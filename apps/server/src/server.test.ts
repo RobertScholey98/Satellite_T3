@@ -6406,6 +6406,146 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("managed documents retain snapshots and submissions through authenticated RPC", () =>
+    Effect.gen(function* () {
+      const dispatched: OrchestrationCommand[] = [];
+      const config = yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getThreadShellById: () => Effect.succeedSome(makeDefaultOrchestrationThreadShell()),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatched.push(command);
+                return { sequence: dispatched.length };
+              }),
+          },
+        },
+      });
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const sourcePath = path.join(config.baseDir, "review.html");
+      yield* fs.writeFileString(sourcePath, "<!doctype html><h1>Retained verification</h1>");
+      const wsUrl = yield* getWsServerUrl("/ws");
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            const published = yield* client[WS_METHODS.documentsPublish]({
+              requestId: "publish-rpc-review",
+              threadId: defaultThreadId,
+              title: "Verification",
+              kind: "review",
+              path: sourcePath,
+              definition: { items: [{ id: "reopen", title: "Reopen the thread" }] },
+            });
+            yield* fs.remove(sourcePath);
+            const retained = yield* client[WS_METHODS.documentsGet]({
+              documentId: published.document.id,
+            });
+            assert.equal(retained.content, "<!doctype html><h1>Retained verification</h1>");
+            const answers = [
+              { itemId: "reopen", outcome: "broken" as const, notes: "The selection was lost." },
+            ];
+            const mutation = {
+              documentId: published.document.id,
+              revisionId: published.revision.id,
+              expectedAnswerVersion: 0,
+              requestId: "save-rpc-review",
+              answers,
+            };
+            const saved = yield* client[WS_METHODS.documentsSaveDraft](mutation);
+            assert.equal(saved.answerVersion, 1);
+            assert.equal(dispatched.length, 0);
+            const submit = {
+              ...mutation,
+              expectedAnswerVersion: 1,
+              requestId: "submit-rpc-review",
+            };
+            const submitted = yield* client[WS_METHODS.documentsSubmit](submit);
+            const repeated = yield* client[WS_METHODS.documentsSubmit](submit);
+            const retry = yield* client[WS_METHODS.documentsRetry]({ submissionId: submitted.id });
+            assert.equal(repeated.id, submitted.id);
+            assert.equal(retry.id, submitted.id);
+            assert.equal(submitted.delivery, "delivered");
+            assert.equal(dispatched.length, 1);
+            const command = dispatched[0];
+            assert.equal(command?.type, "thread.turn.start");
+            if (command?.type === "thread.turn.start") {
+              assert.equal(command.threadId, defaultThreadId);
+              assert.equal(command.message.text, submitted.markdown);
+            }
+            const history = yield* client[WS_METHODS.documentsHistory]({
+              documentId: published.document.id,
+            });
+            assert.deepEqual(
+              history.events.map((entry) => entry.event),
+              ["published", "draft-saved", "submitted", "delivery"],
+            );
+            assert.deepEqual(
+              history.events.find((entry) => entry.event === "draft-saved")?.answers,
+              answers,
+            );
+            assertTrue(history.events.every((entry) => entry.actor.startsWith("session:")));
+            const listed = yield* client[WS_METHODS.documentsList]({ threadId: defaultThreadId });
+            assert.equal(listed[0]?.status, "submitted");
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("managed documents let read-only clients list but reject all mutations", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+      const token = yield* exchangeAccessToken(defaultDesktopBootstrapToken, {
+        scope: "orchestration:read",
+      });
+      const ticketResponse = yield* HttpClient.post("/api/auth/websocket-ticket", {
+        headers: { authorization: `Bearer ${token.body.access_token ?? ""}` },
+      });
+      const { ticket } = yield* responseJsonEffect<{ readonly ticket: string }>(ticketResponse);
+      const wsUrl = `${yield* getWsServerUrl("/ws", { authenticated: false })}?wsTicket=${encodeURIComponent(ticket)}`;
+      yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.gen(function* () {
+            assert.deepEqual(
+              yield* client[WS_METHODS.documentsList]({ threadId: defaultThreadId }),
+              [],
+            );
+            const mutation = {
+              documentId: "unavailable-document",
+              revisionId: "unavailable-revision",
+              expectedAnswerVersion: 0,
+              requestId: "unauthorized-review",
+              answers: [],
+            };
+            const errors = [
+              yield* client[WS_METHODS.documentsPublish]({
+                threadId: defaultThreadId,
+                requestId: "unauthorized-publish",
+                title: "Review",
+                kind: "review",
+                path: "unavailable.html",
+              }).pipe(Effect.flip),
+              yield* client[WS_METHODS.documentsSaveDraft](mutation).pipe(Effect.flip),
+              yield* client[WS_METHODS.documentsSubmit](mutation).pipe(Effect.flip),
+              yield* client[WS_METHODS.documentsRetry]({
+                submissionId: "unavailable-submission",
+              }).pipe(Effect.flip),
+            ];
+            for (const error of errors) {
+              assert.equal(error._tag, "EnvironmentAuthorizationError");
+              if (error._tag === "EnvironmentAuthorizationError") {
+                assert.equal(error.requiredScope, "orchestration:operate");
+              }
+            }
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("provider setup lets read-only clients observe installation but not change setup", () =>
     Effect.gen(function* () {
       let installStarts = 0;

@@ -30,6 +30,19 @@ Blue means working, amber means input or approval is needed, green means the lat
 turn explicitly completed, red means an error, and gray means idle or unavailable.
 Clicking the pill does not approve requests or resolve pending questions.
 
+## Documents
+
+Agents can publish retained plans, reports, and manual verification checklists to
+the thread's **Documents** panel. Review outcomes and notes can be saved as drafts,
+exported to Markdown, or explicitly submitted to the agent. Published revisions,
+saved answers, and submission/delivery history stay on the environment host.
+Interactive HTML documents can use the JSON bridge to load and save draft answers.
+
+See [Documents and manual reviews](docs/user/documents.md) for usage and
+[Document authoring](docs/operations/document-authoring.md) for the example generator
+and protocol. Existing provider session data and T3's built-in proposed plans keep
+their normal storage; file documents enter this library when published explicitly.
+
 ## Isolation and scope
 
 - Server data: `.t3/satellite/userdata` in this checkout.

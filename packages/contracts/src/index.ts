@@ -45,3 +45,4 @@ export * from "./usage.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 export * from "./satellite.ts";
+export * from "./documents.ts";

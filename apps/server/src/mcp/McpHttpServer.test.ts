@@ -14,6 +14,7 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { DocumentService } from "../documents/DocumentService.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -60,6 +61,18 @@ const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.
       Layer.mock(OrchestrationEngineService)({}),
       NodeServices.layer,
     ),
+  ),
+);
+const DocumentsTestLayer = McpHttpServer.DocumentsToolkitRegistrationLive.pipe(
+  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(
+    Layer.mock(DocumentService)({
+      list: (input) =>
+        Effect.sync(() => {
+          expect(input.threadId).toBe(threadId);
+          return [];
+        }),
+    }),
   ),
 );
 
@@ -393,7 +406,9 @@ it.effect("saves the snapshot PNG on request and reports its path", () =>
       );
       expect(Buffer.from(yield* fileSystem.readFile(screenshotPath!)).toString()).toBe("png");
       const [, text] = snapshot.content;
-      expect(text?.type === "text" ? text.text : "").toContain(screenshotPath);
+      expect(text?.type === "text" ? decodeJsonText(text.text) : null).toMatchObject({
+        screenshotPath,
+      });
 
       const unsaved = yield* callSnapshot({});
       expect(unsaved.structuredContent).not.toHaveProperty("screenshotPath");
@@ -462,6 +477,35 @@ it.effect(
         { type: "text", text: "MCP credential does not grant the pull-requests capability." },
       ]);
     }).pipe(Effect.provide(PullRequestsTestLayer)),
+);
+
+it.effect(
+  "registers document authoring tools with scoped structured results and no submission tool",
+  () =>
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      expect(server.tools.map(({ tool }) => tool.name).sort()).toEqual([
+        "list_documents",
+        "publish_document",
+        "read_document",
+      ]);
+      const denied = yield* server
+        .callTool({ name: "list_documents", arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(denied.isError).toBe(true);
+      const allowed = yield* server.callTool({ name: "list_documents", arguments: {} }).pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, {
+          ...invocation,
+          capabilities: new Set(["documents"] as const),
+        }),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+      expect(allowed.isError).toBe(false);
+      expect(allowed.structuredContent).toEqual({ documents: [] });
+    }).pipe(Effect.provide(DocumentsTestLayer)),
 );
 
 it.effect("keeps the snapshot text under the agent's output ceiling", () =>

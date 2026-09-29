@@ -1,0 +1,20 @@
+{
+  "title": "SatelliteT3 manual verification",
+  "items": [
+    {
+      "id": "hide-window",
+      "title": "Hide the main window",
+      "description": "Start a task, close the main window, and confirm the pill remains visible while work continues."
+    },
+    {
+      "id": "reopen-thread",
+      "title": "Return to the same conversation",
+      "description": "Click the pill and confirm the original conversation opens with its latest messages."
+    },
+    {
+      "id": "review-continuity",
+      "title": "Save and reopen this review",
+      "description": "Record an outcome and a note, save the draft, close the document, and reopen it. Confirm the saved answers are retained."
+    }
+  ]
+}

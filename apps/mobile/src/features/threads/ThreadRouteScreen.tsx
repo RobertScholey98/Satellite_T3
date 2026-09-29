@@ -106,9 +106,19 @@ function ThreadHeader(
   const navigation = useNavigation();
   const { layout, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
   const { onOpenTerminal } = props.gitControls;
-  const native = useThreadHeaderOptions(props);
+  const onOpenDocuments = useCallback(
+    () =>
+      navigation.navigate("ThreadDocuments", {
+        environmentId: props.gitControls.environmentId,
+        threadId: props.gitControls.threadId,
+      }),
+    [navigation, props.gitControls.environmentId, props.gitControls.threadId],
+  );
+  const native = useThreadHeaderOptions({ ...props, onOpenDocuments });
   const androidHeaderActions = useMemo<ReadonlyArray<ScreenHeaderAction>>(() => {
-    const actions: ScreenHeaderAction[] = [];
+    const actions: ScreenHeaderAction[] = [
+      { accessibilityLabel: "Open documents", icon: "doc.text", onPress: onOpenDocuments },
+    ];
     if (props.onReturnToThread) {
       actions.push({
         accessibilityLabel: "Return to chat",
@@ -139,6 +149,7 @@ function ThreadHeader(
     });
     return actions;
   }, [
+    onOpenDocuments,
     props.inspectorMode,
     panes.auxiliaryPaneVisible,
     props.onOpenFilesInspector,

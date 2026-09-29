@@ -103,6 +103,7 @@ import {
   normalizeDispatchCommand,
 } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
+import { DocumentService } from "./documents/DocumentService.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import {
@@ -519,6 +520,7 @@ const makeWsRpcLayer = (
               Effect.orElseSucceed(() => null),
             );
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+      const documents = yield* DocumentService;
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -3127,6 +3129,32 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.documentsList]: (input) =>
+          observeRpcEffect(WS_METHODS.documentsList, documents.list(input)),
+        [WS_METHODS.documentsGet]: (input) =>
+          observeRpcEffect(WS_METHODS.documentsGet, documents.get(input)),
+        [WS_METHODS.documentsHistory]: (input) =>
+          observeRpcEffect(WS_METHODS.documentsHistory, documents.history(input)),
+        [WS_METHODS.documentsPublish]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.documentsPublish,
+            documents.publish(input, `session:${currentSessionId}`),
+          ),
+        [WS_METHODS.documentsSaveDraft]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.documentsSaveDraft,
+            documents.saveDraft(input, `session:${currentSessionId}`),
+          ),
+        [WS_METHODS.documentsSubmit]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.documentsSubmit,
+            documents.submit(input, `session:${currentSessionId}`),
+          ),
+        [WS_METHODS.documentsRetry]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.documentsRetry,
+            documents.retry(input, `session:${currentSessionId}`),
+          ),
         [WS_METHODS.projectsWriteFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsWriteFile,
@@ -3830,6 +3858,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         ),
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const documents = yield* DocumentService;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3878,6 +3907,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               // One server-lifetime service means clients share the same PR caches, and a WS
               // mutation invalidates the HTTP diff cache that every client reads from.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
+              Layer.provide(Layer.succeed(DocumentService, documents)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

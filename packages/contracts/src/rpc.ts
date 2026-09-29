@@ -282,8 +282,29 @@ import {
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import {
+  DocumentOperationError,
+  DocumentSummary,
+  DocumentDetail,
+  DocumentSubmission,
+  DocumentsListInput,
+  DocumentsGetInput,
+  DocumentsPublishInput,
+  DocumentsSaveDraftInput,
+  DocumentsSubmitInput,
+  DocumentsRetryInput,
+  DocumentsHistoryInput,
+  DocumentsHistoryResult,
+} from "./documents.ts";
 
 export const WS_METHODS = {
+  documentsList: "documents.list",
+  documentsGet: "documents.get",
+  documentsPublish: "documents.publish",
+  documentsSaveDraft: "documents.saveDraft",
+  documentsSubmit: "documents.submit",
+  documentsRetry: "documents.retry",
+  documentsHistory: "documents.history",
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -991,6 +1012,43 @@ const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
 });
 
+const documentRpcError = Schema.Union([DocumentOperationError, EnvironmentAuthorizationError]);
+const WsDocumentsListRpc = Rpc.make(WS_METHODS.documentsList, {
+  payload: DocumentsListInput,
+  success: Schema.Array(DocumentSummary),
+  error: documentRpcError,
+});
+const WsDocumentsGetRpc = Rpc.make(WS_METHODS.documentsGet, {
+  payload: DocumentsGetInput,
+  success: DocumentDetail,
+  error: documentRpcError,
+});
+const WsDocumentsPublishRpc = Rpc.make(WS_METHODS.documentsPublish, {
+  payload: DocumentsPublishInput,
+  success: DocumentDetail,
+  error: documentRpcError,
+});
+const WsDocumentsSaveDraftRpc = Rpc.make(WS_METHODS.documentsSaveDraft, {
+  payload: DocumentsSaveDraftInput,
+  success: DocumentDetail,
+  error: documentRpcError,
+});
+const WsDocumentsSubmitRpc = Rpc.make(WS_METHODS.documentsSubmit, {
+  payload: DocumentsSubmitInput,
+  success: DocumentSubmission,
+  error: documentRpcError,
+});
+const WsDocumentsRetryRpc = Rpc.make(WS_METHODS.documentsRetry, {
+  payload: DocumentsRetryInput,
+  success: DocumentSubmission,
+  error: documentRpcError,
+});
+const WsDocumentsHistoryRpc = Rpc.make(WS_METHODS.documentsHistory, {
+  payload: DocumentsHistoryInput,
+  success: DocumentsHistoryResult,
+  error: documentRpcError,
+});
+
 const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
@@ -1428,6 +1486,13 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
 });
 
 export const WsRpcGroup = RpcGroup.make(
+  WsDocumentsListRpc,
+  WsDocumentsGetRpc,
+  WsDocumentsPublishRpc,
+  WsDocumentsSaveDraftRpc,
+  WsDocumentsSubmitRpc,
+  WsDocumentsRetryRpc,
+  WsDocumentsHistoryRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

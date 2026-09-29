@@ -34,6 +34,7 @@ import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboarding
 import { useConnectOnboardingNavigation } from "./features/cloud/connectOnboardingNavigation";
 import { AttachmentFileScreen } from "./features/files/AttachmentFileScreen";
 import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
+import { ThreadDocumentsScreen } from "./features/documents/ThreadDocumentsScreen";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import {
   HardwareKeyboardCommandOverlay,
@@ -650,6 +651,11 @@ const RootStackConfig = createNativeStackNavigator({
         sheetAllowedDetents: Platform.OS === "android" ? undefined : [0.55, 0.92],
         sheetGrabberVisible: Platform.OS !== "android",
       },
+    }),
+    ThreadDocuments: createNativeStackScreen({
+      screen: ThreadDocumentsScreen,
+      linking: `${THREAD_LINKING_PREFIX}/documents`,
+      options: { ...GLASS_HEADER_OPTIONS, title: "Documents" },
     }),
     ThreadFiles: createNativeStackScreen({
       screen: ThreadFilesTreeScreen,
