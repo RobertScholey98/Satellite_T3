@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import { ArrowLeftIcon, ChartNoAxesColumnIcon, Minimize2Icon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -198,6 +198,13 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
           />
         </>
       )}
+      {window.satelliteBridge ? (
+        <SidebarUtilityItem
+          icon={<Minimize2Icon />}
+          label="Hide to Satellite pill"
+          onClick={() => window.satelliteBridge?.hideMain()}
+        />
+      ) : null}
       <SidebarUpdatePill />
     </SidebarMenu>
   );

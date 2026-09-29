@@ -1,5 +1,7 @@
 import type {
   DesktopBridge,
+  SatelliteBridge,
+  SatelliteNavigation,
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingInputEvent,
   DesktopPreviewRecordingFrame,
@@ -10,6 +12,19 @@ import { exposeClerkBridge } from "@clerk/electron/preload";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
+import * as SatelliteChannels from "./satellite/channels.ts";
+
+if (process.argv.includes("--satellite-pill"))
+  contextBridge.exposeInMainWorld("satelliteBridge", {
+    publish: (state) => ipcRenderer.send(SatelliteChannels.SATELLITE_PUBLISH, state),
+    hideMain: () => ipcRenderer.send(SatelliteChannels.SATELLITE_HIDE_MAIN),
+    onNavigate: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, target: SatelliteNavigation) =>
+        listener(target);
+      ipcRenderer.on(SatelliteChannels.SATELLITE_NAVIGATE, wrapped);
+      return () => ipcRenderer.removeListener(SatelliteChannels.SATELLITE_NAVIGATE, wrapped);
+    },
+  } satisfies SatelliteBridge);
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
   "requested",

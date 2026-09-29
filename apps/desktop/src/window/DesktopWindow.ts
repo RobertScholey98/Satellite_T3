@@ -30,6 +30,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
+import { installSatellitePill, isSatellitePillWindow } from "../satellite/SatellitePill.ts";
 
 const TITLEBAR_HEIGHT = 40;
 // Matches --workspace-topbar-height in apps/web/src/index.css. Native macOS
@@ -281,7 +282,7 @@ function syncWindowAppearance(
   platform: NodeJS.Platform,
 ): Effect.Effect<void> {
   return Effect.sync(() => {
-    if (window.isDestroyed()) {
+    if (window.isDestroyed() || isSatellitePillWindow(window)) {
       return;
     }
 
@@ -360,7 +361,14 @@ export const make = Effect.gen(function* () {
     );
 
   const currentMainWindow = electronWindow.currentMainOrFirst.pipe(Effect.flatMap(withoutSplash));
-  const focusedMainWindow = electronWindow.focusedMainOrFirst.pipe(Effect.flatMap(withoutSplash));
+  const focusedMainWindow = electronWindow.focusedMainOrFirst.pipe(
+    Effect.flatMap(withoutSplash),
+    Effect.flatMap((window) =>
+      Option.isSome(window) && isSatellitePillWindow(window.value)
+        ? electronWindow.main
+        : Effect.succeed(window),
+    ),
+  );
 
   const createWindow = Effect.fn("desktop.window.createWindow")(function* (): Effect.fn.Return<
     Electron.BrowserWindow,
@@ -407,6 +415,9 @@ export const make = Effect.gen(function* () {
       ...getWindowTitleBarOptions(shouldUseDarkColors, environment.platform),
       webPreferences: {
         preload: environment.preloadPath,
+        ...(process.env.T3CODE_SATELLITE_PILL === "1"
+          ? { additionalArguments: ["--satellite-pill"] }
+          : {}),
         // The window boots hidden (show: false until ready-to-show), and
         // Chromium throttles hidden renderers: timers coalesce and rAF stops,
         // which stalls first paint. Boot unthrottled; the first-reveal trigger
@@ -419,6 +430,21 @@ export const make = Effect.gen(function* () {
         webviewTag: true,
       },
     });
+
+    if (process.env.T3CODE_SATELLITE_PILL === "1") {
+      yield* Effect.sync(() =>
+        installSatellitePill(window, {
+          preloadPath: environment.preloadPath.replace(
+            /preload\.cjs$/,
+            "satellite-pill-preload.cjs",
+          ),
+          revealMain: () => {
+            void runPromise(electronWindow.reveal(window));
+          },
+          ...iconOption,
+        }),
+      );
+    }
 
     if (environment.platform === "darwin") {
       window.setAutoHideCursor(false);
@@ -818,7 +844,7 @@ export const make = Effect.gen(function* () {
       // Boot is done; hand the window back to normal hidden-window throttling
       // (see the backgroundThrottling comment on the create options above).
       if (!window.isDestroyed()) {
-        window.webContents.setBackgroundThrottling(true);
+        window.webContents.setBackgroundThrottling(process.env.T3CODE_SATELLITE_PILL !== "1");
       }
       // Reveal the real window, then close the connecting splash (if any) so the
       // two don't overlap and there's no blank gap between them.
@@ -829,7 +855,7 @@ export const make = Effect.gen(function* () {
     });
 
     loadApplication();
-    if (environment.isDevelopment) {
+    if (environment.isDevelopment && process.env.T3CODE_SATELLITE_PILL !== "1") {
       window.webContents.openDevTools({ mode: "detach" });
     }
 
