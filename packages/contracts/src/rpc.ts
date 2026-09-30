@@ -6,6 +6,49 @@ import {
   ChatGptHandoffState,
 } from "./providerSetup.ts";
 import * as Schema from "effect/Schema";
+import {
+  IssuesListInput,
+  IssuesListResult,
+  IssuesGetInput,
+  IssueDetail,
+  IssueBoardsListInput,
+  IssueBoardSummary,
+  IssueBoardsOpenInput,
+  IssueBoardView,
+  IssueBoardsConfigureInput,
+  IssueBoardsDisconnectInput,
+  IssueBoardsMoveInput,
+  IssueMoveReceipt,
+  IssueMovesRetryInput,
+  IssueAttemptsReserveInput,
+  IssueAttemptLink,
+  IssueAttemptsListInput,
+  IssueAttempt,
+  IssueAttemptsReceiptsInput,
+  IssueAttemptsReceiptsResult,
+  IssueAttemptsIngestInput,
+  IssueAttemptsIngestResult,
+  IssueAttemptsAcknowledgeInput,
+  IssueAttemptsSyncGenerationsInput,
+  IssueOperationError,
+} from "./issues.ts";
+import {
+  OpenWorkListInput,
+  OpenWorkListResult,
+  OpenWorkTimelineInput,
+  OpenWorkTimelineResult,
+  OpenWorkLinkFolderInput,
+  OpenWorkFolderLink,
+  OpenWorkUnlinkFolderInput,
+  OpenWorkAssignDocumentInput,
+  OpenWorkDocument,
+  OpenWorkFavoriteInput,
+  OpenWorkFavoritesInput,
+  OpenWorkFavoritesResult,
+  OpenWorkReadLinkedInput,
+  OpenWorkReadLinkedResult,
+  OpenWorkOperationError,
+} from "./openWork.ts";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -299,6 +342,28 @@ import {
 
 export const WS_METHODS = {
   documentsList: "documents.list",
+  issuesList: "issues.list",
+  issuesGet: "issues.get",
+  issuesBoardsList: "issues.boards.list",
+  issuesBoardsOpen: "issues.boards.open",
+  issuesBoardsConfigure: "issues.boards.configure",
+  issuesBoardsDisconnect: "issues.boards.disconnect",
+  issuesBoardsMove: "issues.boards.move",
+  issuesMovesRetry: "issues.moves.retry",
+  issuesAttemptsReserve: "issues.attempts.reserve",
+  issuesAttemptsList: "issues.attempts.list",
+  issuesAttemptsReceipts: "issues.attempts.receipts",
+  issuesAttemptsIngest: "issues.attempts.ingest",
+  issuesAttemptsAcknowledge: "issues.attempts.acknowledge",
+  issuesAttemptsSyncGenerations: "issues.attempts.syncGenerations",
+  openWorkList: "openWork.list",
+  openWorkTimeline: "openWork.timeline",
+  openWorkLinkFolder: "openWork.linkFolder",
+  openWorkUnlinkFolder: "openWork.unlinkFolder",
+  openWorkAssignDocument: "openWork.assignDocument",
+  openWorkFavoriteDocument: "openWork.favoriteDocument",
+  openWorkFavorites: "openWork.favorites",
+  openWorkReadLinkedDocument: "openWork.readLinkedDocument",
   documentsGet: "documents.get",
   documentsPublish: "documents.publish",
   documentsSaveDraft: "documents.saveDraft",
@@ -1486,6 +1551,116 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
 });
 
 export const WsRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.issuesList, {
+    payload: IssuesListInput,
+    success: IssuesListResult,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesGet, {
+    payload: IssuesGetInput,
+    success: IssueDetail,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesBoardsList, {
+    payload: IssueBoardsListInput,
+    success: Schema.Array(IssueBoardSummary),
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesBoardsOpen, {
+    payload: IssueBoardsOpenInput,
+    success: IssueBoardView,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesBoardsConfigure, {
+    payload: IssueBoardsConfigureInput,
+    success: IssueBoardView,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesBoardsDisconnect, {
+    payload: IssueBoardsDisconnectInput,
+    success: Schema.Void,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesBoardsMove, {
+    payload: IssueBoardsMoveInput,
+    success: IssueMoveReceipt,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesMovesRetry, {
+    payload: IssueMovesRetryInput,
+    success: IssueMoveReceipt,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesAttemptsReserve, {
+    payload: IssueAttemptsReserveInput,
+    success: IssueAttemptLink,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesAttemptsList, {
+    payload: IssueAttemptsListInput,
+    success: Schema.Array(IssueAttempt),
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesAttemptsReceipts, {
+    payload: IssueAttemptsReceiptsInput,
+    success: IssueAttemptsReceiptsResult,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesAttemptsIngest, {
+    payload: IssueAttemptsIngestInput,
+    success: IssueAttemptsIngestResult,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesAttemptsAcknowledge, {
+    payload: IssueAttemptsAcknowledgeInput,
+    success: Schema.Void,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.issuesAttemptsSyncGenerations, {
+    payload: IssueAttemptsSyncGenerationsInput,
+    success: Schema.Void,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.openWorkList, {
+    payload: OpenWorkListInput,
+    success: OpenWorkListResult,
+    error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.openWorkTimeline, {
+    payload: OpenWorkTimelineInput,
+    success: OpenWorkTimelineResult,
+    error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.openWorkLinkFolder, {
+    payload: OpenWorkLinkFolderInput,
+    success: OpenWorkFolderLink,
+    error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.openWorkUnlinkFolder, {
+    payload: OpenWorkUnlinkFolderInput,
+    success: Schema.Void,
+    error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.openWorkAssignDocument, {
+    payload: OpenWorkAssignDocumentInput,
+    success: OpenWorkDocument,
+    error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.openWorkFavoriteDocument, {
+    payload: OpenWorkFavoriteInput,
+    success: OpenWorkDocument,
+    error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.openWorkFavorites, {
+    payload: OpenWorkFavoritesInput,
+    success: OpenWorkFavoritesResult,
+    error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.openWorkReadLinkedDocument, {
+    payload: OpenWorkReadLinkedInput,
+    success: OpenWorkReadLinkedResult,
+    error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
+  }),
   WsDocumentsListRpc,
   WsDocumentsGetRpc,
   WsDocumentsPublishRpc,

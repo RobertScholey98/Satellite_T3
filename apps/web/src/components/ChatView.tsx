@@ -103,6 +103,12 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useIssueDraftStore } from "~/issueDraftStore";
+import { issuesEnvironment } from "~/state/issues";
+import { IssueDraftFields } from "./work/IssueDraftFields";
+import { unwrapWorkResult } from "./work/commands";
+import { validWorktreeName } from "./work/work.logic";
+import { ThreadIssueLinks } from "./work/ThreadIssueLinks";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
 import { isMacPlatform } from "../lib/utils";
@@ -751,6 +757,8 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       threadSyncPhase?: ThreadSyncPhase | null;
       routeKind: "server";
+      embeddedDraft?: false;
+      onDraftSubmitted?: (threadRef: ScopedThreadRef) => void;
       draftId?: never;
     }
   | {
@@ -761,6 +769,8 @@ type ChatViewProps =
       forceExpandedMobileComposer?: boolean;
       threadSyncPhase?: never;
       routeKind: "draft";
+      embeddedDraft?: boolean;
+      onDraftSubmitted?: (threadRef: ScopedThreadRef) => void;
       draftId: DraftId;
     };
 
@@ -1484,6 +1494,15 @@ export default function ChatView(props: ChatViewProps) {
     forceExpandedMobileComposer = false,
   } = props;
   const draftId = routeKind === "draft" ? props.draftId : null;
+  const embeddedDraft = props.embeddedDraft === true;
+  const issueDraftIntent = useIssueDraftStore((state) =>
+    draftId ? state.intents[draftId] : undefined,
+  );
+  const reserveIssueAttempt = useAtomCommand(issuesEnvironment.reserveAttempt, {
+    reportFailure: false,
+  });
+  const readIssueForStart = useAtomCommand(issuesEnvironment.get, { reportFailure: false });
+  const issueReservationInFlight = useRef(false);
   const threadSyncPhase = routeKind === "server" ? (props.threadSyncPhase ?? null) : null;
   const threadDetailLoading = threadSyncPhase === "loading";
   const handleNewThread = useNewThreadHandler();
@@ -5849,7 +5868,7 @@ export default function ChatView(props: ChatViewProps) {
         activeProjectSettings.settings.newWorktreesStartFromOrigin)
       : false;
   const sendEnvMode = resolveSendEnvMode({
-    requestedEnvMode: envMode,
+    requestedEnvMode: issueDraftIntent ? "worktree" : envMode,
     isGitRepo,
   });
   const localCheckoutBranchMismatch = useMemo(
@@ -6687,6 +6706,7 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (embeddedDraft && event.key === "Escape") return;
       if (preventRepeatedTerminalCloseShortcut(event, keybindings)) {
         event.stopPropagation();
         return;
@@ -7324,6 +7344,18 @@ export default function ChatView(props: ChatViewProps) {
     },
   ) => {
     e?.preventDefault();
+    if (issueDraftIntent && !validWorktreeName(issueDraftIntent.worktreeName)) {
+      setThreadError(threadId, "Enter a valid worktree name before sending.");
+      return;
+    }
+    if (issueDraftIntent && submissionIntent === "background") {
+      setThreadError(threadId, "Send issue work in the foreground so its launch can be tracked.");
+      return;
+    }
+    if (issueDraftIntent && sendEnvMode !== "worktree") {
+      setThreadError(threadId, "Issue work needs a Git project and one model in a new worktree.");
+      return;
+    }
     // Typed out in full rather than picked from the menu. Attachments or contexts
     // mean the user is sending a prompt, so those go through as usual.
     if (
@@ -7404,6 +7436,10 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const multipleModelSelections = sendCtx.multipleModelSelections;
+    if (issueDraftIntent && multipleModelSelections !== null) {
+      setThreadError(threadId, "Issue work starts one model per attempt.");
+      return;
+    }
     if (
       multipleModelSelections !== null &&
       serverConfig?.environment.capabilities.requiredWorktreeBootstrap !== true
@@ -7716,6 +7752,49 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
 
+    let issueAttemptForSend = issueDraftIntent?.reservation;
+    let issueContextForSend = "";
+    if (issueDraftIntent && draftId && isFirstMessage) {
+      if (issueReservationInFlight.current) return;
+      issueReservationInFlight.current = true;
+      try {
+        const detail = unwrapWorkResult(
+          await readIssueForStart({
+            environmentId: issueDraftIntent.sourceEnvironmentId,
+            input: { projectId: issueDraftIntent.sourceProjectId, issue: issueDraftIntent.issue },
+          }),
+        );
+        issueContextForSend = `\n\n<attached_issue>\nRepository host: ${detail.ref.host}\nIssue: #${detail.ref.number} ${detail.title}\nURL: ${detail.ref.url}\n\n${detail.body}\n</attached_issue>`;
+        if (
+          !issueAttemptForSend ||
+          issueAttemptForSend.destinationEnvironmentId !== environmentId
+        ) {
+          issueAttemptForSend = unwrapWorkResult(
+            await reserveIssueAttempt({
+              environmentId: issueDraftIntent.sourceEnvironmentId,
+              input: {
+                requestId: `${issueDraftIntent.requestId}:${environmentId}`,
+                boardId: issueDraftIntent.boardId,
+                issue: issueDraftIntent.issue,
+                sourceEnvironmentId: issueDraftIntent.sourceEnvironmentId,
+                destinationEnvironmentId: environmentId,
+              },
+            }),
+          );
+          useIssueDraftStore
+            .getState()
+            .set(draftId, { ...issueDraftIntent, reservation: issueAttemptForSend });
+        }
+      } catch (error) {
+        setThreadError(
+          threadIdForSend,
+          error instanceof Error ? error.message : "Could not reserve issue work.",
+        );
+        return;
+      } finally {
+        issueReservationInFlight.current = false;
+      }
+    }
     const composerImagesSnapshot = [...composerImages];
     const composerFilesSnapshot = [...composerFiles];
     const composerAttachmentsSnapshot = [...composerImagesSnapshot, ...composerFilesSnapshot];
@@ -7752,7 +7831,7 @@ export default function ChatView(props: ChatViewProps) {
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+      text: (messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT) + issueContextForSend,
     });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       return;
@@ -8356,12 +8435,16 @@ export default function ChatView(props: ChatViewProps) {
                     prepareWorktree: {
                       projectCwd: activeProject.workspaceRoot,
                       baseBranch: baseBranchForWorktree,
-                      branch: buildTemporaryWorktreeBranchName(randomHex),
+                      branch:
+                        issueDraftIntent?.worktreeName ??
+                        buildTemporaryWorktreeBranchName(randomHex),
+                      ...(issueAttemptForSend ? { requireWorktree: true } : {}),
                       ...(startFromOrigin ? { startFromOrigin: true } : {}),
                     },
                     runSetupScript: true,
                   }
                 : {}),
+              ...(issueAttemptForSend ? { issueAttempt: issueAttemptForSend } : {}),
             }
           : undefined;
       const backgroundThreadRef =
@@ -8444,6 +8527,8 @@ export default function ChatView(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        if (draftId && issueAttemptForSend) useIssueDraftStore.getState().remove(draftId);
+        if (embeddedDraft) props.onDraftSubmitted?.(scopeThreadRef(environmentId, threadIdForSend));
         // The turn is under way and will spend quota, so that thread's limits
         // snapshot is stale. Uploads may have outlasted a navigation, so only
         // the sending thread's panel clears.
@@ -9700,7 +9785,12 @@ export default function ChatView(props: ChatViewProps) {
   });
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+    <div
+      className={cn(
+        "relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background",
+        embeddedDraft && "[&_[data-chat-header]]:hidden",
+      )}
+    >
       <Dialog
         open={
           deviceSetupThread !== null &&
@@ -9724,7 +9814,7 @@ export default function ChatView(props: ChatViewProps) {
           ) : null}
         </WizardPopup>
       </Dialog>
-      {rightPanelControlsAtRoot ? panelLayoutControls : null}
+      {!embeddedDraft && rightPanelControlsAtRoot ? panelLayoutControls : null}
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-col overflow-x-hidden",
@@ -9733,48 +9823,51 @@ export default function ChatView(props: ChatViewProps) {
         data-chat-column-maximized-away={rightPanelMaximized ? "true" : "false"}
       >
         {/* Top bar */}
-        <WorkspacePageHeader
-          data-chat-header
-          electron={isElectron}
-          reserveNativeControls={reserveTitleBarControlInset && !inlineRightPanelOwnsTitleBar}
-          className="relative bg-background"
-        >
-          {isElectron && rightPanelControlsAtRoot ? (
-            <span
-              aria-hidden
-              className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
+        {!embeddedDraft ? (
+          <WorkspacePageHeader
+            data-chat-header
+            electron={isElectron}
+            reserveNativeControls={reserveTitleBarControlInset && !inlineRightPanelOwnsTitleBar}
+            className="relative bg-background"
+          >
+            {isElectron && rightPanelControlsAtRoot ? (
+              <span
+                aria-hidden
+                className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
+              />
+            ) : null}
+            {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
+            <ChatHeader
+              {...(!supportsPullRequests || activeProjectRepository === null
+                ? {}
+                : { onOpenPullRequest: openProjectPullRequest })}
+              activeThreadEnvironmentId={activeThread.environmentId}
+              activeThreadId={activeThread.id}
+              {...(routeKind === "draft" && draftId ? { draftId } : {})}
+              activeThreadTitle={activeThread.title}
+              isServerThread={isServerThread}
+              activeProject={activeProject}
+              openInCwd={gitCwd}
+              activeProjectScripts={activeProjectScripts}
+              preferredScriptId={
+                activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
+              }
+              keybindings={keybindings}
+              availableEditors={availableEditors}
+              rightPanelOpen={rightPanelOpen}
+              gitCwd={gitCwd}
+              onNewThreadInProject={handleNewThreadInActiveProject}
+              {...(activeDraftLogicalProjectKey
+                ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
+                : {})}
+              onRunProjectScript={runProjectScript}
+              onAddProjectScript={saveProjectScript}
+              onUpdateProjectScript={updateProjectScript}
+              onDeleteProjectScript={deleteProjectScript}
             />
-          ) : null}
-          {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
-          <ChatHeader
-            {...(!supportsPullRequests || activeProjectRepository === null
-              ? {}
-              : { onOpenPullRequest: openProjectPullRequest })}
-            activeThreadEnvironmentId={activeThread.environmentId}
-            activeThreadId={activeThread.id}
-            {...(routeKind === "draft" && draftId ? { draftId } : {})}
-            activeThreadTitle={activeThread.title}
-            isServerThread={isServerThread}
-            activeProject={activeProject}
-            openInCwd={gitCwd}
-            activeProjectScripts={activeProjectScripts}
-            preferredScriptId={
-              activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
-            }
-            keybindings={keybindings}
-            availableEditors={availableEditors}
-            rightPanelOpen={rightPanelOpen}
-            gitCwd={gitCwd}
-            onNewThreadInProject={handleNewThreadInActiveProject}
-            {...(activeDraftLogicalProjectKey
-              ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
-              : {})}
-            onRunProjectScript={runProjectScript}
-            onAddProjectScript={saveProjectScript}
-            onUpdateProjectScript={updateProjectScript}
-            onDeleteProjectScript={deleteProjectScript}
-          />
-        </WorkspacePageHeader>
+          </WorkspacePageHeader>
+        ) : null}
+        {!embeddedDraft && isServerThread ? <ThreadIssueLinks threadRef={routeThreadRef} /> : null}
 
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -9981,11 +10074,13 @@ export default function ChatView(props: ChatViewProps) {
                     <ComposerSurface.Shell contextStrip={showComposerContextStrip}>
                       <ComposerSurface.Host>
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
+                          {draftId ? <IssueDraftFields draftId={draftId} /> : null}
                           <ChatComposer
                             multipleModelSelections={multipleModelSelections}
                             supportsMultipleModels={
+                              !issueDraftIntent &&
                               serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===
-                              true
+                                true
                             }
                             onMultipleModelSelectionsChange={setMultipleModelSelections}
                             composerRef={composerRef}
@@ -10125,7 +10220,9 @@ export default function ChatView(props: ChatViewProps) {
                           {mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
-                                forceNewWorktree={multipleModelSelections !== null}
+                                forceNewWorktree={
+                                  issueDraftIntent !== undefined || multipleModelSelections !== null
+                                }
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}
@@ -10255,7 +10352,7 @@ export default function ChatView(props: ChatViewProps) {
         ))}
       </div>
 
-      {rightPanelPresent && !shouldUseRightPanelSheet && activeThreadRef ? (
+      {!embeddedDraft && rightPanelPresent && !shouldUseRightPanelSheet && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
           widthStorageKey={`t3code:preview-panel-width:${activeThreadKey}`}
@@ -10301,7 +10398,7 @@ export default function ChatView(props: ChatViewProps) {
           {rightPanelContent}
         </RightPanelTabs>
       ) : null}
-      {rightPanelPresent && shouldUseRightPanelSheet && activeThreadRef ? (
+      {!embeddedDraft && rightPanelPresent && shouldUseRightPanelSheet && activeThreadRef ? (
         <RightPanelSheet
           animationDurationMs={panelAnimationsActive ? panelAnimationDurationMs : 0}
           open={rightPanelOpen}

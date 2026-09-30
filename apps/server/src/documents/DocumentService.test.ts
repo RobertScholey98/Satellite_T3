@@ -3,6 +3,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  DocumentOperationError,
   type OrchestrationCommand,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -28,6 +29,10 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import migration from "../persistence/Migrations/055_ManagedDocuments.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 import { makeDocumentService } from "./DocumentService.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { makePublicationRecorder } from "../openWork/PublicationRepository.ts";
+import { makeOpenWorkService } from "../openWork/OpenWorkService.ts";
 
 const integrationLayer = Layer.mergeAll(
   OrchestrationEngineLive.pipe(
@@ -43,6 +48,7 @@ const integrationLayer = Layer.mergeAll(
   Layer.provide(RepositoryIdentityResolver.layer),
   Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-documents-test-" })),
+  Layer.provideMerge(VcsProcess.layer.pipe(Layer.provide(ProcessRunner.layer))),
   Layer.provideMerge(NodeServices.layer),
 );
 const threadId = ThreadId.make("documents-thread");
@@ -115,6 +121,124 @@ const setup = Effect.gen(function* () {
 });
 
 describe("managed document persistence", () => {
+  it.effect(
+    "publication provenance commits atomically and keeps original worktree when its thread moves",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* setup;
+        const processes = yield* VcsProcess.VcsProcess;
+        const run = (args: readonly string[], cwd = f.stateDir) =>
+          processes
+            .run({
+              operation: "DocumentService.provenanceTest",
+              command: "git",
+              cwd,
+              args,
+              env: {
+                ...process.env,
+                GIT_AUTHOR_NAME: "Test",
+                GIT_AUTHOR_EMAIL: "test@example.com",
+                GIT_COMMITTER_NAME: "Test",
+                GIT_COMMITTER_EMAIL: "test@example.com",
+              },
+            })
+            .pipe(Effect.map((result) => result.stdout.trim()));
+        yield* run(["init", "-b", "main"]);
+        yield* f.fs.writeFileString(f.path.join(f.stateDir, "code.txt"), "main\n");
+        yield* run(["add", "code.txt"]);
+        yield* run(["commit", "-m", "main"]);
+        const main = yield* run(["rev-parse", "HEAD"]);
+        yield* run(["switch", "-c", "feature"]);
+        const recorder = yield* makePublicationRecorder;
+        let currentCwd = f.stateDir;
+        const recordPublication = (input: Parameters<typeof recorder>[0]) =>
+          recorder({ ...input, worktreePath: currentCwd }).pipe(
+            Effect.mapError(
+              () =>
+                new DocumentOperationError({
+                  reason: "storage",
+                  message: "Could not record provenance.",
+                }),
+            ),
+          );
+        const service = yield* makeDocumentService({
+          ...f.options,
+          recordPublication: (input) => recordPublication({ ...input, worktreePath: currentCwd }),
+        });
+        const first = yield* service.publish({ ...f.publication, requestId: "birth-one" }, actor);
+        yield* f.fs.writeFileString(f.path.join(f.stateDir, "code.txt"), "first\n");
+        yield* run(["commit", "-am", "first"]);
+        const committed = yield* run(["rev-parse", "HEAD"]);
+        const other = f.path.join(f.stateDir, "other-worktree");
+        yield* run(["worktree", "add", "--detach", other, main]);
+        currentCwd = other;
+        const next = yield* service.publish(
+          {
+            ...f.publication,
+            requestId: "birth-two",
+            documentId: first.document.id,
+            expectedCurrentRevisionId: first.revision.id,
+            step: { kind: "commit", commitSha: main },
+          },
+          actor,
+        );
+        const open = yield* makeOpenWorkService({
+          projects: () =>
+            Effect.succeed([
+              { id: ProjectId.make("documents-project"), workspaceRoot: f.stateDir },
+            ]),
+        });
+        const list = yield* open.list({});
+        const original = list.worktrees.find((tree) => tree.branch === "feature")!;
+        const timeline = yield* open.timeline({ worktreeId: original.id });
+        assert.deepEqual(timeline.documents[0]?.source, {
+          kind: "published",
+          documentId: first.document.id,
+          revisionId: first.revision.id,
+          threadId,
+        });
+        assert.deepEqual(timeline.documents[0]?.step, { kind: "commit", commitSha: committed });
+        const otherView = yield* open.timeline({
+          worktreeId: list.worktrees.find((tree) => tree.branch === null)!.id,
+        });
+        assert.equal(otherView.documents[0]?.source.kind, "published");
+        assert.deepEqual(otherView.documents[0]?.step, { kind: "commit", commitSha: main });
+        yield* f.fs.writeFileString(f.sourcePath, "<h1>Live replacement</h1>");
+        assert.include(
+          (yield* service.get({ documentId: first.document.id, revisionId: first.revision.id }))
+            .content,
+          "Original",
+        );
+        const failing = yield* makeDocumentService({
+          ...f.options,
+          recordPublication: (input) =>
+            recordPublication({ ...input, worktreePath: currentCwd }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new DocumentOperationError({ reason: "storage", message: "Injected rollback" }),
+                ),
+              ),
+            ),
+        });
+        assert.equal(
+          (yield* failing
+            .publish({ ...f.publication, requestId: "rollback" }, actor)
+            .pipe(Effect.result))._tag,
+          "Failure",
+        );
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          count: number;
+        }>`SELECT count(*) AS count FROM open_work_documents`;
+        assert.equal(rows[0]?.count, 2);
+        assert.equal(
+          (yield* service.history({ documentId: first.document.id })).revisions.length,
+          2,
+        );
+        assert.equal(next.revision.number, 2);
+      }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
+  );
+
   it.effect(
     "snapshots survive source changes and service restart, preserving revisions and answer history",
     () =>

@@ -159,6 +159,8 @@ import { Separator } from "~/components/ui/separator";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { getSourceControlPresentationForKind } from "~/sourceControlPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
+import { IssuesBoard } from "~/components/work/IssuesBoard";
+import { OpenWorkView } from "~/components/work/OpenWorkView";
 
 function getShortcutContext() {
   return {
@@ -173,6 +175,7 @@ function getShortcutContext() {
 }
 
 export interface PullRequestsSearch extends PullRequestListPreferences {
+  readonly tab?: "pull-requests" | "issues" | "open";
   /**
    * Narrows the list to one server. Absent means every connected one, which is the default the
    * page has now — so a link written before servers could be chosen still opens the whole list.
@@ -294,6 +297,7 @@ function pullRequestSearchLabels(raw: unknown): Partial<Pick<PullRequestsSearch,
 
 export const Route = createFileRoute("/_chat/pull-requests")({
   validateSearch: (raw: Record<string, unknown>): PullRequestsSearch => ({
+    ...(raw.tab === "issues" || raw.tab === "open" ? { tab: raw.tab } : {}),
     involvement:
       raw.involvement === "reviewing" || raw.involvement === "authored" ? raw.involvement : "all",
     state:
@@ -340,7 +344,47 @@ export const Route = createFileRoute("/_chat/pull-requests")({
   component: PullRequestsRouteView,
 });
 
+function WorkTabs() {
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
+  return (
+    <nav aria-label="Work views" className="flex shrink-0 gap-1 border-b px-4 py-2">
+      {(
+        [
+          ["pull-requests", "Pull requests"],
+          ["issues", "Issues"],
+          ["open", "Open"],
+        ] as const
+      ).map(([tab, label]) => (
+        <Button
+          key={tab}
+          size="sm"
+          variant={(search.tab ?? "pull-requests") === tab ? "secondary" : "ghost"}
+          aria-current={(search.tab ?? "pull-requests") === tab ? "page" : undefined}
+          onClick={() => void navigate({ search: (current) => ({ ...current, tab }) })}
+        >
+          {label}
+        </Button>
+      ))}
+    </nav>
+  );
+}
+
 function PullRequestsRouteView() {
+  const search = Route.useSearch();
+  if (!search.tab || search.tab === "pull-requests") return <PullRequestsContent />;
+  return (
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+      <WorkspacePageHeader electron={isElectron}>
+        <h1 className="text-sm font-medium">{search.tab === "issues" ? "Issues" : "Open work"}</h1>
+      </WorkspacePageHeader>
+      <WorkTabs />
+      {search.tab === "issues" ? <IssuesBoard /> : <OpenWorkView />}
+    </SidebarInset>
+  );
+}
+
+function PullRequestsContent() {
   useEscapeToGoBack();
   const search = Route.useSearch();
   const sort = search.sort ?? "ready";
@@ -2072,6 +2116,7 @@ function PullRequestsRouteView() {
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+      <WorkTabs />
       <div className="relative flex min-h-0 flex-1">
         {pullRequestsSupported && rightPanelPresent ? openPanelControls : null}
         <PullRequestsColumn {...columnProps} />

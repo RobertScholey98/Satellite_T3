@@ -30,3 +30,8 @@ registered as managed documents.
 T3's built-in proposed plans remain part of the conversation. A plan written as a
 file becomes a managed document when the agent publishes it. Provider session
 history and unpublished working files retain their existing storage locations.
+
+The [Open work timeline](issues-and-open-work.md) places published versions beside
+the worktree's commits. A publication keeps its original worktree association
+even if its thread later moves. Folder-linked Markdown and HTML files are live
+references and remain separate from retained publications.
