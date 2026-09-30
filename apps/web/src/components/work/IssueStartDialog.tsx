@@ -35,11 +35,10 @@ export function IssueStartDialog({
   });
   useEffect(() => {
     if (useComposerDraftStore.getState().getDraftSession(draftId)) return;
-    const project =
-      projects.find(
-        (candidate) =>
-          candidate.environmentId === environmentId && candidate.id === board.board.projectId,
-      ) ?? projects[0];
+    const project = projects.find(
+      (candidate) =>
+        candidate.environmentId === environmentId && candidate.id === board.board.projectId,
+    );
     if (!project) return;
     useComposerDraftStore
       .getState()

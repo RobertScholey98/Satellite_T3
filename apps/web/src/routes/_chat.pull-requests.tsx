@@ -32,6 +32,8 @@ import {
   SearchIcon,
   UserLockIcon,
   type LucideIcon,
+  GitBranchIcon,
+  TicketIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -176,6 +178,12 @@ function getShortcutContext() {
 
 export interface PullRequestsSearch extends PullRequestListPreferences {
   readonly tab?: "pull-requests" | "issues" | "open";
+  readonly boardId?: string;
+  readonly boardEnvironmentId?: EnvironmentId;
+  readonly boardProjectId?: ProjectId;
+  readonly issueId?: string;
+  readonly worktreePath?: string;
+  readonly workEnvironmentId?: EnvironmentId;
   /**
    * Narrows the list to one server. Absent means every connected one, which is the default the
    * page has now — so a link written before servers could be chosen still opens the whole list.
@@ -298,6 +306,24 @@ function pullRequestSearchLabels(raw: unknown): Partial<Pick<PullRequestsSearch,
 export const Route = createFileRoute("/_chat/pull-requests")({
   validateSearch: (raw: Record<string, unknown>): PullRequestsSearch => ({
     ...(raw.tab === "issues" || raw.tab === "open" ? { tab: raw.tab } : {}),
+    ...(typeof raw.boardId === "string" && raw.boardId
+      ? { boardId: raw.boardId.slice(0, 512) }
+      : {}),
+    ...(typeof raw.boardEnvironmentId === "string" && raw.boardEnvironmentId
+      ? { boardEnvironmentId: raw.boardEnvironmentId as EnvironmentId }
+      : {}),
+    ...(typeof raw.boardProjectId === "string" && raw.boardProjectId
+      ? { boardProjectId: raw.boardProjectId as ProjectId }
+      : {}),
+    ...(typeof raw.workEnvironmentId === "string" && raw.workEnvironmentId
+      ? { workEnvironmentId: raw.workEnvironmentId as EnvironmentId }
+      : {}),
+    ...(typeof raw.issueId === "string" && raw.issueId
+      ? { issueId: raw.issueId.slice(0, 512) }
+      : {}),
+    ...(typeof raw.worktreePath === "string" && raw.worktreePath
+      ? { worktreePath: raw.worktreePath.slice(0, 4096) }
+      : {}),
     involvement:
       raw.involvement === "reviewing" || raw.involvement === "authored" ? raw.involvement : "all",
     state:
@@ -348,23 +374,32 @@ function WorkTabs() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   return (
-    <nav aria-label="Work views" className="flex shrink-0 gap-1 border-b px-4 py-2">
+    <nav
+      aria-label="Work views"
+      className="flex shrink-0 gap-5 border-b pl-(--workspace-gutter-start) pr-(--workspace-gutter-end)"
+    >
       {(
         [
-          ["pull-requests", "Pull requests"],
-          ["issues", "Issues"],
-          ["open", "Open"],
+          ["pull-requests", "Pull requests", PullRequestGlyph.pullRequest],
+          ["issues", "Issues", TicketIcon],
+          ["open", "Open", GitBranchIcon],
         ] as const
-      ).map(([tab, label]) => (
-        <Button
+      ).map(([tab, label, Icon]) => (
+        <button
           key={tab}
-          size="sm"
-          variant={(search.tab ?? "pull-requests") === tab ? "secondary" : "ghost"}
+          type="button"
+          className={cn(
+            "-mb-px flex min-h-10 items-center gap-1.5 border-b-2 px-0.5 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+            (search.tab ?? "pull-requests") === tab
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground",
+          )}
           aria-current={(search.tab ?? "pull-requests") === tab ? "page" : undefined}
           onClick={() => void navigate({ search: (current) => ({ ...current, tab }) })}
         >
+          <Icon aria-hidden className="size-3.5" />
           {label}
-        </Button>
+        </button>
       ))}
     </nav>
   );
@@ -372,6 +407,10 @@ function WorkTabs() {
 
 function PullRequestsRouteView() {
   const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
+  const boardEnvironmentId = search.boardEnvironmentId ?? search.environmentId;
+  const boardProjectId = search.boardProjectId ?? search.projectId;
+  const workEnvironmentId = search.workEnvironmentId ?? search.environmentId;
   if (!search.tab || search.tab === "pull-requests") return <PullRequestsContent />;
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
@@ -379,7 +418,89 @@ function PullRequestsRouteView() {
         <h1 className="text-sm font-medium">{search.tab === "issues" ? "Issues" : "Open work"}</h1>
       </WorkspacePageHeader>
       <WorkTabs />
-      {search.tab === "issues" ? <IssuesBoard /> : <OpenWorkView />}
+      {search.tab === "issues" ? (
+        <IssuesBoard
+          target={{
+            ...(boardEnvironmentId ? { environmentId: boardEnvironmentId } : {}),
+            ...(boardProjectId ? { projectId: boardProjectId } : {}),
+            ...(search.boardId ? { boardId: search.boardId } : {}),
+            ...(search.issueId ? { issueId: search.issueId } : {}),
+          }}
+          onViewWork={(target) =>
+            void navigate({
+              search: (current) => ({
+                ...current,
+                workEnvironmentId: target.environmentId,
+                worktreePath: target.worktreePath,
+                tab: "open",
+              }),
+            })
+          }
+          onSelectBoard={(target) =>
+            void navigate({
+              replace: true,
+              search: (current) => {
+                const next = {
+                  ...current,
+                  boardEnvironmentId: target.environmentId,
+                  boardProjectId: target.projectId,
+                  ...(target.boardId ? { boardId: target.boardId } : {}),
+                };
+                if (!target.boardId) delete next.boardId;
+                delete next.issueId;
+                return next;
+              },
+            })
+          }
+          onDismissIssue={() =>
+            void navigate({
+              replace: true,
+              search: (current) => {
+                const next = { ...current };
+                delete next.issueId;
+                return next;
+              },
+            })
+          }
+        />
+      ) : (
+        <OpenWorkView
+          target={{
+            ...(workEnvironmentId ? { environmentId: workEnvironmentId } : {}),
+            ...(search.worktreePath ? { worktreePath: search.worktreePath } : {}),
+          }}
+          onSelectWorktree={(target) =>
+            void navigate({
+              replace: true,
+              search: (current) => {
+                const next = {
+                  ...current,
+                  workEnvironmentId: target.environmentId,
+                  ...(target.worktreePath ? { worktreePath: target.worktreePath } : {}),
+                };
+                if (!target.worktreePath) delete next.worktreePath;
+                return next;
+              },
+            })
+          }
+          onViewBoard={(target) =>
+            void navigate({
+              search: (current) => {
+                const next = {
+                  ...current,
+                  boardEnvironmentId: target.environmentId,
+                  boardProjectId: target.projectId,
+                  boardId: target.boardId,
+                  ...(target.issueId ? { issueId: target.issueId } : {}),
+                  tab: "issues" as const,
+                };
+                if (!target.issueId) delete next.issueId;
+                return next;
+              },
+            })
+          }
+        />
+      )}
     </SidebarInset>
   );
 }

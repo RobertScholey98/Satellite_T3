@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  ProjectId,
   IssueBoardView,
   IssueBoardLocator,
   IssueBoardMapping,
@@ -16,6 +17,15 @@ import { CSS } from "@dnd-kit/utilities";
 import { useNavigate } from "@tanstack/react-router";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  GripVerticalIcon,
+  ListIcon,
+  Columns3Icon,
+  MoreHorizontalIcon,
+  SearchIcon,
+  TicketIcon,
+  ListFilterIcon,
+} from "lucide-react";
 
 import { useProjects } from "~/state/entities";
 
@@ -32,6 +42,22 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 
 import { Switch } from "../ui/switch";
+import {
+  Menu,
+  MenuTrigger,
+  MenuPopup,
+  MenuItem,
+  MenuSeparator,
+  MenuGroupLabel,
+  MenuRadioGroup,
+  MenuRadioItem,
+} from "../ui/menu";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
+import {
+  PullRequestRowLines,
+  PULL_REQUEST_ROW_CLASS,
+  PULL_REQUEST_ROW_NUMBER_CLASS,
+} from "../pullRequest/PullRequestListRow";
 import { PullRequestMarkdown } from "../pullRequest/PullRequestMarkdown";
 
 import {
@@ -67,20 +93,26 @@ function BoardCard({
         transform: CSS.Translate.toString(drag.transform),
         opacity: drag.isDragging ? 0.5 : 1,
       }}
-      className="flex gap-2 border-b bg-background p-3"
+      className="group flex gap-1 rounded-lg border border-border/60 bg-card/40 p-3 hover:bg-accent/40"
     >
       <button
         type="button"
         {...drag.listeners}
         {...drag.attributes}
         aria-label={`Drag issue ${item.issue.ref.number}`}
-        className="cursor-grab touch-none text-muted-foreground"
+        className="cursor-grab touch-none self-start rounded-sm text-muted-foreground/50 focus-visible:ring-2 focus-visible:ring-ring"
       >
-        ⠿
+        <GripVerticalIcon className="size-3.5" />
       </button>
-      <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
-        <span className="text-xs text-muted-foreground">#{item.issue.ref.number}</span>
-        <p className="mt-1 text-sm">{item.issue.title}</p>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span className="font-mono text-xs tabular-nums text-muted-foreground">
+          #{item.issue.ref.number}
+        </span>
+        <p className="mt-2 text-sm leading-snug">{item.issue.title}</p>
         {item.issue.labels.length ? (
           <p className="mt-2 truncate text-xs text-muted-foreground">
             {item.issue.labels.join(" · ")}
@@ -94,10 +126,14 @@ function BoardCard({
 function BoardColumn({
   id,
   title,
+  count,
+  tone = "muted",
   children,
 }: {
   id: string;
   title: string;
+  count: number;
+  tone?: "muted" | "progress" | "review" | "completed";
   children: React.ReactNode;
 }) {
   const drop = useDroppable({ id });
@@ -105,18 +141,49 @@ function BoardColumn({
   return (
     <section
       ref={drop.setNodeRef}
-      className={`min-h-64 w-72 shrink-0 border ${drop.isOver ? "border-primary" : "border-border"}`}
+      className={`min-h-64 w-72 shrink-0 rounded-xl bg-muted/30 p-2 ${drop.isOver ? "ring-1 ring-primary" : ""}`}
     >
-      <h2 className="border-b bg-muted/30 px-3 py-2 text-sm font-medium">{title}</h2>
-      {children}
+      <h2 className="flex items-center gap-2 px-1 py-2 text-sm font-medium">
+        <span
+          className={`size-2 rounded-full border ${tone === "progress" ? "border-warning bg-warning" : tone === "review" ? "border-primary bg-primary" : tone === "completed" ? "border-success bg-success" : "border-muted-foreground/70"}`}
+        />
+        {title}
+        <span className="text-xs font-normal tabular-nums text-muted-foreground">{count}</span>
+      </h2>
+      <div className="mt-2 space-y-2">{children}</div>
+      {!count ? (
+        <p className="px-2 py-5 text-xs text-muted-foreground">No issues in this column</p>
+      ) : null}
     </section>
   );
 }
 
-export function IssuesBoard() {
+export function IssuesBoard({
+  target,
+  onViewWork,
+  onSelectBoard,
+  onDismissIssue,
+}: {
+  target?: {
+    environmentId?: EnvironmentId;
+    projectId?: ProjectId;
+    boardId?: string;
+    issueId?: string;
+  };
+  onViewWork?: (target: { environmentId: EnvironmentId; worktreePath: string }) => void;
+  onSelectBoard?: (target: {
+    environmentId: EnvironmentId;
+    projectId: ProjectId;
+    boardId?: string;
+  }) => void;
+  onDismissIssue?: () => void;
+}) {
   const projects = useProjects();
 
   const { environments } = useEnvironments();
+  const targetKey = JSON.stringify(target ?? null);
+  const [dismissedTargetKey, setDismissedTargetKey] = useState<string | null>(null);
+  const activeTarget = dismissedTargetKey === targetKey ? undefined : target;
 
   const supported = projects.filter(
     (project) =>
@@ -124,17 +191,28 @@ export function IssuesBoard() {
         ?.serverConfig?.environment.capabilities.issueBoards === true,
   );
 
-  const [scopeKey, setScopeKey] = useState("");
+  const [scopeKey, setScopeKey] = useState(
+    target?.environmentId && target.projectId ? `${target.environmentId}:${target.projectId}` : "",
+  );
+  const targetOpened = useRef<string | null>(null);
+  useEffect(() => {
+    if (target?.environmentId && target.projectId) {
+      setScopeKey(`${target.environmentId}:${target.projectId}`);
+    }
+    targetOpened.current = null;
+  }, [target?.environmentId, target?.projectId, target?.boardId, target?.issueId]);
 
-  const scope =
-    supported.find((project) => `${project.environmentId}:${project.id}` === scopeKey) ??
-    supported[0];
+  const scope = scopeKey
+    ? supported.find((project) => `${project.environmentId}:${project.id}` === scopeKey)
+    : activeTarget?.environmentId
+      ? supported.find((project) => project.environmentId === activeTarget.environmentId)
+      : supported[0];
   const scopedEnvironment = environments.find(
     (environment) => environment.environmentId === scope?.environmentId,
   );
   const connected = scopedEnvironment?.connection.phase === "connected";
 
-  const [mode, setMode] = useState<"issues" | "board">("issues");
+  const [mode, setMode] = useState<"issues" | "board">("board");
 
   const [issueList, setIssueList] = useState<readonly IssueSummary[]>([]);
 
@@ -209,6 +287,7 @@ export function IssuesBoard() {
         if (current === generation.current) {
           setView(result);
           setConfiguring(result.board.mapping === null);
+          return result;
         }
       } catch (failure) {
         if (current === generation.current) setError(workError(failure));
@@ -268,8 +347,17 @@ export function IssuesBoard() {
 
         setBoards(result);
 
-        if (result[0]) await refresh(result[0].id, result[0].locator);
-        else setView(null);
+        const requested = activeTarget?.boardId
+          ? result.find((board) => board.id === activeTarget.boardId)
+          : result[0];
+        if (requested) await refresh(requested.id, requested.locator);
+        else {
+          setView(null);
+          if (activeTarget?.boardId)
+            setError(
+              "The requested board is unavailable. Choose another board or connect it again.",
+            );
+        }
       })
       .catch((failure) => {
         if (current === scopeGeneration.current) setError(workError(failure));
@@ -282,32 +370,64 @@ export function IssuesBoard() {
       generation.current++;
       scopeGeneration.current++;
     };
-  }, [list, scope?.environmentId, scope?.id, connected]);
+  }, [list, scope?.environmentId, scope?.id, connected, target?.boardId]);
 
-  const select = async (item: IssueBoardItem) => {
-    if (!scope || !connected) return;
+  const select = useCallback(
+    async (item: IssueBoardItem) => {
+      if (!scope || !connected) return;
 
-    const current = ++detailGeneration.current;
+      const current = ++detailGeneration.current;
 
-    setSelected(item);
-    setDetail(null);
-    setError(null);
+      setSelected(item);
+      setDetail(null);
+      setError(null);
 
-    try {
-      const result = unwrapWorkResult(
-        await get({
-          environmentId: scope.environmentId,
-          input: { projectId: scope.id, issue: item.issue.ref },
-        }),
-      );
-      if (current === detailGeneration.current) setDetail(result);
-    } catch (failure) {
-      if (current === detailGeneration.current) setError(workError(failure));
-    }
-  };
+      try {
+        const result = unwrapWorkResult(
+          await get({
+            environmentId: scope.environmentId,
+            input: { projectId: scope.id, issue: item.issue.ref },
+          }),
+        );
+        if (current === detailGeneration.current) setDetail(result);
+      } catch (failure) {
+        if (current === detailGeneration.current) setError(workError(failure));
+      }
+    },
+    [scope, connected, get],
+  );
+
+  useEffect(() => {
+    if (!activeTarget?.issueId || !connected || !scope || pending) return;
+    if (activeTarget.environmentId && activeTarget.environmentId !== scope.environmentId) return;
+    if (activeTarget.projectId && activeTarget.projectId !== scope.id) return;
+    if (activeTarget.boardId && activeTarget.boardId !== view?.board.id) return;
+    const key = `${scope.environmentId}:${scope.id}:${activeTarget.boardId ?? ""}:${activeTarget.issueId}`;
+    if (targetOpened.current === key) return;
+    const item = view?.items.find((candidate) => candidate.issue.ref.id === activeTarget.issueId);
+    const issue = issueList.find((candidate) => candidate.ref.id === activeTarget.issueId);
+    const selectedItem =
+      item ?? (issue ? { issue, itemId: issue.ref.id, columnId: null, version: null } : null);
+    if (!selectedItem) return;
+    targetOpened.current = key;
+    void select(selectedItem);
+  }, [
+    target?.environmentId,
+    target?.projectId,
+    target?.boardId,
+    target?.issueId,
+    scope,
+    view,
+    issueList,
+    connected,
+    pending,
+    select,
+    activeTarget,
+  ]);
 
   const moveItem = async (item: IssueBoardItem, columnId: string) => {
     if (!scope || !connected || !view || item.columnId === columnId) return;
+    const currentScope = scopeGeneration.current;
 
     setPending(true);
     setError(null);
@@ -326,17 +446,18 @@ export function IssuesBoard() {
           },
         }),
       );
+      if (currentScope !== scopeGeneration.current) return;
 
       if (receipt.status === "failed")
         throw new Error(receipt.error ?? "The remote board rejected this move.");
 
       await refresh(view.board.id);
 
-      setSelected(null);
+      if (currentScope === scopeGeneration.current) setSelected(null);
     } catch (failure) {
-      setError(workError(failure));
+      if (currentScope === scopeGeneration.current) setError(workError(failure));
     } finally {
-      setPending(false);
+      if (currentScope === scopeGeneration.current) setPending(false);
     }
   };
 
@@ -356,9 +477,17 @@ export function IssuesBoard() {
     ) ?? [];
 
   const existing = defaultIssueAttempt(attempts);
+  const startIssue = () => {
+    onDismissIssue?.();
+    setStarting(true);
+  };
+  const matchesQuery = (issue: IssueSummary) =>
+    `${issue.title} ${issue.ref.number} ${issue.labels.join(" ")}`
+      .toLowerCase()
+      .includes(query.replace(/^#/, "").toLowerCase());
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-5">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-4 py-4 sm:px-6">
       {scope && !connected ? (
         <p role="status" className="text-sm text-muted-foreground">
           {scopedEnvironment?.label ?? "Environment"} is not connected. Last loaded data stays
@@ -366,102 +495,154 @@ export function IssuesBoard() {
         </p>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          variant={mode === "issues" ? "secondary" : "ghost"}
-          onClick={() => setMode("issues")}
-        >
-          Issue list
-        </Button>
-        <Button
-          size="sm"
-          variant={mode === "board" ? "secondary" : "ghost"}
-          onClick={() => setMode("board")}
-        >
-          Board
-        </Button>
-        <select
-          aria-label="Issue project and environment"
-          value={scope ? `${scope.environmentId}:${scope.id}` : ""}
-          onChange={(event) => setScopeKey(event.target.value)}
-          className="max-w-72 rounded-md border bg-background px-2 py-1.5 text-sm"
-        >
-          {supported.map((project) => (
-            <option
-              key={`${project.environmentId}:${project.id}`}
-              value={`${project.environmentId}:${project.id}`}
-            >
-              {project.title} ·{" "}
-              {
-                environments.find(
-                  (environment) => environment.environmentId === project.environmentId,
-                )?.label
-              }
-            </option>
-          ))}
-        </select>
-        {mode === "board" ? (
-          <select
-            aria-label="Board"
-            value={view?.board.id ?? ""}
-            onChange={(event) => void refresh(event.target.value)}
-            className="max-w-72 rounded-md border bg-background px-2 py-1.5 text-sm"
-          >
-            {boards.map((board) => (
-              <option key={board.id} value={board.id}>
-                {board.title}
-              </option>
+        <Menu>
+          <MenuTrigger render={<Button size="sm" variant="ghost" />}>
+            {scope?.title ?? "Choose project"} · {scopedEnvironment?.label ?? "Environment"}
+          </MenuTrigger>
+          <MenuPopup>
+            {supported.map((project) => (
+              <MenuItem
+                key={`${project.environmentId}:${project.id}`}
+                onClick={() => {
+                  setDismissedTargetKey(targetKey);
+                  setScopeKey(`${project.environmentId}:${project.id}`);
+                  onSelectBoard?.({ environmentId: project.environmentId, projectId: project.id });
+                }}
+              >
+                {project.title} ·{" "}
+                {
+                  environments.find(
+                    (environment) => environment.environmentId === project.environmentId,
+                  )?.label
+                }
+              </MenuItem>
             ))}
-          </select>
+          </MenuPopup>
+        </Menu>
+        {mode === "board" && boards.length ? (
+          <Menu>
+            <MenuTrigger render={<Button size="sm" variant="ghost" />}>
+              {view?.board.title ?? "Choose board"}
+            </MenuTrigger>
+            <MenuPopup>
+              {boards.map((board) => (
+                <MenuItem
+                  key={board.id}
+                  disabled={!connected || pending}
+                  onClick={() => {
+                    setDismissedTargetKey(targetKey);
+                    void refresh(board.id).then((result) => {
+                      if (result && scope)
+                        onSelectBoard?.({
+                          environmentId: scope.environmentId,
+                          projectId: scope.id,
+                          boardId: result.board.id,
+                        });
+                    });
+                  }}
+                >
+                  {board.title}
+                </MenuItem>
+              ))}
+            </MenuPopup>
+          </Menu>
         ) : null}
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!scope || !connected || pending}
-          onClick={() => {
-            setMode("board");
-            setConnecting(true);
-          }}
-        >
-          Connect board
-        </Button>
-        {view ? (
-          <>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={pending || !connected}
-              onClick={() => void refresh(view.board.id)}
+        <div className="ml-auto flex items-center gap-1" role="group" aria-label="Issues view">
+          <Button
+            size="icon-sm"
+            aria-label="Issue list"
+            aria-pressed={mode === "issues"}
+            variant={mode === "issues" ? "secondary" : "ghost"}
+            onClick={() => setMode("issues")}
+          >
+            <ListIcon />
+          </Button>
+          <Button
+            size="icon-sm"
+            aria-label="Board"
+            aria-pressed={mode === "board"}
+            variant={mode === "board" ? "secondary" : "ghost"}
+            onClick={() => setMode("board")}
+          >
+            <Columns3Icon />
+          </Button>
+          <Menu>
+            <MenuTrigger
+              render={<Button size="icon-sm" variant="ghost" aria-label="Board settings" />}
             >
-              Refresh
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setConfiguring(true)}>
-              Column mapping
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={pending || !connected}
-              onClick={() => {
-                if (scope && connected)
-                  void disconnect({
-                    environmentId: scope.environmentId,
-                    input: { requestId: randomUUID(), boardId: view.board.id },
-                  })
-                    .then(unwrapWorkResult)
-                    .then(() => {
-                      setView(null);
-                      setBoards((current) => current.filter((board) => board.id !== view.board.id));
-                    })
-                    .catch((failure) => setError(workError(failure)));
-              }}
-            >
-              Disconnect
-            </Button>
-          </>
-        ) : null}
+              <MoreHorizontalIcon />
+            </MenuTrigger>
+            <MenuPopup align="end">
+              {view ? (
+                <MenuItem onClick={() => setConfiguring(true)} disabled={!connected || pending}>
+                  Column mapping
+                </MenuItem>
+              ) : null}
+              <MenuItem
+                disabled={!scope || !connected || pending}
+                onClick={() => {
+                  setMode("board");
+                  setConnecting(true);
+                }}
+              >
+                Connect board
+              </MenuItem>
+              {view ? (
+                <>
+                  <MenuItem
+                    disabled={!connected || pending}
+                    onClick={() => void refresh(view.board.id)}
+                  >
+                    Refresh board
+                  </MenuItem>
+                  <MenuSeparator />
+                  <MenuItem
+                    disabled={!connected || pending}
+                    onClick={() => {
+                      const currentScope = scopeGeneration.current;
+                      if (scope && connected)
+                        void disconnect({
+                          environmentId: scope.environmentId,
+                          input: { requestId: randomUUID(), boardId: view.board.id },
+                        })
+                          .then(unwrapWorkResult)
+                          .then(() => {
+                            if (currentScope !== scopeGeneration.current) return;
+                            setView(null);
+                            setBoards((current) =>
+                              current.filter((board) => board.id !== view.board.id),
+                            );
+                          })
+                          .catch((failure) => {
+                            if (currentScope === scopeGeneration.current)
+                              setError(workError(failure));
+                          });
+                    }}
+                  >
+                    Disconnect board
+                  </MenuItem>
+                </>
+              ) : null}
+            </MenuPopup>
+          </Menu>
+        </div>
       </div>
-      {!supported.length ? (
+      <InputGroup>
+        <InputGroupAddon>
+          <SearchIcon />
+        </InputGroupAddon>
+        <InputGroupInput
+          aria-label="Search issues"
+          placeholder="Search issues or #number"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </InputGroup>
+      {!scope && supported.length ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          The requested project is unavailable. Choose a connected project to view its issues.
+        </p>
+      ) : !supported.length ? (
         <p className="text-sm text-muted-foreground">
           Issues are unavailable. Connect an environment that supports issue boards.
         </p>
@@ -493,14 +674,19 @@ export function IssuesBoard() {
                 size="xs"
                 variant="outline"
                 onClick={() => {
+                  const currentScope = scopeGeneration.current;
                   if (scope && connected)
                     void retry({
                       environmentId: scope.environmentId,
                       input: { requestId: randomUUID(), moveId: receipt.id },
                     })
                       .then(unwrapWorkResult)
-                      .then(() => refresh(view.board.id))
-                      .catch((failure) => setError(workError(failure)));
+                      .then(() => {
+                        if (currentScope === scopeGeneration.current) return refresh(view.board.id);
+                      })
+                      .catch((failure) => {
+                        if (currentScope === scopeGeneration.current) setError(workError(failure));
+                      });
                 }}
               >
                 Retry
@@ -510,55 +696,58 @@ export function IssuesBoard() {
         ))}
       {mode === "issues" ? (
         <section>
-          <div className="flex flex-wrap gap-2">
-            <select
-              aria-label="Filter issues by state"
-              value={issueState}
-              onChange={(event) => setIssueState(event.target.value)}
-              className="rounded-md border bg-background px-2 py-1 text-sm"
-            >
-              <option value="all">All states</option>
-              {[...new Set(issueList.map((issue) => issue.state))].map((state) => (
-                <option key={state} value={state}>
-                  {state}
-                </option>
-              ))}
-            </select>
-            <select
-              aria-label="Filter issues by repository host"
-              value={issueHost}
-              onChange={(event) => setIssueHost(event.target.value)}
-              className="rounded-md border bg-background px-2 py-1 text-sm"
-            >
-              <option value="all">All hosts</option>
-              {[...new Set(issueList.map((issue) => issue.ref.host))].map((host) => (
-                <option key={host} value={host}>
-                  {host}
-                </option>
-              ))}
-            </select>
-            <Input
-              aria-label="Search issues"
-              placeholder="Search issues"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </div>
-          <div className="mt-3 divide-y">
+          <Menu>
+            <MenuTrigger render={<Button size="sm" variant="ghost" />}>
+              <ListFilterIcon />
+              Filters
+              {issueState !== "all" || issueHost !== "all"
+                ? ` · ${Number(issueState !== "all") + Number(issueHost !== "all")}`
+                : ""}
+            </MenuTrigger>
+            <MenuPopup>
+              <MenuGroupLabel>State</MenuGroupLabel>
+              <MenuRadioGroup value={issueState} onValueChange={setIssueState}>
+                <MenuRadioItem value="all">All states</MenuRadioItem>
+                {[...new Set(issueList.map((issue) => issue.state))].map((state) => (
+                  <MenuRadioItem key={state} value={state}>
+                    {state}
+                  </MenuRadioItem>
+                ))}
+              </MenuRadioGroup>
+              <MenuSeparator />
+              <MenuGroupLabel>Repository host</MenuGroupLabel>
+              <MenuRadioGroup value={issueHost} onValueChange={setIssueHost}>
+                <MenuRadioItem value="all">All hosts</MenuRadioItem>
+                {[...new Set(issueList.map((issue) => issue.ref.host))].map((host) => (
+                  <MenuRadioItem key={host} value={host}>
+                    {host}
+                  </MenuRadioItem>
+                ))}
+              </MenuRadioGroup>
+              <MenuSeparator />
+              <MenuItem
+                onClick={() => {
+                  setIssueState("all");
+                  setIssueHost("all");
+                }}
+              >
+                Clear filters
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+          <div className="mt-3 space-y-1">
             {issueList
               .filter(
                 (issue) =>
                   (issueState === "all" || issue.state === issueState) &&
                   (issueHost === "all" || issue.ref.host === issueHost) &&
-                  `${issue.title} ${issue.ref.number} ${issue.labels.join(" ")}`
-                    .toLowerCase()
-                    .includes(query.toLowerCase()),
+                  matchesQuery(issue),
               )
               .map((issue) => (
                 <button
                   type="button"
                   key={`${issue.ref.host}:${issue.ref.repository}:${issue.ref.id}`}
-                  className="block w-full py-3 text-left"
+                  className={`${PULL_REQUEST_ROW_CLASS} px-2 py-2 hover:bg-accent/40 outline-none focus-visible:ring-2 focus-visible:ring-ring`}
                   onClick={() =>
                     void select(
                       view?.items.find(
@@ -569,10 +758,20 @@ export function IssuesBoard() {
                     )
                   }
                 >
-                  <span className="text-xs text-muted-foreground">
-                    #{issue.ref.number} · {issue.state}
-                  </span>
-                  <p className="text-sm">{issue.title}</p>
+                  <TicketIcon className="size-4 shrink-0 text-muted-foreground" />
+                  <PullRequestRowLines
+                    number={
+                      <span className={PULL_REQUEST_ROW_NUMBER_CLASS}>#{issue.ref.number}</span>
+                    }
+                    title={issue.title}
+                    meta={
+                      <>
+                        <span>{issue.state}</span>
+                        <span>{issue.ref.repository}</span>
+                        <span className="truncate">{issue.labels.join(" · ")}</span>
+                      </>
+                    }
+                  />
                 </button>
               ))}
           </div>
@@ -613,9 +812,27 @@ export function IssuesBoard() {
         <DndContext onDragEnd={dragEnd}>
           <div className="flex items-start gap-3 overflow-x-auto pb-4">
             {view.columns.map((column) => (
-              <BoardColumn key={column.id} id={column.id} title={column.title}>
+              <BoardColumn
+                key={column.id}
+                id={column.id}
+                title={column.title}
+                tone={
+                  column.id === view.board.mapping?.inProgress
+                    ? "progress"
+                    : column.id === view.board.mapping?.inPullRequest
+                      ? "review"
+                      : column.id === view.board.mapping?.completed
+                        ? "completed"
+                        : "muted"
+                }
+                count={
+                  view.items.filter(
+                    (item) => item.columnId === column.id && matchesQuery(item.issue),
+                  ).length
+                }
+              >
                 {view.items
-                  .filter((item) => item.columnId === column.id)
+                  .filter((item) => item.columnId === column.id && matchesQuery(item.issue))
                   .map((item) => (
                     <BoardCard
                       key={item.itemId}
@@ -629,9 +846,23 @@ export function IssuesBoard() {
             {view.items.some(
               (item) => !view.columns.some((column) => column.id === item.columnId),
             ) ? (
-              <BoardColumn id="unassigned" title="Unassigned">
+              <BoardColumn
+                id="unassigned"
+                title="Unassigned"
+                count={
+                  view.items.filter(
+                    (item) =>
+                      !view.columns.some((column) => column.id === item.columnId) &&
+                      matchesQuery(item.issue),
+                  ).length
+                }
+              >
                 {view.items
-                  .filter((item) => !view.columns.some((column) => column.id === item.columnId))
+                  .filter(
+                    (item) =>
+                      !view.columns.some((column) => column.id === item.columnId) &&
+                      matchesQuery(item.issue),
+                  )
                   .map((item) => (
                     <BoardCard
                       key={item.itemId}
@@ -655,6 +886,12 @@ export function IssuesBoard() {
             setConfiguring(false);
           }}
           onConfigured={(result) => {
+            setDismissedTargetKey(targetKey);
+            onSelectBoard?.({
+              environmentId: scope.environmentId,
+              projectId: scope.id,
+              boardId: result.board.id,
+            });
             setView(result);
             setBoards((current) => [
               ...current.filter((board) => board.id !== result.board.id),
@@ -672,14 +909,17 @@ export function IssuesBoard() {
             if (!opened) {
               detailGeneration.current++;
               setSelected(null);
+              onDismissIssue?.();
             }
           }}
         >
-          <DialogPopup className="max-w-2xl">
+          <DialogPopup className="max-w-3xl">
             <DialogHeader>
-              <DialogTitle>
-                #{selected.issue.ref.number} · {selected.issue.title}
-              </DialogTitle>
+              <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                <TicketIcon className="size-3.5" />#{selected.issue.ref.number} ·{" "}
+                {selected.issue.state}
+              </p>
+              <DialogTitle>{selected.issue.title}</DialogTitle>
             </DialogHeader>
             <DialogPanel>
               <a
@@ -691,39 +931,11 @@ export function IssuesBoard() {
                 Open in repository host
               </a>
               {detail ? (
-                <div className="mt-4 max-h-[55dvh] space-y-5 overflow-auto">
-                  <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
-                    <dt className="text-muted-foreground">State</dt>
-                    <dd>{detail.state}</dd>
-                    <dt className="text-muted-foreground">Repository host</dt>
-                    <dd>
-                      {detail.ref.host} · {detail.ref.repository}
-                    </dd>
-                    <dt className="text-muted-foreground">Author</dt>
-                    <dd>{detail.author?.name ?? "Unavailable"}</dd>
-                    <dt className="text-muted-foreground">Assignees</dt>
-                    <dd>
-                      {detail.assignees?.map((actor) => actor.name).join(", ") || "Unassigned"}
-                    </dd>
-                    {detail.createdAt ? (
-                      <>
-                        <dt className="text-muted-foreground">Created</dt>
-                        <dd>
-                          <time dateTime={detail.createdAt}>
-                            {new Date(detail.createdAt).toLocaleString()}
-                          </time>
-                        </dd>
-                      </>
-                    ) : null}
-                    <dt className="text-muted-foreground">Updated</dt>
-                    <dd>
-                      <time dateTime={detail.updatedAt}>
-                        {new Date(detail.updatedAt).toLocaleString()}
-                      </time>
-                    </dd>
-                    <dt className="text-muted-foreground">Labels</dt>
-                    <dd>{detail.labels.join(" · ") || "None"}</dd>
-                  </dl>
+                <div className="mt-4 space-y-5">
+                  <p className="text-xs text-muted-foreground">
+                    {detail.author?.name ?? "Unknown author"} · {detail.ref.repository}
+                    {detail.labels.length ? ` · ${detail.labels.join(" · ")}` : ""}
+                  </p>
                   {scope ? (
                     <PullRequestMarkdown
                       text={detail.body || "No description."}
@@ -731,6 +943,46 @@ export function IssuesBoard() {
                       environmentId={scope.environmentId}
                     />
                   ) : null}
+                  <details className="border-t border-border/60 pt-3">
+                    <summary className="cursor-pointer text-xs text-muted-foreground">
+                      All issue details
+                    </summary>
+                    <div className="mt-3">
+                      {" "}
+                      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
+                        <dt className="text-muted-foreground">State</dt>
+                        <dd>{detail.state}</dd>
+                        <dt className="text-muted-foreground">Repository host</dt>
+                        <dd>
+                          {detail.ref.host} · {detail.ref.repository}
+                        </dd>
+                        <dt className="text-muted-foreground">Author</dt>
+                        <dd>{detail.author?.name ?? "Unavailable"}</dd>
+                        <dt className="text-muted-foreground">Assignees</dt>
+                        <dd>
+                          {detail.assignees?.map((actor) => actor.name).join(", ") || "Unassigned"}
+                        </dd>
+                        {detail.createdAt ? (
+                          <>
+                            <dt className="text-muted-foreground">Created</dt>
+                            <dd>
+                              <time dateTime={detail.createdAt}>
+                                {new Date(detail.createdAt).toLocaleString()}
+                              </time>
+                            </dd>
+                          </>
+                        ) : null}
+                        <dt className="text-muted-foreground">Updated</dt>
+                        <dd>
+                          <time dateTime={detail.updatedAt}>
+                            {new Date(detail.updatedAt).toLocaleString()}
+                          </time>
+                        </dd>
+                        <dt className="text-muted-foreground">Labels</dt>
+                        <dd>{detail.labels.join(" · ") || "None"}</dd>
+                      </dl>
+                    </div>
+                  </details>
                   {detail.hostFields && Object.keys(detail.hostFields).length ? (
                     <details className="border-t pt-3">
                       <summary className="cursor-pointer text-sm font-medium">
@@ -776,13 +1028,35 @@ export function IssuesBoard() {
               )}
               {error ? <p className="text-sm text-destructive">{error}</p> : null}
               {attempts.length ? (
-                <div className="mt-4 grid gap-2">
+                <div className="mt-5 grid gap-2 rounded-xl border border-border/60 bg-card/40 p-4">
                   <h3 className="text-sm font-medium">Linked work attempts</h3>
                   {attempts.map((attempt) => (
-                    <p key={attempt.link.attemptId} className="text-xs">
-                      {attempt.active ? "Active" : "Earlier"} · {attempt.status} ·{" "}
-                      {attempt.worktreePath ?? "Worktree not ready"}
-                    </p>
+                    <div key={attempt.link.attemptId} className="space-y-2 py-1">
+                      <p className="text-xs text-muted-foreground">
+                        {attempt.active ? "Active" : "Earlier"} · {attempt.status}
+                      </p>
+                      <p className="break-all font-mono text-xs">
+                        {attempt.worktreePath ?? "Worktree not ready"}
+                      </p>
+                      {attempt.threadId ? (
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => {
+                            if (attempt.threadId)
+                              void navigate({
+                                to: "/$environmentId/$threadId",
+                                params: {
+                                  environmentId: attempt.link.destinationEnvironmentId,
+                                  threadId: attempt.threadId,
+                                },
+                              });
+                          }}
+                        >
+                          Open thread
+                        </Button>
+                      ) : null}
+                    </div>
                   ))}
                 </div>
               ) : null}
@@ -806,6 +1080,20 @@ export function IssuesBoard() {
               ) : null}
             </DialogPanel>
             <DialogFooter>
+              {existing?.worktreePath && onViewWork ? (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    if (!existing.worktreePath) return;
+                    onViewWork({
+                      environmentId: existing.link.destinationEnvironmentId,
+                      worktreePath: existing.worktreePath,
+                    });
+                  }}
+                >
+                  View work
+                </Button>
+              ) : null}
               {view && issueCanStart(selected, view.board.mapping) ? (
                 existing?.threadId ? (
                   <>
@@ -821,14 +1109,16 @@ export function IssuesBoard() {
                           });
                       }}
                     >
-                      Start · Continue existing
+                      Continue thread
                     </Button>
-                    <Button variant="outline" onClick={() => setStarting(true)}>
+                    <Button variant="outline" disabled={!connected || pending} onClick={startIssue}>
                       New attempt
                     </Button>
                   </>
                 ) : (
-                  <Button onClick={() => setStarting(true)}>Start</Button>
+                  <Button disabled={!connected || pending} onClick={startIssue}>
+                    Start
+                  </Button>
                 )
               ) : null}
             </DialogFooter>

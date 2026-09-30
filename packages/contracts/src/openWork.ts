@@ -13,11 +13,27 @@ export type OpenWorkPublicationStep = typeof OpenWorkPublicationStep.Type;
 export type OpenWorkStep = typeof OpenWorkStep.Type;
 export const OpenWorkFile = Schema.Struct({
   path: Schema.String,
+  previousPath: Schema.NullOr(Schema.String),
+  status: Schema.Literals([
+    "added",
+    "modified",
+    "deleted",
+    "renamed",
+    "copied",
+    "untracked",
+    "conflicted",
+  ]),
   insertions: NonNegativeInt,
   deletions: NonNegativeInt,
 });
+export type OpenWorkFile = typeof OpenWorkFile.Type;
+export const OpenWorkWipFile = Schema.Struct({
+  ...OpenWorkFile.fields,
+  layer: Schema.Literals(["staged", "unstaged", "untracked"]),
+});
+export type OpenWorkWipFile = typeof OpenWorkWipFile.Type;
 export const OpenWorkWip = Schema.Struct({
-  files: Schema.Array(OpenWorkFile),
+  files: Schema.Array(OpenWorkWipFile),
   insertions: NonNegativeInt,
   deletions: NonNegativeInt,
 });
@@ -38,6 +54,7 @@ export const OpenWorkCommit = Schema.Struct({
   parents: Schema.Array(Schema.String),
   subject: Schema.String,
   committedAt: Schema.String,
+  files: Schema.Array(OpenWorkFile),
 });
 export type OpenWorkCommit = typeof OpenWorkCommit.Type;
 export const OpenWorkDocument = Schema.Struct({

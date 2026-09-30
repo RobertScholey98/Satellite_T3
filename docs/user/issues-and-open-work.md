@@ -26,6 +26,11 @@ The selector shows how far each is ahead of and behind main. The timeline shows
 commits beyond main, followed by the live work-in-progress step containing
 staged, unstaged, and untracked changes.
 
+Select a changed file to review its diff beside the timeline. A saved commit
+compares with its first parent, so the comparison stays with that commit as new
+work arrives. WIP lets you review staged, unstaged, and untracked files separately.
+Use the linked ticket to return to its board or continue its thread.
+
 Published documents from threads that worked in that worktree appear alongside
 its commits. New publications start in WIP and stay with the next commit. Assign
 a document to an older commit when it describes that code. Favouriting pins it

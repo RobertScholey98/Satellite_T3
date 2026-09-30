@@ -1,7 +1,12 @@
+import { parseOpenWorkDiff } from "../vcs/reviewDiff.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import { OpenWorkOperationError, type OpenWorkCommit } from "@t3tools/contracts";
+import {
+  OpenWorkOperationError,
+  type OpenWorkCommit,
+  type OpenWorkWipFile,
+} from "@t3tools/contracts";
 import { VcsProcess } from "../vcs/VcsProcess.ts";
 
 export const makeGitReader = Effect.gen(function* () {
@@ -123,7 +128,13 @@ export const makeGitReader = Effect.gen(function* () {
       "log",
       "--reverse",
       "--topo-order",
-      "--format=%H%x00%P%x00%s%x00%cI%x00",
+      "--format=%x00t3-commit%x00%H%x00%P%x00%s%x00%cI%x00",
+      "--diff-merges=first-parent",
+      "--root",
+      "--raw",
+      "--numstat",
+      "-z",
+      "--find-renames",
       range,
       "--",
     ]);
@@ -132,16 +143,19 @@ export const makeGitReader = Effect.gen(function* () {
         reason: "git",
         message: "Could not read commits.",
       });
-    const fields = result.stdout.split("\0");
     const values: OpenWorkCommit[] = [];
-    for (let index = 0; index + 3 < fields.length; index += 4) {
-      const sha = fields[index]?.trim();
+    for (const record of result.stdout
+      .split(/\0t3-commit\0(?=[a-f0-9]{40,64}\0[a-f0-9 ]*\0[^\0]*\0\d{4}-\d{2}-\d{2}T[^\0]*\0)/)
+      .slice(1)) {
+      const fields = record.split("\0");
+      const sha = fields[0]?.trim();
       if (sha)
         values.push({
           sha,
-          parents: fields[index + 1]?.split(" ").filter(Boolean) ?? [],
-          subject: fields[index + 2] ?? "",
-          committedAt: fields[index + 3] ?? "",
+          parents: fields[1]?.split(" ").filter(Boolean) ?? [],
+          subject: fields[2] ?? "",
+          committedAt: fields[3] ?? "",
+          files: parseOpenWorkDiff(fields.slice(4).join("\0")),
         });
     }
     return values;
@@ -161,36 +175,47 @@ export const makeGitReader = Effect.gen(function* () {
         reason: "git",
         message: "Could not read uncommitted changes.",
       });
-    const changed = new Set<string>();
+    const [staged, unstaged] = yield* Effect.all(
+      [
+        run(cwd, ["diff", "--cached", "--raw", "--numstat", "-z", "--find-renames", "--"]),
+        run(cwd, ["diff", "--raw", "--numstat", "-z", "--find-renames", "--"]),
+      ],
+      { concurrency: 2 },
+    );
+    if (staged.exitCode !== 0 || unstaged.exitCode !== 0)
+      return yield* new OpenWorkOperationError({
+        reason: "git",
+        message: "Could not read uncommitted file statistics.",
+      });
+    const files: OpenWorkWipFile[] = [
+      ...parseOpenWorkDiff(staged.stdout).map((file) => ({ ...file, layer: "staged" as const })),
+      ...parseOpenWorkDiff(unstaged.stdout).map((file) => ({
+        ...file,
+        layer: "unstaged" as const,
+      })),
+    ];
     const statusFields = status.stdout.split("\0");
+    const untracked: string[] = [];
     for (let index = 0; index < statusFields.length; index++) {
       const field = statusFields[index];
       if (!field) continue;
-      changed.add(field.slice(3));
+      if (field.startsWith("?? ")) untracked.push(field.slice(3));
       if (field.slice(0, 2).includes("R") || field.slice(0, 2).includes("C")) index++;
     }
-    const stats = yield* text(cwd, ["diff", "--numstat", "-z", head ? "HEAD" : "--cached", "--"]);
-    const byPath = new Map<string, { insertions: number; deletions: number }>();
-    const statFields = stats?.split("\0") ?? [];
-    for (let index = 0; index < statFields.length; index++) {
-      const parts = statFields[index]?.split("\t") ?? [];
-      if (parts.length < 3) continue;
-      let filePath = parts.slice(2).join("\t");
-      if (!filePath) {
-        index++;
-        index++;
-        filePath = statFields[index] ?? "";
-      }
-      if (filePath)
-        byPath.set(filePath, {
-          insertions: Number.parseInt(parts[0] ?? "", 10) || 0,
-          deletions: Number.parseInt(parts[1] ?? "", 10) || 0,
-        });
-    }
-    const files = [...changed].sort().map((filePath) => ({
-      path: filePath,
-      ...(byPath.get(filePath) ?? { insertions: 0, deletions: 0 }),
-    }));
+    // Listing worktrees must not read unbounded untracked files on each refresh.
+    files.push(
+      ...untracked.map((filePath) => ({
+        path: filePath,
+        previousPath: null,
+        status: "untracked" as const,
+        layer: "untracked" as const,
+        insertions: 0,
+        deletions: 0,
+      })),
+    );
+    files.sort(
+      (left, right) => left.path.localeCompare(right.path) || left.layer.localeCompare(right.layer),
+    );
     return {
       branch,
       head,

@@ -12,6 +12,7 @@ import { ProjectId, ThreadId } from "@t3tools/contracts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import migration from "../persistence/Migrations/057_OpenWork.ts";
+import { makeGitReader } from "./GitReader.ts";
 import { makeOpenWorkService } from "./OpenWorkService.ts";
 import { makePublicationRecorder } from "./PublicationRepository.ts";
 
@@ -327,3 +328,77 @@ describe("Open work", () => {
       }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 });
+
+it.effect("lists exact commit files and keeps overlapping WIP layers distinct", () =>
+  Effect.gen(function* () {
+    const f = yield* setup;
+    const git = yield* makeGitReader;
+    yield* f.fs.writeFileString(f.path.join(f.cwd, "t3-commit"), "marker file\n");
+    yield* f.fs.writeFileString(f.path.join(f.cwd, "empty.txt"), "");
+    yield* f.fs.writeFile(f.path.join(f.cwd, "binary.bin"), new Uint8Array([0, 1, 2]));
+    yield* f.run(["add", "."]);
+    yield* f.run(["commit", "-m", "files"]);
+    yield* f.run(["mv", "code.txt", "renamed file.txt"]);
+    yield* f.run(["commit", "-m", "rename"]);
+    const history = yield* git.commits(f.cwd, "HEAD");
+    assert.equal(history.length, 3);
+    assert.deepEqual(history[0]!.files, [
+      { path: "code.txt", previousPath: null, status: "added", insertions: 1, deletions: 0 },
+    ]);
+    assert.deepEqual(
+      history[1]!.files.map((file) => [file.path, file.status, file.insertions]),
+      [
+        ["binary.bin", "added", 0],
+        ["empty.txt", "added", 0],
+        ["t3-commit", "added", 1],
+      ],
+    );
+    assert.deepEqual(history[2]!.files, [
+      {
+        path: "renamed file.txt",
+        previousPath: "code.txt",
+        status: "renamed",
+        insertions: 0,
+        deletions: 0,
+      },
+    ]);
+    yield* f.fs.writeFileString(f.path.join(f.cwd, "renamed file.txt"), "staged\n");
+    yield* f.run(["add", "renamed file.txt"]);
+    yield* f.fs.writeFileString(f.path.join(f.cwd, "renamed file.txt"), "unstaged\n");
+    yield* f.fs.writeFileString(f.path.join(f.cwd, "untracked.txt"), "new\n");
+    const timeline = yield* f.service.timeline({ worktreeId: f.worktreeId });
+    assert.deepEqual(
+      timeline.commits.map((commit) => commit.files),
+      history.slice(1).map((commit) => commit.files),
+    );
+    assert.deepEqual(
+      timeline.wip.files.map((file) => [file.path, file.layer]),
+      [
+        ["renamed file.txt", "staged"],
+        ["renamed file.txt", "unstaged"],
+        ["untracked.txt", "untracked"],
+      ],
+    );
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);
+
+it.effect("commit timeline metadata compares merge commits with their first parent", () =>
+  Effect.gen(function* () {
+    const f = yield* setup;
+    yield* f.run(["switch", "-c", "side"]);
+    yield* f.fs.writeFileString(f.path.join(f.cwd, "side.txt"), "side\n");
+    yield* f.run(["add", "."]);
+    yield* f.run(["commit", "-m", "side"]);
+    yield* f.run(["switch", "feature"]);
+    yield* f.fs.writeFileString(f.path.join(f.cwd, "code.txt"), "first parent\n");
+    yield* f.run(["commit", "-am", "first parent"]);
+    const parent = yield* f.run(["rev-parse", "HEAD"]);
+    yield* f.run(["merge", "--no-ff", "side", "-m", "merge"]);
+    const timeline = yield* f.service.timeline({ worktreeId: f.worktreeId });
+    const merge = timeline.commits.at(-1)!;
+    assert.equal(merge.parents[0], parent);
+    assert.deepEqual(merge.files, [
+      { path: "side.txt", previousPath: null, status: "added", insertions: 1, deletions: 0 },
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(layer)),
+);
