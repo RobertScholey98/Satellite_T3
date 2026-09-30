@@ -1,7 +1,6 @@
 import type {
   DesktopBridge,
   SatelliteBridge,
-  SatellitePillState,
   SatelliteShellState,
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingInputEvent,
@@ -17,30 +16,15 @@ import * as SatelliteChannels from "./satellite/channels.ts";
 
 if (process.argv.includes("--satellite-pill"))
   contextBridge.exposeInMainWorld("satelliteBridge", {
-    getZoomFactor: () => webFrame.getZoomFactor(),
     publish: (state) => ipcRenderer.send(SatelliteChannels.SATELLITE_PUBLISH, state),
     hideMain: () => ipcRenderer.send(SatelliteChannels.SATELLITE_HIDE_MAIN),
-    openMain: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_OPEN),
-    showMenu: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_MENU),
-    movePill: (direction) => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_MOVE, direction),
-    beginPillDrag: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_DRAG_BEGIN),
-    updatePillDrag: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_DRAG_UPDATE),
-    endPillDrag: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_DRAG_END),
-    finishTransition: (transitionId) =>
-      ipcRenderer.send(SatelliteChannels.SATELLITE_TRANSITION_FINISHED, transitionId),
     setPinned: (pinned) => ipcRenderer.send(SatelliteChannels.SATELLITE_SET_PINNED, pinned),
     onShellState: (listener) => {
       const wrapped = (_event: Electron.IpcRendererEvent, state: SatelliteShellState) =>
         listener(state);
       ipcRenderer.on(SatelliteChannels.SATELLITE_SHELL_STATE, wrapped);
-      ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_READY);
+      ipcRenderer.send(SatelliteChannels.SATELLITE_WORKSPACE_READY);
       return () => ipcRenderer.removeListener(SatelliteChannels.SATELLITE_SHELL_STATE, wrapped);
-    },
-    onPillState: (listener) => {
-      const wrapped = (_event: Electron.IpcRendererEvent, state: SatellitePillState) =>
-        listener(state);
-      ipcRenderer.on(SatelliteChannels.SATELLITE_PILL_STATE, wrapped);
-      return () => ipcRenderer.removeListener(SatelliteChannels.SATELLITE_PILL_STATE, wrapped);
     },
   } satisfies SatelliteBridge);
 

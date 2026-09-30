@@ -4,6 +4,8 @@ param(
   [Parameter(Mandatory = $true)][int]$StartY,
   [Parameter(Mandatory = $true)][int]$EndX,
   [Parameter(Mandatory = $true)][int]$EndY,
+  [int]$Steps = 12,
+  [int]$StepDelayMs = 20,
   [switch]$WaitForReleaseAcknowledgement
 )
 $ErrorActionPreference = 'Stop'
@@ -13,6 +15,10 @@ using System.Runtime.InteropServices;
 public static class SatelliteOwnedDrag {
     [StructLayout(LayoutKind.Sequential)]
     public struct POINT { public int X; public int Y; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT point);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
@@ -42,16 +48,20 @@ try {
   if ($hitRoot -ne $windowHandle) { throw 'The drag start does not belong to OwnedHwnd; no button was pressed.' }
   $buttonPressed = $true
   [SatelliteOwnedDrag]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-  for ($step = 1; $step -le 12; $step++) {
+  $samples = [System.Collections.Generic.List[object]]::new()
+  for ($step = 1; $step -le $Steps; $step++) {
     if (-not [SatelliteOwnedDrag]::IsWindow($windowHandle)) { throw 'The owned test window closed during the drag.' }
-    $x = [int][Math]::Round($StartX + ($EndX - $StartX) * $step / 12)
-    $y = [int][Math]::Round($StartY + ($EndY - $StartY) * $step / 12)
+    $x = [int][Math]::Round($StartX + ($EndX - $StartX) * $step / $Steps)
+    $y = [int][Math]::Round($StartY + ($EndY - $StartY) * $step / $Steps)
     if (-not [SatelliteOwnedDrag]::SetCursorPos($x, $y)) { throw 'Could not move the cursor during the drag.' }
-    Start-Sleep -Milliseconds 20
+    Start-Sleep -Milliseconds $StepDelayMs
+    $rect = New-Object SatelliteOwnedDrag+RECT
+    if (-not [SatelliteOwnedDrag]::GetWindowRect($windowHandle, [ref]$rect)) { throw 'Could not sample the owned window.' }
+    $samples.Add(@{ x = $rect.Left; y = $rect.Top; width = $rect.Right - $rect.Left; height = $rect.Bottom - $rect.Top; dpi = [SatelliteOwnedDrag]::GetDpiForWindow($windowHandle) })
   }
   [SatelliteOwnedDrag]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
   $buttonPressed = $false
-  @{ ownedHwnd = $OwnedHwnd; validatedRootHwnd = $hitRoot.ToInt64(); start = @($StartX, $StartY); end = @($EndX, $EndY); steps = 12 } | ConvertTo-Json -Compress
+  @{ ownedHwnd = $OwnedHwnd; validatedRootHwnd = $hitRoot.ToInt64(); start = @($StartX, $StartY); end = @($EndX, $EndY); steps = $Steps; samples = $samples } | ConvertTo-Json -Depth 4 -Compress
   if ($WaitForReleaseAcknowledgement) {
     $null = [Console]::In.ReadLineAsync().Wait(5000)
   }

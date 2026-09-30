@@ -11,35 +11,26 @@ export const SatellitePillState = Schema.Struct({
 });
 export type SatellitePillState = typeof SatellitePillState.Type;
 
-/** Geometry is in native device-independent pixels relative to the current window canvas. */
+/** The retained workspace and native pill have independent window geometry. */
 export interface SatelliteShellState {
   readonly mode: "pill" | "workspace";
-  readonly phase: "settled" | "expanding" | "collapsing";
-  readonly transitionId: number;
-  readonly pillBounds: {
-    readonly x: number;
-    readonly y: number;
-    readonly width: number;
-    readonly height: number;
-  };
-  readonly workspaceSize: { readonly width: number; readonly height: number };
   readonly pinned?: boolean;
 }
 
 export type SatelliteMoveDirection = "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown";
 
 export interface SatelliteBridge {
-  readonly getZoomFactor: () => number;
   readonly publish: (state: SatellitePillState) => void;
   readonly hideMain: () => void;
+  readonly setPinned: (pinned: boolean) => void;
+  readonly onShellState: (listener: (state: SatelliteShellState) => void) => () => void;
+}
+
+/** Only the standalone pill renderer receives these capabilities. */
+export interface SatellitePillBridge {
   readonly openMain: () => void;
   readonly showMenu: () => void;
   readonly movePill: (direction: SatelliteMoveDirection) => void;
   readonly beginPillDrag: () => void;
-  readonly updatePillDrag: () => void;
-  readonly endPillDrag: () => void;
-  readonly finishTransition: (transitionId: number) => void;
-  readonly setPinned: (pinned: boolean) => void;
-  readonly onShellState: (listener: (state: SatelliteShellState) => void) => () => void;
   readonly onPillState: (listener: (state: SatellitePillState) => void) => () => void;
 }
