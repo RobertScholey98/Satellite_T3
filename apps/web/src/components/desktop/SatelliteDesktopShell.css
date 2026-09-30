@@ -112,6 +112,11 @@ html[data-satellite-mode="pill"] [data-satellite="shell-surface"],
 }
 
 /* Keep the native controls inside the workspace's 40px tab row. */
+html[data-satellite-mode] [data-workspace-tabbar] {
+  /* 52px control group, 12px edge inset, and an 8px gap to the panel toggle. */
+  --workspace-native-controls-inset: 72px;
+}
+
 [data-satellite="workspace"]:has([data-workspace-tabbar]) > [data-satellite="window-controls"] {
   top: 6px;
   gap: 2px;

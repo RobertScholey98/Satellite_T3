@@ -425,7 +425,7 @@ function PullRequestsRouteView() {
   const workEnvironmentId = search.workEnvironmentId ?? search.environmentId;
   if (!search.tab || search.tab === "pull-requests") return <PullRequestsContent />;
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+    <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none">
       <WorkTabs />
       {search.tab === "issues" ? (
         <IssuesBoard
@@ -2225,7 +2225,7 @@ function PullRequestsContent() {
   }, [keybindings]);
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+    <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none">
       <WorkTabs controls={pullRequestsSupported ? panelToggleControls : null} />
       <div className="relative flex min-h-0 flex-1">
         <PullRequestsColumn {...columnProps} />

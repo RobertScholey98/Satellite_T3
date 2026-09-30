@@ -506,14 +506,16 @@ export function IssuesBoard({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-4 py-4 sm:px-6">
+    <div
+      className={`flex min-h-0 min-w-0 flex-1 flex-col gap-4 px-4 py-4 sm:px-6 ${mode === "board" && view ? "overflow-hidden" : "overflow-auto"}`}
+    >
       {scope && !connected ? (
         <p role="status" className="text-sm text-muted-foreground">
           {scopedEnvironment?.label ?? "Environment"} is not connected. Last loaded data stays
           visible; reconnect to update it.
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
         <Menu>
           <MenuTrigger render={<Button size="sm" variant="ghost" />}>
             Project: {scope?.title ?? "Choose project"} ·{" "}
@@ -879,69 +881,71 @@ export function IssuesBoard({
       ) : null}
       {mode === "board" && view ? (
         <DndContext onDragEnd={dragEnd}>
-          <div className="flex items-start gap-3 overflow-x-auto pb-4">
-            {view.columns.map((column) => (
-              <BoardColumn
-                key={column.id}
-                id={column.id}
-                title={column.title}
-                tone={
-                  column.id === view.board.mapping?.inProgress
-                    ? "progress"
-                    : column.id === view.board.mapping?.inPullRequest
-                      ? "review"
-                      : column.id === view.board.mapping?.completed
-                        ? "completed"
-                        : "muted"
-                }
-                count={
-                  view.items.filter(
-                    (item) => item.columnId === column.id && matchesQuery(item.issue),
-                  ).length
-                }
-              >
-                {view.items
-                  .filter((item) => item.columnId === column.id && matchesQuery(item.issue))
-                  .map((item) => (
-                    <BoardCard
-                      key={item.itemId}
-                      item={item}
-                      onOpen={() => void select(item)}
-                      disabled={pending || !connected || !view.board.mapping}
-                    />
-                  ))}
-              </BoardColumn>
-            ))}
-            {view.items.some(
-              (item) => !view.columns.some((column) => column.id === item.columnId),
-            ) ? (
-              <BoardColumn
-                id="unassigned"
-                title="Unassigned"
-                count={
-                  view.items.filter(
-                    (item) =>
-                      !view.columns.some((column) => column.id === item.columnId) &&
-                      matchesQuery(item.issue),
-                  ).length
-                }
-              >
-                {view.items
-                  .filter(
-                    (item) =>
-                      !view.columns.some((column) => column.id === item.columnId) &&
-                      matchesQuery(item.issue),
-                  )
-                  .map((item) => (
-                    <BoardCard
-                      key={item.itemId}
-                      item={item}
-                      onOpen={() => void select(item)}
-                      disabled={pending || !connected}
-                    />
-                  ))}
-              </BoardColumn>
-            ) : null}
+          <div className="min-h-0 flex-1 overflow-auto">
+            <div className="flex min-h-full w-max min-w-full items-stretch gap-3 pb-4">
+              {view.columns.map((column) => (
+                <BoardColumn
+                  key={column.id}
+                  id={column.id}
+                  title={column.title}
+                  tone={
+                    column.id === view.board.mapping?.inProgress
+                      ? "progress"
+                      : column.id === view.board.mapping?.inPullRequest
+                        ? "review"
+                        : column.id === view.board.mapping?.completed
+                          ? "completed"
+                          : "muted"
+                  }
+                  count={
+                    view.items.filter(
+                      (item) => item.columnId === column.id && matchesQuery(item.issue),
+                    ).length
+                  }
+                >
+                  {view.items
+                    .filter((item) => item.columnId === column.id && matchesQuery(item.issue))
+                    .map((item) => (
+                      <BoardCard
+                        key={item.itemId}
+                        item={item}
+                        onOpen={() => void select(item)}
+                        disabled={pending || !connected || !view.board.mapping}
+                      />
+                    ))}
+                </BoardColumn>
+              ))}
+              {view.items.some(
+                (item) => !view.columns.some((column) => column.id === item.columnId),
+              ) ? (
+                <BoardColumn
+                  id="unassigned"
+                  title="Unassigned"
+                  count={
+                    view.items.filter(
+                      (item) =>
+                        !view.columns.some((column) => column.id === item.columnId) &&
+                        matchesQuery(item.issue),
+                    ).length
+                  }
+                >
+                  {view.items
+                    .filter(
+                      (item) =>
+                        !view.columns.some((column) => column.id === item.columnId) &&
+                        matchesQuery(item.issue),
+                    )
+                    .map((item) => (
+                      <BoardCard
+                        key={item.itemId}
+                        item={item}
+                        onOpen={() => void select(item)}
+                        disabled={pending || !connected}
+                      />
+                    ))}
+                </BoardColumn>
+              ) : null}
+            </div>
           </div>
         </DndContext>
       ) : null}
