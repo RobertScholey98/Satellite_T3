@@ -783,6 +783,7 @@ export const makeIssueService = (options: {
           const saved =
             yield* sql<BoardRow>`SELECT * FROM issue_boards WHERE project_id=${input.projectId}`;
           const configs = yield* Effect.forEach(saved, decodeBoard);
+          if (input.connectedOnly) return configs;
           const discovery = yield* scope(input.projectId).pipe(
             Effect.flatMap((scope) => options.host.listBoards(scope)),
             Effect.result,

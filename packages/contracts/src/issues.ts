@@ -179,7 +179,10 @@ export const IssuesListResult = Schema.Struct({
 export type IssuesListResult = typeof IssuesListResult.Type;
 export const IssuesGetInput = Schema.Struct({ projectId: ProjectId, issue: IssueRef });
 export type IssuesGetInput = typeof IssuesGetInput.Type;
-export const IssueBoardsListInput = Schema.Struct({ projectId: ProjectId });
+export const IssueBoardsListInput = Schema.Struct({
+  projectId: ProjectId,
+  connectedOnly: Schema.optional(Schema.Boolean),
+});
 export type IssueBoardsListInput = typeof IssueBoardsListInput.Type;
 export const IssueBoardsOpenInput = Schema.Struct({
   projectId: ProjectId,

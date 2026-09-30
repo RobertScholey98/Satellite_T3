@@ -41,6 +41,11 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { randomUUID } from "~/lib/utils";
 
 import { Button } from "../ui/button";
+import {
+  WorkspaceBreadcrumb,
+  WorkspaceBreadcrumbItem,
+  WorkspaceBreadcrumbSeparator,
+} from "../WorkspaceBreadcrumb";
 
 import { Input } from "../ui/input";
 import {
@@ -241,6 +246,8 @@ export function IssuesBoard({
   const listIssues = useAtomCommand(issuesEnvironment.list, { reportFailure: false });
 
   const [boards, setBoards] = useState<readonly IssueBoardSummary[]>([]);
+  const [projectBoards, setProjectBoards] = useState<Record<string, boolean | undefined>>({});
+  const projectMenuGeneration = useRef(0);
 
   const [view, setView] = useState<IssueBoardView | null>(null);
 
@@ -500,6 +507,34 @@ export function IssuesBoard({
       .includes(query.replace(/^#/, "").toLowerCase());
   const connectedBoards = boards.filter((board) => board.mapping !== null);
   const availableBoards = boards.filter((board) => board.mapping === null);
+  const loadProjectBoards = () => {
+    const current = ++projectMenuGeneration.current;
+    for (const project of supported) {
+      if (
+        environments.find((environment) => environment.environmentId === project.environmentId)
+          ?.connection.phase !== "connected"
+      )
+        continue;
+      const key = `${project.environmentId}:${project.id}`;
+      void list({
+        environmentId: project.environmentId,
+        input: { projectId: project.id, connectedOnly: true },
+      })
+        .then(unwrapWorkResult)
+        .then((result) => {
+          if (current === projectMenuGeneration.current)
+            setProjectBoards((previous) => ({
+              ...previous,
+              [key]: result.some((board) => board.mapping !== null),
+            }));
+        })
+        .catch(() => {
+          // An unavailable environment is not evidence that a project has no boards.
+          if (current === projectMenuGeneration.current)
+            setProjectBoards((previous) => ({ ...previous, [key]: undefined }));
+        });
+    }
+  };
   const connectBoard = () => {
     setMode("board");
     setConfiguration({ initial: null, scopeGeneration: scopeGeneration.current });
@@ -516,78 +551,107 @@ export function IssuesBoard({
         </p>
       ) : null}
       <div className="flex shrink-0 flex-wrap items-center gap-2">
-        <Menu>
-          <MenuTrigger render={<Button size="sm" variant="ghost" />}>
-            Project: {scope?.title ?? "Choose project"} ·{" "}
-            {scopedEnvironment?.label ?? "Environment"}
-            <ChevronDownIcon />
-          </MenuTrigger>
-          <MenuPopup>
-            <MenuGroup>
-              <MenuGroupLabel>Local project</MenuGroupLabel>
-              {supported.map((project) => (
-                <MenuItem
-                  key={`${project.environmentId}:${project.id}`}
-                  onClick={() => {
-                    setDismissedTargetKey(targetKey);
-                    setScopeKey(`${project.environmentId}:${project.id}`);
-                    onSelectBoard?.({
-                      environmentId: project.environmentId,
-                      projectId: project.id,
-                    });
-                  }}
-                >
-                  {project.title} ·{" "}
-                  {
-                    environments.find(
-                      (environment) => environment.environmentId === project.environmentId,
-                    )?.label
-                  }
-                </MenuItem>
-              ))}
-            </MenuGroup>
-          </MenuPopup>
-        </Menu>
-        {mode === "board" ? (
-          <Menu>
-            <MenuTrigger render={<Button size="sm" variant="outline" />}>
-              <Columns3Icon />
-              Board: {view?.board.title ?? "Choose board"}
-              <ChevronDownIcon />
-            </MenuTrigger>
-            <MenuPopup>
-              {connectedBoards.length ? (
+        <WorkspaceBreadcrumb ariaLabel="Issue board" className="max-w-full">
+          <WorkspaceBreadcrumbItem current={mode === "issues"} className="shrink min-w-0">
+            <Menu
+              onOpenChange={(opened) => {
+                if (opened) loadProjectBoards();
+              }}
+            >
+              <MenuTrigger
+                aria-label="Choose project"
+                render={<Button size="sm" variant="ghost" className="min-w-0 max-w-full" />}
+              >
+                <span className="max-w-64 truncate">{scope?.title ?? "Choose project"}</span>
+                <ChevronDownIcon />
+              </MenuTrigger>
+              <MenuPopup align="start">
                 <MenuGroup>
-                  <MenuGroupLabel>Connected boards</MenuGroupLabel>
-                  {connectedBoards.map((board) => (
-                    <MenuItem
-                      key={board.id}
-                      disabled={!connected || pending}
-                      onClick={() => {
-                        setDismissedTargetKey(targetKey);
-                        void refresh(board.id).then((result) => {
-                          if (result && scope)
-                            onSelectBoard?.({
-                              environmentId: scope.environmentId,
-                              projectId: scope.id,
-                              boardId: result.board.id,
-                            });
-                        });
-                      }}
-                    >
-                      {board.title}
-                    </MenuItem>
-                  ))}
+                  <MenuGroupLabel>Projects</MenuGroupLabel>
+                  {supported.map((project) => {
+                    const key = `${project.environmentId}:${project.id}`;
+                    const hasBoard =
+                      project.environmentId === scope?.environmentId &&
+                      project.id === scope.id &&
+                      connectedBoards.length > 0
+                        ? true
+                        : projectBoards[key];
+                    const withoutBoard = mode === "board" && hasBoard === false;
+                    return (
+                      <MenuItem
+                        key={key}
+                        aria-label={project.title}
+                        aria-description={withoutBoard ? "No board connected" : undefined}
+                        onClick={() => {
+                          setDismissedTargetKey(targetKey);
+                          setScopeKey(key);
+                          onSelectBoard?.({
+                            environmentId: project.environmentId,
+                            projectId: project.id,
+                          });
+                        }}
+                      >
+                        <span className={withoutBoard ? "text-muted-foreground" : undefined}>
+                          {project.title}
+                        </span>
+                        {withoutBoard ? (
+                          <span className="ml-auto text-xs text-muted-foreground">No board</span>
+                        ) : null}
+                      </MenuItem>
+                    );
+                  })}
                 </MenuGroup>
-              ) : null}
-              {connectedBoards.length ? <MenuSeparator /> : null}
-              <MenuItem disabled={!scope || !connected || pending} onClick={connectBoard}>
-                <PlusIcon />
-                Connect board
-              </MenuItem>
-            </MenuPopup>
-          </Menu>
-        ) : null}
+              </MenuPopup>
+            </Menu>
+          </WorkspaceBreadcrumbItem>
+          {mode === "board" ? (
+            <>
+              <WorkspaceBreadcrumbSeparator />
+              <WorkspaceBreadcrumbItem current>
+                <Menu>
+                  <MenuTrigger
+                    aria-label="Choose board"
+                    render={<Button size="sm" variant="ghost" className="min-w-0 max-w-full" />}
+                  >
+                    <span className="max-w-64 truncate">{view?.board.title ?? "Choose board"}</span>
+                    <ChevronDownIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="start">
+                    {connectedBoards.length ? (
+                      <MenuGroup>
+                        <MenuGroupLabel>Connected boards</MenuGroupLabel>
+                        {connectedBoards.map((board) => (
+                          <MenuItem
+                            key={board.id}
+                            disabled={!connected || pending}
+                            onClick={() => {
+                              setDismissedTargetKey(targetKey);
+                              void refresh(board.id).then((result) => {
+                                if (result && scope)
+                                  onSelectBoard?.({
+                                    environmentId: scope.environmentId,
+                                    projectId: scope.id,
+                                    boardId: result.board.id,
+                                  });
+                              });
+                            }}
+                          >
+                            {board.title}
+                          </MenuItem>
+                        ))}
+                      </MenuGroup>
+                    ) : null}
+                    {connectedBoards.length ? <MenuSeparator /> : null}
+                    <MenuItem disabled={!scope || !connected || pending} onClick={connectBoard}>
+                      <PlusIcon />
+                      Connect board
+                    </MenuItem>
+                  </MenuPopup>
+                </Menu>
+              </WorkspaceBreadcrumbItem>
+            </>
+          ) : null}
+        </WorkspaceBreadcrumb>
         <div className="ml-auto flex items-center gap-1" role="group" aria-label="Issues view">
           <Button
             size="icon-sm"

@@ -114,7 +114,8 @@ function menuItem(label: string, role = "menuitem") {
   const menu = document.querySelector<HTMLElement>('[role="menu"]');
   expect(menu, "The menu should be open").not.toBeNull();
   const item = [...menu!.querySelectorAll<HTMLElement>(`[role="${role}"]`)].find(
-    (candidate) => candidate.textContent?.trim() === label,
+    (candidate) =>
+      (candidate.getAttribute("aria-label") ?? candidate.textContent?.trim()) === label,
   );
   expect(item, `Missing menu item: ${label}`).toBeDefined();
   return item!;
@@ -171,6 +172,40 @@ afterEach(async () => {
 });
 
 describe("IssuesBoard menus", () => {
+  it("shows breadcrumb projects without machine names and keeps unconnected projects available for setup", async () => {
+    commands.listBoards.mockImplementation(async ({ input }: { input: { projectId: ProjectId } }) =>
+      AsyncResult.success(input.projectId === firstProjectId ? [firstBoard] : [discoveredBoard]),
+    );
+    await mount();
+    const breadcrumb = container.querySelector('nav[aria-label="Issue board"]');
+    expect(breadcrumb?.textContent).toContain("First project");
+    expect(breadcrumb?.textContent).toContain("First connected board");
+    expect(breadcrumb?.textContent).not.toContain("Test machine");
+    await click(button("First project"));
+    expect(document.querySelector('[role="menu"]')?.textContent).not.toContain("Test machine");
+    expect(menuItem("First project").textContent).not.toContain("No board");
+    expect(menuItem("Second project").textContent).toContain("No board");
+    await click(menuItem("Second project"));
+    expect(onSelectBoard).toHaveBeenCalledWith({ environmentId, projectId: secondProjectId });
+    expect(container.textContent).toContain("No board connected to Second project");
+    await click(button("Connect board"));
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("does not describe a failed connection lookup as a project with no board", async () => {
+    commands.listBoards.mockImplementation(
+      async ({ input }: { input: { connectedOnly?: boolean } }) => {
+        if (input.connectedOnly) throw new Error("Environment unavailable");
+        return AsyncResult.success([firstBoard]);
+      },
+    );
+    await mount();
+    await click(button("First project"));
+    expect(menuItem("Second project").textContent).not.toContain("No board");
+    await click(menuItem("Second project"));
+    expect(onSelectBoard).toHaveBeenCalledWith({ environmentId, projectId: secondProjectId });
+  });
+
   it("loads a legacy ready column and saves multiple ready columns without changing move destinations", async () => {
     commands.listBoards.mockResolvedValue(AsyncResult.success([firstBoard]));
     commands.configureBoard.mockImplementation(
@@ -254,10 +289,10 @@ describe("IssuesBoard menus", () => {
 
   it("opens the local project menu and selects another project", async () => {
     await mount();
-    await click(button("Project: First project · Test machine"));
-    await click(menuItem("Second project · Test machine"));
+    await click(button("First project"));
+    await click(menuItem("Second project"));
     expect(onSelectBoard).toHaveBeenCalledWith({ environmentId, projectId: secondProjectId });
-    expect(button("Project: Second project · Test machine")).toBeDefined();
+    expect(button("Second project")).toBeDefined();
     expect(commands.listBoards).toHaveBeenLastCalledWith({
       environmentId,
       input: { projectId: secondProjectId },
@@ -269,7 +304,7 @@ describe("IssuesBoard menus", () => {
       AsyncResult.success([firstBoard, secondBoard, discoveredBoard]),
     );
     await mount();
-    await click(button("Board: First connected board"));
+    await click(button("First connected board"));
     expect(document.querySelector('[role="menu"]')?.textContent).not.toContain(
       discoveredBoard.title,
     );
@@ -283,7 +318,7 @@ describe("IssuesBoard menus", () => {
       projectId: firstProjectId,
       boardId: secondBoard.id,
     });
-    expect(button("Board: Second connected board")).toBeDefined();
+    expect(button("Second connected board")).toBeDefined();
   });
 
   it("filters the issue list by state and host, then clears both filters", async () => {

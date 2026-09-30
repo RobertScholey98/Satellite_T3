@@ -138,6 +138,46 @@ const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 describe("IssueService", () => {
+  it.effect("lists saved board connections without querying repository hosts", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        let discoveries = 0;
+        const service = yield* makeIssueService({
+          ...test.options,
+          host: {
+            ...test.options.host,
+            listBoards: () =>
+              Effect.sync(() => {
+                discoveries++;
+                return [{ title: "Discovered board", locator: { ...locator, projectNumber: 2 } }];
+              }),
+          },
+        });
+        const saved = yield* service.listBoards({ projectId, connectedOnly: true });
+        assert.deepStrictEqual(
+          saved.map((board) => board.id),
+          [test.boardId],
+        );
+        assert.deepStrictEqual(
+          yield* service.listBoards({
+            projectId: ProjectId.make("another-project"),
+            connectedOnly: true,
+          }),
+          [],
+        );
+        yield* service.disconnectBoard({
+          requestId: "disconnect-for-picker",
+          boardId: test.boardId,
+        });
+        assert.deepStrictEqual(yield* service.listBoards({ projectId, connectedOnly: true }), []);
+        assert.strictEqual(discoveries, 0);
+        assert.strictEqual((yield* service.listBoards({ projectId })).length, 1);
+        assert.strictEqual(discoveries, 1);
+      }),
+    ),
+  );
+
   it.effect("reads legacy Ready mappings and reserves after a service restart", () =>
     run(
       Effect.gen(function* () {

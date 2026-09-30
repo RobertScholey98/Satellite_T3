@@ -28,7 +28,10 @@ vi.mock("~/state/environments", () => ({
 }));
 vi.mock("~/state/issues", () => ({ issuesEnvironment: commands }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
-vi.mock("~/lib/utils", () => ({ randomUUID: () => "request-id" }));
+vi.mock("~/lib/utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/lib/utils")>()),
+  randomUUID: () => "request-id",
+}));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@dnd-kit/core", () => ({
   DndContext: ({ children }: { children: ReactNode }) => <div data-board-content>{children}</div>,
@@ -384,7 +387,7 @@ describe("project board selection", () => {
     await click("Refresh board");
     commands.listBoards.mockResolvedValue(AsyncResult.success([discovered]));
 
-    await click("Second project · Test machine");
+    await click("Second project");
 
     expect(boardText()).toBe("");
     await act(async () => {
@@ -410,7 +413,7 @@ describe("project board selection", () => {
       .mockResolvedValueOnce(AsyncResult.success([secondBoard]));
     commands.openBoard.mockResolvedValue(AsyncResult.success(boardView(secondBoard)));
     await mount();
-    await click("Second project · Test machine");
+    await click("Second project");
     expect(boardText()).toContain(`${secondBoard.title} issue`);
 
     await act(async () => {
@@ -457,7 +460,7 @@ describe("project board selection", () => {
     commands.configureBoard.mockReturnValue(saving.promise);
     await click("Save mapping", dialog);
 
-    await click("Second project · Test machine");
+    await click("Second project");
     expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
     await act(async () => {
       saving.resolve(AsyncResult.success(boardView({ ...discovered, mapping })));
