@@ -35,13 +35,15 @@ html[data-satellite-mode="pill"] body > :not(#root) * {
 [data-satellite="shell"] {
   position: fixed;
   inset: 0;
-  overflow: hidden;
+  overflow: clip;
 }
 
+/* Hidden chat focus/scroll requests must not scroll the shell itself. Unlike
+   hidden, clip keeps retained workspace content from displacing the pill. */
 [data-satellite="shell-surface"] {
   position: absolute;
   box-sizing: border-box;
-  overflow: hidden;
+  overflow: clip;
   border: 1px solid var(--border);
   background: var(--background);
   isolation: isolate;

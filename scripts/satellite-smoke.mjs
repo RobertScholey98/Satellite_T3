@@ -632,6 +632,47 @@ async function destroyFixture(application, fixtureId) {
   );
 }
 
+async function assertBackgroundScrollIsolation(page) {
+  const result = await page.evaluate(() => {
+    const workspace = document.querySelector('[data-satellite="workspace"]');
+    const surface = document.querySelector('[data-satellite="shell-surface"]');
+    const shell = document.querySelector('[data-satellite="shell"]');
+    const expander = document.querySelector('[data-satellite="pill-content"]');
+    // Model a retained chat following its caret or new content while collapsed.
+    // Chromium must still scroll the chat, without scrolling either shell boundary.
+    const scroller = document.createElement("div");
+    scroller.style.cssText =
+      "position:absolute;right:20px;bottom:20px;width:180px;height:100px;overflow:auto";
+    const content = document.createElement("div");
+    content.style.cssText = "height:500px;position:relative";
+    const target = document.createElement("button");
+    target.textContent = "Background chat scroll fixture";
+    target.style.cssText = "position:absolute;bottom:0;left:0";
+    content.append(target);
+    scroller.append(content);
+    workspace.append(scroller);
+    try {
+      const before = expander.getBoundingClientRect().toJSON();
+      target.scrollIntoView({ block: "nearest", inline: "nearest" });
+      const after = expander.getBoundingClientRect().toJSON();
+      const hit = document.elementFromPoint(after.x + after.width / 2, after.y + after.height / 2);
+      return {
+        before,
+        after,
+        chatScrolled: scroller.scrollTop > 0,
+        shellScroll: [shell.scrollLeft, shell.scrollTop, surface.scrollLeft, surface.scrollTop],
+        clickable: hit !== null && expander.contains(hit),
+      };
+    } finally {
+      scroller.remove();
+    }
+  });
+  NodeAssert.equal(result.chatScrolled, true, "Background chat can still follow new content");
+  NodeAssert.deepEqual(result.shellScroll, [0, 0, 0, 0], "Chat scrolling cannot move the shell");
+  NodeAssert.deepEqual(result.after, result.before, "The pill must remain in its visible frame");
+  NodeAssert.equal(result.clickable, true, "Background chat scrolling must not hide pill controls");
+}
+
 async function quit(application) {
   // Playwright Electron's close invokes app.quit(), preserving the app's shutdown path.
   await application.close();
@@ -931,6 +972,16 @@ try {
     await destroyFixture(application, blurFixtureId);
   }
   report.checks.push("Unpinned workspace collapses on native blur");
+  stage("Checking background chat scrolling after click-away collapse");
+  await assertBackgroundScrollIsolation(shell.page);
+  await expand(application, shell, initial);
+  const scrollFixtureId = await blurIntoOwnedFixture(application, shell);
+  try {
+    await assertCollapsed(application, shell, initial);
+  } finally {
+    await destroyFixture(application, scrollFixtureId);
+  }
+  report.checks.push("Background chat scrolling preserves visible, clickable pill and workspace");
   NodeAssert.equal(
     await workspace.evaluate(
       (node) => node.isConnected && node === document.querySelector('[data-satellite="workspace"]'),
