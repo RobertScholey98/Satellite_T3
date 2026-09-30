@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useParams } from "@tanstack/react-router";
 import type { SatellitePillState, ScopedThreadRef } from "@t3tools/contracts";
 import { useEffect } from "react";
 
@@ -49,25 +49,10 @@ function UnselectedThreadProjection() {
   return null;
 }
 
-/** Stays mounted with the main renderer when Electron hides its window. */
+/** Stays mounted while the native window collapses around the pill. */
 export function SatellitePillCoordinator() {
   const params = useParams({ strict: false });
   const threadRef = resolveThreadRouteRef(params);
-  const navigate = useNavigate();
-  useEffect(
-    () =>
-      window.satelliteBridge?.onNavigate((target) => {
-        if (target.environmentId && target.threadId) {
-          void navigate({
-            to: "/$environmentId/$threadId",
-            params: { environmentId: target.environmentId, threadId: target.threadId },
-          });
-        } else {
-          void navigate({ to: "/" });
-        }
-      }),
-    [navigate],
-  );
   return threadRef ? (
     <SelectedThreadProjection
       key={`${threadRef.environmentId}:${threadRef.threadId}`}

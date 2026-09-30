@@ -1,0 +1,209 @@
+/* The native window is transparent in both forms; only this clipped surface paints. */
+html[data-satellite-mode],
+html[data-satellite-mode] body {
+  background: transparent !important;
+}
+
+html[data-satellite-mode] {
+  --satellite-window-controls-inset: 76px;
+  --desktop-window-right-resize-inset: 0px;
+  --workspace-controls-right: calc(0.75rem + var(--satellite-window-controls-inset));
+  --workspace-native-controls-inset: calc(
+    var(--workspace-gutter-end) + var(--satellite-window-controls-inset)
+  );
+}
+
+/* Satellite has frameless controls without Windows' titlebar-overlay mode.
+   Reserve their space in the header that currently owns the window's edge. */
+html[data-satellite-mode] [data-reserve-native-controls] {
+  padding-right: var(--workspace-native-controls-inset);
+}
+
+html[data-satellite-mode] [data-right-panel-tabbar].drag-region {
+  padding-right: calc(7rem + var(--satellite-window-controls-inset));
+}
+
+/* Dialog backdrops transition every property. Hide each portal descendant and
+   stop that transition so inherited visibility cannot linger over the canvas. */
+html[data-satellite-mode="pill"] body > :not(#root),
+html[data-satellite-mode="pill"] body > :not(#root) * {
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transition: none !important;
+}
+
+[data-satellite="shell"] {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+[data-satellite="shell-surface"] {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--background);
+  isolation: isolate;
+}
+
+[data-satellite="shell"]:not([data-phase="settled"]) [data-satellite="shell-surface"] {
+  will-change: width, height, left, top, border-radius;
+}
+
+[data-satellite="workspace"] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Contain fixed preview guests without hiding their native rendering surface. */
+  transform: translateY(0);
+  background: var(--background);
+}
+
+[data-satellite="workspace"][inert] {
+  pointer-events: none;
+}
+
+/* Native drag regions ignore stacking and inert. The retained titlebar must not
+   intercept the pill's pointer gesture, including its padding and border. */
+html[data-satellite-mode="pill"] [data-satellite="shell-surface"],
+[data-satellite="workspace"][inert] .drag-region {
+  -webkit-app-region: no-drag;
+}
+
+[data-satellite="workspace"] [data-slot="sidebar-wrapper"] {
+  height: 100% !important;
+  min-height: 0;
+}
+
+[data-satellite="window-controls"] {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 55;
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--background);
+  -webkit-app-region: no-drag;
+}
+
+[data-satellite="window-controls"] button {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+[data-satellite="window-controls"] button:hover,
+[data-satellite="window-controls"] button[aria-pressed="true"] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+[data-satellite="window-controls"] svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-satellite="pill"] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  padding: 0 9px 0 12px;
+  color: #f0f1f3;
+  font-family: Bahnschrift, "Segoe UI", sans-serif;
+  user-select: none;
+  touch-action: none;
+}
+
+[data-satellite="pill"] button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  outline: none;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+[data-satellite="pill"][data-keyboard-focus] button:focus-visible,
+[data-satellite="window-controls"] button:focus-visible {
+  outline: 1px solid #88b8f5;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+[data-satellite="pill-dot"] {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #929a96;
+}
+
+[data-satellite="pill"][data-state="working"] [data-satellite="pill-dot"] {
+  background: #88b8f5;
+}
+[data-satellite="pill"][data-state="awaiting-input"] [data-satellite="pill-dot"] {
+  background: #ebc37a;
+}
+[data-satellite="pill"][data-state="completed"] [data-satellite="pill-dot"] {
+  background: #a6d8bd;
+}
+[data-satellite="pill"][data-state="error"] [data-satellite="pill-dot"] {
+  background: #ef8b83;
+}
+
+[data-satellite="pill-content"] {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  height: 70px;
+  text-align: left;
+}
+
+[data-satellite="pill-title"],
+[data-satellite="pill-detail"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-satellite="pill-title"] {
+  font-size: 13px;
+  font-weight: 600;
+}
+[data-satellite="pill-detail"] {
+  color: #a8afb9;
+  font-size: 11px;
+}
+[data-satellite="pill-attention"] {
+  color: #ebc37a;
+  font-size: 11px;
+}
+[data-satellite="pill"] [data-satellite="pill-menu"] {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 38px;
+  color: #a8afb9;
+}
+[data-satellite="pill-menu"] svg {
+  width: 18px;
+  height: 18px;
+}

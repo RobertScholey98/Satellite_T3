@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -29,8 +30,10 @@ function makeTestWindow(
   let minimized = true;
   let restored = false;
   let focused = false;
+  let visible = false;
 
   const window = {
+    id: 1,
     isDestroyed: () => {
       if (options.isDestroyedError !== undefined) {
         throw options.isDestroyedError;
@@ -49,6 +52,10 @@ function makeTestWindow(
     },
     focus: () => {
       focused = true;
+    },
+    isVisible: () => visible,
+    show: () => {
+      visible = true;
     },
     once: (eventName: string, listener: () => void) => {
       const eventListeners = listeners.get(eventName) ?? new Set<() => void>();
@@ -74,6 +81,7 @@ function makeTestWindow(
     sentMessages,
     isRestored: () => restored,
     isFocused: () => focused,
+    isVisible: () => visible,
     closedListenerCount: () => listeners.get("closed")?.size ?? 0,
     close: () => {
       destroyed = true;
@@ -87,22 +95,16 @@ function makeTestWindow(
 }
 
 function makeElectronWindowLayer(window: ReturnType<typeof makeTestWindow>["window"]) {
-  return Layer.succeed(
+  return Layer.effect(
     ElectronWindow.ElectronWindow,
-    ElectronWindow.ElectronWindow.of({
-      create: () => Effect.die("unexpected BrowserWindow creation"),
-      main: Effect.succeedSome(window as Electron.BrowserWindow),
-      currentMainOrFirst: Effect.succeedSome(window as Electron.BrowserWindow),
-      focusedMainOrFirst: Effect.succeedSome(window as Electron.BrowserWindow),
-      setMain: () => Effect.void,
-      clearMain: () => Effect.void,
-      prepareReveal: () => Effect.succeed(false),
-      reveal: () => Effect.void,
-      sendAll: () => Effect.void,
-      destroyAll: Effect.void,
-      syncAllAppearance: () => Effect.void,
+    Effect.gen(function* () {
+      const service = yield* ElectronWindow.make;
+      return ElectronWindow.ElectronWindow.of({
+        ...service,
+        main: Effect.succeedSome(window as Electron.BrowserWindow),
+      });
     }),
-  );
+  ).pipe(Layer.provide(Layer.succeed(HostProcessPlatform, "linux")));
 }
 
 function makeLayer(window: ReturnType<typeof makeTestWindow>["window"]) {
@@ -114,7 +116,7 @@ function makeLayer(window: ReturnType<typeof makeTestWindow>["window"]) {
 }
 
 describe("DesktopSshPasswordPrompts", () => {
-  it.effect("sends renderer prompts and resolves them by request id", () => {
+  it.effect("reveals a hidden window and resolves its renderer prompt by request id", () => {
     const testWindow = makeTestWindow();
 
     return Effect.gen(function* () {
@@ -138,6 +140,7 @@ describe("DesktopSshPasswordPrompts", () => {
       assert.equal(request.destination, "devbox");
       assert.equal(testWindow.isRestored(), true);
       assert.equal(testWindow.isFocused(), true);
+      assert.equal(testWindow.isVisible(), true);
 
       yield* prompts.resolve({ requestId: request.requestId, password: "secret" });
       assert.equal(yield* Fiber.join(fiber), "secret");
@@ -223,6 +226,35 @@ describe("DesktopSshPasswordPrompts", () => {
       assert.equal(password, "secret");
       assert.equal(testWindow.isFocused(), false);
       assert.equal(testWindow.closedListenerCount(), 0);
+    }).pipe(Effect.provide(makeLayer(testWindow.window)), Effect.scoped);
+  });
+
+  it.effect("classifies reveal failures and expires the pending prompt", () => {
+    const testWindow = makeTestWindow({
+      isMinimizedError: new Error("failed to reveal window"),
+    });
+
+    return Effect.gen(function* () {
+      const prompts = yield* DesktopSshPasswordPrompts.DesktopSshPasswordPrompts;
+      const error = yield* prompts
+        .request({
+          destination: "devbox",
+          username: "julius",
+          prompt: "Enter the SSH password.",
+          attempt: 1,
+        })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, DesktopSshPasswordPrompts.DesktopSshPromptPresentationError);
+      assert.equal(error.operation, "reveal-window");
+      assert.instanceOf(error.cause, ElectronWindow.ElectronWindowOperationError);
+      const requestId = error.requestId;
+      assert.ok(requestId);
+      assert.equal(testWindow.closedListenerCount(), 0);
+      const resolveError = yield* prompts
+        .resolve({ requestId, password: "secret" })
+        .pipe(Effect.flip);
+      assert.instanceOf(resolveError, DesktopSshPasswordPrompts.DesktopSshPromptExpiredError);
     }).pipe(Effect.provide(makeLayer(testWindow.window)), Effect.scoped);
   });
 

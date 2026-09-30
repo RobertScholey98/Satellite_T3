@@ -1,7 +1,8 @@
 import type {
   DesktopBridge,
   SatelliteBridge,
-  SatelliteNavigation,
+  SatellitePillState,
+  SatelliteShellState,
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingInputEvent,
   DesktopPreviewRecordingFrame,
@@ -16,13 +17,30 @@ import * as SatelliteChannels from "./satellite/channels.ts";
 
 if (process.argv.includes("--satellite-pill"))
   contextBridge.exposeInMainWorld("satelliteBridge", {
+    getZoomFactor: () => webFrame.getZoomFactor(),
     publish: (state) => ipcRenderer.send(SatelliteChannels.SATELLITE_PUBLISH, state),
     hideMain: () => ipcRenderer.send(SatelliteChannels.SATELLITE_HIDE_MAIN),
-    onNavigate: (listener) => {
-      const wrapped = (_event: Electron.IpcRendererEvent, target: SatelliteNavigation) =>
-        listener(target);
-      ipcRenderer.on(SatelliteChannels.SATELLITE_NAVIGATE, wrapped);
-      return () => ipcRenderer.removeListener(SatelliteChannels.SATELLITE_NAVIGATE, wrapped);
+    openMain: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_OPEN),
+    showMenu: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_MENU),
+    movePill: (direction) => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_MOVE, direction),
+    beginPillDrag: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_DRAG_BEGIN),
+    updatePillDrag: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_DRAG_UPDATE),
+    endPillDrag: () => ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_DRAG_END),
+    finishTransition: (transitionId) =>
+      ipcRenderer.send(SatelliteChannels.SATELLITE_TRANSITION_FINISHED, transitionId),
+    setPinned: (pinned) => ipcRenderer.send(SatelliteChannels.SATELLITE_SET_PINNED, pinned),
+    onShellState: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, state: SatelliteShellState) =>
+        listener(state);
+      ipcRenderer.on(SatelliteChannels.SATELLITE_SHELL_STATE, wrapped);
+      ipcRenderer.send(SatelliteChannels.SATELLITE_PILL_READY);
+      return () => ipcRenderer.removeListener(SatelliteChannels.SATELLITE_SHELL_STATE, wrapped);
+    },
+    onPillState: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, state: SatellitePillState) =>
+        listener(state);
+      ipcRenderer.on(SatelliteChannels.SATELLITE_PILL_STATE, wrapped);
+      return () => ipcRenderer.removeListener(SatelliteChannels.SATELLITE_PILL_STATE, wrapped);
     },
   } satisfies SatelliteBridge);
 
@@ -48,7 +66,7 @@ exposeClerkBridge({ passkeys: true });
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Electron exposes the client platform in its sandboxed preload process.
 const clientPlatform = process.platform;
 
-if (clientPlatform === "darwin") {
+if (clientPlatform === "darwin" && !process.argv.includes("--satellite-pill")) {
   // Native window buttons do not scale with Chromium zoom. Keep their reserved
   // space in native points, including when a zoomed page is reloaded.
   const syncWindowControlInset = () => {

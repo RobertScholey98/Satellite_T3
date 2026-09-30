@@ -201,7 +201,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       {window.satelliteBridge ? (
         <SidebarUtilityItem
           icon={<Minimize2Icon />}
-          label="Hide to Satellite pill"
+          label="Collapse to Satellite pill"
           onClick={() => window.satelliteBridge?.hideMain()}
         />
       ) : null}

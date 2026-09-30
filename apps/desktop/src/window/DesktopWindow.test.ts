@@ -17,6 +17,12 @@ import * as Electron from "electron";
 import * as NodeEvents from "node:events";
 import { vi } from "vite-plus/test";
 
+vi.mock("../satellite/SatellitePill.ts", () => ({
+  installSatellitePill: vi.fn(),
+  isSatelliteWindow: () => false,
+  expandSatelliteWindow: vi.fn(),
+}));
+
 vi.mock("electron", async (importOriginal) => ({
   ...(await importOriginal<typeof import("electron")>()),
   session: {
@@ -55,6 +61,7 @@ import {
 import * as DesktopServerExposure from "../backend/DesktopServerExposure.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 import * as PreviewManager from "../preview/Manager.ts";
+import * as SatellitePill from "../satellite/SatellitePill.ts";
 
 const environmentInput = {
   dirname: "/repo/apps/desktop/dist-electron",
@@ -194,23 +201,26 @@ const electronThemeLayer = Layer.succeed(ElectronTheme.ElectronTheme, {
   onUpdated: () => Effect.void,
 } satisfies ElectronTheme.ElectronTheme["Service"]);
 
-const desktopEnvironmentLayer = DesktopEnvironment.layer(environmentInput).pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      NodeServices.layer,
-      DesktopConfig.layerTest({
-        T3CODE_PORT: "3773",
-        VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
-      }),
+const makeDesktopEnvironmentLayer = (platform: NodeJS.Platform = environmentInput.platform) =>
+  DesktopEnvironment.layer({ ...environmentInput, platform }).pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        DesktopConfig.layerTest({
+          T3CODE_PORT: "3773",
+          VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
+        }),
+      ),
     ),
-  ),
-);
+  );
+const desktopEnvironmentLayer = makeDesktopEnvironmentLayer();
 
 const desktopWindowBoundsEquivalence = Schema.toEquivalence(
   DesktopAppSettings.DesktopWindowBoundsSchema,
 );
 
 function makeTestLayer(input: {
+  readonly platform?: NodeJS.Platform;
   readonly window: Electron.BrowserWindow;
   readonly createCount: Ref.Ref<number>;
   readonly mainWindow: Ref.Ref<Option.Option<Electron.BrowserWindow>>;
@@ -286,7 +296,7 @@ function makeTestLayer(input: {
     Layer.provide(
       Layer.mergeAll(
         desktopAssetsLayer,
-        desktopEnvironmentLayer,
+        input.platform ? makeDesktopEnvironmentLayer(input.platform) : desktopEnvironmentLayer,
         desktopAppSettingsLayer,
         desktopClientSettingsLayer,
         desktopServerExposureLayer,
@@ -831,6 +841,92 @@ describe("DesktopWindow", () => {
       }).pipe(Effect.provide(layer));
     }),
   );
+
+  it.effect(
+    "Satellite boots into its pill without restoring a maximized workspace or persisting pill bounds",
+    () =>
+      Effect.gen(function* () {
+        vi.stubEnv("T3CODE_SATELLITE_PILL", "1");
+        const fakeWindow = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+        const createdWindowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+        const mainWindowBoundsUpdates: DesktopAppSettings.DesktopWindowBounds[] = [];
+        const onReveal = vi.fn();
+        const layer = makeTestLayer({
+          platform: "win32",
+          window: fakeWindow.window,
+          createCount,
+          mainWindow,
+          createdWindowOptions,
+          mainWindowBoundsUpdates,
+          onReveal,
+          desktopSettings: {
+            ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+            mainWindowMaximized: true,
+          },
+        });
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+          fakeWindow.windowListeners.get("ready-to-show")?.();
+          yield* desktopWindow.flushMainWindowBounds;
+          assert.equal(onReveal.mock.calls.length, 0);
+          assert.equal(fakeWindow.maximize.mock.calls.length, 0);
+          assert.deepEqual(mainWindowBoundsUpdates, []);
+          assert.equal(createdWindowOptions[0]?.skipTaskbar, true);
+          assert.equal(createdWindowOptions[0]?.transparent, true);
+          assert.equal(createdWindowOptions[0]?.frame, false);
+          assert.equal(createdWindowOptions[0]?.resizable, false);
+          assert.equal(fakeWindow.openDevTools.mock.calls.length, 0);
+          assert.deepEqual(fakeWindow.setBackgroundThrottling.mock.calls, [[false]]);
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+  );
+
+  for (const platform of ["darwin", "linux"] as const) {
+    it.effect(`keeps the normal desktop on ${platform} when the Satellite flag is present`, () =>
+      Effect.gen(function* () {
+        vi.stubEnv("T3CODE_SATELLITE_PILL", "1");
+        const installCount = vi.mocked(SatellitePill.installSatellitePill).mock.calls.length;
+        const fakeWindow = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+        const createdWindowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+        const mainWindowBoundsUpdates: DesktopAppSettings.DesktopWindowBounds[] = [];
+        const layer = makeTestLayer({
+          platform,
+          window: fakeWindow.window,
+          createCount,
+          mainWindow,
+          createdWindowOptions,
+          mainWindowBoundsUpdates,
+          desktopSettings: {
+            ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+            mainWindowMaximized: true,
+          },
+        });
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+          fakeWindow.windowListeners.get("ready-to-show")?.();
+          yield* desktopWindow.flushMainWindowBounds;
+          assert.equal(
+            vi.mocked(SatellitePill.installSatellitePill).mock.calls.length,
+            installCount,
+          );
+          assert.isUndefined(createdWindowOptions[0]?.skipTaskbar);
+          assert.isUndefined(createdWindowOptions[0]?.transparent);
+          assert.isUndefined(createdWindowOptions[0]?.webPreferences?.additionalArguments);
+          assert.equal(createdWindowOptions[0]?.minWidth, 840);
+          assert.equal(createdWindowOptions[0]?.minHeight, 620);
+          assert.equal(fakeWindow.maximize.mock.calls.length, 1);
+          assert.deepEqual(mainWindowBoundsUpdates, [{ x: 0, y: 0, width: 1100, height: 780 }]);
+          assert.deepEqual(fakeWindow.setBackgroundThrottling.mock.calls, [[true]]);
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+    );
+  }
 
   it.effect("restores the persisted maximized state", () =>
     Effect.gen(function* () {

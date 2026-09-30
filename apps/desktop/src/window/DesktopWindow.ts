@@ -30,7 +30,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
-import { installSatellitePill, isSatellitePillWindow } from "../satellite/SatellitePill.ts";
+import { installSatellitePill, isSatelliteWindow } from "../satellite/SatellitePill.ts";
 
 const TITLEBAR_HEIGHT = 40;
 // Matches --workspace-topbar-height in apps/web/src/index.css. Native macOS
@@ -282,7 +282,11 @@ function syncWindowAppearance(
   platform: NodeJS.Platform,
 ): Effect.Effect<void> {
   return Effect.sync(() => {
-    if (window.isDestroyed() || isSatellitePillWindow(window)) {
+    if (window.isDestroyed()) {
+      return;
+    }
+    if (isSatelliteWindow(window)) {
+      window.setBackgroundColor("#00000000");
       return;
     }
 
@@ -361,14 +365,7 @@ export const make = Effect.gen(function* () {
     );
 
   const currentMainWindow = electronWindow.currentMainOrFirst.pipe(Effect.flatMap(withoutSplash));
-  const focusedMainWindow = electronWindow.focusedMainOrFirst.pipe(
-    Effect.flatMap(withoutSplash),
-    Effect.flatMap((window) =>
-      Option.isSome(window) && isSatellitePillWindow(window.value)
-        ? electronWindow.main
-        : Effect.succeed(window),
-    ),
-  );
+  const focusedMainWindow = electronWindow.focusedMainOrFirst.pipe(Effect.flatMap(withoutSplash));
 
   const createWindow = Effect.fn("desktop.window.createWindow")(function* (): Effect.fn.Return<
     Electron.BrowserWindow,
@@ -402,22 +399,34 @@ export const make = Effect.gen(function* () {
     if (persistedBounds !== null && initialBounds === DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE) {
       yield* logWindowWarning("saved main window bounds could not be restored; using defaults");
     }
+    const satellite = process.env.T3CODE_SATELLITE_PILL === "1" && environment.platform === "win32";
     const window = yield* electronWindow.create({
       ...initialBounds,
-      minWidth: 840,
-      minHeight: 620,
+      minWidth: satellite ? 0 : 840,
+      minHeight: satellite ? 0 : 620,
       show: false,
       autoHideMenuBar: true,
       ...(environment.platform === "darwin" ? { disableAutoHideCursor: true } : {}),
-      backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
+      backgroundColor: satellite
+        ? "#00000000"
+        : getInitialWindowBackgroundColor(shouldUseDarkColors),
       ...iconOption,
       title: environment.displayName,
-      ...getWindowTitleBarOptions(shouldUseDarkColors, environment.platform),
+      ...(satellite
+        ? {
+            frame: false,
+            thickFrame: false,
+            transparent: true,
+            resizable: false,
+            skipTaskbar: true,
+            alwaysOnTop: true,
+            maximizable: false,
+            fullscreenable: false,
+          }
+        : getWindowTitleBarOptions(shouldUseDarkColors, environment.platform)),
       webPreferences: {
         preload: environment.preloadPath,
-        ...(process.env.T3CODE_SATELLITE_PILL === "1"
-          ? { additionalArguments: ["--satellite-pill"] }
-          : {}),
+        ...(satellite ? { additionalArguments: ["--satellite-pill"] } : {}),
         // The window boots hidden (show: false until ready-to-show), and
         // Chromium throttles hidden renderers: timers coalesce and rAF stops,
         // which stalls first paint. Boot unthrottled; the first-reveal trigger
@@ -431,13 +440,9 @@ export const make = Effect.gen(function* () {
       },
     });
 
-    if (process.env.T3CODE_SATELLITE_PILL === "1") {
+    if (satellite) {
       yield* Effect.sync(() =>
         installSatellitePill(window, {
-          preloadPath: environment.preloadPath.replace(
-            /preload\.cjs$/,
-            "satellite-pill-preload.cjs",
-          ),
           revealMain: () => {
             void runPromise(electronWindow.reveal(window));
           },
@@ -453,7 +458,7 @@ export const make = Effect.gen(function* () {
     let pendingBoundsPersistFiber: Fiber.Fiber<void, never> | undefined;
     let boundsPersistenceEnabled = persistedBounds === null || restoredPersistedBounds;
     const readPersistableBounds = (): DesktopAppSettings.DesktopWindowBounds | null => {
-      if (window.isDestroyed()) {
+      if (window.isDestroyed() || satellite) {
         return null;
       }
       const bounds =
@@ -490,6 +495,7 @@ export const make = Effect.gen(function* () {
       return pendingBoundsPersistFiber;
     };
     const scheduleBoundsPersist = () => {
+      if (satellite) return;
       if (!boundsPersistenceEnabled) {
         const currentBounds = readPersistableBounds();
         if (
@@ -844,7 +850,12 @@ export const make = Effect.gen(function* () {
       // Boot is done; hand the window back to normal hidden-window throttling
       // (see the backgroundThrottling comment on the create options above).
       if (!window.isDestroyed()) {
-        window.webContents.setBackgroundThrottling(process.env.T3CODE_SATELLITE_PILL !== "1");
+        window.webContents.setBackgroundThrottling(!satellite);
+      }
+      // The Satellite renderer announces when the pill is mounted and ready to show.
+      if (satellite) {
+        void runPromise(dismissConnectingSplash);
+        return;
       }
       // Reveal the real window, then close the connecting splash (if any) so the
       // two don't overlap and there's no blank gap between them.
@@ -855,7 +866,7 @@ export const make = Effect.gen(function* () {
     });
 
     loadApplication();
-    if (environment.isDevelopment && process.env.T3CODE_SATELLITE_PILL !== "1") {
+    if (environment.isDevelopment && !satellite) {
       window.webContents.openDevTools({ mode: "detach" });
     }
 
@@ -921,7 +932,7 @@ export const make = Effect.gen(function* () {
       frame: false,
       center: true,
       show: false,
-      skipTaskbar: false,
+      skipTaskbar: process.env.T3CODE_SATELLITE_PILL === "1" && environment.platform === "win32",
       backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
       title: environment.displayName,
       webPreferences: {

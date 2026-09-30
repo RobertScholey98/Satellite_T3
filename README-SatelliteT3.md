@@ -20,11 +20,13 @@ Existing supported provider logins are used by upstream without copying credenti
 
 ## Use
 
-Open a project, select a conversation, and submit a task. Use **Hide to Satellite pill** or
-close the main window to leave the conversation running. Click the pill to return
-to that conversation. Its menu provides **Open conversation** and **Quit SatelliteT3**.
-Use the grip to drag the pill, or focus it and press Alt+arrow keys. Its position
-survives relaunch and is kept on screen. The system tray also reopens the app.
+SatelliteT3 starts as a pill and stays out of the taskbar. Click the pill to expand
+the workspace from its position, then open a project, select a conversation, and
+submit a task. Closing, minimizing, pressing Escape, or clicking outside collapses
+the workspace while the conversation keeps running. Use **Keep workspace open** to
+prevent collapse when clicking outside. Drag anywhere on the pill, or focus it
+and press Alt+arrow keys; its position survives relaunch and is kept on screen.
+The pill menu and system tray can open the workspace or **Quit SatelliteT3**.
 
 Blue means working, amber means input or approval is needed, green means the latest
 turn explicitly completed, red means an error, and gray means idle or unavailable.
@@ -72,5 +74,6 @@ node scripts/satellite-smoke.mjs
 ```
 
 It uses separate `.t3/verification` data, runs no provider turns, and checks native
-window properties, hidden-window updates, reopen, quit, and position restoration.
-Screenshots are saved below `.t3/verification/native-smoke/artifacts`.
+window clipping, expansion/collapse motion, zoom, pinning, quit, and position
+restoration. Screenshots, video, and frame measurements are saved below
+`.t3/verification/native-smoke/artifacts`.
