@@ -55,6 +55,12 @@ import { BrowserDocumentFrame } from "../files/BrowserDocumentFrame";
 import ChatMarkdown from "../ChatMarkdown";
 import { documentsAtStep } from "./work.logic";
 import { unwrapWorkResult, workError } from "./commands";
+import {
+  readOpenWorkSelection,
+  readOpenWorkSnapshot,
+  saveOpenWorkSelection,
+  saveOpenWorkSnapshot,
+} from "./openWorkViewState";
 import type { OpenWorkDiffSelection } from "./OpenWorkDiffPanel";
 
 const OpenWorkDiffPanel = lazy(() =>
@@ -65,7 +71,9 @@ export function OpenWorkView({
   target,
   onSelectWorktree,
   onViewBoard,
+  onSyncChange,
 }: {
+  onSyncChange?: (syncing: boolean) => void;
   target?: { environmentId?: EnvironmentId; worktreePath?: string };
   onSelectWorktree?: (target: { environmentId: EnvironmentId; worktreePath?: string }) => void;
   onViewBoard?: (target: {
@@ -75,45 +83,71 @@ export function OpenWorkView({
     issueId?: string;
   }) => void;
 }) {
+  const [restoredSelection, setRestoredSelection] = useState(readOpenWorkSelection);
   const { environments } = useEnvironments();
   const available = environments.filter(
     (environment) => environment.serverConfig?.environment.capabilities.openWork === true,
   );
   const [environmentKey, setEnvironmentKey] = useState<EnvironmentId | null>(
-    target?.environmentId ?? null,
+    target?.environmentId ?? restoredSelection?.environmentId ?? null,
   );
-  const environment = environmentKey
-    ? available.find((candidate) => candidate.environmentId === environmentKey)
+  const requestedEnvironment = target?.environmentId ?? environmentKey;
+  const environment = requestedEnvironment
+    ? available.find((candidate) => candidate.environmentId === requestedEnvironment)
     : available[0];
   const environmentId = environment?.environmentId;
   const requestedWorktreePath =
     !target?.environmentId || target.environmentId === environmentId
-      ? target?.worktreePath
+      ? (target?.worktreePath ??
+        (restoredSelection?.environmentId === environmentId
+          ? restoredSelection?.worktreePath
+          : undefined))
       : undefined;
   const connected = environment?.connection.phase === "connected";
   const activeEnvironment = useRef(environmentId);
   useLayoutEffect(() => {
     activeEnvironment.current = environmentId;
   }, [environmentId]);
-  const [worktrees, setWorktrees] = useState<readonly OpenWorktreeSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const initial = readOpenWorkSnapshot(environmentId, requestedWorktreePath);
+  const [stateEnvironment, setStateEnvironment] = useState(environmentId);
+  const [worktrees, setWorktrees] = useState<readonly OpenWorktreeSummary[]>(
+    initial?.worktrees ?? [],
+  );
+  const [selectedId, setSelectedId] = useState<string | null>(initial?.selectedId ?? null);
   const [loaded, setLoaded] = useState<{
     environmentId: EnvironmentId;
     timeline: OpenWorkTimelineResult;
-  } | null>(null);
+  } | null>(
+    initial?.timeline && environmentId ? { environmentId, timeline: initial.timeline } : null,
+  );
   const timeline =
-    loaded && loaded.environmentId === environmentId && loaded.timeline.worktree.id === selectedId
+    loaded &&
+    loaded.environmentId === environmentId &&
+    loaded.timeline.worktree.id === selectedId &&
+    (!requestedWorktreePath ||
+      normalizeProjectPathForComparison(loaded.timeline.worktree.path) ===
+        normalizeProjectPathForComparison(requestedWorktreePath))
       ? loaded.timeline
       : null;
-  const loadedEnvironmentId = loaded?.environmentId;
   const hasIssueBoards = environment?.serverConfig?.environment.capabilities.issueBoards;
-  const [favorites, setFavorites] = useState<readonly OpenWorkDocument[]>([]);
-  const [attempts, setAttempts] = useState<readonly IssueAttempt[]>([]);
+  const [favorites, setFavorites] = useState<readonly OpenWorkDocument[]>(initial?.favorites ?? []);
+  const [attempts, setAttempts] = useState<readonly IssueAttempt[]>(initial?.attempts ?? []);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [documentSyncing, setDocumentSyncing] = useState(false);
+  const [boardSyncing, setBoardSyncing] = useState(false);
+  useEffect(() => {
+    onSyncChange?.(syncing || boardSyncing || documentSyncing);
+    return () => onSyncChange?.(false);
+  }, [syncing, boardSyncing, documentSyncing, onSyncChange]);
   const [finding, setFinding] = useState(false);
-  const [board, setBoard] = useState<{ attemptId: string; view: IssueBoardView } | null>(null);
-  const [diffSelection, setDiffSelection] = useState<OpenWorkDiffSelection | null>(null);
+  const [board, setBoard] = useState<{ attemptId: string; view: IssueBoardView } | null>(
+    initial?.board ?? null,
+  );
+  const [diffSelection, setDiffSelection] = useState<OpenWorkDiffSelection | null>(
+    initial?.diff ?? null,
+  );
   const [revision, setRevision] = useState(0);
   const diffTrigger = useRef<HTMLButtonElement | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
@@ -126,14 +160,27 @@ export function OpenWorkView({
     });
   };
   const [opened, setOpened] = useState<{
+    documentId: string;
     title: string;
     format: string;
     content: string;
     truncated: boolean;
     live: boolean;
     cwd: string;
-  } | null>(null);
+  } | null>(initial?.opened ?? null);
   const generation = useRef(0);
+  const documentReadGeneration = useRef(0);
+  const openedDocumentId = useRef(opened?.documentId);
+  useLayoutEffect(() => {
+    openedDocumentId.current = opened?.documentId;
+  }, [opened?.documentId]);
+  const dismissDocument = useCallback(() => {
+    openedDocumentId.current = undefined;
+    documentReadGeneration.current++;
+    setBusy(false);
+    setDocumentSyncing(false);
+    setOpened(null);
+  }, [setBusy, setDocumentSyncing, setOpened]);
   const list = useAtomCommand(openWorkEnvironment.list, { reportFailure: false });
   const getTimeline = useAtomCommand(openWorkEnvironment.timeline, { reportFailure: false });
   const getFavorites = useAtomCommand(openWorkEnvironment.favorites, { reportFailure: false });
@@ -167,11 +214,69 @@ export function OpenWorkView({
     (item) => item.issue.ref.id === linkedAttempt?.link.issue.id,
   );
   const boardColumn = issueView?.columns.find((column) => column.id === boardItem?.columnId);
+  const openDocument = async (document: OpenWorkDocument, refreshing = false) => {
+    if (!environmentId || !connected || !document.available) return;
+    if (refreshing && openedDocumentId.current !== document.id) return;
+    setDocumentSyncing(refreshing);
+    setBusy(!refreshing);
+    if (!refreshing) openedDocumentId.current = document.id;
+    const documentRead = ++documentReadGeneration.current;
+    const current = generation.current;
+    const isCurrent = () =>
+      documentRead === documentReadGeneration.current &&
+      current === generation.current &&
+      openedDocumentId.current === document.id;
+    setError(null);
+    const cwd =
+      worktrees.find((worktree) => worktree.id === document.worktreeId)?.path ??
+      timeline?.worktree.path ??
+      "";
+    try {
+      if (document.source.kind === "linked") {
+        const result = unwrapWorkResult(
+          await readLinked({ environmentId, input: { documentId: document.id } }),
+        );
+        if (isCurrent())
+          setOpened({ documentId: document.id, title: document.title, ...result, live: true, cwd });
+      } else {
+        const result = unwrapWorkResult(
+          await readPublished({
+            environmentId,
+            input: {
+              documentId: document.source.documentId,
+              revisionId: document.source.revisionId,
+            },
+          }),
+        );
+        if (isCurrent())
+          setOpened({
+            documentId: document.id,
+            title: document.title,
+            format: result.revision.format,
+            content: result.content,
+            truncated: false,
+            live: false,
+            cwd,
+          });
+      }
+    } catch (failure) {
+      if (isCurrent()) setError(workError(failure));
+    } finally {
+      if (documentRead === documentReadGeneration.current) {
+        if (refreshing) setDocumentSyncing(false);
+        else setBusy(false);
+      }
+    }
+  };
+  const refreshOpened = useEffectEvent((documents: readonly OpenWorkDocument[]) => {
+    const document = documents.find((candidate) => candidate.id === opened?.documentId);
+    if (document) void openDocument(document, true);
+  });
   const refresh = useCallback(
     async (worktreeId?: string) => {
       if (!environmentId || !connected || activeEnvironment.current !== environmentId) return;
       const current = ++generation.current;
-      setBusy(true);
+      setSyncing(true);
       setError(null);
       try {
         const [inventory, pinned, currentAttempts] = await Promise.all([
@@ -187,8 +292,7 @@ export function OpenWorkView({
         setWorktrees(inventory.worktrees);
         setFavorites(pinned.documents);
         if (currentAttempts) setAttempts(currentAttempts);
-        const preferredId =
-          worktreeId ?? (loadedEnvironmentId === environmentId ? selectedId : null);
+        const preferredId = worktreeId ?? (requestedWorktreePath ? null : selectedId);
         const id = preferredId
           ? inventory.worktrees.find((worktree) => worktree.id === preferredId)?.id
           : requestedWorktreePath
@@ -207,6 +311,7 @@ export function OpenWorkView({
             setLoaded({ environmentId, timeline: value });
             setSelectedId(id);
             setRevision((value) => value + 1);
+            refreshOpened([...value.documents, ...pinned.documents]);
           }
         } else {
           setLoaded(null);
@@ -215,7 +320,7 @@ export function OpenWorkView({
       } catch (failure) {
         if (current === generation.current) setError(workError(failure));
       } finally {
-        if (current === generation.current) setBusy(false);
+        if (current === generation.current) setSyncing(false);
       }
     },
     [
@@ -226,25 +331,75 @@ export function OpenWorkView({
       getFavorites,
       selectedId,
       requestedWorktreePath,
-      loadedEnvironmentId,
       hasIssueBoards,
       listAttempts,
     ],
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
     generation.current++;
-    setWorktrees([]);
-    setLoaded(null);
-    setFavorites([]);
-    setSelectedId(null);
-    setAttempts([]);
-    setOpened(null);
+    const snapshot = readOpenWorkSnapshot(environmentId, requestedWorktreePath);
+    setStateEnvironment(environmentId);
+    setWorktrees(snapshot?.worktrees ?? []);
+    setLoaded(
+      snapshot?.timeline && environmentId ? { environmentId, timeline: snapshot.timeline } : null,
+    );
+    setFavorites(snapshot?.favorites ?? []);
+    setSelectedId(snapshot?.selectedId ?? null);
+    setAttempts(snapshot?.attempts ?? []);
+    setOpened(snapshot?.opened ?? null);
     setFinding(false);
     setError(null);
     setBusy(false);
-    setBoard(null);
-    setDiffSelection(null);
+    documentReadGeneration.current++;
+    setDocumentSyncing(false);
+    setSyncing(false);
+    setBoard(snapshot?.board ?? null);
+    setDiffSelection(snapshot?.diff ?? null);
   }, [environmentId]);
+  useEffect(() => {
+    if (!environmentId || stateEnvironment !== environmentId) return;
+    saveOpenWorkSnapshot(environmentId, {
+      worktrees,
+      selectedId,
+      timeline,
+      favorites,
+      attempts,
+      diff: diffSelection,
+      opened,
+      board,
+    });
+  }, [
+    environmentId,
+    stateEnvironment,
+    worktrees,
+    selectedId,
+    timeline,
+    favorites,
+    attempts,
+    diffSelection,
+    opened,
+    board,
+  ]);
+  const selectedPath = worktrees.find((worktree) => worktree.id === selectedId)?.path;
+  const reportSelection = useEffectEvent((id: EnvironmentId, path: string) => {
+    if (target?.environmentId && target.environmentId !== id) return;
+    if (
+      target?.worktreePath &&
+      normalizeProjectPathForComparison(target.worktreePath) !==
+        normalizeProjectPathForComparison(path)
+    )
+      return;
+    if (target?.environmentId !== id || target?.worktreePath !== path)
+      onSelectWorktree?.({ environmentId: id, worktreePath: path });
+  });
+  useEffect(() => {
+    if (!environmentId || stateEnvironment !== environmentId) return;
+    const path = selectedPath;
+    if (path) {
+      saveOpenWorkSelection(environmentId, path);
+      reportSelection(environmentId, path);
+    }
+  }, [environmentId, stateEnvironment, selectedPath]);
 
   useEffect(() => {
     if (target?.environmentId) setEnvironmentKey(target.environmentId);
@@ -263,12 +418,22 @@ export function OpenWorkView({
       setSelectedId(selected?.id ?? null);
       setDiffSelection(null);
       setLoaded(null);
+      dismissDocument();
       if (selected) void refresh(selected.id);
     }
-  }, [environmentId, requestedWorktreePath, worktrees, selectedId, connected, refresh]);
+  }, [
+    environmentId,
+    requestedWorktreePath,
+    worktrees,
+    selectedId,
+    connected,
+    refresh,
+    dismissDocument,
+  ]);
   useEffect(() => {
     if (!linkedAttempt || !sourceConnected) return;
     let current = true;
+    setBoardSyncing(true);
     const { link } = linkedAttempt;
     void openBoard({
       environmentId: link.sourceEnvironmentId,
@@ -279,10 +444,14 @@ export function OpenWorkView({
         if (current) setBoard({ attemptId: link.attemptId, view });
       })
       .catch(() => {
-        if (current) setBoard(null);
+        // Keep the last board status visible while its source is unavailable.
+      })
+      .finally(() => {
+        if (current) setBoardSyncing(false);
       });
     return () => {
       current = false;
+      setBoardSyncing(false);
     };
   }, [
     linkedAttempt?.link.attemptId,
@@ -303,55 +472,13 @@ export function OpenWorkView({
     };
   }, [environmentId, connected]);
   useLiveRefresh(
-    environmentId && connected && !busy && !finding && !opened
+    environmentId && connected && !busy && !syncing && !documentSyncing && !finding
       ? () => {
           void refresh();
         }
       : null,
     { key: `open-work:${environmentId ?? "none"}:${selectedId ?? "none"}` },
   );
-  const openDocument = async (document: OpenWorkDocument) => {
-    if (!environmentId || !connected || !document.available) return;
-    setBusy(true);
-    setError(null);
-    const current = generation.current;
-    const cwd =
-      worktrees.find((worktree) => worktree.id === document.worktreeId)?.path ??
-      timeline?.worktree.path ??
-      "";
-    try {
-      if (document.source.kind === "linked") {
-        const result = unwrapWorkResult(
-          await readLinked({ environmentId, input: { documentId: document.id } }),
-        );
-        if (current === generation.current)
-          setOpened({ title: document.title, ...result, live: true, cwd });
-      } else {
-        const result = unwrapWorkResult(
-          await readPublished({
-            environmentId,
-            input: {
-              documentId: document.source.documentId,
-              revisionId: document.source.revisionId,
-            },
-          }),
-        );
-        if (current === generation.current)
-          setOpened({
-            title: document.title,
-            format: result.revision.format,
-            content: result.content,
-            truncated: false,
-            live: false,
-            cwd,
-          });
-      }
-    } catch (failure) {
-      if (current === generation.current) setError(workError(failure));
-    } finally {
-      if (current === generation.current) setBusy(false);
-    }
-  };
   const documentRow = (document: OpenWorkDocument) => (
     <div key={document.id} className="group flex items-center gap-2 py-2">
       <FileTextIcon className="size-4 shrink-0 text-muted-foreground" />
@@ -615,11 +742,14 @@ export function OpenWorkView({
                     generation.current++;
                     setSelectedId(value);
                     setDiffSelection(null);
+                    dismissDocument();
                     setLoaded(null);
                     void refresh(value);
                     const selected = worktrees.find((worktree) => worktree.id === value);
-                    if (selected && environmentId)
+                    if (selected && environmentId) {
+                      setRestoredSelection({ environmentId, worktreePath: selected.path });
                       onSelectWorktree?.({ environmentId, worktreePath: selected.path });
+                    }
                   }}
                 >
                   {worktrees.map((worktree) => (
@@ -705,7 +835,7 @@ export function OpenWorkView({
             Open work is unavailable. Connect an environment that supports worktree history.
           </p>
         ) : null}
-        {busy ? (
+        {busy || (syncing && !timeline) ? (
           <p role="status" className="mb-3 text-xs text-muted-foreground">
             Loading worktree history…
           </p>
@@ -936,11 +1066,17 @@ export function OpenWorkView({
             }}
           />
         ) : null}
-        {opened ? (
+        {opened && stateEnvironment === environmentId && (!requestedWorktreePath || timeline) ? (
           <Dialog
             open
             onOpenChange={(open) => {
-              if (!open) setOpened(null);
+              if (!open) {
+                openedDocumentId.current = undefined;
+                documentReadGeneration.current++;
+                setBusy(false);
+                setDocumentSyncing(false);
+                setOpened(null);
+              }
             }}
           >
             <DialogPopup className="h-[85dvh] max-w-5xl">

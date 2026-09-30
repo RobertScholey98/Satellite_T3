@@ -109,7 +109,9 @@ vi.mock("./IssueReadyColumnsPicker", () => ({
   ),
 }));
 
+import { createMemoryStorage } from "~/lib/storage";
 import { IssuesBoard } from "./IssuesBoard";
+import { clearIssuesSnapshots } from "./issues-view-state";
 
 const environmentId = EnvironmentId.make("test-environment");
 const firstProjectId = ProjectId.make("first-project");
@@ -256,6 +258,8 @@ async function setConnection(phase: "connected" | "disconnected") {
 }
 
 beforeEach(() => {
+  clearIssuesSnapshots();
+  vi.stubGlobal("localStorage", createMemoryStorage());
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   for (const command of Object.values(commands)) command.mockReset();
   onSelectBoard.mockClear();
@@ -320,6 +324,7 @@ describe("project board selection", () => {
       if (hasSavedBoard) restoreSavedBoard();
       await mount();
       const before = boardText();
+      onSelectBoard.mockClear();
       commands.openBoard.mockResolvedValue(AsyncResult.success(boardView(discovered)));
 
       await previewDiscovery();
@@ -499,5 +504,168 @@ describe("project board selection", () => {
       boardId: discovered.id,
     });
     expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+  });
+});
+
+describe("cached issues navigation", () => {
+  it("restores repository-list mode and search after remount", async () => {
+    await mount();
+    await act(async () => {
+      renderer!.root.findByProps({ "aria-label": "Issue list" }).props.onClick();
+    });
+    await act(async () => {
+      renderer!.root
+        .findByProps({ "aria-label": "Search issues" })
+        .props.onChange({ target: { value: "remember this" } });
+    });
+    await act(async () => renderer!.unmount());
+    await mount();
+    expect(renderer!.root.findByProps({ "aria-label": "Issue list" }).props["aria-pressed"]).toBe(
+      true,
+    );
+    expect(renderer!.root.findByProps({ "aria-label": "Search issues" }).props.value).toBe(
+      "remember this",
+    );
+  });
+
+  it("restores cached ticket details while refreshing the selected ticket", async () => {
+    restoreSavedBoard();
+    const issue = boardView(saved).items[0]!.issue;
+    commands.get.mockResolvedValue(
+      AsyncResult.success({ ...issue, body: "Cached ticket description" }),
+    );
+    const target = {
+      environmentId,
+      projectId: firstProjectId,
+      boardId: saved.id,
+      issueId: issue.ref.id,
+    };
+    await mount(target);
+    expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(1);
+    await act(async () => renderer!.unmount());
+    commands.get.mockReturnValue(new Promise(() => {}));
+    await mount(target);
+    expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(1);
+    expect(text(renderer!.root)).not.toContain("Loading full issue details");
+    expect(commands.get).toHaveBeenCalledTimes(2);
+  });
+  it("keeps the saved board visible on remount while discovery refreshes and after a refresh error", async () => {
+    restoreSavedBoard();
+    await mount();
+    expect(boardText()).toContain(saved.title + " issue");
+    await act(async () => renderer!.unmount());
+    const loading =
+      deferred<ReturnType<typeof AsyncResult.success<readonly IssueBoardSummary[]>>>();
+    commands.listBoards.mockReturnValue(loading.promise);
+    await mount();
+    expect(boardText()).toContain(saved.title + " issue");
+    commands.openBoard.mockRejectedValue(new Error("Offline"));
+    await act(async () => loading.resolve(AsyncResult.success([saved])));
+    expect(boardText()).toContain(saved.title + " issue");
+    expect(text(renderer!.root)).toContain("Offline");
+  });
+
+  it("clears an old board immediately when navigating within the same project", async () => {
+    restoreSavedBoard();
+    await mount({ environmentId, projectId: firstProjectId, boardId: saved.id });
+    expect(boardText()).toContain(saved.title + " issue");
+    commands.listBoards.mockReturnValue(new Promise(() => {}));
+    await act(async () => {
+      renderer!.update(
+        <IssuesBoard
+          target={{ environmentId, projectId: firstProjectId, boardId: "another-board" }}
+        />,
+      );
+    });
+    expect(boardText()).toBe("");
+  });
+
+  it("clears the old ticket detail when navigating to another ticket in the same project", async () => {
+    restoreSavedBoard();
+    const view = boardView(saved);
+    const first = view.items[0]!;
+    const second = {
+      ...first,
+      itemId: "second-item",
+      issue: {
+        ...first.issue,
+        ref: { ...first.issue.ref, id: "second-issue", number: 43 },
+        title: "Second ticket",
+      },
+    };
+    commands.openBoard
+      .mockReset()
+      .mockResolvedValue(AsyncResult.success({ ...view, items: [first, second] }));
+    commands.get.mockResolvedValue(
+      AsyncResult.success({ ...first.issue, body: "First description" }),
+    );
+    await mount({
+      environmentId,
+      projectId: firstProjectId,
+      boardId: saved.id,
+      issueId: first.issue.ref.id,
+    });
+    commands.get.mockReturnValue(new Promise(() => {}));
+    await act(async () => {
+      renderer!.update(
+        <IssuesBoard
+          target={{
+            environmentId,
+            projectId: firstProjectId,
+            boardId: saved.id,
+            issueId: second.issue.ref.id,
+          }}
+        />,
+      );
+    });
+    const dialog = renderer!.root.findByProps({ role: "dialog" });
+    expect(text(dialog)).toContain("Second ticket");
+    expect(text(dialog)).toContain("Loading full issue details");
+  });
+
+  it("does not restore a different board's ticket", async () => {
+    restoreSavedBoard();
+    const issue = boardView(saved).items[0]!.issue;
+    commands.get.mockResolvedValue(AsyncResult.success({ ...issue, body: "Cached description" }));
+    await mount({
+      environmentId,
+      projectId: firstProjectId,
+      boardId: saved.id,
+      issueId: issue.ref.id,
+    });
+    await act(async () => renderer!.unmount());
+    commands.listBoards.mockReturnValue(new Promise(() => {}));
+    await mount({ environmentId, projectId: firstProjectId, boardId: "another-board" });
+    expect(boardText()).toBe("");
+    expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+  });
+
+  it("never shows another project's cached board", async () => {
+    restoreSavedBoard();
+    await mount();
+    await act(async () => renderer!.unmount());
+    commands.listBoards.mockReturnValue(new Promise(() => {}));
+    await mount({ environmentId, projectId: secondProjectId });
+    expect(boardText()).toBe("");
+  });
+
+  it("reports syncing until every request finishes and clears the header on unmount", async () => {
+    const discovery =
+      deferred<ReturnType<typeof AsyncResult.success<readonly IssueBoardSummary[]>>>();
+    const issues =
+      deferred<ReturnType<typeof AsyncResult.success<{ issues: never[]; nextCursor: null }>>>();
+    commands.listBoards.mockReturnValue(discovery.promise);
+    commands.list.mockReturnValue(issues.promise);
+    const syncing = vi.fn();
+    await act(async () => {
+      renderer = create(<IssuesBoard onSyncChange={syncing} />);
+    });
+    expect(syncing).toHaveBeenLastCalledWith(true);
+    await act(async () => discovery.resolve(AsyncResult.success([])));
+    expect(syncing).toHaveBeenLastCalledWith(true);
+    await act(async () => issues.resolve(AsyncResult.success({ issues: [], nextCursor: null })));
+    expect(syncing).toHaveBeenLastCalledWith(false);
+    await act(async () => renderer!.unmount());
+    expect(syncing).toHaveBeenLastCalledWith(false);
   });
 });

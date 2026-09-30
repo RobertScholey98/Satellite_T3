@@ -17,7 +17,7 @@ import { CSS } from "@dnd-kit/utilities";
 
 import { useNavigate } from "@tanstack/react-router";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   GripVerticalIcon,
   ListIcon,
@@ -93,6 +93,12 @@ import { IssueReadyColumnsPicker } from "./IssueReadyColumnsPicker";
 import { defaultIssueAttempt, issueCanStart } from "./work.logic";
 
 import { unwrapWorkResult, workError } from "./commands";
+import {
+  readIssuesPreferences,
+  writeIssuesPreferences,
+  readIssuesSnapshot,
+  writeIssuesSnapshot,
+} from "./issues-view-state";
 
 function BoardCard({
   item,
@@ -182,6 +188,8 @@ export function IssuesBoard({
   onViewWork,
   onSelectBoard,
   onDismissIssue,
+  onSelectIssue,
+  onSyncChange,
 }: {
   target?: {
     environmentId?: EnvironmentId;
@@ -196,6 +204,8 @@ export function IssuesBoard({
     boardId?: string;
   }) => void;
   onDismissIssue?: () => void;
+  onSelectIssue?: (issueId: string) => void;
+  onSyncChange?: (syncing: boolean) => void;
 }) {
   const projects = useProjects();
 
@@ -231,29 +241,71 @@ export function IssuesBoard({
   );
   const connected = scopedEnvironment?.connection.phase === "connected";
 
-  const [mode, setMode] = useState<"issues" | "board">("board");
+  const dataKey = scope ? `${scope.environmentId}:${scope.id}` : "";
+  const [initialSnapshot] = useState(() => {
+    const snapshot = readIssuesSnapshot(dataKey);
+    if (!snapshot) return undefined;
+    const matchesBoard = !target?.boardId || snapshot.view?.board.id === target.boardId;
+    const matchesIssue =
+      matchesBoard && (!target?.issueId || snapshot.selected?.issue.ref.id === target.issueId);
+    return {
+      ...snapshot,
+      view: matchesBoard ? snapshot.view : null,
+      selected: matchesIssue ? snapshot.selected : null,
+      detail: matchesIssue ? snapshot.detail : null,
+    };
+  });
+  const [initialPreferences] = useState(() => readIssuesPreferences(dataKey));
+  const [hydratedKey, setHydratedKey] = useState(dataKey);
+  const [mode, setMode] = useState<"issues" | "board">(initialPreferences.mode);
+  const [syncCount, setSyncCount] = useState(0);
+  const syncCallback = useRef(onSyncChange);
+  syncCallback.current = onSyncChange;
+  const mounted = useRef(true);
+  const trackSync = useCallback(async <T,>(request: () => Promise<T>) => {
+    if (mounted.current) setSyncCount((count) => count + 1);
+    try {
+      return await request();
+    } finally {
+      if (mounted.current) setSyncCount((count) => count - 1);
+    }
+  }, []);
+  useEffect(() => {
+    onSyncChange?.(syncCount > 0);
+  }, [onSyncChange, syncCount]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      syncCallback.current?.(false);
+    };
+  }, []);
 
-  const [issueList, setIssueList] = useState<readonly IssueSummary[]>([]);
+  const [issueList, setIssueList] = useState<readonly IssueSummary[]>(
+    initialSnapshot?.issueList ?? [],
+  );
 
-  const [query, setQuery] = useState("");
-  const [issueState, setIssueState] = useState("all");
-  const [issueHost, setIssueHost] = useState("all");
+  const [query, setQuery] = useState(initialPreferences.query);
+  const [issueState, setIssueState] = useState(initialPreferences.issueState);
+  const [issueHost, setIssueHost] = useState(initialPreferences.issueHost);
 
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(initialSnapshot?.nextCursor ?? null);
 
   const detailGeneration = useRef(0);
 
   const listIssues = useAtomCommand(issuesEnvironment.list, { reportFailure: false });
 
-  const [boards, setBoards] = useState<readonly IssueBoardSummary[]>([]);
+  const [boards, setBoards] = useState<readonly IssueBoardSummary[]>(initialSnapshot?.boards ?? []);
   const [projectBoards, setProjectBoards] = useState<Record<string, boolean | undefined>>({});
   const projectMenuGeneration = useRef(0);
 
-  const [view, setView] = useState<IssueBoardView | null>(null);
+  const [view, setView] = useState<IssueBoardView | null>(initialSnapshot?.view ?? null);
 
-  const [selected, setSelected] = useState<IssueBoardItem | null>(null);
+  const [selected, setSelected] = useState<IssueBoardItem | null>(
+    initialSnapshot?.selected ?? null,
+  );
 
-  const [detail, setDetail] = useState<IssueDetail | null>(null);
+  const [detail, setDetail] = useState<IssueDetail | null>(initialSnapshot?.detail ?? null);
 
   const [configuration, setConfiguration] = useState<{
     initial: IssueBoardView | null;
@@ -294,13 +346,15 @@ export function IssuesBoard({
 
       try {
         const result = unwrapWorkResult(
-          await open({
-            environmentId: scope.environmentId,
-            input: {
-              projectId: scope.id,
-              boardId,
-            },
-          }),
+          await trackSync(() =>
+            open({
+              environmentId: scope.environmentId,
+              input: {
+                projectId: scope.id,
+                boardId,
+              },
+            }),
+          ),
         );
 
         if (current === generation.current) {
@@ -313,39 +367,74 @@ export function IssuesBoard({
         if (current === generation.current) setPending(false);
       }
     },
-    [open, scope, connected],
+    [open, scope, connected, trackSync],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     generation.current++;
     scopeGeneration.current++;
     detailGeneration.current++;
-    setView(null);
-    setBoards([]);
-    setIssueList([]);
-    setNextCursor(null);
-    setSelected(null);
-    setDetail(null);
+    const snapshot = readIssuesSnapshot(dataKey);
+    const preferences = readIssuesPreferences(dataKey);
+    const restoredView =
+      snapshot?.view && (!target?.boardId || snapshot.view.board.id === target.boardId)
+        ? snapshot.view
+        : null;
+    const restoredSelected =
+      snapshot?.selected &&
+      (!target?.boardId || restoredView) &&
+      (!target?.issueId || snapshot.selected.issue.ref.id === target.issueId)
+        ? snapshot.selected
+        : null;
+    setView(restoredView);
+    setBoards(snapshot?.boards ?? []);
+    setIssueList(snapshot?.issueList ?? []);
+    setNextCursor(snapshot?.nextCursor ?? null);
+    setSelected(restoredSelected);
+    setDetail(restoredSelected ? (snapshot?.detail ?? null) : null);
+    setMode(preferences.mode);
+    setQuery(preferences.query);
+    setIssueState(preferences.issueState);
+    setIssueHost(preferences.issueHost);
+    setHydratedKey(dataKey);
     setError(null);
     setPending(false);
     setStarting(false);
-  }, [scope?.environmentId, scope?.id]);
+  }, [dataKey]);
+
+  useEffect(() => {
+    if (!dataKey || hydratedKey !== dataKey) return;
+    writeIssuesSnapshot(dataKey, { boards, issueList, nextCursor, view, selected, detail });
+    writeIssuesPreferences(dataKey, { mode, query, issueState, issueHost });
+  }, [
+    dataKey,
+    hydratedKey,
+    boards,
+    issueList,
+    nextCursor,
+    view,
+    selected,
+    detail,
+    mode,
+    query,
+    issueState,
+    issueHost,
+  ]);
 
   useEffect(() => {
     setConfiguration(null);
     if (!scope || !connected) return;
     const current = ++scopeGeneration.current;
 
-    setSelected(null);
     setError(null);
-
-    detailGeneration.current++;
 
     if (!scope) return;
 
     setPending(true);
 
-    void listIssues({ environmentId: scope.environmentId, input: { projectId: scope.id } })
+    void trackSync(() =>
+      listIssues({ environmentId: scope.environmentId, input: { projectId: scope.id } }),
+    )
       .then(unwrapWorkResult)
       .then((result) => {
         if (current === scopeGeneration.current) {
@@ -357,7 +446,9 @@ export function IssuesBoard({
         if (current === scopeGeneration.current) setError(workError(failure));
       });
 
-    void list({ environmentId: scope.environmentId, input: { projectId: scope.id } })
+    void trackSync(() =>
+      list({ environmentId: scope.environmentId, input: { projectId: scope.id } }),
+    )
       .then(unwrapWorkResult)
       .then(async (result) => {
         if (current !== scopeGeneration.current) return;
@@ -370,8 +461,15 @@ export function IssuesBoard({
           (board) =>
             board.mapping !== null && (!activeTarget?.boardId || board.id === activeTarget.boardId),
         );
-        if (requested) await refresh(requested.id);
-        else {
+        if (requested) {
+          if (activeTarget?.boardId !== requested.id || activeTarget?.projectId !== scope.id)
+            onSelectBoard?.({
+              environmentId: scope.environmentId,
+              projectId: scope.id,
+              boardId: requested.id,
+            });
+          await refresh(requested.id);
+        } else {
           setView(null);
           if (activeTarget?.boardId)
             setError(
@@ -392,29 +490,55 @@ export function IssuesBoard({
     };
   }, [list, scope?.environmentId, scope?.id, connected, target?.boardId]);
 
+  useLayoutEffect(() => {
+    if (!target?.boardId || view?.board.id === target.boardId) return;
+    detailGeneration.current++;
+    setView(null);
+    setSelected(null);
+    setDetail(null);
+  }, [target?.boardId]);
+
+  useLayoutEffect(() => {
+    if (!target?.issueId || selected?.issue.ref.id === target.issueId) return;
+    detailGeneration.current++;
+    setSelected(null);
+    setDetail(null);
+  }, [target?.issueId]);
+
   const select = useCallback(
     async (item: IssueBoardItem) => {
-      if (!scope || !connected) return;
+      if (!scope) return;
 
       const current = ++detailGeneration.current;
 
+      const cached = readIssuesSnapshot(dataKey);
       setSelected(item);
-      setDetail(null);
+      if (activeTarget?.issueId !== item.issue.ref.id) onSelectIssue?.(item.issue.ref.id);
+      setDetail(
+        cached?.selected?.issue.ref.id === item.issue.ref.id &&
+          cached.selected.issue.ref.host === item.issue.ref.host &&
+          cached.selected.issue.ref.repository === item.issue.ref.repository
+          ? cached.detail
+          : null,
+      );
       setError(null);
+      if (!connected) return;
 
       try {
         const result = unwrapWorkResult(
-          await get({
-            environmentId: scope.environmentId,
-            input: { projectId: scope.id, issue: item.issue.ref },
-          }),
+          await trackSync(() =>
+            get({
+              environmentId: scope.environmentId,
+              input: { projectId: scope.id, issue: item.issue.ref },
+            }),
+          ),
         );
         if (current === detailGeneration.current) setDetail(result);
       } catch (failure) {
         if (current === detailGeneration.current) setError(workError(failure));
       }
     },
-    [scope, connected, get],
+    [scope, connected, get, dataKey, onSelectIssue, activeTarget?.issueId, trackSync],
   );
 
   useEffect(() => {
@@ -528,10 +652,12 @@ export function IssuesBoard({
       )
         continue;
       const key = `${project.environmentId}:${project.id}`;
-      void list({
-        environmentId: project.environmentId,
-        input: { projectId: project.id, connectedOnly: true },
-      })
+      void trackSync(() =>
+        list({
+          environmentId: project.environmentId,
+          input: { projectId: project.id, connectedOnly: true },
+        }),
+      )
         .then(unwrapWorkResult)
         .then((result) => {
           if (current === projectMenuGeneration.current)
@@ -791,7 +917,7 @@ export function IssuesBoard({
           </EmptyContent>
         </Empty>
       ) : null}
-      {pending ? (
+      {pending && !view && !issueList.length ? (
         <p role="status" className="text-xs text-muted-foreground">
           Updating board…
         </p>
@@ -923,10 +1049,12 @@ export function IssuesBoard({
               onClick={() => {
                 if (!connected) return;
                 const currentScope = scopeGeneration.current;
-                void listIssues({
-                  environmentId: scope.environmentId,
-                  input: { projectId: scope.id, cursor: nextCursor },
-                })
+                void trackSync(() =>
+                  listIssues({
+                    environmentId: scope.environmentId,
+                    input: { projectId: scope.id, cursor: nextCursor },
+                  }),
+                )
                   .then(unwrapWorkResult)
                   .then((result) => {
                     if (currentScope !== scopeGeneration.current) return;
@@ -1020,6 +1148,7 @@ export function IssuesBoard({
       ) : null}
       {scope && connected && configuration ? (
         <BoardConfiguration
+          trackSync={trackSync}
           key={`${scope.environmentId}:${scope.id}`}
           environmentId={scope.environmentId}
           projectId={scope.id}
@@ -1283,6 +1412,7 @@ export function IssuesBoard({
 }
 
 function BoardConfiguration({
+  trackSync,
   environmentId,
   projectId,
   projectTitle,
@@ -1291,6 +1421,7 @@ function BoardConfiguration({
   onClose,
   onConfigured,
 }: {
+  trackSync: <T>(request: () => Promise<T>) => Promise<T>;
   environmentId: EnvironmentId;
   projectId: IssueBoardSummary["projectId"];
   projectTitle: string;
@@ -1337,10 +1468,12 @@ function BoardConfiguration({
 
     try {
       const result = unwrapWorkResult(
-        await open({
-          environmentId,
-          input: { projectId, locator: selectedLocator },
-        }),
+        await trackSync(() =>
+          open({
+            environmentId,
+            input: { projectId, locator: selectedLocator },
+          }),
+        ),
       );
 
       setView(result);

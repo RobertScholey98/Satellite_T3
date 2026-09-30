@@ -6,6 +6,10 @@ Ready for development columns and a destination column for In progress, In PR, a
 **Move to Completed when a pull request is merged** if you want merges to finish
 tickets automatically. You can change these choices later.
 
+Reopening the workspace returns to your last tab and selection. Cached tickets,
+pull requests, and worktree history remain visible while **Syncing** refreshes them.
+If a refresh fails, you can keep viewing the cached content and retry.
+
 Open a ticket to see its details. Tickets in any of your Ready columns offer **Start**.
 Choose the project in the usual new-thread prompt, name the worktree, and send
 your instructions. The ticket moves into progress after the worktree is ready

@@ -158,6 +158,8 @@ import { getSourceControlPresentationForKind } from "~/sourceControlPresentation
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { IssuesBoard } from "~/components/work/IssuesBoard";
 import { OpenWorkView } from "~/components/work/OpenWorkView";
+import { WorkSyncIndicator } from "~/components/work/WorkSyncIndicator";
+import { writeWorkAreaSearch } from "~/components/work/workspaceNavigation";
 
 function getShortcutContext() {
   return {
@@ -368,7 +370,7 @@ export const Route = createFileRoute("/_chat/pull-requests")({
   component: PullRequestsRouteView,
 });
 
-function WorkTabs({ controls }: { controls?: ReactNode }) {
+function WorkTabs({ controls, syncing = false }: { controls?: ReactNode; syncing?: boolean }) {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   return (
@@ -405,6 +407,7 @@ function WorkTabs({ controls }: { controls?: ReactNode }) {
           </button>
         ))}
       </nav>
+      <WorkSyncIndicator syncing={syncing} />
       {controls ? (
         <div
           className="flex h-full shrink-0 items-center [-webkit-app-region:no-drag]"
@@ -420,15 +423,21 @@ function WorkTabs({ controls }: { controls?: ReactNode }) {
 function PullRequestsRouteView() {
   const search = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
+  const [syncing, setSyncing] = useState(false);
+  useEffect(() => writeWorkAreaSearch(search), [search]);
   const boardEnvironmentId = search.boardEnvironmentId ?? search.environmentId;
   const boardProjectId = search.boardProjectId ?? search.projectId;
   const workEnvironmentId = search.workEnvironmentId ?? search.environmentId;
   if (!search.tab || search.tab === "pull-requests") return <PullRequestsContent />;
   return (
     <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none">
-      <WorkTabs />
+      <WorkTabs syncing={syncing} />
       {search.tab === "issues" ? (
         <IssuesBoard
+          onSyncChange={setSyncing}
+          onSelectIssue={(issueId) =>
+            void navigate({ replace: true, search: (current) => ({ ...current, issueId }) })
+          }
           target={{
             ...(boardEnvironmentId ? { environmentId: boardEnvironmentId } : {}),
             ...(boardProjectId ? { projectId: boardProjectId } : {}),
@@ -456,7 +465,14 @@ function PullRequestsRouteView() {
                   ...(target.boardId ? { boardId: target.boardId } : {}),
                 };
                 if (!target.boardId) delete next.boardId;
-                delete next.issueId;
+                const previousEnvironment = current.boardEnvironmentId ?? current.environmentId;
+                const previousProject = current.boardProjectId ?? current.projectId;
+                if (
+                  (previousEnvironment && previousEnvironment !== target.environmentId) ||
+                  (previousProject && previousProject !== target.projectId) ||
+                  (current.boardId && current.boardId !== target.boardId)
+                )
+                  delete next.issueId;
                 return next;
               },
             })
@@ -474,6 +490,7 @@ function PullRequestsRouteView() {
         />
       ) : (
         <OpenWorkView
+          onSyncChange={setSyncing}
           target={{
             ...(workEnvironmentId ? { environmentId: workEnvironmentId } : {}),
             ...(search.worktreePath ? { worktreePath: search.worktreePath } : {}),
@@ -1050,6 +1067,7 @@ function PullRequestsContent() {
   // happens to be theirs: the list, the counts beside its rows, and whatever the panel is
   // showing. The panel owns its own reads, so it is told to redo them rather than reached into.
   const [detailRefreshToken, setDetailRefreshToken] = useState(0);
+  const [detailSyncing, setDetailSyncing] = useState(false);
   // The queries only go pending once the invalidation has come back, so refreshing is tracked
   // from the first moment rather than the second: a button that stays live through the slow half
   // of its own work is a button that gets pressed again, and buys the whole cascade twice.
@@ -2226,7 +2244,16 @@ function PullRequestsContent() {
 
   return (
     <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none">
-      <WorkTabs controls={pullRequestsSupported ? panelToggleControls : null} />
+      <WorkTabs
+        controls={pullRequestsSupported ? panelToggleControls : null}
+        syncing={
+          refreshing ||
+          baselineQuery.isPending ||
+          statsQuery.isPending ||
+          detailSyncing ||
+          (partitionsWanted && (authoredQuery.isPending || reviewingQuery.isPending))
+        }
+      />
       <div className="relative flex min-h-0 flex-1">
         <PullRequestsColumn {...columnProps} />
 
@@ -2281,6 +2308,7 @@ function PullRequestsContent() {
             pullRequestStatusSeeds={listedPullRequestTabStatuses}
           >
             <PullRequestDetailPanel
+              onSyncChange={setDetailSyncing}
               getShortcutContext={getShortcutContext}
               shortcutsEnabled={activePullRequestSurface?.id === renderedPullRequestSurface.id}
               key={renderedPullRequestSurface.id}
