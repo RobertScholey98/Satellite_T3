@@ -3763,25 +3763,33 @@ export default function ChatView(props: ChatViewProps) {
     }
   }, [environmentId, gitStatusCwd, liveIsGitRepo]);
   const isGitRepo = liveIsGitRepo ?? recallCheckoutIsRepo(environmentId, gitStatusCwd) ?? true;
+  const showDraftIdeaToggle =
+    isLocalDraftThread &&
+    draftId !== null &&
+    activeProject !== null &&
+    !issueDraftIntent &&
+    !embeddedDraft;
   // Keep a hidden, off-flow strip mounted for existing threads so the composer
   // can measure whether its relocated controls fit. The visible chrome remains
   // content-driven: Git/environment context or controls that actually fit.
   const mountComposerContextStrip =
-    !isIdea &&
-    shouldShowComposerContextStrip({
-      hasActiveProject: activeProject !== null,
-      isGitRepo,
-      showEnvironmentIndicator: showComposerEnvironmentIndicator,
-      hostsRestingComposerControls: routeKind === "server",
-    });
+    showDraftIdeaToggle ||
+    (!isIdea &&
+      shouldShowComposerContextStrip({
+        hasActiveProject: activeProject !== null,
+        isGitRepo,
+        showEnvironmentIndicator: showComposerEnvironmentIndicator,
+        hostsRestingComposerControls: routeKind === "server",
+      }));
   const showComposerContextStrip =
-    mountComposerContextStrip &&
-    shouldShowComposerContextStrip({
-      hasActiveProject: activeProject !== null,
-      isGitRepo,
-      showEnvironmentIndicator: showComposerEnvironmentIndicator,
-      hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
-    });
+    showDraftIdeaToggle ||
+    (mountComposerContextStrip &&
+      shouldShowComposerContextStrip({
+        hasActiveProject: activeProject !== null,
+        isGitRepo,
+        showEnvironmentIndicator: showComposerEnvironmentIndicator,
+        hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
+      }));
   const terminalShortcutLabelOptions = useMemo(
     () => ({
       context: {
@@ -10272,8 +10280,19 @@ export default function ChatView(props: ChatViewProps) {
                           {mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
+                                ideaToggle={
+                                  showDraftIdeaToggle && draftId ? (
+                                    <DraftIdeaToggle
+                                      draftId={draftId}
+                                      disabled={isSendBusy}
+                                      onSelectIdea={() => setMultipleModelSelections(null)}
+                                    />
+                                  ) : null
+                                }
                                 forceNewWorktree={
-                                  issueDraftIntent !== undefined || multipleModelSelections !== null
+                                  !isIdea &&
+                                  (issueDraftIntent !== undefined ||
+                                    multipleModelSelections !== null)
                                 }
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}
@@ -10315,15 +10334,6 @@ export default function ChatView(props: ChatViewProps) {
                         </div>
                       </div>
                     </ComposerSurface.Shell>
-                    {isLocalDraftThread && draftId && !issueDraftIntent && !embeddedDraft ? (
-                      <div className="mt-2 flex justify-end px-3">
-                        <DraftIdeaToggle
-                          draftId={draftId}
-                          disabled={isSendBusy}
-                          onSelectIdea={() => setMultipleModelSelections(null)}
-                        />
-                      </div>
-                    ) : null}
                     <div
                       aria-hidden
                       className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"

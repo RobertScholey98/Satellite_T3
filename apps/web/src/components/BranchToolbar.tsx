@@ -5,10 +5,12 @@ import {
   FolderGit2Icon,
   FolderGitIcon,
   FolderIcon,
+  GitBranchIcon,
   ScaleIcon,
 } from "lucide-react";
 import {
   type Ref,
+  type ReactNode,
   memo,
   useImperativeHandle,
   useCallback,
@@ -40,7 +42,11 @@ import {
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
 import { PreviousWorktreeItemContent } from "./PreviousWorktreeItemContent";
-import { ComposerControl } from "./chat/ComposerControl";
+import {
+  ComposerControl,
+  ComposerControlIcon,
+  ComposerControlSeparator,
+} from "./chat/ComposerControl";
 import {
   Menu,
   MenuGroup,
@@ -66,6 +72,7 @@ export interface BranchToolbarHandle {
 }
 
 interface BranchToolbarProps {
+  ideaToggle?: ReactNode;
   forceNewWorktree?: boolean;
   ref?: Ref<BranchToolbarHandle>;
   environmentId: EnvironmentId;
@@ -504,6 +511,7 @@ function useLabelsOverflow(element: HTMLDivElement | null): boolean {
 }
 
 export const BranchToolbar = memo(function BranchToolbar({
+  ideaToggle,
   forceNewWorktree = false,
   ref,
   environmentId,
@@ -535,6 +543,7 @@ export const BranchToolbar = memo(function BranchToolbar({
     draftId ? store.getDraftSession(draftId) : store.getDraftThreadByRef(threadRef),
   );
   const serverThread = useThreadShell(threadRef);
+  const isIdea = (serverThread ?? draftThread)?.purpose === "idea";
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const activeProjectRef = serverThread
     ? scopeProjectRef(serverThread.environmentId, serverThread.projectId)
@@ -547,7 +556,8 @@ export const BranchToolbar = memo(function BranchToolbar({
     ? null
     : (serverThread?.worktreePath ?? draftThread?.worktreePath ?? null);
   const effectiveEnvMode = forceNewWorktree ? "worktree" : envMode;
-  const envModeLocked = envLocked || (serverThread !== null && activeWorktreePath !== null);
+  const envModeLocked =
+    isIdea || envLocked || (serverThread !== null && activeWorktreePath !== null);
 
   // "Previous worktree" hops a draft into the most recently active worktree
   // of this project — the "keep going where I just was" follow-up flow. Only
@@ -629,13 +639,21 @@ export const BranchToolbar = memo(function BranchToolbar({
         !contextStripVisible && "pointer-events-none invisible absolute inset-x-0 top-full",
       )}
     >
+      {ideaToggle ? (
+        <div className="flex shrink-0 items-center gap-1 ps-1" data-composer-context-control>
+          {ideaToggle}
+          {showGitControls || showEnvironmentIndicator ? (
+            <ComposerControlSeparator size="xs" />
+          ) : null}
+        </div>
+      ) : null}
       {showGitControls ? (
         <div className="contents @3xl/composer-surface:hidden">
           <MobileRunContextSelector
             forceNewWorktree={forceNewWorktree}
             autoEnvironmentLabel={autoEnvironmentLabel}
             onAutoEnvironment={onAutoEnvironment}
-            envLocked={envLocked}
+            envLocked={isIdea || envLocked}
             envModeLocked={envModeLocked}
             environmentId={environmentId}
             availableEnvironments={availableEnvironments}
@@ -664,7 +682,7 @@ export const BranchToolbar = memo(function BranchToolbar({
               <BranchToolbarEnvironmentSelector
                 autoEnvironmentLabel={autoEnvironmentLabel}
                 onAutoEnvironment={onAutoEnvironment}
-                envLocked={envLocked}
+                envLocked={isIdea || envLocked}
                 environmentId={environmentId}
                 availableEnvironments={availableEnvironments}
                 {...(showEnvironmentPicker && onEnvironmentChange ? { onEnvironmentChange } : {})}
@@ -705,7 +723,14 @@ export const BranchToolbar = memo(function BranchToolbar({
         />
       ) : null}
 
-      {showGitControls ? (
+      {showGitControls && isIdea ? (
+        <div className="ml-auto min-w-0">
+          <ComposerControl size="xs" disabled aria-label="Branch locked to main">
+            <ComposerControlIcon icon={GitBranchIcon} size="xs" />
+            main
+          </ComposerControl>
+        </div>
+      ) : showGitControls ? (
         <BranchToolbarBranchSelector
           forceNewWorktree={forceNewWorktree}
           ref={branchSelectorRef}

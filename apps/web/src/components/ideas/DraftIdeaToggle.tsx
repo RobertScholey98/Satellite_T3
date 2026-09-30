@@ -1,5 +1,6 @@
+import { BrainIcon } from "lucide-react";
 import { useComposerDraftStore, type DraftId } from "../../composerDraftStore";
-import { Checkbox } from "../ui/checkbox";
+import { ComposerControl, ComposerControlIcon } from "../chat/ComposerControl";
 
 export function DraftIdeaToggle({
   draftId,
@@ -14,20 +15,21 @@ export function DraftIdeaToggle({
   const isIdea = draft?.purpose === "idea";
   if (!draft) return null;
   return (
-    <label className="flex items-center gap-2 text-sm text-muted-foreground">
-      <Checkbox
-        aria-label="Idea"
-        checked={isIdea}
-        disabled={disabled}
-        onCheckedChange={(checked) => {
-          useComposerDraftStore.getState().setDraftThreadContext(draftId, {
-            purpose: checked ? "idea" : "work",
-            ...(checked ? { envMode: "local", branch: null, worktreePath: null } : {}),
-          });
-          if (checked) onSelectIdea();
-        }}
-      />
+    <ComposerControl
+      size="xs"
+      aria-label="Idea"
+      aria-pressed={isIdea}
+      disabled={disabled}
+      onClick={() => {
+        useComposerDraftStore.getState().setDraftThreadContext(draftId, {
+          purpose: isIdea ? "work" : "idea",
+          ...(!isIdea ? { envMode: "local", branch: null, worktreePath: null } : {}),
+        });
+        if (!isIdea) onSelectIdea();
+      }}
+    >
+      <ComposerControlIcon icon={BrainIcon} size="xs" />
       Idea
-    </label>
+    </ComposerControl>
   );
 }

@@ -49,9 +49,9 @@ describe("home draft idea toggle", () => {
     await act(async () =>
       root.render(<DraftIdeaToggle draftId={draftId} disabled={false} onSelectIdea={() => {}} />),
     );
-    const checkbox = container.querySelector<HTMLElement>('[role="checkbox"][aria-label="Idea"]');
-    expect(checkbox).not.toBeNull();
-    await act(async () => checkbox!.click());
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Idea"]');
+    expect(toggle).not.toBeNull();
+    await act(async () => toggle!.click());
     const idea = useComposerDraftStore.getState().getDraftSession(draftId)!;
     expect(idea).toMatchObject({
       purpose: "idea",
@@ -69,7 +69,7 @@ describe("home draft idea toggle", () => {
     expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
       "Explore a different creation flow.",
     );
-    await act(async () => checkbox!.click());
+    await act(async () => toggle!.click());
     expect(useComposerDraftStore.getState().getDraftSession(draftId)?.purpose).toBe("work");
     expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
       "Explore a different creation flow.",
