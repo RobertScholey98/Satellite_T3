@@ -507,6 +507,18 @@ export function IssuesBoard({
       .includes(query.replace(/^#/, "").toLowerCase());
   const connectedBoards = boards.filter((board) => board.mapping !== null);
   const availableBoards = boards.filter((board) => board.mapping === null);
+  const projectOptions = supported
+    .map((project) => {
+      const key = `${project.environmentId}:${project.id}`;
+      const hasBoard =
+        project.environmentId === scope?.environmentId &&
+        project.id === scope.id &&
+        connectedBoards.length > 0
+          ? true
+          : projectBoards[key];
+      return { project, key, hasBoard };
+    })
+    .sort((left, right) => Number(right.hasBoard === true) - Number(left.hasBoard === true));
   const loadProjectBoards = () => {
     const current = ++projectMenuGeneration.current;
     for (const project of supported) {
@@ -568,14 +580,7 @@ export function IssuesBoard({
               <MenuPopup align="start">
                 <MenuGroup>
                   <MenuGroupLabel>Projects</MenuGroupLabel>
-                  {supported.map((project) => {
-                    const key = `${project.environmentId}:${project.id}`;
-                    const hasBoard =
-                      project.environmentId === scope?.environmentId &&
-                      project.id === scope.id &&
-                      connectedBoards.length > 0
-                        ? true
-                        : projectBoards[key];
+                  {projectOptions.map(({ project, key, hasBoard }) => {
                     const withoutBoard = mode === "board" && hasBoard === false;
                     return (
                       <MenuItem
