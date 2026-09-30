@@ -2,7 +2,8 @@
 
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
-This document covers the unified release workflow for stable and nightly desktop releases.
+This document is a reference for upstream T3 Code's stable and nightly release infrastructure.
+SatelliteT3 removes those upstream workflows and does not publish through them.
 
 ## What the workflow does
 

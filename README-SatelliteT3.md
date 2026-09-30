@@ -61,6 +61,11 @@ The upstream README and license notices are retained. Upstream history is preser
 
 ## Verification
 
+Fork CI builds the desktop app and runs focused Satellite tests on GitHub's Windows
+runners. The manual **Windows Tests** workflow runs additional package or file checks.
+Upstream publishing, deployment, mobile builds, and contributor moderation workflows
+are removed from this fork.
+
 The real GPT-6.1 Sol continuity test created a file in a disposable repository while
 the main window was hidden. The pill showed working and completed states; clicking
 it restored and focused the correct conversation. Approval/input and unavailable

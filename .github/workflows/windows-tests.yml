@@ -1,6 +1,4 @@
-# On-demand Windows test lane. Manual only: nothing in the suite passes on
-# Windows yet, so this exists to give contributors (and agents) a cloud Windows
-# box to iterate against. Once the suite is green here, fold it into ci.yml.
+# On-demand Windows tests beyond the focused SatelliteT3 CI lane.
 #
 #   gh workflow run windows-tests.yml --ref <branch> -f package=packages/shared
 #   gh workflow run windows-tests.yml --ref <branch> -f package=apps/server \
@@ -14,7 +12,7 @@ on:
       package:
         description: "Workspace directory to test, e.g. apps/server or packages/shared. Empty runs every package except apps/server."
         type: string
-        default: ""
+        default: "apps/desktop"
       files:
         description: "Space-separated test files relative to the package directory. Empty runs the package's whole suite. Requires package."
         type: string
@@ -26,7 +24,7 @@ permissions:
 jobs:
   test:
     name: Test (${{ inputs.package || 'all non-server' }})
-    runs-on: blacksmith-8vcpu-windows-2025
+    runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -58,7 +56,7 @@ jobs:
           key: windows-tests-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Install
-        run: vp install
+        run: vp install --frozen-lockfile
 
       - name: Ensure Electron runtime is installed
         if: inputs.package == '' || inputs.package == 'apps/desktop'
@@ -68,9 +66,12 @@ jobs:
       # so file-scoped runs call `vp test run` inside the package instead.
       - name: Test
         shell: pwsh
+        env:
+          TEST_PACKAGE: ${{ inputs.package }}
+          TEST_FILES: ${{ inputs.files }}
         run: |
-          $package = '${{ inputs.package }}'
-          $files = '${{ inputs.files }}'
+          $package = $env:TEST_PACKAGE
+          $files = $env:TEST_FILES
           if ($package -eq '') {
             vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' test
           } elseif ($files -eq '') {
