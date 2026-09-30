@@ -402,22 +402,20 @@ export const make = Effect.gen(function* () {
     const satellite = process.env.T3CODE_SATELLITE_PILL === "1" && environment.platform === "win32";
     const window = yield* electronWindow.create({
       ...initialBounds,
-      minWidth: satellite ? 0 : 840,
-      minHeight: satellite ? 0 : 620,
+      minWidth: 840,
+      minHeight: 620,
       show: false,
       autoHideMenuBar: true,
       ...(environment.platform === "darwin" ? { disableAutoHideCursor: true } : {}),
-      backgroundColor: satellite
-        ? "#00000000"
-        : getInitialWindowBackgroundColor(shouldUseDarkColors),
+      backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
       ...iconOption,
       title: environment.displayName,
       ...(satellite
         ? {
             frame: false,
-            thickFrame: false,
-            transparent: true,
-            resizable: false,
+            thickFrame: true,
+            transparent: false,
+            resizable: true,
             skipTaskbar: true,
             alwaysOnTop: true,
             maximizable: false,
@@ -447,6 +445,11 @@ export const make = Effect.gen(function* () {
             void runPromise(electronWindow.reveal(window));
           },
           ...iconOption,
+          pillUrl: new URL("/satellite-pill.html", applicationUrl).href,
+          pillPreloadPath: environment.preloadPath.replace(
+            /preload\.cjs$/,
+            "satellite-pill-preload.cjs",
+          ),
         }),
       );
     }
@@ -852,7 +855,7 @@ export const make = Effect.gen(function* () {
       if (!window.isDestroyed()) {
         window.webContents.setBackgroundThrottling(!satellite);
       }
-      // The Satellite renderer announces when the pill is mounted and ready to show.
+      // The Satellite owner reveals the standalone pill and retained workspace separately.
       if (satellite) {
         void runPromise(dismissConnectingSplash);
         return;

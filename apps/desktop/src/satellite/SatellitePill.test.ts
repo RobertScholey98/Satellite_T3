@@ -2,10 +2,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as Electron from "electron";
 import * as NodeFS from "node:fs";
-import type { SatelliteShellState } from "@t3tools/contracts";
 import { expandSatelliteWindow, installSatellitePill } from "./SatellitePill.ts";
+import { loadWindowsPillDrag } from "./WindowsPillDrag.ts";
 import * as Channels from "./channels.ts";
 
+vi.mock("./WindowsPillDrag.ts", () => ({
+  loadWindowsPillDrag: vi.fn(async () => vi.fn(() => true)),
+}));
 vi.mock("node:fs", () => ({
   readFileSync: vi.fn(() => '{"x":100,"y":100}'),
   mkdirSync: vi.fn(),
@@ -23,6 +26,8 @@ vi.mock("electron", async () => {
     webContents = Object.assign(new EventEmitter(), {
       send: vi.fn(),
       getZoomFactor: vi.fn(() => 1),
+      setZoomFactor: vi.fn(),
+      reload: vi.fn(),
     });
     hide = vi.fn(() => {
       this.visible = false;
@@ -47,11 +52,28 @@ vi.mock("electron", async () => {
     setMinimumSize = vi.fn();
     setResizable = vi.fn();
     setShape = vi.fn();
+    setMaximumSize = vi.fn();
+    setSize = vi.fn((width: number, height: number) => {
+      this.bounds = { ...this.bounds, width, height };
+    });
+    loadURL = vi.fn(async () => undefined);
+    getNativeWindowHandle = () => Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]);
+    hooks = new Map<number, () => void>();
+    hookWindowMessage = (message: number, callback: () => void) => {
+      this.hooks.set(message, callback);
+    };
     restore = vi.fn();
     isEnabled = vi.fn(() => true);
     getChildWindows = vi.fn(() => []);
     constructor(_options: Electron.BrowserWindowConstructorOptions) {
       super();
+      this.bounds = {
+        ...this.bounds,
+        ...(_options.x !== undefined ? { x: _options.x } : {}),
+        ...(_options.y !== undefined ? { y: _options.y } : {}),
+        ...(_options.width !== undefined ? { width: _options.width } : {}),
+        ...(_options.height !== undefined ? { height: _options.height } : {}),
+      };
       windows.push(this);
     }
     isDestroyed = () => this.destroyed;
@@ -103,442 +125,211 @@ vi.mock("electron", async () => {
   };
 });
 
-describe("native Satellite shell", () => {
+describe("independent native Satellite surfaces", () => {
   let main: Electron.BrowserWindow;
-  let reveal = vi.fn<() => void>();
-  const send = (channel: string, value?: unknown) =>
-    Electron.ipcMain.emit(channel, { sender: main.webContents }, value);
-  const cursorAt = (x: number, y: number) =>
-    vi.mocked(Electron.screen.getCursorScreenPoint).mockReturnValue({ x, y });
-  const shell = () =>
-    vi
-      .mocked(main.webContents.send)
-      .mock.calls.findLast(
-        ([channel]) => channel === Channels.SATELLITE_SHELL_STATE,
-      )?.[1] as SatelliteShellState;
-  const settle = () => send(Channels.SATELLITE_TRANSITION_FINISHED, shell().transitionId);
-  const pill = () => ({
-    ...shell().pillBounds,
-    x: main.getBounds().x + shell().pillBounds.x,
-    y: main.getBounds().y + shell().pillBounds.y,
-  });
-  const expectPillShape = () => {
-    expect(main.setShape).toHaveBeenLastCalledWith([shell().pillBounds]);
-    expect(pill().width).toBe(320);
-    expect(pill().height).toBe(70);
-  };
-  const expand = () => {
-    send(Channels.SATELLITE_PILL_OPEN);
-    settle();
-  };
-  const collapse = () => {
-    send(Channels.SATELLITE_HIDE_MAIN);
-    settle();
-  };
-  beforeEach(() => {
+  let pill: Electron.BrowserWindow;
+  let reveal: ReturnType<typeof vi.fn<() => void>>;
+  const send = (sender: Electron.BrowserWindow, channel: string, value?: unknown) =>
+    Electron.ipcMain.emit(channel, { sender: sender.webContents }, value);
+  const message = (window: Electron.BrowserWindow, id: number) =>
+    (window as unknown as { hooks: Map<number, () => void> }).hooks.get(id)?.();
+  const state = {
+    threadId: "t1",
+    environmentId: "remote",
+    title: "Fix build",
+    state: "working",
+    detail: "Reading",
+    attention: false,
+  } as const;
+  const saved = () => JSON.parse(vi.mocked(NodeFS.writeFileSync).mock.lastCall?.[1] as string);
+  const expand = () => expandSatelliteWindow(main);
+  const collapse = () => send(main, Channels.SATELLITE_HIDE_MAIN);
+  beforeEach(async () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    cursorAt(0, 0);
     main = new Electron.BrowserWindow({});
     reveal = vi.fn(() => {
-      expandSatelliteWindow(main);
-      main.show();
-      main.focus();
+      expand();
     });
-    installSatellitePill(main, { revealMain: reveal });
-    send(Channels.SATELLITE_PILL_READY);
+    installSatellitePill(main, {
+      revealMain: reveal,
+      pillUrl: "http://localhost/satellite-pill.html",
+      pillPreloadPath: "/pill.cjs",
+    });
+    pill = Electron.BrowserWindow.getAllWindows().find((window) => window !== main)!;
+    await Promise.resolve();
+    send(main, Channels.SATELLITE_WORKSPACE_READY);
+    send(pill, Channels.SATELLITE_PILL_READY);
   });
   afterEach(() => {
     for (const window of Electron.BrowserWindow.getAllWindows()) window.destroy();
     vi.useRealTimers();
   });
-  const state = {
-    threadId: "thread-1",
-    environmentId: "remote-1",
-    title: "Fix build",
-    state: "working",
-    detail: "Reading files",
-    attention: false,
-  } as const;
-
-  it("starts as one visible taskbar-free pill using the workspace renderer", () => {
-    expect(Electron.BrowserWindow.getAllWindows()).toEqual([main]);
-    expect(main.isVisible()).toBe(true);
-    expect(main.isFocused()).toBe(false);
-    expect(main.getBounds()).toEqual({ x: 51, y: 27, width: 1100, height: 780 });
-    expect(pill()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
-    expectPillShape();
-    expect(main.setSkipTaskbar).toHaveBeenCalledWith(true);
-    expect(shell()).toMatchObject({ mode: "pill", phase: "settled" });
-  });
-  it("expands and collapses by shaping one stable canvas without resizing the viewport", () => {
-    const initial = main.getBounds();
-    const initialPill = pill();
-    vi.mocked(main.setBounds).mockClear();
-    send(Channels.SATELLITE_PUBLISH, state);
-    send(Channels.SATELLITE_PILL_OPEN);
-    expect(shell()).toMatchObject({ mode: "workspace", phase: "expanding" });
-    const workspace = main.getBounds();
-    expect(workspace.width).toBe(1100);
-    expect(workspace.height).toBe(780);
-    expect(workspace).toEqual(initial);
-    expect(pill()).toEqual(initialPill);
-    expect(main.setShape).toHaveBeenLastCalledWith([{ x: 0, y: 0, width: 1100, height: 780 }]);
-    settle();
-    main.close();
-    expect(shell().phase).toBe("collapsing");
-    expect(main.getBounds()).toEqual(workspace);
-    settle();
-    expect(main.getBounds()).toEqual(initial);
-    expect(pill()).toEqual(initialPill);
-    expectPillShape();
-    expect(main.setBounds).not.toHaveBeenCalled();
-    expect(main.setResizable).toHaveBeenCalledTimes(1);
-    expect(main.setResizable).toHaveBeenCalledWith(false);
-    expect(main.isDestroyed()).toBe(false);
-    expect(main.isVisible()).toBe(true);
-    expect(main.hide).not.toHaveBeenCalled();
-    expect(Electron.BrowserWindow.getAllWindows()).toEqual([main]);
-    expect(main.webContents.send).toHaveBeenCalledWith(Channels.SATELLITE_PILL_STATE, state);
-  });
-  it("supports desktop reveal paths and renderer-requested collapse", () => {
-    expandSatelliteWindow(main);
-    settle();
-    expect(shell().mode).toBe("workspace");
-    collapse();
-    expectPillShape();
-  });
-  it("collapses on blur unless pinned, focused again, or showing a native dialog", () => {
-    expand();
-    main.blur();
-    vi.advanceTimersByTime(150);
-    expect(shell().phase).toBe("collapsing");
-    settle();
-    expand();
-    send(Channels.SATELLITE_SET_PINNED, true);
-    main.blur();
-    vi.advanceTimersByTime(150);
-    expect(shell().mode).toBe("workspace");
-    send(Channels.SATELLITE_SET_PINNED, false);
-    main.blur();
-    main.focus();
-    vi.advanceTimersByTime(150);
-    expect(shell().mode).toBe("workspace");
-    vi.mocked(main.isEnabled).mockReturnValue(false);
-    main.blur();
-    vi.advanceTimersByTime(150);
-    expect(shell().mode).toBe("workspace");
-  });
-  it("minimize collapses instead of leaving an inaccessible minimized window", () => {
-    expand();
-    main.emit("minimize");
-    settle();
-    expect(main.restore).toHaveBeenCalledOnce();
-    expect(shell().mode).toBe("pill");
-  });
-  it("ignores stale animation completions when a transition reverses", () => {
-    send(Channels.SATELLITE_PILL_OPEN);
-    const opening = shell().transitionId;
-    send(Channels.SATELLITE_HIDE_MAIN);
-    send(Channels.SATELLITE_TRANSITION_FINISHED, opening);
-    expect(shell().phase).toBe("collapsing");
-    settle();
-    expectPillShape();
-  });
-  it("recovers a missing renderer completion and can reopen afterward", () => {
-    expand();
-    send(Channels.SATELLITE_HIDE_MAIN);
-    vi.advanceTimersByTime(650);
-    expect(shell().phase).toBe("collapsing");
-    vi.advanceTimersByTime(850);
-    expect(shell().phase).toBe("settled");
-    expectPillShape();
-    expand();
-    expect(main.getBounds().width).toBe(1100);
-  });
-  it("uses the actual rounded native canvas without changing size during a morph or move", () => {
-    main.destroy();
-    main = new Electron.BrowserWindow({});
-    const setBounds = vi.mocked(main.setBounds).getMockImplementation()!;
-    vi.mocked(main.setBounds).mockImplementation((bounds) => {
-      const requested = { ...main.getBounds(), ...bounds };
-      setBounds({
-        ...requested,
-        x: requested.x + 1,
-        width: requested.width + 1,
-        height: requested.height + 1,
-      });
-    });
-    installSatellitePill(main, { revealMain: reveal });
-    send(Channels.SATELLITE_PILL_READY);
-    const canvas = main.getBounds();
-    expect(shell().workspaceSize).toEqual({ width: 1101, height: 781 });
-    expect(pill()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
-    vi.mocked(main.setBounds).mockClear();
-    expand();
-    collapse();
-    expect(main.getBounds()).toEqual(canvas);
-    expect(shell().workspaceSize).toEqual({ width: 1101, height: 781 });
-    expect(main.setBounds).not.toHaveBeenCalled();
-    expect(pill()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
-    send(Channels.SATELLITE_PILL_MOVE, "ArrowRight");
-    expect(shell().workspaceSize).toEqual({ width: 1101, height: 781 });
-    expect(pill()).toEqual({ x: 116, y: 100, width: 320, height: 70 });
-    expectPillShape();
-    expand();
-    collapse();
-    expect(NodeFS.writeFileSync).toHaveBeenLastCalledWith(
-      expect.any(String),
-      '{"x":116,"y":100,"workspaceWidth":1100,"workspaceHeight":780}',
-      "utf8",
-    );
-  });
-  it("moves only the settled pill and retains its new anchor", () => {
-    send(Channels.SATELLITE_PILL_MOVE, "ArrowRight");
-    expect(pill().x).toBe(116);
-    expand();
-    const workspace = main.getBounds();
-    send(Channels.SATELLITE_PILL_MOVE, "ArrowRight");
-    expect(main.getBounds()).toEqual(workspace);
-    collapse();
-    expect(pill().x).toBe(116);
-    expectPillShape();
-  });
-  it("preserves the visible pill location when re-anchoring after a native drag", () => {
-    const canvas = main.getBounds();
-    main.setBounds({ ...canvas, x: canvas.x + 300, y: canvas.y + 200 });
-    expect(pill()).toEqual({ x: 400, y: 300, width: 320, height: 70 });
-    main.emit("moved");
-    expect(pill()).toEqual({ x: 400, y: 300, width: 320, height: 70 });
-    expectPillShape();
-    const anchoredCanvas = main.getBounds();
-    expect(anchoredCanvas.x).toBeGreaterThanOrEqual(0);
-    expect(anchoredCanvas.x + anchoredCanvas.width).toBeLessThanOrEqual(1920);
-    expect(anchoredCanvas.y + anchoredCanvas.height).toBeLessThanOrEqual(1040);
-    expand();
-    collapse();
-    expect(main.getBounds()).toEqual(anchoredCanvas);
-    expect(pill()).toEqual({ x: 400, y: 300, width: 320, height: 70 });
-  });
-  it("drags the stable canvas in native DIPs without zoom scaling or intermediate re-anchoring", () => {
-    const canvas = main.getBounds();
-    const localPill = shell().pillBounds;
-    vi.mocked(main.webContents.getZoomFactor).mockReturnValue(2);
-    vi.mocked(main.setBounds).mockClear();
-    vi.mocked(main.setShape).mockClear();
-    vi.mocked(main.webContents.send).mockClear();
-    cursorAt(140, 200);
-    send(Channels.SATELLITE_PILL_DRAG_BEGIN);
-    cursorAt(430, 380);
-    send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-    expect(main.getBounds()).toEqual({ ...canvas, x: canvas.x + 290, y: canvas.y + 180 });
-    cursorAt(600, 420);
-    send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-    expect(main.getBounds()).toEqual({ ...canvas, x: canvas.x + 460, y: canvas.y + 220 });
-    vi.advanceTimersByTime(500);
-    expect(NodeFS.writeFileSync).not.toHaveBeenCalled();
-    expect(main.setBounds).not.toHaveBeenCalled();
+  it("boots a small visible pill and retains a hidden resizable workspace", () => {
+    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
+    expect(pill.isVisible()).toBe(true);
+    expect(main.isVisible()).toBe(false);
+    expect(main.setResizable).toHaveBeenCalledWith(true);
     expect(main.setShape).not.toHaveBeenCalled();
-    expect(main.webContents.send).not.toHaveBeenCalled();
-    expect(main.webContents.getZoomFactor).not.toHaveBeenCalled();
-    send(Channels.SATELLITE_PILL_DRAG_END);
-    expect(pill()).toEqual({ x: 560, y: 320, width: 320, height: 70 });
-    expect(shell().pillBounds).not.toEqual(localPill);
-    expectPillShape();
-    expect(NodeFS.writeFileSync).toHaveBeenCalledOnce();
-    main.emit("move");
-    main.emit("moved");
-    vi.advanceTimersByTime(500);
-    expect(NodeFS.writeFileSync).toHaveBeenCalledOnce();
+    expect(pill.webContents.setZoomFactor).toHaveBeenCalledWith(1);
   });
-  it("applies the final cursor position, clamps the pill, and starts the next drag from its new anchor", () => {
-    cursorAt(150, 150);
-    send(Channels.SATELLITE_PILL_DRAG_BEGIN);
-    cursorAt(600, 400);
-    send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-    expect(pill()).toEqual({ x: 550, y: 350, width: 320, height: 70 });
-    cursorAt(-700, 5000);
-    send(Channels.SATELLITE_PILL_DRAG_END);
-    expect(pill()).toEqual({ x: 0, y: 970, width: 320, height: 70 });
-    expect(main.getBounds()).toEqual({ x: 0, y: 260, width: 1100, height: 780 });
-    expect(NodeFS.writeFileSync).toHaveBeenCalledOnce();
-    expect(NodeFS.writeFileSync).toHaveBeenLastCalledWith(
-      expect.any(String),
-      '{"x":0,"y":970,"workspaceWidth":1100,"workspaceHeight":780}',
-      "utf8",
-    );
-    send(Channels.SATELLITE_PILL_DRAG_BEGIN);
-    cursorAt(-650, 4975);
-    send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-    send(Channels.SATELLITE_PILL_DRAG_END);
-    expect(pill()).toEqual({ x: 50, y: 945, width: 320, height: 70 });
-    const anchored = main.getBounds();
+  it("switches surfaces without destroying the mounted workspace", () => {
     expand();
+    expect(main.isVisible()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
     collapse();
-    expect(main.getBounds()).toEqual(anchored);
-    expect(pill()).toEqual({ x: 50, y: 945, width: 320, height: 70 });
-  });
-  it("ignores stale drag messages and prevents other renderers from starting or ending a drag", () => {
-    const other = new Electron.BrowserWindow({});
-    const outside = (channel: string) =>
-      Electron.ipcMain.emit(channel, { sender: other.webContents });
-    cursorAt(100, 100);
-    outside(Channels.SATELLITE_PILL_DRAG_BEGIN);
-    cursorAt(200, 200);
-    send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-    send(Channels.SATELLITE_PILL_DRAG_END);
-    expect(main.setPosition).not.toHaveBeenCalled();
-    send(Channels.SATELLITE_PILL_DRAG_BEGIN);
-    cursorAt(300, 250);
-    outside(Channels.SATELLITE_PILL_DRAG_UPDATE);
-    outside(Channels.SATELLITE_PILL_DRAG_END);
-    expect(main.setPosition).not.toHaveBeenCalled();
-    send(Channels.SATELLITE_PILL_DRAG_BEGIN);
-    send(Channels.SATELLITE_PILL_MOVE, "ArrowRight");
-    send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-    expect(pill()).toEqual({ x: 200, y: 150, width: 320, height: 70 });
-    send(Channels.SATELLITE_PILL_DRAG_END);
-    cursorAt(600, 600);
-    send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-    send(Channels.SATELLITE_PILL_DRAG_END);
-    expect(pill()).toEqual({ x: 200, y: 150, width: 320, height: 70 });
-    expect(NodeFS.writeFileSync).toHaveBeenCalledOnce();
-    expect(reveal).not.toHaveBeenCalled();
-  });
-  it.each(["expanding", "workspace", "collapsing"] as const)(
-    "rejects drag sessions while %s",
-    (phase) => {
-      send(Channels.SATELLITE_PILL_OPEN);
-      if (phase !== "expanding") settle();
-      if (phase === "collapsing") send(Channels.SATELLITE_HIDE_MAIN);
-      const bounds = main.getBounds();
-      cursorAt(100, 100);
-      send(Channels.SATELLITE_PILL_DRAG_BEGIN);
-      cursorAt(300, 300);
-      send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-      send(Channels.SATELLITE_PILL_DRAG_END);
-      expect(main.setPosition).not.toHaveBeenCalled();
-      expect(main.getBounds()).toEqual(bounds);
-    },
-  );
-  it.each(["blur", "reload", "crash", "close", "display change", "expand"] as const)(
-    "ends an active drag on %s and ignores late movement",
-    (event) => {
-      cursorAt(100, 100);
-      send(Channels.SATELLITE_PILL_DRAG_BEGIN);
-      cursorAt(350, 220);
-      send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-      // Cancellation must use the last delivered position, not a pointer that
-      // has already moved into another application.
-      cursorAt(5000, 5000);
-      switch (event) {
-        case "blur":
-          main.blur();
-          break;
-        case "reload":
-          main.webContents.emit("did-start-loading");
-          break;
-        case "crash":
-          main.webContents.emit("render-process-gone", {}, { reason: "crashed" });
-          break;
-        case "close":
-          main.close();
-          break;
-        case "display change":
-          Electron.screen.emit("display-metrics-changed", {});
-          break;
-        case "expand":
-          expand();
-          break;
-      }
-      const bounds = main.getBounds();
-      send(Channels.SATELLITE_PILL_DRAG_UPDATE);
-      send(Channels.SATELLITE_PILL_DRAG_END);
-      expect(main.getBounds()).toEqual(bounds);
-      expect(pill()).toEqual({ x: 350, y: 220, width: 320, height: 70 });
-      collapse();
-      send(Channels.SATELLITE_PILL_DRAG_BEGIN);
-      cursorAt(5040, 5030);
-      send(Channels.SATELLITE_PILL_DRAG_END);
-      expect(pill()).toEqual({ x: 390, y: 250, width: 320, height: 70 });
-    },
-  );
-  it("remembers workspace movement and size without saving compact workspace dimensions", () => {
+    expect(main.isVisible()).toBe(false);
+    expect(pill.isVisible()).toBe(true);
+    expect(main.isDestroyed()).toBe(false);
     expand();
-    main.setBounds({ x: 0, y: 0, width: 1200, height: 800 });
+    expect(main.isVisible()).toBe(true);
+    expect(Electron.BrowserWindow.getAllWindows()).toHaveLength(2);
+  });
+  it("persists actual native drag completion without moving or clamping on release", () => {
+    const boundsBefore = vi.mocked(pill.setBounds).mock.calls.length;
+    const before = vi.mocked(pill.setPosition).mock.calls.length;
+    message(pill, 0x0231);
+    pill.setPosition(-100, -20);
+    message(pill, 0x0232);
+    expect(saved()).toMatchObject({ x: -100, y: -20 });
+    expect(vi.mocked(pill.setPosition).mock.calls.length).toBe(before + 1);
+    expect(vi.mocked(pill.setBounds).mock.calls.length).toBe(boundsBefore);
+    expect(pill.getBounds()).toMatchObject({ x: -100, y: -20, width: 320, height: 70 });
+  });
+  it("accepts only the pill sender for drag and only the main sender for publication", async () => {
+    const start = await vi.mocked(loadWindowsPillDrag).mock.results[0]!.value;
+    send(main, Channels.SATELLITE_PILL_DRAG_BEGIN);
+    expect(start).not.toHaveBeenCalled();
+    send(pill, Channels.SATELLITE_PILL_DRAG_BEGIN);
+    expect(start).toHaveBeenCalledOnce();
+    send(pill, Channels.SATELLITE_PUBLISH, state);
+    expect(pill.webContents.send).not.toHaveBeenCalledWith(Channels.SATELLITE_PILL_STATE, state);
+    send(main, Channels.SATELLITE_PUBLISH, state);
+    expect(pill.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_STATE, state);
+    send(main, Channels.SATELLITE_PILL_OPEN);
+    expect(reveal).not.toHaveBeenCalled();
+    send(pill, Channels.SATELLITE_PILL_OPEN);
+    expect(reveal).toHaveBeenCalledOnce();
+  });
+  it("records preferred workspace size only when a native user resize finishes", () => {
+    expand();
+    main.setBounds({ x: 20, y: 20, width: 1111, height: 788 });
+    main.emit("resize");
+    message(main, 0x0231);
+    message(main, 0x0232);
     collapse();
-    expect(pill()).toEqual({ x: 0, y: 0, width: 320, height: 70 });
-    expectPillShape();
-    expect(main.getBounds()).toEqual({ x: 0, y: 0, width: 1200, height: 800 });
+    expect(saved()).toMatchObject({ workspaceWidth: 1100, workspaceHeight: 780 });
     expand();
-    expect(main.getBounds()).toEqual({ x: 0, y: 0, width: 1200, height: 800 });
-    expect(NodeFS.writeFileSync).toHaveBeenLastCalledWith(
-      expect.any(String),
-      '{"x":0,"y":0,"workspaceWidth":1200,"workspaceHeight":800}',
-      "utf8",
-    );
-  });
-  it("fresh heartbeats retain working state, then a stalled renderer becomes unknown", () => {
-    send(Channels.SATELLITE_PUBLISH, state);
-    vi.advanceTimersByTime(20_000);
-    send(Channels.SATELLITE_PUBLISH, state);
-    vi.advanceTimersByTime(20_000);
-    expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_STATE, state);
-    vi.advanceTimersByTime(10_000);
-    expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_STATE, {
-      ...state,
-      state: "unknown",
-      detail: "Status unavailable — reconnecting",
-    });
-  });
-  it("rejects window-control messages from other renderers", () => {
-    const other = new Electron.BrowserWindow({});
-    for (const [channel, value] of [
-      [Channels.SATELLITE_PUBLISH, state],
-      [Channels.SATELLITE_PILL_OPEN, undefined],
-      [Channels.SATELLITE_SET_PINNED, true],
-      [Channels.SATELLITE_PILL_MOVE, "ArrowRight"],
-    ] as const)
-      Electron.ipcMain.emit(channel, { sender: other.webContents }, value);
-    expect(reveal).not.toHaveBeenCalled();
-    expect(shell()).toMatchObject({ mode: "pill", pinned: false });
-    expect(pill().x).toBe(100);
-  });
-  it("recovers a crash into the pill and clears stale attention", () => {
-    send(Channels.SATELLITE_PUBLISH, state);
+    message(main, 0x0231);
+    main.emit("will-resize");
+    main.setBounds({ x: 20, y: 20, width: 1200, height: 820 });
+    message(main, 0x0232);
+    expect(saved()).toMatchObject({ workspaceWidth: 1200, workspaceHeight: 820 });
+    collapse();
     expand();
-    main.webContents.emit("render-process-gone", {}, { reason: "crashed" });
-    expect(shell()).toMatchObject({ mode: "pill", phase: "settled" });
-    expect(main.webContents.send).toHaveBeenCalledWith(Channels.SATELLITE_PILL_STATE, {
-      ...state,
-      state: "unknown",
-      detail: "Status unavailable — reconnecting",
-    });
+    expect(main.getBounds()).toMatchObject({ width: 1200, height: 820 });
   });
-  it("explicit quit saves placement, destroys the window, and removes IPC listeners", () => {
-    Electron.app.emit("before-quit", {});
-    expect(NodeFS.writeFileSync).toHaveBeenCalledWith(
-      expect.stringContaining("satellite-pill.json"),
-      '{"x":100,"y":100,"workspaceWidth":1100,"workspaceHeight":780}',
-      "utf8",
-    );
+  it("collapses on outside blur and close while respecting pin", () => {
+    expand();
+    main.blur();
+    vi.advanceTimersByTime(150);
+    expect(pill.isVisible()).toBe(true);
+    expand();
+    send(main, Channels.SATELLITE_SET_PINNED, true);
+    main.blur();
+    vi.advanceTimersByTime(150);
+    expect(main.isVisible()).toBe(true);
     main.close();
-    expect(main.isDestroyed()).toBe(true);
-    expect(Electron.ipcMain.listenerCount(Channels.SATELLITE_PILL_OPEN)).toBe(0);
-    expect(Electron.ipcMain.listenerCount(Channels.SATELLITE_PILL_DRAG_BEGIN)).toBe(0);
-    expect(Electron.ipcMain.listenerCount(Channels.SATELLITE_PILL_DRAG_UPDATE)).toBe(0);
-    expect(Electron.ipcMain.listenerCount(Channels.SATELLITE_PILL_DRAG_END)).toBe(0);
+    expect(main.isDestroyed()).toBe(false);
+    expect(pill.isVisible()).toBe(true);
   });
-  it("recovers the shell on display removal even during a transition", () => {
-    main.setBounds({ ...main.getBounds(), x: -1000, y: 2000 });
-    send(Channels.SATELLITE_PILL_OPEN);
-    Electron.screen.emit("display-removed", {});
-    expect(shell().phase).toBe("settled");
-    const bounds = main.getBounds();
-    expect(bounds.x).toBeGreaterThanOrEqual(0);
-    expect(bounds.y + bounds.height).toBeLessThanOrEqual(1040);
+  it("marks stale and crashed workspace status unavailable", () => {
+    send(main, Channels.SATELLITE_PUBLISH, state);
+    vi.advanceTimersByTime(30_000);
+    expect(pill.webContents.send).toHaveBeenLastCalledWith(
+      Channels.SATELLITE_PILL_STATE,
+      expect.objectContaining({ state: "unknown" }),
+    );
+    expand();
+    main.webContents.emit("render-process-gone");
+    expect(pill.isVisible()).toBe(true);
+    pill.webContents.emit("render-process-gone");
+    expect(pill.webContents.reload).toHaveBeenCalledOnce();
+  });
+  it("clamps keyboard movement and topology recovery but ignores scale-only notifications", () => {
+    pill.setPosition(-50, -50);
+    send(pill, Channels.SATELLITE_PILL_MOVE, "ArrowLeft");
+    expect(pill.getBounds()).toMatchObject({ x: 0, y: 0 });
+    pill.setPosition(-50, -50);
+    Electron.screen.emit("display-metrics-changed", {}, {}, ["scaleFactor"]);
+    expect(pill.getBounds().x).toBe(-50);
+    Electron.screen.emit("display-removed");
+    expect(pill.getBounds()).toMatchObject({ x: 0, y: 0 });
+  });
+  it("destroys the auxiliary surface and unregisters IPC with its lifecycle owner", () => {
+    const count = Electron.ipcMain.listenerCount(Channels.SATELLITE_PUBLISH);
+    main.destroy();
+    expect(pill.isDestroyed()).toBe(true);
+    expect(Electron.ipcMain.listenerCount(Channels.SATELLITE_PUBLISH)).toBe(count - 1);
+  });
+  it("replays a topology change deferred during native capture", () => {
+    message(pill, 0x0231);
+    pill.setPosition(-80, -20);
+    Electron.screen.emit("display-removed");
+    expect(pill.getBounds().x).toBe(-80);
+    message(pill, 0x0232);
+    expect(pill.getBounds()).toEqual({ x: 0, y: 0, width: 320, height: 70 });
+  });
+  it("caps native minimums to a small work area without changing preferred workspace size", () => {
+    const primary = {
+      id: 1,
+      workArea: { x: 0, y: 0, width: 700, height: 500 },
+    } as Electron.Display;
+    const primarySpy = vi.spyOn(Electron.screen, "getPrimaryDisplay").mockReturnValue(primary);
+    const displaysSpy = vi.spyOn(Electron.screen, "getAllDisplays").mockReturnValue([primary]);
+    expand();
+    expect(main.getBounds()).toMatchObject({ width: 700, height: 500 });
+    expect(main.setMinimumSize).toHaveBeenLastCalledWith(700, 500);
     collapse();
-    expect(pill()).toEqual({ x: 0, y: 970, width: 320, height: 70 });
-    expectPillShape();
+    expect(saved()).toMatchObject({ workspaceWidth: 1100, workspaceHeight: 780 });
+    primarySpy.mockRestore();
+    displaysSpy.mockRestore();
+  });
+  it("keeps a recovering workspace hidden until its renderer is ready", () => {
+    main.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    expect(expandSatelliteWindow(main)).toBe(false);
+    expect(main.isVisible()).toBe(false);
+    expect(pill.isVisible()).toBe(true);
+    send(main, Channels.SATELLITE_WORKSPACE_READY);
+    expect(main.isVisible()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+    expect(reveal).toHaveBeenCalledOnce();
+    expect(expandSatelliteWindow(main)).toBe(true);
+  });
+  it("keeps both surfaces ready through same-document and subframe navigation", () => {
+    for (const window of [main, pill]) {
+      window.webContents.emit("did-start-loading");
+      window.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true });
+      window.webContents.emit("did-start-navigation", {
+        isMainFrame: false,
+        isSameDocument: false,
+      });
+    }
+    expect(expandSatelliteWindow(main)).toBe(true);
+    expect(main.isVisible()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+    collapse();
+    expect(main.isVisible()).toBe(false);
+    expect(pill.isVisible()).toBe(true);
+  });
+  it("waits for a reloaded pill document before hiding the last workspace surface", () => {
+    expand();
+    pill.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    collapse();
+    expect(main.isVisible()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+    send(pill, Channels.SATELLITE_PILL_READY);
+    expect(main.isVisible()).toBe(false);
+    expect(pill.isVisible()).toBe(true);
   });
 });

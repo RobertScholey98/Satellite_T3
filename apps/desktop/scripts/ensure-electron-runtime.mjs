@@ -101,10 +101,12 @@ function invalidRuntimePaths(electronDir, platformPath) {
   ].filter((runtimePath) => NodeFS.existsSync(runtimePath) && !isMachO(runtimePath));
 }
 
-function runChecked(command, args) {
+function runChecked(command, args, env = process.env) {
   const result = NodeChildProcess.spawnSync(command, args, {
     encoding: "utf8",
     stdio: "inherit",
+    env,
+    windowsHide: true,
   });
 
   if (result.status === 0) {
@@ -114,6 +116,37 @@ function runChecked(command, args) {
   throw new Error(
     `${command} ${args.join(" ")} failed with exit code ${result.status ?? "unknown"}`,
   );
+}
+
+export function extractElectronRuntime(zipPath, destination) {
+  if (hostPlatform === "darwin") {
+    runChecked("ditto", ["-x", "-k", zipPath, destination]);
+  } else if (hostPlatform === "win32") {
+    // Windows includes PowerShell, but Python may only be a Microsoft Store alias.
+    // Pass paths as data so special characters cannot become PowerShell syntax.
+    runChecked(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory($env:T3_ELECTRON_ARCHIVE, $env:T3_ELECTRON_DIST)",
+      ],
+      {
+        ...process.env,
+        T3_ELECTRON_ARCHIVE: zipPath,
+        T3_ELECTRON_DIST: destination,
+      },
+    );
+  } else {
+    runChecked("python3", [
+      "-c",
+      "import os, sys, zipfile; os.makedirs(sys.argv[2], exist_ok=True); zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
+      zipPath,
+      destination,
+    ]);
+  }
 }
 
 function installElectronRuntime(electronDir, version) {
@@ -127,16 +160,7 @@ function installElectronRuntime(electronDir, version) {
       "-o",
       zipPath,
     ]);
-    if (hostPlatform === "darwin") {
-      runChecked("ditto", ["-x", "-k", zipPath, NodePath.join(electronDir, "dist")]);
-    } else {
-      runChecked("python3", [
-        "-c",
-        "import os, sys, zipfile; os.makedirs(sys.argv[2], exist_ok=True); zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
-        zipPath,
-        NodePath.join(electronDir, "dist"),
-      ]);
-    }
+    extractElectronRuntime(zipPath, NodePath.join(electronDir, "dist"));
   } finally {
     NodeFS.rmSync(tempDir, { recursive: true, force: true });
   }

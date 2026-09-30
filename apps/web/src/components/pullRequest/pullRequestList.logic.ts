@@ -441,6 +441,7 @@ export interface PullRequestStatsTarget {
     readonly refs: ReadonlyArray<{
       readonly projectId: ProjectId;
       readonly repository: string;
+      readonly host: string;
       readonly number: number;
     }>;
   };
@@ -502,6 +503,7 @@ export function pullRequestStatsBatches(
       ref: {
         projectId: entry.projectId,
         repository: entry.repository,
+        host: entry.host,
         number: entry.number,
       },
     });
@@ -600,23 +602,38 @@ export function partitionPullRequestsWithPriority<Entry extends PullRequestListE
   entries: ReadonlyArray<Entry>,
   authored: ReadonlyArray<Entry>,
   reviewRequested: ReadonlyArray<Entry>,
+  deduplicateRepositories = false,
 ): ReadonlyArray<PullRequestGroup<Entry>> {
-  const authoredByKey = new Map(authored.map((entry) => [pullRequestEntryKey(entry), entry]));
+  const entryKey = (entry: Entry) =>
+    deduplicateRepositories
+      ? `${entry.provider}:${entry.host.toLowerCase()}:${entry.repository.toLowerCase()}:${entry.number}`
+      : pullRequestEntryKey(entry);
+  const authoredByKey = new Map(authored.map((entry) => [entryKey(entry), entry]));
   // A row can be both authored and review-requested; authored wins, as the local grouping has it.
   const reviewByKey = new Map(
     reviewRequested.flatMap((entry) => {
-      const key = pullRequestEntryKey(entry);
+      const key = entryKey(entry);
       return authoredByKey.has(key) ? [] : [[key, entry] as const];
     }),
   );
   const others: Entry[] = [];
   for (const entry of entries) {
-    const key = pullRequestEntryKey(entry);
+    const key = entryKey(entry);
     // The feed's copy of a partitioned row is at least as fresh — it replaces in place.
     if (authoredByKey.has(key)) {
-      authoredByKey.set(key, entry);
+      if (
+        !deduplicateRepositories ||
+        pullRequestEntryKey(authoredByKey.get(key)!) === pullRequestEntryKey(entry)
+      ) {
+        authoredByKey.set(key, entry);
+      }
     } else if (reviewByKey.has(key)) {
-      reviewByKey.set(key, entry);
+      if (
+        !deduplicateRepositories ||
+        pullRequestEntryKey(reviewByKey.get(key)!) === pullRequestEntryKey(entry)
+      ) {
+        reviewByKey.set(key, entry);
+      }
     } else {
       others.push(entry);
     }
@@ -649,15 +666,34 @@ export function mergePullRequestDiffStats(
   stats: ReadonlyArray<{
     readonly environmentId: string;
     readonly projectId: string;
+    readonly repository: string;
+    readonly host?: string | undefined;
     readonly number: number;
     readonly additions: number;
     readonly deletions: number;
   }>,
+  entries: ReadonlyArray<EnvironmentPullRequestEntry> = [],
 ): PullRequestDiffStats {
   if (stats.length === 0) return previous;
   const next = new Map(previous);
   for (const stat of stats) {
-    next.set(pullRequestDiffStatKey(stat), {
+    const hosts =
+      stat.host === undefined
+        ? new Set(
+            entries
+              .filter(
+                (entry) =>
+                  entry.environmentId === stat.environmentId &&
+                  entry.projectId === stat.projectId &&
+                  entry.repository.toLowerCase() === stat.repository.toLowerCase() &&
+                  entry.number === stat.number,
+              )
+              .map((entry) => entry.host.toLowerCase()),
+          )
+        : new Set([stat.host.toLowerCase()]);
+    if (hosts.size !== 1) continue;
+    const host = [...hosts][0]!;
+    next.set(pullRequestDiffStatKey({ ...stat, host }), {
       additions: stat.additions,
       deletions: stat.deletions,
     });
@@ -665,12 +701,15 @@ export function mergePullRequestDiffStats(
   return next;
 }
 
-/** A project id only names a project within its own environment, so the key carries both. */
+/** Counts belong to one repository on one host, within the project and environment that read it. */
 export const pullRequestDiffStatKey = (row: {
   readonly environmentId: string;
   readonly projectId: string;
+  readonly repository: string;
+  readonly host: string;
   readonly number: number;
-}) => `${row.environmentId} ${row.projectId} ${row.number}`;
+}) =>
+  `${row.environmentId} ${row.projectId} ${row.host.toLowerCase()} ${row.repository.toLowerCase()} ${row.number}`;
 
 /**
  * Every connected environment's listing, read as one list.
@@ -695,6 +734,19 @@ export interface MergedPullRequestList {
   readonly truncatedEnvironments: ReadonlyArray<string>;
 }
 
+/** Shared upstream rows keep the first copy's environment for actions and later pages. */
+export function deduplicatePullRequestRepositories<Entry extends PullRequestListEntry>(
+  entries: ReadonlyArray<Entry>,
+): Entry[] {
+  const listed = new Set<string>();
+  return entries.filter((entry) => {
+    const key = `${entry.provider}:${entry.host.toLowerCase()}:${entry.repository.toLowerCase()}:${entry.number}`;
+    if (listed.has(key)) return false;
+    listed.add(key);
+    return true;
+  });
+}
+
 /**
  * The environments' answers folded into one. A host reached from more than one environment is one
  * row in the switcher, readable if any environment could read it and searched on the host only if
@@ -702,6 +754,7 @@ export interface MergedPullRequestList {
  */
 export function mergePullRequestLists(
   answers: ReadonlyArray<readonly [EnvironmentId, PullRequestListResult]>,
+  deduplicateRepositories = false,
 ): MergedPullRequestList | null {
   if (answers.length === 0) return null;
   const viewers: Record<string, string> = {};
@@ -740,7 +793,10 @@ export function mergePullRequestLists(
   return {
     viewers,
     providers: [...providers.values()],
-    entries: entries.toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    entries: (deduplicateRepositories
+      ? deduplicatePullRequestRepositories(entries)
+      : entries
+    ).toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
     errors,
     truncated,
     nextCursors,

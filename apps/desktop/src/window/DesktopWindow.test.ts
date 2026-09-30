@@ -875,9 +875,10 @@ describe("DesktopWindow", () => {
           assert.equal(fakeWindow.maximize.mock.calls.length, 0);
           assert.deepEqual(mainWindowBoundsUpdates, []);
           assert.equal(createdWindowOptions[0]?.skipTaskbar, true);
-          assert.equal(createdWindowOptions[0]?.transparent, true);
+          assert.equal(createdWindowOptions[0]?.transparent, false);
           assert.equal(createdWindowOptions[0]?.frame, false);
-          assert.equal(createdWindowOptions[0]?.resizable, false);
+          assert.equal(createdWindowOptions[0]?.resizable, true);
+          assert.equal(createdWindowOptions[0]?.thickFrame, true);
           assert.equal(fakeWindow.openDevTools.mock.calls.length, 0);
           assert.deepEqual(fakeWindow.setBackgroundThrottling.mock.calls, [[false]]);
         }).pipe(Effect.provide(layer));

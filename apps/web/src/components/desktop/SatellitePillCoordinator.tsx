@@ -49,7 +49,7 @@ function UnselectedThreadProjection() {
   return null;
 }
 
-/** Stays mounted while the native window collapses around the pill. */
+/** Stays mounted while the retained workspace is hidden. */
 export function SatellitePillCoordinator() {
   const params = useParams({ strict: false });
   const threadRef = resolveThreadRouteRef(params);

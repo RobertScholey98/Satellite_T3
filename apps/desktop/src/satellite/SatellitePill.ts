@@ -1,6 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Native Electron boundary owns a small position file beside desktop preferences.
-// @effect-diagnostics globalTimers:off -- Electron listeners dispose their motion, blur, position, and health timers.
-// @effect-diagnostics globalConsole:off -- Preference errors are reported at the Electron boundary.
+// @effect-diagnostics nodeBuiltinImport:off -- Native Electron boundary owns desktop placement preferences.
+// @effect-diagnostics globalTimers:off -- Electron listeners dispose their blur and health timers.
+// @effect-diagnostics globalConsole:off -- Preference and native helper errors are reported at this boundary.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
@@ -10,10 +10,12 @@ import * as Channels from "./channels.ts";
 import {
   clampPillBounds,
   handleMainClose,
+  PILL_SIZE,
   resolvePillBounds,
   resolveWorkspaceBounds,
   unavailablePillState,
 } from "./pillModel.ts";
+import { loadWindowsPillDrag } from "./WindowsPillDrag.ts";
 
 const Position = Schema.Struct({
   x: Schema.Finite,
@@ -27,24 +29,26 @@ const isMoveDirection = Schema.is(
   Schema.Literals(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]),
 );
 const STALE_AFTER_MS = 30_000;
-// Leave rendering/IPC headroom beyond the 500ms morph; this only recovers a
-// missing completion after a renderer reload or stall.
-const TRANSITION_FALLBACK_MS = 1_500;
-const shells = new WeakMap<Electron.BrowserWindow, { expand: () => void }>();
+const shells = new WeakMap<Electron.BrowserWindow, { expand: () => boolean }>();
 
 export function isSatelliteWindow(window: Electron.BrowserWindow): boolean {
   return shells.has(window);
 }
 
-/** All desktop reveal paths, including shortcuts and capture, expand the same surface. */
-export function expandSatelliteWindow(window: Electron.BrowserWindow): void {
-  shells.get(window)?.expand();
+/** Every desktop reveal path expands the retained workspace. */
+export function expandSatelliteWindow(window: Electron.BrowserWindow): boolean {
+  return shells.get(window)?.expand() ?? true;
 }
 
-/** The workspace stays mounted in this window while the renderer displays its pill. */
+/** Own both native surfaces. The pill never borrows the workspace's viewport or geometry. */
 export function installSatellitePill(
   main: Electron.BrowserWindow,
-  options: { readonly revealMain: () => void; readonly icon?: string },
+  options: {
+    readonly revealMain: () => void;
+    readonly icon?: string;
+    readonly pillUrl: string;
+    readonly pillPreloadPath: string;
+  },
 ): void {
   const positionPath = NodePath.join(Electron.app.getPath("userData"), "satellite-pill.json");
   let position: typeof Position.Type | null = null;
@@ -52,7 +56,7 @@ export function installSatellitePill(
     const saved: unknown = JSON.parse(NodeFS.readFileSync(positionPath, "utf8"));
     if (isPosition(saved)) position = saved;
   } catch {
-    // A missing or damaged position file falls back to the primary display.
+    /* Missing or damaged preferences use the primary display. */
   }
   const workAreas = () => {
     const primary = Electron.screen.getPrimaryDisplay();
@@ -62,48 +66,78 @@ export function installSatellitePill(
     ].map((display) => display.workArea);
   };
   let pillBounds = clampPillBounds(position, workAreas());
-  const initialBounds = main.getBounds();
+  const initial = main.getBounds();
   let workspaceSize = {
-    width: Math.max(840, position?.workspaceWidth ?? initialBounds.width),
-    height: Math.max(620, position?.workspaceHeight ?? initialBounds.height),
+    width: Math.max(840, position?.workspaceWidth ?? initial.width),
+    height: Math.max(620, position?.workspaceHeight ?? initial.height),
   };
-  const initialCanvas = resolveWorkspaceBounds(pillBounds, workspaceSize, workAreas());
-  const relativePill = (canvas: Electron.Rectangle) => ({
-    ...pillBounds,
-    x: pillBounds.x - canvas.x,
-    y: pillBounds.y - canvas.y,
-  });
-  let shell: SatelliteShellState = {
-    mode: "pill",
-    phase: "settled",
-    transitionId: 0,
-    pillBounds: relativePill(initialCanvas),
-    workspaceSize: { width: initialCanvas.width, height: initialCanvas.height },
-    pinned: false,
-  };
+  let shell: SatelliteShellState = { mode: "pill", pinned: false };
   let snapshot = unavailablePillState();
   let quitting = false;
   let menuOpen = false;
-  let changingBounds = false;
-  let placementNeedsReconcile = false;
-  let pillDrag: { cursor: Electron.Point; origin: Electron.Point } | undefined;
-  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  let mainReady = false;
+  let pillReady = false;
+  let nativePillMove = false;
+  let topologyRecoveryPending = false;
+  let workspaceGesture: "idle" | "moving" | "resizing" = "idle";
   let staleTimer: ReturnType<typeof setTimeout> | undefined;
-  let transitionTimer: ReturnType<typeof setTimeout> | undefined;
   let blurTimer: ReturnType<typeof setTimeout> | undefined;
+  let nativeDrag: ((handle: Buffer) => boolean) | undefined;
+  const pill = new Electron.BrowserWindow({
+    ...pillBounds,
+    minWidth: 1,
+    minHeight: 1,
+    maxWidth: PILL_SIZE.width,
+    maxHeight: PILL_SIZE.height,
+    show: false,
+    frame: false,
+    thickFrame: false,
+    transparent: true,
+    backgroundColor: "#00000000",
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    ...(options.icon ? { icon: options.icon } : {}),
+    webPreferences: {
+      preload: options.pillPreloadPath,
+      partition: "satellite-pill",
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  // Reusing getBounds() dimensions for placement accumulates enclosing-pixel rounding.
+  pill.setMinimumSize(1, 1);
+  pill.setMaximumSize(PILL_SIZE.width, PILL_SIZE.height);
+  pill.setBounds(pillBounds);
+  pill.setVisibleOnAllWorkspaces(true);
+  pill.webContents.setZoomFactor(1);
+  const pillScheme = new URL(options.pillUrl).protocol.slice(0, -1);
+  if (pillScheme === "t3code" || pillScheme === "t3code-dev") {
+    pill.webContents.session.protocol.handle(pillScheme, (request) =>
+      Electron.net.fetch(request.url),
+    );
+  }
+  main.setSkipTaskbar(true);
+  main.setAlwaysOnTop(true, "floating");
+  main.setVisibleOnAllWorkspaces(true);
+  main.setResizable(true);
+  const setWorkspaceBounds = (bounds: Electron.Rectangle) => {
+    main.setMinimumSize(Math.min(840, bounds.width), Math.min(620, bounds.height));
+    main.setBounds(bounds);
+  };
+  setWorkspaceBounds(resolveWorkspaceBounds(pillBounds, workspaceSize, workAreas()));
+
   const sendShell = () => {
     if (!main.isDestroyed()) main.webContents.send(Channels.SATELLITE_SHELL_STATE, shell);
   };
   const sendState = () => {
-    if (!main.isDestroyed()) main.webContents.send(Channels.SATELLITE_PILL_STATE, snapshot);
-  };
-  const markUnknown = () => {
-    clearTimeout(staleTimer);
-    snapshot = unavailablePillState(snapshot);
-    sendState();
+    if (!pill.isDestroyed()) pill.webContents.send(Channels.SATELLITE_PILL_STATE, snapshot);
   };
   const savePosition = () => {
-    clearTimeout(saveTimer);
     try {
       NodeFS.mkdirSync(NodePath.dirname(positionPath), { recursive: true });
       NodeFS.writeFileSync(
@@ -120,144 +154,46 @@ export function installSatellitePill(
       console.warn("SatelliteT3 could not save pill position", error);
     }
   };
-  const setBounds = (bounds: Electron.Rectangle) => {
-    const current = main.getBounds();
-    if (
-      current.x === bounds.x &&
-      current.y === bounds.y &&
-      current.width === bounds.width &&
-      current.height === bounds.height
-    )
-      return;
-    changingBounds = true;
-    main.setBounds(bounds);
-    changingBounds = false;
-  };
-  const applyShape = () => {
-    // The WebView keeps one viewport in both modes. Native shaping clips unused
-    // pixels and lets clicks fall through the otherwise transparent canvas.
-    main.setShape([
-      shell.mode === "pill" && shell.phase === "settled"
-        ? shell.pillBounds
-        : { x: 0, y: 0, ...shell.workspaceSize },
-    ]);
-  };
-  const rememberPlacement = () => {
-    if (main.isDestroyed() || changingBounds || pillDrag || shell.phase !== "settled") return;
-    const bounds = main.getBounds();
-    const resized =
-      bounds.width !== shell.workspaceSize.width || bounds.height !== shell.workspaceSize.height;
-    if (
-      !resized &&
-      bounds.x + shell.pillBounds.x === pillBounds.x &&
-      bounds.y + shell.pillBounds.y === pillBounds.y
-    )
-      return;
-    placementNeedsReconcile = true;
-    if (shell.mode === "pill") {
-      // Native dragging moves the canvas, while its visible pill keeps the same
-      // local offset. Re-anchor the canvas only once the drag has completed.
-      pillBounds = {
-        ...pillBounds,
-        x: bounds.x + shell.pillBounds.x,
-        y: bounds.y + shell.pillBounds.y,
-      };
-    } else {
-      // A native move must not turn DPI rounding into a new preferred size.
-      if (resized) workspaceSize = { width: bounds.width, height: bounds.height };
-      pillBounds = resolvePillBounds(bounds, workAreas(), pillBounds);
-      shell = {
-        ...shell,
-        pillBounds: relativePill(bounds),
-        workspaceSize: { width: bounds.width, height: bounds.height },
-      };
-      applyShape();
-      sendShell();
-    }
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(savePosition, 300);
-  };
-  const reconcilePlacement = () => {
-    pillBounds = clampPillBounds(pillBounds, workAreas());
-    const canvas = resolveWorkspaceBounds(pillBounds, workspaceSize, workAreas());
-    setBounds(canvas);
-    const actualCanvas = main.getBounds();
-    shell = {
-      ...shell,
-      pillBounds: relativePill(actualCanvas),
-      workspaceSize: { width: actualCanvas.width, height: actualCanvas.height },
-    };
-    placementNeedsReconcile = false;
-    applyShape();
-    sendShell();
+  const rememberPill = () => {
+    if (pill.isDestroyed()) return;
+    const actual = pill.getBounds();
+    pillBounds = { ...PILL_SIZE, x: actual.x, y: actual.y };
     savePosition();
   };
-  const updatePillDragPosition = () => {
-    if (!pillDrag || main.isDestroyed()) return;
-    // Cursor and window coordinates are both native DIPs, independent of the
-    // renderer's zoom and the scale factor of the display under the pointer.
-    const cursor = Electron.screen.getCursorScreenPoint();
-    const x = pillDrag.origin.x + cursor.x - pillDrag.cursor.x;
-    const y = pillDrag.origin.y + cursor.y - pillDrag.cursor.y;
-    const current = main.getBounds();
-    if (current.x === x && current.y === y) return;
-    main.setPosition(x, y);
-    const actual = main.getBounds();
-    pillBounds = {
-      ...pillBounds,
-      x: actual.x + shell.pillBounds.x,
-      y: actual.y + shell.pillBounds.y,
-    };
+  const markUnknown = () => {
+    clearTimeout(staleTimer);
+    snapshot = unavailablePillState(snapshot);
+    sendState();
   };
-  const finishPillDrag = (applyFinalPoint: boolean) => {
-    if (!pillDrag) return;
-    if (applyFinalPoint) updatePillDragPosition();
-    pillDrag = undefined;
-    if (!main.isDestroyed()) reconcilePlacement();
-  };
-  const finishTransition = (transitionId: number) => {
-    if (main.isDestroyed() || transitionId !== shell.transitionId || shell.phase === "settled")
-      return;
-    clearTimeout(transitionTimer);
-    shell = { ...shell, phase: "settled" };
-    applyShape();
-    if (shell.mode === "pill" && main.isFocused()) main.blur();
-    sendShell();
-    savePosition();
-  };
-  const startTransition = (mode: "pill" | "workspace") => {
-    finishPillDrag(false);
-    if (main.isDestroyed() || quitting || shell.mode === mode) return;
+  const expand = () => {
+    if (quitting || main.isDestroyed()) return false;
+    if (shell.mode === "workspace") return mainReady;
     clearTimeout(blurTimer);
-    clearTimeout(transitionTimer);
-    rememberPlacement();
-    shell = {
-      ...shell,
-      mode,
-      phase: mode === "workspace" ? "expanding" : "collapsing",
-      transitionId: shell.transitionId + 1,
-    };
-    applyShape();
+    rememberPill();
+    setWorkspaceBounds(resolveWorkspaceBounds(pillBounds, workspaceSize, workAreas()));
+    shell = { ...shell, mode: "workspace" };
     sendShell();
-    const transitionId = shell.transitionId;
-    transitionTimer = setTimeout(() => finishTransition(transitionId), TRANSITION_FALLBACK_MS);
+    if (mainReady) {
+      main.show();
+      main.focus();
+      pill.hide();
+    }
+    return mainReady;
   };
-  const collapse = () => startTransition("pill");
-  shells.set(main, { expand: () => startTransition("workspace") });
-  main.setSkipTaskbar(true);
-  main.setAlwaysOnTop(true, "floating");
-  main.setVisibleOnAllWorkspaces(true);
-  main.setMinimumSize(0, 0);
-  main.setResizable(false);
-  setBounds(initialCanvas);
-  const actualCanvas = main.getBounds();
-  shell = {
-    ...shell,
-    pillBounds: relativePill(actualCanvas),
-    workspaceSize: { width: actualCanvas.width, height: actualCanvas.height },
+  const collapse = () => {
+    if (quitting || main.isDestroyed() || shell.mode === "pill") return;
+    clearTimeout(blurTimer);
+    pillBounds = resolvePillBounds(main.getBounds(), workAreas(), pillBounds);
+    pill.setBounds(pillBounds);
+    shell = { ...shell, mode: "pill" };
+    sendShell();
+    if (pillReady) {
+      pill.showInactive();
+      main.hide();
+    }
+    savePosition();
   };
-  applyShape();
-
+  shells.set(main, { expand });
   const openMain = () => {
     if (!main.isDestroyed()) options.revealMain();
   };
@@ -292,169 +228,222 @@ export function installSatellitePill(
   tray.setToolTip("SatelliteT3 — open workspace");
   tray.setContextMenu(menu());
   tray.on("click", openMain);
-  const publish = (event: Electron.IpcMainEvent, value: unknown) => {
-    if (event.sender !== main.webContents || !isPillState(value)) return;
-    snapshot = { ...value, title: value.title.slice(0, 240), detail: value.detail.slice(0, 500) };
-    clearTimeout(staleTimer);
-    staleTimer = setTimeout(markUnknown, STALE_AFTER_MS);
-    sendState();
+  const mainSender = (event: Electron.IpcMainEvent) => event.sender === main.webContents;
+  const pillSender = (event: Electron.IpcMainEvent) => event.sender === pill.webContents;
+  const listeners = {
+    [Channels.SATELLITE_PUBLISH]: (event: Electron.IpcMainEvent, value: unknown) => {
+      if (!mainSender(event) || !isPillState(value)) return;
+      snapshot = { ...value, title: value.title.slice(0, 240), detail: value.detail.slice(0, 500) };
+      clearTimeout(staleTimer);
+      staleTimer = setTimeout(markUnknown, STALE_AFTER_MS);
+      sendState();
+    },
+    [Channels.SATELLITE_HIDE_MAIN]: (event: Electron.IpcMainEvent) => {
+      if (mainSender(event)) collapse();
+    },
+    [Channels.SATELLITE_WORKSPACE_READY]: (event: Electron.IpcMainEvent) => {
+      if (!mainSender(event)) return;
+      mainReady = true;
+      sendShell();
+      if (shell.mode === "workspace") {
+        main.show();
+        main.focus();
+        pill.hide();
+        options.revealMain();
+      }
+    },
+    [Channels.SATELLITE_PILL_READY]: (event: Electron.IpcMainEvent) => {
+      if (!pillSender(event)) return;
+      pillReady = true;
+      sendState();
+      if (shell.mode === "pill") {
+        pill.showInactive();
+        main.hide();
+      }
+    },
+    [Channels.SATELLITE_PILL_OPEN]: (event: Electron.IpcMainEvent) => {
+      if (pillSender(event)) openMain();
+    },
+    [Channels.SATELLITE_PILL_MENU]: (event: Electron.IpcMainEvent) => {
+      if (!pillSender(event) || nativePillMove) return;
+      menuOpen = true;
+      clearTimeout(blurTimer);
+      menu().popup({
+        window: pill,
+        callback: () => {
+          menuOpen = false;
+        },
+      });
+    },
+    [Channels.SATELLITE_PILL_MOVE]: (event: Electron.IpcMainEvent, direction: unknown) => {
+      if (
+        !pillSender(event) ||
+        !isMoveDirection(direction) ||
+        nativePillMove ||
+        shell.mode !== "pill"
+      )
+        return;
+      const actual = pill.getBounds();
+      pillBounds = clampPillBounds(
+        {
+          x: actual.x + (direction === "ArrowLeft" ? -16 : direction === "ArrowRight" ? 16 : 0),
+          y: actual.y + (direction === "ArrowUp" ? -16 : direction === "ArrowDown" ? 16 : 0),
+        },
+        workAreas(),
+      );
+      pill.setBounds(pillBounds);
+      rememberPill();
+    },
+    [Channels.SATELLITE_PILL_DRAG_BEGIN]: (event: Electron.IpcMainEvent) => {
+      if (
+        !pillSender(event) ||
+        quitting ||
+        menuOpen ||
+        nativePillMove ||
+        shell.mode !== "pill" ||
+        pill.isDestroyed()
+      )
+        return;
+      nativeDrag?.(pill.getNativeWindowHandle());
+    },
+    [Channels.SATELLITE_SET_PINNED]: (event: Electron.IpcMainEvent, pinned: unknown) => {
+      if (mainSender(event) && typeof pinned === "boolean") setPinned(pinned);
+    },
   };
-  const hideMain = (event: Electron.IpcMainEvent) => {
-    if (event.sender === main.webContents) collapse();
-  };
-  const pillReady = (event: Electron.IpcMainEvent) => {
-    if (event.sender !== main.webContents) return;
-    sendState();
-    sendShell();
-    if (!main.isVisible()) main.showInactive();
-  };
-  const pillOpen = (event: Electron.IpcMainEvent) => {
-    if (event.sender === main.webContents) openMain();
-  };
-  const pillMenu = (event: Electron.IpcMainEvent) => {
-    if (event.sender !== main.webContents) return;
-    finishPillDrag(false);
-    menuOpen = true;
-    clearTimeout(blurTimer);
-    menu().popup({
-      window: main,
-      callback: () => {
-        menuOpen = false;
-      },
-    });
-  };
-  const pillMove = (event: Electron.IpcMainEvent, direction: unknown) => {
-    if (
-      event.sender !== main.webContents ||
-      !isMoveDirection(direction) ||
-      pillDrag ||
-      shell.mode !== "pill" ||
-      shell.phase !== "settled"
-    )
-      return;
-    const x =
-      pillBounds.x + (direction === "ArrowLeft" ? -16 : direction === "ArrowRight" ? 16 : 0);
-    const y = pillBounds.y + (direction === "ArrowUp" ? -16 : direction === "ArrowDown" ? 16 : 0);
-    pillBounds = clampPillBounds({ x, y }, workAreas());
-    reconcilePlacement();
-  };
-  const pillDragBegin = (event: Electron.IpcMainEvent) => {
-    if (
-      event.sender !== main.webContents ||
-      main.isDestroyed() ||
-      quitting ||
-      menuOpen ||
-      pillDrag ||
-      shell.mode !== "pill" ||
-      shell.phase !== "settled"
-    )
-      return;
-    clearTimeout(saveTimer);
-    clearTimeout(blurTimer);
-    pillDrag = { cursor: Electron.screen.getCursorScreenPoint(), origin: main.getBounds() };
-  };
-  const pillDragUpdate = (event: Electron.IpcMainEvent) => {
-    if (event.sender === main.webContents) updatePillDragPosition();
-  };
-  const pillDragEnd = (event: Electron.IpcMainEvent) => {
-    if (event.sender === main.webContents) finishPillDrag(true);
-  };
-  const transitionFinished = (event: Electron.IpcMainEvent, transitionId: unknown) => {
-    if (event.sender === main.webContents && typeof transitionId === "number")
-      finishTransition(transitionId);
-  };
-  const pin = (event: Electron.IpcMainEvent, pinned: unknown) => {
-    if (event.sender === main.webContents && typeof pinned === "boolean") setPinned(pinned);
-  };
-  const beforeQuit = () => {
-    finishPillDrag(false);
-    rememberPlacement();
-    quitting = true;
-    savePosition();
-  };
-  const displayChanged = () => {
-    if (main.isDestroyed()) return;
-    pillDrag = undefined;
-    clearTimeout(transitionTimer);
-    shell = {
-      ...shell,
-      phase: "settled",
-      transitionId: shell.transitionId + 1,
-    };
-    reconcilePlacement();
-  };
-  Electron.app.on("before-quit", beforeQuit);
-  Electron.screen.on("display-added", displayChanged);
-  Electron.screen.on("display-removed", displayChanged);
-  Electron.screen.on("display-metrics-changed", displayChanged);
-  Electron.ipcMain.on(Channels.SATELLITE_PUBLISH, publish);
-  Electron.ipcMain.on(Channels.SATELLITE_HIDE_MAIN, hideMain);
-  Electron.ipcMain.on(Channels.SATELLITE_PILL_READY, pillReady);
-  Electron.ipcMain.on(Channels.SATELLITE_PILL_OPEN, pillOpen);
-  Electron.ipcMain.on(Channels.SATELLITE_PILL_MENU, pillMenu);
-  Electron.ipcMain.on(Channels.SATELLITE_PILL_MOVE, pillMove);
-  Electron.ipcMain.on(Channels.SATELLITE_PILL_DRAG_BEGIN, pillDragBegin);
-  Electron.ipcMain.on(Channels.SATELLITE_PILL_DRAG_UPDATE, pillDragUpdate);
-  Electron.ipcMain.on(Channels.SATELLITE_PILL_DRAG_END, pillDragEnd);
-  Electron.ipcMain.on(Channels.SATELLITE_TRANSITION_FINISHED, transitionFinished);
-  Electron.ipcMain.on(Channels.SATELLITE_SET_PINNED, pin);
+  for (const [channel, listener] of Object.entries(listeners))
+    Electron.ipcMain.on(channel, listener);
+  pill.hookWindowMessage(0x0231, () => {
+    nativePillMove = true;
+  });
+  pill.hookWindowMessage(0x0232, () => {
+    nativePillMove = false;
+    rememberPill();
+    if (topologyRecoveryPending) displayChanged();
+  });
+  main.hookWindowMessage(0x0231, () => {
+    workspaceGesture = "moving";
+  });
+  main.on("will-resize", () => {
+    if (workspaceGesture !== "idle") workspaceGesture = "resizing";
+  });
+  main.hookWindowMessage(0x0232, () => {
+    if (workspaceGesture === "resizing" && !topologyRecoveryPending) {
+      const bounds = main.getBounds();
+      workspaceSize = { width: bounds.width, height: bounds.height };
+      savePosition();
+    }
+    workspaceGesture = "idle";
+    if (topologyRecoveryPending) displayChanged();
+  });
+  pill.on("moved", () => {
+    if (!nativePillMove) rememberPill();
+  });
+  pill.on("close", (event) => {
+    if (!quitting) event.preventDefault();
+  });
   main.on("close", (event) => handleMainClose(event, quitting, collapse));
   main.on("minimize", () => {
-    if (quitting) return;
-    main.restore();
-    collapse();
+    if (!quitting) {
+      main.restore();
+      collapse();
+    }
   });
   main.on("blur", () => {
-    finishPillDrag(false);
     clearTimeout(blurTimer);
     blurTimer = setTimeout(() => {
-      if (main.isDestroyed() || shell.pinned || menuOpen || main.isFocused() || !main.isEnabled())
+      if (
+        main.isDestroyed() ||
+        shell.mode !== "workspace" ||
+        shell.pinned ||
+        menuOpen ||
+        main.isFocused() ||
+        !main.isEnabled()
+      )
         return;
       if (main.getChildWindows().some((child) => child.isVisible())) return;
       collapse();
     }, 150);
   });
   main.on("focus", () => clearTimeout(blurTimer));
-  main.on("move", rememberPlacement);
-  main.on("resize", rememberPlacement);
-  main.on("moved", () => {
-    if (changingBounds || pillDrag) return;
-    rememberPlacement();
-    if (placementNeedsReconcile && shell.phase === "settled") reconcilePlacement();
+  main.webContents.on("did-start-navigation", (event) => {
+    if (!event.isMainFrame || event.isSameDocument) return;
+    mainReady = false;
+    markUnknown();
   });
   main.webContents.on("render-process-gone", () => {
+    mainReady = false;
     markUnknown();
     collapse();
-    finishTransition(shell.transitionId);
   });
-  main.webContents.on("did-start-loading", () => {
-    finishPillDrag(false);
-    markUnknown();
+  pill.webContents.on("did-start-navigation", (event) => {
+    if (!event.isMainFrame || event.isSameDocument) return;
+    pillReady = false;
   });
-  main.once("closed", () => {
-    if (pillDrag) pillBounds = clampPillBounds(pillBounds, workAreas());
-    pillDrag = undefined;
+  pill.webContents.on("render-process-gone", () => {
+    pillReady = false;
+    if (!quitting) pill.webContents.reload();
+  });
+  const beforeQuit = () => {
+    rememberPill();
+    quitting = true;
+  };
+  const displayChanged = () => {
+    if (main.isDestroyed() || pill.isDestroyed()) return;
+    if (nativePillMove || workspaceGesture !== "idle") {
+      topologyRecoveryPending = true;
+      return;
+    }
+    topologyRecoveryPending = false;
+    pillBounds = clampPillBounds(pill.getBounds(), workAreas());
+    pill.setBounds(pillBounds);
+    if (shell.mode === "workspace")
+      setWorkspaceBounds(
+        resolveWorkspaceBounds(
+          resolvePillBounds(main.getBounds(), workAreas(), pillBounds),
+          workspaceSize,
+          workAreas(),
+        ),
+      );
     savePosition();
+  };
+  const displayMetricsChanged = (
+    _event: Electron.Event,
+    _display: Electron.Display,
+    metrics: string[],
+  ) => {
+    if (metrics.includes("workArea") || metrics.includes("bounds")) displayChanged();
+  };
+  Electron.app.on("before-quit", beforeQuit);
+  Electron.screen.on("display-added", displayChanged);
+  Electron.screen.on("display-removed", displayChanged);
+  Electron.screen.on("display-metrics-changed", displayMetricsChanged);
+  main.once("closed", () => {
     shells.delete(main);
-    clearTimeout(saveTimer);
+    quitting = true;
     clearTimeout(staleTimer);
-    clearTimeout(transitionTimer);
     clearTimeout(blurTimer);
     Electron.app.removeListener("before-quit", beforeQuit);
     Electron.screen.removeListener("display-added", displayChanged);
     Electron.screen.removeListener("display-removed", displayChanged);
-    Electron.screen.removeListener("display-metrics-changed", displayChanged);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_PUBLISH, publish);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_HIDE_MAIN, hideMain);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_PILL_READY, pillReady);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_PILL_OPEN, pillOpen);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_PILL_MENU, pillMenu);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_PILL_MOVE, pillMove);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_PILL_DRAG_BEGIN, pillDragBegin);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_PILL_DRAG_UPDATE, pillDragUpdate);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_PILL_DRAG_END, pillDragEnd);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_TRANSITION_FINISHED, transitionFinished);
-    Electron.ipcMain.removeListener(Channels.SATELLITE_SET_PINNED, pin);
+    Electron.screen.removeListener("display-metrics-changed", displayMetricsChanged);
+    for (const [channel, listener] of Object.entries(listeners))
+      Electron.ipcMain.removeListener(channel, listener);
+    if (!pill.isDestroyed()) {
+      if (pillScheme === "t3code" || pillScheme === "t3code-dev")
+        pill.webContents.session.protocol.unhandle(pillScheme);
+      rememberPill();
+      pill.destroy();
+    }
     tray.destroy();
   });
+  void loadWindowsPillDrag()
+    .then((start) => {
+      if (quitting || pill.isDestroyed()) return;
+      nativeDrag = start;
+      return pill.loadURL(options.pillUrl);
+    })
+    .catch((error) => {
+      console.warn("SatelliteT3 could not prepare native pill", error);
+      if (!quitting && !pill.isDestroyed()) void pill.loadURL(options.pillUrl);
+    });
 }

@@ -43,6 +43,10 @@ import {
   isOrchestrationCommandRejection,
   OrchestrationCommandPreviouslyRejectedError,
 } from "../orchestration/Errors.ts";
+import {
+  makePublicationRecorder,
+  type PublicationInput,
+} from "../openWork/PublicationRepository.ts";
 
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 const MAX_ANSWER_BYTES = 64 * 1024;
@@ -184,10 +188,22 @@ export class DocumentService extends Context.Service<
         const config = yield* ServerConfig;
         const engine = yield* OrchestrationEngineService;
         const projection = yield* ProjectionSnapshotQuery;
+        const recordPublication = yield* makePublicationRecorder;
         return yield* makeDocumentService({
           stateDir: config.stateDir,
           dispatch: engine.dispatch,
           getThread: projection.getThreadShellById,
+          recordPublication: (input) =>
+            Effect.gen(function* () {
+              const thread = yield* projection.getThreadShellById(input.threadId);
+              if (Option.isNone(thread)) return;
+              const project = yield* projection.getProjectShellById(thread.value.projectId);
+              if (Option.isNone(project)) return;
+              yield* recordPublication({
+                ...input,
+                worktreePath: thread.value.worktreePath ?? project.value.workspaceRoot,
+              });
+            }).pipe(Effect.mapError(storageError)),
         });
       }),
     ),
@@ -198,6 +214,9 @@ export const makeDocumentService = (options: {
   readonly stateDir: string;
   readonly dispatch: OrchestrationEngineShape["dispatch"];
   readonly getThread: ProjectionSnapshotQueryShape["getThreadShellById"];
+  readonly recordPublication?: (
+    input: Omit<PublicationInput, "worktreePath">,
+  ) => Effect.Effect<void, DocumentOperationError>;
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -417,6 +436,14 @@ export const makeDocumentService = (options: {
             yield* sql`INSERT INTO managed_documents (id,thread_id,title,kind,current_revision_id,revision_number,status,updated_at) VALUES (${documentId},${input.threadId},${input.title},${input.kind},${revisionId},${number},'draft',${createdAt})`;
           }
           yield* sql`INSERT INTO document_revisions (id,document_id,number,format,content_hash,created_at,definition_json,snapshot_path,answers_json,answer_version) VALUES (${revisionId},${documentId},${number},${format},${hash(content)},${createdAt},${json(definition)},${snapshotFilename},${json(answers)},0)`;
+          if (options.recordPublication)
+            yield* options.recordPublication({
+              documentId,
+              revisionId,
+              threadId: input.threadId,
+              title: input.title,
+              ...(input.step ? { step: input.step } : {}),
+            });
           yield* recordHistory({
             documentId,
             revisionId,

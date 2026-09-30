@@ -1,6 +1,6 @@
 /// <reference types="vite-plus/client" />
 
-import type { DesktopBridge, SatelliteBridge } from "@t3tools/contracts";
+import type { DesktopBridge, SatelliteBridge, SatellitePillBridge } from "@t3tools/contracts";
 
 interface ImportMetaEnv {
   readonly VITE_HTTP_URL: string;
@@ -24,5 +24,6 @@ declare global {
   interface Window {
     desktopBridge?: DesktopBridge;
     satelliteBridge?: SatelliteBridge;
+    satellitePillBridge?: SatellitePillBridge;
   }
 }

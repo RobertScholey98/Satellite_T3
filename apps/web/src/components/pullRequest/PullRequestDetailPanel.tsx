@@ -428,11 +428,13 @@ export function PullRequestDetailPanel({
   composerDraftTarget,
   onBack,
   onSelectPullRequest,
+  onSyncChange,
 }: {
   environmentId: EnvironmentId;
   shortcutsEnabled: boolean;
   getShortcutContext: () => ShortcutMatchContext;
   onSelectPullRequest?: ((reference: PullRequestRef) => void) | undefined;
+  onSyncChange?: (syncing: boolean) => void;
   /**
    * The thread this panel sits beside, if any. Links that are not the pull
    * request itself (check details, host permalinks) can open in that thread's
@@ -852,6 +854,11 @@ export function PullRequestDetailPanel({
   // One word for "the host is being asked again", whichever of the two halves is in flight:
   // the invalidation round trip, then the detail read it kicks off.
   const refreshing = isInvalidating || detailQuery.isPending;
+  const syncing = refreshing || activityQuery.isPending;
+  useEffect(() => {
+    onSyncChange?.(syncing);
+    return () => onSyncChange?.(false);
+  }, [onSyncChange, syncing]);
   const refreshFromHost = useCallback(async () => {
     setIsInvalidating(true);
     try {

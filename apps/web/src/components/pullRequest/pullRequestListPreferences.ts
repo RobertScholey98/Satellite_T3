@@ -22,6 +22,7 @@ export type PullRequestListSort = typeof PullRequestListSort.Type;
 export interface PullRequestListPreferences {
   readonly involvement: PullRequestInvolvement;
   readonly state: PullRequestListState;
+  readonly includeUpstream?: boolean;
   readonly environmentId?: EnvironmentId;
   readonly projectId?: ProjectId;
   readonly host?: string;
@@ -44,9 +45,10 @@ const DEFAULT_PULL_REQUEST_LIST_PREFERENCES = {
 } as const satisfies PullRequestListPreferences;
 
 const BoundedPreference = Schema.String.check(Schema.isMaxLength(200));
-const PullRequestListPreferencesSchema = Schema.Struct({
+export const PullRequestListPreferencesSchema = Schema.Struct({
   involvement: PullRequestInvolvement,
   state: PullRequestListState,
+  includeUpstream: Schema.optional(Schema.Boolean),
   environmentId: Schema.optional(EnvironmentId),
   projectId: Schema.optional(ProjectId),
   host: Schema.optional(BoundedPreference),
@@ -78,6 +80,7 @@ export function pullRequestListPreferences(
   return {
     involvement: search.involvement,
     state: search.state,
+    ...(search.includeUpstream ? { includeUpstream: true } : {}),
     ...(search.environmentId ? { environmentId: search.environmentId } : {}),
     ...(search.projectId ? { projectId: search.projectId } : {}),
     ...(search.host ? { host: search.host } : {}),

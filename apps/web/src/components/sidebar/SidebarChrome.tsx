@@ -23,7 +23,7 @@ import {
   useSidebar,
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
+import { readWorkAreaSearch } from "../work/workspaceNavigation";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
@@ -148,7 +148,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     closeMobileSidebar();
     void navigate({
       to: "/pull-requests",
-      search: readPullRequestListPreferences(),
+      search: readWorkAreaSearch(),
     });
   }, [closeMobileSidebar, navigate]);
   const handleSettingsClick = useCallback(() => {

@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { OpenWorkPublicationStep } from "./openWork.ts";
 
 const DocumentId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 const DocumentTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(240));
@@ -93,6 +94,7 @@ export const DocumentsPublishInput = Schema.Struct({
   kind: DocumentKind,
   path: TrimmedNonEmptyString,
   definition: Schema.optional(Schema.NullOr(DocumentChecklist)),
+  step: Schema.optional(OpenWorkPublicationStep),
 });
 export type DocumentsPublishInput = typeof DocumentsPublishInput.Type;
 export const DocumentsSaveDraftInput = Schema.Struct({

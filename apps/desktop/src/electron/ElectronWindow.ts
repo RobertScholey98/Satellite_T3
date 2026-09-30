@@ -270,7 +270,7 @@ export const make = Effect.gen(function* () {
             return;
           }
 
-          expandSatelliteWindow(window);
+          if (!expandSatelliteWindow(window)) return;
 
           // Only a capture reveal fights another process for the foreground, which
           // needs Win32 calls that load native modules. Everything else stays native.

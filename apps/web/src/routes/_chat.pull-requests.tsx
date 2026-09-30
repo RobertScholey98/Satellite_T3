@@ -29,9 +29,10 @@ import {
   Plug2Icon,
   Maximize2Icon,
   Minimize2Icon,
-  SearchIcon,
   UserLockIcon,
   type LucideIcon,
+  GitBranchIcon,
+  TicketIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -45,6 +46,7 @@ import {
 } from "react";
 
 import {
+  deduplicatePullRequestRepositories,
   filterPullRequestsByInvolvement,
   findScopedProject,
   collectPullRequestListFacets,
@@ -112,11 +114,6 @@ import {
 } from "../components/pullRequest/PullRequestRow";
 import { PullRequestsUnavailableState } from "../components/pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs, type PullRequestTabStatusSeed } from "../components/RightPanelTabs";
-import {
-  WorkspaceBreadcrumb,
-  WorkspaceBreadcrumbItem,
-  WorkspaceBreadcrumbSeparator,
-} from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../components/WorkspacePageContainer";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
@@ -159,6 +156,10 @@ import { Separator } from "~/components/ui/separator";
 import { primaryServerKeybindingsAtom } from "~/state/server";
 import { getSourceControlPresentationForKind } from "~/sourceControlPresentation";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
+import { IssuesBoard } from "~/components/work/IssuesBoard";
+import { OpenWorkView } from "~/components/work/OpenWorkView";
+import { WorkSyncIndicator } from "~/components/work/WorkSyncIndicator";
+import { writeWorkAreaSearch } from "~/components/work/workspaceNavigation";
 
 function getShortcutContext() {
   return {
@@ -173,6 +174,13 @@ function getShortcutContext() {
 }
 
 export interface PullRequestsSearch extends PullRequestListPreferences {
+  readonly tab?: "pull-requests" | "issues" | "open";
+  readonly boardId?: string;
+  readonly boardEnvironmentId?: EnvironmentId;
+  readonly boardProjectId?: ProjectId;
+  readonly issueId?: string;
+  readonly worktreePath?: string;
+  readonly workEnvironmentId?: EnvironmentId;
   /**
    * Narrows the list to one server. Absent means every connected one, which is the default the
    * page has now — so a link written before servers could be chosen still opens the whole list.
@@ -294,8 +302,30 @@ function pullRequestSearchLabels(raw: unknown): Partial<Pick<PullRequestsSearch,
 
 export const Route = createFileRoute("/_chat/pull-requests")({
   validateSearch: (raw: Record<string, unknown>): PullRequestsSearch => ({
+    ...(raw.tab === "issues" || raw.tab === "open" ? { tab: raw.tab } : {}),
+    ...(typeof raw.boardId === "string" && raw.boardId
+      ? { boardId: raw.boardId.slice(0, 512) }
+      : {}),
+    ...(typeof raw.boardEnvironmentId === "string" && raw.boardEnvironmentId
+      ? { boardEnvironmentId: raw.boardEnvironmentId as EnvironmentId }
+      : {}),
+    ...(typeof raw.boardProjectId === "string" && raw.boardProjectId
+      ? { boardProjectId: raw.boardProjectId as ProjectId }
+      : {}),
+    ...(typeof raw.workEnvironmentId === "string" && raw.workEnvironmentId
+      ? { workEnvironmentId: raw.workEnvironmentId as EnvironmentId }
+      : {}),
+    ...(typeof raw.issueId === "string" && raw.issueId
+      ? { issueId: raw.issueId.slice(0, 512) }
+      : {}),
+    ...(typeof raw.worktreePath === "string" && raw.worktreePath
+      ? { worktreePath: raw.worktreePath.slice(0, 4096) }
+      : {}),
     involvement:
       raw.involvement === "reviewing" || raw.involvement === "authored" ? raw.involvement : "all",
+    ...(raw.includeUpstream === true || raw.includeUpstream === "true"
+      ? { includeUpstream: true }
+      : {}),
     state:
       raw.state === "closed" || raw.state === "merged" || raw.state === "all" ? raw.state : "open",
     ...(SORT_OPTIONS.some((option) => option.value === raw.sort)
@@ -340,7 +370,168 @@ export const Route = createFileRoute("/_chat/pull-requests")({
   component: PullRequestsRouteView,
 });
 
+function WorkTabs({ controls, syncing = false }: { controls?: ReactNode; syncing?: boolean }) {
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
+  return (
+    <WorkspacePageHeader
+      electron={isElectron}
+      data-workspace-tabbar
+      className="relative h-10 min-h-10 border-b"
+    >
+      <nav
+        aria-label="Work views"
+        className="-mb-px flex h-10 min-w-0 flex-1 gap-5 overflow-x-auto"
+      >
+        {(
+          [
+            ["pull-requests", "Pull requests", PullRequestGlyph.pullRequest],
+            ["issues", "Issues", TicketIcon],
+            ["open", "Open", GitBranchIcon],
+          ] as const
+        ).map(([tab, label, Icon]) => (
+          <button
+            key={tab}
+            type="button"
+            className={cn(
+              "flex h-10 shrink-0 items-center gap-1.5 border-b-2 px-0.5 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+              (search.tab ?? "pull-requests") === tab
+                ? "border-foreground text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            )}
+            aria-current={(search.tab ?? "pull-requests") === tab ? "page" : undefined}
+            onClick={() => void navigate({ search: (current) => ({ ...current, tab }) })}
+          >
+            <Icon aria-hidden className="size-3.5" />
+            {label}
+          </button>
+        ))}
+      </nav>
+      <WorkSyncIndicator syncing={syncing} />
+      {controls ? (
+        <div
+          className="flex h-full shrink-0 items-center [-webkit-app-region:no-drag]"
+          data-workspace-titlebar-controls
+        >
+          {controls}
+        </div>
+      ) : null}
+    </WorkspacePageHeader>
+  );
+}
+
 function PullRequestsRouteView() {
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
+  const [syncing, setSyncing] = useState(false);
+  useEffect(() => writeWorkAreaSearch(search), [search]);
+  const boardEnvironmentId = search.boardEnvironmentId ?? search.environmentId;
+  const boardProjectId = search.boardProjectId ?? search.projectId;
+  const workEnvironmentId = search.workEnvironmentId ?? search.environmentId;
+  if (!search.tab || search.tab === "pull-requests") return <PullRequestsContent />;
+  return (
+    <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none">
+      <WorkTabs syncing={syncing} />
+      {search.tab === "issues" ? (
+        <IssuesBoard
+          onSyncChange={setSyncing}
+          onSelectIssue={(issueId) =>
+            void navigate({ replace: true, search: (current) => ({ ...current, issueId }) })
+          }
+          target={{
+            ...(boardEnvironmentId ? { environmentId: boardEnvironmentId } : {}),
+            ...(boardProjectId ? { projectId: boardProjectId } : {}),
+            ...(search.boardId ? { boardId: search.boardId } : {}),
+            ...(search.issueId ? { issueId: search.issueId } : {}),
+          }}
+          onViewWork={(target) =>
+            void navigate({
+              search: (current) => ({
+                ...current,
+                workEnvironmentId: target.environmentId,
+                worktreePath: target.worktreePath,
+                tab: "open",
+              }),
+            })
+          }
+          onSelectBoard={(target) =>
+            void navigate({
+              replace: true,
+              search: (current) => {
+                const next = {
+                  ...current,
+                  boardEnvironmentId: target.environmentId,
+                  boardProjectId: target.projectId,
+                  ...(target.boardId ? { boardId: target.boardId } : {}),
+                };
+                if (!target.boardId) delete next.boardId;
+                const previousEnvironment = current.boardEnvironmentId ?? current.environmentId;
+                const previousProject = current.boardProjectId ?? current.projectId;
+                if (
+                  (previousEnvironment && previousEnvironment !== target.environmentId) ||
+                  (previousProject && previousProject !== target.projectId) ||
+                  (current.boardId && current.boardId !== target.boardId)
+                )
+                  delete next.issueId;
+                return next;
+              },
+            })
+          }
+          onDismissIssue={() =>
+            void navigate({
+              replace: true,
+              search: (current) => {
+                const next = { ...current };
+                delete next.issueId;
+                return next;
+              },
+            })
+          }
+        />
+      ) : (
+        <OpenWorkView
+          onSyncChange={setSyncing}
+          target={{
+            ...(workEnvironmentId ? { environmentId: workEnvironmentId } : {}),
+            ...(search.worktreePath ? { worktreePath: search.worktreePath } : {}),
+          }}
+          onSelectWorktree={(target) =>
+            void navigate({
+              replace: true,
+              search: (current) => {
+                const next = {
+                  ...current,
+                  workEnvironmentId: target.environmentId,
+                  ...(target.worktreePath ? { worktreePath: target.worktreePath } : {}),
+                };
+                if (!target.worktreePath) delete next.worktreePath;
+                return next;
+              },
+            })
+          }
+          onViewBoard={(target) =>
+            void navigate({
+              search: (current) => {
+                const next = {
+                  ...current,
+                  boardEnvironmentId: target.environmentId,
+                  boardProjectId: target.projectId,
+                  boardId: target.boardId,
+                  ...(target.issueId ? { issueId: target.issueId } : {}),
+                  tab: "issues" as const,
+                };
+                if (!target.issueId) delete next.issueId;
+                return next;
+              },
+            })
+          }
+        />
+      )}
+    </SidebarInset>
+  );
+}
+
+function PullRequestsContent() {
   useEscapeToGoBack();
   const search = Route.useSearch();
   const sort = search.sort ?? "ready";
@@ -383,8 +574,11 @@ function PullRequestsRouteView() {
     [capableEnvironments, scopedEnvironmentId],
   );
   const environmentKey = useMemo(
-    () => pullRequestEnvironmentSetKey(environmentIds),
-    [environmentIds],
+    () =>
+      environmentIds.length === 0
+        ? ""
+        : `${pullRequestEnvironmentSetKey(environmentIds)}:upstream=${search.includeUpstream === true}`,
+    [environmentIds, search.includeUpstream],
   );
   // An environment may still be connecting, or may predate this feature. Until at least one has
   // reported, an empty set means "not known yet" rather than "no environment can", and the page
@@ -525,6 +719,7 @@ function PullRequestsRouteView() {
           return {
             involvement: next.involvement ?? previous.involvement,
             state: next.state ?? previous.state,
+            ...(next.includeUpstream ? { includeUpstream: true } : {}),
             ...(next.sort && next.sort !== "ready" ? { sort: next.sort } : {}),
             ...(next.repository ? { repository: next.repository } : {}),
             ...(next.number ? { number: next.number } : {}),
@@ -631,6 +826,8 @@ function PullRequestsRouteView() {
    * where the page's actions land — and the others are asked only for what is theirs alone. A
    * server left with nothing of its own is not read at all.
    *
+   * Upstream reads keep every project: an origin identity cannot prove two copies have the
+   * same upstream remote.
    * Left alone while the projects are still arriving, and while the scope is a single project:
    * that path deliberately asks both servers holding an ambiguous id.
    */
@@ -639,7 +836,7 @@ function PullRequestsRouteView() {
     readonly projectIds?: ReadonlyArray<ProjectId>;
   }> => {
     const plain = queryEnvironmentIds.map((environmentId) => ({ environmentId }));
-    if (!projectsKnown || scopedProjectId !== undefined) return plain;
+    if (!projectsKnown || scopedProjectId !== undefined || search.includeUpstream) return plain;
     const assignment = assignProjectsToEnvironments(
       projects,
       queryEnvironmentIds,
@@ -657,7 +854,7 @@ function PullRequestsRouteView() {
       if (projectIds.length === (totals.get(environmentId) ?? 0)) return [{ environmentId }];
       return [{ environmentId, projectIds }];
     });
-  }, [projects, projectsKnown, queryEnvironmentIds, scopedProjectId]);
+  }, [projects, projectsKnown, queryEnvironmentIds, scopedProjectId, search.includeUpstream]);
   // Part of the scope, since a different split is a different question and its answers must not
   // be filed under the same page state.
   const assignmentKey = useMemo(
@@ -722,6 +919,7 @@ function PullRequestsRouteView() {
             environmentId,
             input: {
               state: search.state,
+              ...(search.includeUpstream ? { includeUpstream: true } : {}),
               // The hosts narrow by involvement themselves — GitHub by author and review
               // request, and so on — so asking them is the difference between a page of results
               // and a page of everything with the answer somewhere further down it.
@@ -745,6 +943,7 @@ function PullRequestsRouteView() {
       scopedProjectId,
       search.host,
       search.involvement,
+      search.includeUpstream,
       search.state,
       sentCursors,
       sentRegrown,
@@ -769,6 +968,7 @@ function PullRequestsRouteView() {
         environmentId,
         input: {
           state: search.state,
+          ...(search.includeUpstream ? { includeUpstream: true } : {}),
           involvement: search.involvement,
           limit: PAGE_SIZE,
           ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
@@ -784,6 +984,7 @@ function PullRequestsRouteView() {
       scopedProjectId,
       search.host,
       search.involvement,
+      search.includeUpstream,
       search.state,
     ],
   );
@@ -794,6 +995,7 @@ function PullRequestsRouteView() {
       environmentId,
       input: {
         state: "all",
+        ...(search.includeUpstream ? { includeUpstream: true } : {}),
         involvement: search.involvement,
         limit: PAGE_SIZE,
         ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
@@ -801,7 +1003,14 @@ function PullRequestsRouteView() {
         ...(search.host ? { host: search.host } : {}),
       } satisfies PullRequestListInput,
     }));
-  }, [environmentQueries, filtersOpen, scopedProjectId, search.host, search.involvement]);
+  }, [
+    environmentQueries,
+    filtersOpen,
+    scopedProjectId,
+    search.host,
+    search.involvement,
+    search.includeUpstream,
+  ]);
   const facetQuery = usePullRequestList(facetTargets);
   // The priority groups' own reads. The feed below is paginated by recency, so an older authored
   // or review-requested row can be missing from its first page; partitioned from these
@@ -828,6 +1037,7 @@ function PullRequestsRouteView() {
         environmentId,
         input: {
           state: search.state,
+          ...(search.includeUpstream ? { includeUpstream: true } : {}),
           involvement,
           limit: PAGE_SIZE,
           ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
@@ -846,6 +1056,7 @@ function PullRequestsRouteView() {
     scopedProjectId,
     search.host,
     search.state,
+    search.includeUpstream,
   ]);
   const authoredQuery = usePullRequestList(partitionTargets.authored);
   const reviewingQuery = usePullRequestList(partitionTargets.reviewing);
@@ -856,6 +1067,7 @@ function PullRequestsRouteView() {
   // happens to be theirs: the list, the counts beside its rows, and whatever the panel is
   // showing. The panel owns its own reads, so it is told to redo them rather than reached into.
   const [detailRefreshToken, setDetailRefreshToken] = useState(0);
+  const [detailSyncing, setDetailSyncing] = useState(false);
   // The queries only go pending once the invalidation has come back, so refreshing is tracked
   // from the first moment rather than the second: a button that stays live through the slow half
   // of its own work is a button that gets pressed again, and buys the whole cascade twice.
@@ -1103,7 +1315,11 @@ function PullRequestsRouteView() {
         // screen therefore stays, and the slice — ordered among itself, since one repository's
         // next rows can be newer than another's last — lands under it.
         const held = new Set(previous.entries.map(pullRequestEntryKey));
-        const arrived = answered.entries.filter((entry) => !held.has(pullRequestEntryKey(entry)));
+        const arrived = search.includeUpstream
+          ? deduplicatePullRequestRepositories([...previous.entries, ...answered.entries]).slice(
+              previous.entries.length,
+            )
+          : answered.entries.filter((entry) => !held.has(pullRequestEntryKey(entry)));
         const appended = rankPullRequestMatches(
           arrived.toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
           sentParsed.text,
@@ -1131,6 +1347,7 @@ function PullRequestsRouteView() {
     );
   }, [
     answered,
+    search.includeUpstream,
     filterKey,
     sentCursors,
     sentParsed.text,
@@ -1354,10 +1571,11 @@ function PullRequestsRouteView() {
     if (authored === undefined || reviewing === undefined) {
       return groupPullRequestsByInvolvement(entries, viewers);
     }
-    return partitionPullRequestsWithPriority(entries, authored, reviewing);
+    return partitionPullRequestsWithPriority(entries, authored, reviewing, search.includeUpstream);
   }, [
     hasLocalFilters,
     localFilters,
+    search.includeUpstream,
     authoredQuery.data?.entries,
     entries,
     environmentKey,
@@ -1502,8 +1720,14 @@ function PullRequestsRouteView() {
   useEffect(() => {
     const stats = statsQuery.stats;
     if (stats === null) return;
-    setStatsByRow((previous) => mergePullRequestDiffStats(previous, stats));
-  }, [statsQuery.stats]);
+    setStatsByRow((previous) =>
+      mergePullRequestDiffStats(
+        previous,
+        stats,
+        groups.flatMap((group) => group.entries),
+      ),
+    );
+  }, [statsQuery.stats, groups]);
   const displayGroups = useMemo(() => {
     // The reader's pending answers go on here, after grouping: the authored and reviewing
     // groups are read separately from the feed, and a row closed a moment ago has to leave
@@ -1723,18 +1947,6 @@ function PullRequestsRouteView() {
       onToggleRightPanel={toggleRightPanel}
     />
   );
-  const openPanelControls = (
-    <div
-      // The bare workspace-titlebar-controls inset plus mr-px: the same
-      // anchor the thread view's controls and the sidebar trigger use, so
-      // every titlebar cluster in the app sits one shared inset from its
-      // edge.
-      className="absolute top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
-      data-workspace-titlebar-controls
-    >
-      {panelToggleControls}
-    </div>
-  );
   // The rows carried over from the last filters can also narrow to nothing one step further on,
   // where involvement is applied against the viewers of the answer they came from. "Nothing under
   // these filters" is a claim, and it is the wrong one to make about a question still in flight,
@@ -1895,6 +2107,8 @@ function PullRequestsRouteView() {
   const filtersMenu = (
     <PullRequestFiltersMenu
       onOpenChange={setFiltersOpen}
+      includeUpstream={search.includeUpstream === true}
+      onIncludeUpstream={(includeUpstream) => updateListScope({ includeUpstream })}
       state={search.state}
       stateOptions={STATE_TABS}
       onState={(state) => updateListScope({ state })}
@@ -1936,54 +2150,12 @@ function PullRequestsRouteView() {
   const columnProps = {
     refreshing,
     onRefresh: () => void refreshFromHost(),
-    searchValue: search.q ?? "",
-    involvement: search.involvement,
-    state: search.state,
     host: search.host,
     hostMenuOptions,
-    onInvolvement: (involvement: PullRequestInvolvement) => updateListScope({ involvement }),
-    onState: (state: PullRequestListState) => updateListScope({ state }),
     onHost: (host: string | undefined) => updateListScope({ host }),
     searchInput,
     sortMenu,
     filtersMenu,
-    rightPanelControl:
-      // Footprint reserve while the panel is closed: the toggle itself stays
-      // mounted at the fixed titlebar inset in both states so it cannot move
-      // on toggle, and this spacer keeps refresh from sliding underneath it
-      // (sized per header padding so refresh ends a normal gap short of it).
-      !pullRequestsSupported ? null : (
-        <span
-          aria-hidden
-          className={cn(
-            "shrink-0",
-            rightPanelState.isOpen ? "-ml-3 w-0" : "w-7 sm:w-5",
-            panelAnimationsActive && "transition-[width,margin] ease-out",
-          )}
-          style={
-            panelAnimationsActive
-              ? { transitionDuration: `${panelAnimationDurationMs}ms` }
-              : undefined
-          }
-        />
-      ),
-    titlebarControls:
-      // While the panel is closed the strip lives inside the header: a no-drag
-      // descendant beats the header's desktop drag-region, where a floating
-      // sibling loses (app-region hit-testing ignores z-index). While the
-      // floating strip crosses the header during motion, the narrow extension
-      // keeps that overlap non-draggable without moving the toggle.
-      pullRequestsSupported ? (
-        rightPanelPresent ? (
-          <span
-            aria-hidden
-            className="pointer-events-none absolute inset-y-0 left-full w-7 [-webkit-app-region:no-drag]"
-          />
-        ) : (
-          openPanelControls
-        )
-      ) : null,
-    rightPanelOpen: rightPanelState.isOpen,
     listBody,
     scrollRef,
   };
@@ -2071,9 +2243,18 @@ function PullRequestsRouteView() {
   }, [keybindings]);
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+    <SidebarInset className="h-full min-h-0 overflow-hidden overscroll-y-none">
+      <WorkTabs
+        controls={pullRequestsSupported ? panelToggleControls : null}
+        syncing={
+          refreshing ||
+          baselineQuery.isPending ||
+          statsQuery.isPending ||
+          detailSyncing ||
+          (partitionsWanted && (authoredQuery.isPending || reviewingQuery.isPending))
+        }
+      />
       <div className="relative flex min-h-0 flex-1">
-        {pullRequestsSupported && rightPanelPresent ? openPanelControls : null}
         <PullRequestsColumn {...columnProps} />
 
         {rightPanelPresent && renderedPullRequestSurface && panelEnvironmentId !== null ? (
@@ -2127,6 +2308,7 @@ function PullRequestsRouteView() {
             pullRequestStatusSeeds={listedPullRequestTabStatuses}
           >
             <PullRequestDetailPanel
+              onSyncChange={setDetailSyncing}
               getShortcutContext={getShortcutContext}
               shortcutsEnabled={activePullRequestSurface?.id === renderedPullRequestSurface.id}
               key={renderedPullRequestSurface.id}
@@ -2290,282 +2472,69 @@ function CompactFilterMenu<Value extends string>({
   );
 }
 
-/**
- * The search, folded to an icon until asked for. Opening moves focus into the input — the
- * whole point of pressing it is to type. It stays open while it holds a query, so an active
- * search is never invisible; empty and blurred, it folds back.
- */
-function ExpandableSearch({
-  searchInput,
-  searchValue,
-  open,
-  onOpenChange,
-  focusToken,
-  onFocusWithin,
-}: {
-  searchInput: ReactNode;
-  searchValue: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  /** Bumped to pull focus into the input while it is already showing — the Mod+F path. */
-  focusToken: number;
-  /**
-   * Focus entering and leaving the expanded input. An unmount fires no blur, which is the
-   * point: whoever unmounted this can still see the reader was mid-typing and move the
-   * focus somewhere that continues the sentence.
-   */
-  onFocusWithin?: (focused: boolean) => void;
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    containerRef.current?.querySelector("input")?.focus();
-  }, [open]);
-  const appliedFocusToken = useRef(focusToken);
-  useEffect(() => {
-    if (appliedFocusToken.current === focusToken) return;
-    appliedFocusToken.current = focusToken;
-    const input = containerRef.current?.querySelector("input");
-    input?.focus();
-    input?.select();
-  }, [focusToken]);
-  if (open || searchValue.length > 0) {
-    return (
-      <div
-        ref={containerRef}
-        className="w-56 min-w-24 shrink"
-        onFocus={() => onFocusWithin?.(true)}
-        onBlur={() => {
-          onFocusWithin?.(false);
-          if (searchValue.length === 0) onOpenChange(false);
-        }}
-      >
-        {searchInput}
-      </div>
-    );
-  }
-  return (
-    <Button
-      size="icon-sm"
-      variant="ghost"
-      aria-label="Search pull requests"
-      onClick={() => onOpenChange(true)}
-    >
-      <SearchIcon className="size-4" />
-    </Button>
-  );
-}
-
-/**
- * The pull request list column. The full controls live at the top of the scroll flow; once
- * they scroll away, the title transforms into the scope itself — "Pull Requests / Open ▾
- * Authored ▾" — where each segment is the menu for that filter, and a folded search sits on
- * the right. Scrolled back up, the topbar returns to the plain title. The topbar is the
- * window drag region throughout; its interactive children opt out through the `.drag-region`
- * descendant rules.
- */
+/** Keeps the filters visible while only the pull request list scrolls. */
 function PullRequestsColumn({
   refreshing,
   onRefresh,
-  searchValue,
-  involvement,
-  state,
   host,
   hostMenuOptions,
-  onInvolvement,
-  onState,
   onHost,
   searchInput,
   sortMenu,
   filtersMenu,
-  rightPanelControl,
-  titlebarControls,
-  rightPanelOpen,
   listBody,
   scrollRef,
 }: {
   refreshing: boolean;
   onRefresh: () => void;
-  searchValue: string;
-  involvement: PullRequestInvolvement;
-  state: PullRequestListState;
   host: string | undefined;
   hostMenuOptions: ReadonlyArray<PullRequestFilterOption<string>>;
-  onInvolvement: (involvement: PullRequestInvolvement) => void;
-  onState: (state: PullRequestListState) => void;
   onHost: (host: string | undefined) => void;
   searchInput: ReactNode;
   sortMenu: ReactNode;
   filtersMenu: ReactNode;
-  rightPanelControl: ReactNode;
-  titlebarControls: ReactNode;
-  rightPanelOpen: boolean;
   listBody: ReactNode;
   scrollRef: RefObject<HTMLDivElement | null>;
 }) {
-  const markerRef = useRef<HTMLDivElement | null>(null);
-  const [condensed, setCondensed] = useState(false);
-  useEffect(() => {
-    const marker = markerRef.current;
-    if (!marker) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => setCondensed(entry ? !entry.isIntersecting : false),
-      { root: scrollRef.current },
-    );
-    observer.observe(marker);
-    return () => observer.disconnect();
-  }, []);
-  // Typing into the topbar search narrows the list, and a short enough list un-scrolls the
-  // page — which dissolves the condensed topbar and unmounts the very input being typed in.
-  // The two inputs are one search to the reader, so the focus follows the value into the
-  // in-flow bar, caret at the end, and the sentence continues.
-  const topbarSearchFocusedRef = useRef(false);
-  const inFlowSearchRef = useRef<HTMLDivElement | null>(null);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchFocusToken, setSearchFocusToken] = useState(0);
-  const searchExpanded = searchOpen || searchValue.length > 0;
-  // Mod+F belongs to this page's own search: the desktop shell binds no find-in-page, so the
-  // shortcut would otherwise do nothing. Condensed, it unfolds the topbar search; at the top,
-  // it focuses the in-flow bar and selects the query the way a find field would.
+  const searchRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       if (event.key.toLowerCase() !== "f" || !(event.metaKey || event.ctrlKey)) return;
       if (event.altKey || event.shiftKey) return;
       event.preventDefault();
-      if (condensed) {
-        setSearchOpen(true);
-        setSearchFocusToken((token) => token + 1);
-        return;
-      }
-      const input = inFlowSearchRef.current?.querySelector("input");
+      const input = searchRef.current?.querySelector("input");
       input?.focus();
       input?.select();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [condensed]);
-  useEffect(() => {
-    if (condensed) return;
-    // The fold-out is gone from the chrome; forgetting it open keeps the next condensing
-    // from starting with an empty expanded search nobody asked for.
-    setSearchOpen(false);
-    if (!topbarSearchFocusedRef.current) return;
-    topbarSearchFocusedRef.current = false;
-    const input = inFlowSearchRef.current?.querySelector("input");
-    if (!input) return;
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
-  }, [condensed]);
+  }, []);
 
   return (
-    // Painted flat like the chat column: the inset underneath carries the chrome grain, and a
-    // content surface that lets it show reads as a different background than every thread.
     <div className="@container/pr-list flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      {/* A closed right panel leaves this column full-width, so the shared header
-          reserves native window controls and hosts the controls strip itself: on
-          desktop the header is a drag-region, and only a no-drag descendant wins
-          clicks from it - a floating sibling loses to app-region hit-testing no
-          matter its z-index. While the panel is open, the strip mounts back at
-          the route level, whose box spans the panel too, so the toggle keeps one
-          fixed top-right anchor. */}
-      <WorkspacePageHeader
-        electron={isElectron}
-        reserveNativeControls={!rightPanelOpen}
-        className="relative bg-background"
-      >
-        {titlebarControls}
-        {condensed ? (
-          <WorkspaceBreadcrumb ariaLabel="Pull request scope" className="overflow-hidden">
-            {/* An expanded search owns the scarce horizontal space. The page title stays
-                available to readers while the live filters remain available in both states. */}
-            <WorkspaceBreadcrumbItem current className={cn(searchExpanded && "sr-only")}>
-              <h1 className="truncate">Pull Requests</h1>
-            </WorkspaceBreadcrumbItem>
-            {searchExpanded ? null : <WorkspaceBreadcrumbSeparator />}
-            <WorkspaceBreadcrumbItem className="shrink gap-1.5">
-              <CompactFilterMenu
-                label="Filter by state"
-                value={state}
-                options={STATE_TABS}
-                onChange={onState}
-                className="shrink-0"
-              />
-              <CompactFilterMenu
-                label="Filter by involvement"
-                value={involvement}
-                options={INVOLVEMENT_TABS}
-                onChange={onInvolvement}
-              />
-              {hostMenuOptions.length > 2 ? (
-                <CompactFilterMenu
-                  label="Filter by host"
-                  value={host ?? ""}
-                  options={hostMenuOptions}
-                  onChange={(next) => onHost(next === "" ? undefined : next)}
-                />
-              ) : null}
-            </WorkspaceBreadcrumbItem>
-          </WorkspaceBreadcrumb>
-        ) : (
-          <WorkspaceBreadcrumb ariaLabel="Pull requests breadcrumb">
-            <WorkspaceBreadcrumbItem current>
-              <h1 className="truncate">Pull Requests</h1>
-            </WorkspaceBreadcrumbItem>
-          </WorkspaceBreadcrumb>
-        )}
-        <div className="min-w-0 flex-1" />
-        {condensed ? (
-          <div className="flex shrink items-center gap-1.5">
-            <ExpandableSearch
-              searchInput={searchInput}
-              searchValue={searchValue}
-              open={searchOpen}
-              onOpenChange={setSearchOpen}
-              focusToken={searchFocusToken}
-              onFocusWithin={(focused) => {
-                topbarSearchFocusedRef.current = focused;
-              }}
-            />
-            <PullRequestRefreshControl compact refreshing={refreshing} onRefresh={onRefresh} />
+      <WorkspacePageContainer width="expanded" className="shrink-0 gap-0 py-4">
+        <div ref={searchRef} className="flex flex-wrap items-center gap-2">
+          <div className="min-w-0 basis-full @lg/pr-list:basis-0 @lg/pr-list:flex-1">
+            {searchInput}
           </div>
-        ) : null}
-        {rightPanelControl}
-      </WorkspacePageHeader>
-
-      <div
-        ref={scrollRef}
-        className="topbar-scroll-fade scrollbar-gutter-both min-h-0 flex-1 overflow-y-auto"
-      >
-        {/* The top padding is the shared fade band's height, the same pairing the
-            settings page makes: at rest the controls sit fully below the mask, and only
-            content actually passing under the chrome fades. */}
-        <WorkspacePageContainer width="expanded" className="min-h-full gap-4">
-          <div className="flex flex-col gap-3">
-            <div ref={inFlowSearchRef} className="flex flex-wrap items-center gap-2">
-              <div className="min-w-0 basis-full @lg/pr-list:basis-0 @lg/pr-list:flex-1">
-                {searchInput}
-              </div>
-              {sortMenu}
-              {filtersMenu}
-              <CompactFilterMenu
-                label="Filter by provider"
-                outlined
-                iconOnly={host !== undefined}
-                triggerIcon={<Plug2Icon aria-hidden className="size-4" />}
-                triggerLabel="All"
-                value={host ?? ""}
-                options={hostMenuOptions}
-                onChange={(next) => onHost(next === "" ? undefined : next)}
-              />
-              {!condensed ? (
-                <PullRequestRefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-              ) : null}
-            </div>
-            {/* Scrolled past this marker, the controls are gone and the title takes over. */}
-            <div ref={markerRef} aria-hidden className="-mt-3 h-px w-full" />
-          </div>
-
+          {sortMenu}
+          {filtersMenu}
+          <CompactFilterMenu
+            label="Filter by provider"
+            outlined
+            iconOnly={host !== undefined}
+            triggerIcon={<Plug2Icon aria-hidden className="size-4" />}
+            triggerLabel="All"
+            value={host ?? ""}
+            options={hostMenuOptions}
+            onChange={(next) => onHost(next === "" ? undefined : next)}
+          />
+          <PullRequestRefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        </div>
+      </WorkspacePageContainer>
+      <div ref={scrollRef} className="scrollbar-gutter-both min-h-0 flex-1 overflow-y-auto">
+        <WorkspacePageContainer width="expanded" className="min-h-full gap-4 pt-0">
           {listBody}
         </WorkspacePageContainer>
       </div>
@@ -2574,18 +2543,16 @@ function PullRequestsColumn({
 }
 
 function PullRequestRefreshControl({
-  compact = false,
   refreshing,
   onRefresh,
 }: {
-  compact?: boolean;
   refreshing: boolean;
   onRefresh: () => void;
 }) {
   return (
     <Button
-      size={compact ? "icon-sm" : "icon"}
-      variant={compact ? "ghost" : "outline"}
+      size="icon"
+      variant="outline"
       aria-label="Refresh pull requests"
       onClick={onRefresh}
       disabled={refreshing}

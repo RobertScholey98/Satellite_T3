@@ -5,6 +5,7 @@ import {
   filterPullRequestsByInvolvement,
   findScopedProject,
   mergePullRequestLists,
+  deduplicatePullRequestRepositories,
   pullRequestEntryKey,
   pullRequestEnvironmentSetKey,
   groupPullRequestsByInvolvement,
@@ -90,7 +91,7 @@ describe("visible pull request line-count targets", () => {
     );
 
     expect(pullRequestStatsBatches(entriesByKey, keys)[0]?.input.refs).toEqual([
-      { projectId: "project-1", repository: "pingdotgg/t3code", number: 3 },
+      { projectId: "project-1", repository: "pingdotgg/t3code", host: "github.com", number: 3 },
     ]);
   });
 
@@ -106,6 +107,8 @@ describe("visible pull request line-count targets", () => {
       {
         environmentId: ENV_1,
         projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        host: "github.com",
         number: 1,
         additions: 1,
         deletions: 1,
@@ -120,7 +123,7 @@ describe("visible pull request line-count targets", () => {
     );
     expect([...keys]).toEqual([secondKey]);
     expect(pullRequestStatsBatches(entriesByKey, keys)[0]?.input.refs).toEqual([
-      { projectId: "project-1", repository: "pingdotgg/t3code", number: 2 },
+      { projectId: "project-1", repository: "pingdotgg/t3code", host: "github.com", number: 2 },
     ]);
   });
 
@@ -167,6 +170,8 @@ describe("visible pull request line-count targets", () => {
       {
         environmentId: ENV_1,
         projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        host: "github.com",
         number: 1,
         additions: 1,
         deletions: 1,
@@ -206,6 +211,8 @@ describe("visible pull request line-count targets", () => {
       entries.map((item) => ({
         environmentId: ENV_1,
         projectId: item.projectId,
+        repository: item.repository,
+        host: item.host,
         number: item.number,
         additions: item.additions,
         deletions: item.deletions,
@@ -284,6 +291,8 @@ describe("visible pull request line-count targets", () => {
       entries.map((item) => ({
         environmentId: ENV_1,
         projectId: item.projectId,
+        repository: item.repository,
+        host: item.host,
         number: item.number,
         additions: item.additions,
         deletions: item.deletions,
@@ -982,7 +991,9 @@ describe("blocked-on-me ranking", () => {
 });
 
 describe("line counts that arrive after the rows", () => {
-  const stats = new Map([["env-1 project-1 7", { additions: 42, deletions: 3 }]]);
+  const stats = new Map([
+    ["env-1 project-1 github.com pingdotgg/t3code 7", { additions: 42, deletions: 3 }],
+  ]);
 
   it("fills in a row whose host left the counts for later", () => {
     const row = entry({ number: 7, additions: 0, deletions: 0 });
@@ -1001,35 +1012,158 @@ describe("line counts that arrive after the rows", () => {
 });
 
 describe("merging line counts across keyed stats queries", () => {
+  it("keeps equal pull request numbers separate across repositories and hosts", () => {
+    const rows = [
+      entry({
+        number: 7,
+        repository: "alice/repo",
+        host: "github.com",
+        additions: 0,
+        deletions: 0,
+      }),
+      entry({
+        number: 7,
+        repository: "upstream/repo",
+        host: "github.com",
+        additions: 0,
+        deletions: 0,
+      }),
+      entry({
+        number: 7,
+        repository: "upstream/repo",
+        host: "enterprise.example",
+        additions: 0,
+        deletions: 0,
+      }),
+    ];
+    const merged = mergePullRequestDiffStats(
+      new Map(),
+      rows.map((row, index) => ({ ...row, additions: index + 1, deletions: 0 })),
+    );
+    expect(rows.map((row) => withDiffStat(row, merged).additions)).toEqual([1, 2, 3]);
+    expect(
+      pullRequestStatsBatches(
+        new Map(rows.map((row) => [pullRequestEntryKey(row), row])),
+        new Set(rows.map(pullRequestEntryKey)),
+      )[0]?.input.refs.map((ref) => [ref.repository, ref.host]),
+    ).toEqual([
+      ["alice/repo", "github.com"],
+      ["upstream/repo", "github.com"],
+      ["upstream/repo", "enterprise.example"],
+    ]);
+  });
+
+  it("uses missing-host stats only when the loaded repository has one host", () => {
+    const row = entry({ number: 7, additions: 0, deletions: 0 });
+    const stat = {
+      environmentId: row.environmentId,
+      projectId: row.projectId,
+      repository: row.repository,
+      number: 7,
+      additions: 42,
+      deletions: 3,
+    };
+    const accepted = mergePullRequestDiffStats(new Map(), [stat], [row]);
+    expect(withDiffStat(row, accepted).additions).toBe(42);
+    const otherHost = { ...row, host: "enterprise.example" };
+    const ambiguous = mergePullRequestDiffStats(new Map(), [stat], [row, otherHost]);
+    expect(withDiffStat(row, ambiguous)).toBe(row);
+    expect(withDiffStat(otherHost, ambiguous)).toBe(otherHost);
+  });
   it("keeps counts already held while a fresh batch says nothing about them", () => {
     const held = mergePullRequestDiffStats(new Map(), [
-      { environmentId: "env-1", projectId: "project-1", number: 1, additions: 10, deletions: 2 },
-      { environmentId: "env-1", projectId: "project-1", number: 2, additions: 5, deletions: 1 },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        host: "github.com",
+        number: 1,
+        additions: 10,
+        deletions: 2,
+      },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        host: "github.com",
+        number: 2,
+        additions: 5,
+        deletions: 1,
+      },
     ]);
     // A third row appeared; its batch is still pending and contributes nothing yet.
     const merged = mergePullRequestDiffStats(held, []);
-    expect(merged.get("env-1 project-1 1")).toEqual({ additions: 10, deletions: 2 });
-    expect(merged.get("env-1 project-1 2")).toEqual({ additions: 5, deletions: 1 });
+    expect(merged.get("env-1 project-1 github.com pingdotgg/t3code 1")).toEqual({
+      additions: 10,
+      deletions: 2,
+    });
+    expect(merged.get("env-1 project-1 github.com pingdotgg/t3code 2")).toEqual({
+      additions: 5,
+      deletions: 1,
+    });
   });
 
   it("replaces a count once its replacement arrives, keeping its neighbours", () => {
     const held = mergePullRequestDiffStats(new Map(), [
-      { environmentId: "env-1", projectId: "project-1", number: 1, additions: 10, deletions: 2 },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        host: "github.com",
+        number: 1,
+        additions: 10,
+        deletions: 2,
+      },
     ]);
     const merged = mergePullRequestDiffStats(held, [
-      { environmentId: "env-1", projectId: "project-1", number: 1, additions: 11, deletions: 2 },
-      { environmentId: "env-1", projectId: "project-1", number: 3, additions: 7, deletions: 0 },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        host: "github.com",
+        number: 1,
+        additions: 11,
+        deletions: 2,
+      },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        host: "github.com",
+        number: 3,
+        additions: 7,
+        deletions: 0,
+      },
     ]);
-    expect(merged.get("env-1 project-1 1")).toEqual({ additions: 11, deletions: 2 });
-    expect(merged.get("env-1 project-1 3")).toEqual({ additions: 7, deletions: 0 });
+    expect(merged.get("env-1 project-1 github.com pingdotgg/t3code 1")).toEqual({
+      additions: 11,
+      deletions: 2,
+    });
+    expect(merged.get("env-1 project-1 github.com pingdotgg/t3code 3")).toEqual({
+      additions: 7,
+      deletions: 0,
+    });
   });
 
   it("does not mutate the map it was handed", () => {
-    const held = new Map([["env-1 project-1 1", { additions: 1, deletions: 1 }]]);
-    mergePullRequestDiffStats(held, [
-      { environmentId: "env-1", projectId: "project-1", number: 1, additions: 2, deletions: 2 },
+    const held = new Map([
+      ["env-1 project-1 github.com pingdotgg/t3code 1", { additions: 1, deletions: 1 }],
     ]);
-    expect(held.get("env-1 project-1 1")).toEqual({ additions: 1, deletions: 1 });
+    mergePullRequestDiffStats(held, [
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        host: "github.com",
+        number: 1,
+        additions: 2,
+        deletions: 2,
+      },
+    ]);
+    expect(held.get("env-1 project-1 github.com pingdotgg/t3code 1")).toEqual({
+      additions: 1,
+      deletions: 1,
+    });
   });
 });
 
@@ -1072,6 +1206,17 @@ describe("partitioning with the hosts' own priority reads", () => {
     expect(groups.map((group) => group.key)).toEqual(["authored", "reviewRequested"]);
     expect(groups[0]!.entries.map((item) => item.number)).toEqual([1]);
     expect(groups[1]!.entries.map((item) => item.number)).toEqual([2, 3]);
+  });
+
+  it("shows a shared upstream pull request once across environment priority reads", () => {
+    const feed = entry({ number: 7, repository: "upstream/repo", environmentId: ENV_1 });
+    const mine = { ...feed, environmentId: ENV_2 };
+    const fork = entry({ number: 7, repository: "alice/repo", environmentId: ENV_1 });
+    const groups = partitionPullRequestsWithPriority([feed, fork], [mine], [feed], true);
+    expect(groups.map((group) => [group.key, group.entries])).toEqual([
+      ["authored", [mine]],
+      ["others", [fork]],
+    ]);
   });
 
   it("lets the feed's copy of a partitioned row replace the partition's", () => {
@@ -1197,6 +1342,7 @@ describe("remembered pull request list controls", () => {
     const preferences = {
       involvement: "reviewing",
       state: "merged",
+      includeUpstream: true,
       environmentId: "env-1" as EnvironmentId,
       projectId: "project-1" as ProjectId,
       host: "github.com",
@@ -1211,6 +1357,21 @@ describe("remembered pull request list controls", () => {
 
     writePullRequestListPreferences(preferences, storage);
     expect(readPullRequestListPreferences(storage)).toEqual(preferences);
+  });
+
+  it("turns upstream off after restoring an enabled preference", () => {
+    const storage = makeStorage();
+    writePullRequestListPreferences(
+      { involvement: "all", state: "open", includeUpstream: true },
+      storage,
+    );
+    const enabled = readPullRequestListPreferences(storage);
+    expect(enabled.includeUpstream).toBe(true);
+    writePullRequestListPreferences(
+      pullRequestListPreferences({ ...enabled, includeUpstream: false }),
+      storage,
+    );
+    expect(readPullRequestListPreferences(storage)).toEqual({ involvement: "all", state: "open" });
   });
 
   it("omits the default sort from storage", () => {
@@ -1290,6 +1451,31 @@ describe("merging the environments' own listings", () => {
       [ENV_2, 2],
       [ENV_1, 1],
     ]);
+  });
+
+  it("deduplicates shared upstream rows while keeping distinct forks", () => {
+    const shared = entry({ number: 4, repository: "upstream/repo" });
+    const merged = mergePullRequestLists(
+      [
+        [ENV_1, answer({ entries: [shared, entry({ number: 4, repository: "alice/repo" })] })],
+        [ENV_2, answer({ entries: [shared, entry({ number: 4, repository: "bob/repo" })] })],
+      ],
+      true,
+    );
+    expect(merged?.entries.map((row) => [row.environmentId, row.repository])).toEqual([
+      [ENV_1, "upstream/repo"],
+      [ENV_1, "alice/repo"],
+      [ENV_2, "bob/repo"],
+    ]);
+  });
+
+  it("keeps the original environment when a later slice repeats an upstream row", () => {
+    const held = [{ ...entry({ number: 4, repository: "upstream/repo" }), environmentId: ENV_1 }];
+    const next = [
+      { ...entry({ number: 4, repository: "upstream/repo" }), environmentId: ENV_2 },
+      { ...entry({ number: 5, repository: "upstream/repo" }), environmentId: ENV_2 },
+    ];
+    expect(deduplicatePullRequestRepositories([...held, ...next])).toEqual([held[0], next[1]]);
   });
 
   it("tells two environments' copies of one pull request apart", () => {
