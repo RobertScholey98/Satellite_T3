@@ -25,6 +25,8 @@ import {
   SearchIcon,
   TicketIcon,
   ListFilterIcon,
+  ChevronDownIcon,
+  PlusIcon,
 } from "lucide-react";
 
 import { useProjects } from "~/state/entities";
@@ -40,6 +42,14 @@ import { randomUUID } from "~/lib/utils";
 import { Button } from "../ui/button";
 
 import { Input } from "../ui/input";
+import {
+  Empty,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+  EmptyDescription,
+  EmptyContent,
+} from "../ui/empty";
 
 import { Switch } from "../ui/switch";
 import {
@@ -65,6 +75,7 @@ import {
   DialogPopup,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogPanel,
   DialogFooter,
 } from "../ui/dialog";
@@ -234,9 +245,10 @@ export function IssuesBoard({
 
   const [detail, setDetail] = useState<IssueDetail | null>(null);
 
-  const [configuring, setConfiguring] = useState(false);
-
-  const [connecting, setConnecting] = useState(false);
+  const [configuration, setConfiguration] = useState<{
+    initial: IssueBoardView | null;
+    scopeGeneration: number;
+  } | null>(null);
 
   const [starting, setStarting] = useState(false);
 
@@ -262,7 +274,7 @@ export function IssuesBoard({
   const navigate = useNavigate();
 
   const refresh = useCallback(
-    async (boardId: string, locator?: IssueBoardLocator) => {
+    async (boardId: string) => {
       if (!scope || !connected) return;
 
       const current = ++generation.current;
@@ -276,17 +288,13 @@ export function IssuesBoard({
             environmentId: scope.environmentId,
             input: {
               projectId: scope.id,
-              ...((locator ??
-              boards.find((board) => board.id === boardId && board.mapping === null)?.locator)
-                ? { locator: locator ?? boards.find((board) => board.id === boardId)?.locator }
-                : { boardId }),
+              boardId,
             },
           }),
         );
 
         if (current === generation.current) {
           setView(result);
-          setConfiguring(result.board.mapping === null);
           return result;
         }
       } catch (failure) {
@@ -295,7 +303,7 @@ export function IssuesBoard({
         if (current === generation.current) setPending(false);
       }
     },
-    [open, scope, connected, boards],
+    [open, scope, connected],
   );
 
   useEffect(() => {
@@ -310,12 +318,11 @@ export function IssuesBoard({
     setDetail(null);
     setError(null);
     setPending(false);
-    setConnecting(false);
-    setConfiguring(false);
     setStarting(false);
   }, [scope?.environmentId, scope?.id]);
 
   useEffect(() => {
+    setConfiguration(null);
     if (!scope || !connected) return;
     const current = ++scopeGeneration.current;
 
@@ -347,10 +354,13 @@ export function IssuesBoard({
 
         setBoards(result);
 
-        const requested = activeTarget?.boardId
-          ? result.find((board) => board.id === activeTarget.boardId)
-          : result[0];
-        if (requested) await refresh(requested.id, requested.locator);
+        // Discovery includes every board available to the account. Only a saved
+        // mapping connects one to this local project; browsing cannot create that link.
+        const requested = result.find(
+          (board) =>
+            board.mapping !== null && (!activeTarget?.boardId || board.id === activeTarget.boardId),
+        );
+        if (requested) await refresh(requested.id);
         else {
           setView(null);
           if (activeTarget?.boardId)
@@ -485,6 +495,12 @@ export function IssuesBoard({
     `${issue.title} ${issue.ref.number} ${issue.labels.join(" ")}`
       .toLowerCase()
       .includes(query.replace(/^#/, "").toLowerCase());
+  const connectedBoards = boards.filter((board) => board.mapping !== null);
+  const availableBoards = boards.filter((board) => board.mapping === null);
+  const connectBoard = () => {
+    setMode("board");
+    setConfiguration({ initial: null, scopeGeneration: scopeGeneration.current });
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto px-4 py-4 sm:px-6">
@@ -497,9 +513,12 @@ export function IssuesBoard({
       <div className="flex flex-wrap items-center gap-2">
         <Menu>
           <MenuTrigger render={<Button size="sm" variant="ghost" />}>
-            {scope?.title ?? "Choose project"} · {scopedEnvironment?.label ?? "Environment"}
+            Project: {scope?.title ?? "Choose project"} ·{" "}
+            {scopedEnvironment?.label ?? "Environment"}
+            <ChevronDownIcon />
           </MenuTrigger>
           <MenuPopup>
+            <MenuGroupLabel>Local project</MenuGroupLabel>
             {supported.map((project) => (
               <MenuItem
                 key={`${project.environmentId}:${project.id}`}
@@ -519,13 +538,16 @@ export function IssuesBoard({
             ))}
           </MenuPopup>
         </Menu>
-        {mode === "board" && boards.length ? (
+        {mode === "board" ? (
           <Menu>
-            <MenuTrigger render={<Button size="sm" variant="ghost" />}>
-              {view?.board.title ?? "Choose board"}
+            <MenuTrigger render={<Button size="sm" variant="outline" />}>
+              <Columns3Icon />
+              Board: {view?.board.title ?? "Choose board"}
+              <ChevronDownIcon />
             </MenuTrigger>
             <MenuPopup>
-              {boards.map((board) => (
+              {connectedBoards.length ? <MenuGroupLabel>Connected boards</MenuGroupLabel> : null}
+              {connectedBoards.map((board) => (
                 <MenuItem
                   key={board.id}
                   disabled={!connected || pending}
@@ -544,6 +566,11 @@ export function IssuesBoard({
                   {board.title}
                 </MenuItem>
               ))}
+              {connectedBoards.length ? <MenuSeparator /> : null}
+              <MenuItem disabled={!scope || !connected || pending} onClick={connectBoard}>
+                <PlusIcon />
+                Connect board
+              </MenuItem>
             </MenuPopup>
           </Menu>
         ) : null}
@@ -574,17 +601,16 @@ export function IssuesBoard({
             </MenuTrigger>
             <MenuPopup align="end">
               {view ? (
-                <MenuItem onClick={() => setConfiguring(true)} disabled={!connected || pending}>
+                <MenuItem
+                  onClick={() =>
+                    setConfiguration({ initial: view, scopeGeneration: scopeGeneration.current })
+                  }
+                  disabled={!connected || pending}
+                >
                   Column mapping
                 </MenuItem>
               ) : null}
-              <MenuItem
-                disabled={!scope || !connected || pending}
-                onClick={() => {
-                  setMode("board");
-                  setConnecting(true);
-                }}
-              >
+              <MenuItem disabled={!scope || !connected || pending} onClick={connectBoard}>
                 Connect board
               </MenuItem>
               {view ? (
@@ -599,24 +625,36 @@ export function IssuesBoard({
                   <MenuItem
                     disabled={!connected || pending}
                     onClick={() => {
+                      if (!scope || !connected) return;
                       const currentScope = scopeGeneration.current;
-                      if (scope && connected)
-                        void disconnect({
-                          environmentId: scope.environmentId,
-                          input: { requestId: randomUUID(), boardId: view.board.id },
-                        })
-                          .then(unwrapWorkResult)
-                          .then(() => {
-                            if (currentScope !== scopeGeneration.current) return;
-                            setView(null);
-                            setBoards((current) =>
-                              current.filter((board) => board.id !== view.board.id),
-                            );
-                          })
-                          .catch((failure) => {
-                            if (currentScope === scopeGeneration.current)
-                              setError(workError(failure));
+                      setPending(true);
+                      setError(null);
+                      void disconnect({
+                        environmentId: scope.environmentId,
+                        input: { requestId: randomUUID(), boardId: view.board.id },
+                      })
+                        .then(unwrapWorkResult)
+                        .then(() => {
+                          if (currentScope !== scopeGeneration.current) return;
+                          setView(null);
+                          setBoards((current) =>
+                            current.map((board) =>
+                              board.id === view.board.id ? { ...board, mapping: null } : board,
+                            ),
+                          );
+                          setDismissedTargetKey(targetKey);
+                          onSelectBoard?.({
+                            environmentId: scope.environmentId,
+                            projectId: scope.id,
                           });
+                        })
+                        .catch((failure) => {
+                          if (currentScope === scopeGeneration.current)
+                            setError(workError(failure));
+                        })
+                        .finally(() => {
+                          if (currentScope === scopeGeneration.current) setPending(false);
+                        });
                     }}
                   >
                     Disconnect board
@@ -627,17 +665,19 @@ export function IssuesBoard({
           </Menu>
         </div>
       </div>
-      <InputGroup>
-        <InputGroupAddon>
-          <SearchIcon />
-        </InputGroupAddon>
-        <InputGroupInput
-          aria-label="Search issues"
-          placeholder="Search issues or #number"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </InputGroup>
+      {mode === "issues" || view ? (
+        <InputGroup>
+          <InputGroupAddon>
+            <SearchIcon />
+          </InputGroupAddon>
+          <InputGroupInput
+            aria-label="Search issues"
+            placeholder="Search issues or #number"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </InputGroup>
+      ) : null}
       {!scope && supported.length ? (
         <p role="status" className="text-sm text-muted-foreground">
           The requested project is unavailable. Choose a connected project to view its issues.
@@ -646,10 +686,27 @@ export function IssuesBoard({
         <p className="text-sm text-muted-foreground">
           Issues are unavailable. Connect an environment that supports issue boards.
         </p>
-      ) : !view && !pending && connected ? (
-        <p className="text-sm text-muted-foreground">
-          Connect an existing GitHub Project or Azure DevOps board to get started.
-        </p>
+      ) : mode === "board" && !view && !pending && connected && !error ? (
+        <Empty size="compact">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Columns3Icon />
+            </EmptyMedia>
+            <EmptyTitle>No board connected to {scope?.title}</EmptyTitle>
+            <EmptyDescription>
+              Connect an existing GitHub Project or Azure DevOps board to work on its tickets here.
+            </EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button size="sm" onClick={connectBoard}>
+              <PlusIcon />
+              Connect board
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setMode("issues")}>
+              View repository issues
+            </Button>
+          </EmptyContent>
+        </Empty>
       ) : null}
       {pending ? (
         <p role="status" className="text-xs text-muted-foreground">
@@ -876,16 +933,17 @@ export function IssuesBoard({
           </div>
         </DndContext>
       ) : null}
-      {scope && connected && (connecting || configuring) ? (
+      {scope && connected && configuration ? (
         <BoardConfiguration
+          key={`${scope.environmentId}:${scope.id}`}
           environmentId={scope.environmentId}
           projectId={scope.id}
-          initial={configuring ? view : null}
-          onClose={() => {
-            setConnecting(false);
-            setConfiguring(false);
-          }}
+          projectTitle={scope.title}
+          initial={configuration.initial}
+          availableBoards={availableBoards}
+          onClose={() => setConfiguration(null)}
           onConfigured={(result) => {
+            if (configuration.scopeGeneration !== scopeGeneration.current) return;
             setDismissedTargetKey(targetKey);
             onSelectBoard?.({
               environmentId: scope.environmentId,
@@ -897,8 +955,7 @@ export function IssuesBoard({
               ...current.filter((board) => board.id !== result.board.id),
               result.board,
             ]);
-            setConnecting(false);
-            setConfiguring(false);
+            setConfiguration(null);
           }}
         />
       ) : null}
@@ -1143,13 +1200,17 @@ export function IssuesBoard({
 function BoardConfiguration({
   environmentId,
   projectId,
+  projectTitle,
   initial,
+  availableBoards,
   onClose,
   onConfigured,
 }: {
   environmentId: EnvironmentId;
   projectId: IssueBoardSummary["projectId"];
+  projectTitle: string;
   initial: IssueBoardView | null;
+  availableBoards: readonly IssueBoardSummary[];
   onClose: () => void;
   onConfigured: (view: IssueBoardView) => void;
 }) {
@@ -1171,6 +1232,7 @@ function BoardConfiguration({
 
   const [view, setView] = useState(initial);
   const [mapping, setMapping] = useState<IssueBoardMapping | null>(initial?.board.mapping ?? null);
+  const [manual, setManual] = useState(availableBoards.length === 0);
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1184,12 +1246,17 @@ function BoardConfiguration({
       ? { kind, host, owner, ownerKind, projectNumber: Number(number) }
       : { kind, host, organization, project, team, boardId };
 
-  const load = async () => {
+  const load = async (selectedLocator: IssueBoardLocator) => {
     setBusy(true);
     setError(null);
 
     try {
-      const result = unwrapWorkResult(await open({ environmentId, input: { projectId, locator } }));
+      const result = unwrapWorkResult(
+        await open({
+          environmentId,
+          input: { projectId, locator: selectedLocator },
+        }),
+      );
 
       setView(result);
       setMapping(
@@ -1218,9 +1285,40 @@ function BoardConfiguration({
       <DialogPopup className="max-w-xl">
         <DialogHeader>
           <DialogTitle>{initial ? "Configure board columns" : "Connect board"}</DialogTitle>
+          <DialogDescription>
+            {view
+              ? `${view.board.title} · ${projectTitle}. Choose the columns for this project's workflow.`
+              : manual
+                ? `Enter the details of an existing board to connect it to ${projectTitle}.`
+                : `Choose a board to connect to ${projectTitle}. These boards are available through your account.`}
+          </DialogDescription>
         </DialogHeader>
         <DialogPanel>
-          {!view ? (
+          {!view && !manual ? (
+            <div className="grid gap-2">
+              {availableBoards.map((board) => (
+                <div key={board.id} className="grid gap-1">
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void load(board.locator)}
+                  >
+                    <Columns3Icon />
+                    {board.title}
+                  </Button>
+                  <p className="px-1 text-xs text-muted-foreground">
+                    {board.locator.host} ·{" "}
+                    {board.locator.kind === "github-project"
+                      ? `${board.locator.owner} / Project #${board.locator.projectNumber}`
+                      : `${board.locator.organization} / ${board.locator.project} / ${board.locator.team}`}
+                  </p>
+                </div>
+              ))}
+              <Button variant="ghost" disabled={busy} onClick={() => setManual(true)}>
+                Enter board details
+              </Button>
+            </div>
+          ) : !view ? (
             <div className="grid gap-3">
               <label className="grid gap-1 text-xs">
                 Repository host
@@ -1286,7 +1384,7 @@ function BoardConfiguration({
                   )}
                 </>
               )}
-              <Button variant="outline" disabled={busy} onClick={() => void load()}>
+              <Button variant="outline" disabled={busy} onClick={() => void load(locator)}>
                 Load remote columns
               </Button>
             </div>
@@ -1343,6 +1441,20 @@ function BoardConfiguration({
           {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
         </DialogPanel>
         <DialogFooter>
+          {!initial && (view || (manual && availableBoards.length > 0)) ? (
+            <Button
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setView(null);
+                setMapping(null);
+                setManual(availableBoards.length === 0);
+                setError(null);
+              }}
+            >
+              Back
+            </Button>
+          ) : null}
           <Button variant="ghost" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
