@@ -9,8 +9,15 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import * as ProcessRunner from "../processRunner.ts";
+
+const IdentityCacheKey = Schema.fromJsonString(
+  Schema.Tuple([Schema.String, Schema.NullOr(Schema.String)]),
+);
+const encodeIdentityCacheKey = Schema.encodeSync(IdentityCacheKey);
+const decodeIdentityCacheKey = Schema.decodeUnknownSync(IdentityCacheKey);
 
 const DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY = 512;
 // Background sweeps resolve every project each minute. A long TTL keeps them
@@ -34,7 +41,7 @@ export class RepositoryIdentityResolver extends Context.Service<
   {
     readonly resolve: (
       cwd: string,
-      options?: { readonly refresh?: boolean },
+      options?: { readonly refresh?: boolean; readonly remoteName?: string },
     ) => Effect.Effect<RepositoryIdentity | null>;
   }
 >()("t3/project/RepositoryIdentityResolver") {}
@@ -58,7 +65,7 @@ function parseRemoteFetchUrls(stdout: string): Map<string, string> {
 function pickPrimaryRemote(
   remotes: ReadonlyMap<string, string>,
 ): { readonly remoteName: string; readonly remoteUrl: string } | null {
-  for (const preferredRemoteName of ["upstream", "origin"] as const) {
+  for (const preferredRemoteName of ["origin", "upstream"] as const) {
     const remoteUrl = remotes.get(preferredRemoteName);
     if (remoteUrl) {
       return { remoteName: preferredRemoteName, remoteUrl };
@@ -123,6 +130,7 @@ const resolveRepositoryIdentityFromCacheKey = Effect.fn(
   "RepositoryIdentityResolver.resolveFromCacheKey",
 )(function* (
   cacheKey: string,
+  remoteName?: string,
 ): Effect.fn.Return<RepositoryIdentity | null, never, ProcessRunner.ProcessRunner> {
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const remoteResult = yield* processRunner
@@ -136,7 +144,14 @@ const resolveRepositoryIdentityFromCacheKey = Effect.fn(
     return null;
   }
 
-  const remote = pickPrimaryRemote(parseRemoteFetchUrls(remoteResult.value.stdout));
+  const remotes = parseRemoteFetchUrls(remoteResult.value.stdout);
+  const remoteUrl = remoteName === undefined ? undefined : remotes.get(remoteName);
+  const remote =
+    remoteName === undefined
+      ? pickPrimaryRemote(remotes)
+      : remoteUrl === undefined
+        ? null
+        : { remoteName, remoteUrl };
   return remote ? buildRepositoryIdentity({ ...remote, rootPath: cacheKey }) : null;
 });
 
@@ -166,14 +181,16 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
   );
 
   const repositoryIdentityCache = yield* Cache.makeWith<string, RepositoryIdentity | null>(
-    (cacheKey) =>
-      resolveRepositoryIdentityFromCacheKey(cacheKey).pipe(
+    (cacheKey) => {
+      const [rootPath, remoteName] = decodeIdentityCacheKey(cacheKey);
+      return resolveRepositoryIdentityFromCacheKey(rootPath, remoteName ?? undefined).pipe(
         Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
         Effect.filterOrElse(
           (identity): identity is null => identity === null,
           (identity) => refine(identity).pipe(Effect.orElseSucceed(() => identity)),
         ),
-      ),
+      );
+    },
     { capacity: cacheCapacity, timeToLive },
   );
 
@@ -184,8 +201,9 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
       if (options?.refresh) yield* Cache.invalidate(repositoryRootCache, cwd);
       const cacheKey = yield* Cache.get(repositoryRootCache, cwd);
       if (cacheKey === null) return null;
-      if (options?.refresh) yield* Cache.invalidate(repositoryIdentityCache, cacheKey);
-      return yield* Cache.get(repositoryIdentityCache, cacheKey);
+      const identityKey = encodeIdentityCacheKey([cacheKey, options?.remoteName ?? null]);
+      if (options?.refresh) yield* Cache.invalidate(repositoryIdentityCache, identityKey);
+      return yield* Cache.get(repositoryIdentityCache, identityKey);
     },
   );
 

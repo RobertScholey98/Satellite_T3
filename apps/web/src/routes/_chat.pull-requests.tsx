@@ -47,6 +47,7 @@ import {
 } from "react";
 
 import {
+  deduplicatePullRequestRepositories,
   filterPullRequestsByInvolvement,
   findScopedProject,
   collectPullRequestListFacets,
@@ -326,6 +327,9 @@ export const Route = createFileRoute("/_chat/pull-requests")({
       : {}),
     involvement:
       raw.involvement === "reviewing" || raw.involvement === "authored" ? raw.involvement : "all",
+    ...(raw.includeUpstream === true || raw.includeUpstream === "true"
+      ? { includeUpstream: true }
+      : {}),
     state:
       raw.state === "closed" || raw.state === "merged" || raw.state === "all" ? raw.state : "open",
     ...(SORT_OPTIONS.some((option) => option.value === raw.sort)
@@ -548,8 +552,11 @@ function PullRequestsContent() {
     [capableEnvironments, scopedEnvironmentId],
   );
   const environmentKey = useMemo(
-    () => pullRequestEnvironmentSetKey(environmentIds),
-    [environmentIds],
+    () =>
+      environmentIds.length === 0
+        ? ""
+        : `${pullRequestEnvironmentSetKey(environmentIds)}:upstream=${search.includeUpstream === true}`,
+    [environmentIds, search.includeUpstream],
   );
   // An environment may still be connecting, or may predate this feature. Until at least one has
   // reported, an empty set means "not known yet" rather than "no environment can", and the page
@@ -690,6 +697,7 @@ function PullRequestsContent() {
           return {
             involvement: next.involvement ?? previous.involvement,
             state: next.state ?? previous.state,
+            ...(next.includeUpstream ? { includeUpstream: true } : {}),
             ...(next.sort && next.sort !== "ready" ? { sort: next.sort } : {}),
             ...(next.repository ? { repository: next.repository } : {}),
             ...(next.number ? { number: next.number } : {}),
@@ -796,6 +804,8 @@ function PullRequestsContent() {
    * where the page's actions land — and the others are asked only for what is theirs alone. A
    * server left with nothing of its own is not read at all.
    *
+   * Upstream reads keep every project: an origin identity cannot prove two copies have the
+   * same upstream remote.
    * Left alone while the projects are still arriving, and while the scope is a single project:
    * that path deliberately asks both servers holding an ambiguous id.
    */
@@ -804,7 +814,7 @@ function PullRequestsContent() {
     readonly projectIds?: ReadonlyArray<ProjectId>;
   }> => {
     const plain = queryEnvironmentIds.map((environmentId) => ({ environmentId }));
-    if (!projectsKnown || scopedProjectId !== undefined) return plain;
+    if (!projectsKnown || scopedProjectId !== undefined || search.includeUpstream) return plain;
     const assignment = assignProjectsToEnvironments(
       projects,
       queryEnvironmentIds,
@@ -822,7 +832,7 @@ function PullRequestsContent() {
       if (projectIds.length === (totals.get(environmentId) ?? 0)) return [{ environmentId }];
       return [{ environmentId, projectIds }];
     });
-  }, [projects, projectsKnown, queryEnvironmentIds, scopedProjectId]);
+  }, [projects, projectsKnown, queryEnvironmentIds, scopedProjectId, search.includeUpstream]);
   // Part of the scope, since a different split is a different question and its answers must not
   // be filed under the same page state.
   const assignmentKey = useMemo(
@@ -887,6 +897,7 @@ function PullRequestsContent() {
             environmentId,
             input: {
               state: search.state,
+              ...(search.includeUpstream ? { includeUpstream: true } : {}),
               // The hosts narrow by involvement themselves — GitHub by author and review
               // request, and so on — so asking them is the difference between a page of results
               // and a page of everything with the answer somewhere further down it.
@@ -910,6 +921,7 @@ function PullRequestsContent() {
       scopedProjectId,
       search.host,
       search.involvement,
+      search.includeUpstream,
       search.state,
       sentCursors,
       sentRegrown,
@@ -934,6 +946,7 @@ function PullRequestsContent() {
         environmentId,
         input: {
           state: search.state,
+          ...(search.includeUpstream ? { includeUpstream: true } : {}),
           involvement: search.involvement,
           limit: PAGE_SIZE,
           ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
@@ -949,6 +962,7 @@ function PullRequestsContent() {
       scopedProjectId,
       search.host,
       search.involvement,
+      search.includeUpstream,
       search.state,
     ],
   );
@@ -959,6 +973,7 @@ function PullRequestsContent() {
       environmentId,
       input: {
         state: "all",
+        ...(search.includeUpstream ? { includeUpstream: true } : {}),
         involvement: search.involvement,
         limit: PAGE_SIZE,
         ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
@@ -966,7 +981,14 @@ function PullRequestsContent() {
         ...(search.host ? { host: search.host } : {}),
       } satisfies PullRequestListInput,
     }));
-  }, [environmentQueries, filtersOpen, scopedProjectId, search.host, search.involvement]);
+  }, [
+    environmentQueries,
+    filtersOpen,
+    scopedProjectId,
+    search.host,
+    search.involvement,
+    search.includeUpstream,
+  ]);
   const facetQuery = usePullRequestList(facetTargets);
   // The priority groups' own reads. The feed below is paginated by recency, so an older authored
   // or review-requested row can be missing from its first page; partitioned from these
@@ -993,6 +1015,7 @@ function PullRequestsContent() {
         environmentId,
         input: {
           state: search.state,
+          ...(search.includeUpstream ? { includeUpstream: true } : {}),
           involvement,
           limit: PAGE_SIZE,
           ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
@@ -1011,6 +1034,7 @@ function PullRequestsContent() {
     scopedProjectId,
     search.host,
     search.state,
+    search.includeUpstream,
   ]);
   const authoredQuery = usePullRequestList(partitionTargets.authored);
   const reviewingQuery = usePullRequestList(partitionTargets.reviewing);
@@ -1268,7 +1292,11 @@ function PullRequestsContent() {
         // screen therefore stays, and the slice — ordered among itself, since one repository's
         // next rows can be newer than another's last — lands under it.
         const held = new Set(previous.entries.map(pullRequestEntryKey));
-        const arrived = answered.entries.filter((entry) => !held.has(pullRequestEntryKey(entry)));
+        const arrived = search.includeUpstream
+          ? deduplicatePullRequestRepositories([...previous.entries, ...answered.entries]).slice(
+              previous.entries.length,
+            )
+          : answered.entries.filter((entry) => !held.has(pullRequestEntryKey(entry)));
         const appended = rankPullRequestMatches(
           arrived.toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
           sentParsed.text,
@@ -1296,6 +1324,7 @@ function PullRequestsContent() {
     );
   }, [
     answered,
+    search.includeUpstream,
     filterKey,
     sentCursors,
     sentParsed.text,
@@ -1519,10 +1548,11 @@ function PullRequestsContent() {
     if (authored === undefined || reviewing === undefined) {
       return groupPullRequestsByInvolvement(entries, viewers);
     }
-    return partitionPullRequestsWithPriority(entries, authored, reviewing);
+    return partitionPullRequestsWithPriority(entries, authored, reviewing, search.includeUpstream);
   }, [
     hasLocalFilters,
     localFilters,
+    search.includeUpstream,
     authoredQuery.data?.entries,
     entries,
     environmentKey,
@@ -1667,8 +1697,14 @@ function PullRequestsContent() {
   useEffect(() => {
     const stats = statsQuery.stats;
     if (stats === null) return;
-    setStatsByRow((previous) => mergePullRequestDiffStats(previous, stats));
-  }, [statsQuery.stats]);
+    setStatsByRow((previous) =>
+      mergePullRequestDiffStats(
+        previous,
+        stats,
+        groups.flatMap((group) => group.entries),
+      ),
+    );
+  }, [statsQuery.stats, groups]);
   const displayGroups = useMemo(() => {
     // The reader's pending answers go on here, after grouping: the authored and reviewing
     // groups are read separately from the feed, and a row closed a moment ago has to leave
@@ -2060,6 +2096,8 @@ function PullRequestsContent() {
   const filtersMenu = (
     <PullRequestFiltersMenu
       onOpenChange={setFiltersOpen}
+      includeUpstream={search.includeUpstream === true}
+      onIncludeUpstream={(includeUpstream) => updateListScope({ includeUpstream })}
       state={search.state}
       stateOptions={STATE_TABS}
       onState={(state) => updateListScope({ state })}

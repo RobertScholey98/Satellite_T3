@@ -367,6 +367,7 @@ const RepositoryIdentityResolverLayerLive = Layer.effect(
 ).pipe(Layer.provide(SourceControlProviderRegistryLayerLive), Layer.provide(ProcessRunner.layer));
 
 const PullRequestServiceLive = PullRequestService.layer.pipe(
+  Layer.provide(RepositoryIdentityResolverLayerLive),
   Layer.provide(PullRequestProviderRegistry.layer),
   // Where the viewed-file marks live for a host that keeps none of its own.
   Layer.provide(PullRequestFilesViewed.layer),

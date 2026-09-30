@@ -18,6 +18,7 @@ import type {
 } from "@t3tools/contracts";
 import { PullRequestOperationError } from "@t3tools/contracts";
 
+import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
@@ -400,6 +401,7 @@ function fakeProvider(
 function makeService(input: {
   readonly projects: ReadonlyArray<OrchestrationProjectShell>;
   readonly providers: ReadonlyArray<PullRequestProviderApi>;
+  readonly resolveIdentity?: RepositoryIdentityResolver["Service"]["resolve"];
   readonly resolveHandle?: SourceControlProviderRegistry.SourceControlProviderRegistry["Service"]["resolveHandle"];
 }) {
   // Built into the test's own scope rather than provided call by call: the marks store owns a
@@ -407,6 +409,9 @@ function makeService(input: {
   return Effect.flatMap(
     Layer.build(
       Layer.mergeAll(
+        Layer.succeed(RepositoryIdentityResolver, {
+          resolve: input.resolveIdentity ?? (() => Effect.succeed(null)),
+        }),
         Layer.succeed(PullRequestProviderRegistry, fromProviders(input.providers)),
         Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
           resolveLink: () => undefined,
@@ -4023,6 +4028,7 @@ it.effect("fills in the line counts for the rows it is given", () =>
     // Only the rows the host answered for; the other is left with whatever the listing had.
     assert.deepStrictEqual(result.stats, [
       {
+        host: "github.com",
         projectId: "p1" as ProjectId,
         repository: "acme/web",
         number: 1,
@@ -4219,6 +4225,7 @@ it.effect(
       assert.deepStrictEqual(counts.stats, [
         {
           ...reference,
+          host: "github.com",
           additions: core.additions,
           deletions: core.deletions,
         },
@@ -6887,5 +6894,213 @@ it.effect("keeps Azure continuation cursors separate for repositories with the s
     seen.length = 0;
     yield* service.list({ state: "open", cursors: { [key]: first.nextCursors[key]! } });
     assert.deepStrictEqual(seen, ["/org-b"]);
+  }),
+);
+
+it.effect("lists forks by default and includes distinct upstream only on request", () =>
+  Effect.gen(function* () {
+    const fork = project({
+      id: "fork",
+      title: "fork",
+      workspaceRoot: "/fork",
+      repository: "me/repo",
+    });
+    const upstream = project({
+      id: "upstream",
+      title: "upstream",
+      workspaceRoot: "/fork",
+      repository: "owner/repo",
+    }).repositoryIdentity!;
+    const reads: string[] = [];
+    const service = yield* makeService({
+      projects: [fork],
+      resolveIdentity: (_, options) =>
+        Effect.succeed(options?.remoteName === "upstream" ? upstream : fork.repositoryIdentity!),
+      providers: [
+        fakeProvider("github", {
+          getChangeRequestPreview: () => Effect.succeed(changeRequest(1, "2026-07-02T00:00:00Z")),
+          listChangeRequests: ({ repository }) =>
+            Effect.sync(() => {
+              reads.push(repository);
+              return {
+                items: [changeRequest(1, "2026-07-02T00:00:00Z")],
+                truncated: false,
+                continues: false,
+              };
+            }),
+        }),
+      ],
+    });
+    const own = yield* service.list({ state: "open" });
+    assert.deepStrictEqual(
+      own.entries.map((entry) => entry.repository),
+      ["me/repo"],
+    );
+    const combined = yield* service.list({ state: "open", includeUpstream: true });
+    assert.sameMembers(
+      combined.entries.map((entry) => entry.repository),
+      ["me/repo", "owner/repo"],
+    );
+    assert.sameMembers(reads, ["me/repo", "me/repo", "owner/repo"]);
+    yield* service.preview({ projectId: fork.id, repository: "owner/repo", number: 1 });
+    yield* service.list({ state: "open", includeUpstream: false });
+    assert.strictEqual(reads.length, 3);
+  }),
+);
+
+it.effect("does not list an upstream alias of the same repository twice", () =>
+  Effect.gen(function* () {
+    const own = project({
+      id: "same",
+      title: "same",
+      workspaceRoot: "/same",
+      repository: "owner/repo",
+    });
+    let reads = 0;
+    const service = yield* makeService({
+      projects: [own],
+      resolveIdentity: () => Effect.succeed(own.repositoryIdentity!),
+      providers: [
+        fakeProvider("github", {
+          listChangeRequests: () =>
+            Effect.sync(() => {
+              reads++;
+              return {
+                items: [changeRequest(1, "2026-07-02T00:00:00Z")],
+                truncated: false,
+                continues: false,
+              };
+            }),
+        }),
+      ],
+    });
+    const result = yield* service.list({ state: "open", includeUpstream: true });
+    assert.strictEqual(result.entries.length, 1);
+    assert.strictEqual(reads, 1);
+  }),
+);
+
+it.effect("keeps fork and upstream counts separate for equal request numbers", () =>
+  Effect.gen(function* () {
+    const fork = project({
+      id: "fork",
+      title: "fork",
+      workspaceRoot: "/fork",
+      repository: "me/repo",
+    });
+    const upstream = project({
+      id: "upstream",
+      title: "upstream",
+      workspaceRoot: "/fork",
+      repository: "owner/repo",
+    }).repositoryIdentity!;
+    const service = yield* makeService({
+      projects: [fork],
+      resolveIdentity: () => Effect.succeed(upstream),
+      providers: [
+        fakeProvider("github", {
+          listChangeRequestStats: ({ changeRequests }) =>
+            Effect.succeed(
+              changeRequests.map((ref) => ({
+                ...ref,
+                additions: ref.repository === "me/repo" ? 2 : 5,
+                deletions: 1,
+              })),
+            ),
+        }),
+      ],
+    });
+    const result = yield* service.listStats({
+      refs: [
+        { projectId: fork.id, repository: "me/repo", number: 1 },
+        { projectId: fork.id, repository: "owner/repo", number: 1 },
+      ],
+    });
+    assert.deepStrictEqual(
+      result.stats.map(({ repository, additions }) => ({ repository, additions })),
+      [
+        { repository: "me/repo", additions: 2 },
+        { repository: "owner/repo", additions: 5 },
+      ],
+    );
+  }),
+);
+
+it.effect("scopes upstream listing and equal repository stats by host", () =>
+  Effect.gen(function* () {
+    const fork = project({
+      id: "fork",
+      title: "fork",
+      workspaceRoot: "/fork",
+      repository: "owner/repo",
+    });
+    const upstream = project({
+      id: "upstream",
+      title: "upstream",
+      workspaceRoot: "/fork",
+      repository: "owner/repo",
+      host: "github.example.com",
+    }).repositoryIdentity!;
+    const listed: string[] = [];
+    const service = yield* makeService({
+      projects: [fork],
+      resolveIdentity: () => Effect.succeed(upstream),
+      providers: [
+        fakeProvider("github", {
+          listChangeRequests: ({ host }) =>
+            Effect.sync(() => {
+              listed.push(host!);
+              return {
+                items: [changeRequest(1, "2026-07-02T00:00:00Z")],
+                truncated: true,
+                continues: true,
+              };
+            }),
+          listChangeRequestStats: ({ host, changeRequests }) =>
+            Effect.succeed(
+              changeRequests.map((ref) => ({
+                ...ref,
+                additions: host === "github.com" ? 2 : 5,
+                deletions: 1,
+              })),
+            ),
+        }),
+      ],
+    });
+    const result = yield* service.list({
+      state: "open",
+      includeUpstream: true,
+      host: "github.example.com",
+    });
+    assert.deepStrictEqual(listed, ["github.example.com"]);
+    assert.deepStrictEqual(Object.keys(result.nextCursors), ["github.example.com owner/repo"]);
+    yield* service.list({
+      state: "open",
+      includeUpstream: true,
+      host: "github.example.com",
+      cursors: result.nextCursors,
+    });
+    assert.deepStrictEqual(listed, ["github.example.com", "github.example.com"]);
+    const refs = ["github.com", "github.example.com"].map((host) => ({
+      projectId: fork.id,
+      repository: "owner/repo",
+      host,
+      number: 1,
+    }));
+    const counts = yield* service.listStats({ refs });
+    assert.deepStrictEqual(
+      counts.stats.map(({ host, additions }) => ({ host, additions })),
+      [
+        { host: "github.com", additions: 2 },
+        { host: "github.example.com", additions: 5 },
+      ],
+    );
+    assert.deepStrictEqual(
+      (yield* service.listStats({ refs: [refs[0]!] })).stats.map(({ host, additions }) => ({
+        host,
+        additions,
+      })),
+      [{ host: "github.com", additions: 2 }],
+    );
   }),
 );

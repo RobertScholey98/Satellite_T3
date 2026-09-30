@@ -553,6 +553,8 @@ export type PullRequestListCursors = typeof PullRequestListCursors.Type;
 
 export const PullRequestListInput = Schema.Struct({
   state: PullRequestListState,
+  /** Include a distinct upstream remote alongside each project's own repository. */
+  includeUpstream: Schema.optional(Schema.Boolean),
   involvement: Schema.optional(PullRequestInvolvement),
   filters: Schema.optional(PullRequestListFilters),
   projectId: Schema.optional(ProjectId),
@@ -778,6 +780,7 @@ export type PullRequestStack = typeof PullRequestStack.Type;
  * rows on screen at the speed of everything else on them.
  */
 export const PullRequestDiffStat = Schema.Struct({
+  host: Schema.optional(TrimmedNonEmptyString),
   projectId: ProjectId,
   repository: TrimmedNonEmptyString,
   number: PositiveInt,

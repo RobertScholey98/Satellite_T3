@@ -309,7 +309,11 @@ export function usePullRequestList(
       }
     }
   }, [query.observations]);
-  const data = useMemo(() => mergePullRequestLists(query.values), [query.values]);
+  const includeUpstream = targets.some(({ input }) => input.includeUpstream === true);
+  const data = useMemo(
+    () => mergePullRequestLists(query.values, includeUpstream),
+    [query.values, includeUpstream],
+  );
   return { data, error: query.error, isPending: query.isPending, refresh: query.refresh };
 }
 

@@ -135,6 +135,54 @@ const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 describe("IssueService", () => {
+  it.effect("keeps a connected upstream board after the project switches to its fork", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const restarted = yield* makeIssueService({
+          ...test.options,
+          getProject: () =>
+            Effect.succeed({
+              ...project,
+              repositoryIdentity: {
+                canonicalKey: "github.com/my-fork/repo",
+                provider: "github",
+                displayName: "my-fork/repo",
+                locator: {
+                  source: "git-remote" as const,
+                  remoteName: "origin",
+                  remoteUrl: "https://github.com/my-fork/repo.git",
+                },
+              },
+            }),
+          host: {
+            ...test.options.host,
+            listBoards: () => Effect.succeed([]),
+            board: (cwd, requested) => {
+              assert.deepStrictEqual(requested, locator);
+              return test.options.host.board(cwd, requested);
+            },
+            move: (cwd, requested, item, column) => {
+              assert.deepStrictEqual(requested, locator);
+              return test.options.host.move(cwd, requested, item, column);
+            },
+          },
+        });
+
+        assert.strictEqual((yield* restarted.listBoards({ projectId }))[0]?.id, test.boardId);
+        const opened = yield* restarted.openBoard({ projectId, boardId: test.boardId });
+        assert.deepStrictEqual(opened.board.locator, locator);
+        yield* restarted.move({
+          requestId: "move-upstream-after-fork",
+          boardId: test.boardId,
+          issue,
+          columnId: "progress",
+        });
+        assert.deepStrictEqual(test.writes, ["progress"]);
+      }),
+    ),
+  );
+
   it.effect(
     "reservation and attachment do not move or activate before the first successful send",
     () =>
