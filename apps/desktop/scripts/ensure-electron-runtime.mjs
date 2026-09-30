@@ -5,6 +5,8 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import * as NodeChildProcess from "node:child_process";
 
+import { cliArchiveTarCommand } from "../../../packages/shared/src/cliRelease.ts";
+
 const require = NodeModule.createRequire(import.meta.url);
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone repair script has no Effect runtime.
 const hostPlatform = NodeOS.platform();
@@ -119,6 +121,14 @@ function runChecked(command, args) {
 export function extractElectronRuntimeArchive(zipPath, destination) {
   if (hostPlatform === "darwin") {
     runChecked("ditto", ["-x", "-k", zipPath, destination]);
+  } else if (hostPlatform === "win32") {
+    NodeFS.mkdirSync(destination, { recursive: true });
+    runChecked(cliArchiveTarCommand(hostPlatform, process.env), [
+      "-xf",
+      zipPath,
+      "-C",
+      destination,
+    ]);
   } else {
     runChecked("python3", [
       "-c",
