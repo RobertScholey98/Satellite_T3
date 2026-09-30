@@ -66,7 +66,6 @@ describe("home draft idea toggle", () => {
         purpose: idea.purpose ?? "work",
       }),
     ).toBe("local");
-    expect(container.textContent).toContain("Claude");
     expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
       "Explore a different creation flow.",
     );

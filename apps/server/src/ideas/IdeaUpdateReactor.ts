@@ -96,7 +96,7 @@ export class IdeaUpdateReactor extends Context.Service<
           const automatic = selected
             ? undefined
             : (yield* providers.listInstances).find(
-                (instance) => instance.enabled && instance.driverKind === "claude",
+                (instance) => instance.enabled && instance.driverKind === "claudeAgent",
               );
           const modelSelection =
             selected ??
@@ -115,7 +115,7 @@ export class IdeaUpdateReactor extends Context.Service<
           const provider = yield* providers.getInstance(modelSelection.instanceId);
           if (
             !provider?.enabled ||
-            provider.driverKind !== "claude" ||
+            provider.driverKind !== "claudeAgent" ||
             !provider.textGeneration.generateIdeaUpdate
           )
             return yield* new IdeaRuntimeError({

@@ -510,10 +510,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       .getThreadShellById(threadId)
       .pipe(Effect.mapError((e) => toValidationError("ProviderService.startSession", e.message)));
     if (Option.isNone(shell) || shell.value.purpose !== "idea") return undefined;
-    if (provider !== "claude")
+    if (provider !== "claudeAgent")
       return yield* toValidationError(
         "ProviderService.startSession",
-        "Ideas currently require Claude. This provider cannot enforce the idea's read-only project access.",
+        "Ideas support has not been implemented for this provider. Select a Claude model to continue.",
       );
     if (Option.isNone(ideaRuntime))
       return yield* toValidationError(
@@ -1803,7 +1803,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         });
       }
       if (readIdeaExecution(input.threadId)) {
-        if (Option.isNone(ideaRuntime) || routed.adapter.provider !== "claude")
+        if (Option.isNone(ideaRuntime) || routed.adapter.provider !== "claudeAgent")
           return yield* toValidationError(
             "ProviderService.sendTurn",
             "The constrained idea runtime is unavailable.",

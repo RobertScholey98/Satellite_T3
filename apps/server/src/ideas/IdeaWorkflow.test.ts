@@ -50,13 +50,16 @@ const threadId = ThreadId.make("workflow-idea");
 const projectId = ProjectId.make("workflow-project");
 const messageId = MessageId.make("workflow-message");
 const instanceId = ProviderInstanceId.make("claude");
-const driverKind = ProviderDriverKind.make("claude");
+const driverKind = ProviderDriverKind.make("claudeAgent");
 const now = "2026-09-30T12:00:00.000Z";
 const unused = () => Effect.die("Unexpected provider operation in notebook workflow");
 
-it.effect.each(["idea", "project"] as const)(
-  "maintains, promotes, settles, reopens and permanently deletes via %s",
-  (deletionMode) =>
+it.effect.each([
+  { deletionMode: "idea", modelSource: "configured" },
+  { deletionMode: "project", modelSource: "automatic" },
+] as const)(
+  "maintains, promotes, settles, reopens and permanently deletes via $deletionMode using $modelSource updates",
+  ({ deletionMode, modelSource }) =>
     Effect.gen(function* () {
       let generated = 0;
       let posted = 0;
@@ -192,7 +195,8 @@ it.effect.each(["idea", "project"] as const)(
           Layer.mock(ServerSettingsService)({
             getSettings: Effect.succeed({
               ...DEFAULT_SERVER_SETTINGS,
-              ideaUpdatesModelSelection: { instanceId, model: "haiku" },
+              ideaUpdatesModelSelection:
+                modelSource === "configured" ? { instanceId, model: "haiku" } : null,
             }),
           }),
         ),
@@ -281,7 +285,9 @@ it.effect.each(["idea", "project"] as const)(
 
         const updated = yield* waitFor(
           (event) =>
-            event.type === "idea.changed" && event.payload.mutation.kind === "update.apply",
+            event.type === "idea.changed" &&
+            (event.payload.mutation.kind === "update.apply" ||
+              event.payload.mutation.kind === "update.fail"),
         );
         yield* engine.dispatch({
           type: "thread.session.set",

@@ -1276,10 +1276,13 @@ export function NewTaskDraftScreen(props: {
     if (!message) {
       return;
     }
-    if (message.creation?.purpose === "idea" && flow.selectedProviderStatus?.driver !== "claude") {
+    if (
+      message.creation?.purpose === "idea" &&
+      flow.selectedProviderStatus?.driver !== "claudeAgent"
+    ) {
       Alert.alert(
         "Choose Claude for this idea",
-        "Ideas currently require Claude so project code stays read only.",
+        "Ideas support has not been implemented for this provider. Select a Claude model to continue.",
       );
       return;
     }

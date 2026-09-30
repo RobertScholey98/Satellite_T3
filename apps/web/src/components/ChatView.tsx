@@ -3766,18 +3766,22 @@ export default function ChatView(props: ChatViewProps) {
   // Keep a hidden, off-flow strip mounted for existing threads so the composer
   // can measure whether its relocated controls fit. The visible chrome remains
   // content-driven: Git/environment context or controls that actually fit.
-  const mountComposerContextStrip = shouldShowComposerContextStrip({
-    hasActiveProject: activeProject !== null,
-    isGitRepo,
-    showEnvironmentIndicator: showComposerEnvironmentIndicator,
-    hostsRestingComposerControls: routeKind === "server",
-  });
-  const showComposerContextStrip = shouldShowComposerContextStrip({
-    hasActiveProject: activeProject !== null,
-    isGitRepo,
-    showEnvironmentIndicator: showComposerEnvironmentIndicator,
-    hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
-  });
+  const mountComposerContextStrip =
+    !isIdea &&
+    shouldShowComposerContextStrip({
+      hasActiveProject: activeProject !== null,
+      isGitRepo,
+      showEnvironmentIndicator: showComposerEnvironmentIndicator,
+      hostsRestingComposerControls: routeKind === "server",
+    });
+  const showComposerContextStrip =
+    mountComposerContextStrip &&
+    shouldShowComposerContextStrip({
+      hasActiveProject: activeProject !== null,
+      isGitRepo,
+      showEnvironmentIndicator: showComposerEnvironmentIndicator,
+      hostsRestingComposerControls: routeKind === "server" && restingComposerControlsVisible,
+    });
   const terminalShortcutLabelOptions = useMemo(
     () => ({
       context: {
@@ -7495,7 +7499,7 @@ export default function ChatView(props: ChatViewProps) {
       interactionMode: sendInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
-    if (isIdea && ctxSelectedProvider !== "claude") {
+    if (isIdea && ctxSelectedProvider !== "claudeAgent") {
       setThreadError(
         activeThreadId,
         "Ideas currently require Claude. Select a Claude model to continue.",
@@ -9329,7 +9333,8 @@ export default function ChatView(props: ChatViewProps) {
     (instanceId: ProviderInstanceId, model: string): string | null => {
       if (
         isIdea &&
-        providerStatuses.find((provider) => provider.instanceId === instanceId)?.driver !== "claude"
+        providerStatuses.find((provider) => provider.instanceId === instanceId)?.driver !==
+          "claudeAgent"
       )
         return "Ideas currently require Claude.";
       if (!activeThread) {
@@ -10108,13 +10113,6 @@ export default function ChatView(props: ChatViewProps) {
                       </div>
                     </div>
                   ) : null}
-                  {isLocalDraftThread && draftId && !issueDraftIntent && !embeddedDraft ? (
-                    <DraftIdeaToggle
-                      draftId={draftId}
-                      disabled={isSendBusy}
-                      onSelectIdea={() => setMultipleModelSelections(null)}
-                    />
-                  ) : null}
                   <div
                     className="relative"
                     style={
@@ -10271,7 +10269,7 @@ export default function ChatView(props: ChatViewProps) {
                           data-terminal-open={terminalUiState.terminalOpen ? "true" : undefined}
                           className="relative z-0"
                         >
-                          {mountComposerContextStrip && !isIdea && (
+                          {mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
                                 forceNewWorktree={
@@ -10317,6 +10315,15 @@ export default function ChatView(props: ChatViewProps) {
                         </div>
                       </div>
                     </ComposerSurface.Shell>
+                    {isLocalDraftThread && draftId && !issueDraftIntent && !embeddedDraft ? (
+                      <div className="mt-2 flex justify-end px-3">
+                        <DraftIdeaToggle
+                          draftId={draftId}
+                          disabled={isSendBusy}
+                          onSelectIdea={() => setMultipleModelSelections(null)}
+                        />
+                      </div>
+                    ) : null}
                     <div
                       aria-hidden
                       className="h-[calc(env(safe-area-inset-bottom)+1rem)] sm:h-[calc(env(safe-area-inset-bottom)+1.25rem)]"

@@ -39,7 +39,7 @@ import { IDEA_UPDATE_INSTRUCTIONS } from "./IdeaUpdateGeneration.ts";
 const threadId = ThreadId.make("promotion-catchup");
 const projectId = ProjectId.make("catchup-project");
 const instanceId = ProviderInstanceId.make("claude");
-const driverKind = ProviderDriverKind.make("claude");
+const driverKind = ProviderDriverKind.make("claudeAgent");
 const answerId = EventId.make("answer-activity");
 const now = "2026-09-30T12:00:00.000Z";
 const unused = () => Effect.die("Unexpected provider operation in catch-up test");
