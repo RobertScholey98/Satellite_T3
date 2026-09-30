@@ -9,6 +9,7 @@ import type {
   IssueBoardSummary,
   IssueSummary,
 } from "@t3tools/contracts";
+import { issueReadyColumnIds } from "@t3tools/contracts";
 
 import { DndContext, useDraggable, useDroppable, type DragEndEvent } from "@dnd-kit/core";
 
@@ -82,6 +83,7 @@ import {
 } from "../ui/dialog";
 
 import { IssueStartDialog } from "./IssueStartDialog";
+import { IssueReadyColumnsPicker } from "./IssueReadyColumnsPicker";
 
 import { defaultIssueAttempt, issueCanStart } from "./work.logic";
 
@@ -1271,7 +1273,7 @@ function BoardConfiguration({
       setView(result);
       setMapping(
         result.board.mapping ?? {
-          ready: "",
+          ready: [],
           inProgress: "",
           inPullRequest: "",
           completed: "",
@@ -1400,9 +1402,22 @@ function BoardConfiguration({
             </div>
           ) : (
             <div className="grid gap-3">
+              <div className="grid gap-1 text-xs">
+                <span>Ready for development</span>
+                <IssueReadyColumnsPicker
+                  columns={view.columns}
+                  value={mapping ? issueReadyColumnIds(mapping) : []}
+                  disabled={busy}
+                  onChange={(ready) =>
+                    setMapping((current) => (current ? { ...current, ready } : current))
+                  }
+                />
+                <p className="text-muted-foreground">
+                  Tickets in any selected column can be started.
+                </p>
+              </div>
               {(
                 [
-                  ["ready", "Ready for development"],
                   ["inProgress", "In progress"],
                   ["inPullRequest", "In PR"],
                   ["completed", "Completed"],
@@ -1415,7 +1430,7 @@ function BoardConfiguration({
                     onChange={(event) =>
                       setMapping((current) => ({
                         ...(current ?? {
-                          ready: "",
+                          ready: [],
                           inProgress: "",
                           inPullRequest: "",
                           completed: "",
@@ -1472,7 +1487,7 @@ function BoardConfiguration({
             <Button
               disabled={
                 busy ||
-                !mapping.ready ||
+                issueReadyColumnIds(mapping).length === 0 ||
                 !mapping.inProgress ||
                 !mapping.inPullRequest ||
                 !mapping.completed

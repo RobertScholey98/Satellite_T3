@@ -5,9 +5,14 @@ import type {
   OpenWorkDocument,
   OpenWorkStep,
 } from "@t3tools/contracts";
+import { issueReadyColumnIds } from "@t3tools/contracts";
 
 export function issueCanStart(item: IssueBoardItem, mapping: IssueBoardMapping | null): boolean {
-  return mapping !== null && item.columnId === mapping.ready;
+  return (
+    mapping !== null &&
+    item.columnId !== null &&
+    issueReadyColumnIds(mapping).includes(item.columnId)
+  );
 }
 
 export function defaultIssueAttempt(attempts: readonly IssueAttempt[]): IssueAttempt | null {

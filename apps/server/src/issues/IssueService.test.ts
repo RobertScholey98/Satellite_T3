@@ -76,7 +76,10 @@ const setup = Effect.gen(function* () {
       Effect.succeed({
         title: "Board",
         locator,
-        columns: ["ready", "progress", "pr", "done"].map((id) => ({ id, title: id })),
+        columns: ["ready", "ready-next", "progress", "pr", "done"].map((id) => ({
+          id,
+          title: id,
+        })),
         items: [
           {
             issue: { ref: issue, title: "Issue", state: "open", labels: [], updatedAt: "now" },
@@ -135,6 +138,121 @@ const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 describe("IssueService", () => {
+  it.effect("reads legacy Ready mappings and reserves after a service restart", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const restarted = yield* makeIssueService(test.options);
+        const view = yield* restarted.openBoard({ projectId, boardId: test.boardId });
+        assert.strictEqual(view.board.mapping?.ready, "ready");
+        const link = yield* restarted.reserveAttempt({
+          requestId: "legacy-reserve",
+          boardId: test.boardId,
+          issue,
+          sourceEnvironmentId: environmentId,
+          destinationEnvironmentId: environmentId,
+        });
+        assert.strictEqual(link.boardId, test.boardId);
+        assert.deepStrictEqual(test.writes, []);
+      }),
+    ),
+  );
+  it.effect("persists multiple Ready columns and reserves from either remote placement", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const configured = yield* test.service.configureBoard({
+          requestId: "multi-ready",
+          projectId,
+          locator,
+          mapping: {
+            ready: ["ready", "ready-next", "ready"],
+            inProgress: "progress",
+            inPullRequest: "pr",
+            completed: "done",
+            moveOnMerge: true,
+          },
+        });
+        assert.deepStrictEqual(configured.board.mapping?.ready, ["ready", "ready-next"]);
+        const restarted = yield* makeIssueService(test.options);
+        const view = yield* restarted.openBoard({ projectId, boardId: test.boardId });
+        assert.deepStrictEqual(view.board.mapping?.ready, ["ready", "ready-next"]);
+        yield* test.reserve("first-ready");
+        test.setColumn("ready-next");
+        const second = yield* restarted.reserveAttempt({
+          requestId: "second-ready",
+          boardId: test.boardId,
+          issue,
+          sourceEnvironmentId: environmentId,
+          destinationEnvironmentId: destination,
+        });
+        assert.strictEqual(second.destinationEnvironmentId, destination);
+        const dest = yield* makeIssueService({ ...test.options, environmentId: destination });
+        yield* dest.attachAttempt({
+          link: second,
+          threadId,
+          projectId,
+          worktreePath: "/repo/work",
+        });
+        yield* dest.firstPromptSent({ threadId, eventKey: "send-from-second-ready" });
+        assert.deepStrictEqual(test.writes, []);
+        yield* test.service.ingestReceipts({ receipts: (yield* dest.listReceipts({})).receipts });
+        assert.deepStrictEqual(test.writes, ["progress"]);
+      }),
+    ),
+  );
+  it.effect("rejects empty or unknown Ready selections without replacing the saved mapping", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        for (const ready of [[], ["ready", "missing"]]) {
+          const result = yield* test.service
+            .configureBoard({
+              requestId: `invalid-ready-${ready.length}`,
+              projectId,
+              locator,
+              mapping: {
+                ready,
+                inProgress: "progress",
+                inPullRequest: "pr",
+                completed: "done",
+                moveOnMerge: true,
+              },
+            })
+            .pipe(Effect.result);
+          assert.strictEqual(result._tag, "Failure");
+          if (result._tag === "Failure") assert.strictEqual(result.failure.reason, "invalid");
+        }
+        const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        assert.strictEqual(view.board.mapping?.ready, "ready");
+      }),
+    ),
+  );
+  it.effect("rejects a new reservation after remote placement leaves all Ready columns", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        yield* test.service.configureBoard({
+          requestId: "multi-ready",
+          projectId,
+          locator,
+          mapping: {
+            ready: ["ready", "ready-next"],
+            inProgress: "progress",
+            inPullRequest: "pr",
+            completed: "done",
+            moveOnMerge: true,
+          },
+        });
+        yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        test.setColumn("progress");
+        const result = yield* test.reserve("after-remote-move").pipe(Effect.result);
+        assert.strictEqual(result._tag, "Failure");
+        if (result._tag === "Failure") assert.strictEqual(result.failure.reason, "conflict");
+        assert.strictEqual((yield* test.service.listAttempts({ issue })).length, 0);
+      }),
+    ),
+  );
   it.effect("keeps a connected upstream board after the project switches to its fork", () =>
     run(
       Effect.gen(function* () {

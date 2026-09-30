@@ -35,6 +35,15 @@ describe("issue work eligibility", () => {
     expect(issueCanStart({ ...item, columnId: "doing-id" }, mapping)).toBe(false);
     expect(issueCanStart(item, null)).toBe(false);
   });
+  it("starts in any configured Ready column and stops offering Start when it is removed", () => {
+    const multiple = { ...mapping, ready: ["ready-id", "triaged-id"] };
+    const triaged = { ...item, columnId: "triaged-id" };
+    expect(issueCanStart(item, multiple)).toBe(true);
+    expect(issueCanStart(triaged, multiple)).toBe(true);
+    expect(issueCanStart({ ...item, columnId: "doing-id" }, multiple)).toBe(false);
+    expect(issueCanStart({ ...item, columnId: null }, multiple)).toBe(false);
+    expect(issueCanStart(triaged, { ...multiple, ready: ["ready-id"] })).toBe(false);
+  });
   it("rejects branch names Git cannot create", () => {
     expect(validWorktreeName("issue-123")).toBe(true);
     expect(validWorktreeName("feature/issue-123")).toBe(true);

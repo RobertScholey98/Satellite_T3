@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   ProjectId,
+  type IssueBoardColumn,
   type IssueBoardSummary,
   type IssueBoardView,
 } from "@t3tools/contracts";
@@ -75,6 +76,35 @@ vi.mock("../ui/dialog", () => ({
 vi.mock("../pullRequest/PullRequestMarkdown", () => ({ PullRequestMarkdown: () => null }));
 vi.mock("../pullRequest/PullRequestListRow", () => ({ PullRequestRowLines: () => null }));
 vi.mock("./IssueStartDialog", () => ({ IssueStartDialog: () => null }));
+vi.mock("./IssueReadyColumnsPicker", () => ({
+  IssueReadyColumnsPicker: ({
+    columns,
+    value,
+    onChange,
+    disabled,
+  }: {
+    columns: readonly IssueBoardColumn[];
+    value: readonly string[];
+    onChange: (columns: string[]) => void;
+    disabled?: boolean;
+  }) => (
+    <select
+      aria-label="Ready for development"
+      multiple
+      value={value}
+      disabled={disabled}
+      onChange={(event) =>
+        onChange(Array.from(event.target.selectedOptions, (option) => option.value))
+      }
+    >
+      {columns.map((column) => (
+        <option key={column.id} value={column.id}>
+          {column.title}
+        </option>
+      ))}
+    </select>
+  ),
+}));
 
 import { IssuesBoard } from "./IssuesBoard";
 
@@ -197,9 +227,14 @@ function restoreSavedBoard() {
   commands.openBoard.mockResolvedValueOnce(AsyncResult.success(boardView(saved)));
 }
 async function chooseMapping(dialog: ReactTestInstance) {
-  for (const [index, column] of ["ready", "progress", "review", "done"].entries()) {
+  await act(async () => {
+    dialog.findByProps({ "aria-label": "Ready for development" }).props.onChange({
+      target: { selectedOptions: [{ value: "ready" }] },
+    });
+  });
+  for (const [index, column] of ["progress", "review", "done"].entries()) {
     await act(async () => {
-      dialog.findAllByType("select")[index]!.props.onChange({ target: { value: column } });
+      dialog.findAllByType("select")[index + 1]!.props.onChange({ target: { value: column } });
     });
   }
 }
@@ -319,7 +354,11 @@ describe("project board selection", () => {
     expect(boardText()).toBe("");
     expect(onSelectBoard).not.toHaveBeenCalled();
     expect(commands.configureBoard.mock.calls[0]![0]).toMatchObject({
-      input: { projectId: firstProjectId, locator: discovered.locator, mapping },
+      input: {
+        projectId: firstProjectId,
+        locator: discovered.locator,
+        mapping: { ...mapping, ready: ["ready"] },
+      },
     });
 
     await act(async () => {

@@ -3,6 +3,7 @@
 import {
   EnvironmentId,
   ProjectId,
+  type IssueBoardColumn,
   type IssueBoardSummary,
   type IssueBoardView,
   type IssueSummary,
@@ -87,6 +88,13 @@ const issues: IssueSummary[] = [
   updatedAt: "2026-09-30T00:00:00Z",
 }));
 const onSelectBoard = vi.fn();
+const columns: IssueBoardColumn[] = [
+  { id: "ready", title: "Ready" },
+  { id: "refinement", title: "Ready for refinement" },
+  { id: "progress", title: "In progress" },
+  { id: "review", title: "In PR" },
+  { id: "done", title: "Completed" },
+];
 let root: Root;
 let container: HTMLDivElement;
 
@@ -144,7 +152,7 @@ beforeEach(() => {
     const board = input.boardId === secondBoard.id ? secondBoard : firstBoard;
     const view: IssueBoardView = {
       board,
-      columns: [],
+      columns,
       items: [],
       attempts: [],
       moves: [],
@@ -163,6 +171,87 @@ afterEach(async () => {
 });
 
 describe("IssuesBoard menus", () => {
+  it("loads a legacy ready column and saves multiple ready columns without changing move destinations", async () => {
+    commands.listBoards.mockResolvedValue(AsyncResult.success([firstBoard]));
+    commands.configureBoard.mockImplementation(
+      async ({ input }: { input: { mapping: NonNullable<IssueBoardSummary["mapping"]> } }) =>
+        AsyncResult.success({
+          board: { ...firstBoard, mapping: input.mapping },
+          columns,
+          items: [],
+          attempts: [],
+          moves: [],
+        }),
+    );
+    await mount();
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Board settings"]')!);
+    await click(menuItem("Column mapping"));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.querySelector('button[aria-label="Remove Ready"]')).not.toBeNull();
+    expect([...dialog!.querySelectorAll("select")].map((select) => select.value)).toEqual([
+      "progress",
+      "review",
+      "done",
+    ]);
+    await click(
+      dialog!.querySelector<HTMLButtonElement>('button[aria-label="Ready for development"]')!,
+    );
+    const refinement = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+      (option) => option.textContent?.trim() === "Ready for refinement",
+    );
+    expect(refinement).toBeDefined();
+    await click(refinement!);
+    expect(dialog!.querySelector('button[aria-label="Remove Ready"]')).not.toBeNull();
+    expect(
+      dialog!.querySelector('button[aria-label="Remove Ready for refinement"]'),
+    ).not.toBeNull();
+    const save = [...dialog!.querySelectorAll<HTMLButtonElement>("button")].find(
+      (candidate) => candidate.textContent?.trim() === "Save mapping",
+    )!;
+    expect(save.disabled).toBe(false);
+    await click(save);
+
+    expect(commands.configureBoard).toHaveBeenCalledWith({
+      environmentId,
+      input: {
+        requestId: expect.any(String),
+        projectId: firstProjectId,
+        locator: firstBoard.locator,
+        mapping: { ...firstBoard.mapping, ready: ["ready", "refinement"] },
+      },
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("requires at least one ready column before saving a mapping", async () => {
+    commands.listBoards.mockResolvedValue(AsyncResult.success([firstBoard]));
+    await mount();
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Board settings"]')!);
+    await click(menuItem("Column mapping"));
+
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const save = [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(
+      (candidate) => candidate.textContent?.trim() === "Save mapping",
+    )!;
+    expect(save.disabled).toBe(false);
+    await click(dialog.querySelector<HTMLButtonElement>('button[aria-label="Remove Ready"]')!);
+    expect(save.disabled).toBe(true);
+    await click(save);
+    expect(commands.configureBoard).not.toHaveBeenCalled();
+
+    await click(
+      dialog.querySelector<HTMLButtonElement>('button[aria-label="Ready for development"]')!,
+    );
+    const ready = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+      (option) => option.textContent?.trim() === "Ready",
+    );
+    expect(ready).toBeDefined();
+    await click(ready!);
+    expect(save.disabled).toBe(false);
+  });
+
   it("opens the local project menu and selects another project", async () => {
     await mount();
     await click(button("Project: First project · Test machine"));

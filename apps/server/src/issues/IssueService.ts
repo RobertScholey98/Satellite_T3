@@ -17,6 +17,7 @@ import {
   IssueRef,
   IssueBoardLocator,
   IssueBoardMapping,
+  issueReadyColumnIds,
   type ProjectId,
   type ThreadId,
   type IssuesListInput,
@@ -439,19 +440,29 @@ export const makeIssueService = (options: {
             (yield* project(input.projectId)).workspaceRoot,
             input.locator,
           );
+          const readyColumns = issueReadyColumnIds(input.mapping);
+          if (readyColumns.length === 0)
+            return yield* error("invalid", "Choose at least one Ready for development column.");
           for (const id of [
-            input.mapping.ready,
+            ...readyColumns,
             input.mapping.inProgress,
             input.mapping.inPullRequest,
             input.mapping.completed,
           ])
             if (!remote.columns.some((column) => column.id === id))
               return yield* error("invalid", "Map each stage to an existing remote board column.");
+          const mapping = {
+            ...input.mapping,
+            ready:
+              typeof input.mapping.ready === "string"
+                ? input.mapping.ready
+                : [...new Set(readyColumns)],
+          };
           const id = issueBoardId(input.projectId, remote.locator);
           yield* transaction(
             Effect.gen(function* () {
               yield* sql`INSERT INTO issue_boards(id,project_id,locator_key,title,locator_json,mapping_json)
-        VALUES(${id},${input.projectId},${id},${remote.title},${json(remote.locator)},${json(input.mapping)})
+        VALUES(${id},${input.projectId},${id},${remote.title},${json(remote.locator)},${json(mapping)})
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,locator_json=excluded.locator_json,mapping_json=excluded.mapping_json`;
               yield* remember(input.requestId, input, id);
             }),
@@ -477,10 +488,14 @@ export const makeIssueService = (options: {
           const item = remote.items.find(
             (item) => canonicalIssueKey(item.issue.ref) === canonicalIssueKey(input.issue),
           );
-          if (!board.mapping || item?.columnId !== board.mapping.ready)
+          if (
+            !board.mapping ||
+            !item?.columnId ||
+            !issueReadyColumnIds(board.mapping).includes(item.columnId)
+          )
             return yield* error(
               "conflict",
-              "Start is available only while this ticket is in the configured Ready for development column.",
+              "Start is available only while this ticket is in a configured Ready for development column.",
             );
           const generations = yield* sql<{
             generation: number;

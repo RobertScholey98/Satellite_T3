@@ -1,12 +1,12 @@
 # Issues and open work
 
 Use **Issues** in the Pull Requests workspace to browse tickets from your repository
-hosts. Connect an existing GitHub Project or Azure DevOps board, then choose the
-columns for Ready for development, In progress, In PR, and Completed. Enable
+hosts. Connect an existing GitHub Project or Azure DevOps board, then choose one or more
+Ready for development columns and a destination column for In progress, In PR, and Completed. Enable
 **Move to Completed when a pull request is merged** if you want merges to finish
 tickets automatically. You can change these choices later.
 
-Open a ticket to see its details. Tickets in your Ready column offer **Start**.
+Open a ticket to see its details. Tickets in any of your Ready columns offer **Start**.
 Choose the project in the usual new-thread prompt, name the worktree, and send
 your instructions. The ticket moves into progress after the worktree is ready
 and the agent receives the prompt. Returning tickets offer **Continue existing**;

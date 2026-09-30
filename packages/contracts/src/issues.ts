@@ -69,13 +69,15 @@ export type IssueBoardLocator = typeof IssueBoardLocator.Type;
 export const IssueBoardColumn = Schema.Struct({ id: Id, title: Schema.String });
 export type IssueBoardColumn = typeof IssueBoardColumn.Type;
 export const IssueBoardMapping = Schema.Struct({
-  ready: Id,
+  ready: Schema.Union([Id, Schema.Array(Id).check(Schema.isMinLength(1))]),
   inProgress: Id,
   inPullRequest: Id,
   completed: Id,
   moveOnMerge: Schema.Boolean,
 });
 export type IssueBoardMapping = typeof IssueBoardMapping.Type;
+export const issueReadyColumnIds = (mapping: IssueBoardMapping): ReadonlyArray<string> =>
+  typeof mapping.ready === "string" ? [mapping.ready] : mapping.ready;
 export const IssueBoardSummary = Schema.Struct({
   id: Id,
   projectId: ProjectId,
