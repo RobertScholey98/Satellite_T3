@@ -116,6 +116,19 @@ function runChecked(command, args) {
   );
 }
 
+export function extractElectronRuntimeArchive(zipPath, destination) {
+  if (hostPlatform === "darwin") {
+    runChecked("ditto", ["-x", "-k", zipPath, destination]);
+  } else {
+    runChecked("python3", [
+      "-c",
+      "import os, sys, zipfile; os.makedirs(sys.argv[2], exist_ok=True); zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
+      zipPath,
+      destination,
+    ]);
+  }
+}
+
 function installElectronRuntime(electronDir, version) {
   const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-electron-"));
   const zipPath = NodePath.join(tempDir, `electron-v${version}-${hostPlatform}-${hostArch}.zip`);
@@ -127,16 +140,7 @@ function installElectronRuntime(electronDir, version) {
       "-o",
       zipPath,
     ]);
-    if (hostPlatform === "darwin") {
-      runChecked("ditto", ["-x", "-k", zipPath, NodePath.join(electronDir, "dist")]);
-    } else {
-      runChecked("python3", [
-        "-c",
-        "import os, sys, zipfile; os.makedirs(sys.argv[2], exist_ok=True); zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
-        zipPath,
-        NodePath.join(electronDir, "dist"),
-      ]);
-    }
+    extractElectronRuntimeArchive(zipPath, NodePath.join(electronDir, "dist"));
   } finally {
     NodeFS.rmSync(tempDir, { recursive: true, force: true });
   }
