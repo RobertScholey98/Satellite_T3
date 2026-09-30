@@ -60,6 +60,8 @@ import * as ThreadBackgroundLiveness from "../src/orchestration/ThreadBackground
 import * as ThreadPlanProgress from "../src/orchestration/ThreadPlanProgress.ts";
 import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
+import { IssueService } from "../src/issues/IssueService.ts";
+import { IssueLifecycleReactor } from "../src/issues/IssueLifecycleReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { CheckpointReactor } from "../src/orchestration/Services/CheckpointReactor.ts";
@@ -339,6 +341,7 @@ export const makeOrchestrationIntegrationHarness = (
       generateThreadTitle: () => Effect.succeed({ title: "New thread" }),
     } as unknown as TextGeneration["Service"]);
     const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
+      Layer.provide(Layer.mock(IssueService)({ firstPromptSent: () => Effect.void })),
       Layer.provide(
         Layer.mock(ProviderAuthService)({
           tryHandlePromptCommand: () => Effect.succeed(false),
@@ -402,6 +405,9 @@ export const makeOrchestrationIntegrationHarness = (
           drain: Effect.void,
           cancel: () => Effect.void,
         }),
+      ),
+      Layer.provide(
+        Layer.succeed(IssueLifecycleReactor, { start: () => Effect.void, drain: Effect.void }),
       ),
       Layer.provideMerge(
         Layer.succeed(StorageCleanup.StorageCleanup, {

@@ -18,6 +18,7 @@ export function useThreadHeaderOptions(props: {
   readonly usesNativeHeaderGlass: boolean;
   readonly gitControls: Parameters<typeof ThreadGitControls>[0];
   readonly onReturnToThread?: () => void;
+  readonly onOpenDocuments?: () => void;
 }) {
   const navigation = useNavigation();
   const { layout, panes, togglePrimarySidebar } = useAdaptiveWorkspaceLayout();
@@ -103,8 +104,20 @@ export function useThreadHeaderOptions(props: {
     // Search lives in the persistent sidebar, so the split header keeps
     // the git controls on the RIGHT (no center items — center space is
     // reserved for future breadcrumbs/status).
-    unstable_headerRightItems: () =>
-      layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems,
+    unstable_headerRightItems: () => [
+      ...(props.onOpenDocuments
+        ? [
+            withNativeGlassHeaderItem({
+              accessibilityLabel: "Open documents",
+              icon: { name: "doc.text", type: "sfSymbol" as const },
+              identifier: "thread-right-documents",
+              onPress: props.onOpenDocuments,
+              type: "button" as const,
+            }),
+          ]
+        : []),
+      ...(layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems),
+    ],
     unstable_headerSubtitle: props.usesNativeHeaderGlass ? props.subtitle : undefined,
     contentStyle: undefined,
   };

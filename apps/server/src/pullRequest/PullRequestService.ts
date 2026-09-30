@@ -72,6 +72,8 @@ import {
 } from "@t3tools/contracts";
 import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/sourceControl";
 
+import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
+
 import { AllowGitHubReserve } from "../sourceControl/GitHubCli.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
@@ -621,6 +623,7 @@ export const make = Effect.gen(function* () {
   const mergedPullRequests = yield* PubSub.sliding<PullRequestMergeEvent>(64);
   const pullRequestRefreshes = yield* SubscriptionRef.make(0);
   const registry = yield* PullRequestProviderRegistry;
+  const repositoryIdentityResolver = yield* RepositoryIdentityResolver;
   const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const sourceControlProviders = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
@@ -705,7 +708,7 @@ export const make = Effect.gen(function* () {
   };
 
   const listWorkspaceProjects = (
-    filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host">,
+    filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host" | "includeUpstream">,
   ): Effect.Effect<WorkspaceProjects, PullRequestError> =>
     (filter.projectId === undefined
       ? projections.getProjectShells(filter.projectIds)
@@ -718,6 +721,26 @@ export const make = Effect.gen(function* () {
             detail: "The project list could not be read.",
             cause: error,
           }),
+      ),
+      Effect.flatMap((projects) =>
+        filter.includeUpstream !== true
+          ? Effect.succeed(projects)
+          : Effect.forEach(
+              projects,
+              (project) =>
+                repositoryIdentityResolver
+                  .resolve(project.workspaceRoot, { remoteName: "upstream" })
+                  .pipe(
+                    Effect.map((upstream) =>
+                      upstream === null ||
+                      upstream.canonicalKey.toLowerCase() ===
+                        project.repositoryIdentity?.canonicalKey.toLowerCase()
+                        ? [project]
+                        : [project, { ...project, repositoryIdentity: upstream }],
+                    ),
+                  ),
+              { concurrency: REPOSITORY_CONCURRENCY },
+            ).pipe(Effect.map((projects) => projects.flat())),
       ),
       Effect.flatMap((projects) =>
         refineUnknownProjectKinds(projects, filter).pipe(
@@ -796,20 +819,26 @@ export const make = Effect.gen(function* () {
 
   /**
    * The project whose checkout and credentials serve a reference. The project's own
-   * repository is the default; a reference that names a `host` may instead point at any
+   * repository is the default, and its named upstream remains addressable independently
+   * of the feed scope. A reference that names a `host` may instead point at any
    * repository on that host. Prefer its own checkout; providers with explicit repository
    * targeting can fall back to another checkout on the host. Azure derives its organization
    * from the checkout, so it requires a matching repository.
    */
   const requireProject = (ref: PullRequestRef): Effect.Effect<SupportedProject, PullRequestError> =>
-    listWorkspaceProjects({ projectId: ref.projectId }).pipe(
+    listWorkspaceProjects({ projectId: ref.projectId, includeUpstream: true }).pipe(
       Effect.flatMap(({ supported }): Effect.Effect<SupportedProject, PullRequestError> => {
-        const own = supported[0];
+        const own =
+          supported.find(
+            (candidate) =>
+              candidate.repository.toLowerCase() === ref.repository.trim().toLowerCase() &&
+              (ref.host === undefined || candidate.host === ref.host.trim().toLowerCase()),
+          ) ?? supported[0];
         const repository = ref.repository.trim();
         const host = ref.host?.trim().toLowerCase();
         if (own !== undefined && own.repository.toLowerCase() === repository.toLowerCase()) {
-          // Hostless references only ever meant the project's own repository, and a hosted one
-          // naming it still is; either way the project serves itself.
+          // Hostless links saved before the feed scope changed may name the upstream.
+          // Either configured remote is served by this project's checkout.
           if (host === undefined || host === own.host) return Effect.succeed(own);
         }
         if (host === undefined) {
@@ -829,7 +858,9 @@ export const make = Effect.gen(function* () {
         // Azure SSH and legacy clone hosts differ from the browser URL's host. Compare
         // the complete repository identity before narrowing those checkouts by host.
         return listWorkspaceProjects(
-          repositoryKey.startsWith("dev.azure.com/") ? {} : { host },
+          repositoryKey.startsWith("dev.azure.com/")
+            ? { includeUpstream: true }
+            : { host, includeUpstream: true },
         ).pipe(
           Effect.flatMap(({ supported }) => {
             const onHost = supported.filter((candidate) => candidate.host === host);
@@ -1473,7 +1504,7 @@ export const make = Effect.gen(function* () {
     "PullRequestService.routingIdentity",
   )(function* (input) {
     const host = input.host.toLowerCase();
-    const { supported } = yield* listWorkspaceProjects({ host });
+    const { supported } = yield* listWorkspaceProjects({ host, includeUpstream: true });
     const project = supported.find((candidate) => candidate.api.kind === "github");
     const api = registry.get("github");
     if (project === undefined || api?.getRoutingIdentity === undefined) {
@@ -2433,14 +2464,18 @@ export const make = Effect.gen(function* () {
   const listStatsUncached: PullRequestService["Service"]["listStats"] = (input) =>
     Effect.gen(function* () {
       if (input.refs.length === 0) return { stats: [] };
-      const { supported } = yield* listWorkspaceProjects({});
-      const byProject = new Map(supported.map((project) => [project.project.id, project]));
+      const { supported } = yield* listWorkspaceProjects({ includeUpstream: true });
       const wanted = new Map<
         string,
         { readonly project: SupportedProject; readonly number: number }
       >();
       for (const ref of input.refs) {
-        const project = byProject.get(ref.projectId);
+        const project = supported.find(
+          (project) =>
+            project.project.id === ref.projectId &&
+            project.repository.toLowerCase() === ref.repository.trim().toLowerCase() &&
+            (ref.host === undefined || project.host === ref.host.toLowerCase()),
+        );
         // The repository travels through the client, so it is checked against the project's own
         // remote rather than being handed to a provider verbatim.
         if (
@@ -2450,7 +2485,10 @@ export const make = Effect.gen(function* () {
         ) {
           continue;
         }
-        wanted.set(`${project.project.id} ${ref.number}`, { project, number: ref.number });
+        wanted.set(
+          `${project.project.id} ${project.host} ${project.repository.toLowerCase()} ${ref.number}`,
+          { project, number: ref.number },
+        );
       }
       const byHost = new Map<string, Array<{ project: SupportedProject; number: number }>>();
       for (const entry of wanted.values()) {
@@ -2489,6 +2527,7 @@ export const make = Effect.gen(function* () {
                   : [
                       {
                         projectId: project.project.id,
+                        host: project.host,
                         repository: project.repository,
                         number: stat.number,
                         additions: stat.additions,
@@ -2799,6 +2838,7 @@ export const make = Effect.gen(function* () {
         limit,
         query,
         cursorEntries,
+        includeUpstream,
       ] = JSON.parse(key) as [
         number,
         string,
@@ -2810,8 +2850,10 @@ export const make = Effect.gen(function* () {
         number | null,
         string | null,
         ReadonlyArray<[string, string]> | null,
+        boolean,
       ];
       return listUncached({
+        includeUpstream,
         state,
         ...(involvement === null ? {} : { involvement }),
         ...(filters === null ? {} : { filters: filtersOfKey(filters) }),
@@ -2853,6 +2895,7 @@ export const make = Effect.gen(function* () {
       input.cursors === undefined
         ? null
         : Object.entries(input.cursors).toSorted(([left], [right]) => left.localeCompare(right)),
+      input.includeUpstream === true,
     ]);
     return Cache.get(listCache, key);
   };
@@ -2867,6 +2910,7 @@ export const make = Effect.gen(function* () {
               statsKey,
               {
                 projectId: value.projectId,
+                host: refOfCacheKey(key).host,
                 repository: value.repository,
                 number: value.number,
                 additions: value.additions,
@@ -3035,9 +3079,17 @@ export const make = Effect.gen(function* () {
 
   const listStatsCache = yield* Cache.makeWith(
     (key: string) => {
-      const [, refs] = JSON.parse(key) as [number, ReadonlyArray<[string, string, number, number]>];
+      const [, refs] = JSON.parse(key) as [
+        number,
+        ReadonlyArray<[string, string, number, number, string]>,
+      ];
       return listStatsUncached({
-        refs: refs.map(([projectId, repository, number]) => ({ projectId, repository, number })),
+        refs: refs.map(([projectId, repository, number, , host]) => ({
+          projectId,
+          repository,
+          number,
+          host,
+        })),
       } as unknown as PullRequestListStatsInput).pipe(
         Effect.flatMap((result) =>
           Clock.currentTimeMillis.pipe(Effect.map((at) => ({ result, at }))),
@@ -3053,9 +3105,11 @@ export const make = Effect.gen(function* () {
     JSON.stringify([
       listingsEpoch,
       [...refs]
-        .map((ref) => [ref.projectId, ref.repository, ref.number, refEpoch(ref)] as const)
+        .map((ref) => [ref.projectId, ref.repository, ref.number, refEpoch(ref), ref.host] as const)
         .toSorted((left, right) =>
-          `${left[0]} ${left[1]} ${left[2]}`.localeCompare(`${right[0]} ${right[1]} ${right[2]}`),
+          `${left[0]} ${left[1]} ${left[2]} ${left[4]}`.localeCompare(
+            `${right[0]} ${right[1]} ${right[2]} ${right[4]}`,
+          ),
         ),
     ]);
   // Exact batches share in-flight reads; overlapping pages reuse each row already fetched.
@@ -3083,7 +3137,8 @@ export const make = Effect.gen(function* () {
         (stat) =>
           stat.projectId === ref.projectId &&
           stat.repository.toLowerCase() === ref.repository.toLowerCase() &&
-          stat.number === ref.number,
+          stat.number === ref.number &&
+          (stat.host === undefined || stat.host === ref.host),
       );
       if (stat !== undefined) recordStats(key, stat, at);
     }

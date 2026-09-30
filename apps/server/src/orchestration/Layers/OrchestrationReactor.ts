@@ -17,6 +17,7 @@ import * as PullRequestSyncReactor from "../PullRequestSyncReactor.ts";
 import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 import * as StorageCleanup from "../../storageCleanup.ts";
+import * as IssueLifecycleReactor from "../../issues/IssueLifecycleReactor.ts";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
   const providerRuntimeIngestion = yield* ProviderRuntimeIngestionService;
@@ -31,6 +32,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const ideaUpdates = yield* IdeaUpdateReactor;
   const ideaDeletion = yield* IdeaDeletionReactor;
   const ideaPromotion = yield* IdeaPromotion;
+  const issueLifecycleReactor = yield* IssueLifecycleReactor.IssueLifecycleReactor;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* providerRuntimeIngestion.start();
@@ -45,6 +47,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* ideaUpdates.start();
     yield* ideaDeletion.start();
     yield* ideaPromotion.start();
+    yield* issueLifecycleReactor.start();
   });
 
   return {

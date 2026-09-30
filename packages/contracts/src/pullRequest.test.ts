@@ -338,3 +338,10 @@ describe("naming the file a tick belongs to", () => {
     ).toThrow();
   });
 });
+
+it("accepts optional upstream feed scope without changing the default request", () => {
+  expect(decodeListInput({ state: "open" })).toEqual({ state: "open" });
+  expect(decodeListInput({ state: "open", includeUpstream: true }).includeUpstream).toBe(true);
+  expect(decodeListInput({ state: "open", includeUpstream: false }).includeUpstream).toBe(false);
+  expect(() => decodeListInput({ state: "open", includeUpstream: "true" })).toThrow();
+});

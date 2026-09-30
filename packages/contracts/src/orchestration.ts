@@ -13,6 +13,7 @@ import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Struct from "effect/Struct";
 import { OrchestrationMessageContext } from "./composerContext.ts";
+import { IssueAttemptLink } from "./issues.ts";
 import { ProviderOptionSelections } from "./model.ts";
 import { RepositoryIdentity, ThreadEnvMode } from "./environment.ts";
 import {
@@ -1323,6 +1324,7 @@ const ThreadTurnStartBootstrapPrepareWorktree = Schema.Struct({
 });
 
 const ThreadTurnStartBootstrap = Schema.Struct({
+  issueAttempt: Schema.optional(IssueAttemptLink),
   createThread: Schema.optional(ThreadTurnStartBootstrapCreateThread),
   prepareWorktree: Schema.optional(ThreadTurnStartBootstrapPrepareWorktree),
   runSetupScript: Schema.optional(Schema.Boolean),

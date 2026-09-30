@@ -54,6 +54,7 @@ import {
   recallCheckoutIsRepo,
   rememberCheckoutIsRepo,
   resolveBackgroundDraftWorkspaceOptions,
+  resolveDraftSubmissionIntent,
   resolveComposerInteractionMode,
   restorePlanFollowUpComposer,
   resolveComposerProviderSelection,
@@ -461,6 +462,33 @@ describe("artifact template composer insertion", () => {
     const prompt = "Create a document using this $artifact-template-hello-world about…";
 
     expect(codexArtifactTemplatePromptToAppend(prompt, helloWorldTemplate)).toBeNull();
+  });
+});
+
+describe("draft submission destination", () => {
+  it.each(["foreground", "background", "alternate"] as const)(
+    "keeps idea submissions in their notebook when requested as %s",
+    (requestedIntent) => {
+      expect(
+        resolveDraftSubmissionIntent({
+          purpose: "idea",
+          isLocalDraftThread: true,
+          multipleModels: false,
+          requestedIntent,
+        }),
+      ).toBe("foreground");
+    },
+  );
+
+  it("preserves background sends for ordinary work drafts", () => {
+    expect(
+      resolveDraftSubmissionIntent({
+        purpose: "work",
+        isLocalDraftThread: true,
+        multipleModels: false,
+        requestedIntent: "background",
+      }),
+    ).toBe("background");
   });
 });
 
@@ -1624,6 +1652,14 @@ describe("getStartedThreadModelChangeBlockReason", () => {
 });
 
 describe("resolveSendEnvMode", () => {
+  it("keeps idea launches local even if a restored draft requests a worktree", () => {
+    expect(
+      resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: true, purpose: "idea" }),
+    ).toBe("local");
+    expect(
+      resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: true, purpose: "work" }),
+    ).toBe("worktree");
+  });
   it("keeps worktree mode only for git repositories", () => {
     expect(resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: true })).toBe("worktree");
     expect(resolveSendEnvMode({ requestedEnvMode: "worktree", isGitRepo: false })).toBe("local");

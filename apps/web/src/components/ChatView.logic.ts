@@ -16,6 +16,7 @@ import {
   type ScopedProjectRef,
   type ScopedThreadRef,
   type ThreadId,
+  type ThreadPurpose,
   type ThreadLinkedPullRequest,
   type TurnId,
 } from "@t3tools/contracts";
@@ -200,6 +201,18 @@ export function codexArtifactTemplatePromptToAppend(
   return appendCodexArtifactTemplateUsePrompt(currentDraft, template) === currentDraft
     ? null
     : codexArtifactTemplateUsePrompt(template);
+}
+
+export function resolveDraftSubmissionIntent(input: {
+  purpose: ThreadPurpose;
+  isLocalDraftThread: boolean;
+  multipleModels: boolean;
+  requestedIntent: ComposerSubmissionIntent;
+}): "foreground" | "background" {
+  if (input.purpose === "idea" || !input.isLocalDraftThread) return "foreground";
+  return input.multipleModels || input.requestedIntent === "background"
+    ? "background"
+    : "foreground";
 }
 
 export function shouldDockDraftHeroForSubmission(input: {
@@ -815,8 +828,9 @@ export function readFileAsDataUrl(file: File): Promise<string> {
 export function resolveSendEnvMode(input: {
   requestedEnvMode: DraftThreadEnvMode;
   isGitRepo: boolean;
+  purpose?: ThreadPurpose;
 }): DraftThreadEnvMode {
-  return input.isGitRepo ? input.requestedEnvMode : "local";
+  return input.isGitRepo && input.purpose !== "idea" ? input.requestedEnvMode : "local";
 }
 
 export function resolveBackgroundDraftWorkspaceOptions(input: {

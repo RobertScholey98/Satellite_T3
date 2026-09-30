@@ -278,6 +278,7 @@ export default defineConfig(() => {
       devSourcemap: buildSourcemap !== false,
     },
     build: {
+      rolldownOptions: { input: { main: "index.html", pill: "satellite-pill.html" } },
       outDir: "dist",
       emptyOutDir: true,
       manifest: true,

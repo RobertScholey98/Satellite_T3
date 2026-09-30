@@ -3,6 +3,18 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./issues": {
+      "types": "./src/issues.ts",
+      "default": "./src/issues.ts"
+    },
+    "./open-work": {
+      "types": "./src/openWork.ts",
+      "default": "./src/openWork.ts"
+    },
+    "./documents": {
+      "types": "./src/documents.ts",
+      "default": "./src/documents.ts"
+    },
     "./device/stream": {
       "types": "./src/device/stream.ts",
       "default": "./src/device/stream.ts"

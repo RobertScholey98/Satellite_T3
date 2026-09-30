@@ -107,6 +107,7 @@ function runChecked(command, args) {
   const result = NodeChildProcess.spawnSync(command, args, {
     encoding: "utf8",
     stdio: "inherit",
+    windowsHide: true,
   });
 
   if (result.status === 0) {

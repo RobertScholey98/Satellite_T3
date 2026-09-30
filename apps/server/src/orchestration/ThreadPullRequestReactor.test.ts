@@ -520,6 +520,58 @@ describe("ThreadPullRequestReactor", () => {
     ),
   );
 
+  it.effect.each([false, true])(
+    "discovers upstream pull requests and rechecks their remote (changed: %s)",
+    (changed) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const upstreamRepository = "upstream/repository";
+          const upstreamIdentity = {
+            ...project.repositoryIdentity,
+            canonicalKey: `github.com/${upstreamRepository}`,
+            displayName: upstreamRepository,
+            locator: {
+              ...project.repositoryIdentity.locator,
+              remoteName: "upstream",
+              remoteUrl: `git@github.com:${upstreamRepository}.git`,
+            },
+          };
+          const upstreamReference = {
+            ...reference(42),
+            repository: upstreamRepository,
+            url: `https://github.com/${upstreamRepository}/pull/42`,
+          };
+          const resolutions = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
+          const fixture = yield* makeHarness({
+            threads: [thread("upstream", { worktreePath: "/workspace/worktree" })],
+            existingWorktrees: ["/workspace/worktree"],
+            branchPullRequest: () =>
+              Effect.succeed({
+                ...branchPullRequest(),
+                ...upstreamReference,
+                repositoryKey: upstreamIdentity.canonicalKey,
+              }),
+            resolveRepositoryIdentity: (cwd, options) =>
+              Effect.gen(function* () {
+                expect(cwd).toBe(project.workspaceRoot);
+                yield* Ref.update(resolutions, (calls) => [...calls, options?.remoteName]);
+                if (options?.remoteName !== "upstream") return project.repositoryIdentity;
+                return changed && options.refresh
+                  ? { ...upstreamIdentity, canonicalKey: "github.com/other/repository" }
+                  : upstreamIdentity;
+              }),
+          });
+          yield* Effect.gen(function* () {
+            yield* fixture.start();
+            expect(yield* Ref.get(resolutions)).toEqual(["upstream", "upstream"]);
+            expect(
+              (yield* Ref.get(fixture.commands)).map((command) => command.branchPullRequest),
+            ).toEqual(changed ? [] : [upstreamReference]);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
+  );
+
   it.effect("keeps saved links on lookup failures and rejects a different repository", () =>
     Effect.scoped(
       Effect.gen(function* () {

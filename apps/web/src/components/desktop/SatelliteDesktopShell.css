@@ -1,0 +1,110 @@
+html[data-satellite-mode] {
+  --satellite-window-controls-inset: 76px;
+  --desktop-window-right-resize-inset: 6px;
+  --workspace-controls-right: calc(0.75rem + var(--satellite-window-controls-inset));
+  --workspace-native-controls-inset: calc(
+    var(--workspace-gutter-end) + var(--satellite-window-controls-inset)
+  );
+}
+
+/* Satellite has frameless controls without Windows' titlebar-overlay mode.
+   Reserve their space in the header that currently owns the window's edge. */
+html[data-satellite-mode] [data-reserve-native-controls] {
+  padding-right: var(--workspace-native-controls-inset);
+}
+
+html[data-satellite-mode] [data-right-panel-tabbar].drag-region {
+  padding-right: calc(7rem + var(--satellite-window-controls-inset));
+}
+
+/* Dialog backdrops transition every property. Hide each portal descendant and
+   stop that transition so portals cannot remain visible in the hidden workspace. */
+html[data-satellite-mode="pill"] body > :not(#root),
+html[data-satellite-mode="pill"] body > :not(#root) * {
+  visibility: hidden !important;
+  pointer-events: none !important;
+  transition: none !important;
+}
+
+[data-satellite="shell"] {
+  position: fixed;
+  inset: 0;
+  overflow: clip;
+}
+[data-satellite="workspace"] {
+  position: absolute;
+  inset: 0;
+  transform: translateY(0);
+  background: var(--background);
+}
+[data-satellite="workspace"][inert] {
+  pointer-events: none;
+}
+[data-satellite="workspace"] [data-slot="sidebar-wrapper"] {
+  height: 100% !important;
+  min-height: 0;
+}
+
+[data-satellite="window-controls"] {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 55;
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--background);
+  -webkit-app-region: no-drag;
+}
+
+[data-satellite="window-controls"] button {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+[data-satellite="window-controls"] button:hover,
+[data-satellite="window-controls"] button[aria-pressed="true"] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+[data-satellite="window-controls"] button:focus-visible {
+  outline: 1px solid #88b8f5;
+  outline-offset: 2px;
+}
+
+[data-satellite="window-controls"] svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Keep the native controls inside the workspace's 40px tab row. */
+html[data-satellite-mode] [data-workspace-tabbar] {
+  /* 52px control group, 12px edge inset, and an 8px gap to the panel toggle. */
+  --workspace-native-controls-inset: 72px;
+}
+
+[data-satellite="workspace"]:has([data-workspace-tabbar]) > [data-satellite="window-controls"] {
+  top: 6px;
+  gap: 2px;
+  padding: 2px;
+}
+
+[data-satellite="workspace"]:has([data-workspace-tabbar])
+  > [data-satellite="window-controls"]
+  button {
+  width: 22px;
+  height: 22px;
+}
+
+[data-satellite="workspace"]:has([data-workspace-tabbar]) > [data-satellite="window-controls"] svg {
+  width: 12px;
+  height: 12px;
+}

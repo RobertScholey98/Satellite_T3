@@ -13,6 +13,7 @@ import {
   syncDocumentWindowControlsOverlayClass,
 } from "./lib/windowControlsOverlay";
 import { AppRoot } from "./AppRoot";
+import { SatelliteDesktopShell } from "./components/desktop/SatelliteDesktopShell";
 import { clearChunkReloadGuard, reloadOnceForChunkLoadError } from "./lib/chunkReloadGuard";
 
 prepareProviderAuthDelivery();
@@ -41,7 +42,12 @@ window.addEventListener("vite:preloadError", (event) => {
   }
 });
 
-const app = <AppRoot router={router} />;
+const workspace = <AppRoot router={router} />;
+const app = window.satelliteBridge ? (
+  <SatelliteDesktopShell bridge={window.satelliteBridge}>{workspace}</SatelliteDesktopShell>
+) : (
+  workspace
+);
 
 // Managed auth is cloud-only, and the Electron Clerk provider bundles the full
 // clerk-js runtime. Loading only the selected runtime as a split chunk keeps

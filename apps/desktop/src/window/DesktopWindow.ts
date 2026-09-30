@@ -30,6 +30,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
+import { installSatellitePill, isSatelliteWindow } from "../satellite/SatellitePill.ts";
 
 const TITLEBAR_HEIGHT = 40;
 // Matches --workspace-topbar-height in apps/web/src/index.css. Native macOS
@@ -284,6 +285,10 @@ function syncWindowAppearance(
     if (window.isDestroyed()) {
       return;
     }
+    if (isSatelliteWindow(window)) {
+      window.setBackgroundColor("#00000000");
+      return;
+    }
 
     window.setBackgroundColor(getInitialWindowBackgroundColor(shouldUseDarkColors));
     const { titleBarOverlay } = getWindowTitleBarOptions(shouldUseDarkColors, platform);
@@ -394,6 +399,7 @@ export const make = Effect.gen(function* () {
     if (persistedBounds !== null && initialBounds === DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE) {
       yield* logWindowWarning("saved main window bounds could not be restored; using defaults");
     }
+    const satellite = process.env.T3CODE_SATELLITE_PILL === "1" && environment.platform === "win32";
     const window = yield* electronWindow.create({
       ...initialBounds,
       minWidth: 840,
@@ -404,9 +410,21 @@ export const make = Effect.gen(function* () {
       backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
       ...iconOption,
       title: environment.displayName,
-      ...getWindowTitleBarOptions(shouldUseDarkColors, environment.platform),
+      ...(satellite
+        ? {
+            frame: false,
+            thickFrame: true,
+            transparent: false,
+            resizable: true,
+            skipTaskbar: true,
+            alwaysOnTop: true,
+            maximizable: false,
+            fullscreenable: false,
+          }
+        : getWindowTitleBarOptions(shouldUseDarkColors, environment.platform)),
       webPreferences: {
         preload: environment.preloadPath,
+        ...(satellite ? { additionalArguments: ["--satellite-pill"] } : {}),
         // The window boots hidden (show: false until ready-to-show), and
         // Chromium throttles hidden renderers: timers coalesce and rAF stops,
         // which stalls first paint. Boot unthrottled; the first-reveal trigger
@@ -420,6 +438,22 @@ export const make = Effect.gen(function* () {
       },
     });
 
+    if (satellite) {
+      yield* Effect.sync(() =>
+        installSatellitePill(window, {
+          revealMain: () => {
+            void runPromise(electronWindow.reveal(window));
+          },
+          ...iconOption,
+          pillUrl: new URL("/satellite-pill.html", applicationUrl).href,
+          pillPreloadPath: environment.preloadPath.replace(
+            /preload\.cjs$/,
+            "satellite-pill-preload.cjs",
+          ),
+        }),
+      );
+    }
+
     if (environment.platform === "darwin") {
       window.setAutoHideCursor(false);
     }
@@ -427,7 +461,7 @@ export const make = Effect.gen(function* () {
     let pendingBoundsPersistFiber: Fiber.Fiber<void, never> | undefined;
     let boundsPersistenceEnabled = persistedBounds === null || restoredPersistedBounds;
     const readPersistableBounds = (): DesktopAppSettings.DesktopWindowBounds | null => {
-      if (window.isDestroyed()) {
+      if (window.isDestroyed() || satellite) {
         return null;
       }
       const bounds =
@@ -464,6 +498,7 @@ export const make = Effect.gen(function* () {
       return pendingBoundsPersistFiber;
     };
     const scheduleBoundsPersist = () => {
+      if (satellite) return;
       if (!boundsPersistenceEnabled) {
         const currentBounds = readPersistableBounds();
         if (
@@ -818,7 +853,12 @@ export const make = Effect.gen(function* () {
       // Boot is done; hand the window back to normal hidden-window throttling
       // (see the backgroundThrottling comment on the create options above).
       if (!window.isDestroyed()) {
-        window.webContents.setBackgroundThrottling(true);
+        window.webContents.setBackgroundThrottling(!satellite);
+      }
+      // The Satellite owner reveals the standalone pill and retained workspace separately.
+      if (satellite) {
+        void runPromise(dismissConnectingSplash);
+        return;
       }
       // Reveal the real window, then close the connecting splash (if any) so the
       // two don't overlap and there's no blank gap between them.
@@ -829,7 +869,7 @@ export const make = Effect.gen(function* () {
     });
 
     loadApplication();
-    if (environment.isDevelopment) {
+    if (environment.isDevelopment && !satellite) {
       window.webContents.openDevTools({ mode: "detach" });
     }
 
@@ -895,7 +935,7 @@ export const make = Effect.gen(function* () {
       frame: false,
       center: true,
       show: false,
-      skipTaskbar: false,
+      skipTaskbar: process.env.T3CODE_SATELLITE_PILL === "1" && environment.platform === "win32",
       backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
       title: environment.displayName,
       webPreferences: {

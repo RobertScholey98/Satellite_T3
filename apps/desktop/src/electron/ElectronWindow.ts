@@ -20,6 +20,7 @@ import {
   loadWindowsForegroundApi,
 } from "./WindowsForeground.ts";
 import { startWindowsForegroundFocusThread } from "./WindowsForegroundFocusThread.ts";
+import { expandSatelliteWindow } from "../satellite/SatellitePill.ts";
 
 function windowsForegroundFocusTarget(window: Electron.BrowserWindow) {
   return {
@@ -268,6 +269,8 @@ export const make = Effect.gen(function* () {
           if (window.isDestroyed()) {
             return;
           }
+
+          if (!expandSatelliteWindow(window)) return;
 
           // Only a capture reveal fights another process for the foreground, which
           // needs Win32 calls that load native modules. Everything else stays native.

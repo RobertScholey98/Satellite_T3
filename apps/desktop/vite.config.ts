@@ -119,6 +119,15 @@ export default defineConfig({
       dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
+      entry: ["src/satellite-pill-preload.ts"],
+      clean: false,
+    },
+    {
+      format: "cjs",
+      outDir: "dist-electron",
+      dts: false,
+      sourcemap: true,
+      outExtensions: () => ({ js: ".cjs" }),
       entry: ["src/preview-pick-preload.ts"],
       deps: {
         alwaysBundle: (id) => id === "react-grab" || id.startsWith("react-grab/"),

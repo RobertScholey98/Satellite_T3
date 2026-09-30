@@ -1,5 +1,6 @@
 import { IdeaDeletionCleanup } from "../components/ideas/IdeaDeletionCleanup";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
+import { IssueReceiptRelay } from "../components/issues/IssueReceiptRelay";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -28,6 +29,7 @@ import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPrompt
 import { SnapShotCoordinator } from "../components/desktop/SnapShotCoordinator";
 import { DesktopAppActivationCoordinator } from "../components/desktop/DesktopAppActivationCoordinator";
 import { RunningThreadKeepAlive } from "../components/desktop/RunningThreadKeepAlive";
+import { SatellitePillCoordinator } from "../components/desktop/SatellitePillCoordinator";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { ThreadNotificationCoordinator } from "../components/ThreadNotificationCoordinator";
 import { QueuedMessageSender } from "../components/QueuedMessageSender";
@@ -229,6 +231,7 @@ function RootRouteView() {
           {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
           {primaryEnvironmentAuthenticated ? <DesktopAppActivationCoordinator /> : null}
           {isElectron ? <RunningThreadKeepAlive /> : null}
+          {window.satelliteBridge ? <SatellitePillCoordinator /> : null}
           <RelayClientInstallDialog />
           <ConnectOnboardingDialog />
           <SshPasswordPromptDialog />
@@ -236,6 +239,7 @@ function RootRouteView() {
           <ThreadNotificationCoordinator />
           <QueuedMessageSender />
           <IdeaDeletionCleanup />
+          <IssueReceiptRelay />
           <ConfirmDialogHost />
           <CustomSnoozeDialogHost />
           <SlowRpcRequestToastCoordinator />

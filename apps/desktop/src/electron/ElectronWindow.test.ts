@@ -20,6 +20,7 @@ const {
   windowsForegroundFocusMock,
   windowsForegroundPrepareMock,
   windowsForegroundCloseMock,
+  expandSatelliteWindowMock,
 } = vi.hoisted(() => ({
   activateWindowsForegroundMock: vi.fn(),
   appFocusMock: vi.fn(),
@@ -33,6 +34,11 @@ const {
   windowsForegroundFocusMock: vi.fn(),
   windowsForegroundPrepareMock: vi.fn(),
   windowsForegroundCloseMock: vi.fn(),
+  expandSatelliteWindowMock: vi.fn(() => true),
+}));
+
+vi.mock("../satellite/SatellitePill.ts", () => ({
+  expandSatelliteWindow: expandSatelliteWindowMock,
 }));
 
 vi.mock("./WindowsForeground.ts", () => ({
@@ -89,6 +95,7 @@ function makeWindowsRevealWindow() {
 
 describe("ElectronWindow", () => {
   beforeEach(() => {
+    expandSatelliteWindowMock.mockReset().mockReturnValue(true);
     activateWindowsForegroundMock.mockReset().mockResolvedValue(undefined);
     appFocusMock.mockReset();
     browserWindowMock.mockReset();
@@ -560,6 +567,24 @@ describe("ElectronWindow", () => {
       assert.lengthOf(activateWindowsForegroundMock.mock.calls, 1);
       assert.lengthOf(window.focus.mock.calls, 2);
     }).pipe(Effect.provide(testLayer("win32"))),
+  );
+  it.effect(
+    "defers capture reveal until the Satellite renderer is ready without consuming capture intent",
+    () =>
+      Effect.gen(function* () {
+        const window = makeWindowsRevealWindow();
+        const electronWindow = yield* ElectronWindow.ElectronWindow;
+        yield* electronWindow.prepareReveal(window as unknown as Electron.BrowserWindow);
+        expandSatelliteWindowMock.mockReturnValue(false);
+        yield* electronWindow.reveal(window as unknown as Electron.BrowserWindow);
+        assert.lengthOf(window.show.mock.calls, 0);
+        assert.lengthOf(window.focus.mock.calls, 0);
+        assert.lengthOf(activateWindowsForegroundMock.mock.calls, 0);
+        expandSatelliteWindowMock.mockReturnValue(true);
+        yield* electronWindow.reveal(window as unknown as Electron.BrowserWindow);
+        assert.lengthOf(activateWindowsForegroundMock.mock.calls, 1);
+        assert.lengthOf(window.focus.mock.calls, 1);
+      }).pipe(Effect.provide(testLayer("win32"))),
   );
 
   it.effect("starts the Windows focus worker lazily and closes it with the layer", () =>

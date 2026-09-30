@@ -105,6 +105,9 @@ import {
   normalizeDispatchCommand,
 } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
+import { DocumentService } from "./documents/DocumentService.ts";
+import { IssueService } from "./issues/IssueService.ts";
+import { OpenWorkService } from "./openWork/OpenWorkService.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import {
@@ -522,6 +525,9 @@ const makeWsRpcLayer = (
             );
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const ideaStore = yield* IdeaNotebookStore;
+      const documents = yield* DocumentService;
+      const issues = yield* IssueService;
+      const openWork = yield* OpenWorkService;
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -1100,10 +1106,11 @@ const makeWsRpcLayer = (
           if (
             (bootstrap?.createThread?.purpose === "idea" ||
               (Option.isSome(existingIdea) && existingIdea.value.purpose === "idea")) &&
-            (bootstrap?.prepareWorktree || bootstrap?.runSetupScript)
+            (bootstrap?.prepareWorktree || bootstrap?.runSetupScript || bootstrap?.issueAttempt)
           )
             return yield* new OrchestrationDispatchCommandError({
-              message: "Ideas cannot prepare worktrees or run repository setup scripts.",
+              message:
+                "Ideas cannot prepare worktrees, run repository setup scripts, or start issue attempts.",
             });
           const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
           let createdThread = false;
@@ -1622,6 +1629,32 @@ const makeWsRpcLayer = (
             }
 
             const pendingSetupScript = yield* runSetupProgram();
+
+            if (bootstrap?.issueAttempt) {
+              if (!targetProjectId || !targetWorktreePath) {
+                return yield* Effect.fail(
+                  new OrchestrationDispatchCommandError({
+                    message: "Starting an issue requires a prepared worktree.",
+                  }),
+                );
+              }
+              yield* issues
+                .attachAttempt({
+                  link: bootstrap.issueAttempt,
+                  threadId,
+                  projectId: targetProjectId,
+                  worktreePath: targetWorktreePath,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationDispatchCommandError({
+                        message: cause.message,
+                        cause,
+                      }),
+                  ),
+                );
+            }
 
             yield* track(worktreeSetupTracker.stageStatus(threadId, "agent", "running"));
             // Past this point a cancel would roll back a thread whose turn has
@@ -3220,6 +3253,82 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.documentsList]: (input) =>
+          observeRpcEffect(WS_METHODS.documentsList, documents.list(input)),
+        [WS_METHODS.issuesList]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesList, issues.list(input)),
+        [WS_METHODS.issuesGet]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesGet, issues.get(input)),
+        [WS_METHODS.issuesBoardsList]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesBoardsList, issues.listBoards(input)),
+        [WS_METHODS.issuesBoardsOpen]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesBoardsOpen, issues.openBoard(input)),
+        [WS_METHODS.issuesBoardsConfigure]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesBoardsConfigure, issues.configureBoard(input)),
+        [WS_METHODS.issuesBoardsDisconnect]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesBoardsDisconnect, issues.disconnectBoard(input)),
+        [WS_METHODS.issuesBoardsMove]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesBoardsMove, issues.move(input)),
+        [WS_METHODS.issuesMovesRetry]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesMovesRetry, issues.retryMove(input)),
+        [WS_METHODS.issuesAttemptsReserve]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesAttemptsReserve, issues.reserveAttempt(input)),
+        [WS_METHODS.issuesAttemptsList]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesAttemptsList, issues.listAttempts(input)),
+        [WS_METHODS.issuesAttemptsReceipts]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesAttemptsReceipts, issues.listReceipts(input)),
+        [WS_METHODS.issuesAttemptsIngest]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesAttemptsIngest, issues.ingestReceipts(input)),
+        [WS_METHODS.issuesAttemptsSyncGenerations]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.issuesAttemptsSyncGenerations,
+            issues.syncAttemptGenerations(input),
+          ),
+        [WS_METHODS.issuesAttemptsAcknowledge]: (input) =>
+          observeRpcEffect(WS_METHODS.issuesAttemptsAcknowledge, issues.acknowledgeReceipts(input)),
+        [WS_METHODS.openWorkList]: (input) =>
+          observeRpcEffect(WS_METHODS.openWorkList, openWork.list(input)),
+        [WS_METHODS.openWorkTimeline]: (input) =>
+          observeRpcEffect(WS_METHODS.openWorkTimeline, openWork.timeline(input)),
+        [WS_METHODS.openWorkLinkFolder]: (input) =>
+          observeRpcEffect(WS_METHODS.openWorkLinkFolder, openWork.linkFolder(input)),
+        [WS_METHODS.openWorkUnlinkFolder]: (input) =>
+          observeRpcEffect(WS_METHODS.openWorkUnlinkFolder, openWork.unlinkFolder(input)),
+        [WS_METHODS.openWorkAssignDocument]: (input) =>
+          observeRpcEffect(WS_METHODS.openWorkAssignDocument, openWork.assignDocument(input)),
+        [WS_METHODS.openWorkFavoriteDocument]: (input) =>
+          observeRpcEffect(WS_METHODS.openWorkFavoriteDocument, openWork.favoriteDocument(input)),
+        [WS_METHODS.openWorkFavorites]: (input) =>
+          observeRpcEffect(WS_METHODS.openWorkFavorites, openWork.favorites(input)),
+        [WS_METHODS.openWorkReadLinkedDocument]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.openWorkReadLinkedDocument,
+            openWork.readLinkedDocument(input),
+          ),
+        [WS_METHODS.documentsGet]: (input) =>
+          observeRpcEffect(WS_METHODS.documentsGet, documents.get(input)),
+        [WS_METHODS.documentsHistory]: (input) =>
+          observeRpcEffect(WS_METHODS.documentsHistory, documents.history(input)),
+        [WS_METHODS.documentsPublish]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.documentsPublish,
+            documents.publish(input, `session:${currentSessionId}`),
+          ),
+        [WS_METHODS.documentsSaveDraft]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.documentsSaveDraft,
+            documents.saveDraft(input, `session:${currentSessionId}`),
+          ),
+        [WS_METHODS.documentsSubmit]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.documentsSubmit,
+            documents.submit(input, `session:${currentSessionId}`),
+          ),
+        [WS_METHODS.documentsRetry]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.documentsRetry,
+            documents.retry(input, `session:${currentSessionId}`),
+          ),
         [WS_METHODS.projectsWriteFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsWriteFile,
@@ -3923,6 +4032,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
         ),
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const documents = yield* DocumentService;
+    const issues = yield* IssueService;
+    const openWork = yield* OpenWorkService;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3971,6 +4083,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               // One server-lifetime service means clients share the same PR caches, and a WS
               // mutation invalidates the HTTP diff cache that every client reads from.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
+              Layer.provide(Layer.succeed(DocumentService, documents)),
+              Layer.provide(Layer.succeed(IssueService, issues)),
+              Layer.provide(Layer.succeed(OpenWorkService, openWork)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

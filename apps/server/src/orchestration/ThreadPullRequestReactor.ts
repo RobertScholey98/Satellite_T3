@@ -187,7 +187,7 @@ export const make = Effect.gen(function* () {
                   })) ?? snapshotProject.repositoryIdentity,
               }
             : snapshotProject;
-          const repository = sourceControlRepositorySelector(project.repositoryIdentity);
+          let repository = sourceControlRepositorySelector(project.repositoryIdentity);
           if (first.branch !== null && repository === null) return finishBackfill(group);
           const worktreeExists =
             first.worktreePath !== null && (yield* fileSystem.exists(first.worktreePath));
@@ -204,8 +204,22 @@ export const make = Effect.gen(function* () {
                 );
           // A worktree can have different remotes, and the project identity
           // can lag a remote edit. Do not attach its PR to the wrong repository.
+          let matchedRemoteName: string | undefined;
           if (detected !== null && !pullRequestMatchesProject(detected, project)) {
-            return finishBackfill(group);
+            const upstreamIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
+              remoteName: "upstream",
+              refresh: request.refresh,
+            });
+            if (
+              !pullRequestMatchesProject(detected, {
+                ...project,
+                repositoryIdentity: upstreamIdentity,
+              })
+            ) {
+              return finishBackfill(group);
+            }
+            matchedRemoteName = "upstream";
+            repository = sourceControlRepositorySelector(upstreamIdentity);
           }
           const detectedReference =
             detected !== null && repository !== null
@@ -283,6 +297,7 @@ export const make = Effect.gen(function* () {
             const current = yield* git.branchPullRequest({ cwd, branch: first.branch });
             const currentIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
               refresh: true,
+              ...(matchedRemoteName === undefined ? {} : { remoteName: matchedRemoteName }),
             });
             if (
               current === null ||

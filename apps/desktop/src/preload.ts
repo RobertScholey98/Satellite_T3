@@ -1,5 +1,7 @@
 import type {
   DesktopBridge,
+  SatelliteBridge,
+  SatelliteShellState,
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingInputEvent,
   DesktopPreviewRecordingFrame,
@@ -10,6 +12,21 @@ import { exposeClerkBridge } from "@clerk/electron/preload";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
+import * as SatelliteChannels from "./satellite/channels.ts";
+
+if (process.argv.includes("--satellite-pill"))
+  contextBridge.exposeInMainWorld("satelliteBridge", {
+    publish: (state) => ipcRenderer.send(SatelliteChannels.SATELLITE_PUBLISH, state),
+    hideMain: () => ipcRenderer.send(SatelliteChannels.SATELLITE_HIDE_MAIN),
+    setPinned: (pinned) => ipcRenderer.send(SatelliteChannels.SATELLITE_SET_PINNED, pinned),
+    onShellState: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, state: SatelliteShellState) =>
+        listener(state);
+      ipcRenderer.on(SatelliteChannels.SATELLITE_SHELL_STATE, wrapped);
+      ipcRenderer.send(SatelliteChannels.SATELLITE_WORKSPACE_READY);
+      return () => ipcRenderer.removeListener(SatelliteChannels.SATELLITE_SHELL_STATE, wrapped);
+    },
+  } satisfies SatelliteBridge);
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
   "requested",
@@ -33,7 +50,7 @@ exposeClerkBridge({ passkeys: true });
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Electron exposes the client platform in its sandboxed preload process.
 const clientPlatform = process.platform;
 
-if (clientPlatform === "darwin") {
+if (clientPlatform === "darwin" && !process.argv.includes("--satellite-pill")) {
   // Native window buttons do not scale with Chromium zoom. Keep their reserved
   // space in native points, including when a zoomed page is reloaded.
   const syncWindowControlInset = () => {

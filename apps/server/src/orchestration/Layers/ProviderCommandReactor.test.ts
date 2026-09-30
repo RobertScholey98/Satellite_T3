@@ -28,6 +28,7 @@ import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
@@ -55,6 +56,7 @@ import {
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
 import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
+import { IssueService } from "../../issues/IssueService.ts";
 import { TerminalManager } from "../../terminal/Manager.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
@@ -170,6 +172,7 @@ describe("ProviderCommandReactor", () => {
   async function createHarness(input?: {
     readonly baseDir?: string;
     readonly initialTitle?: string;
+    readonly purpose?: "work" | "idea";
     readonly deferReactorStart?: boolean;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
@@ -188,6 +191,7 @@ describe("ProviderCommandReactor", () => {
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderServiceError>;
     readonly tryHandlePromptCommandEffect?: ProviderAuthService["Service"]["tryHandlePromptCommand"];
+    readonly firstPromptSentEffect?: IssueService["Service"]["firstPromptSent"];
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -196,6 +200,9 @@ describe("ProviderCommandReactor", () => {
     const { stateDir } = deriveServerPathsSync(baseDir, undefined);
     createdStateDirs.add(stateDir);
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
+    const firstPromptSent = vi.fn<IssueService["Service"]["firstPromptSent"]>(
+      input?.firstPromptSentEffect ?? (() => Effect.void),
+    );
     const tryHandlePromptCommand = vi.fn<ProviderAuthService["Service"]["tryHandlePromptCommand"]>(
       input?.tryHandlePromptCommandEffect ?? (() => Effect.succeed(false)),
     );
@@ -463,6 +470,7 @@ describe("ProviderCommandReactor", () => {
       }),
     ).pipe(Layer.provide(orchestrationLayer));
     const layer = ProviderCommandReactorLive.pipe(
+      Layer.provide(Layer.mock(IssueService, { firstPromptSent })),
       Layer.provideMerge(reactorOrchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
@@ -523,6 +531,7 @@ describe("ProviderCommandReactor", () => {
         threadId: ThreadId.make("thread-1"),
         projectId: asProjectId("project-1"),
         title: input?.initialTitle ?? "Thread",
+        purpose: input?.purpose ?? "work",
         modelSelection: modelSelection,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
@@ -616,6 +625,7 @@ describe("ProviderCommandReactor", () => {
       tryHandlePromptCommand,
       startSession,
       sendTurn,
+      firstPromptSent,
       compactThread,
       interruptTurn,
       respondToRequest,
@@ -638,6 +648,81 @@ describe("ProviderCommandReactor", () => {
       },
     };
   }
+
+  effectIt.effect("records issue work only after the provider accepts the prompt", () =>
+    Effect.gen(function* () {
+      const sending = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const recorded = yield* Deferred.make<void>();
+      const harness = yield* Effect.promise(() =>
+        createHarness({
+          firstPromptSentEffect: () => Deferred.succeed(recorded, undefined).pipe(Effect.asVoid),
+        }),
+      );
+      harness.sendTurn.mockImplementation(() =>
+        Deferred.succeed(sending, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+        ),
+      );
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("issue-first-send"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: MessageId.make("issue-prompt"),
+          role: "user",
+          text: "Implement this issue",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* Deferred.await(sending);
+      expect(harness.firstPromptSent).not.toHaveBeenCalled();
+      yield* Deferred.succeed(release, undefined);
+      yield* Deferred.await(recorded);
+      expect(harness.firstPromptSent).toHaveBeenCalledExactlyOnceWith({
+        threadId: "thread-1",
+        eventKey: expect.stringMatching(/^sent:/),
+      });
+    }),
+  );
+
+  effectIt.effect("keeps idea prompts out of issue work and worktree setup", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness({ purpose: "idea" }));
+      const sending = yield* Deferred.make<Effect.Effect<unknown>>();
+      harness.sendTurn.mockImplementation(() =>
+        Effect.withFiber((fiber) =>
+          Deferred.succeed(sending, Fiber.await(fiber)).pipe(
+            Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+          ),
+        ),
+      );
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("idea-first-send"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: MessageId.make("idea-prompt"),
+          role: "user",
+          text: "Explore this idea",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* yield* Deferred.await(sending);
+      yield* Effect.promise(harness.drain);
+      expect(harness.sendTurn).toHaveBeenCalledOnce();
+      expect(harness.firstPromptSent).not.toHaveBeenCalled();
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(harness.generateBranchName).not.toHaveBeenCalled();
+    }),
+  );
 
   effectIt.effect.each(["new", "ready", "stopped"] as const)(
     "handles sign-out for a %s thread before worktree repair, text helpers, or startup",

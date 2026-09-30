@@ -49,6 +49,11 @@ import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import { DocumentService } from "./documents/DocumentService.ts";
+import { OpenWorkService } from "./openWork/OpenWorkService.ts";
+import * as IssueService from "./issues/IssueService.ts";
+import * as IssueHost from "./issues/IssueHost.ts";
+import * as IssueLifecycleReactor from "./issues/IssueLifecycleReactor.ts";
 import * as PullRequestFilesViewed from "./persistence/PullRequestFilesViewed.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
@@ -279,6 +284,7 @@ const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ThreadSettlementReactor.layer),
   Layer.provideMerge(PullRequestSyncReactor.layer),
   Layer.provideMerge(ThreadPullRequestReactor.layer),
+  Layer.provideMerge(IssueLifecycleReactor.layer),
   Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
   Layer.provideMerge(RuntimeReceiptBusLive),
 );
@@ -318,6 +324,19 @@ const SourceControlProviderRegistryLayerLive = SourceControlProviderRegistry.lay
   Layer.provideMerge(VcsDriverRegistryLayerLive),
 );
 
+const IssueServiceLive = IssueService.layer.pipe(
+  Layer.provide(IssueHost.layer),
+  Layer.provide(
+    Layer.mergeAll(
+      GitHubCli.layer,
+      GitLabCli.layer,
+      AzureDevOpsCli.layer,
+      ForgejoCli.layer,
+      BitbucketApi.layer,
+    ),
+  ),
+);
+
 const RepositoryIdentityResolverLayerLive = Layer.effect(
   RepositoryIdentityResolver.RepositoryIdentityResolver,
   Effect.gen(function* () {
@@ -355,6 +374,7 @@ const RepositoryIdentityResolverLayerLive = Layer.effect(
 ).pipe(Layer.provide(SourceControlProviderRegistryLayerLive), Layer.provide(ProcessRunner.layer));
 
 const PullRequestServiceLive = PullRequestService.layer.pipe(
+  Layer.provide(RepositoryIdentityResolverLayerLive),
   Layer.provide(PullRequestProviderRegistry.layer),
   // Where the viewed-file marks live for a host that keeps none of its own.
   Layer.provide(PullRequestFilesViewed.layer),
@@ -517,6 +537,7 @@ const ProviderInstallationRefreshLive = Layer.effectDiscard(
 );
 
 const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+  Layer.provideMerge(IssueServiceLive),
   Layer.provideMerge(ProviderInstallationRefreshLive),
   Layer.provideMerge(ReplayMarkers.layer),
   Layer.provideMerge(ProviderAuthServiceLive),
@@ -629,6 +650,8 @@ export const makeRoutesLayer = Layer.mergeAll(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
+  Layer.provide(DocumentService.layer),
+  Layer.provide(OpenWorkService.layer),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),

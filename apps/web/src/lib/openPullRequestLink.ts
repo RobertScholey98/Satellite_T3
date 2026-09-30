@@ -288,6 +288,7 @@ export function useOpenChangeRequestLink(
             to: "/pull-requests",
             search: (previous) => ({
               ...previous,
+              tab: "pull-requests",
               involvement: previous.involvement ?? "all",
               state: previous.state ?? "all",
               repository,
@@ -304,6 +305,7 @@ export function useOpenChangeRequestLink(
       void navigate({
         to: "/pull-requests",
         search: {
+          tab: "pull-requests",
           involvement: "all",
           // Every state, so the pull request being opened is also in the list behind it whether
           // it is open, merged or closed.

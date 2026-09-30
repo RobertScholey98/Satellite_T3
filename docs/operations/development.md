@@ -106,16 +106,16 @@ vp lint <files>
 vp run --filter <package> typecheck
 ```
 
-Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
-[ci.yml](../../.github/workflows/ci.yml) for its current jobs.
+Use `vp run lint:mobile` for native mobile changes. SatelliteT3's
+[CI](../../.github/workflows/ci.yml) covers Windows desktop builds and focused Satellite tests.
 The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
-Windows investigation while that suite is not a required gate.
+Windows investigation beyond those default checks.
 
 ### Unused code
 
 `vp run knip:check` checks unused files and dependencies across the repo, then
 unused runtime exports in `apps/server`, `apps/desktop`, `apps/web`, and every internal package under
-`packages/`. CI enforces both checks.
+`packages/`. These broader checks remain available locally; the fork CI does not run them.
 Exported types and Effect schemas are allowed without consumers. The schema preprocessor
 recognizes schema types, including aliases and schema classes; functions that create or decode
 schemas remain checked. Canonical Effect service construction APIs stay exported with an explicit

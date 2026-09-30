@@ -105,6 +105,10 @@ Open **Pull requests** to review changes and comments, request reviewers, check 
 or merge. You can edit review titles and descriptions and your own comments where the host allows it.
 GitLab calls these merge requests.
 
+The feed uses your project's `origin` repository when available, so a fork shows its own pull requests.
+To include the original repository's work, enable **Filters → Include upstream pull requests**.
+This choice is remembered on this device and leaves your Git remotes unchanged.
+
 GitHub, GitLab, and Azure DevOps support auto-merge while checks are outstanding. GitHub also
 supports approving waiting fork workflows and opening a revert pull request for a merged change.
 

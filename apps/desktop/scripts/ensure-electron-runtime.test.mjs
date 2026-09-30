@@ -2,9 +2,11 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { extractElectronRuntimeArchive } from "./ensure-electron-runtime.mjs";
+
+afterEach(() => vi.unstubAllEnvs());
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Native archive extraction runs on the actual Windows host.
 const hostPlatform = NodeOS.platform();
@@ -15,12 +17,13 @@ const runtimeArchive = Buffer.from(
 );
 
 describe.skipIf(hostPlatform !== "win32")("Electron runtime extraction on Windows", () => {
-  it("extracts nested files through paths with spaces, apostrophes and brackets", () => {
+  it("extracts nested files without PATH tools and treats special characters literally", () => {
     const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-electron-archive-"));
-    const zipPath = NodePath.join(directory, "runtime [zip] ' fixture.zip");
-    const destination = NodePath.join(directory, "dist [runtime] ' fixture");
+    const zipPath = NodePath.join(directory, "runtime [zip] ' $&; fixture.zip");
+    const destination = NodePath.join(directory, "dist [runtime] ' $&; fixture");
     try {
       NodeFS.writeFileSync(zipPath, runtimeArchive);
+      vi.stubEnv("PATH", "");
 
       extractElectronRuntimeArchive(zipPath, destination);
 

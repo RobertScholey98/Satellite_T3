@@ -46,3 +46,7 @@ export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 
 export * from "./ideas.ts";
+export * from "./satellite.ts";
+export * from "./documents.ts";
+export * from "./issues.ts";
+export * from "./openWork.ts";

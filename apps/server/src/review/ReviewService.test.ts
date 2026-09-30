@@ -4,6 +4,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -29,11 +31,73 @@ function makeLayer(input: {
     ),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
     Layer.provide(ServerConfig.layerTest(input.workspaceRoot, input.baseDir)),
+    Layer.provide(NodeSqliteClient.layer({ filename: ":memory:" })),
     Layer.provideMerge(NodeServices.layer),
   );
 }
 
 describe("ReviewService", () => {
+  it.effect(
+    "allows active registered detached worktrees and rejects stale or unrelated paths",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-main-" });
+        const detached = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-detached-" });
+        const unknown = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-unknown-" });
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+        const testLayer = ReviewService.layer.pipe(
+          Layer.provideMerge(GitVcsDriver.layer),
+          Layer.provide(
+            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({ detect: () => Effect.succeed(null) }),
+          ),
+          Layer.provide(ServerConfig.layerTest(workspaceRoot, baseDir)),
+          Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+          Layer.provideMerge(NodeServices.layer),
+        );
+        yield* Effect.gen(function* () {
+          const git = yield* GitVcsDriver.GitVcsDriver;
+          const sql = yield* SqlClient.SqlClient;
+          const review = yield* ReviewService.ReviewService;
+          const run = (args: string[]) =>
+            git.execute({ operation: "ReviewService.test", cwd: workspaceRoot, args });
+          yield* run(["init", "-b", "main"]);
+          yield* run([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+          ]);
+          yield* run(["worktree", "add", "--detach", detached]);
+          const canonicalDetached = yield* fs.realPath(detached);
+          const common = yield* fs.realPath(workspaceRoot + "/.git");
+          yield* sql`CREATE TABLE open_worktrees (id TEXT PRIMARY KEY,path TEXT,common_dir TEXT)`;
+          yield* sql`CREATE TABLE projection_projects (workspace_root TEXT,deleted_at TEXT)`;
+          yield* sql`INSERT INTO open_worktrees (id,path,common_dir) VALUES (${canonicalDetached},${canonicalDetached},${common})`;
+          yield* sql`INSERT INTO projection_projects (workspace_root,deleted_at) VALUES (${workspaceRoot},NULL)`;
+          assert.deepEqual((yield* review.getDiffPreview({ cwd: detached })).sources, []);
+          assert.equal(
+            (yield* review.getDiffPreview({ cwd: unknown }).pipe(Effect.flip))._tag,
+            "VcsRepositoryDetectionError",
+          );
+          yield* sql`UPDATE projection_projects SET deleted_at='removed'`;
+          assert.equal(
+            (yield* review.getDiffPreview({ cwd: detached }).pipe(Effect.flip))._tag,
+            "VcsRepositoryDetectionError",
+          );
+          yield* sql`UPDATE projection_projects SET deleted_at=NULL`;
+          yield* sql`UPDATE open_worktrees SET common_dir=${unknown} WHERE id=${canonicalDetached}`;
+          assert.equal(
+            (yield* review.getDiffPreview({ cwd: detached }).pipe(Effect.flip))._tag,
+            "VcsRepositoryDetectionError",
+          );
+        }).pipe(Effect.provide(testLayer));
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
   it.effect("rejects diff preview cwd outside the configured workspace roots", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

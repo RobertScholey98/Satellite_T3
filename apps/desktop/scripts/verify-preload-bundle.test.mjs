@@ -15,6 +15,17 @@ const validPreload = `
 `;
 
 describe("desktop preload bundle verifier", () => {
+  it("supplies Electron arguments for preload mode selection", () => {
+    assert.doesNotThrow(() =>
+      verifyPreloadBundle(`
+        if (process.argv.includes("--satellite-pill")) {
+          throw new Error("Expected the main window preload");
+        }
+        ${validPreload}
+      `),
+    );
+  });
+
   it("rejects required API names that only appear in strings", () => {
     assert.throws(
       () =>

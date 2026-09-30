@@ -6,7 +6,7 @@ import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Order from "effect/Order";
 
-export type ReviewSectionKind = "turn" | "working-tree" | "branch-range";
+export type ReviewSectionKind = "turn" | ReviewDiffPreviewSource["kind"];
 
 const DIRTY_WORKTREE_SECTION_ID = "git:working-tree";
 const DIRTY_WORKTREE_TITLE = "Dirty worktree";

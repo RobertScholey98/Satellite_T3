@@ -1,4 +1,5 @@
 import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
+import { IssueService } from "../../issues/IssueService.ts";
 import {
   type ChatAttachment,
   CommandId,
@@ -216,6 +217,7 @@ const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerAuthService = yield* ProviderAuthService;
   const providerService = yield* ProviderService;
+  const issues = yield* IssueService;
   const providerRegistry = yield* ProviderRegistry;
   const gitWorkflow = yield* GitWorkflowService;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -1520,9 +1522,20 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const send = providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.asVoid, Effect.catchCause(recoverTurnStartFailure));
+    const send = providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.tap(() =>
+        thread.purpose === "idea"
+          ? Effect.void
+          : issues
+              .firstPromptSent({
+                threadId: event.payload.threadId,
+                eventKey: `sent:${event.eventId}`,
+              })
+              .pipe(Effect.ignoreCause({ log: true })),
+      ),
+      Effect.asVoid,
+      Effect.catchCause(recoverTurnStartFailure),
+    );
     // The forked send settles `sent` from here on, so drop the entry the post-processing hook uses.
     if (resumed && event.commandId !== null) resumedTurnStarts.delete(event.commandId);
     yield* send.pipe(

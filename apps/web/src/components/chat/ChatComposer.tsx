@@ -3854,10 +3854,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       isMobileViewport,
       shiftKey: false,
       modifierKey: true,
-      isDraftThread: routeKind === "draft",
+      isDraftThread: routeKind === "draft" && !ideaMode,
     });
     submitComposer(undefined, intent ?? "foreground");
-  }, [isMobileViewport, routeKind, submitComposer]);
+  }, [ideaMode, isMobileViewport, routeKind, submitComposer]);
   const compactThreadContext = useCallback(() => {
     if (
       compactDisabled ||
@@ -4031,7 +4031,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             isMobileViewport,
             shiftKey: event.shiftKey,
             modifierKey: event.metaKey || event.ctrlKey,
-            isDraftThread: routeKind === "draft",
+            isDraftThread: routeKind === "draft" && !ideaMode,
             isRunning: phase === "running",
             sendShortcut: settings.sendShortcut,
             prompt: promptRef.current,

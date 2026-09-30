@@ -3263,3 +3263,114 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
     );
   });
 });
+
+it.effect("exact review compares immutable commits, root commits, and merge first parents", () =>
+  Effect.gen(function* () {
+    const cwd = yield* makeTmpDir();
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const { initialBranch } = yield* initRepoWithCommit(cwd);
+    const root = yield* git(cwd, ["rev-parse", "HEAD"]);
+    const rootSource = (yield* driver.getReviewDiffPreview({
+      cwd,
+      comparison: { kind: "commit", commitSha: root },
+    })).sources[0]!;
+    assert.deepEqual(rootSource.files, [
+      { path: "README.md", previousPath: null, additions: 1, deletions: 0 },
+    ]);
+    assert.include(rootSource.diff, "new file mode");
+    assert.deepEqual(
+      yield* driver.getReviewDiffFileContents(
+        makeReviewDiffFileContentsInput(cwd, {
+          sourceKind: "commit",
+          baseRef: rootSource.baseRef,
+          headRef: rootSource.headRef,
+          changeType: "new",
+        }),
+      ),
+      { oldContents: "", newContents: "# test\n" },
+    );
+    yield* git(cwd, ["switch", "-c", "side"]);
+    yield* writeTextFile(cwd, "side.txt", "side\n");
+    yield* git(cwd, ["add", "."]);
+    yield* git(cwd, ["commit", "-m", "side"]);
+    yield* git(cwd, ["switch", initialBranch]);
+    yield* writeTextFile(cwd, "README.md", "first parent\n");
+    yield* git(cwd, ["commit", "-am", "first parent"]);
+    const firstParent = yield* git(cwd, ["rev-parse", "HEAD"]);
+    yield* git(cwd, ["merge", "--no-ff", "side", "-m", "merge"]);
+    const merge = yield* git(cwd, ["rev-parse", "HEAD"]);
+    yield* writeTextFile(cwd, "side.txt", "later\n");
+    yield* git(cwd, ["commit", "-am", "later"]);
+    yield* writeTextFile(cwd, "side.txt", "dirty\n");
+    const source = (yield* driver.getReviewDiffPreview({
+      cwd,
+      comparison: { kind: "commit", commitSha: merge },
+    })).sources[0]!;
+    assert.equal(source.baseRef, firstParent);
+    assert.equal(source.headRef, merge);
+    assert.deepEqual(source.files, [
+      { path: "side.txt", previousPath: null, additions: 1, deletions: 0 },
+    ]);
+    assert.include(source.diff, "+side");
+    assert.notInclude(source.diff, "later");
+    assert.notInclude(source.diff, "dirty");
+    assert.deepEqual(
+      yield* driver.getReviewDiffFileContents(
+        makeReviewDiffFileContentsInput(cwd, {
+          sourceKind: "commit",
+          baseRef: source.baseRef,
+          headRef: source.headRef,
+          changeType: "new",
+          oldPath: "side.txt",
+          newPath: "side.txt",
+        }),
+      ),
+      { oldContents: "", newContents: "side\n" },
+    );
+    const scoped = (yield* driver.getReviewDiffPreview({
+      cwd,
+      comparison: { kind: "commit", commitSha: merge },
+      file: { path: "side.txt", previousPath: null, sourceKind: "commit" },
+    })).sources[0]!;
+    assert.equal(scoped.diff, source.diff);
+  }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+);
+
+it.effect("exact review separates staged, unstaged, and untracked patches and expansion", () =>
+  Effect.gen(function* () {
+    const cwd = yield* makeTmpDir();
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    yield* initRepoWithCommit(cwd);
+    yield* writeTextFile(cwd, "README.md", "staged\n");
+    yield* git(cwd, ["add", "README.md"]);
+    yield* writeTextFile(cwd, "README.md", "unstaged\n");
+    yield* writeTextFile(cwd, "new file.txt", "untracked\n");
+    const indexBefore = yield* git(cwd, ["ls-files", "--stage"]);
+    for (const kind of ["staged", "unstaged", "untracked"] as const) {
+      const source = (yield* driver.getReviewDiffPreview({ cwd, comparison: { kind } }))
+        .sources[0]!;
+      assert.equal(source.kind, kind);
+      const expected =
+        kind === "staged"
+          ? { oldContents: "# test\n", newContents: "staged\n" }
+          : kind === "unstaged"
+            ? { oldContents: "staged\n", newContents: "unstaged\n" }
+            : { oldContents: "", newContents: "untracked\n" };
+      assert.include(source.diff, "+" + expected.newContents.trim());
+      assert.deepEqual(
+        yield* driver.getReviewDiffFileContents(
+          makeReviewDiffFileContentsInput(cwd, {
+            sourceKind: kind,
+            baseRef: source.baseRef,
+            headRef: source.headRef,
+            changeType: kind === "untracked" ? "new" : "change",
+            oldPath: kind === "untracked" ? "new file.txt" : "README.md",
+            newPath: kind === "untracked" ? "new file.txt" : "README.md",
+          }),
+        ),
+        expected,
+      );
+    }
+    assert.equal(yield* git(cwd, ["ls-files", "--stage"]), indexBefore);
+  }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+);

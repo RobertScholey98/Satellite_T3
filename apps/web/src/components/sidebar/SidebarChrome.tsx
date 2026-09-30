@@ -1,5 +1,11 @@
 import { useIdeaWorkspaceStore } from "../ideas/ideaWorkspaceStore";
-import { ArrowLeftIcon, BrainIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  BrainIcon,
+  ChartNoAxesColumnIcon,
+  Minimize2Icon,
+  SettingsIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -24,7 +30,7 @@ import {
   useSidebar,
 } from "../ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
+import { readWorkAreaSearch } from "../work/workspaceNavigation";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
 import { SidebarThreadUndoNotice } from "./SidebarThreadUndoNotice";
 import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
@@ -149,7 +155,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     closeMobileSidebar();
     void navigate({
       to: "/pull-requests",
-      search: readPullRequestListPreferences(),
+      search: readWorkAreaSearch(),
     });
   }, [closeMobileSidebar, navigate]);
   const handleSettingsClick = useCallback(() => {
@@ -213,6 +219,13 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
           />
         </>
       )}
+      {window.satelliteBridge ? (
+        <SidebarUtilityItem
+          icon={<Minimize2Icon />}
+          label="Collapse to Satellite pill"
+          onClick={() => window.satelliteBridge?.hideMain()}
+        />
+      ) : null}
       <SidebarUpdatePill />
     </SidebarMenu>
   );
