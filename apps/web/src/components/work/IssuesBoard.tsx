@@ -680,7 +680,7 @@ export function IssuesBoard({
 
   return (
     <div
-      className={`flex min-h-0 min-w-0 flex-1 flex-col gap-4 px-4 py-4 sm:px-6 ${mode === "board" && view ? "overflow-hidden" : "overflow-auto"}`}
+      className={`flex min-h-0 min-w-0 flex-1 flex-col gap-4 bg-background px-4 py-4 sm:px-6 ${mode === "board" && view ? "overflow-hidden" : "overflow-auto"}`}
     >
       {scope && !connected ? (
         <p role="status" className="text-sm text-muted-foreground">

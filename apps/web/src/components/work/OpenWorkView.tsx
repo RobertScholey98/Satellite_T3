@@ -681,7 +681,7 @@ export function OpenWorkView({
   };
   return (
     <div
-      className="@container/open-work flex min-h-0 flex-1 overflow-hidden"
+      className="@container/open-work flex min-h-0 flex-1 overflow-hidden bg-background"
       onKeyDown={(event) => {
         if (event.key === "Escape" && validDiff && !event.defaultPrevented && !finding && !opened) {
           event.preventDefault();
