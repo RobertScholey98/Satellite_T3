@@ -58,6 +58,7 @@ import {
   MenuPopup,
   MenuItem,
   MenuSeparator,
+  MenuGroup,
   MenuGroupLabel,
   MenuRadioGroup,
   MenuRadioItem,
@@ -518,24 +519,29 @@ export function IssuesBoard({
             <ChevronDownIcon />
           </MenuTrigger>
           <MenuPopup>
-            <MenuGroupLabel>Local project</MenuGroupLabel>
-            {supported.map((project) => (
-              <MenuItem
-                key={`${project.environmentId}:${project.id}`}
-                onClick={() => {
-                  setDismissedTargetKey(targetKey);
-                  setScopeKey(`${project.environmentId}:${project.id}`);
-                  onSelectBoard?.({ environmentId: project.environmentId, projectId: project.id });
-                }}
-              >
-                {project.title} ·{" "}
-                {
-                  environments.find(
-                    (environment) => environment.environmentId === project.environmentId,
-                  )?.label
-                }
-              </MenuItem>
-            ))}
+            <MenuGroup>
+              <MenuGroupLabel>Local project</MenuGroupLabel>
+              {supported.map((project) => (
+                <MenuItem
+                  key={`${project.environmentId}:${project.id}`}
+                  onClick={() => {
+                    setDismissedTargetKey(targetKey);
+                    setScopeKey(`${project.environmentId}:${project.id}`);
+                    onSelectBoard?.({
+                      environmentId: project.environmentId,
+                      projectId: project.id,
+                    });
+                  }}
+                >
+                  {project.title} ·{" "}
+                  {
+                    environments.find(
+                      (environment) => environment.environmentId === project.environmentId,
+                    )?.label
+                  }
+                </MenuItem>
+              ))}
+            </MenuGroup>
           </MenuPopup>
         </Menu>
         {mode === "board" ? (
@@ -546,26 +552,30 @@ export function IssuesBoard({
               <ChevronDownIcon />
             </MenuTrigger>
             <MenuPopup>
-              {connectedBoards.length ? <MenuGroupLabel>Connected boards</MenuGroupLabel> : null}
-              {connectedBoards.map((board) => (
-                <MenuItem
-                  key={board.id}
-                  disabled={!connected || pending}
-                  onClick={() => {
-                    setDismissedTargetKey(targetKey);
-                    void refresh(board.id).then((result) => {
-                      if (result && scope)
-                        onSelectBoard?.({
-                          environmentId: scope.environmentId,
-                          projectId: scope.id,
-                          boardId: result.board.id,
+              {connectedBoards.length ? (
+                <MenuGroup>
+                  <MenuGroupLabel>Connected boards</MenuGroupLabel>
+                  {connectedBoards.map((board) => (
+                    <MenuItem
+                      key={board.id}
+                      disabled={!connected || pending}
+                      onClick={() => {
+                        setDismissedTargetKey(targetKey);
+                        void refresh(board.id).then((result) => {
+                          if (result && scope)
+                            onSelectBoard?.({
+                              environmentId: scope.environmentId,
+                              projectId: scope.id,
+                              boardId: result.board.id,
+                            });
                         });
-                    });
-                  }}
-                >
-                  {board.title}
-                </MenuItem>
-              ))}
+                      }}
+                    >
+                      {board.title}
+                    </MenuItem>
+                  ))}
+                </MenuGroup>
+              ) : null}
               {connectedBoards.length ? <MenuSeparator /> : null}
               <MenuItem disabled={!scope || !connected || pending} onClick={connectBoard}>
                 <PlusIcon />
@@ -762,8 +772,8 @@ export function IssuesBoard({
                 : ""}
             </MenuTrigger>
             <MenuPopup>
-              <MenuGroupLabel>State</MenuGroupLabel>
               <MenuRadioGroup value={issueState} onValueChange={setIssueState}>
+                <MenuGroupLabel>State</MenuGroupLabel>
                 <MenuRadioItem value="all">All states</MenuRadioItem>
                 {[...new Set(issueList.map((issue) => issue.state))].map((state) => (
                   <MenuRadioItem key={state} value={state}>
@@ -772,8 +782,8 @@ export function IssuesBoard({
                 ))}
               </MenuRadioGroup>
               <MenuSeparator />
-              <MenuGroupLabel>Repository host</MenuGroupLabel>
               <MenuRadioGroup value={issueHost} onValueChange={setIssueHost}>
+                <MenuGroupLabel>Repository host</MenuGroupLabel>
                 <MenuRadioItem value="all">All hosts</MenuRadioItem>
                 {[...new Set(issueList.map((issue) => issue.ref.host))].map((host) => (
                   <MenuRadioItem key={host} value={host}>

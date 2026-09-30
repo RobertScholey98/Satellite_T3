@@ -55,6 +55,7 @@ vi.mock("../ui/menu", () => ({
   MenuPopup: "div",
   MenuItem: "button",
   MenuSeparator: "hr",
+  MenuGroup: "div",
   MenuGroupLabel: "span",
   MenuRadioGroup: "div",
   MenuRadioItem: "button",
