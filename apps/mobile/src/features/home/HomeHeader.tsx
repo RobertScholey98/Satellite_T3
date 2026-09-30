@@ -1,3 +1,4 @@
+import { useOpenIdeas } from "../ideas/ideaNavigation";
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { useCallback, useRef } from "react";
 import type { SearchBarCommands } from "react-native-screens";
@@ -14,6 +15,7 @@ import type { HomeHeaderProps } from "./HomeHeader.types";
 export type { HomeHeaderEnvironment } from "./HomeHeader.types";
 
 export function HomeHeader(props: HomeHeaderProps) {
+  const openIdeas = useOpenIdeas();
   const searchBarRef = useRef<SearchBarCommands>(null);
   const iconColor = useUniwindTheme()["--color-icon"];
   // The list uses a fixed creation order and ignores sort/group options, so
@@ -37,6 +39,14 @@ export function HomeHeader(props: HomeHeaderProps) {
           // (GLASS_HEADER_OPTIONS). Only dynamic values are set here.
           headerTintColor: iconColor,
           unstable_headerRightItems: () => [
+            withNativeGlassHeaderItem({
+              accessibilityLabel: "Ideas",
+              icon: { name: "brain", type: "sfSymbol" } as const,
+              identifier: "home-ideas",
+              label: "",
+              onPress: openIdeas,
+              type: "button",
+            }),
             withNativeGlassHeaderItem({
               accessibilityLabel: "Open settings",
               icon: { name: "ellipsis", type: "sfSymbol" } as const,

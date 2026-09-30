@@ -157,6 +157,7 @@ import {
   countComposerDraftAttachmentsAfterSelection,
   getComposerDraftAfterSelection,
   archiveCloudComposerDrafts,
+  clearComposerDraft,
   clearComposerDraftContent,
   clearComposerDraftContentState,
   clearComposerDraftsEnvironment,
@@ -183,6 +184,7 @@ import {
   restoreCloudComposerDrafts,
   retargetNewTaskDraft,
   setComposerDraftText,
+  updateComposerDraftSettings,
   insertComposerDraftContext,
   insertComposerDraftText,
   rememberComposerDraftSelection,
@@ -238,6 +240,30 @@ function contextDraft(start: number, count: number): ComposerDraft {
 }
 
 describe("mobile composer drafts", () => {
+  it("persists idea ownership through restart and removes only the deleted environment's draft", async () => {
+    await waitForComposerDraftsLoaded();
+    const local = "local:idea";
+    const remote = "remote:idea";
+    const work = "local:work";
+    for (const key of [local, remote, work]) {
+      setComposerDraftText(key, `Unsent ${key}`);
+      if (key !== work) updateComposerDraftSettings(key, { purpose: "idea" });
+    }
+    await flushComposerDrafts();
+    resetComposerDraftsLoadState();
+    appAtomRegistry.set(composerDraftsAtom, {});
+    await waitForComposerDraftsLoaded();
+    expect(getComposerDraftSnapshot(local).purpose).toBe("idea");
+    clearComposerDraft(local);
+    await flushComposerDrafts();
+    const saved = decodePersistedComposerState(
+      JSON.parse(composerDraftFileMocks.getDocument()),
+    ).drafts;
+    expect(saved[local]).toBeUndefined();
+    expect(saved[remote]?.purpose).toBe("idea");
+    expect(saved[remote]?.text).toBe(`Unsent ${remote}`);
+    expect(saved[work]?.text).toBe(`Unsent ${work}`);
+  });
   it.each([false, true])(
     "restores visible file chips from legacy drafts (archived: %s)",
     async (archived) => {

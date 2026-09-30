@@ -1,3 +1,8 @@
+import { ideaHttpApiLayer } from "./ideas/http.ts";
+import { IdeaUpdateReactor } from "./ideas/IdeaUpdateReactor.ts";
+import { IdeaDeletionReactor } from "./ideas/IdeaDeletionReactor.ts";
+import { IdeaRuntime } from "./ideas/IdeaRuntime.ts";
+import { IdeaPromotion } from "./ideas/IdeaPromotion.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -264,6 +269,8 @@ const PlatformServicesLive = NodeServices.layer;
 
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
+  Layer.provideMerge(IdeaDeletionReactor.layer),
+  Layer.provideMerge(IdeaUpdateReactor.layer),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
   Layer.provideMerge(CheckpointReactorLive),
@@ -473,6 +480,7 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   // telemetry instead of waiting for the next status probe.
   Layer.provideMerge(ProviderUsageLimitsIngestionLive),
   Layer.provideMerge(ProviderLayerLive),
+  Layer.provideMerge(IdeaRuntime.layer),
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
@@ -522,6 +530,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   ),
   Layer.provideMerge(GitLayerLive),
   Layer.provideMerge(VcsLayerLive),
+  Layer.provideMerge(IdeaPromotion.layer),
   Layer.provideMerge(ProviderRuntimeLayerLive),
   Layer.provideMerge(Layer.mergeAll(TerminalLayerLive, PreviewLayerLive, DeviceLayerLive)),
   Layer.provideMerge(PersistenceLayerLive),
@@ -581,6 +590,7 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layer),
   Layer.provideMerge(ExternalLauncher.layer),
+  Layer.provide(ProcessRunner.layer),
   Layer.provideMerge(RemoteOpenTargets.layer),
   Layer.provideMerge(ServerLifecycleEvents.layer),
   Layer.provide(NetService.layer),
@@ -600,6 +610,7 @@ export const makeRoutesLayer = Layer.mergeAll(
       Layer.provide(authHttpApiLayer),
       Layer.provide(connectHttpApiLayer),
       Layer.provide(orchestrationHttpApiLayer),
+      Layer.provide(ideaHttpApiLayer),
       Layer.provide(pullRequestHttpApiLayer),
       Layer.provide(serverEnvironmentHttpApiLayer),
       Layer.provide(environmentAuthenticatedAuthLayer),

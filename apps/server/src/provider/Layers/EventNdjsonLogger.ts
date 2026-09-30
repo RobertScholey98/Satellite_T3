@@ -70,6 +70,7 @@ export interface EventNdjsonLogger {
 }
 
 export interface EventNdjsonLogStore {
+  readonly retireThread: (threadId: ThreadId) => Effect.Effect<void, EventNdjsonLogDirectoryError>;
   readonly filePath: string;
   readonly logger: (stream: EventNdjsonStream) => EventNdjsonLogger;
   readonly close: () => Effect.Effect<void>;
@@ -672,6 +673,7 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
     lastRetentionAt: initializedAt,
   });
   const timerScope = yield* Scope.make();
+  const retiredThreads = new Set<string>();
 
   const flush = Effect.fnUntraced(function* (timerFired: boolean, close: boolean) {
     const startedAt = yield* Clock.currentTimeMillis;
@@ -754,7 +756,7 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
       const line = `[${observedAt}] ${resolveStreamLabel(stream)}: ${payload}\n`;
       const bytes = Buffer.byteLength(line);
       const action = yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
-        if (state.closed) {
+        if (state.closed || retiredThreads.has(resolveThreadSegment(threadId))) {
           return Effect.succeed([{ flush: false }, state] as const);
         }
         const pending = state.pending;
@@ -786,7 +788,37 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
     return view;
   };
 
-  return { filePath, logger, close } satisfies EventNdjsonLogStore;
+  const retireThread = (threadId: ThreadId) =>
+    SynchronizedRef.modifyEffect(stateRef, (state) =>
+      Effect.try({
+        try: () => {
+          const segment = resolveThreadSegment(threadId);
+          retiredThreads.add(segment);
+          const pending = state.pending.filter((record) => record.threadSegment !== segment);
+          const sinks = new Map(state.sinks);
+          sinks.delete(segment);
+          const basename = NodePath.basename(providerLogPath(directory, filePrefix, segment));
+          for (const name of NodeFS.readdirSync(directory)) {
+            if (
+              name === basename ||
+              (name.startsWith(basename + ".") && /^\d+$/.test(name.slice(basename.length + 1)))
+            )
+              NodeFS.rmSync(NodePath.join(directory, name), { force: true });
+          }
+          return [
+            undefined,
+            {
+              ...state,
+              pending,
+              pendingBytes: pending.reduce((sum, record) => sum + record.bytes, 0),
+              sinks,
+            },
+          ] as const;
+        },
+        catch: (cause) => new EventNdjsonLogDirectoryError({ directory, cause }),
+      }),
+    );
+  return { filePath, logger, close, retireThread } satisfies EventNdjsonLogStore;
 });
 
 export const makeEventNdjsonLogger = Effect.fnUntraced(function* (

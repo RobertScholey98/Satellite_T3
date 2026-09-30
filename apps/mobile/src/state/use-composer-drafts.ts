@@ -322,6 +322,7 @@ export class ComposerDraftPersistenceError extends Schema.TaggedError<ComposerDr
 }
 
 export interface ComposerDraft {
+  readonly purpose?: "work" | "idea";
   readonly text: string;
   readonly context?: OrchestrationMessageContext;
   readonly attachments: ReadonlyArray<DraftComposerAttachment>;
@@ -360,7 +361,12 @@ export interface ComposerDraftWorkspaceSelection {
 
 export type ComposerDraftSettingsUpdate = Pick<
   ComposerDraft,
-  "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceSelection" | "project"
+  | "modelSelection"
+  | "runtimeMode"
+  | "interactionMode"
+  | "workspaceSelection"
+  | "project"
+  | "purpose"
 >;
 
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
@@ -384,6 +390,7 @@ const PersistedComposerContextSchema = Schema.Struct({
 });
 
 const ComposerDraftSchema = Schema.Struct({
+  purpose: Schema.optional(Schema.Literals(["work", "idea"])),
   text: Schema.String,
   context: Schema.optional(PersistedComposerContextSchema),
   attachments: Schema.Array(DraftComposerAttachmentSchema),

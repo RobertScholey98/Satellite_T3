@@ -571,6 +571,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title_state_json AS "titleState",
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
+          purpose,
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
@@ -619,6 +620,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title_state_json AS "titleState",
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
+          purpose,
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
@@ -646,6 +648,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           deleted_at AS "deletedAt"
         FROM projection_threads threads
         WHERE deleted_at IS NULL
+          AND purpose = 'work'
           AND archived_at IS NULL
           ${unsettledThreadsFilter(request.unsettledOnly)}
         ORDER BY project_id ASC, created_at ASC, thread_id ASC
@@ -694,6 +697,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title_state_json AS "titleState",
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
+          purpose,
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
@@ -721,6 +725,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           deleted_at AS "deletedAt"
         FROM projection_threads
         WHERE deleted_at IS NULL
+          AND purpose = 'work'
           AND archived_at IS NOT NULL
         ORDER BY project_id ASC, archived_at DESC, thread_id DESC
       `,
@@ -1137,6 +1142,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           INNER JOIN projection_projects AS projects
             ON projects.project_id = threads.project_id
           WHERE threads.deleted_at IS NULL
+            AND threads.purpose = 'work'
             AND threads.archived_at IS NULL
             AND projects.deleted_at IS NULL
             AND messages.is_streaming = 0
@@ -1298,6 +1304,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title_state_json AS "titleState",
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
+          purpose,
           interaction_mode AS "interactionMode",
           branch,
           worktree_path AS "worktreePath",
@@ -2369,6 +2376,7 @@ pending_approval_requests AS (
                 projectId: row.projectId,
                 title: row.title,
                 modelSelection: row.modelSelection,
+                purpose: row.purpose ?? "work",
                 runtimeMode: row.runtimeMode,
                 interactionMode: row.interactionMode,
                 branch: row.branch,
@@ -2615,6 +2623,7 @@ pending_approval_requests AS (
                   projectId: row.projectId,
                   title: row.title,
                   modelSelection: row.modelSelection,
+                  purpose: row.purpose ?? "work",
                   runtimeMode: row.runtimeMode,
                   interactionMode: row.interactionMode,
                   branch: row.branch,
@@ -2776,6 +2785,7 @@ pending_approval_requests AS (
                         projectId: row.projectId,
                         title: row.title,
                         modelSelection: row.modelSelection,
+                        purpose: row.purpose ?? "work",
                         runtimeMode: row.runtimeMode,
                         interactionMode: row.interactionMode,
                         branch: row.branch,
@@ -2962,6 +2972,7 @@ pending_approval_requests AS (
                   projectId: row.projectId,
                   title: row.title,
                   modelSelection: row.modelSelection,
+                  purpose: row.purpose ?? "work",
                   runtimeMode: row.runtimeMode,
                   interactionMode: row.interactionMode,
                   branch: row.branch,
@@ -3308,6 +3319,7 @@ pending_approval_requests AS (
         projectId: threadRow.value.projectId,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
+        purpose: threadRow.value.purpose ?? "work",
         runtimeMode: threadRow.value.runtimeMode,
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,
@@ -3610,6 +3622,7 @@ pending_approval_requests AS (
         projectId: threadRow.value.projectId,
         title: threadRow.value.title,
         modelSelection: threadRow.value.modelSelection,
+        purpose: threadRow.value.purpose ?? "work",
         runtimeMode: threadRow.value.runtimeMode,
         interactionMode: threadRow.value.interactionMode,
         branch: threadRow.value.branch,

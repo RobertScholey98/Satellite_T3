@@ -50,6 +50,34 @@ function parseLogLine(line: string) {
 }
 
 describe("EventNdjsonLogger", () => {
+  it.effect("retires an idea's buffered and persisted logs and rejects late writes", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "idea-log-retirement-"));
+      const basePath = NodePath.join(tempDir, "provider.ndjson");
+      try {
+        const store = yield* makeEventNdjsonLogStore(basePath, {
+          batchWindowMs: 1000,
+          maxBufferedRecords: 2,
+        });
+        const idea = ThreadId.make("idea-one");
+        const work = ThreadId.make("work-one");
+        yield* store.logger("native").write({ text: "idea native" }, idea);
+        yield* store.logger("canonical").write({ text: "work native" }, work);
+        assert.isTrue(NodeFS.existsSync(ownedLogPath(basePath, "idea-one")));
+        yield* store.logger("canonical").write({ text: "buffered idea text" }, idea);
+        yield* store.retireThread(idea);
+        yield* store.logger("native").write({ text: "late callback" }, idea);
+        yield* store.close();
+        assert.isFalse(NodeFS.existsSync(ownedLogPath(basePath, "idea-one")));
+        assert.include(
+          NodeFS.readFileSync(ownedLogPath(basePath, "work-one"), "utf8"),
+          "work native",
+        );
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
   it.effect("summarizes circular events without exposing their contents in diagnostics", () => {
     const messages: Array<unknown> = [];
     const logCapture = Logger.make<unknown, void>(({ message }) => {

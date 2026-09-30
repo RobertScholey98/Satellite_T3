@@ -185,6 +185,7 @@ function cachedThreadState(value: EnvironmentThreadState): EnvironmentThreadStat
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
   threadId: ThreadIdType,
   resumeCache?: ThreadResumeCache,
+  audience: "work" | "idea" = "work",
 ) {
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
@@ -195,7 +196,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const owner = {};
   if (resumeCache) resumeCache.owner = owner;
   const cached =
-    retained === undefined
+    retained === undefined && audience === "work"
       ? yield* cache.loadThread(environmentId, threadId).pipe(
           Effect.catch((error) =>
             Effect.logWarning("Could not load cached thread.").pipe(
@@ -278,6 +279,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
   ) {
+    if (audience === "idea") return;
     if (resumeCache !== undefined && resumeCache.owner !== owner) return;
     if (
       committed.persisted &&
@@ -422,6 +424,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       page: Option.none(),
     });
     yield* remember;
+    if (audience === "idea") return;
     if (resumeCache !== undefined && resumeCache.owner !== owner) return;
     yield* cache.removeThread(environmentId, threadId).pipe(
       Effect.catch((error) =>
@@ -669,6 +672,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       threadId,
       window,
       yield* Ref.get(reasoningMessagesSupported),
+      audience,
     );
     // Staleness check and merge run under the same lock as stream-item
     // application, so a revert/snapshot cannot land between them (TOCTOU
@@ -819,6 +823,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
             threadId,
             supportsPagination ? { turnLimit: INITIAL_THREAD_USER_TURN_LIMIT } : undefined,
             supportsReasoningMessages,
+            audience,
           );
           if (Option.isSome(httpSnapshot)) {
             yield* applyItem({ kind: "snapshot", snapshot: httpSnapshot.value });
@@ -838,6 +843,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
         return {
           threadId,
+          ...(audience === "idea" ? { audience } : {}),
           ...(canResume ? { afterSequence: sequence } : {}),
           ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
           ...(supportsReasoningMessages ? { reasoningMessages: true as const } : {}),
@@ -912,11 +918,14 @@ function threadStateChanges(
   environmentId: EnvironmentIdType,
   threadId: ThreadIdType,
   resumeCache?: ThreadResumeCache,
+  audience: "work" | "idea" = "work",
 ) {
   return followStreamInEnvironment(
     environmentId,
     Stream.unwrap(
-      makeEnvironmentThreadState(threadId, resumeCache).pipe(Effect.map(SubscriptionRef.changes)),
+      makeEnvironmentThreadState(threadId, resumeCache, audience).pipe(
+        Effect.map(SubscriptionRef.changes),
+      ),
     ),
   );
 }
@@ -926,6 +935,7 @@ export function createEnvironmentThreadStateAtoms<R, E>(
     EnvironmentRegistry | EnvironmentCacheStore | ThreadSnapshotLoader | R,
     E
   >,
+  audience: "work" | "idea" = "work",
 ) {
   // Cache definitions must outlive collectible live-atom definitions. The
   // registry retains these nodes without retaining environment or RPC scopes.
@@ -946,7 +956,7 @@ export function createEnvironmentThreadStateAtoms<R, E>(
         (get) => {
           get.mount(resumeAtom);
           const resume = get.once(resumeAtom);
-          const live = threadStateChanges(environmentId, threadId, resume);
+          const live = threadStateChanges(environmentId, threadId, resume, audience);
           return resume.snapshot === undefined
             ? live
             : Stream.concat(Stream.succeed(cachedThreadState(resume.snapshot.state)), live);

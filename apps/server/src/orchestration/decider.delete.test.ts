@@ -137,6 +137,38 @@ function normalizeDeleteEvent(event: PlannedEvent | ReadonlyArray<PlannedEvent>)
 }
 
 it.layer(NodeServices.layer)("decider deletion flows", (it) => {
+  it.effect(
+    "requests permanent idea cleanup when deleting a project with both thread purposes",
+    () =>
+      Effect.gen(function* () {
+        const seed = yield* seedReadModel;
+        const result = yield* decideOrchestrationCommand({
+          command: {
+            type: "project.delete",
+            commandId: asCommandId("delete-mixed-project"),
+            projectId: asProjectId("project-delete"),
+            force: true,
+          },
+          readModel: {
+            ...seed,
+            threads: seed.threads.map((thread, index) =>
+              index === 0 ? { ...thread, purpose: "idea" as const } : thread,
+            ),
+          },
+        });
+        const events = Array.isArray(result) ? result : [result];
+        expect(events.map((event) => event.type)).toEqual([
+          "thread.deleted",
+          "idea.changed",
+          "project.deleted",
+        ]);
+        expect(events[1]?.payload).toMatchObject({
+          threadId: asThreadId("thread-delete-1"),
+          mutation: { kind: "delete.request" },
+        });
+      }),
+  );
+
   it.effect("rejects deleting a non-empty project without force", () =>
     Effect.gen(function* () {
       const readModel = yield* seedReadModel;

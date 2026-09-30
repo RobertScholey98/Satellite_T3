@@ -1,3 +1,5 @@
+import { IDEA_WS_METHODS, IdeaOperationError } from "@t3tools/contracts";
+import { IdeaNotebookStore } from "./ideas/IdeaNotebookStore.ts";
 import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -519,6 +521,7 @@ const makeWsRpcLayer = (
               Effect.orElseSucceed(() => null),
             );
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+      const ideaStore = yield* IdeaNotebookStore;
       const threadDeletionReactor = yield* ThreadDeletionReactor;
       const analytics = yield* AnalyticsService.AnalyticsService;
       // Every command dispatched on this connection carries the connecting
@@ -959,11 +962,13 @@ const makeWsRpcLayer = (
                     threadId,
                   }),
                 onSome: (nextThread) =>
-                  Option.some<OrchestrationShellStreamEvent>({
-                    kind: "thread-upserted" as const,
-                    sequence,
-                    thread: nextThread,
-                  }),
+                  nextThread.purpose === "idea"
+                    ? Option.none()
+                    : Option.some<OrchestrationShellStreamEvent>({
+                        kind: "thread-upserted" as const,
+                        sequence,
+                        thread: nextThread,
+                      }),
               }),
             ),
           ),
@@ -1081,6 +1086,25 @@ const makeWsRpcLayer = (
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
         Effect.gen(function* () {
           const bootstrap = command.bootstrap;
+          const existingIdea = yield* projectionSnapshotQuery
+            .getThreadShellById(command.threadId)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationDispatchCommandError({
+                    message: "Could not inspect this thread before setup.",
+                    cause,
+                  }),
+              ),
+            );
+          if (
+            (bootstrap?.createThread?.purpose === "idea" ||
+              (Option.isSome(existingIdea) && existingIdea.value.purpose === "idea")) &&
+            (bootstrap?.prepareWorktree || bootstrap?.runSetupScript)
+          )
+            return yield* new OrchestrationDispatchCommandError({
+              message: "Ideas cannot prepare worktrees or run repository setup scripts.",
+            });
           const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
           let createdThread = false;
           let targetProjectId = bootstrap?.createThread?.projectId;
@@ -1427,6 +1451,7 @@ const makeWsRpcLayer = (
                 commandId: yield* serverCommandId("bootstrap-thread-create"),
                 threadId: command.threadId,
                 projectId: bootstrap.createThread.projectId,
+                purpose: bootstrap.createThread.purpose,
                 title: bootstrap.createThread.title,
                 modelSelection: bootstrap.createThread.modelSelection,
                 runtimeMode: bootstrap.createThread.runtimeMode,
@@ -1996,6 +2021,56 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [IDEA_WS_METHODS.list]: (input) =>
+          observeRpcEffect(
+            IDEA_WS_METHODS.list,
+            ideaStore.list(input.projectId).pipe(
+              Effect.map((ideas) => ({ ideas })),
+              Effect.mapError((error) => new IdeaOperationError({ message: error.message })),
+            ),
+          ),
+        [IDEA_WS_METHODS.get]: (input) =>
+          observeRpcEffect(
+            IDEA_WS_METHODS.get,
+            ideaStore.get(input.threadId).pipe(
+              Effect.map((notebook) => ({ notebook })),
+              Effect.mapError((error) => new IdeaOperationError({ message: error.message })),
+            ),
+          ),
+        [IDEA_WS_METHODS.subscribeChanges]: () =>
+          observeRpcStreamEffect(
+            IDEA_WS_METHODS.subscribeChanges,
+            Effect.gen(function* () {
+              const events = yield* orchestrationEngine.subscribeDomainEvents;
+              return events.pipe(
+                Stream.filter(
+                  (event) =>
+                    event.type === "idea.changed" ||
+                    event.type === "idea.purged" ||
+                    event.type === "thread.meta-updated" ||
+                    (event.type === "thread.session-set" && event.payload.turnSettled === true) ||
+                    (event.type === "thread.message-sent" && event.payload.role === "user") ||
+                    (event.type === "thread.created" && event.payload.purpose === "idea"),
+                ),
+                Stream.mapEffect((event) =>
+                  Effect.gen(function* () {
+                    const threadId = ThreadId.make(event.aggregateId);
+                    const notebook = yield* ideaStore.get(threadId);
+                    return notebook || event.type === "idea.purged"
+                      ? Option.some({
+                          threadId,
+                          revision: notebook?.revision ?? 0,
+                          purged: event.type === "idea.purged",
+                        })
+                      : Option.none();
+                  }),
+                ),
+                Stream.filter(Option.isSome),
+                Stream.map((change) => change.value),
+                Stream.mapError((error) => new IdeaOperationError({ message: error.message })),
+              );
+            }),
+          ),
         [ORCHESTRATION_WS_METHODS.searchThreads]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.searchThreads,
@@ -2187,6 +2262,24 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
             Effect.gen(function* () {
+              const audienceThread = yield* projectionSnapshotQuery
+                .getThreadShellById(input.threadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Could not read this thread.",
+                        cause,
+                      }),
+                  ),
+                );
+              if (
+                Option.isSome(audienceThread) &&
+                (audienceThread.value.purpose ?? "work") !== (input.audience ?? "work")
+              )
+                return yield* new OrchestrationGetSnapshotError({
+                  message: "Open this thread from its Ideas workspace.",
+                });
               const isThisThreadDetailEvent = (event: OrchestrationEvent) =>
                 event.aggregateKind === "thread" &&
                 event.aggregateId === input.threadId &&

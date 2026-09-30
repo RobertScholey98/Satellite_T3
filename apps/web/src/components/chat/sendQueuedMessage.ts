@@ -52,10 +52,12 @@ export async function sendQueuedMessage(
   const { environmentId, threadId } = threadRef;
   const threadKey = scopedThreadKey(threadRef);
   const queue = useQueuedMessageStore.getState();
+  const purpose =
+    queue.queuesByThreadKey[threadKey]?.find((item) => item.id === messageId)?.purpose ?? "work";
   const message = queue.beginSend(
     threadKey,
     messageId,
-    latestCompletedToolActivityId(readThread(threadRef)?.activities ?? []),
+    latestCompletedToolActivityId(readThread(threadRef, purpose)?.activities ?? []),
   );
   if (!message) return;
   const { sendSettings } = message;
@@ -133,7 +135,7 @@ export async function sendQueuedMessage(
     // The server starts the turn with the thread's stored modes, so a change
     // made in the composer before queueing is saved first.
     const createdAt = new Date().toISOString();
-    const shell = readThreadShell(threadRef);
+    const shell = purpose === "idea" ? readThread(threadRef, purpose) : readThreadShell(threadRef);
     const metadataUpdate = shell
       ? resolveThreadMetadataUpdateForNextTurn({
           currentModelSelection: shell.modelSelection,
@@ -162,7 +164,7 @@ export async function sendQueuedMessage(
 
     // Stop hands a preparing message back to the composer. Past this point
     // the send can no longer be taken back.
-    const thread = readThread(threadRef) ?? undefined;
+    const thread = readThread(threadRef, purpose) ?? undefined;
     if (!queue.markDispatching(threadKey, message.id, createLocalDispatchSnapshot(thread))) return;
     const context = buildMessageContext({
       terminalContexts: sendableTerminalContexts,

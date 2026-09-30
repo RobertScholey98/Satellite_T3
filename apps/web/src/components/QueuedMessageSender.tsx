@@ -1,3 +1,4 @@
+import { ThreadAudienceContext } from "../state/threadAudience";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import { useEffect, useMemo } from "react";
@@ -24,7 +25,18 @@ export function QueuedMessageSender() {
   const threadKeys = useQueuedMessageStore(
     useShallow((state) => Object.keys(state.queuesByThreadKey)),
   );
-  return threadKeys.map((threadKey) => <ThreadQueueSender key={threadKey} threadKey={threadKey} />);
+  return threadKeys.map((threadKey) => <QueueAudience key={threadKey} threadKey={threadKey} />);
+}
+
+function QueueAudience({ threadKey }: { threadKey: string }) {
+  const purpose = useQueuedMessageStore(
+    (state) => state.queuesByThreadKey[threadKey]?.[0]?.purpose ?? "work",
+  );
+  return (
+    <ThreadAudienceContext value={purpose}>
+      <ThreadQueueSender threadKey={threadKey} />
+    </ThreadAudienceContext>
+  );
 }
 
 /**

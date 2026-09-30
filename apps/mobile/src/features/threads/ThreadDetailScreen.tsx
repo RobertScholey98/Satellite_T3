@@ -113,6 +113,15 @@ import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 
 export interface ThreadDetailScreenProps {
+  readonly readingPosition?: {
+    readonly initialOffset: number;
+    readonly save: (offset: number) => void;
+  };
+  readonly revealMessage?: {
+    readonly messageId?: string;
+    readonly activityId?: string;
+    readonly requestId: number;
+  } | null;
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
   readonly setupWorkingStartedAt?: string | null;
   readonly selectedThread: OrchestrationThreadShell;
@@ -911,6 +920,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             )}
           >
             <ThreadFeed
+              readingPosition={props.readingPosition}
+              revealMessage={props.revealMessage}
               environmentId={props.environmentId}
               threadId={props.selectedThread.id}
               workspaceRoot={props.threadCwd}

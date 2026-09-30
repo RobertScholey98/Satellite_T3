@@ -13,6 +13,34 @@ an existing worktree, use **New thread in this worktree** from the branch toolba
 When you change a new thread's project, T3 Code stays in the current environment
 if that project exists there. Otherwise it selects an environment that has it.
 
+### Explore an idea
+
+Select **Idea** when starting a new thread to discuss a feature before committing
+to implementation. Each idea belongs to its project and environment and keeps one
+conversation. Return to it through **Ideas** in the sidebar footer. Idea activity
+stays out of the ordinary thread list and work notifications.
+
+Ideas currently require Claude. The agent reads the project's default branch and
+can create documents inside the idea. It cannot edit project code. Your current
+checkout and uncommitted changes stay in place.
+
+The notebook starts with an empty pitch. Background updates organise the discussion
+into notes and keep the pitch current. Choose their model in **Settings → General
+→ Text generation → Idea updates**. This setting is separate from thread titles.
+You can edit the pitch and notes, add attachments, and follow linked phrases to
+their supporting notes. If an update conflicts with your edits, review its proposal
+in the notebook. Failed updates can be retried while you continue the conversation.
+
+Use **Promote to issues** to prepare `/promote` in the existing conversation. Review
+the proposed issues and their GitHub repository before publishing. Issue descriptions
+contain the implementation context, so they remain useful after the idea is gone.
+Publishing embeds text and does not upload notebook attachments.
+Full promotion settles the idea; partial promotion leaves its remaining scope active.
+New discussion or manual content changes reopen a settled idea.
+
+Deleting an idea permanently removes its conversation, notebook and owned files
+after confirmation. Published issues remain on GitHub.
+
 ### Start in the background
 
 In a desktop browser or the desktop app, press `Cmd+Enter` on macOS or `Ctrl+Enter`

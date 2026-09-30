@@ -33,6 +33,7 @@ const THREAD_OUTBOX_SCHEMA_VERSION = 3;
 const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
 
 const QueuedThreadCreationSchema = Schema.Struct({
+  purpose: Schema.optional(Schema.Literals(["work", "idea"])),
   projectId: ProjectId,
   // Snapshot of the project's display metadata so a pending task stays
   // presentable in the thread list even when the project shell is not loaded.
@@ -45,6 +46,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
+  purpose: Schema.optional(Schema.Literals(["work", "idea"])),
   schemaVersion: Schema.Literals([1, 2, THREAD_OUTBOX_SCHEMA_VERSION, 4]),
   environmentId: EnvironmentId,
   threadId: ThreadId,
@@ -66,6 +68,7 @@ const decodeStoredQueuedThreadMessage = Schema.decodeUnknownSync(QueuedThreadMes
 const encodeStoredQueuedThreadMessage = Schema.encodeUnknownSync(QueuedThreadMessageSchema);
 
 export interface QueuedThreadCreation {
+  readonly purpose?: "work" | "idea";
   readonly projectId: ProjectIdType;
   readonly projectTitle?: string;
   readonly projectCwd?: string;
@@ -76,6 +79,7 @@ export interface QueuedThreadCreation {
 }
 
 export interface QueuedThreadMessage {
+  readonly purpose?: "work" | "idea";
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;

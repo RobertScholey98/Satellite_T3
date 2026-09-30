@@ -107,6 +107,10 @@
       "types": "./src/state/auth.ts",
       "default": "./src/state/auth.ts"
     },
+    "./state/ideas": {
+      "types": "./src/state/ideas.ts",
+      "default": "./src/state/ideas.ts"
+    },
     "./state/assets": {
       "types": "./src/state/assets.ts",
       "default": "./src/state/assets.ts"

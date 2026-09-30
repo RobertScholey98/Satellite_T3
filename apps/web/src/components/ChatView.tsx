@@ -1,3 +1,4 @@
+import { Checkbox } from "./ui/checkbox";
 import { isChatGptUsageLimitError } from "@t3tools/shared/usageLimits";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -748,6 +749,8 @@ type ChatViewProps =
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
+      ideaWorkspace?: boolean;
+      revealMessage?: { messageId?: MessageId; activityId?: string; requestId: number } | null;
       forceExpandedMobileComposer?: boolean;
       threadSyncPhase?: ThreadSyncPhase | null;
       routeKind: "server";
@@ -758,6 +761,8 @@ type ChatViewProps =
       threadId: ThreadId;
       onDiffPanelOpen?: () => void;
       reserveTitleBarControlInset?: boolean;
+      ideaWorkspace?: boolean;
+      revealMessage?: { messageId?: MessageId; activityId?: string; requestId: number } | null;
       forceExpandedMobileComposer?: boolean;
       threadSyncPhase?: never;
       routeKind: "draft";
@@ -1482,6 +1487,7 @@ export default function ChatView(props: ChatViewProps) {
     onDiffPanelOpen,
     reserveTitleBarControlInset = true,
     forceExpandedMobileComposer = false,
+    ideaWorkspace = false,
   } = props;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const threadSyncPhase = routeKind === "server" ? (props.threadSyncPhase ?? null) : null;
@@ -1565,6 +1571,7 @@ export default function ChatView(props: ChatViewProps) {
         ? store.getDraftSession(draftId)
         : null,
   );
+  const isIdea = ideaWorkspace || draftThread?.purpose === "idea";
   const routeServerThreadShell = useThreadShell(routeKind === "server" ? routeThreadRef : null);
   const serverThread = useThread(routeThreadRef, { waitForShell: draftThread !== null });
   const loadingServerThread = useMemo(
@@ -2054,7 +2061,7 @@ export default function ChatView(props: ChatViewProps) {
     [activeKnownTerminalIds, panelTerminalIds],
   );
   const previewPanelOpen = activeRightPanelKind === "preview" && isPreviewSupportedInRuntime();
-  const rightPanelOpen = rightPanelState.isOpen;
+  const rightPanelOpen = !ideaWorkspace && rightPanelState.isOpen;
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
   const activeTerminalDrawerPresence = usePanelPresence(
@@ -2078,7 +2085,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadKey,
     panelAnimationDurationMs,
   );
-  const rightPanelPresent = rightPanelPresence.present;
+  const rightPanelPresent = !ideaWorkspace && rightPanelPresence.present;
   const rightPanelControlsInPanel = shouldUseRightPanelSheet && rightPanelPresent && rightPanelOpen;
   const rightPanelControlsAtRoot = rightPanelPresent && !shouldUseRightPanelSheet;
   const renderedRightPanelSurface = rightPanelPresence.value?.activeSurface ?? null;
@@ -7273,6 +7280,7 @@ export default function ChatView(props: ChatViewProps) {
       // The overflow is the rest of the restored draft, so it follows the composer.
       const sendCtx = composerRef.current?.getSendContext();
       useQueuedMessageStore.getState().enqueue(activeThreadKey, {
+        ...(isIdea ? { purpose: "idea" as const } : {}),
         prompt: "",
         images: overflow.filter((attachment) => attachment.type === "image"),
         files: overflow.filter((attachment) => attachment.type === "file"),
@@ -7442,6 +7450,13 @@ export default function ChatView(props: ChatViewProps) {
       interactionMode: sendInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
+    if (isIdea && ctxSelectedProvider !== "claude") {
+      setThreadError(
+        activeThreadId,
+        "Ideas currently require Claude. Select a Claude model to continue.",
+      );
+      return;
+    }
     const annotationImageAlreadyAttached =
       directAnnotation?.image !== undefined &&
       sendContextImages.some((image) => image.id === directAnnotation.image?.id);
@@ -7679,6 +7694,7 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
       useQueuedMessageStore.getState().enqueue(activeThreadKey, {
+        ...(isIdea ? { purpose: "idea" as const } : {}),
         prompt: promptForSend,
         images: [...composerImages],
         files: [...composerFiles],
@@ -7703,14 +7719,14 @@ export default function ChatView(props: ChatViewProps) {
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const baseBranchForWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
+      !isIdea && isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
         ? activeThreadBranch
         : null;
 
     // In worktree mode, require an explicit base branch so we don't silently
     // fall back to local execution when branch selection is missing.
     const shouldCreateWorktree =
-      isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
+      !isIdea && isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath;
     if (shouldCreateWorktree && !activeThreadBranch) {
       setThreadError(threadIdForSend, "Select a base branch before sending in New worktree mode.");
       return;
@@ -8006,6 +8022,7 @@ export default function ChatView(props: ChatViewProps) {
                   bootstrap: {
                     createThread: {
                       projectId: activeProject.id,
+                      ...(isIdea ? { purpose: "idea" as const } : {}),
                       title,
                       modelSelection: target.selection,
                       runtimeMode,
@@ -8341,12 +8358,13 @@ export default function ChatView(props: ChatViewProps) {
                 ? {
                     createThread: {
                       projectId: activeProject.id,
+                      ...(isIdea ? { purpose: "idea" as const } : {}),
                       title,
                       modelSelection: threadCreateModelSelection,
                       runtimeMode,
                       interactionMode: sendInteractionMode,
-                      branch: activeThreadBranch,
-                      worktreePath: activeThread.worktreePath,
+                      branch: isIdea ? null : activeThreadBranch,
+                      worktreePath: isIdea ? null : activeThread.worktreePath,
                       createdAt: activeThread.createdAt,
                     },
                   }
@@ -8444,6 +8462,14 @@ export default function ChatView(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        if (isIdea && isLocalDraftThread) {
+          markPromotedDraftThreadByRef(scopeThreadRef(environmentId, threadIdForSend));
+          finalizePromotedDraftThreadByRef(scopeThreadRef(environmentId, threadIdForSend));
+          void navigate({
+            to: "/ideas",
+            search: { environment: environmentId, idea: threadIdForSend },
+          });
+        }
         // The turn is under way and will spend quota, so that thread's limits
         // snapshot is stale. Uploads may have outlasted a navigation, so only
         // the sending thread's panel clears.
@@ -9205,6 +9231,11 @@ export default function ChatView(props: ChatViewProps) {
 
   const getModelDisabledReason = useCallback(
     (instanceId: ProviderInstanceId, model: string): string | null => {
+      if (
+        isIdea &&
+        providerStatuses.find((provider) => provider.instanceId === instanceId)?.driver !== "claude"
+      )
+        return "Ideas currently require Claude.";
       if (!activeThread) {
         return null;
       }
@@ -9217,7 +9248,7 @@ export default function ChatView(props: ChatViewProps) {
       });
       return reason ? `${reason.description} Start a new thread to use this model.` : null;
     },
-    [activeThread, providerStatuses],
+    [activeThread, isIdea, providerStatuses],
   );
 
   const onProviderModelSelect = useCallback(
@@ -9733,48 +9764,50 @@ export default function ChatView(props: ChatViewProps) {
         data-chat-column-maximized-away={rightPanelMaximized ? "true" : "false"}
       >
         {/* Top bar */}
-        <WorkspacePageHeader
-          data-chat-header
-          electron={isElectron}
-          reserveNativeControls={reserveTitleBarControlInset && !inlineRightPanelOwnsTitleBar}
-          className="relative bg-background"
-        >
-          {isElectron && rightPanelControlsAtRoot ? (
-            <span
-              aria-hidden
-              className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
+        {!ideaWorkspace ? (
+          <WorkspacePageHeader
+            data-chat-header
+            electron={isElectron}
+            reserveNativeControls={reserveTitleBarControlInset && !inlineRightPanelOwnsTitleBar}
+            className="relative bg-background"
+          >
+            {isElectron && rightPanelControlsAtRoot ? (
+              <span
+                aria-hidden
+                className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
+              />
+            ) : null}
+            {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
+            <ChatHeader
+              {...(!supportsPullRequests || activeProjectRepository === null
+                ? {}
+                : { onOpenPullRequest: openProjectPullRequest })}
+              activeThreadEnvironmentId={activeThread.environmentId}
+              activeThreadId={activeThread.id}
+              {...(routeKind === "draft" && draftId ? { draftId } : {})}
+              activeThreadTitle={activeThread.title}
+              isServerThread={isServerThread}
+              activeProject={activeProject}
+              openInCwd={gitCwd}
+              activeProjectScripts={activeProjectScripts}
+              preferredScriptId={
+                activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
+              }
+              keybindings={keybindings}
+              availableEditors={availableEditors}
+              rightPanelOpen={rightPanelOpen}
+              gitCwd={gitCwd}
+              onNewThreadInProject={handleNewThreadInActiveProject}
+              {...(activeDraftLogicalProjectKey
+                ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
+                : {})}
+              onRunProjectScript={runProjectScript}
+              onAddProjectScript={saveProjectScript}
+              onUpdateProjectScript={updateProjectScript}
+              onDeleteProjectScript={deleteProjectScript}
             />
-          ) : null}
-          {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
-          <ChatHeader
-            {...(!supportsPullRequests || activeProjectRepository === null
-              ? {}
-              : { onOpenPullRequest: openProjectPullRequest })}
-            activeThreadEnvironmentId={activeThread.environmentId}
-            activeThreadId={activeThread.id}
-            {...(routeKind === "draft" && draftId ? { draftId } : {})}
-            activeThreadTitle={activeThread.title}
-            isServerThread={isServerThread}
-            activeProject={activeProject}
-            openInCwd={gitCwd}
-            activeProjectScripts={activeProjectScripts}
-            preferredScriptId={
-              activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
-            }
-            keybindings={keybindings}
-            availableEditors={availableEditors}
-            rightPanelOpen={rightPanelOpen}
-            gitCwd={gitCwd}
-            onNewThreadInProject={handleNewThreadInActiveProject}
-            {...(activeDraftLogicalProjectKey
-              ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
-              : {})}
-            onRunProjectScript={runProjectScript}
-            onAddProjectScript={saveProjectScript}
-            onUpdateProjectScript={updateProjectScript}
-            onDeleteProjectScript={deleteProjectScript}
-          />
-        </WorkspacePageHeader>
+          </WorkspacePageHeader>
+        ) : null}
 
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">
@@ -9822,6 +9855,7 @@ export default function ChatView(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
+                revealMessage={props.revealMessage ?? null}
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
                 {...(!paintOnlyDisplayedTimeline
@@ -9830,7 +9864,7 @@ export default function ChatView(props: ChatViewProps) {
                       agentPanelModel,
                       onOpenAgents: addAgentsSurface,
                       onUseArtifactTemplate: useArtifactTemplate,
-                      ...(activeProject ? { onRunShellCommand: runShellCommand } : {}),
+                      ...(activeProject && !isIdea ? { onRunShellCommand: runShellCommand } : {}),
                     }
                   : {})}
                 isWorking={!paintOnlyDisplayedTimeline && isWorking}
@@ -9970,6 +10004,26 @@ export default function ChatView(props: ChatViewProps) {
                       </div>
                     </div>
                   ) : null}
+                  {isDraftHeroState && draftId ? (
+                    <label className="mb-3 flex items-center gap-2 text-sm text-muted-foreground">
+                      <Checkbox
+                        checked={isIdea}
+                        onCheckedChange={(checked) => {
+                          setDraftThreadContext(draftId, {
+                            purpose: checked ? "idea" : "work",
+                            ...(checked
+                              ? { envMode: "local", branch: null, worktreePath: null }
+                              : {}),
+                          });
+                          if (checked) setMultipleModelSelections(null);
+                        }}
+                      />
+                      Idea
+                      <span className="text-xs">
+                        A notebook and a conversation. Code stays unchanged.
+                      </span>
+                    </label>
+                  ) : null}
                   <div
                     className="relative"
                     style={
@@ -9982,10 +10036,12 @@ export default function ChatView(props: ChatViewProps) {
                       <ComposerSurface.Host>
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           <ChatComposer
-                            multipleModelSelections={multipleModelSelections}
+                            ideaMode={isIdea}
+                            multipleModelSelections={isIdea ? null : multipleModelSelections}
                             supportsMultipleModels={
+                              !isIdea &&
                               serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===
-                              true
+                                true
                             }
                             onMultipleModelSelectionsChange={setMultipleModelSelections}
                             composerRef={composerRef}
@@ -10122,7 +10178,7 @@ export default function ChatView(props: ChatViewProps) {
                           data-terminal-open={terminalUiState.terminalOpen ? "true" : undefined}
                           className="relative z-0"
                         >
-                          {mountComposerContextStrip && (
+                          {mountComposerContextStrip && !isIdea && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
                                 forceNewWorktree={multipleModelSelections !== null}
@@ -10235,24 +10291,29 @@ export default function ChatView(props: ChatViewProps) {
         </div>
         {/* end horizontal flex container */}
 
-        {mountedTerminalThreadRefs.map(({ key: mountedThreadKey, threadRef: mountedThreadRef }) => (
-          <PersistentThreadTerminalDrawer
-            key={mountedThreadKey}
-            threadRef={mountedThreadRef}
-            threadId={mountedThreadRef.threadId}
-            active={mountedThreadKey === activeThreadKey}
-            launchContext={
-              mountedThreadKey === activeThreadKey ? (activeTerminalLaunchContext ?? null) : null
-            }
-            focusRequestId={mountedThreadKey === activeThreadKey ? terminalFocusRequestId : 0}
-            splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-            splitVerticalShortcutLabel={splitTerminalVerticalShortcutLabel ?? undefined}
-            newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-            closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-            keybindings={keybindings}
-            onAddTerminalContext={addTerminalContextToDraft}
-          />
-        ))}
+        {!ideaWorkspace &&
+          mountedTerminalThreadRefs.map(
+            ({ key: mountedThreadKey, threadRef: mountedThreadRef }) => (
+              <PersistentThreadTerminalDrawer
+                key={mountedThreadKey}
+                threadRef={mountedThreadRef}
+                threadId={mountedThreadRef.threadId}
+                active={mountedThreadKey === activeThreadKey}
+                launchContext={
+                  mountedThreadKey === activeThreadKey
+                    ? (activeTerminalLaunchContext ?? null)
+                    : null
+                }
+                focusRequestId={mountedThreadKey === activeThreadKey ? terminalFocusRequestId : 0}
+                splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
+                splitVerticalShortcutLabel={splitTerminalVerticalShortcutLabel ?? undefined}
+                newShortcutLabel={newTerminalShortcutLabel ?? undefined}
+                closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
+                keybindings={keybindings}
+                onAddTerminalContext={addTerminalContextToDraft}
+              />
+            ),
+          )}
       </div>
 
       {rightPanelPresent && !shouldUseRightPanelSheet && activeThreadRef ? (

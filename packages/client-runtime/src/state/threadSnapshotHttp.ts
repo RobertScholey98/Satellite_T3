@@ -46,6 +46,7 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
   readonly timeoutMs?: number;
   readonly window?: ThreadSnapshotWindow;
   readonly reasoningMessages?: boolean;
+  readonly audience?: "work" | "idea";
 }) {
   return yield* executeAuthenticatedEnvironmentHttpRequest({
     ...input,
@@ -58,6 +59,7 @@ export const fetchEnvironmentThreadSnapshot = Effect.fn(
       client.threadSnapshot({
         params: { threadId: input.threadId },
         payload: {
+          ...(input.audience === "idea" ? { audience: "idea" as const } : {}),
           ...(input.reasoningMessages === true ? { reasoningMessages: "true" as const } : {}),
           ...(input.window !== undefined ? { turnLimit: input.window.turnLimit } : {}),
           ...(input.window?.beforeCursor !== undefined
@@ -85,6 +87,7 @@ export class ThreadSnapshotLoader extends Context.Service<
       threadId: ThreadId,
       window?: ThreadSnapshotWindow,
       reasoningMessages?: boolean,
+      audience?: "work" | "idea",
     ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>>;
   }
 >()("@t3tools/client-runtime/state/threadSnapshotHttp/ThreadSnapshotLoader") {}
@@ -108,12 +111,14 @@ export const threadSnapshotLoaderLayer: Layer.Layer<
         threadId: ThreadId,
         window?: ThreadSnapshotWindow,
         reasoningMessages?: boolean,
+        audience?: "work" | "idea",
       ) =>
         fetchEnvironmentThreadSnapshot({
           prepared,
           threadId,
           signer,
           remoteAuthorization,
+          ...(audience === "idea" ? { audience } : {}),
           ...(reasoningMessages === true ? { reasoningMessages: true } : {}),
           ...(window !== undefined ? { window } : {}),
         }).pipe(

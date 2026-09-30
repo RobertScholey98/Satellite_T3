@@ -421,6 +421,7 @@ export const make = Effect.gen(function* () {
       });
 
     const thread = yield* snapshotQuery.getThreadShellById(threadId);
+    if (Option.isSome(thread) && thread.value.purpose === "idea") return;
     const project = Option.isSome(thread)
       ? yield* snapshotQuery.getProjectShellById(thread.value.projectId)
       : Option.none<OrchestrationProjectShell>();

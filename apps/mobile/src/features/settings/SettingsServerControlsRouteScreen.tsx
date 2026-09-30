@@ -1,3 +1,6 @@
+import { buildModelOptions } from "../../lib/modelOptions";
+import { MaterialButton } from "../../components/MaterialButton";
+import type { SettingsTarget } from "./settings-environment-filter";
 import { useNavigation } from "@react-navigation/native";
 import { SettingsRow } from "./components/SettingsRow";
 import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
@@ -386,6 +389,11 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       />
                     ))}
                   </SettingsSection>
+                  {!projectSelected
+                    ? selectedTargets.map((target) => (
+                        <IdeaUpdatesModelSetting key={target.environmentId} target={target} />
+                      ))
+                    : null}
                   <SettingsSection title="Preview browser">
                     <FanoutSwitchRow
                       icon="globe"
@@ -560,5 +568,58 @@ function FanoutSwitchRow(props: {
         <Text className="text-sm font-t3-medium text-foreground">Mixed · Set on</Text>
       </Pressable>
     </SettingsControlRow>
+  );
+}
+
+function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
+  const [expanded, setExpanded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: true });
+  const selection = target.serverConfig.settings.ideaUpdatesModelSelection;
+  const models = buildModelOptions(target.serverConfig, selection).filter(
+    (model) => model.providerDriver === "claudeAgent",
+  );
+  const choose = async (model: typeof selection) => {
+    setSaving(true);
+    const result = await update({
+      environmentId: target.environmentId,
+      input: { patch: { ideaUpdatesModelSelection: model } },
+    });
+    setSaving(false);
+    if (result._tag !== "Failure") setExpanded(false);
+  };
+  return (
+    <SettingsSection title={`Idea updates · ${target.label}`}>
+      <SettingsRow
+        icon="brain"
+        label="Notebook model"
+        value={selection?.model ?? "Automatic"}
+        onPress={() => setExpanded((value) => !value)}
+      />
+      <View className="px-4 pb-3">
+        <Text className="text-sm text-foreground-muted">
+          Organizes notes and updates pitches independently of thread titles.
+        </Text>
+      </View>
+      {expanded ? (
+        <View className="gap-1 p-3">
+          <MaterialButton label="Automatic" disabled={saving} onPress={() => void choose(null)} />
+          {models.map((model) => (
+            <MaterialButton
+              key={model.key}
+              tone="text"
+              label={`${model.providerLabel} · ${model.label}`}
+              disabled={saving || model.isUnavailable}
+              onPress={() => void choose(model.selection)}
+            />
+          ))}
+          {!models.length ? (
+            <Text className="text-sm text-foreground-muted">
+              Connect a Claude provider to update ideas.
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+    </SettingsSection>
   );
 }

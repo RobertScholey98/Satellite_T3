@@ -1,3 +1,9 @@
+import { IdeaRuntime } from "../ideas/IdeaRuntime.ts";
+import { IdeasToolkit, IdeasImageToolkit, IdeaImageTool } from "./toolkits/ideas/tools.ts";
+import {
+  IdeasToolkitHandlersLive,
+  IdeasImageToolkitHandlersLive,
+} from "./toolkits/ideas/handlers.ts";
 import * as NodeCrypto from "node:crypto";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -667,7 +673,27 @@ const McpTransportLive = McpServer.layerHttp({
   protocols: [McpProtocol.v2025_06_18],
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
+const registerIdeaImage = Effect.gen(function* () {
+  const runtime = yield* IdeaRuntime;
+  const built = yield* IdeasImageToolkit;
+  yield* registerImageTool(
+    IdeaImageTool,
+    (payload) =>
+      built
+        .handle("idea_read_image", payload)
+        .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
+    (effect) => effect.pipe(Effect.provideService(IdeaRuntime, runtime)),
+    "idea-image",
+    "Could not read the idea image.",
+  );
+});
+export const IdeasToolkitRegistrationLive = Layer.mergeAll(
+  McpServer.toolkit(IdeasToolkit).pipe(Layer.provide(IdeasToolkitHandlersLive)),
+  Layer.effectDiscard(registerIdeaImage).pipe(Layer.provide(IdeasImageToolkitHandlersLive)),
+);
+
 export const layer = Layer.mergeAll(
+  IdeasToolkitRegistrationLive,
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,

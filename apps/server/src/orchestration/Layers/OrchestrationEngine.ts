@@ -1,3 +1,5 @@
+import { purgeIdeaThreadContent } from "../../persistence/Layers/OrchestrationEventStore.ts";
+import { IdeaNotebookStore } from "../../ideas/IdeaNotebookStore.ts";
 import type {
   OrchestrationClientOrigin,
   OrchestrationEvent,
@@ -83,6 +85,7 @@ function commandToAggregateRef(command: OrchestrationCommand): {
 
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const ideas = yield* IdeaNotebookStore;
   const eventStore = yield* OrchestrationEventStore;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
@@ -242,7 +245,31 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           envelope.command.type === "thread.user-input.dismiss"
             ? yield* projectionSnapshotQuery.getUserInputActivity(envelope.command)
             : Option.none();
+        const ideaFailure = (cause: unknown) =>
+          new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "This idea is unavailable.",
+            cause,
+          });
+        if (
+          "threadId" in envelope.command &&
+          !["idea.delete", "idea.purge"].includes(envelope.command.type) &&
+          !(
+            envelope.command.type === "idea.apply" &&
+            envelope.command.mutation.kind === "delete.fail"
+          ) &&
+          (yield* ideas.isDeleted(envelope.command.threadId).pipe(Effect.mapError(ideaFailure)))
+        )
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: "This idea was permanently deleted or is being deleted.",
+          });
+        const notebook =
+          envelope.command.type.startsWith("idea.") && "threadId" in envelope.command
+            ? yield* ideas.get(envelope.command.threadId).pipe(Effect.mapError(ideaFailure))
+            : null;
         const eventBase = yield* decideOrchestrationCommand({
+          ...(notebook ? { notebook } : {}),
           command: envelope.command,
           readModel: commandReadModel,
           ...(Option.isSome(userInputActivity)
@@ -282,6 +309,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 nextCommandReadModel = yield* projectEvent(nextCommandReadModel, savedEvent);
                 const cleanup = yield* projectionPipeline.projectEventDeferred(savedEvent);
                 attachmentCleanups.push(cleanup);
+                if (savedEvent.type === "idea.purged")
+                  yield* purgeIdeaThreadContent(
+                    savedEvent.payload.threadId,
+                    savedEvent.sequence,
+                  ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
                 committedEvents.push(savedEvent);
               }
 
@@ -470,4 +502,4 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,
   makeOrchestrationEngine,
-);
+).pipe(Layer.provideMerge(IdeaNotebookStore.layer));

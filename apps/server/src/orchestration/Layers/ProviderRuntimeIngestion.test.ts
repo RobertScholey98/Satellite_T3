@@ -70,6 +70,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { makeSqlStatementCounter } from "../../../integration/SqlStatementCounter.integration.ts";
+import { IdeaNotebookStore } from "../../ideas/IdeaNotebookStore.ts";
 
 function makeTestServerSettingsLayer(overrides: Partial<ServerSettings> = {}) {
   return ServerSettingsService.layerTest(overrides);
@@ -267,6 +268,7 @@ describe("ProviderRuntimeIngestion", () => {
   });
 
   async function createHarness(options?: {
+    purpose?: "work" | "idea";
     serverSettings?: Partial<ServerSettings>;
     threadTitle?: string;
     workspaceSubdirectory?: string;
@@ -378,6 +380,7 @@ describe("ProviderRuntimeIngestion", () => {
       commandId: CommandId.make("cmd-thread-create"),
       threadId: ThreadId.make("thread-1"),
       projectId: asProjectId("project-1"),
+      purpose: options?.purpose,
       title: options?.threadTitle ?? "Thread",
       modelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
@@ -417,6 +420,11 @@ describe("ProviderRuntimeIngestion", () => {
       engine,
       dispatch,
       readModel: () => testRuntime.runPromise(snapshotQuery.getSnapshot()),
+      readEvents: () => testRuntime.runPromise(Stream.runCollect(engine.readEvents(0))),
+      readNotebook: () =>
+        testRuntime.runPromise(
+          Effect.flatMap(IdeaNotebookStore, (ideas) => ideas.get(asThreadId("thread-1"))),
+        ),
       readTurn: (turnId: TurnId) =>
         testRuntime.runPromise(
           Effect.flatMap(ProjectionTurnRepository, (turns) =>
@@ -481,6 +489,73 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
   });
+
+  it.each(["turn.completed", "turn.aborted"] as const)(
+    "includes the final buffered answer in the notebook input boundary after %s",
+    async (terminalType) => {
+      const harness = await createHarness({
+        purpose: "idea",
+        serverSettings: { responseStreamingMode: "paragraph" },
+      });
+      const threadId = asThreadId("thread-1");
+      const base = {
+        provider: ProviderDriverKind.make("claude"),
+        threadId,
+        turnId: asTurnId("idea-turn"),
+        createdAt: "2026-01-01T00:00:01.000Z",
+      };
+      await harness.dispatch({
+        type: "thread.message.user.append",
+        commandId: CommandId.make("idea-question"),
+        threadId,
+        message: {
+          messageId: asMessageId("idea-question"),
+          text: "How should creation work?",
+          attachments: [],
+        },
+        createdAt: base.createdAt,
+      });
+      await harness.emitAndDrain([
+        { ...base, type: "turn.started", eventId: asEventId("idea-started") },
+        {
+          ...base,
+          type: "content.delta",
+          eventId: asEventId("idea-answer"),
+          itemId: asItemId("idea-answer"),
+          payload: { streamKind: "assistant_text", delta: "Keep one dedicated conversation." },
+        },
+      ]);
+      expect((await harness.readNotebook())?.update.status).toBe("waiting");
+      await harness.emitAndDrain([
+        {
+          ...base,
+          type: terminalType,
+          eventId: asEventId("idea-terminal"),
+          payload:
+            terminalType === "turn.completed"
+              ? { state: "completed" }
+              : { reason: "Interrupted by user." },
+        },
+      ]);
+      const notebook = await harness.readNotebook();
+      expect(notebook?.update.status).toBe("pending");
+      const inputs = (await harness.readEvents()).filter(
+        (event) => event.sequence <= (notebook?.update.requestedSequence ?? 0),
+      );
+      expect(
+        inputs
+          .filter(
+            (event) => event.type === "thread.message-sent" && event.payload.role === "assistant",
+          )
+          .map((event) => (event.type === "thread.message-sent" ? event.payload.text : ""))
+          .join(""),
+      ).toBe("Keep one dedicated conversation.");
+      expect(inputs.at(-1)).toMatchObject({
+        type: "thread.session-set",
+        payload: { turnSettled: true, session: { activeTurnId: null } },
+      });
+    },
+  );
 
   it.each([
     { delivery: "buffered", responseStreamingMode: "paragraph" as const },

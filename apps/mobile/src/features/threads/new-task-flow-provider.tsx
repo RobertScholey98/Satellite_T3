@@ -974,7 +974,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       const workspaceSelection = draft.workspaceSelection;
       // Fall back to the resolved mode (server default) so queued tasks drain
       // with the same mode the composer displayed.
-      const mode = workspaceSelection?.mode ?? workspaceMode;
+      const mode = draft.purpose === "idea" ? "local" : (workspaceSelection?.mode ?? workspaceMode);
       // When the selection is the stand-in built from the queued snapshot,
       // persist the original (possibly absent) snapshot values — the
       // stand-in's placeholder title/workspaceRoot must never be written back
@@ -1006,6 +1006,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
           ),
         }),
         creation: {
+          ...(draft.purpose === "idea" ? { purpose: "idea" } : {}),
           projectId: selectedProject.id,
           ...(projectTitle !== undefined ? { projectTitle } : {}),
           ...(projectCwd !== undefined ? { projectCwd } : {}),

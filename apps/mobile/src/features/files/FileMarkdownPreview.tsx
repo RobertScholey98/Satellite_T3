@@ -37,7 +37,10 @@ interface MarkdownPreviewStyles {
   readonly nativeTextStyle: NativeMarkdownTextStyle;
 }
 
-function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): MarkdownPreviewStyles {
+function useMarkdownPreviewStyles(
+  renderImage?: MarkdownImageRenderer,
+  onLinkPress?: (href: string) => void,
+): MarkdownPreviewStyles {
   const { appearance } = useAppearancePreferences();
   const markdownFontSizes = useMemo(
     () => resolveMarkdownFontSizes(appearance.baseFontSize),
@@ -67,7 +70,8 @@ function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): Markdown
           className="font-t3-medium"
           onPress={() => {
             if (href) {
-              void tryOpenExternalUrl(href, "markdown-link");
+              if (onLinkPress) onLinkPress(href);
+              else void tryOpenExternalUrl(href, "markdown-link");
             }
           }}
           style={{
@@ -184,6 +188,7 @@ function useMarkdownPreviewStyles(renderImage?: MarkdownImageRenderer): Markdown
     nativeMarkdownTypography,
     regularFontFamily,
     renderImage,
+    onLinkPress,
     strong,
     boldFontFamily,
   ]);
@@ -283,5 +288,31 @@ export function FileMarkdownPreview(props: {
         )}
       </View>
     </ScrollView>
+  );
+}
+
+export function MarkdownDocument({
+  markdown,
+  onLinkPress,
+}: {
+  markdown: string;
+  onLinkPress: (href: string) => void;
+}) {
+  const styles = useMarkdownPreviewStyles(undefined, onLinkPress);
+  return hasNativeSelectableMarkdownText() ? (
+    <SelectableMarkdownText
+      markdown={markdown}
+      onLinkPress={onLinkPress}
+      textStyle={styles.nativeTextStyle}
+    />
+  ) : (
+    <Markdown
+      options={{ gfm: true }}
+      renderers={styles.renderers}
+      styles={styles.styles}
+      theme={styles.theme}
+    >
+      {markdown}
+    </Markdown>
   );
 }

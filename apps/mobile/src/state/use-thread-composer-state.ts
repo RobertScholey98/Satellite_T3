@@ -165,6 +165,21 @@ export function useThreadComposerState() {
   const selectedThreadKey = selectedThreadShell
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
+  const selectedDraftPurpose = selectedThreadKey
+    ? composerDrafts[selectedThreadKey]?.purpose
+    : undefined;
+  const selectedHasDraft =
+    selectedThreadKey !== null && composerDrafts[selectedThreadKey] !== undefined;
+  useEffect(() => {
+    if (
+      selectedThreadKey &&
+      selectedHasDraft &&
+      selectedThreadShell?.purpose === "idea" &&
+      selectedDraftPurpose !== "idea"
+    ) {
+      updateComposerDraftSettings(selectedThreadKey, { purpose: "idea" });
+    }
+  }, [selectedThreadKey, selectedHasDraft, selectedThreadShell?.purpose, selectedDraftPurpose]);
   // The creation entry is the thread itself (rendered as the first message),
   // not a follow-up waiting behind it.
   const selectedThreadQueuedMessages = useMemo(
@@ -437,6 +452,7 @@ export function useThreadComposerState() {
     // is rolled out of the queue and the content is merged back into the
     // draft, preserving anything typed since.
     const enqueuePromise = enqueueThreadOutboxMessage({
+      ...(thread.purpose === "idea" ? { purpose: "idea" as const } : {}),
       environmentId: selectedThreadShell.environmentId,
       threadId: selectedThreadShell.id,
       messageId,

@@ -1,3 +1,7 @@
+import { IdeaArtifactId } from "@t3tools/contracts";
+import { IdeaNotebookStore } from "./ideas/IdeaNotebookStore.ts";
+import { IdeaRuntime } from "./ideas/IdeaRuntime.ts";
+import { IdeaPromotion } from "./ideas/IdeaPromotion.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -549,6 +553,9 @@ const buildAppUnderTest = (options?: {
       ProviderSessionDirectory.ProviderSessionDirectory["Service"]
     >;
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
+    ideaStore?: Partial<IdeaNotebookStore["Service"]>;
+    ideaRuntime?: Partial<IdeaRuntime["Service"]>;
+    ideaPromotion?: Partial<IdeaPromotion["Service"]>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
     threadDeletionReactor?: Partial<ThreadDeletionReactor["Service"]>;
     analyticsService?: Partial<AnalyticsService.AnalyticsService["Service"]>;
@@ -779,6 +786,13 @@ const buildAppUnderTest = (options?: {
     ).pipe(
       Layer.provide(
         Layer.mergeAll(
+          Layer.mock(IdeaNotebookStore)({
+            get: () => Effect.succeed(null),
+            list: () => Effect.succeed([]),
+            ...options?.layers?.ideaStore,
+          }),
+          Layer.mock(IdeaRuntime)({ ...options?.layers?.ideaRuntime }),
+          Layer.mock(IdeaPromotion)({ ...options?.layers?.ideaPromotion }),
           Layer.mock(Keybindings.Keybindings)({
             loadConfigState: Effect.succeed({
               keybindings: [],
@@ -1743,6 +1757,80 @@ const EMPTY_DEVICE_STATE: DeviceServiceState = {
 };
 
 it.layer(NodeServices.layer)("server router seam", (it) => {
+  it.effect("ideas artifacts use authenticated HTTP and idea details require their audience", () =>
+    Effect.gen(function* () {
+      const thread = {
+        ...makeDefaultOrchestrationReadModel().threads[0]!,
+        purpose: "idea" as const,
+      };
+      const artifact = {
+        id: IdeaArtifactId.make("document"),
+        name: "notes.md",
+        mediaType: "text/markdown",
+        sizeBytes: 5,
+        revision: 1,
+        createdAt: thread.createdAt,
+        source: "upload" as const,
+      };
+      let writes = 0;
+      yield* buildAppUnderTest({
+        layers: {
+          ideaRuntime: {
+            writeArtifact: () =>
+              Effect.sync(() => {
+                writes++;
+                return artifact;
+              }),
+            readArtifact: () => Effect.succeed({ artifact, contentBase64: "aGVsbG8=" }),
+          },
+          projectionSnapshotQuery: {
+            getThreadDetailSnapshot: () => Effect.succeedSome({ snapshotSequence: 0, thread }),
+            getThreadShellById: () =>
+              Effect.succeedSome(makeDefaultOrchestrationThreadShell({ purpose: "idea" })),
+          },
+        },
+      });
+      const uploadUrl = yield* getHttpServerUrl(`/api/ideas/${thread.id}/artifacts`);
+      const payload = jsonRequestBody({
+        name: "notes.md",
+        mediaType: "text/markdown",
+        contentBase64: "aGVsbG8=",
+      });
+      const denied = yield* fetchEffect(uploadUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: payload,
+      });
+      assert.equal(denied.status, 401);
+      assert.equal(writes, 0);
+      const token = yield* getAuthenticatedBearerSessionToken();
+      const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
+      assert.equal(
+        (yield* fetchEffect(uploadUrl, { method: "POST", headers, body: payload })).status,
+        200,
+      );
+      assert.equal(writes, 1);
+      const read = yield* fetchEffect(uploadUrl + "/document", { headers });
+      assert.equal(read.status, 200);
+      assert.equal(
+        (yield* responseJsonEffect<{ contentBase64: string }>(read)).contentBase64,
+        "aGVsbG8=",
+      );
+      const detailsUrl = yield* getHttpServerUrl(`/api/orchestration/threads/${thread.id}`);
+      assert.equal((yield* fetchEffect(detailsUrl, { headers })).status, 404);
+      assert.equal((yield* fetchEffect(detailsUrl + "?audience=idea", { headers })).status, 200);
+      const wsUrl = yield* getWsServerUrl();
+      const result = yield* withWsRpcClient(wsUrl, (client) =>
+        client[ORCHESTRATION_WS_METHODS.subscribeThread]({ threadId: thread.id }).pipe(
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.result,
+        ),
+      );
+      assert.equal(result._tag, "Failure");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("parks HTTP ingress until command readiness", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

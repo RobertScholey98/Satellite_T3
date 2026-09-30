@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   deleted: vi.fn(),
   download: vi.fn(),
   copy: vi.fn(),
+  write: vi.fn(),
   share: vi.fn(),
   shareFromSource: vi.fn(),
   available: vi.fn(),
@@ -53,6 +54,10 @@ vi.mock("expo-file-system", () => {
       this.uri = typeof source === "string" ? source : `${source.uri}/${encodeURIComponent(name!)}`;
     }
 
+    write(bytes: Uint8Array): void {
+      mocks.write(this.uri, bytes);
+    }
+
     async copy(destination: File): Promise<void> {
       await mocks.copy(this.uri, destination.uri);
     }
@@ -76,6 +81,8 @@ import {
   downloadAndShareAttachment,
   downloadAttachmentForPreview,
   shareLocalAttachment,
+  shareAttachmentBytes,
+  clearOwnedAttachmentDownloads,
 } from "./attachmentDownload";
 import { isForegroundHandoffActive } from "./foreground-handoff";
 
@@ -429,4 +436,30 @@ describe("document viewer handoff", () => {
     expect(mocks.deleted).toHaveBeenCalledTimes(1);
     expect(isForegroundHandoffActive()).toBe(false);
   });
+});
+
+it("removes only the deleted idea's retained share files", async () => {
+  mocks.available.mockResolvedValue(true);
+  mocks.share.mockResolvedValue(undefined);
+  const bytes = new Uint8Array([1, 2, 3]);
+  const signal = new AbortController().signal;
+  await shareAttachmentBytes({
+    bytes,
+    attachment: { name: "diagram.png", mimeType: "image/png" },
+    ownerKey: "local:idea",
+    signal,
+  });
+  await shareAttachmentBytes({
+    bytes,
+    attachment: { name: "other.png", mimeType: "image/png" },
+    ownerKey: "remote:idea",
+    signal,
+  });
+  expect(mocks.write).toHaveBeenCalledWith(expect.stringContaining("owner-local%3Aidea"), bytes);
+  mocks.deleted.mockClear();
+  await clearOwnedAttachmentDownloads("local:idea");
+  expect(mocks.deleted).toHaveBeenCalledWith(
+    "file:///cache/t3-attachment-downloads/owner-local%3Aidea",
+  );
+  expect(mocks.deleted).not.toHaveBeenCalledWith(expect.stringContaining("owner-remote"));
 });

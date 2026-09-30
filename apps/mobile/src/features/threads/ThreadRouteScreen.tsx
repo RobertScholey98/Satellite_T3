@@ -218,6 +218,16 @@ type ThreadRouteScreenRouteProps = StaticScreenProps<{
 }>;
 
 interface ThreadRouteScreenProps extends ThreadRouteScreenRouteProps {
+  readonly readingPosition?: {
+    readonly initialOffset: number;
+    readonly save: (offset: number) => void;
+  };
+  readonly revealMessage?: {
+    readonly messageId?: string;
+    readonly activityId?: string;
+    readonly requestId: number;
+  } | null;
+  readonly ideaWorkspace?: boolean;
   readonly onReturnToThread?: () => void;
   readonly renderInspector?: (headerInset: number) => ReactNode;
 }
@@ -958,6 +968,8 @@ function ThreadRouteContent(
 
       <View className="flex-1 bg-screen android:overflow-hidden android:rounded-t-[28px] android:bg-thread-canvas">
         <ThreadDetailScreen
+          readingPosition={props.readingPosition}
+          revealMessage={props.revealMessage}
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           contentPresentation={contentPresentation}
           screenTone={connectionTone(routeConnectionState)}
@@ -1041,21 +1053,23 @@ function ThreadRouteContent(
   return (
     <>
       {activeInspectorRenderer ? <InspectorPaneRoleActivation /> : null}
-      <ThreadHeader
-        title={selectedThread.title}
-        subtitle={headerSubtitle}
-        headerColor={headerColor}
-        usesNativeHeaderGlass={usesNativeHeaderGlass}
-        gitControls={threadGitControlProps}
-        hasThreadCwd={selectedThreadCwd !== null}
-        hasWorkspaceRoot={Boolean(selectedThreadProject?.workspaceRoot)}
-        fileInspectorSupported={fileInspector.supported}
-        inspectorMode={inspectorMode}
-        onToggleInspector={handleToggleInspector}
-        onOpenGitInspector={handleOpenGitInspector}
-        onOpenFilesInspector={handleOpenFilesInspector}
-        onReturnToThread={props.onReturnToThread}
-      />
+      {!props.ideaWorkspace ? (
+        <ThreadHeader
+          title={selectedThread.title}
+          subtitle={headerSubtitle}
+          headerColor={headerColor}
+          usesNativeHeaderGlass={usesNativeHeaderGlass}
+          gitControls={threadGitControlProps}
+          hasThreadCwd={selectedThreadCwd !== null}
+          hasWorkspaceRoot={Boolean(selectedThreadProject?.workspaceRoot)}
+          fileInspectorSupported={fileInspector.supported}
+          inspectorMode={inspectorMode}
+          onToggleInspector={handleToggleInspector}
+          onOpenGitInspector={handleOpenGitInspector}
+          onOpenFilesInspector={handleOpenFilesInspector}
+          onReturnToThread={props.onReturnToThread}
+        />
+      ) : null}
 
       {renderThreadRouteBody()}
     </>

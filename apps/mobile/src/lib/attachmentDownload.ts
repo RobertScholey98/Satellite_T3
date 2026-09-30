@@ -72,9 +72,15 @@ async function availableSharing(signal: AbortSignal) {
   return Sharing;
 }
 
-async function createCachedAttachmentFile(attachment: AttachmentFileMetadata) {
+async function createCachedAttachmentFile(attachment: AttachmentFileMetadata, ownerKey?: string) {
   const { Directory, File, Paths } = await import("expo-file-system");
-  const cache = new Directory(Paths.cache, ATTACHMENT_DOWNLOAD_DIRECTORY);
+  const cache = ownerKey
+    ? new Directory(
+        Paths.cache,
+        ATTACHMENT_DOWNLOAD_DIRECTORY,
+        `owner-${encodeURIComponent(ownerKey)}`,
+      )
+    : new Directory(Paths.cache, ATTACHMENT_DOWNLOAD_DIRECTORY);
   cache.create({ idempotent: true, intermediates: true });
   const now = Date.now();
   try {
@@ -273,4 +279,45 @@ export async function shareLocalAttachment(input: {
   } finally {
     cached.preview.dispose();
   }
+}
+
+export async function clearOwnedAttachmentDownloads(ownerKey: string): Promise<void> {
+  const { Directory, Paths } = await import("expo-file-system");
+  const directory = new Directory(
+    Paths.cache,
+    ATTACHMENT_DOWNLOAD_DIRECTORY,
+    `owner-${encodeURIComponent(ownerKey)}`,
+  );
+  if (directory.exists) directory.delete();
+}
+
+export async function shareAttachmentBytes(input: {
+  readonly bytes: Uint8Array;
+  readonly attachment: AttachmentFileMetadata;
+  readonly ownerKey: string;
+  readonly signal: AbortSignal;
+}): Promise<void> {
+  if ((await availableSharing(input.signal)) === null) return;
+  const cached = await createCachedAttachmentFile(input.attachment, input.ownerKey);
+  try {
+    if (input.signal.aborted) return;
+    cached.file.write(input.bytes);
+    await cached.preview.share(input.signal);
+  } finally {
+    cached.preview.dispose();
+  }
+}
+
+export async function listOwnedAttachmentDownloadKeys(): Promise<string[]> {
+  const { Directory, Paths } = await import("expo-file-system");
+  const directory = new Directory(Paths.cache, ATTACHMENT_DOWNLOAD_DIRECTORY);
+  if (!directory.exists) return [];
+  return directory.list().flatMap((item) => {
+    if (!(item instanceof Directory) || !item.name.startsWith("owner-")) return [];
+    try {
+      return [decodeURIComponent(item.name.slice(6))];
+    } catch {
+      return [];
+    }
+  });
 }

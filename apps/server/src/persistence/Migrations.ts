@@ -1,3 +1,4 @@
+import Migration0055 from "./Migrations/055_IdeaNotebooks.ts";
 /**
  * Migration runner with an inline loader.
  *
@@ -132,6 +133,7 @@ const migrationEntries = [
   [52, "ProjectionThreadTitleState", Migration0052],
   [53, "PullRequestFilesViewed", Migration0053],
   [54, "ProjectionThreadsAutoSettleDisabledAt", Migration0054],
+  [55, "IdeaNotebooks", Migration0055],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

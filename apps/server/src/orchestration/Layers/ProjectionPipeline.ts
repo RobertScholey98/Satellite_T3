@@ -1,3 +1,4 @@
+import { IdeaNotebookStore } from "../../ideas/IdeaNotebookStore.ts";
 import {
   ApprovalRequestId,
   isImportedAgentSessionMessageId,
@@ -74,6 +75,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   threadTurns: "projection.thread-turns",
   checkpoints: "projection.checkpoints",
   pendingApprovals: "projection.pending-approvals",
+  ideas: "projection.ideas",
 } as const;
 
 type ProjectorName =
@@ -479,6 +481,7 @@ const runAttachmentSideEffects = Effect.fn("runAttachmentSideEffects")(function*
 const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjectionPipeline")(
   function* () {
     const sql = yield* SqlClient.SqlClient;
+    const ideas = yield* IdeaNotebookStore;
     const eventStore = yield* OrchestrationEventStore;
     const projectionStateRepository = yield* ProjectionStateRepository;
     const projectionProjectRepository = yield* ProjectionProjectRepository;
@@ -613,6 +616,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
+            purpose: event.payload.purpose ?? "work",
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
@@ -1987,6 +1991,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         name: ORCHESTRATION_PROJECTOR_NAMES.threads,
         apply: applyThreadsProjection,
       },
+      {
+        name: ORCHESTRATION_PROJECTOR_NAMES.ideas,
+        apply: (event) =>
+          ideas
+            .project(event)
+            .pipe(
+              Effect.mapError((cause) => toPersistenceSqlError("ProjectionPipeline.ideas")(cause)),
+            ),
+      },
     ];
 
     const applyAttachmentSideEffects = Effect.fn("applyAttachmentSideEffects")(
@@ -2209,6 +2222,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   OrchestrationProjectionPipeline,
   makeOrchestrationProjectionPipeline(),
 ).pipe(
+  Layer.provideMerge(IdeaNotebookStore.layer),
   Layer.provideMerge(ProjectionProjectRepositoryLive),
   Layer.provideMerge(ProjectionThreadRepositoryLive),
   Layer.provideMerge(ProjectionThreadMessageRepositoryLive),

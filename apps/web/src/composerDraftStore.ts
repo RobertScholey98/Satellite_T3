@@ -227,6 +227,7 @@ const PersistedTerminalContextDraft = Schema.Struct({
 type PersistedTerminalContextDraft = typeof PersistedTerminalContextDraft.Type;
 
 const PersistedComposerThreadDraftState = Schema.Struct({
+  purpose: Schema.optionalKey(Schema.Literals(["work", "idea"])),
   prompt: Schema.String,
   attachments: Schema.Array(PersistedComposerImageAttachment),
   files: Schema.optionalKey(Schema.Array(PersistedComposerDraftFileAttachment)),
@@ -310,6 +311,7 @@ type LegacyPersistedComposerDraftStoreState = PersistedComposerDraftStoreState &
   LegacyV2StoreFields;
 
 const PersistedDraftThreadState = Schema.Struct({
+  purpose: Schema.optionalKey(Schema.Literals(["work", "idea"])),
   threadId: ThreadId,
   environmentId: Schema.String,
   projectId: ProjectId,
@@ -376,6 +378,7 @@ export type ComposerContextInsertionHandler = (
 const contextInsertionHandlers = new Map<string, ComposerContextInsertionHandler>();
 
 export interface ComposerThreadDraftState {
+  purpose?: "work" | "idea";
   prompt: string;
   images: ComposerImageAttachment[];
   files: ComposerFileAttachment[];
@@ -437,6 +440,7 @@ export function composerDraftHasUserContent(
  * environment/worktree configuration before the first send.
  */
 export interface DraftSessionState {
+  purpose?: "work" | "idea";
   threadId: ThreadId;
   environmentId: EnvironmentId;
   projectId: ProjectId;
@@ -519,6 +523,7 @@ interface ComposerDraftStoreState {
       worktreePath?: string | null;
       createdAt?: string;
       envMode?: DraftThreadEnvMode;
+      purpose?: "work" | "idea";
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
@@ -536,6 +541,7 @@ interface ComposerDraftStoreState {
       worktreePath?: string | null;
       createdAt?: string;
       envMode?: DraftThreadEnvMode;
+      purpose?: "work" | "idea";
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
@@ -552,6 +558,7 @@ interface ComposerDraftStoreState {
       projectRef?: ScopedProjectRef;
       createdAt?: string;
       envMode?: DraftThreadEnvMode;
+      purpose?: "work" | "idea";
       startFromOrigin?: boolean;
       runtimeMode?: RuntimeMode;
       interactionMode?: ProviderInteractionMode;
@@ -1503,6 +1510,7 @@ function createDraftThreadState(
     worktreePath?: string | null;
     createdAt?: string;
     envMode?: DraftThreadEnvMode;
+    purpose?: "work" | "idea";
     startFromOrigin?: boolean;
     runtimeMode?: RuntimeMode;
     interactionMode?: ProviderInteractionMode;
@@ -1551,6 +1559,7 @@ function createDraftThreadState(
               : existingThread.loadBalancedEnvironmentId,
           }
         : {}),
+    purpose: options?.purpose ?? existingThread?.purpose ?? "work",
     createdAt: options?.createdAt ?? existingThread?.createdAt ?? new Date().toISOString(),
     runtimeMode: options?.runtimeMode ?? existingThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
     interactionMode:
@@ -1581,6 +1590,7 @@ function isDraftThreadPromoting(draftThread: DraftThreadState | null | undefined
 function draftThreadsEqual(left: DraftThreadState | undefined, right: DraftThreadState): boolean {
   return (
     !!left &&
+    left.purpose === right.purpose &&
     left.threadId === right.threadId &&
     left.environmentId === right.environmentId &&
     left.projectId === right.projectId &&
@@ -1726,6 +1736,7 @@ function normalizePersistedDraftThreads(
             : parsedThreadRef
               ? projectDraftKey(scopeProjectRef(normalizedEnvironmentId, projectId as ProjectId))
               : threadKeyOrId,
+        purpose: candidateDraftThread.purpose === "idea" ? "idea" : "work",
         createdAt:
           typeof createdAt === "string" && createdAt.length > 0
             ? createdAt
@@ -2016,6 +2027,7 @@ function normalizePersistedDraftsByThreadId(
                 : threadKeyOrId;
             })();
     nextDraftsByThreadKey[normalizedThreadKey] = {
+      ...(draftCandidate.purpose === "idea" ? { purpose: "idea" as const } : {}),
       prompt,
       attachments,
       ...(files.length > 0 ? { files } : {}),
@@ -2137,6 +2149,7 @@ export function partializeComposerDraftStoreState(
       continue;
     }
     const persistedDraft: DeepMutable<PersistedComposerThreadDraftState> = {
+      ...(draft.purpose ? { purpose: draft.purpose } : {}),
       prompt: draft.prompt,
       attachments: draft.persistedAttachments,
       ...(draft.files.length > 0
@@ -2439,6 +2452,7 @@ function toHydratedThreadDraft(
     })) ?? [];
 
   return {
+    ...(persistedDraft.purpose ? { purpose: persistedDraft.purpose } : {}),
     // Files predating inline references get a chip appended; images stay shelf-only.
     prompt: ensureInlineContextReferences(persistedDraft.prompt, [
       ...(persistedDraft.reviewComments ?? []).map(reviewCommentContextReference),
@@ -2470,6 +2484,7 @@ function toHydratedDraftThreadState(
 ): DraftThreadState {
   return {
     threadId: persistedDraftThread.threadId,
+    ...(persistedDraftThread.purpose ? { purpose: persistedDraftThread.purpose } : {}),
     environmentId: persistedDraftThread.environmentId as EnvironmentId,
     projectId: persistedDraftThread.projectId,
     logicalProjectKey:
@@ -2783,6 +2798,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 options.createdAt === undefined
                   ? existing.createdAt
                   : options.createdAt || existing.createdAt,
+              purpose: options.purpose ?? existing.purpose ?? "work",
               runtimeMode: options.runtimeMode ?? existing.runtimeMode,
               interactionMode: options.interactionMode ?? existing.interactionMode,
               branch: nextBranch,
@@ -2793,6 +2809,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               promotedTo: existing.promotedTo ?? null,
             };
             const isUnchanged =
+              nextDraftThread.purpose === existing.purpose &&
               nextDraftThread.environmentId === existing.environmentId &&
               nextDraftThread.projectId === existing.projectId &&
               nextDraftThread.logicalProjectKey === existing.logicalProjectKey &&

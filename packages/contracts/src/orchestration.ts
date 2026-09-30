@@ -1,3 +1,12 @@
+import {
+  ThreadPurpose,
+  IdeaEditCommand,
+  IdeaDeleteCommand,
+  IdeaApplyCommand,
+  IdeaPurgeCommand,
+  IdeaChangedPayload,
+  IdeaPurgedPayload,
+} from "./ideas.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -791,6 +800,7 @@ export const ThreadPullRequestLink = Schema.Struct({
 export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
 
 export const OrchestrationThread = Schema.Struct({
+  purpose: Schema.optional(ThreadPurpose),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -882,6 +892,7 @@ export const OrchestrationProjectShell = Schema.Struct({
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
 export const OrchestrationThreadShell = Schema.Struct({
+  purpose: Schema.optional(ThreadPurpose),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -1006,6 +1017,7 @@ export const OrchestrationSubscribeShellInput = Schema.Struct({
 export type OrchestrationSubscribeShellInput = typeof OrchestrationSubscribeShellInput.Type;
 
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
+  audience: Schema.optional(ThreadPurpose),
   threadId: ThreadId,
   /** Opt in to reasoning roles; older clients receive system messages instead. */
   reasoningMessages: Schema.optionalKey(Schema.Boolean),
@@ -1117,6 +1129,7 @@ const ProjectDeleteCommand = Schema.Struct({
 });
 
 const ThreadCreateCommand = Schema.Struct({
+  purpose: Schema.optional(ThreadPurpose),
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1290,6 +1303,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 });
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
+  purpose: Schema.optional(ThreadPurpose),
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
@@ -1425,6 +1439,8 @@ const ThreadSessionStopCommand = Schema.Struct({
 });
 
 const DispatchableClientOrchestrationCommand = Schema.Union([
+  IdeaEditCommand,
+  IdeaDeleteCommand,
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
@@ -1459,6 +1475,8 @@ export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
 
 export const ClientOrchestrationCommand = Schema.Union([
+  IdeaEditCommand,
+  IdeaDeleteCommand,
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
@@ -1492,6 +1510,7 @@ export const ClientOrchestrationCommand = Schema.Union([
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
 const ThreadSessionSetCommand = Schema.Struct({
+  turnSettled: Schema.optional(Schema.Literal(true)),
   type: Schema.Literal("thread.session.set"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1659,6 +1678,8 @@ const ThreadPullRequestLinkSyncCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  IdeaApplyCommand,
+  IdeaPurgeCommand,
   ThreadAutoSettleCommand,
   ThreadPullRequestSyncCommand,
   ThreadPullRequestLinkSyncCommand,
@@ -1688,6 +1709,8 @@ export const OrchestrationCommand = Schema.Union([
 export type OrchestrationCommand = typeof OrchestrationCommand.Type;
 
 export const OrchestrationEventType = Schema.Literals([
+  "idea.changed",
+  "idea.purged",
   "project.created",
   "project.meta-updated",
   "project.deleted",
@@ -1762,6 +1785,7 @@ export const ProjectDeletedPayload = Schema.Struct({
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
+  purpose: Schema.optional(ThreadPurpose),
   threadId: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -1975,6 +1999,7 @@ export const ThreadSessionStopRequestedPayload = Schema.Struct({
 });
 
 export const ThreadSessionSetPayload = Schema.Struct({
+  turnSettled: Schema.optional(Schema.Literal(true)),
   threadId: ThreadId,
   session: OrchestrationSession,
 });
@@ -2042,6 +2067,16 @@ const EventBaseFields = {
 } as const;
 
 export const OrchestrationEvent = Schema.Union([
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("idea.changed"),
+    payload: IdeaChangedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("idea.purged"),
+    payload: IdeaPurgedPayload,
+  }),
   Schema.Struct({
     ...EventBaseFields,
     type: Schema.Literal("project.created"),

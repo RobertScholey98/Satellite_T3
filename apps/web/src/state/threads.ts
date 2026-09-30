@@ -1,3 +1,5 @@
+import { useContext } from "react";
+import { ThreadAudienceContext } from "./threadAudience";
 import { useAtomValue } from "@effect/atom-react";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
 import { arrayElementsEqual } from "@t3tools/client-runtime/state/entities";
@@ -23,6 +25,13 @@ export const threadEnvironment = createThreadEnvironmentAtoms(
   environmentSnapshotAtom,
 );
 const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime);
+export const environmentIdeaThreads = createEnvironmentThreadStateAtoms(
+  connectionAtomRuntime,
+  "idea",
+);
+export const environmentIdeaThreadDetails = createEnvironmentThreadDetailAtoms(
+  environmentIdeaThreads.stateAtom,
+);
 export const environmentThreadDetails = createEnvironmentThreadDetailAtoms(
   environmentThreads.stateAtom,
 );
@@ -39,9 +48,13 @@ export function useEnvironmentThread(
   environmentId: EnvironmentId | null,
   threadId: ThreadId | null,
 ): EnvironmentThreadState {
+  const audience = useContext(ThreadAudienceContext);
   const result = useAtomValue(
     environmentId !== null && threadId !== null
-      ? environmentThreads.stateAtom(environmentId, threadId)
+      ? (audience === "idea" ? environmentIdeaThreads : environmentThreads).stateAtom(
+          environmentId,
+          threadId,
+        )
       : EMPTY_THREAD_STATE_ATOM,
   );
   return Option.getOrElse(

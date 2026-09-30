@@ -1,4 +1,5 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import { useIdeaWorkspaceStore } from "../ideas/ideaWorkspaceStore";
+import { ArrowLeftIcon, BrainIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -191,6 +192,20 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
               onClick={handlePullRequestsClick}
             />
           ) : null}
+          <SidebarUtilityItem
+            icon={<BrainIcon />}
+            label="Ideas"
+            onClick={() => {
+              closeMobileSidebar();
+              void navigate({
+                to: "/ideas",
+                search: useIdeaWorkspaceStore.getState().lastSelected ?? {
+                  environment: undefined,
+                  idea: undefined,
+                },
+              });
+            }}
+          />
           <SidebarUtilityItem
             icon={<ChartNoAxesColumnIcon />}
             label="Usage"

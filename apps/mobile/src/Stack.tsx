@@ -1,3 +1,5 @@
+import { IdeaDeletionCleanup } from "./features/ideas/IdeaDeletionCleanup";
+import { IdeasRouteScreen, IdeaRouteScreen } from "./features/ideas/IdeasRouteScreen";
 import {
   createPathConfigForStaticNavigation,
   getPathFromState,
@@ -505,7 +507,7 @@ function workspaceLocationFromState(state: NavigationState) {
 function ThreadOutboxDrainWorker() {
   useThreadOutboxDrain();
   useComposerAttachmentUploadWorker();
-  return null;
+  return <IdeaDeletionCleanup />;
 }
 
 function RootStackLayout(props: {
@@ -613,6 +615,16 @@ const RootStackConfig = createNativeStackNavigator({
         headerBackVisible: false,
         ...getCompactBrandHeaderOptions(),
       },
+    }),
+    Ideas: createNativeStackScreen({
+      screen: IdeasRouteScreen,
+      linking: "ideas",
+      options: GLASS_HEADER_OPTIONS,
+    }),
+    Idea: createNativeStackScreen({
+      screen: IdeaRouteScreen,
+      linking: "ideas/:environmentId/:threadId",
+      options: GLASS_HEADER_OPTIONS,
     }),
     Thread: createNativeStackScreen({
       screen: ThreadRouteScreen,

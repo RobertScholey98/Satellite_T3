@@ -401,6 +401,9 @@ const make = Effect.gen(function* () {
           commandId,
           threadId: input.threadId,
           session: input.session,
+          ...(input.session.status === "error" || input.session.status === "stopped"
+            ? { turnSettled: true as const }
+            : {}),
           createdAt: input.createdAt,
         }),
       ),
@@ -710,11 +713,12 @@ const make = Effect.gen(function* () {
       thread,
       projects: project ? [project] : [],
     });
-    const refreshWorkspaceSnapshot = effectiveCwd
-      ? providerRegistry
-          .refreshWorkspaceSnapshot({ instanceId: desiredInstanceId, cwd: effectiveCwd })
-          .pipe(Effect.forkDetach)
-      : Effect.void;
+    const refreshWorkspaceSnapshot =
+      thread.purpose !== "idea" && effectiveCwd
+        ? providerRegistry
+            .refreshWorkspaceSnapshot({ instanceId: desiredInstanceId, cwd: effectiveCwd })
+            .pipe(Effect.forkDetach)
+        : Effect.void;
     // OpenCode skips SessionPrompt.ensureTitle when session.create already has
     // a title. Prompt seeds and "New thread" are not user titles, so omit them
     // and let the provider generate one. A real rename is source "manual" and
@@ -1342,10 +1346,10 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    yield* ensureThreadWorktree(thread);
+    if (thread.purpose !== "idea") yield* ensureThreadWorktree(thread);
 
     const isCompactCommand = isCompactCommandMessage(message);
-    if (!hasOtherUserMessages && !isCompactCommand) {
+    if (thread.purpose !== "idea" && !hasOtherUserMessages && !isCompactCommand) {
       const project = yield* resolveProject(thread.projectId);
       const generationCwd =
         resolveThreadWorkspaceCwd({

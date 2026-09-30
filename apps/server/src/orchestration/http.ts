@@ -39,13 +39,15 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           // and activity payload in the database has OOM-killed servers, and
           // the route's only consumer (the project CLI) reads projects alone —
           // UI clients load the shell and per-thread snapshots instead.
-          return yield* projectionSnapshotQuery
-            .getCommandReadModel()
-            .pipe(
-              Effect.catch((cause) =>
-                failEnvironmentInternal("orchestration_snapshot_failed", cause),
-              ),
-            );
+          return yield* projectionSnapshotQuery.getCommandReadModel().pipe(
+            Effect.map((snapshot) => ({
+              ...snapshot,
+              threads: snapshot.threads.filter((thread) => thread.purpose !== "idea"),
+            })),
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_snapshot_failed", cause),
+            ),
+          );
         }),
       )
       .handle(
@@ -84,7 +86,10 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
                 failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
               ),
             );
-          if (Option.isNone(snapshot)) {
+          if (
+            Option.isNone(snapshot) ||
+            (snapshot.value.thread.purpose ?? "work") !== (args.payload.audience ?? "work")
+          ) {
             return yield* failEnvironmentNotFound("thread_not_found");
           }
           return projectThreadDetailSnapshot(

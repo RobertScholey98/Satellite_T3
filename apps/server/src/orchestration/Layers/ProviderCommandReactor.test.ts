@@ -1648,6 +1648,15 @@ describe("ProviderCommandReactor", () => {
       let readModel = yield* Effect.promise(() => harness.readModel());
       let thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
       expect(thread?.session?.lastError).toContain("deterministic startup failure");
+      const startupEvents = yield* harness.engine.readEvents(0).pipe(Stream.runCollect);
+      expect(
+        startupEvents.some(
+          (event) =>
+            event.type === "thread.session-set" &&
+            event.payload.session.status === "error" &&
+            event.payload.turnSettled === true,
+        ),
+      ).toBe(true);
       expect(harness.sendTurn).not.toHaveBeenCalled();
 
       failStartup = false;

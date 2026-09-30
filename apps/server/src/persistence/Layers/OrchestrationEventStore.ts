@@ -30,6 +30,29 @@ import {
   type OrchestrationEventStoreShape,
 } from "../Services/OrchestrationEventStore.ts";
 
+export const purgeIdeaThreadContent = Effect.fn("purgeIdeaThreadContent")(function* (
+  threadId: ThreadId,
+  terminalSequence: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`DELETE FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = ${threadId} AND sequence <> ${terminalSequence}`;
+  yield* sql`DELETE FROM orchestration_command_receipts WHERE aggregate_kind = 'thread' AND aggregate_id = ${threadId}`;
+  for (const table of [
+    "projection_thread_messages",
+    "projection_thread_activities",
+    "projection_thread_sessions",
+    "projection_thread_proposed_plans",
+    "projection_thread_pull_requests",
+    "projection_turns",
+    "projection_pending_approvals",
+    "checkpoint_diff_blobs",
+    "provider_session_runtime",
+    "projection_idea_notebooks",
+    "projection_threads",
+  ])
+    yield* sql`DELETE FROM ${sql(table)} WHERE thread_id = ${threadId}`;
+});
+
 const encodeProjectIcon = Schema.encodeSync(ProjectIconOverride);
 const decodeEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const UnknownFromJsonString = Schema.fromJsonString(Schema.Unknown);

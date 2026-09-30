@@ -1,3 +1,6 @@
+import { IdeaPromotion } from "../../ideas/IdeaPromotion.ts";
+import { IdeaUpdateReactor } from "../../ideas/IdeaUpdateReactor.ts";
+import { IdeaDeletionReactor } from "../../ideas/IdeaDeletionReactor.ts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -32,6 +35,35 @@ describe("OrchestrationReactor", () => {
 
     runtime = ManagedRuntime.make(
       Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
+        Layer.provide(
+          Layer.succeed(IdeaUpdateReactor, {
+            start: () =>
+              Effect.sync(() => {
+                started.push("idea-updates");
+              }),
+            drain: Effect.void,
+            cancel: () => Effect.void,
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(IdeaDeletionReactor, {
+            start: () =>
+              Effect.sync(() => {
+                started.push("idea-deletion");
+              }),
+            drain: Effect.void,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(IdeaPromotion)({
+            start: () =>
+              Effect.sync(() => {
+                started.push("idea-promotion");
+              }),
+            drain: Effect.void,
+            cancel: () => Effect.void,
+          }),
+        ),
         Layer.provideMerge(
           Layer.succeed(StorageCleanup, {
             start: () => {
@@ -132,6 +164,9 @@ describe("OrchestrationReactor", () => {
       "pull-request-sync-reactor",
       "agent-awareness-relay",
       "storage-cleanup",
+      "idea-updates",
+      "idea-deletion",
+      "idea-promotion",
     ]);
 
     await Effect.runPromise(Scope.close(scope, Exit.void));

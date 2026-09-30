@@ -139,6 +139,7 @@ export function pendingThreadCreationShell(
   return {
     environmentId: message.environmentId,
     id: message.threadId,
+    ...(creation.purpose ? { purpose: creation.purpose } : {}),
     projectId: creation.projectId,
     title: deriveThreadTitleFromPrompt(message.text),
     modelSelection: message.modelSelection,

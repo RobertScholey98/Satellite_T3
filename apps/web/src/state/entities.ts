@@ -1,3 +1,5 @@
+import { ThreadAudienceContext } from "./threadAudience";
+import { environmentIdeaThreadDetails } from "./threads";
 import { useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentProject,
@@ -11,7 +13,7 @@ import {
 import type { ScopedProjectRef, ScopedThreadRef, ServerConfig } from "@t3tools/contracts";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
-import { useMemo } from "react";
+import { useContext, useMemo } from "react";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom } from "./server";
@@ -103,14 +105,24 @@ export function useThreadShell(ref: ScopedThreadRef | null): EnvironmentThreadSh
 }
 
 export function useThreadDetail(ref: ScopedThreadRef | null): EnvironmentThread | null {
+  const audience = useContext(ThreadAudienceContext);
   return useAtomValue(
-    ref === null ? EMPTY_THREAD_DETAIL_ATOM : environmentThreadDetails.detailAtom(ref),
+    ref === null
+      ? EMPTY_THREAD_DETAIL_ATOM
+      : (audience === "idea" ? environmentIdeaThreadDetails : environmentThreadDetails).detailAtom(
+          ref,
+        ),
   );
 }
 
 export function useThreadStatus(ref: ScopedThreadRef | null): EnvironmentThreadStatus {
+  const audience = useContext(ThreadAudienceContext);
   return useAtomValue(
-    ref === null ? EMPTY_THREAD_STATUS_ATOM : environmentThreadDetails.statusAtom(ref),
+    ref === null
+      ? EMPTY_THREAD_STATUS_ATOM
+      : (audience === "idea" ? environmentIdeaThreadDetails : environmentThreadDetails).statusAtom(
+          ref,
+        ),
   );
 }
 
@@ -184,9 +196,16 @@ export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | 
 }
 
 /** The thread as `useThread` returns it, read outside React. */
-export function readThread(ref: ScopedThreadRef): EnvironmentThread | null {
+export function readThread(
+  ref: ScopedThreadRef,
+  audience: "work" | "idea" = "work",
+): EnvironmentThread | null {
   return mergeEnvironmentThread(
-    appAtomRegistry.get(environmentThreadDetails.detailAtom(ref)),
+    appAtomRegistry.get(
+      (audience === "idea" ? environmentIdeaThreadDetails : environmentThreadDetails).detailAtom(
+        ref,
+      ),
+    ),
     readThreadShell(ref),
   );
 }

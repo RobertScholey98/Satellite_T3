@@ -1,3 +1,4 @@
+import type { IdeaUpdateInput, IdeaUpdateResult } from "../ideas/IdeaUpdateGeneration.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -81,6 +82,9 @@ export interface ThreadTitleGenerationResult {
 export class TextGeneration extends Context.Service<
   TextGeneration,
   {
+    readonly generateIdeaUpdate?: (
+      input: IdeaUpdateInput,
+    ) => Effect.Effect<IdeaUpdateResult, TextGenerationError>;
     /**
      * Generate a commit message from staged change context.
      */

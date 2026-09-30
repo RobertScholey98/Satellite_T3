@@ -8,6 +8,7 @@
  */
 import {
   CommandId,
+  ThreadPurpose,
   IsoDateTime,
   ModelSelection,
   NonNegativeInt,
@@ -27,6 +28,7 @@ import type * as Effect from "effect/Effect";
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThread = Schema.Struct({
+  purpose: Schema.optional(ThreadPurpose),
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,

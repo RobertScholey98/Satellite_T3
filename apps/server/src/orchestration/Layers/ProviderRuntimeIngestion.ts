@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   CommandId,
   MessageId,
+  type OrchestrationCommand,
   type OrchestrationEvent,
   OrchestrationProposedPlanId,
   CheckpointRef,
@@ -1797,6 +1798,9 @@ const make = Effect.gen(function* () {
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
       const isTerminalTurn = event.type === "turn.completed" || event.type === "turn.aborted";
+      let terminalIdeaSession:
+        | Extract<OrchestrationCommand, { type: "thread.session.set" }>
+        | undefined;
       const isCompactedThreadState =
         event.type === "thread.state.changed" && event.payload.state === "compacted";
       const pendingTurnStart =
@@ -1937,9 +1941,10 @@ const make = Effect.gen(function* () {
             );
           }
 
-          yield* orchestrationEngine.dispatch({
+          const command = {
             type: "thread.session.set",
             commandId: yield* providerCommandId(event, "thread-session-set"),
+            ...(isTerminalTurn ? { turnSettled: true } : {}),
             threadId: thread.id,
             session: {
               threadId: thread.id,
@@ -1954,7 +1959,16 @@ const make = Effect.gen(function* () {
               updatedAt: now,
             },
             createdAt: now,
-          });
+          } satisfies Extract<OrchestrationCommand, { type: "thread.session.set" }>;
+          if (
+            isTerminalTurn &&
+            Option.exists(
+              yield* projectionSnapshotQuery.getThreadShellById(thread.id),
+              (shell) => shell.purpose === "idea",
+            )
+          )
+            terminalIdeaSession = command;
+          else yield* orchestrationEngine.dispatch(command);
         }
       }
 
@@ -2616,6 +2630,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       ).pipe(Effect.asVoid);
+      if (terminalIdeaSession) yield* orchestrationEngine.dispatch(terminalIdeaSession);
     });
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;

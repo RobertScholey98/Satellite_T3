@@ -268,6 +268,7 @@ import { ComputerUseAppIcon } from "~/components/Icons";
 // ---------------------------------------------------------------------------
 
 interface TimelineRowSharedState {
+  revealActivity: { activityId?: string; requestId: number } | null;
   citationRequest: AssistantCitationTarget | null;
   listRef: React.RefObject<LegendListRef | null>;
   timestampFormat: TimestampFormat;
@@ -396,6 +397,7 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH = {
 // ---------------------------------------------------------------------------
 
 interface MessagesTimelineProps {
+  revealMessage?: { messageId?: MessageId; activityId?: string; requestId: number } | null;
   citationRequest?: AssistantCitationRequest | null;
   citationHistoryLoading?: boolean;
   onCiteAssistantText?: (
@@ -476,6 +478,7 @@ interface MessagesTimelineProps {
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   citationRequest = null,
+  revealMessage = null,
   citationHistoryLoading = false,
   onCiteAssistantText,
   isWorking,
@@ -957,6 +960,66 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     onExpandTurn: expandCitedTurn,
     onManualNavigation,
   });
+  const revealedMessageRequest = useRef<typeof revealMessage>(null);
+  const requestedMessageCursor = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      !revealMessage ||
+      revealedMessageRequest.current === revealMessage ||
+      !timelineViewportElement ||
+      citationHistoryLoading
+    )
+      return;
+    const source = timelineEntries.find((entry) =>
+      revealMessage.activityId
+        ? entry.kind === "work" && entry.entry.id === revealMessage.activityId
+        : entry.kind === "message" && entry.message.id === revealMessage.messageId,
+    );
+    if (!source) {
+      if (
+        loadEarlier &&
+        !loadEarlier.loading &&
+        loadEarlier.cursor !== requestedMessageCursor.current
+      ) {
+        requestedMessageCursor.current = loadEarlier.cursor ?? null;
+        loadEarlier.onLoadEarlier();
+      }
+      return;
+    }
+    const index = rows.findIndex((row) =>
+      revealMessage.activityId
+        ? ((row.kind === "work" || row.kind === "work-live") &&
+            row.groupedEntries.some((entry) => entry.id === revealMessage.activityId)) ||
+          (row.kind === "activity-group" &&
+            row.entries.some(
+              (entry) => entry.kind === "work" && entry.entry.id === revealMessage.activityId,
+            ))
+        : row.kind === "message" && row.message.id === revealMessage.messageId,
+    );
+    if (index < 0) {
+      const turnId =
+        source.kind === "message"
+          ? source.message.turnId
+          : source.kind === "work"
+            ? source.entry.turnId
+            : null;
+      if (turnId) expandCitedTurn(turnId);
+      return;
+    }
+    onManualNavigation();
+    void listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0.2 });
+    revealedMessageRequest.current = revealMessage;
+  }, [
+    revealMessage,
+    timelineViewportElement,
+    citationHistoryLoading,
+    timelineEntries,
+    rows,
+    loadEarlier,
+    expandCitedTurn,
+    listRef,
+    onManualNavigation,
+  ]);
   const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] = useState(false);
   const alwaysRender = citationAlwaysRender ?? restoringAlwaysRender;
   const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
@@ -1142,6 +1205,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
       citationRequest: readyCitationRequest,
+      revealActivity: revealMessage?.activityId ? revealMessage : null,
       listRef,
       timestampFormat,
       routeThreadKey,
@@ -1179,6 +1243,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }),
     [
       readyCitationRequest,
+      revealMessage,
       listRef,
       timestampFormat,
       routeThreadKey,
@@ -4729,11 +4794,14 @@ const PlainWorkEntryRow = memo(function PlainWorkEntryRow(props: {
   onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 }) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry, displayLabel } = props;
-  const { threadRef, onImageExpand, timestampFormat } = use(TimelineRowCtx);
+  const { threadRef, onImageExpand, timestampFormat, revealActivity } = use(TimelineRowCtx);
   const groupView = use(WorkGroupViewCtx);
   const [expanded, setExpanded] = useState(
     () => groupView?.state.expandedEntries.has(workEntry.id) ?? false,
   );
+  useEffect(() => {
+    if (revealActivity?.activityId === workEntry.id) setExpanded(true);
+  }, [revealActivity, workEntry.id]);
   const toggleExpanded = () => {
     const next = !expanded;
     if (groupView) {

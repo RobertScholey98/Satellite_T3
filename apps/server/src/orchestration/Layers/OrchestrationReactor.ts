@@ -1,3 +1,6 @@
+import { IdeaPromotion } from "../../ideas/IdeaPromotion.ts";
+import { IdeaUpdateReactor } from "../../ideas/IdeaUpdateReactor.ts";
+import { IdeaDeletionReactor } from "../../ideas/IdeaDeletionReactor.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -25,6 +28,9 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const threadPullRequestReactor = yield* ThreadPullRequestReactor.ThreadPullRequestReactor;
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
   const storageCleanup = yield* StorageCleanup.StorageCleanup;
+  const ideaUpdates = yield* IdeaUpdateReactor;
+  const ideaDeletion = yield* IdeaDeletionReactor;
+  const ideaPromotion = yield* IdeaPromotion;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* providerRuntimeIngestion.start();
@@ -36,6 +42,9 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* pullRequestSyncReactor.start();
     yield* agentAwarenessRelay.start();
     yield* storageCleanup.start();
+    yield* ideaUpdates.start();
+    yield* ideaDeletion.start();
+    yield* ideaPromotion.start();
   });
 
   return {

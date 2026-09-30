@@ -17,7 +17,7 @@ import {
   type NavigationAction,
 } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Platform, Pressable, ScrollView, View } from "react-native";
+import { Alert, Platform, Pressable, ScrollView, Switch, View } from "react-native";
 import {
   KeyboardController,
   KeyboardStickyView,
@@ -98,6 +98,7 @@ import {
   mergeComposerDraftContent,
   restoreComposerDraftSnapshot,
   updateComposerDraftSettings,
+  useComposerDraft,
   scheduleUnusedComposerAttachmentCleanup,
   type ComposerDraft,
   waitForComposerDraftsLoaded,
@@ -192,6 +193,7 @@ export function NewTaskDraftScreen(props: {
 }) {
   const projects = useProjects();
   const flow = useNewTaskFlow();
+  const ideaDraft = useComposerDraft(flow.draftKey);
   const navigation = useNavigation();
   const {
     consumeShare,
@@ -1274,7 +1276,14 @@ export function NewTaskDraftScreen(props: {
     if (!message) {
       return;
     }
-    if (!queuesInsteadOfStarting) {
+    if (message.creation?.purpose === "idea" && flow.selectedProviderStatus?.driver !== "claude") {
+      Alert.alert(
+        "Choose Claude for this idea",
+        "Ideas currently require Claude so project code stays read only.",
+      );
+      return;
+    }
+    if (!queuesInsteadOfStarting && message.creation?.purpose !== "idea") {
       // Arm the lock-screen card before the async thread creation: backgrounding
       // the app right after tapping submit would otherwise reject the foreground
       // -only Activity start. If creation fails, the token registration's replay
@@ -1316,7 +1325,7 @@ export function NewTaskDraftScreen(props: {
     setSubmitNavigationAction(
       queuesInsteadOfStarting
         ? CommonActions.goBack()
-        : StackActions.replace("Thread", {
+        : StackActions.replace(message.creation?.purpose === "idea" ? "Idea" : "Thread", {
             environmentId: String(message.environmentId),
             threadId: String(message.threadId),
           }),
@@ -1598,7 +1607,19 @@ export function NewTaskDraftScreen(props: {
           />
         </View>
       ) : null}
-      <View className="pb-1">{workspaceControls}</View>
+      <View className="flex-row items-center gap-3 px-3 pb-2">
+        <Switch
+          accessibilityLabel="Idea"
+          value={ideaDraft.purpose === "idea"}
+          onValueChange={(checked) => {
+            if (flow.draftKey)
+              updateComposerDraftSettings(flow.draftKey, { purpose: checked ? "idea" : "work" });
+          }}
+        />
+        <Text className="text-foreground">Idea</Text>
+        <Text className="text-xs text-foreground-muted">Code stays unchanged.</Text>
+      </View>
+      {ideaDraft.purpose !== "idea" ? <View className="pb-1">{workspaceControls}</View> : null}
 
       {modelUnavailable ? (
         <Pressable

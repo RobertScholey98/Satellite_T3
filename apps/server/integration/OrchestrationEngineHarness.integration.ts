@@ -1,3 +1,6 @@
+import { IdeaPromotion } from "../src/ideas/IdeaPromotion.ts";
+import { IdeaUpdateReactor } from "../src/ideas/IdeaUpdateReactor.ts";
+import { IdeaDeletionReactor } from "../src/ideas/IdeaDeletionReactor.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
 
@@ -383,6 +386,23 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(VcsProcess.layer),
     );
     const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
+      Layer.provide(
+        Layer.succeed(IdeaUpdateReactor, {
+          start: () => Effect.void,
+          drain: Effect.void,
+          cancel: () => Effect.void,
+        }),
+      ),
+      Layer.provide(
+        Layer.succeed(IdeaDeletionReactor, { start: () => Effect.void, drain: Effect.void }),
+      ),
+      Layer.provide(
+        Layer.mock(IdeaPromotion)({
+          start: () => Effect.void,
+          drain: Effect.void,
+          cancel: () => Effect.void,
+        }),
+      ),
       Layer.provideMerge(
         Layer.succeed(StorageCleanup.StorageCleanup, {
           start: () => Effect.void,

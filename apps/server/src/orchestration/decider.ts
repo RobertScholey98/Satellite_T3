@@ -1,3 +1,5 @@
+import { applyIdeaMutation } from "../ideas/IdeaNotebook.ts";
+import type { IdeaNotebook } from "@t3tools/contracts";
 import {
   EventId,
   MAX_SCRIPT_ID_LENGTH,
@@ -212,16 +214,121 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   command,
   readModel,
   userInputActivity,
+  notebook,
 }: {
   readonly command: OrchestrationCommand;
   readonly readModel: OrchestrationReadModel;
   readonly userInputActivity?: OrchestrationThreadActivity;
+  readonly notebook?: IdeaNotebook;
 }): Effect.fn.Return<
   DecideOrchestrationCommandResult,
   OrchestrationCommandRejection | PlatformError.PlatformError,
   Crypto.Crypto
 > {
+  if ("threadId" in command) {
+    const existing = readModel.threads.find((thread) => thread.id === command.threadId);
+    const blocked = new Set([
+      "thread.delete",
+      "thread.archive",
+      "thread.unarchive",
+      "thread.settle",
+      "thread.unsettle",
+      "thread.auto-settle",
+      "thread.snooze",
+      "thread.unsnooze",
+      "thread.pin",
+      "thread.unpin",
+      "thread.pin.reorder",
+      "thread.auto-settle.set",
+      "thread.checkpoint.revert",
+      "thread.pull-request.link",
+      "thread.pull-request.unlink",
+      "thread.runtime-mode.set",
+      "thread.interaction-mode.set",
+      "thread.conversation.revert",
+      "thread.active.reorder",
+      "thread.history.import",
+    ]);
+    if (
+      existing?.purpose === "idea" &&
+      command.type === "thread.meta.update" &&
+      (command.branch !== undefined ||
+        command.worktreePath !== undefined ||
+        command.linkedPullRequest !== undefined)
+    )
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: "Ideas do not have implementation branches, worktrees or pull requests.",
+      });
+    if (existing?.purpose === "idea" && blocked.has(command.type))
+      return yield* new OrchestrationCommandInvariantError({
+        commandType: command.type,
+        detail: "Manage this idea from the Ideas area.",
+      });
+  }
   switch (command.type) {
+    case "idea.edit":
+    case "idea.apply":
+    case "idea.delete":
+    case "idea.purge": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.purpose !== "idea" || !notebook)
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This thread is not an idea.",
+        });
+      const occurredAt = yield* nowIso;
+      const base = yield* withEventBase({
+        aggregateKind: "thread",
+        aggregateId: command.threadId,
+        occurredAt,
+        commandId: command.commandId,
+      });
+      if (
+        (command.type === "idea.apply" || command.type === "idea.purge") &&
+        command.deletionEpoch !== notebook.deletionEpoch
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "This idea operation is no longer current.",
+        });
+      if (command.type === "idea.purge") {
+        if (notebook.status !== "deleting")
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Deletion must be requested first.",
+          });
+        return {
+          ...base,
+          type: "idea.purged",
+          payload: {
+            threadId: command.threadId,
+            deletionEpoch: command.deletionEpoch,
+            deletedAt: occurredAt,
+          },
+        };
+      }
+      const mutation =
+        command.type === "idea.edit"
+          ? command.edit
+          : command.type === "idea.apply"
+            ? command.mutation
+            : { kind: "delete.request" as const };
+      yield* Effect.try({
+        try: () =>
+          applyIdeaMutation(notebook, mutation, occurredAt, readModel.snapshotSequence + 1),
+        catch: (cause) =>
+          new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: cause instanceof Error ? cause.message : "Invalid notebook change.",
+          }),
+      });
+      return {
+        ...base,
+        type: "idea.changed",
+        payload: { threadId: command.threadId, mutation, updatedAt: occurredAt },
+      };
+    }
     case "project.create": {
       yield* requireProjectAbsent({
         readModel,
@@ -339,28 +446,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Project '${command.projectId}' is not empty and cannot be deleted without force=true.`,
         });
       }
-      if (activeThreads.length > 0) {
-        return yield* decideCommandSequence({
-          readModel,
-          commands: [
-            ...activeThreads.map(
-              (thread): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
-                type: "thread.delete",
-                commandId: command.commandId,
-                threadId: thread.id,
-              }),
-            ),
-            {
-              type: "project.delete",
-              commandId: command.commandId,
-              projectId: command.projectId,
-            },
-          ],
+      const threadEvents = yield* decideCommandSequence({
+        readModel,
+        commands: activeThreads
+          .filter((thread) => thread.purpose !== "idea")
+          .map((thread): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
+            type: "thread.delete",
+            commandId: command.commandId,
+            threadId: thread.id,
+          })),
+      });
+      const occurredAt = yield* nowIso;
+      const ideaEvents: PlannedOrchestrationEvent[] = [];
+      for (const thread of activeThreads.filter((thread) => thread.purpose === "idea")) {
+        ideaEvents.push({
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: thread.id,
+            occurredAt,
+            commandId: command.commandId,
+          })),
+          type: "idea.changed",
+          payload: {
+            threadId: thread.id,
+            mutation: { kind: "delete.request" },
+            updatedAt: occurredAt,
+          },
         });
       }
-
-      const occurredAt = yield* nowIso;
-      return {
+      const projectEvent = {
         ...(yield* withEventBase({
           aggregateKind: "project",
           aggregateId: command.projectId,
@@ -373,9 +487,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           deletedAt: occurredAt,
         },
       };
+      return [...threadEvents, ...ideaEvents, projectEvent];
     }
 
     case "thread.create": {
+      if (
+        command.purpose === "idea" &&
+        (command.branch !== null || command.worktreePath !== null || command.historyImport)
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "An idea starts with one new discussion and no implementation worktree.",
+        });
       yield* requireProject({
         readModel,
         command,
@@ -396,6 +519,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         })),
         type: "thread.created",
         payload: {
+          purpose: command.purpose ?? "work",
           threadId: command.threadId,
           projectId: command.projectId,
           title: command.title,
@@ -1744,7 +1868,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           createdAt: command.createdAt,
         },
       };
-      if (attachments.length === 0) return responseEvent;
+      if (attachments.length === 0 && thread.purpose !== "idea") return responseEvent;
       const historyEvent = yield* decideOrchestrationCommand({
         readModel,
         command: {
@@ -1763,7 +1887,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               requestId: command.requestId,
               answers: command.answers,
               questionTextById,
-              attachmentsByQuestionId: command.attachmentsByQuestionId,
+              attachmentsByQuestionId: command.attachmentsByQuestionId ?? {},
               detail: attachments.map((attachment) => attachment.name).join("\n"),
             },
           },
@@ -1897,6 +2021,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         })),
         type: "thread.session-set",
         payload: {
+          ...(command.turnSettled ? { turnSettled: true } : {}),
           threadId: command.threadId,
           session: command.session,
         },

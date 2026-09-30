@@ -859,7 +859,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     // new-thread surfaces mint fresh drafts and leave invested ones behind
     // unmapped, so the mapping only knows about the latest per project.
     for (const [draftKey, session] of Object.entries(draftThreadsByThreadKey)) {
-      if (session.promotedTo != null) {
+      if (session.purpose === "idea" || session.promotedTo != null) {
         continue;
       }
       if (
@@ -2485,7 +2485,7 @@ export default function Sidebar() {
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
     let count = 0;
     for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
-      if (session.promotedTo != null) {
+      if (session.purpose === "idea" || session.promotedTo != null) {
         continue;
       }
       if (!composerDraftHasUserContent(store.draftsByThreadKey[draftKey])) {

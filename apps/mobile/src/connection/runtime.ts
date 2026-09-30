@@ -1,3 +1,4 @@
+import { ideaArtifactHttpLayer } from "@t3tools/client-runtime/state/ideas";
 import { Connection } from "@t3tools/client-runtime/connection";
 import { shellSnapshotLoaderLayer } from "@t3tools/client-runtime/state/shell";
 import { threadSnapshotLoaderLayer } from "@t3tools/client-runtime/state/threads";
@@ -20,7 +21,11 @@ const providedConnectionPlatformLayer = connectionPlatformLayer.pipe(
   Layer.provide(runtimeContextLayer),
 );
 
-const snapshotLoaderLayer = Layer.merge(threadSnapshotLoaderLayer, shellSnapshotLoaderLayer);
+const snapshotLoaderLayer = Layer.mergeAll(
+  threadSnapshotLoaderLayer,
+  shellSnapshotLoaderLayer,
+  ideaArtifactHttpLayer,
+);
 
 type ConnectionLayerSource =
   | typeof Connection.layer

@@ -1,3 +1,10 @@
+import {
+  ThreadPurpose,
+  IdeaArtifactId,
+  IdeaArtifactWriteInput,
+  IdeaArtifactWriteResult,
+  IdeaArtifactReadResult,
+} from "./ideas.ts";
 import * as Context from "effect/Context";
 import type * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
@@ -82,6 +89,8 @@ export const EnvironmentOperationForbiddenReason = Schema.Literals([
 export type EnvironmentOperationForbiddenReason = typeof EnvironmentOperationForbiddenReason.Type;
 
 export const EnvironmentInternalErrorReason = Schema.Literals([
+  "idea_upload_failed",
+  "idea_document_unavailable",
   "bootstrap_validation_failed",
   "browser_session_issuance_failed",
   "browser_session_cookie_failed",
@@ -498,6 +507,7 @@ const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
 // to strings). Both fields optional: omitting them keeps the full-snapshot
 // behavior, so pagination stays opt-in per request.
 const EnvironmentOrchestrationThreadSnapshotQuery = {
+  audience: Schema.optional(ThreadPurpose),
   reasoningMessages: Schema.optional(Schema.Literal("true")),
   turnLimit: Schema.optional(
     Schema.FiniteFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
@@ -615,7 +625,31 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+export class EnvironmentIdeasHttpApi extends HttpApiGroup.make("ideas")
+  .add(
+    HttpApiEndpoint.post("writeArtifact", "/api/ideas/:threadId/artifacts", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ threadId: ThreadId }),
+      payload: Schema.Struct({
+        name: IdeaArtifactWriteInput.fields.name,
+        mediaType: IdeaArtifactWriteInput.fields.mediaType,
+        contentBase64: IdeaArtifactWriteInput.fields.contentBase64,
+      }),
+      success: IdeaArtifactWriteResult,
+      error: EnvironmentOrchestrationSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("readArtifact", "/api/ideas/:threadId/artifacts/:artifactId", {
+      headers: OptionalBearerHeaders,
+      params: Schema.Struct({ threadId: ThreadId, artifactId: IdeaArtifactId }),
+      success: IdeaArtifactReadResult,
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentIdeasHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)

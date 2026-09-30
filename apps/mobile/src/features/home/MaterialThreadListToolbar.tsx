@@ -1,3 +1,4 @@
+import { useOpenIdeas } from "../ideas/ideaNavigation";
 import { useCallback, useEffect, useRef, useState, type ComponentProps } from "react";
 import { BackHandler, Keyboard, type TextInput, View, type LayoutChangeEvent } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -29,6 +30,7 @@ export function MaterialThreadListToolbar(props: {
   readonly onRequestVisibility?: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  const openIdeas = useOpenIdeas();
   const { fabSize } = useAndroidControlSizing();
   const { height: toolbarHeight, ...headerPadding } = useMaterialToolbarLayout();
   const { state } = useWorkspaceState();
@@ -106,6 +108,11 @@ export function MaterialThreadListToolbar(props: {
                 accessibilityLabel="Search threads"
                 icon="magnifyingglass"
                 onPress={openSearch}
+              />
+              <AndroidHeaderIconButton
+                accessibilityLabel="Ideas"
+                icon="brain"
+                onPress={openIdeas}
               />
               <AndroidHeaderIconButton
                 accessibilityLabel="Open settings"

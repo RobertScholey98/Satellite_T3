@@ -245,6 +245,15 @@ function isFreshTimestamp(input: string): boolean {
 }
 
 export interface ThreadFeedProps {
+  readonly readingPosition?: {
+    readonly initialOffset: number;
+    readonly save: (offset: number) => void;
+  };
+  readonly revealMessage?: {
+    readonly messageId?: string;
+    readonly activityId?: string;
+    readonly requestId: number;
+  } | null;
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
   readonly setupWorkingStartedAt?: string | null;
   readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
@@ -2334,6 +2343,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       // UIKit's adjustedContentInset, so topContentInset is 0 here). Add the
       // header height back or the material toggles a full header too late.
       reportHeaderMaterialVisibility(event.nativeEvent.contentOffset.y + anchorTopInset > 6);
+      props.readingPosition?.save(event.nativeEvent.contentOffset.y);
       // LegendList recomputes its inset-aware end distance before invoking
       // this handler, so getState() is current. Only the actual end re-arms
       // follow: its broader maintain-scroll threshold is large enough for a
@@ -2349,7 +2359,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         });
       }
     },
-    [reportHeaderMaterialVisibility, anchorTopInset, props.listRef, transitionEndFollow],
+    [
+      reportHeaderMaterialVisibility,
+      anchorTopInset,
+      props.listRef,
+      props.readingPosition,
+      transitionEndFollow,
+    ],
   );
   const clearUserScrollSettle = useCallback(() => {
     if (userScrollSettleTimerRef.current !== null) {
@@ -2429,7 +2445,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   useEffect(() => {
     clearUserScrollSettle();
     userScrollSessionRef.current = false;
-    transitionEndFollow({ type: "reset" });
+    transitionEndFollow({
+      type: props.readingPosition?.initialOffset ? "user-scroll-begin" : "reset",
+    });
   }, [clearUserScrollSettle, feedThreadKey, transitionEndFollow]);
   useEffect(() => {
     if (props.submittedMessageId !== null) {
@@ -2470,6 +2488,56 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       props.latestTurn,
     ],
   );
+  const revealedRequest = useRef<typeof props.revealMessage>(null);
+  useEffect(() => {
+    const request = props.revealMessage;
+    if (!request || revealedRequest.current === request) return;
+    const index = presentedFeed.findIndex((entry) =>
+      request.activityId
+        ? entry.type === "activity-group" &&
+          entry.activities.some((activity) => activity.id === request.activityId)
+        : entry.type === "message" && entry.message.id === request.messageId,
+    );
+    if (index >= 0) {
+      if (request.activityId)
+        setInteractionState((current) => ({
+          ...current,
+          expandedWorkRows: { ...current.expandedWorkRows, [request.activityId!]: true },
+        }));
+      transitionEndFollow({ type: "user-scroll-begin" });
+      void props.listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0.2 });
+      revealedRequest.current = request;
+      return;
+    }
+    const source = props.feed.find((entry) =>
+      request.activityId
+        ? entry.type === "activity-group" &&
+          entry.activities.some((activity) => activity.id === request.activityId)
+        : entry.type === "message" && entry.message.id === request.messageId,
+    );
+    const sourceTurnId =
+      source?.type === "message"
+        ? source.message.turnId
+        : source?.type === "activity-group"
+          ? source.turnId
+          : null;
+    if (sourceTurnId && !expandedTurnIds.has(sourceTurnId)) {
+      setInteractionState((current) => ({
+        ...current,
+        expandedTurnIds: new Set(current.expandedTurnIds).add(sourceTurnId),
+      }));
+    } else if (!source && props.loadEarlier && !props.loadEarlier.loading) {
+      props.loadEarlier.onLoadEarlier();
+    }
+  }, [
+    props.revealMessage,
+    props.feed,
+    props.listRef,
+    props.loadEarlier,
+    presentedFeed,
+    expandedTurnIds,
+    transitionEndFollow,
+  ]);
   const setupAnchorIndex = presentedFeed.findIndex(
     (entry) => entry.type === "message" && entry.message.role === "user",
   );
@@ -2965,7 +3033,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
             // composer instead of under the header. No effect on threads that
             // overflow the viewport (the padding clamps to zero).
             alignItemsAtEnd
-            initialScrollAtEnd
+            initialScrollAtEnd={!props.readingPosition || props.readingPosition.initialOffset <= 0}
+            {...(props.readingPosition?.initialOffset
+              ? { initialScrollOffset: props.readingPosition.initialOffset }
+              : {})}
             onScroll={handleScroll}
             onScrollBeginDrag={handleScrollBeginDrag}
             onScrollEndDrag={handleScrollEndDrag}

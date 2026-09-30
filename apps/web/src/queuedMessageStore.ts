@@ -31,6 +31,7 @@ export interface QueuedMessageSendSettings {
  * the same text, attachments, and contexts the user pressed Enter on.
  */
 export interface QueuedComposerMessage {
+  purpose?: "work" | "idea";
   id: string;
   prompt: string;
   images: ComposerImageAttachment[];

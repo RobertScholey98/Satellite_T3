@@ -1,3 +1,4 @@
+import type { ThreadId } from "@t3tools/contracts";
 /**
  * ProviderEventLoggers — single observability service that owns the shared
  * provider event log store and exposes its two runtime views:
@@ -43,6 +44,9 @@ import * as EventNdjsonLogger from "./EventNdjsonLogger.ts";
 export class ProviderEventLoggers extends Context.Service<
   ProviderEventLoggers,
   {
+    readonly retireThread?: (
+      threadId: ThreadId,
+    ) => Effect.Effect<void, EventNdjsonLogger.EventNdjsonLogDirectoryError>;
     readonly native: EventNdjsonLogger.EventNdjsonLogger | undefined;
     readonly canonical: EventNdjsonLogger.EventNdjsonLogger | undefined;
   }
@@ -84,6 +88,7 @@ export const make = Effect.gen(function* () {
 
   yield* Effect.addFinalizer(() => store.close());
   return ProviderEventLoggers.of({
+    retireThread: store.retireThread,
     native: store.logger("native"),
     canonical: store.logger("canonical"),
   });

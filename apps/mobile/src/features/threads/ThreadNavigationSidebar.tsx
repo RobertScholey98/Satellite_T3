@@ -1,3 +1,4 @@
+import { useOpenIdeas } from "../ideas/ideaNavigation";
 import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { computeThreadMoveAvailability } from "./threadOrder";
@@ -130,6 +131,7 @@ function NativeSidebarContainer(props: ThreadNavigationSidebarProps) {
 function ThreadNavigationSidebarPane(
   props: ThreadNavigationSidebarProps & { readonly nativeChrome: boolean },
 ) {
+  const openIdeas = useOpenIdeas();
   const { themeVariables: materialTheme } = useAppearancePreferences();
   const drawerColor = materialTheme["--color-drawer"];
 
@@ -895,8 +897,9 @@ function ThreadNavigationSidebarPane(
         filterIcon,
         filterMenu,
         onOpenSettings: props.onOpenSettings,
+        onOpenIdeas: openIdeas,
       }),
-    [filterIcon, filterMenu, props.onOpenSettings],
+    [filterIcon, filterMenu, props.onOpenSettings, openIdeas],
   );
   // Snoozed threads need no special case: the shelf header is a list row
   // even while collapsed.
@@ -1099,7 +1102,7 @@ function ThreadNavigationSidebarPane(
               <ControlPillMenu actions={listMenuActions} onPressAction={handleListMenuAction}>
                 <SidebarFilterButton accessibilityLabel="Filter threads" icon={filterIcon} />
               </ControlPillMenu>
-              <SidebarHeaderActions onOpenSettings={props.onOpenSettings} />
+              <SidebarHeaderActions onOpenSettings={props.onOpenSettings} onOpenIdeas={openIdeas} />
             </View>
           </View>
 

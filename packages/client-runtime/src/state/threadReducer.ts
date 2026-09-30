@@ -145,6 +145,7 @@ export function applyThreadDetailEvent(
       };
 
     case "thread.deleted":
+    case "idea.purged":
       return { kind: "deleted" };
 
     case "thread.archived":

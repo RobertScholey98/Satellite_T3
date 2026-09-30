@@ -1,3 +1,4 @@
+import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
 /**
  * ClaudeTextGeneration – Text generation layer using the Claude CLI.
  *
@@ -102,6 +103,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
+      | "generateIdeaUpdate"
       | "generateThreadTitle",
     value: unknown,
     detail: string,
@@ -132,6 +134,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
+      | "generateIdeaUpdate"
       | "generateThreadTitle";
     cwd: string;
     prompt: string;
@@ -200,6 +203,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         claudeSettings.binaryPath || "claude",
         [
           "-p",
+          ...(operation === "generateIdeaUpdate"
+            ? ["--bare", "--no-session-persistence", "--setting-sources", ""]
+            : []),
           "--output-format",
           "json",
           "--json-schema",
@@ -410,7 +416,16 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       };
     });
 
+  const generateIdeaUpdate = (input: IdeaUpdateInput) =>
+    runClaudeJson({
+      operation: "generateIdeaUpdate",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: IdeaUpdateResult,
+      modelSelection: input.modelSelection,
+    });
   return {
+    generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

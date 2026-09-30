@@ -7,6 +7,32 @@ import { ProviderValidationError } from "./Errors.ts";
 
 const quoteReference = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
+export function appendIdeaUserInputAttachments(
+  answers: ProviderUserInputAnswers,
+  attachmentsByQuestionId: UserInputAttachments = {},
+): ProviderUserInputAnswers {
+  const result = new Map(Object.entries(answers));
+  for (const [questionId, attachments] of Object.entries(attachmentsByQuestionId)) {
+    if (!attachments.length) continue;
+    const references = attachments
+      .map(
+        (attachment) =>
+          `Attached ${quoteReference(attachment.name)} in this idea notebook: artifact ${quoteReference("attachment-" + attachment.id)}. Read it with idea_read or idea_read_image.`,
+      )
+      .join("\n");
+    const answer = result.get(questionId);
+    result.set(
+      questionId,
+      Array.isArray(answer)
+        ? [...answer, references]
+        : typeof answer === "string" && answer.length > 0
+          ? answer + "\n\n" + references
+          : references,
+    );
+  }
+  return Object.fromEntries(result);
+}
+
 /** Keep provider answer protocols unchanged; paths refer to files on the provider's server. */
 export const appendUserInputAttachmentPaths = Effect.fn("appendUserInputAttachmentPaths")(
   function* (input: {

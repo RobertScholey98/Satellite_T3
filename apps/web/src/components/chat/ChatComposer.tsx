@@ -1390,6 +1390,7 @@ export interface ChatComposerProps {
   threadSyncPhase: ThreadSyncPhase | null;
 
   // Mode
+  ideaMode?: boolean;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
 
@@ -1494,6 +1495,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     routeThreadRef,
     draftId,
     multipleModelSelections,
+    ideaMode = false,
     supportsMultipleModels,
     onMultipleModelSelectionsChange: setMultipleModelSelections,
     activeThreadId,
@@ -4974,20 +4976,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           },
         ]
       : []),
-    {
-      id: "mode",
-      content: (
-        <ComposerFooterModeControls
-          showInteractionModeToggle={planModeUiEnabled}
-          interactionMode={interactionMode}
-          runtimeMode={runtimeMode}
-          size={composerControlsInStrip ? "xs" : "sm"}
-          hidden={composerControlsHidden || restingHiddenBlockCount > 0}
-          onToggleInteractionMode={toggleInteractionMode}
-          onRuntimeModeChange={handleRuntimeModeChange}
-        />
-      ),
-    },
+    ...(ideaMode
+      ? []
+      : [
+          {
+            id: "mode",
+            content: (
+              <ComposerFooterModeControls
+                showInteractionModeToggle={planModeUiEnabled}
+                interactionMode={interactionMode}
+                runtimeMode={runtimeMode}
+                size={composerControlsInStrip ? "xs" : "sm"}
+                hidden={composerControlsHidden || restingHiddenBlockCount > 0}
+                onToggleInteractionMode={toggleInteractionMode}
+                onRuntimeModeChange={handleRuntimeModeChange}
+              />
+            ),
+          },
+        ]),
   ];
   const hiddenRestingBlockIds = restingBlockDefs
     .slice(restingBlockDefs.length - restingHiddenBlockCount)

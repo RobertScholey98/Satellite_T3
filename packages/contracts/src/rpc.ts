@@ -1,4 +1,13 @@
 import {
+  IDEA_WS_METHODS,
+  IdeaListInput,
+  IdeaListResult,
+  IdeaGetInput,
+  IdeaGetResult,
+  IdeaChange,
+  IdeaOperationError,
+} from "./ideas.ts";
+import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
   ChatGptImportProfileInput,
@@ -1427,7 +1436,27 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
+const WsIdeaListRpc = Rpc.make(IDEA_WS_METHODS.list, {
+  payload: IdeaListInput,
+  success: IdeaListResult,
+  error: Schema.Union([IdeaOperationError, EnvironmentAuthorizationError]),
+});
+const WsIdeaGetRpc = Rpc.make(IDEA_WS_METHODS.get, {
+  payload: IdeaGetInput,
+  success: IdeaGetResult,
+  error: Schema.Union([IdeaOperationError, EnvironmentAuthorizationError]),
+});
+const WsIdeaChangesRpc = Rpc.make(IDEA_WS_METHODS.subscribeChanges, {
+  payload: Schema.Struct({}),
+  success: IdeaChange,
+  error: Schema.Union([IdeaOperationError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 export const WsRpcGroup = RpcGroup.make(
+  WsIdeaListRpc,
+  WsIdeaGetRpc,
+  WsIdeaChangesRpc,
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,

@@ -64,7 +64,7 @@ export function buildPendingNewTasks(input: {
 }): ReadonlyArray<PendingNewTask> {
   const tasks: PendingNewTask[] = [];
   for (const message of input.queuedMessages) {
-    if (!message.creation) {
+    if (!message.creation || message.creation.purpose === "idea") {
       continue;
     }
     tasks.push({
@@ -82,7 +82,12 @@ export function buildPendingNewTasks(input: {
     });
   }
   for (const [draftKey, draft] of Object.entries(input.drafts)) {
-    if (!isNewTaskDraftKey(draftKey) || !draft.project || !composerDraftHasUserContent(draft)) {
+    if (
+      draft.purpose === "idea" ||
+      !isNewTaskDraftKey(draftKey) ||
+      !draft.project ||
+      !composerDraftHasUserContent(draft)
+    ) {
       continue;
     }
     tasks.push({

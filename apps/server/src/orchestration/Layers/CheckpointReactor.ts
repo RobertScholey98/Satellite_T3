@@ -677,9 +677,10 @@ const make = Effect.gen(function* () {
 
     const threadId = event.payload.threadId;
     const thread = yield* resolveThreadDetail(threadId);
-    if (!thread) {
+    if (!thread || thread.purpose === "idea") {
       return;
     }
+    if (event.type === "thread.turn-start-requested") pending.add(threadId);
 
     const projects = yield* resolveThreadProjects(thread.projectId);
     const checkpointCwd = yield* resolveCheckpointCwd({
@@ -911,7 +912,6 @@ const make = Effect.gen(function* () {
 
   const processDomainEvent = Effect.fn("processDomainEvent")(function* (event: OrchestrationEvent) {
     if (event.type === "thread.turn-start-requested" || event.type === "thread.message-sent") {
-      if (event.type === "thread.turn-start-requested") pending.add(event.payload.threadId);
       yield* ensurePreTurnBaselineFromDomainTurnStart(event);
       return;
     }
@@ -936,6 +936,8 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = Effect.fn("processRuntimeEvent")(function* (
     event: ProviderRuntimeEvent,
   ) {
+    const ideaShell = yield* projectionSnapshotQuery.getThreadShellById(event.threadId);
+    if (Option.isSome(ideaShell) && ideaShell.value.purpose === "idea") return;
     if (event.type === "session.exited") {
       startedTurns.delete(event.threadId);
       pending.delete(event.threadId);

@@ -1,3 +1,9 @@
+import { IdeaRuntime } from "../../ideas/IdeaRuntime.ts";
+import {
+  readIdeaExecution,
+  takeIdeaInitialContext,
+  withIdeaLock,
+} from "../../ideas/IdeaExecution.ts";
 /**
  * ProviderServiceLive - Cross-provider orchestration layer.
  *
@@ -53,7 +59,10 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as Stream from "effect/Stream";
 
-import { appendUserInputAttachmentPaths } from "../userInputAttachments.ts";
+import {
+  appendUserInputAttachmentPaths,
+  appendIdeaUserInputAttachments,
+} from "../userInputAttachments.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as DeviceService from "../../device/DeviceService.ts";
@@ -491,6 +500,30 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const projectionQuery = yield* Effect.serviceOption(
     ProjectionSnapshotQuery.ProjectionSnapshotQuery,
   );
+  const ideaRuntime = yield* Effect.serviceOption(IdeaRuntime);
+  const prepareIdeaSession = Effect.fn("ProviderService.prepareIdeaSession")(function* (
+    threadId: ThreadId,
+    provider: string,
+  ) {
+    if (Option.isNone(projectionQuery)) return undefined;
+    const shell = yield* projectionQuery.value
+      .getThreadShellById(threadId)
+      .pipe(Effect.mapError((e) => toValidationError("ProviderService.startSession", e.message)));
+    if (Option.isNone(shell) || shell.value.purpose !== "idea") return undefined;
+    if (provider !== "claude")
+      return yield* toValidationError(
+        "ProviderService.startSession",
+        "Ideas currently require Claude. This provider cannot enforce the idea's read-only project access.",
+      );
+    if (Option.isNone(ideaRuntime))
+      return yield* toValidationError(
+        "ProviderService.startSession",
+        "The idea runtime is unavailable.",
+      );
+    return yield* ideaRuntime.value
+      .prepare(threadId)
+      .pipe(Effect.mapError((e) => toValidationError("ProviderService.startSession", e.message)));
+  });
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -966,9 +999,33 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     } satisfies Record<string, string>;
   });
 
+  const guardIdeaLaunch = <A, E>(threadId: ThreadId, idea: boolean, launch: Effect.Effect<A, E>) =>
+    !idea
+      ? launch
+      : withIdeaLock(
+          threadId,
+          Effect.gen(function* () {
+            if (Option.isNone(ideaRuntime))
+              return yield* toValidationError(
+                "ProviderService.startSession",
+                "The idea runtime is unavailable.",
+              );
+            yield* ideaRuntime.value
+              .foregroundContext(threadId)
+              .pipe(
+                Effect.mapError((e) =>
+                  toValidationError("ProviderService.startSession", e.message),
+                ),
+              );
+            return yield* launch;
+          }),
+        );
+
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
-      const capabilities = yield* agentAccessCapabilities(threadId);
+      const capabilities = readIdeaExecution(threadId)
+        ? new Set<McpInvocationContext.McpCapability>(["ideas"])
+        : yield* agentAccessCapabilities(threadId);
       const credential = yield* issueMcpCredential({ threadId, providerInstanceId, capabilities });
       if (credential) {
         const deviceEnvironment = capabilities.has("device")
@@ -1263,8 +1320,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     });
     return yield* Effect.gen(function* () {
       const adapter = yield* registry.getByInstance(bindingInstanceId);
+      const idea = yield* prepareIdeaSession(input.binding.threadId, input.binding.provider);
       const hasResumeCursor =
-        input.binding.resumeCursor !== null && input.binding.resumeCursor !== undefined;
+        !idea && input.binding.resumeCursor !== null && input.binding.resumeCursor !== undefined;
       const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
       if (hasActiveSession) {
         const activeSessions = yield* adapter.listSessions();
@@ -1285,14 +1343,14 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
       }
 
-      if (!hasResumeCursor) {
+      if (!hasResumeCursor && !idea) {
         return yield* toValidationError(
           input.operation,
           `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
         );
       }
 
-      const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
+      const persistedCwd = idea?.cwd ?? readPersistedCwd(input.binding.runtimePayload);
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
       yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
@@ -1306,7 +1364,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
           runtimeMode: input.binding.runtimeMode ?? "full-access",
         })
-        .pipe(Effect.onError(() => clearMcpSession(input.binding.threadId)));
+        .pipe(
+          (launch) => guardIdeaLaunch(input.binding.threadId, idea !== undefined, launch),
+          Effect.onError(() => clearMcpSession(input.binding.threadId)),
+        );
       if (resumed.provider !== adapter.provider) {
         yield* clearMcpSession(input.binding.threadId);
         return yield* toValidationError(
@@ -1481,12 +1542,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             );
           }
         }
-        const effectiveResumeCursor =
-          input.resumeCursor ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
-            ? persistedBinding.resumeCursor
-            : undefined);
+        const idea = yield* prepareIdeaSession(threadId, resolvedProvider);
+        const effectiveResumeCursor = idea
+          ? undefined
+          : (input.resumeCursor ??
+            (persistedBinding?.providerInstanceId === resolvedInstanceId
+              ? persistedBinding.resumeCursor
+              : undefined));
         const effectiveCwd =
+          idea?.cwd ??
           input.cwd ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
             ? readPersistedCwd(persistedBinding.runtimePayload)
@@ -1532,9 +1596,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             ...input,
             providerInstanceId: resolvedInstanceId,
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
-            ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),
+            resumeCursor: effectiveResumeCursor,
           })
-          .pipe(Effect.onError(() => clearMcpSession(threadId)));
+          .pipe(
+            (launch) => guardIdeaLaunch(threadId, idea !== undefined, launch),
+            Effect.onError(() => clearMcpSession(threadId)),
+          );
 
         if (session.provider !== adapter.provider) {
           yield* clearMcpSession(threadId);
@@ -1697,7 +1764,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
 
-    const input = {
+    let input = {
       ...parsed,
       ...(inputTextWithAttachmentContext !== undefined
         ? { input: inputTextWithAttachmentContext }
@@ -1734,6 +1801,40 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           operation: "ProviderService.sendTurn",
           allowRecovery: true,
         });
+      }
+      if (readIdeaExecution(input.threadId)) {
+        if (Option.isNone(ideaRuntime) || routed.adapter.provider !== "claude")
+          return yield* toValidationError(
+            "ProviderService.sendTurn",
+            "The constrained idea runtime is unavailable.",
+          );
+        yield* ideaRuntime.value
+          .importAttachments(input.threadId, attachments)
+          .pipe(Effect.mapError((e) => toValidationError("ProviderService.sendTurn", e.message)));
+        const notebook = yield* ideaRuntime.value
+          .foregroundContext(input.threadId, true)
+          .pipe(Effect.mapError((e) => toValidationError("ProviderService.sendTurn", e.message)));
+        const initial = takeIdeaInitialContext(input.threadId);
+        const promote = /^\s*\/promote(?:\s|$)/.test(input.input ?? "")
+          ? yield* ideaRuntime.value
+              .readContext({ threadId: input.threadId, resource: "promote" })
+              .pipe(
+                Effect.mapError((e) => toValidationError("ProviderService.sendTurn", e.message)),
+              )
+          : undefined;
+        input = {
+          ...input,
+          input: [
+            initial,
+            "Current idea notebook:",
+            notebook,
+            promote,
+            "User message:",
+            input.input,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        };
       }
       metricProvider = routed.adapter.provider;
       metricModel = input.modelSelection?.model;
@@ -2058,10 +2159,30 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         "provider.thread_id": input.threadId,
         "provider.request_id": input.requestId,
       });
-      const answers = yield* appendUserInputAttachmentPaths({
-        ...input,
-        attachmentsDir: serverConfig.attachmentsDir,
-      }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+      let answers = input.answers;
+      if (readIdeaExecution(input.threadId)) {
+        if (Option.isNone(ideaRuntime))
+          return yield* toValidationError(
+            "ProviderService.respondToUserInput",
+            "The constrained idea runtime is unavailable.",
+          );
+        yield* ideaRuntime.value
+          .importAttachments(
+            input.threadId,
+            Object.values(input.attachmentsByQuestionId ?? {}).flat(),
+          )
+          .pipe(
+            Effect.mapError((e) =>
+              toValidationError("ProviderService.respondToUserInput", e.message),
+            ),
+          );
+        answers = appendIdeaUserInputAttachments(input.answers, input.attachmentsByQuestionId);
+      } else {
+        answers = yield* appendUserInputAttachmentPaths({
+          ...input,
+          attachmentsDir: serverConfig.attachmentsDir,
+        }).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
+      }
       yield* routed.adapter.respondToUserInput(routed.threadId, input.requestId, answers);
     }).pipe(
       withMetrics({

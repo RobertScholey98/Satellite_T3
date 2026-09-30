@@ -3122,6 +3122,55 @@ export function GeneralSettingsPanel() {
       <SettingsSection id="text-generation" title="Text generation">
         <SettingsRow
           serverScoped
+          settingKeys={["ideaUpdatesModelSelection"]}
+          title="Idea updates"
+          description="The provider and model that organize idea notes and update their pitches. This is independent of thread titles."
+          control={
+            !hasServerTargets || !hasTextGenerationProvider ? (
+              <span className="text-sm text-muted-foreground">
+                Connect an environment with a text generation provider.
+              </span>
+            ) : (
+              <div className="flex items-center gap-2">
+                <ProviderModelPicker
+                  activeInstanceId={
+                    settings.ideaUpdatesModelSelection?.instanceId ??
+                    textGenerationModelInstanceEntries.find(
+                      (entry) => entry.driverKind === "claudeAgent",
+                    )?.instanceId ??
+                    textGenInstanceId
+                  }
+                  model={settings.ideaUpdatesModelSelection?.model ?? textGenModel}
+                  lockedProvider={null}
+                  instanceEntries={textGenerationModelInstanceEntries.filter(
+                    (entry) => entry.driverKind === "claudeAgent",
+                  )}
+                  modelOptionsByInstance={textGenerationModelOptionsByInstance}
+                  triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                  {...(settings.ideaUpdatesModelSelection === null
+                    ? { triggerLabel: "Automatic" }
+                    : {})}
+                  getModelDisabledReason={textGenerationModelDisabledReason}
+                  onInstanceModelChange={(instanceId, model) => {
+                    if (!textGenerationModelDisabledReason(instanceId, model))
+                      updateSettings({
+                        ideaUpdatesModelSelection: createModelSelection(instanceId, model),
+                      });
+                  }}
+                />
+                {settings.ideaUpdatesModelSelection !== null ? (
+                  <SettingResetButton
+                    label="idea updates model"
+                    onClick={() => updateSettings({ ideaUpdatesModelSelection: null })}
+                  />
+                ) : null}
+              </div>
+            )
+          }
+        />
+
+        <SettingsRow
+          serverScoped
           settingKeys={["textGenerationModelSelection"]}
           {...searchableSetting("text-generation-model")}
           description="Used for thread titles and other generated text on connected devices with this provider. Source control can override it."

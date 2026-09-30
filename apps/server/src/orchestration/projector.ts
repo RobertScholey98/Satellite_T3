@@ -426,6 +426,13 @@ export function projectEvent(
         })),
       );
 
+    case "idea.purged":
+      return Effect.succeed({
+        ...nextBase,
+        threads: nextBase.threads.filter((thread) => thread.id !== event.payload.threadId),
+      });
+    case "idea.changed":
+      return Effect.succeed(nextBase);
     case "thread.created":
       return Effect.gen(function* () {
         const payload = yield* decodeForEvent(
@@ -439,6 +446,7 @@ export function projectEvent(
           {
             id: payload.threadId,
             projectId: payload.projectId,
+            purpose: payload.purpose ?? "work",
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,

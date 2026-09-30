@@ -1,3 +1,5 @@
+import { readIdeaExecution, isIdeaTool } from "../../ideas/IdeaExecution.ts";
+import { constrainClaudeIdeaOptions } from "../../ideas/ClaudeIdeaPolicy.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 /**
  * ClaudeAdapterLive - Scoped live implementation for the Claude Agent provider adapter.
@@ -2190,7 +2192,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
   ) {
     const threadId = context.session.threadId;
-    if (!threadId) return;
+    if (!threadId || readIdeaExecution(threadId)) return;
 
     const resumeCursor = {
       threadId,
@@ -4412,7 +4414,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       }
 
       const startedAt = yield* nowIso;
-      const resumeState = readClaudeResumeState(input.resumeCursor);
+      const ideaExecution = readIdeaExecution(input.threadId);
+      const resumeState = ideaExecution ? undefined : readClaudeResumeState(input.resumeCursor);
       const threadId = input.threadId;
       const existingResumeSessionId = resumeState?.resume;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
@@ -4677,6 +4680,15 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           return yield* handleAskUserQuestion(context, toolInput, callbackOptions);
         }
 
+        if (readIdeaExecution(input.threadId)) {
+          return isIdeaTool(toolName)
+            ? ({ behavior: "allow", updatedInput: toolInput } satisfies PermissionResult)
+            : ({
+                behavior: "deny",
+                message: "Idea sessions can only use their scoped notebook and main-reading tools.",
+              } satisfies PermissionResult);
+        }
+
         if (toolName === "ExitPlanMode") {
           const planMarkdown = extractExitPlanModePlan(toolInput);
           if (planMarkdown) {
@@ -4907,7 +4919,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(input.cwd ? [input.cwd] : []),
         serverConfig.attachmentsDir,
       ];
-      const queryOptions: ClaudeQueryOptions = {
+      let queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
@@ -4987,6 +4999,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.path_to_executable": claudeBinaryPath,
       });
 
+      if (ideaExecution) {
+        if (!mcpSession)
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: "The scoped idea tools are unavailable.",
+          });
+        queryOptions = constrainClaudeIdeaOptions(queryOptions);
+      }
+
       const queryRuntime = yield* Effect.try({
         try: () =>
           createQuery({
@@ -5034,7 +5056,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         query: queryRuntime,
         streamFiber: undefined,
         startedAt,
-        basePermissionMode: permissionMode,
+        basePermissionMode: ideaExecution ? "default" : permissionMode,
         currentApiModelId: apiModelId,
         currentEffort: effectiveEffort ?? undefined,
         resumeSessionId: sessionId,
@@ -5186,12 +5208,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // "plan" maps directly to the SDK's "plan" permission mode;
     // "default" restores the session's original permission mode.
     // When interactionMode is absent we leave the current mode unchanged.
-    if (input.interactionMode === "plan") {
+    if (!readIdeaExecution(input.threadId) && input.interactionMode === "plan") {
       yield* Effect.tryPromise({
         try: () => context.query.setPermissionMode("plan"),
         catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
       });
-    } else if (input.interactionMode === "default") {
+    } else if (!readIdeaExecution(input.threadId) && input.interactionMode === "default") {
       yield* Effect.tryPromise({
         try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
         catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
@@ -5244,14 +5266,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     // skillOverrides, or reserved for the agent with `user-invocable: false`,
     // is left as prose: the CLI would answer `/name` with a notice instead of
     // running it.
-    const skills = yield* discoverClaudeSkills(
-      claudeSettings,
-      context.session.cwd,
-      claudeEnvironment,
-    ).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
+    const skills = readIdeaExecution(input.threadId)
+      ? []
+      : yield* discoverClaudeSkills(claudeSettings, context.session.cwd, claudeEnvironment).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
     const message = yield* buildUserMessageEffect(input, {
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,

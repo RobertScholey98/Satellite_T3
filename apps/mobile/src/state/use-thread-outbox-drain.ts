@@ -13,7 +13,8 @@ import {
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { threadDetailToShell } from "./thread-detail-shell";
+import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
 
@@ -30,7 +31,7 @@ import {
 } from "./acknowledged-thread-messages";
 import { appAtomRegistry } from "./atom-registry";
 import { restoredNewTaskDraftKey } from "./new-task-draft-key";
-import { useProjects, useServerConfigs, useThreadShells } from "./entities";
+import { useProjects, useServerConfigs } from "./entities";
 import {
   clearPendingThreadCreationOutcome,
   pendingThreadCreationOutcomesAtom,
@@ -58,7 +59,11 @@ import {
   type ThreadOutboxCommandStage,
   type ThreadOutboxFailureAction,
 } from "./thread-outbox-model";
-import { environmentThreadShells, threadEnvironment } from "./threads";
+import {
+  environmentThreadShells,
+  environmentIdeaThreadDetails,
+  threadEnvironment,
+} from "./threads";
 import {
   appendComposerDraftAttachments,
   composerDraftsAtom,
@@ -83,6 +88,17 @@ import {
   setPendingConnectionError,
   useRemoteConnectionStatus,
 } from "./use-remote-environment-registry";
+
+const outboxThreadsAtom = Atom.make((get) => {
+  const threads = [...get(environmentThreadShells.threadShellsAtom)];
+  for (const queue of Object.values(get(threadOutboxManager.queuedMessagesByThreadKeyAtom))) {
+    const message = queue[0];
+    if (message?.purpose !== "idea" || message.creation) continue;
+    const detail = get(environmentIdeaThreadDetails.detailAtom(message));
+    if (detail) threads.push(threadDetailToShell(message.environmentId, detail));
+  }
+  return threads;
+});
 
 // Ordinary offline behavior (a socket dropping mid-request, a retryable
 // attachment upload failure) must not spam `console.warn` on every backoff
@@ -644,7 +660,7 @@ export function useThreadOutboxDrain(): void {
   const editingQueuedMessageIds = useAtomValue(editingQueuedMessageIdsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
   const shellStatuses = useThreadOutboxShellStatuses();
-  const threads = useThreadShells();
+  const threads = useAtomValue(outboxThreadsAtom);
   const creationOutcomes = useAtomValue(pendingThreadCreationOutcomesAtom);
   const projects = useProjects();
   const serverConfigs = useServerConfigs();
@@ -1016,6 +1032,7 @@ export function useThreadOutboxDrain(): void {
         environmentId: queuedMessage.environmentId,
         input: buildProjectThreadStartTurnInput({
           projectId: creation.projectId,
+          ...(creation.purpose === "idea" ? { purpose: "idea" } : {}),
           projectCwd,
           threadId: queuedMessage.threadId,
           commandId: queuedMessage.commandId,
@@ -1169,6 +1186,7 @@ export function useThreadOutboxDrain(): void {
         (candidate) => candidate.environmentId === nextQueuedMessage.environmentId,
       );
       const shellStatus = shellStatuses.get(nextQueuedMessage.environmentId) ?? "empty";
+      if (nextQueuedMessage.purpose === "idea" && creation === undefined && !thread) continue;
       const deliveryAction = resolveThreadOutboxDeliveryAction({
         isCreation: creation !== undefined,
         threadExists: thread !== undefined,
@@ -1276,10 +1294,7 @@ export function useThreadOutboxDrain(): void {
         // against the live thread snapshot so a vanished thread or newly
         // created target defers, while busy existing threads can still steer.
         if (deliveryAction === "send") {
-          const liveThread = findThread(
-            appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
-            nextQueuedMessage,
-          );
+          const liveThread = findThread(appAtomRegistry.get(outboxThreadsAtom), nextQueuedMessage);
           const liveThreadBusy =
             liveThread?.session?.status === "running" || liveThread?.session?.status === "starting";
           const liveDeliveryAction = resolveThreadOutboxDeliveryAction({
