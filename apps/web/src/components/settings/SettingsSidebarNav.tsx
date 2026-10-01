@@ -236,48 +236,50 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
       <SidebarContent className="overflow-x-hidden">
         <SidebarGroup>
           <div className="flex flex-col gap-2">
-            <div className="flex h-8 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground">
-              <SearchIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
-              <SidebarInput
-                ref={searchInputRef}
-                nativeInput
-                type="search"
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.currentTarget.value);
-                  setActiveResultIndex(0);
-                }}
-                onKeyDown={handleSearchKeyDown}
-                placeholder="Search"
-                aria-label="Search settings"
-                role="combobox"
-                aria-autocomplete="list"
-                aria-expanded={isSearching && hasResults}
-                aria-controls={isSearching && hasResults ? "settings-search-results" : undefined}
-                aria-activedescendant={
-                  isSearching && results[activeResultIndex]
-                    ? `settings-search-result-${results[activeResultIndex].id}`
-                    : undefined
-                }
-                className="min-w-0 flex-1"
-              />
-              {isSearching ? (
-                <Button
-                  type="button"
-                  size="icon-micro"
-                  variant="ghost-muted"
-                  className="shrink-0"
-                  aria-label="Clear settings search"
-                  onClick={() => {
-                    clearSearch();
-                    searchInputRef.current?.focus();
+            <div className="flex items-center gap-1">
+              <div className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground">
+                <SearchIcon className="size-4 shrink-0 text-sidebar-muted-foreground/80" />
+                <SidebarInput
+                  ref={searchInputRef}
+                  nativeInput
+                  type="search"
+                  value={query}
+                  onChange={(event) => {
+                    setQuery(event.currentTarget.value);
+                    setActiveResultIndex(0);
                   }}
-                >
-                  <XIcon className="size-3" />
-                </Button>
-              ) : (
-                <Kbd>/</Kbd>
-              )}
+                  onKeyDown={handleSearchKeyDown}
+                  placeholder="Search"
+                  aria-label="Search settings"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded={isSearching && hasResults}
+                  aria-controls={isSearching && hasResults ? "settings-search-results" : undefined}
+                  aria-activedescendant={
+                    isSearching && results[activeResultIndex]
+                      ? `settings-search-result-${results[activeResultIndex].id}`
+                      : undefined
+                  }
+                  className="min-w-0 flex-1"
+                />
+                {isSearching ? (
+                  <Button
+                    type="button"
+                    size="icon-micro"
+                    variant="ghost-muted"
+                    className="shrink-0"
+                    aria-label="Clear settings search"
+                    onClick={() => {
+                      clearSearch();
+                      searchInputRef.current?.focus();
+                    }}
+                  >
+                    <XIcon className="size-3" />
+                  </Button>
+                ) : (
+                  <Kbd>/</Kbd>
+                )}
+              </div>
             </div>
             {isSearching && results.length === 0 ? (
               <p
