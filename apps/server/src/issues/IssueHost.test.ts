@@ -507,4 +507,60 @@ describe("IssueHost", () => {
         }),
       ),
   );
+  it.effect("reads an Azure work item detail with every page of comments", () =>
+    withNode(
+      Effect.gen(function* () {
+        const workItem = {
+          id: 42,
+          rev: 9,
+          fields: {
+            "System.Title": "Task",
+            "System.State": "New",
+            "System.ChangedDate": "now",
+            "System.WorkItemType": "User Story",
+          },
+        };
+        const comment = (id: number, text: string) => ({
+          id,
+          text,
+          createdDate: "2026-10-01T00:00:00Z",
+          createdBy: { displayName: "Rob" },
+        });
+        const api = yield* host({
+          azure: ({ args }) =>
+            Effect.sync(() => {
+              const version = args[args.indexOf("--api-version") + 1] ?? "";
+              if (/preview\.\d/.test(version))
+                throw new Error(`could not convert string to float: '${version}'`);
+              const resource = args[args.indexOf("--resource") + 1];
+              if (resource === "workItemsBatch") return { value: [workItem] };
+              if (resource === "comments")
+                return args.includes("continuationToken=next")
+                  ? { comments: [comment(2, "Second")], continuation_token: null }
+                  : { comments: [comment(1, "First")], continuation_token: "next" };
+              return {};
+            }),
+        });
+        const detail = yield* api.get({
+          cwd: "/repo",
+          ref: {
+            hostKind: "azure-devops",
+            host: "dev.azure.com",
+            repository: "org/Project",
+            id: "42",
+            number: 42,
+            url: "https://dev.azure.com/org/Project/_workitems/edit/42",
+          },
+        });
+        assert.strictEqual(detail.title, "Task");
+        assert.deepStrictEqual(
+          detail.comments?.map((entry) => [entry.id, entry.body, entry.author?.name]),
+          [
+            ["1", "First", "Rob"],
+            ["2", "Second", "Rob"],
+          ],
+        );
+      }),
+    ),
+  );
 });
