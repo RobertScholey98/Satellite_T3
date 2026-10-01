@@ -391,6 +391,8 @@ describe("IssueHost", () => {
               Effect.gen(function* () {
                 calls.push(input.args);
                 const resource = input.args[input.args.indexOf("--resource") + 1];
+                if (resource?.toLowerCase() === "workitems") throw new Error("KeyError: 'type'");
+                if (input.args[0] === "boards" && input.args[1] === "work-item") return workItem;
                 if (resource === "boards") return metadata;
                 if (resource === "teamfieldvalues")
                   return {
@@ -401,9 +403,8 @@ describe("IssueHost", () => {
                 if (input.args.includes("--in-file"))
                   bodies.push(yield* decodeJson(yield* fs.readFileString(file!)));
                 if (resource === "wiql") return { workItems: [{ id: 42 }] };
-                if (input.args.includes("PATCH") || input.args.some((arg) => arg === "id=42"))
-                  return workItem;
-                return { value: [workItem] };
+                if (resource === "workItemsBatch") return { value: [workItem] };
+                return {};
               }),
           });
           const locator: IssueBoardLocator = {
@@ -417,21 +418,23 @@ describe("IssueHost", () => {
           const board = yield* api.board("/repo", locator);
           assert.strictEqual(board.items[0]!.columnId, "ready");
           yield* api.move("/repo", locator, board.items[0]!, "doing");
-          const query = yield* decodeQuery(bodies[0]);
+          const query = yield* decodeQuery(
+            bodies.find((body) => typeof body === "object" && body !== null && "query" in body),
+          );
           assert.match(query.query, /\[System.AreaPath\] UNDER 'Project\\Team'/);
           assert.match(query.query, /\[System.WorkItemType\] IN \('User Story'\)/);
-          assert.deepStrictEqual(bodies[1], [
-            { op: "test", path: "/rev", value: 9 },
-            { op: "add", path: "/fields/System.State", value: "Active" },
-            { op: "add", path: "/fields/WEF_TEAM_Kanban.Column", value: "Building" },
-            { op: "add", path: "/fields/WEF_TEAM_Kanban.Column.Done", value: false },
-          ]);
-          assert.strictEqual(
-            calls.some(
-              (args) => args.includes("PATCH") && args.includes("application/json-patch+json"),
-            ),
-            true,
+          assert.deepStrictEqual(
+            bodies.filter((body) => typeof body === "object" && body !== null && "ids" in body),
+            [{ ids: [42] }, { ids: [42] }],
           );
+          const update = calls.find((args) => args[0] === "boards" && args[1] === "work-item");
+          assert.strictEqual(update?.[update.indexOf("--id") + 1], "42");
+          assert.strictEqual(update?.[update.indexOf("--state") + 1], "Active");
+          const fieldsAt = update?.indexOf("--fields") ?? -1;
+          assert.deepStrictEqual(update?.slice(fieldsAt + 1, fieldsAt + 3), [
+            "WEF_TEAM_Kanban.Column=Building",
+            "WEF_TEAM_Kanban.Column.Done=false",
+          ]);
           assert.strictEqual(
             calls.some((args) => args.includes("columns")),
             false,
