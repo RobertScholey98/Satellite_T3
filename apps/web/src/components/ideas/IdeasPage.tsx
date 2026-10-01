@@ -18,7 +18,7 @@ import {
 } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   BrainIcon,
   FileTextIcon,
@@ -57,7 +57,7 @@ import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
-import { SidebarInset, useSidebar } from "../ui/sidebar";
+import { SidebarInset } from "../ui/sidebar";
 import { PanelTabCloseButton } from "../ui/panel-tab-close-button";
 import {
   AlertDialog,
@@ -133,7 +133,6 @@ export function IdeasPage({
   environment?: string | undefined;
   idea?: string | undefined;
 }) {
-  const { isMobile, setOpen, setOpenMobile } = useSidebar();
   const selected =
     environment && idea
       ? { environmentId: EnvironmentId.make(environment), threadId: ThreadId.make(idea) }
@@ -151,17 +150,10 @@ export function IdeasPage({
           <IdeaWorkspace key={scopedThreadKey(selected)} threadRef={selected} />
         ) : (
           <div className="flex flex-1 items-center justify-center p-8">
-            <div className="max-w-sm space-y-3">
-              <h2 className="text-lg font-medium">Room to think</h2>
-              <p className="text-sm leading-6 text-muted-foreground">
-                Open an idea to continue its conversation, read the pitch, or work through its
-                notes. Your implementation threads stay separate.
-              </p>
-              <Button
-                variant="outline"
-                onClick={() => (isMobile ? setOpenMobile(true) : setOpen(true))}
-              >
-                Open ideas
+            <div className="max-w-sm space-y-3 text-center">
+              <h2 className="text-lg font-medium">No ideas yet</h2>
+              <Button variant="link" render={<Link to="/" />}>
+                Start a new idea thread
               </Button>
             </div>
           </div>
