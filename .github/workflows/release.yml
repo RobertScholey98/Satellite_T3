@@ -1,0 +1,168 @@
+name: SatelliteT3 Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to release, e.g. v0.1.0 or v0.1.0-alpha.1"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: satellite-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Build Windows x64
+    # Keep Visual Studio 2022 aligned with the packager's node-gyp configuration.
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      T3CODE_DESKTOP_DEV: "0"
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Validate version tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          if ($tag -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-(alpha|beta|rc)\.(0|[1-9]\d*))?$') {
+            throw "Expected vX.Y.Z or vX.Y.Z-alpha.N/beta.N/rc.N"
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$($tag.Substring(1))" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ steps.version.outputs.tag }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Resolve package cache path
+        id: package_cache_path
+        run: '"path=$(vp pm cache dir)" >> $env:GITHUB_OUTPUT'
+
+      - name: Cache packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.package_cache_path.outputs.path }}
+          key: satellite-windows-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Setup Python for native dependencies
+        id: python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Ensure Rust target is installed
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Lint Satellite sources and packaging
+        run: vp lint apps/desktop/src/satellite apps/desktop/src/boot.ts apps/desktop/src/app/DesktopStatePaths.ts apps/web/src/components/desktop/SatelliteDesktopShell.tsx apps/web/src/satellitePill.ts packages/contracts/src/satellite.ts scripts/satellite-dev.mjs scripts/build-desktop-artifact.ts
+
+      - name: Typecheck desktop and web
+        run: |
+          vp run --filter @t3tools/desktop typecheck
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          vp run --filter @t3tools/web typecheck
+
+      - name: Test desktop shell, identity, and startup
+        working-directory: apps/desktop
+        run: vp test run src/satellite/SatellitePill.test.ts src/satellite/pillModel.test.ts src/window/DesktopWindow.test.ts src/ssh/DesktopSshPasswordPrompts.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopEarlyElectronStartup.test.ts scripts/main-process-bundle.test.mjs scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
+
+      - name: Test web shell and pill projection
+        working-directory: apps/web
+        run: vp test run --project unit src/components/desktop/SatelliteDesktopShell.test.tsx src/satellitePill.test.ts
+
+      - name: Test packaging
+        run: vp test run scripts/build-desktop-artifact.test.ts
+
+      - name: Build unsigned installer and updater files
+        env:
+          T3CODE_DESKTOP_VERSION: ${{ steps.version.outputs.version }}
+          npm_config_python: ${{ steps.python.outputs.python-path }}
+        run: vp run dist:desktop:win:x64
+
+      - name: Verify preload bundle output
+        run: node apps/desktop/scripts/verify-preload-bundle.mjs
+
+      - name: Collect release assets
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $installer = "release/SatelliteT3-$env:RELEASE_VERSION-x64.exe"
+          foreach ($path in @($installer, "$installer.blockmap", 'release/latest.yml')) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "Missing release asset: $path" }
+          }
+          $assets = @($installer, "$installer.blockmap", 'release/latest.yml')
+          $sums = $assets | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($_))"
+          }
+          $sums | Set-Content -LiteralPath release/SHA256SUMS -Encoding utf8NoBOM
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          if-no-files-found: error
+          path: |
+            release/SatelliteT3-*-x64.exe
+            release/SatelliteT3-*-x64.exe.blockmap
+            release/latest.yml
+            release/SHA256SUMS
+
+  publish:
+    name: Publish GitHub Release
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          args=(--verify-tag --generate-notes --title "SatelliteT3 $RELEASE_TAG")
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            args+=(--prerelease --latest=false)
+          else
+            args+=(--latest)
+          fi
+          gh release create "$RELEASE_TAG" release/* "${args[@]}"

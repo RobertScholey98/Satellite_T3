@@ -135,7 +135,8 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       });
     }
     const outputDirectory = NodePath.join(directory, "dist-electron");
-    const fixture = `console.log(require('node:module').getCompileCacheDir() ? 'cached' : 'uncached');`;
+    const fixture = `console.log(require('node:module').getCompileCacheDir() ? 'cached' : 'uncached');
+console.log(process.env.T3CODE_SATELLITE_PILL);`;
     await NodeFSP.writeFile(NodePath.join(outputDirectory, "main.cjs"), fixture);
     await NodeFSP.writeFile(
       NodePath.join(outputDirectory, "backend.mjs"),
@@ -157,6 +158,7 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
             APPIMAGE: "",
             NODE_COMPILE_CACHE: undefined,
             NODE_DISABLE_COMPILE_CACHE: disabled ? "1" : undefined,
+            T3CODE_SATELLITE_PILL: disabled ? "0" : undefined,
             XDG_CACHE_HOME: directory,
             TMPDIR: directory,
             TEMP: directory,
@@ -164,7 +166,11 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
           },
         });
         assert.equal(child.status, 0, child.stderr);
-        assert.equal(child.stdout.trim(), disabled ? "uncached" : "cached");
+        const expected = disabled ? "uncached" : "cached";
+        assert.equal(
+          child.stdout.trim(),
+          args[0].endsWith("boot.cjs") ? `${expected}\n${disabled ? "0" : "1"}` : expected,
+        );
       }
     }
   } finally {

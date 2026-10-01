@@ -66,6 +66,33 @@ runners. The manual **Windows Tests** workflow runs additional package or file c
 Upstream publishing, deployment, mobile builds, and contributor moderation workflows
 are removed from this fork.
 
+## Windows releases
+
+The **SatelliteT3 Release** workflow builds an unsigned Windows x64 installer and
+publishes it with checksums and automatic-update files to this fork's GitHub Releases.
+GitHub Actions must be enabled. It uses the built-in workflow token; no release
+secrets are required.
+
+Commit and push the changes you want to ship, then tag that commit:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Use a new version for each release. Tags such as `v0.1.0-alpha.1`,
+`v0.1.0-beta.1`, and `v0.1.0-rc.1` publish prereleases; plain `v0.1.0` releases
+are marked latest. To retry a failed run, use GitHub Actions' rerun control or run
+the release workflow manually with the existing tag. Publishing an already
+published version fails rather than replacing its assets.
+
+Download the `.exe` from GitHub Releases and install it. Installed builds start
+with the pill, store server data under `~/.satellite-t3/userdata`, and use the
+`satellite-t3` Chromium profile. They do not migrate the development launcher's
+data. Automatic updates point at the repository that built the installer;
+stable installs follow stable releases. These initial releases are unsigned and
+do not bundle a Linux WSL runtime or publish standalone CLI archives.
+
 The real GPT-6.1 Sol continuity test created a file in a disposable repository while
 the main window was hidden. The pill showed working and completed states; clicking
 it restored and focused the correct conversation. Approval/input and unavailable
