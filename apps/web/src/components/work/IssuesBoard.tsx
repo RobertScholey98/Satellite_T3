@@ -317,6 +317,8 @@ export function IssuesBoard({
   const [error, setError] = useState<string | null>(null);
 
   const [pending, setPending] = useState(false);
+  const [boardDiscoveryPending, setBoardDiscoveryPending] = useState(false);
+  const [boardDiscoveryError, setBoardDiscoveryError] = useState<string | null>(null);
 
   const generation = useRef(0);
   const scopeGeneration = useRef(0);
@@ -446,6 +448,8 @@ export function IssuesBoard({
         if (current === scopeGeneration.current) setError(workError(failure));
       });
 
+    setBoardDiscoveryPending(true);
+    setBoardDiscoveryError(null);
     void trackSync(() =>
       list({ environmentId: scope.environmentId, input: { projectId: scope.id } }),
     )
@@ -478,10 +482,16 @@ export function IssuesBoard({
         }
       })
       .catch((failure) => {
-        if (current === scopeGeneration.current) setError(workError(failure));
+        if (current === scopeGeneration.current) {
+          setBoardDiscoveryError(workError(failure));
+          setError(workError(failure));
+        }
       })
       .finally(() => {
-        if (current === scopeGeneration.current) setPending(false);
+        if (current === scopeGeneration.current) {
+          setPending(false);
+          setBoardDiscoveryPending(false);
+        }
       });
 
     return () => {
@@ -773,7 +783,7 @@ export function IssuesBoard({
                       </MenuGroup>
                     ) : null}
                     {connectedBoards.length ? <MenuSeparator /> : null}
-                    <MenuItem disabled={!scope || !connected || pending} onClick={connectBoard}>
+                    <MenuItem disabled={!scope || !connected} onClick={connectBoard}>
                       <PlusIcon />
                       Connect board
                     </MenuItem>
@@ -819,7 +829,7 @@ export function IssuesBoard({
                   Column mapping
                 </MenuItem>
               ) : null}
-              <MenuItem disabled={!scope || !connected || pending} onClick={connectBoard}>
+              <MenuItem disabled={!scope || !connected} onClick={connectBoard}>
                 Connect board
               </MenuItem>
               {view ? (
@@ -1155,6 +1165,14 @@ export function IssuesBoard({
           projectTitle={scope.title}
           initial={configuration.initial}
           availableBoards={availableBoards}
+          discoveryPending={boardDiscoveryPending}
+          discoveryFailure={boardDiscoveryError}
+          onDiscovered={(result) => {
+            if (configuration.scopeGeneration !== scopeGeneration.current) return;
+            setBoards(result);
+            setBoardDiscoveryError(null);
+            setError((current) => (current === boardDiscoveryError ? null : current));
+          }}
           onClose={() => setConfiguration(null)}
           onConfigured={(result) => {
             if (configuration.scopeGeneration !== scopeGeneration.current) return;
@@ -1418,6 +1436,9 @@ function BoardConfiguration({
   projectTitle,
   initial,
   availableBoards,
+  discoveryPending,
+  discoveryFailure,
+  onDiscovered,
   onClose,
   onConfigured,
 }: {
@@ -1427,6 +1448,9 @@ function BoardConfiguration({
   projectTitle: string;
   initial: IssueBoardView | null;
   availableBoards: readonly IssueBoardSummary[];
+  discoveryPending: boolean;
+  discoveryFailure: string | null;
+  onDiscovered: (boards: readonly IssueBoardSummary[]) => void;
   onClose: () => void;
   onConfigured: (view: IssueBoardView) => void;
 }) {
@@ -1448,12 +1472,36 @@ function BoardConfiguration({
 
   const [view, setView] = useState(initial);
   const [mapping, setMapping] = useState<IssueBoardMapping | null>(initial?.board.mapping ?? null);
-  const [manual, setManual] = useState(availableBoards.length === 0);
+  const [manual, setManual] = useState(false);
+  const [retryError, setRetryError] = useState<string | null | undefined>(undefined);
+  const discoveryError = retryError === undefined ? discoveryFailure : retryError;
+  const [retryingDiscovery, setRetryingDiscovery] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const open = useAtomCommand(issuesEnvironment.openBoard, { reportFailure: false });
+  const listBoards = useAtomCommand(issuesEnvironment.listBoards, { reportFailure: false });
+
+  const retryDiscovery = async () => {
+    setRetryingDiscovery(true);
+    setRetryError(null);
+    try {
+      const result = unwrapWorkResult(
+        await trackSync(() =>
+          listBoards({
+            environmentId,
+            input: { projectId },
+          }),
+        ),
+      );
+      onDiscovered(result);
+    } catch (failure) {
+      setRetryError(workError(failure));
+    } finally {
+      setRetryingDiscovery(false);
+    }
+  };
 
   const configure = useAtomCommand(issuesEnvironment.configureBoard, { reportFailure: false });
 
@@ -1514,11 +1562,28 @@ function BoardConfiguration({
         <DialogPanel>
           {!view && !manual ? (
             <div className="grid gap-2">
+              {discoveryPending || retryingDiscovery ? (
+                <p role="status">Finding available boards…</p>
+              ) : discoveryError ? (
+                <div className="grid gap-2">
+                  <p role="alert" className="text-sm text-destructive">
+                    Could not discover boards: {discoveryError}
+                  </p>
+                  <Button variant="outline" disabled={busy} onClick={() => void retryDiscovery()}>
+                    Retry discovery
+                  </Button>
+                </div>
+              ) : availableBoards.length === 0 ? (
+                <p role="status">
+                  No unconnected boards were found in your account's repository owner or
+                  organisation.
+                </p>
+              ) : null}
               {availableBoards.map((board) => (
                 <div key={board.id} className="grid gap-1">
                   <Button
                     variant="outline"
-                    disabled={busy}
+                    disabled={busy || discoveryPending || retryingDiscovery}
                     onClick={() => void load(board.locator)}
                   >
                     <Columns3Icon />
@@ -1672,14 +1737,14 @@ function BoardConfiguration({
           {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
         </DialogPanel>
         <DialogFooter>
-          {!initial && (view || (manual && availableBoards.length > 0)) ? (
+          {!initial && (view || manual) ? (
             <Button
               variant="ghost"
               disabled={busy}
               onClick={() => {
                 setView(null);
                 setMapping(null);
-                setManual(availableBoards.length === 0);
+                setManual(false);
                 setError(null);
               }}
             >

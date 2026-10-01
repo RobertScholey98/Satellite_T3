@@ -58,6 +58,151 @@ const withNode = <A, E>(
   effect: Effect.Effect<A, E, FileSystem.FileSystem | import("effect/Path").Path>,
 ) => effect.pipe(Effect.provide(NodeServices.layer));
 describe("IssueHost", () => {
+  it.effect("paginates Azure projects and teams instead of dropping later boards", () =>
+    withNode(
+      Effect.gen(function* () {
+        const calls: ReadonlyArray<string>[] = [];
+        const api = yield* host({
+          azure: ({ args }) =>
+            Effect.sync(() => {
+              calls.push(args);
+              if (args.includes("project") && args.includes("list")) {
+                return {
+                  value:
+                    args[args.indexOf("--skip") + 1] === "0"
+                      ? Array.from({ length: 100 }, (_, i) => ({
+                          id: `project-${i}`,
+                          name: `Project ${i}`,
+                        }))
+                      : [{ id: "last-project", name: "Last project" }],
+                };
+              }
+              if (args.includes("teams")) {
+                if (!args.includes("projectId=last-project")) return { value: [] };
+                return {
+                  value: args.includes("$skip=0")
+                    ? Array.from({ length: 100 }, (_, i) => ({
+                        id: `team-${i}`,
+                        name: `Team ${i}`,
+                      }))
+                    : [{ id: "last-team", name: "Last team" }],
+                };
+              }
+              return {
+                value: args.includes("team=last-team") ? [{ id: "stories", name: "Stories" }] : [],
+              };
+            }),
+        });
+        const boards = yield* api.listBoards({
+          ...scope,
+          ref: {
+            ...issue,
+            hostKind: "azure-devops",
+            host: "dev.azure.com",
+            repository: "org/repo",
+          },
+        });
+        assert.strictEqual(boards.length, 1);
+        assert.strictEqual(boards[0]?.title, "Last project / Last team / Stories");
+        assert.strictEqual(
+          calls.filter((args) => args.includes("project") && args.includes("list")).length,
+          2,
+        );
+        assert.strictEqual(
+          calls.some(
+            (args) => args.includes("$skip=100") && args.includes("projectId=last-project"),
+          ),
+          true,
+        );
+      }),
+    ),
+  );
+  it.effect("reports malformed Azure discovery responses as failures", () =>
+    withNode(
+      Effect.gen(function* () {
+        const api = yield* host({
+          azure: () => Effect.succeed({ value: [{ name: "Missing ID" }] }),
+        });
+        const result = yield* api
+          .listBoards({
+            ...scope,
+            ref: {
+              ...issue,
+              hostKind: "azure-devops",
+              host: "dev.azure.com",
+              repository: "org/repo",
+            },
+          })
+          .pipe(Effect.result);
+        assert.strictEqual(result._tag, "Failure");
+      }),
+    ),
+  );
+  it.effect(
+    "discovers Azure boards across accessible projects in the repository's organization",
+    () =>
+      withNode(
+        Effect.gen(function* () {
+          const calls: ReadonlyArray<string>[] = [];
+          const api = yield* host({
+            azure: ({ args }) =>
+              Effect.sync(() => {
+                calls.push(args);
+                if (args.includes("project") && args.includes("list")) {
+                  return {
+                    value: [
+                      { id: "project-one", name: "First project" },
+                      { id: "project-two", name: "Other project" },
+                    ],
+                  };
+                }
+                if (args.includes("teams")) {
+                  return { value: [{ id: "team-one", name: "Team" }] };
+                }
+                if (args.includes("boards")) {
+                  return { value: [{ id: "stories", name: "Stories" }] };
+                }
+                return {};
+              }),
+          });
+          const boards = yield* api.listBoards({
+            ...scope,
+            ref: {
+              ...issue,
+              hostKind: "azure-devops",
+              host: "dev.azure.com",
+              repository: "org/First project",
+            },
+          });
+          assert.deepStrictEqual(
+            boards.map((board) => board.locator),
+            [
+              {
+                kind: "azure-board",
+                host: "dev.azure.com",
+                organization: "org",
+                project: "First project",
+                team: "team-one",
+                boardId: "stories",
+              },
+              {
+                kind: "azure-board",
+                host: "dev.azure.com",
+                organization: "org",
+                project: "Other project",
+                team: "team-one",
+                boardId: "stories",
+              },
+            ],
+          );
+          assert.strictEqual(boards[1]?.title, "Other project / Team / Stories");
+          assert.strictEqual(
+            calls.every((args) => args.includes("https://dev.azure.com/org")),
+            true,
+          );
+        }),
+      ),
+  );
   it.effect("lists real GitHub issues and excludes PRs, rejecting malformed issue identities", () =>
     withNode(
       Effect.gen(function* () {

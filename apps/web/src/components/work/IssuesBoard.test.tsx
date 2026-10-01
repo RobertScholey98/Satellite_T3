@@ -287,6 +287,33 @@ afterEach(async () => {
 });
 
 describe("project board selection", () => {
+  it("shows a discovery failure in the picker and retries without entering board details", async () => {
+    commands.listBoards.mockRejectedValueOnce(new Error("Azure CLI request failed"));
+    await mount();
+    await click("Connect board");
+    let dialog = renderer!.root.findByProps({ role: "dialog" });
+    expect(text(dialog)).toContain("Could not discover boards");
+    expect(text(dialog)).toContain("Azure CLI request failed");
+    expect(dialog.findAllByType("input")).toHaveLength(0);
+    await click("Retry discovery", dialog);
+    dialog = renderer!.root.findByProps({ role: "dialog" });
+    expect(text(dialog)).toContain(discovered.title);
+    expect(text(dialog)).not.toContain("Could not discover boards");
+    expect(commands.openBoard).not.toHaveBeenCalled();
+  });
+
+  it("keeps the picker visible while discovery loads and updates it when boards arrive", async () => {
+    const discovery =
+      deferred<ReturnType<typeof AsyncResult.success<readonly IssueBoardSummary[]>>>();
+    commands.listBoards.mockReturnValueOnce(discovery.promise);
+    await mount();
+    await click("Connect board");
+    const dialog = renderer!.root.findByProps({ role: "dialog" });
+    expect(text(dialog)).toContain("Finding available boards");
+    expect(dialog.findAllByType("input")).toHaveLength(0);
+    await act(async () => discovery.resolve(AsyncResult.success([discovered])));
+    expect(text(renderer!.root.findByProps({ role: "dialog" }))).toContain(discovered.title);
+  });
   it("leaves account-wide discoveries unselected on entering a project", async () => {
     await mount();
     expect(commands.openBoard).not.toHaveBeenCalled();
