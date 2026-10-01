@@ -74,11 +74,8 @@ import {
   useTheme,
 } from "../../hooks/useTheme";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
-import {
-  useClientSettings,
-  useClientSettingsHydrated,
-  useUpdateClientSettings,
-} from "../../hooks/useSettings";
+import { useClientSettings, useClientSettingsHydrated } from "../../hooks/useSettings";
+import { setPillModeEnabled } from "./pillMode";
 import {
   useScopedSettings,
   useScopedSettingsMixed,
@@ -2150,7 +2147,7 @@ function LegacyFeaturesSection() {
 export function GeneralSettingsPanel() {
   const pillPreference = useClientSettings((settings) => settings.satellitePillEnabled);
   const clientSettingsHydrated = useClientSettingsHydrated();
-  const updateClientSettings = useUpdateClientSettings();
+  const [savingPillMode, setSavingPillMode] = useState(false);
   const pillActive = Boolean(window.satelliteBridge);
   const pillEnabled = pillPreference ?? pillActive;
   const modifierLabel = isMacPlatform(navigator.platform) ? "⌘" : "Ctrl";
@@ -2280,10 +2277,13 @@ export function GeneralSettingsPanel() {
             control={
               <Switch
                 checked={pillEnabled}
-                disabled={!clientSettingsHydrated}
-                onCheckedChange={(checked) =>
-                  void updateClientSettings({ satellitePillEnabled: checked })
-                }
+                disabled={!clientSettingsHydrated || savingPillMode}
+                onCheckedChange={(checked) => {
+                  setSavingPillMode(true);
+                  void setPillModeEnabled(checked, pillActive).finally(() =>
+                    setSavingPillMode(false),
+                  );
+                }}
                 aria-label="Pill mode"
               />
             }
