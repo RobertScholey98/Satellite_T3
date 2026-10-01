@@ -192,9 +192,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
-      // Titles need only the supplied prompt, not configuration from the checkout.
+      // Titles and notebook updates need only the supplied prompt, not checkout context.
+      // Avoid --bare: it also skips the subscription's OAuth credentials.
       const workingDirectory =
-        operation === "generateThreadTitle"
+        operation === "generateThreadTitle" || operation === "generateIdeaUpdate"
           ? yield* fileSystem
               .makeTempDirectoryScoped({ prefix: "t3code-claude-title-" })
               .pipe(
@@ -208,7 +209,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         [
           "-p",
           ...(operation === "generateIdeaUpdate"
-            ? ["--bare", "--no-session-persistence", "--setting-sources", ""]
+            ? ["--no-session-persistence", "--setting-sources", ""]
             : []),
           "--output-format",
           "json",

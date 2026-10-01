@@ -50,6 +50,10 @@ function makeFakeClaudeBinary(dir: string) {
         "  process.exit(code);",
         "}",
         "",
+        'if (argv.includes("--bare")) {',
+        '  fail("Not logged in · Please run /login", 1);',
+        "}",
+        "",
         'const permissionIndex = argv.indexOf("--permission-mode");',
         'if (permissionIndex === -1 || argv[permissionIndex + 1] !== "dontAsk") {',
         '  fail("text generation must deny permission prompts", 12);',
@@ -278,25 +282,29 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
     ),
   );
 
-  it.effect("generates notebook edits without tools or persistent sessions", () =>
-    withFakeClaudeEnv(
-      {
-        output: '{"structured_output":{"edits":[],"summary":"No new decisions."}}',
-        argsMustContain: "--bare --no-session-persistence --setting-sources",
-      },
-      (generation) =>
-        Effect.gen(function* () {
-          const result = yield* generation.generateIdeaUpdate!({
-            cwd: process.cwd(),
-            prompt: "Organize the notebook.",
-            modelSelection: createModelSelection(
-              ProviderInstanceId.make("claudeAgent"),
-              SYNTHETIC_CLAUDE_THINKING_MODEL,
-            ),
-          });
-          expect(result).toEqual({ edits: [], summary: "No new decisions." });
-        }),
-    ),
+  it.effect(
+    "generates notebook edits with subscription login, without tools or persistent sessions",
+    () =>
+      withFakeClaudeEnv(
+        {
+          output: '{"structured_output":{"edits":[],"summary":"No new decisions."}}',
+          argsMustContain: "--no-session-persistence --setting-sources",
+          argsMustNotContain: "--bare",
+          cwdMustNotBe: process.cwd(),
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const result = yield* generation.generateIdeaUpdate!({
+              cwd: process.cwd(),
+              prompt: "Organize the notebook.",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_THINKING_MODEL,
+              ),
+            });
+            expect(result).toEqual({ edits: [], summary: "No new decisions." });
+          }),
+      ),
   );
 
   it.effect("forwards Claude thinking settings without passing unsupported effort", () =>
