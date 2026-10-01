@@ -75,6 +75,9 @@ export default mergeConfig(
       },
     },
     pack: {
+      // The UMD entry forwards require through a factory, hiding its relative
+      // imports from the bundler. Its ESM entry keeps the parser self-contained.
+      alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
       // The executable embeds one entry; the history worker becomes a hidden
       // subcommand there instead of a sibling script.
       entry: packExecutable ? ["src/bin.ts"] : ["src/bin.ts", "src/claude-history-worker.ts"],
