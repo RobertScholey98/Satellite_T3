@@ -29,6 +29,7 @@ import {
   PlusIcon,
   LinkIcon,
   TrashIcon,
+  XIcon,
 } from "lucide-react";
 import {
   createContext,
@@ -58,7 +59,6 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { SidebarInset } from "../ui/sidebar";
-import { PanelTabCloseButton } from "../ui/panel-tab-close-button";
 import {
   AlertDialog,
   AlertDialogPopup,
@@ -332,12 +332,15 @@ function IdeaWorkspace({ threadRef }: { threadRef: ScopedThreadRef }) {
                 </span>
               </Button>
               {tab.kind !== "thread" ? (
-                <PanelTabCloseButton
-                  label="Close tab"
+                <Button
+                  size="icon-micro"
+                  variant="ghost-muted"
+                  aria-label="Close tab"
+                  title="Close tab"
                   onClick={() => useIdeaWorkspaceStore.getState().close(key, ideaTabKey(tab))}
                 >
-                  <FileTextIcon className="size-3" />
-                </PanelTabCloseButton>
+                  <XIcon />
+                </Button>
               ) : null}
             </div>
           ))}
