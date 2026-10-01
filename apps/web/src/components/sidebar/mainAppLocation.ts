@@ -1,5 +1,6 @@
-import { useLocation, useNavigate } from "@tanstack/react-router";
+import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { useCallback, useEffect } from "react";
+import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 
 // Settings, Usage, and Pull Requests replace the sidebar utility row with a
 // Back button. Everything else is the main app. Legacy `/projects/<key>` links
@@ -15,17 +16,19 @@ export function isSidebarUtilityPage(pathname: string) {
   );
 }
 
-let mainAppHref: string | null = null;
+let mainAppLocation: { href: string; draftId?: DraftId } | null = null;
 
 // Mount once in the app shell. Records the latest main app URL so Back can
 // return there no matter how many utility pages were visited since.
 export function MainAppLocationTracker() {
+  const draftId = useParams({ strict: false, select: (params) => params.draftId });
   const href = useLocation({
     select: (location) => (isSidebarUtilityPage(location.pathname) ? null : location.href),
   });
   useEffect(() => {
-    if (href !== null) mainAppHref = href;
-  }, [href]);
+    if (href !== null)
+      mainAppLocation = { href, ...(draftId ? { draftId: DraftId.make(draftId) } : {}) };
+  }, [draftId, href]);
   return null;
 }
 
@@ -33,5 +36,15 @@ export function MainAppLocationTracker() {
 // the app was opened directly on a utility page.
 export function useNavigateToMainApp() {
   const navigate = useNavigate();
-  return useCallback(() => navigate({ href: mainAppHref ?? "/" }), [navigate]);
+  return useCallback(() => {
+    const draft = mainAppLocation?.draftId
+      ? useComposerDraftStore.getState().getDraftSession(mainAppLocation.draftId)
+      : null;
+    const href =
+      mainAppLocation &&
+      (!mainAppLocation.draftId || (draft && (draft.purpose !== "idea" || !draft.promotedTo)))
+        ? mainAppLocation.href
+        : "/";
+    return navigate({ href });
+  }, [navigate]);
 }

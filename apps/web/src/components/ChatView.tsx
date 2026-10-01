@@ -8562,12 +8562,11 @@ export default function ChatView(props: ChatViewProps) {
       } else {
         turnStartSucceeded = true;
         if (isIdea && isLocalDraftThread) {
-          markPromotedDraftThreadByRef(scopeThreadRef(environmentId, threadIdForSend));
-          finalizePromotedDraftThreadByRef(scopeThreadRef(environmentId, threadIdForSend));
-          void navigate({
-            to: "/ideas",
-            search: { environment: environmentId, idea: threadIdForSend },
-          });
+          const ideaThreadRef = scopeThreadRef(environmentId, threadIdForSend);
+          markPromotedDraftThreadByRef(ideaThreadRef);
+          if (currentRouteThreadKeyRef.current !== routeThreadKey) {
+            finalizePromotedDraftThreadByRef(ideaThreadRef);
+          }
         }
         if (draftId && issueAttemptForSend) useIssueDraftStore.getState().remove(draftId);
         if (embeddedDraft) props.onDraftSubmitted?.(scopeThreadRef(environmentId, threadIdForSend));

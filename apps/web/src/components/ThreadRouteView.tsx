@@ -1,6 +1,6 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import ChatView from "./ChatView";
@@ -46,6 +46,7 @@ import { resolveThreadSyncPhase } from "../threadSync";
  */
 export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
   const navigate = useNavigate();
+  const router = useRouter();
   const draftId = target.kind === "draft" ? target.draftId : null;
   const draftSession = useComposerDraftStore((store) =>
     draftId === null ? null : store.getDraftSession(draftId),
@@ -66,13 +67,16 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
   const backgroundSubmissionPending = useBackgroundDraftSubmissionPending(
     target.kind === "draft" ? serverThreadRef : null,
   );
+  const isIdeaDraft = draftSession?.purpose === "idea";
   const canonicalThreadRef =
     target.kind === "draft"
-      ? resolveDraftPromotionNavigationTarget({
-          serverThreadRef,
-          serverThread,
-          backgroundSubmissionPending,
-        })
+      ? isIdeaDraft
+        ? (draftSession.promotedTo ?? null)
+        : resolveDraftPromotionNavigationTarget({
+            serverThreadRef,
+            serverThread,
+            backgroundSubmissionPending,
+          })
       : null;
 
   const shell = useEnvironmentQuery(
@@ -135,11 +139,31 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
       return;
     }
     let cancelled = false;
-    void waitForDraftHeroTransition().then(() => {
+    void waitForDraftHeroTransition().then(async () => {
       if (cancelled) {
+        if (
+          isIdeaDraft &&
+          !router.state.matches.some(
+            (match) => "draftId" in match.params && match.params.draftId === draftId,
+          )
+        ) {
+          finalizePromotedDraftThreadByRef(canonicalThreadRef);
+        }
         return;
       }
-      void navigate({
+      if (isIdeaDraft) {
+        await navigate({
+          to: "/ideas",
+          search: {
+            environment: canonicalThreadRef.environmentId,
+            idea: canonicalThreadRef.threadId,
+          },
+          replace: true,
+        });
+        finalizePromotedDraftThreadByRef(canonicalThreadRef);
+        return;
+      }
+      await navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(canonicalThreadRef),
         replace: true,
@@ -148,7 +172,7 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
     return () => {
       cancelled = true;
     };
-  }, [canonicalThreadRef, navigate]);
+  }, [canonicalThreadRef, draftId, isIdeaDraft, navigate, router]);
 
   useEffect(() => {
     if (target.kind !== "draft" || draftSession || canonicalThreadRef) {

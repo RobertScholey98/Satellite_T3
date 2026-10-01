@@ -33,6 +33,7 @@ import {
 } from "../panelAnimations";
 import LegacyThreadSidebar from "./LegacySidebar";
 import ThreadSidebar from "./Sidebar";
+import { IdeasSidebar } from "./ideas/IdeasSidebar";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
 import { SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { MainAppLocationTracker } from "./sidebar/mainAppLocation";
@@ -206,7 +207,7 @@ function NavigationHistoryShortcuts() {
   return null;
 }
 
-// Settings swaps the thread sidebar out of the tree. Keep the lightweight
+// Settings and Ideas swap the thread sidebar out of the tree. Keep the lightweight
 // project projection subscribed so returning to a draft never renders the
 // zero-project state while the environment snapshot reconnects.
 function ProjectProjectionRetention() {
@@ -219,12 +220,11 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const legacySidebarEnabled = useLegacySidebarEnabled();
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
-  // Settings routes show the settings nav in place of whichever thread
-  // sidebar is active.
   const pathname = useLocation({ select: (location) => location.pathname });
   const panelAnimationsSuppressed = usePanelNavigationSuppression(pathname);
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
   const isOnSettings = pathname === "/settings" || pathname.startsWith("/settings/");
+  const isOnIdeas = pathname === "/ideas";
   const isMacosDesktop = isElectron && !window.satelliteBridge && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   // Subscribed rather than read once: the clamp must track live window size,
@@ -305,7 +305,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           collapsible="offcanvas"
           data-app-sidebar=""
           role="navigation"
-          aria-label={isOnSettings ? "Settings" : "Threads"}
+          aria-label={isOnSettings ? "Settings" : isOnIdeas ? "Ideas" : "Threads"}
           resizable={{
             maxWidth: sidebarMaximumWidth,
             minWidth: THREAD_SIDEBAR_MIN_WIDTH,
@@ -320,6 +320,11 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             <>
               <SidebarChromeHeader isElectron={isElectron} />
               <SettingsSidebarNav pathname={pathname} />
+            </>
+          ) : isOnIdeas ? (
+            <>
+              <SidebarChromeHeader isElectron={isElectron} />
+              <IdeasSidebar />
             </>
           ) : legacySidebarEnabled ? (
             <LegacyThreadSidebar />

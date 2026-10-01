@@ -20,7 +20,6 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
 import {
-  ArrowLeftIcon,
   BrainIcon,
   FileTextIcon,
   MessageSquareIcon,
@@ -47,8 +46,6 @@ import remarkGfm from "remark-gfm";
 
 import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { useProjects } from "../../state/entities";
-import { useEnvironments } from "../../state/environments";
 import { ideaEnvironment } from "../../state/ideas";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -60,7 +57,7 @@ import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
-import { SidebarInset } from "../ui/sidebar";
+import { SidebarInset, useSidebar } from "../ui/sidebar";
 import { PanelTabCloseButton } from "../ui/panel-tab-close-button";
 import {
   AlertDialog,
@@ -136,12 +133,7 @@ export function IdeasPage({
   environment?: string | undefined;
   idea?: string | undefined;
 }) {
-  const { environments } = useEnvironments();
-  const projects = useProjects();
-  const navigate = useNavigate();
-  const [filter, setFilter] = useState("");
-  const [projectFilter, setProjectFilter] = useState("");
-  const compact = useMediaQuery("max-md");
+  const { isMobile, setOpen, setOpenMobile } = useSidebar();
   const selected =
     environment && idea
       ? { environmentId: EnvironmentId.make(environment), threadId: ThreadId.make(idea) }
@@ -150,91 +142,27 @@ export function IdeasPage({
     <SidebarInset className="h-dvh min-h-0 overflow-hidden">
       <WorkspacePageHeader electron={isElectron}>
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          {compact && selected ? (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Back to ideas"
-              onClick={() =>
-                void navigate({ to: "/ideas", search: { environment: undefined, idea: undefined } })
-              }
-            >
-              <ArrowLeftIcon />
-            </Button>
-          ) : null}
           <BrainIcon className="size-4 text-muted-foreground" />
           <h1 className="text-sm font-medium">Ideas</h1>
         </div>
       </WorkspacePageHeader>
       <div className="flex min-h-0 flex-1">
-        {!compact || !selected ? (
-          <aside
-            className="flex w-full shrink-0 flex-col border-r border-border md:w-64"
-            aria-label="Ideas list"
-          >
-            <div className="space-y-2 p-3">
-              <Input
-                aria-label="Find an idea"
-                placeholder="Find an idea"
-                value={filter}
-                onChange={(event) => setFilter(event.target.value)}
-              />
-              <Select
-                value={projectFilter}
-                onValueChange={(value) => setProjectFilter(value ?? "")}
-              >
-                <SelectTrigger size="sm" aria-label="Filter ideas by project">
-                  <SelectValue placeholder="All projects" />
-                </SelectTrigger>
-                <SelectPopup>
-                  <SelectItem value="">All projects</SelectItem>
-                  {projects.map((project) => (
-                    <SelectItem
-                      key={`${project.environmentId}:${project.id}`}
-                      value={`${project.environmentId}:${project.id}`}
-                    >
-                      {project.title} ·{" "}
-                      {
-                        environments.find((item) => item.environmentId === project.environmentId)
-                          ?.label
-                      }
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto">
-              {environments.map((item) => (
-                <EnvironmentIdeas
-                  key={item.environmentId}
-                  environmentId={item.environmentId}
-                  label={item.label}
-                  filter={filter}
-                  projectFilter={projectFilter}
-                  selectedId={item.environmentId === environment ? idea : undefined}
-                />
-              ))}
-              {environments.length === 0 ? (
-                <p className="p-4 text-sm text-muted-foreground">
-                  Connect to an environment to see its ideas.
-                </p>
-              ) : null}
-            </div>
-            <p className="border-t border-border p-3 text-xs leading-5 text-muted-foreground">
-              Start an idea by selecting Idea in a new thread.
-            </p>
-          </aside>
-        ) : null}
         {selected ? (
           <IdeaWorkspace key={scopedThreadKey(selected)} threadRef={selected} />
         ) : (
-          <div className="hidden flex-1 items-center justify-center p-8 md:flex">
+          <div className="flex flex-1 items-center justify-center p-8">
             <div className="max-w-sm space-y-3">
               <h2 className="text-lg font-medium">Room to think</h2>
               <p className="text-sm leading-6 text-muted-foreground">
                 Open an idea to continue its conversation, read the pitch, or work through its
                 notes. Your implementation threads stay separate.
               </p>
+              <Button
+                variant="outline"
+                onClick={() => (isMobile ? setOpenMobile(true) : setOpen(true))}
+              >
+                Open ideas
+              </Button>
             </div>
           </div>
         )}
@@ -242,97 +170,6 @@ export function IdeasPage({
     </SidebarInset>
   );
 }
-
-function EnvironmentIdeas({
-  environmentId,
-  label,
-  filter,
-  projectFilter,
-  selectedId,
-}: {
-  environmentId: EnvironmentId;
-  label: string;
-  filter: string;
-  projectFilter: string;
-  selectedId?: string | undefined;
-}) {
-  const query = useEnvironmentQuery(ideaEnvironment.list({ environmentId, input: {} }));
-  const projects = useProjects();
-  const navigate = useNavigate();
-  const ideas =
-    query.data?.ideas.filter(
-      (item) =>
-        (!projectFilter || `${environmentId}:${item.projectId}` === projectFilter) &&
-        `${item.title} ${item.excerpt}`.toLowerCase().includes(filter.toLowerCase()),
-    ) ?? [];
-  return (
-    <div className="px-2 pb-3">
-      {query.error ? (
-        <div className="space-y-2 p-2 text-xs text-muted-foreground">
-          <p>
-            {label}: {query.error}
-          </p>
-          <Button size="xs" variant="outline" onClick={query.refresh}>
-            Retry
-          </Button>
-        </div>
-      ) : null}
-      {query.isPending && !query.data ? (
-        <p className="p-2 text-xs text-muted-foreground">Loading {label}…</p>
-      ) : null}
-      {query.data?.ideas.length === 0 ? (
-        <p className="p-2 text-xs text-muted-foreground">No ideas in {label} yet.</p>
-      ) : null}
-      {["active", "settled", "deleting"].map((status) => {
-        const group = ideas.filter((item) => item.status === status);
-        if (!group.length) return null;
-        const content = (
-          <>
-            {Array.from(new Set(group.map((item) => item.projectId))).map((projectId) => (
-              <div key={projectId} className="mb-3">
-                <p className="px-2 py-2 text-xs text-muted-foreground">
-                  {projects.find(
-                    (item) => item.environmentId === environmentId && item.id === projectId,
-                  )?.title ?? "Project"}
-                  <span className="opacity-60"> · {label}</span>
-                </p>
-                {group
-                  .filter((item) => item.projectId === projectId)
-                  .map((item) => (
-                    <button
-                      key={item.threadId}
-                      className={`w-full rounded-md px-2 py-2 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring ${selectedId === item.threadId ? "bg-accent" : ""}`}
-                      onClick={() =>
-                        void navigate({
-                          to: "/ideas",
-                          search: { environment: environmentId, idea: item.threadId },
-                        })
-                      }
-                    >
-                      <span className="block truncate text-sm">{item.title}</span>
-                      <span className="line-clamp-2 text-xs leading-5 text-muted-foreground">
-                        {item.status === "deleting"
-                          ? (item.deletionError ?? "Deleting…")
-                          : item.excerpt || "The pitch will grow with the conversation."}
-                      </span>
-                    </button>
-                  ))}
-              </div>
-            ))}
-          </>
-        );
-        return status === "settled" ? (
-          <IdeaDisclosure key={status} title={<>Settled · {group.length}</>}>
-            {content}
-          </IdeaDisclosure>
-        ) : (
-          <div key={status}>{content}</div>
-        );
-      })}
-    </div>
-  );
-}
-
 function IdeaWorkspace({ threadRef }: { threadRef: ScopedThreadRef }) {
   const query = useEnvironmentQuery(
     ideaEnvironment.get({
