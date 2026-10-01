@@ -40,6 +40,7 @@ import { useAtomCommand } from "~/state/use-atom-command";
 
 import { randomUUID } from "~/lib/utils";
 
+import { SatelliteLoader } from "../SatelliteLoader";
 import { Button } from "../ui/button";
 import {
   WorkspaceBreadcrumb,
@@ -1563,7 +1564,18 @@ function BoardConfiguration({
           {!view && !manual ? (
             <div className="grid gap-2">
               {discoveryPending || retryingDiscovery ? (
-                <p role="status">Finding available boards…</p>
+                <div
+                  role="status"
+                  className="flex items-center gap-2 text-sm text-muted-foreground"
+                >
+                  <SatelliteLoader
+                    loading
+                    size={22}
+                    role="presentation"
+                    aria-label="Finding available boards"
+                  />
+                  Finding available boards…
+                </div>
               ) : discoveryError ? (
                 <div className="grid gap-2">
                   <p role="alert" className="text-sm text-destructive">
@@ -1597,9 +1609,6 @@ function BoardConfiguration({
                   </p>
                 </div>
               ))}
-              <Button variant="ghost" disabled={busy} onClick={() => setManual(true)}>
-                Enter board details
-              </Button>
             </div>
           ) : !view ? (
             <div className="grid gap-3">
@@ -1737,6 +1746,16 @@ function BoardConfiguration({
           {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
         </DialogPanel>
         <DialogFooter>
+          {!view && !manual ? (
+            <Button
+              variant="link"
+              className="sm:mr-auto"
+              disabled={busy}
+              onClick={() => setManual(true)}
+            >
+              Manual setup
+            </Button>
+          ) : null}
           {!initial && (view || manual) ? (
             <Button
               variant="ghost"
