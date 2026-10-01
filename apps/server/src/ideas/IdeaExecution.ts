@@ -4,7 +4,7 @@ import type { ThreadId } from "@t3tools/contracts";
 
 export interface IdeaExecutionContext {
   readonly cwd: string;
-  readonly mainRevision: string;
+  readonly mainRevision: string | null;
   readonly projectDirectory: string;
   readonly deletionEpoch: number;
   readonly context: string;
@@ -20,7 +20,7 @@ export function setIdeaExecution(threadId: ThreadId, execution: IdeaExecutionCon
 
 export const readIdeaExecution = (threadId: ThreadId) => executions.get(threadId);
 
-export function refreshIdeaMain(threadId: ThreadId, mainRevision: string) {
+export function refreshIdeaMain(threadId: ThreadId, mainRevision: string | null) {
   const execution = executions.get(threadId);
   if (execution) executions.set(threadId, { ...execution, mainRevision });
 }
