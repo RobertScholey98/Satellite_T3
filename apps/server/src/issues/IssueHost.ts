@@ -174,6 +174,7 @@ const isArray = Schema.is(Schema.Array(Schema.Unknown));
 const decodeIssueDetail = Schema.decodeEffect(IssueDetail);
 const decodeIssueSummary = Schema.decodeEffect(IssueSummary);
 const readRecord = (text: string) => decodeRecordJson(text).pipe(Effect.mapError(invalid));
+const readJson = (text: string) => decodeJson(text).pipe(Effect.mapError(invalid));
 const str = (value: unknown, fallback = ""): string =>
   typeof value === "string" ? value : fallback;
 const num = (value: unknown): number => (typeof value === "number" ? value : 0);
@@ -278,6 +279,24 @@ export const makeIssueHost = (options: {
           Effect.map((output) => output.stdout),
           Effect.mapError(remoteError),
         );
+    const azCli = (cwd: string, organization: string, args: ReadonlyArray<string>) =>
+      azure
+        .execute({
+          cwd,
+          args: [
+            ...args,
+            "--organization",
+            `https://dev.azure.com/${segment(organization)}`,
+            "--only-show-errors",
+            "--output",
+            "json",
+          ],
+          maxOutputBytes: 4 * 1024 * 1024,
+        })
+        .pipe(
+          Effect.map((output) => output.stdout),
+          Effect.mapError(remoteError),
+        );
     const az = Effect.fnUntraced(function* (
       cwd: string,
       organization: string,
@@ -287,13 +306,12 @@ export const makeIssueHost = (options: {
       query: Record<string, string> = {},
       body?: unknown,
       method = "GET",
+      // The CLI parses this as a float after stripping "-preview", so "7.1-preview.4" is rejected.
       apiVersion = "7.1",
     ) {
       const args = [
         "devops",
         "invoke",
-        "--organization",
-        `https://dev.azure.com/${segment(organization)}`,
         "--area",
         area,
         "--resource",
@@ -302,9 +320,6 @@ export const makeIssueHost = (options: {
         apiVersion,
         "--http-method",
         method,
-        "--only-show-errors",
-        "--output",
-        "json",
       ];
       if (Object.keys(route).length)
         args.push(
@@ -324,7 +339,7 @@ export const makeIssueHost = (options: {
             yield* fs.writeFileString(file, json(body));
             args.push("--in-file", file);
           }
-          return (yield* azure.execute({ cwd, args, maxOutputBytes: 4 * 1024 * 1024 })).stdout;
+          return yield* azCli(cwd, organization, args);
         }),
       ).pipe(Effect.mapError(remoteError));
     });
@@ -352,49 +367,44 @@ export const makeIssueHost = (options: {
     };
     const get: IssueHostShape["get"] = Effect.fn("IssueHost.get")(function* (scope) {
       const { ref, cwd } = scope;
-      let text: string;
+      let raw: Record<string, unknown>;
       if (ref.hostKind === "github")
-        text = yield* gh(cwd, ref.host, [`repos/${ref.repository}/issues/${segment(ref.id)}`]);
+        raw = yield* readRecord(
+          yield* gh(cwd, ref.host, [`repos/${ref.repository}/issues/${segment(ref.id)}`]),
+        );
       else if (ref.hostKind === "gitlab")
-        text = yield* gl(
-          cwd,
-          ref.host,
-          `projects/${segment(ref.repository)}/issues/${segment(ref.id)}`,
+        raw = yield* readRecord(
+          yield* gl(cwd, ref.host, `projects/${segment(ref.repository)}/issues/${segment(ref.id)}`),
         );
       else if (ref.hostKind === "forgejo")
-        text = (yield* forgejo
-          .api({
-            cwd,
-            host: ref.host,
-            repository: ref.repository,
-            path: `repos/${ref.repository}/issues/${segment(ref.id)}`,
-          })
-          .pipe(Effect.mapError(remoteError))).stdout;
+        raw = yield* readRecord(
+          (yield* forgejo
+            .api({
+              cwd,
+              host: ref.host,
+              repository: ref.repository,
+              path: `repos/${ref.repository}/issues/${segment(ref.id)}`,
+            })
+            .pipe(Effect.mapError(remoteError))).stdout,
+        );
       else if (ref.hostKind === "bitbucket")
-        text = (yield* bitbucket
-          .request({
-            method: "GET",
-            url: `repositories/${ref.repository}/issues/${segment(ref.id)}`,
-            maxBytes: 4 * 1024 * 1024,
-          })
-          .pipe(Effect.mapError(remoteError))).body;
+        raw = yield* readRecord(
+          (yield* bitbucket
+            .request({
+              method: "GET",
+              url: `repositories/${ref.repository}/issues/${segment(ref.id)}`,
+              maxBytes: 4 * 1024 * 1024,
+            })
+            .pipe(Effect.mapError(remoteError))).body,
+        );
       else if (ref.hostKind === "azure-devops") {
-        const scope = azureScope(ref);
-        const [workItem] = yield* azureWorkItems(cwd, scope.organization, scope.project, [
-          Number(ref.id),
-        ]);
-        if (!workItem)
-          return yield* new IssueOperationError({
-            reason: "not-found",
-            message: "This work item no longer exists.",
-          });
-        text = json(workItem);
+        const { organization, project } = azureScope(ref);
+        raw = yield* azureWorkItem(cwd, organization, project, ref.id);
       } else
         return yield* new IssueOperationError({
           reason: "unavailable",
           message: "This repository host does not expose issues.",
         });
-      const raw = yield* readRecord(text);
       yield* validateIssue(scope, raw);
       const detail = issueFromHost(scope, raw);
       const commentEntries: unknown[] = [];
@@ -710,6 +720,20 @@ export const makeIssueHost = (options: {
       );
       return (yield* validate(AzureWorkItemList, batch)).value;
     });
+    const azureWorkItem = Effect.fnUntraced(function* (
+      cwd: string,
+      organization: string,
+      project: string,
+      id: string,
+    ) {
+      const [workItem] = yield* azureWorkItems(cwd, organization, project, [Number(id)]);
+      if (!workItem)
+        return yield* new IssueOperationError({
+          reason: "not-found",
+          message: "This work item no longer exists.",
+        });
+      return workItem;
+    });
     const azureBoardMetadata = Effect.fnUntraced(function* (
       cwd: string,
       locator: Extract<IssueBoardLocator, { kind: "azure-board" }>,
@@ -871,31 +895,19 @@ export const makeIssueHost = (options: {
           const { organization } = azureScope(ref);
           const named = Schema.Struct({ id: TrimmedNonEmptyString, name: Schema.String });
           const namedList = Schema.Struct({ value: Schema.Array(named) });
-          const organizationUrl = `https://dev.azure.com/${segment(organization)}`;
           const pageSize = 100;
           const projects: { id: string; name: string }[] = [];
           for (let skip = 0; ; skip += pageSize) {
-            const output = yield* azure
-              .execute({
-                cwd,
-                args: [
-                  "devops",
-                  "project",
-                  "list",
-                  "--organization",
-                  organizationUrl,
-                  "--top",
-                  String(pageSize),
-                  "--skip",
-                  String(skip),
-                  "--only-show-errors",
-                  "--output",
-                  "json",
-                ],
-                maxOutputBytes: 4 * 1024 * 1024,
-              })
-              .pipe(Effect.mapError(remoteError));
-            const page = yield* validate(namedList, yield* readRecord(output.stdout));
+            const output = yield* azCli(cwd, organization, [
+              "devops",
+              "project",
+              "list",
+              "--top",
+              String(pageSize),
+              "--skip",
+              String(skip),
+            ]);
+            const page = yield* validate(namedList, yield* readRecord(output));
             projects.push(...page.value);
             if (page.value.length < pageSize) break;
           }
@@ -906,32 +918,18 @@ export const makeIssueHost = (options: {
               Effect.gen(function* () {
                 const teams: { id: string; name: string }[] = [];
                 for (let skip = 0; ; skip += pageSize) {
-                  const output = yield* azure
-                    .execute({
-                      cwd,
-                      args: [
-                        "devops",
-                        "team",
-                        "list",
-                        "--organization",
-                        organizationUrl,
-                        "--project",
-                        project.id,
-                        "--top",
-                        String(pageSize),
-                        "--skip",
-                        String(skip),
-                        "--only-show-errors",
-                        "--output",
-                        "json",
-                      ],
-                      maxOutputBytes: 4 * 1024 * 1024,
-                    })
-                    .pipe(Effect.mapError(remoteError));
-                  const page = yield* validate(
-                    Schema.Array(named),
-                    yield* decodeJson(output.stdout).pipe(Effect.mapError(invalid)),
-                  );
+                  const output = yield* azCli(cwd, organization, [
+                    "devops",
+                    "team",
+                    "list",
+                    "--project",
+                    project.id,
+                    "--top",
+                    String(pageSize),
+                    "--skip",
+                    String(skip),
+                  ]);
+                  const page = yield* validate(Schema.Array(named), yield* readJson(output));
                   teams.push(...page);
                   if (page.length < pageSize) break;
                 }
@@ -1009,7 +1007,13 @@ export const makeIssueHost = (options: {
           );
           return;
         }
-        const metadata = yield* azureBoardMetadata(cwd, locator);
+        const [metadata, workItem] = yield* Effect.all(
+          [
+            azureBoardMetadata(cwd, locator),
+            azureWorkItem(cwd, locator.organization, locator.project, item.issue.ref.id),
+          ],
+          { concurrency: 2 },
+        );
         const column = arr(metadata.columns)
           .map(obj)
           .find((column) => column.id === columnId);
@@ -1017,14 +1021,6 @@ export const makeIssueHost = (options: {
           return yield* new IssueOperationError({
             reason: "invalid",
             message: "The selected Azure board column no longer exists.",
-          });
-        const [workItem] = yield* azureWorkItems(cwd, locator.organization, locator.project, [
-          Number(item.issue.ref.id),
-        ]);
-        if (!workItem)
-          return yield* new IssueOperationError({
-            reason: "not-found",
-            message: "This work item no longer exists.",
           });
         yield* validate(AzureIssueResponse, workItem);
         const fields = obj(workItem.fields);
@@ -1036,29 +1032,18 @@ export const makeIssueHost = (options: {
             message: "The selected column does not map this work item type.",
           });
         const doneField = str(obj(obj(metadata.fields).doneField).referenceName);
-        yield* azure
-          .execute({
-            cwd,
-            args: [
-              "boards",
-              "work-item",
-              "update",
-              "--organization",
-              `https://dev.azure.com/${segment(locator.organization)}`,
-              "--id",
-              item.issue.ref.id,
-              "--state",
-              state,
-              "--fields",
-              `${columnField}=${str(column.name)}`,
-              ...(doneField ? [`${doneField}=false`] : []),
-              "--only-show-errors",
-              "--output",
-              "json",
-            ],
-            maxOutputBytes: 4 * 1024 * 1024,
-          })
-          .pipe(Effect.mapError(remoteError));
+        yield* azCli(cwd, locator.organization, [
+          "boards",
+          "work-item",
+          "update",
+          "--id",
+          item.issue.ref.id,
+          "--state",
+          state,
+          "--fields",
+          `${columnField}=${str(column.name)}`,
+          ...(doneField ? [`${doneField}=false`] : []),
+        ]);
       },
     );
     return { list, get, listBoards, board, move } satisfies IssueHostShape;
