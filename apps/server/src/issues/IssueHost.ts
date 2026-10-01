@@ -323,7 +323,6 @@ export const makeIssueHost = (options: {
             const file = path.join(directory, "request.json");
             yield* fs.writeFileString(file, json(body));
             args.push("--in-file", file);
-            if (method === "PATCH") args.push("--media-type", "application/json-patch+json");
           }
           return (yield* azure.execute({ cwd, args, maxOutputBytes: 4 * 1024 * 1024 })).stdout;
         }),
@@ -381,10 +380,15 @@ export const makeIssueHost = (options: {
           .pipe(Effect.mapError(remoteError))).body;
       else if (ref.hostKind === "azure-devops") {
         const scope = azureScope(ref);
-        text = yield* az(cwd, scope.organization, "wit", "workitems", {
-          project: scope.project,
-          id: ref.id,
-        });
+        const [workItem] = yield* azureWorkItems(cwd, scope.organization, scope.project, [
+          Number(ref.id),
+        ]);
+        if (!workItem)
+          return yield* new IssueOperationError({
+            reason: "not-found",
+            message: "This work item no longer exists.",
+          });
+        text = json(workItem);
       } else
         return yield* new IssueOperationError({
           reason: "unavailable",
@@ -549,21 +553,7 @@ export const makeIssueHost = (options: {
         const ids = (yield* validate(AzureQueryResponse, response)).workItems.map(
           (entry) => entry.id,
         );
-        entries = ids.length
-          ? (yield* validate(
-              AzureWorkItemList,
-              yield* readRecord(
-                yield* az(
-                  cwd,
-                  organization,
-                  "wit",
-                  "workitems",
-                  { project },
-                  { ids: ids.join(",") },
-                ),
-              ),
-            )).value
-          : [];
+        entries = ids.length ? yield* azureWorkItems(cwd, organization, project, ids) : [];
         if (ids.length === 100) nextCursor = String(ids.at(-1));
       } else
         return yield* new IssueOperationError({
@@ -709,6 +699,17 @@ export const makeIssueHost = (options: {
       } while (cursor);
       return { title: str(project.title), locator: resolved, columns, items };
     });
+    const azureWorkItems = Effect.fnUntraced(function* (
+      cwd: string,
+      organization: string,
+      project: string,
+      ids: ReadonlyArray<number>,
+    ) {
+      const batch = yield* readRecord(
+        yield* az(cwd, organization, "wit", "workItemsBatch", { project }, {}, { ids }, "POST"),
+      );
+      return (yield* validate(AzureWorkItemList, batch)).value;
+    });
     const azureBoardMetadata = Effect.fnUntraced(function* (
       cwd: string,
       locator: Extract<IssueBoardLocator, { kind: "azure-board" }>,
@@ -777,17 +778,14 @@ export const makeIssueHost = (options: {
         });
       const entries: unknown[] = [];
       for (let offset = 0; offset < ids.length; offset += 200) {
-        const batch = yield* readRecord(
-          yield* az(
+        entries.push(
+          ...(yield* azureWorkItems(
             cwd,
             locator.organization,
-            "wit",
-            "workitems",
-            { project: locator.project },
-            { ids: ids.slice(offset, offset + 200).join(",") },
-          ),
+            locator.project,
+            ids.slice(offset, offset + 200),
+          )),
         );
-        entries.push(...(yield* validate(AzureWorkItemList, batch)).value);
       }
       const items = yield* Effect.forEach(entries, (entry) =>
         Effect.gen(function* () {
@@ -1020,12 +1018,14 @@ export const makeIssueHost = (options: {
             reason: "invalid",
             message: "The selected Azure board column no longer exists.",
           });
-        const workItem = yield* readRecord(
-          yield* az(cwd, locator.organization, "wit", "workitems", {
-            project: locator.project,
-            id: item.issue.ref.id,
-          }),
-        );
+        const [workItem] = yield* azureWorkItems(cwd, locator.organization, locator.project, [
+          Number(item.issue.ref.id),
+        ]);
+        if (!workItem)
+          return yield* new IssueOperationError({
+            reason: "not-found",
+            message: "This work item no longer exists.",
+          });
         yield* validate(AzureIssueResponse, workItem);
         const fields = obj(workItem.fields);
         const state = str(obj(column.stateMappings)[str(fields["System.WorkItemType"])]);
@@ -1035,23 +1035,30 @@ export const makeIssueHost = (options: {
             reason: "invalid",
             message: "The selected column does not map this work item type.",
           });
-        const patch: { op: string; path: string; value: unknown }[] = [
-          { op: "test", path: "/rev", value: num(workItem.rev) },
-          { op: "add", path: "/fields/System.State", value: state },
-          { op: "add", path: `/fields/${columnField}`, value: str(column.name) },
-        ];
         const doneField = str(obj(obj(metadata.fields).doneField).referenceName);
-        if (doneField) patch.push({ op: "add", path: `/fields/${doneField}`, value: false });
-        yield* az(
-          cwd,
-          locator.organization,
-          "wit",
-          "workitems",
-          { project: locator.project, id: item.issue.ref.id },
-          {},
-          patch,
-          "PATCH",
-        );
+        yield* azure
+          .execute({
+            cwd,
+            args: [
+              "boards",
+              "work-item",
+              "update",
+              "--organization",
+              `https://dev.azure.com/${segment(locator.organization)}`,
+              "--id",
+              item.issue.ref.id,
+              "--state",
+              state,
+              "--fields",
+              `${columnField}=${str(column.name)}`,
+              ...(doneField ? [`${doneField}=false`] : []),
+              "--only-show-errors",
+              "--output",
+              "json",
+            ],
+            maxOutputBytes: 4 * 1024 * 1024,
+          })
+          .pipe(Effect.mapError(remoteError));
       },
     );
     return { list, get, listBoards, board, move } satisfies IssueHostShape;
