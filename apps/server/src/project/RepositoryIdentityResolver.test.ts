@@ -229,6 +229,32 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 
+  it.effect("resolves the identity of a bare repository container", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const container = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-bare-container-test-",
+      });
+
+      yield* git(container, ["init", "--bare", ".bare"]);
+      yield* fileSystem.writeFileString(path.join(container, ".git"), "gitdir: ./.bare\n");
+      yield* git(container, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const identity = yield* resolver.resolve(container);
+      const resolvedIdentityRoot =
+        identity?.rootPath === undefined ? "" : NodeFS.realpathSync.native(identity.rootPath);
+      const resolvedContainer = NodeFS.realpathSync.native(container);
+
+      expect(identity).not.toBeNull();
+      expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
+      expect(normalizeResolvedPath(resolvedIdentityRoot)).toBe(
+        normalizeResolvedPath(resolvedContainer),
+      );
+    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+  );
+
   it.effect("returns null for non-git folders and repos without remotes", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
