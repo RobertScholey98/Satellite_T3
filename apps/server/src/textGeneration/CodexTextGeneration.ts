@@ -1,4 +1,8 @@
-import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
+import {
+  IdeaUpdateGenerationResult,
+  normalizeIdeaUpdateResult,
+  type IdeaUpdateInput,
+} from "../ideas/IdeaUpdateGeneration.ts";
 import { prepareCodexIdeaPolicy } from "../ideas/CodexIdeaPolicy.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -468,9 +472,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       operation: "generateIdeaUpdate",
       cwd: input.cwd,
       prompt: input.prompt,
-      outputSchemaJson: IdeaUpdateResult,
+      outputSchemaJson: IdeaUpdateGenerationResult,
       modelSelection: input.modelSelection,
-    });
+    }).pipe(Effect.map(normalizeIdeaUpdateResult));
 
   return {
     generateIdeaUpdate,

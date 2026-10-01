@@ -1,4 +1,5 @@
 import { IdeaContentEdit, type IdeaNotebook, type ModelSelection } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { ideaSourceKey } from "./IdeaDiscussion.ts";
 import { toJsonSchemaObject } from "../textGeneration/TextGenerationUtils.ts";
@@ -7,13 +8,38 @@ export const IDEA_UPDATE_MESSAGE_CHARS = 40_000;
 export const IDEA_UPDATE_DOCUMENT_CHARS = 125_000;
 export const IDEA_UPDATE_PROMPT_BYTES = 180_000;
 
+const IdeaUpdateTitle = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80));
+
 export const IdeaUpdateResult = Schema.Struct({
   edits: Schema.Array(IdeaContentEdit),
   summary: Schema.String,
-  title: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80))),
+  title: Schema.optional(IdeaUpdateTitle),
 });
 export type IdeaUpdateResult = typeof IdeaUpdateResult.Type;
-export const IDEA_UPDATE_OUTPUT_SCHEMA = toJsonSchemaObject(IdeaUpdateResult);
+
+export const IdeaUpdateGenerationResult = Schema.Struct({
+  edits: Schema.Array(
+    IdeaContentEdit.mapMembers(([pitch, entry, ...remaining]) => [
+      pitch,
+      Schema.Struct({
+        ...entry.fields,
+        restore: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+      }),
+      ...remaining,
+    ]),
+  ),
+  summary: Schema.String,
+  title: Schema.NullOr(IdeaUpdateTitle).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+});
+
+export function normalizeIdeaUpdateResult({
+  title,
+  ...result
+}: typeof IdeaUpdateGenerationResult.Type): IdeaUpdateResult {
+  return title === null ? result : { ...result, title };
+}
+
+export const IDEA_UPDATE_OUTPUT_SCHEMA = toJsonSchemaObject(IdeaUpdateGenerationResult);
 export interface IdeaUpdateInput {
   readonly cwd: string;
   readonly modelSelection: ModelSelection;

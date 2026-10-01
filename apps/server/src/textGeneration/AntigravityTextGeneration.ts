@@ -1,4 +1,8 @@
-import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
+import {
+  IdeaUpdateGenerationResult,
+  normalizeIdeaUpdateResult,
+  type IdeaUpdateInput,
+} from "../ideas/IdeaUpdateGeneration.ts";
 import {
   type ModelSelection,
   type ProviderSetupError,
@@ -421,9 +425,9 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       operation: "generateIdeaUpdate",
       ideaWorkspace: input.cwd,
       prompt: input.prompt,
-      outputSchema: IdeaUpdateResult,
+      outputSchema: IdeaUpdateGenerationResult,
       modelSelection: input.modelSelection,
-    });
+    }).pipe(Effect.map(normalizeIdeaUpdateResult));
 
   return {
     generateIdeaUpdate,

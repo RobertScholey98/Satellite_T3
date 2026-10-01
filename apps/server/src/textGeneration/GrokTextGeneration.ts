@@ -1,4 +1,8 @@
-import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
+import {
+  IdeaUpdateGenerationResult,
+  normalizeIdeaUpdateResult,
+  type IdeaUpdateInput,
+} from "../ideas/IdeaUpdateGeneration.ts";
 import { installTextGenerationToolGuard } from "./AcpTextGenerationGuard.ts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -296,9 +300,9 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       operation: "generateIdeaUpdate",
       cwd: input.cwd,
       prompt: input.prompt,
-      outputSchemaJson: IdeaUpdateResult,
+      outputSchemaJson: IdeaUpdateGenerationResult,
       modelSelection: input.modelSelection,
-    });
+    }).pipe(Effect.map(normalizeIdeaUpdateResult));
 
   return {
     generateIdeaUpdate,

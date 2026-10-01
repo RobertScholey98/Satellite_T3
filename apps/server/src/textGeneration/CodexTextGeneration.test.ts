@@ -37,6 +37,7 @@ interface FakeCodexInput {
   requireArg?: string;
   forbidArg?: string;
   requireOwnedOutput?: boolean;
+  requireStrictSchema?: boolean;
   stdinMustContain?: string;
   stdinMustNotContain?: string;
 }
@@ -54,6 +55,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     requireArg: input.requireArg ?? null,
     forbidArg: input.forbidArg ?? null,
     requireOwnedOutput: input.requireOwnedOutput ?? false,
+    requireStrictSchema: input.requireStrictSchema ?? false,
     stdinMustContain: input.stdinMustContain ?? null,
     stdinMustNotContain: input.stdinMustNotContain ?? null,
     stderr: input.stderr ?? null,
@@ -99,6 +101,18 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         "function fail(message, code) {",
         '  process.stderr.write(message + "\\n");',
         "  process.exit(code);",
+        "}",
+        "if (check.requireStrictSchema) {",
+        "  function validateSchema(schema) {",
+        "    if (schema === null || typeof schema !== 'object') return;",
+        "    for (const value of Object.values(schema)) validateSchema(value);",
+        "    if (!schema.properties) return;",
+        "    for (const key of Object.keys(schema.properties)) {",
+        "      if (!schema.required?.includes(key)) fail('invalid_json_schema: required is missing ' + key, 11);",
+        "    }",
+        "    if (schema.additionalProperties !== false) fail('invalid_json_schema: object must be closed', 12);",
+        "  }",
+        "  validateSchema(JSON.parse(NodeFS.readFileSync(schemaPath, 'utf8')));",
         "}",
         "if (check.requireOwnedOutput && [schemaPath, outputPath].some(file => !file || NodePath.relative(process.cwd(), file).startsWith('..') || NodePath.isAbsolute(NodePath.relative(process.cwd(), file)))) {",
         '  fail("structured output files are outside the idea workspace", 10);',
@@ -185,6 +199,37 @@ function withFakeCodexEnv<A, E, R>(
 }
 
 it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
+  it.effect("sends a strict response schema for notebook updates", () => {
+    const update = {
+      edits: [
+        {
+          kind: "entry.save",
+          id: "workflow",
+          baseRevision: 0,
+          title: "Idea workflow",
+          categoryId: "notes",
+          markdown: "Test the ideas workflow.",
+          sources: [{ kind: "message", messageId: "message-1" }],
+          restore: false,
+        },
+      ],
+      summary: "Recorded the workflow test.",
+      title: "Test the ideas workflow",
+    };
+    return withFakeCodexEnv(
+      { output: JSON.stringify(update), requireStrictSchema: true },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateIdeaUpdate!({
+            cwd,
+            prompt: "Organize the notebook.",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          });
+          expect(result).toEqual(update);
+        }),
+    );
+  });
+
   it.effect(
     "keeps environment model routing for notebook updates while stripping unsafe flags",
     () =>

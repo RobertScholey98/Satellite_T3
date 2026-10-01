@@ -1,4 +1,8 @@
-import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
+import {
+  IdeaUpdateGenerationResult,
+  normalizeIdeaUpdateResult,
+  type IdeaUpdateInput,
+} from "../ideas/IdeaUpdateGeneration.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -516,9 +520,9 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       operation: "generateIdeaUpdate",
       cwd: input.cwd,
       prompt: input.prompt,
-      outputSchemaJson: IdeaUpdateResult,
+      outputSchemaJson: IdeaUpdateGenerationResult,
       modelSelection: input.modelSelection,
-    });
+    }).pipe(Effect.map(normalizeIdeaUpdateResult));
 
   return {
     generateIdeaUpdate,

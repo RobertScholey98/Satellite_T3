@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
 import {
   IdeaArtifactId,
   IdeaCategoryId,
@@ -9,6 +10,8 @@ import {
 import { createIdeaNotebook } from "./IdeaNotebook.ts";
 import {
   boundIdeaUpdateContext,
+  IdeaUpdateGenerationResult,
+  normalizeIdeaUpdateResult,
   validateIdeaUpdateProjection,
   validateIdeaUpdateSources,
   validateIdeaUpdateCoverage,
@@ -16,6 +19,7 @@ import {
 import { constrainClaudeIdeaOptions } from "./ClaudeIdeaPolicy.ts";
 import { validateIdeaIssueDrafts } from "./IdeaPromotion.ts";
 
+const decodeIdeaUpdateGenerationResult = Schema.decodeSync(IdeaUpdateGenerationResult);
 const blank = () => createIdeaNotebook(ThreadId.make("test-idea"), "2026-09-30T00:00:00.000Z");
 const note = {
   kind: "entry.save" as const,
@@ -28,6 +32,34 @@ const note = {
 };
 
 describe("idea update boundaries", () => {
+  it.each([undefined, null])("normalizes updates without a title: %s", (title) => {
+    const result = normalizeIdeaUpdateResult(
+      decodeIdeaUpdateGenerationResult({
+        edits: [note],
+        summary: "Saved a note.",
+        ...(title === undefined ? {} : { title }),
+      }),
+    );
+    expect(result).toEqual({
+      edits: [{ ...note, restore: false }],
+      summary: "Saved a note.",
+    });
+  });
+
+  it("preserves explicit restore requests for rejection by the update validator", () => {
+    const result = normalizeIdeaUpdateResult(
+      decodeIdeaUpdateGenerationResult({
+        edits: [{ ...note, restore: true }],
+        summary: "Restore a note.",
+        title: "Idea workflow",
+      }),
+    );
+    expect(result.title).toBe("Idea workflow");
+    expect(validateIdeaUpdateSources(blank(), result.edits, new Map([["message:old", 1]]))).toBe(
+      "Automatic updates cannot restore a deleted note.",
+    );
+  });
+
   it("keeps a new design study complete when an older study already filled the document budget", () => {
     const notebook = { ...blank(), update: { ...blank().update, processedSequence: 4 } };
     const context = boundIdeaUpdateContext(
