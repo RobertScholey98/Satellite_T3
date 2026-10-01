@@ -152,15 +152,6 @@ export class IdeaRuntime extends Context.Service<
         resolveIdeaMain(cwd).pipe(
           Effect.provideService(ProcessRunner, process),
           Effect.mapError(asRuntimeError),
-          Effect.flatMap((revision) =>
-            revision
-              ? Effect.succeed(revision)
-              : Effect.fail(
-                  fail(
-                    "The project's default branch is unavailable. Fetch its remote default branch or create a local main/master branch.",
-                  ),
-                ),
-          ),
         );
       const project = Effect.fn("IdeaRuntime.project")(function* (threadId: ThreadId) {
         yield* active(threadId);
@@ -265,6 +256,10 @@ export class IdeaRuntime extends Context.Service<
         yield* active(input.threadId);
         const current = readIdeaExecution(input.threadId) ?? (yield* prepare(input.threadId));
         const revision = current.mainRevision;
+        if (revision === null)
+          return yield* fail(
+            "The project's default branch is unavailable. You can continue discussing this idea without code context. To read project code, fetch its remote default branch or create a local main/master branch with an initial commit.",
+          );
         if (input.path !== undefined) {
           if (
             input.path.includes("\0") ||
