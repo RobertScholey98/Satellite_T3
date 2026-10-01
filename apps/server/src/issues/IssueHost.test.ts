@@ -54,6 +54,11 @@ const host = (responses: {
     forgejo: { api: () => Effect.succeed(output(responses.forgejo ?? [])) },
     bitbucket: { request: () => Effect.succeed({ body: json({ values: [] }), truncated: false }) },
   });
+const rejectPreviewTeamsInvoke = (args: ReadonlyArray<string>) => {
+  if (args[args.indexOf("--resource") + 1] === "teams") {
+    throw new Error('The requested version "7.1" of the resource is under preview.');
+  }
+};
 const withNode = <A, E>(
   effect: Effect.Effect<A, E, FileSystem.FileSystem | import("effect/Path").Path>,
 ) => effect.pipe(Effect.provide(NodeServices.layer));
@@ -65,6 +70,7 @@ describe("IssueHost", () => {
         const api = yield* host({
           azure: ({ args }) =>
             Effect.sync(() => {
+              rejectPreviewTeamsInvoke(args);
               calls.push(args);
               if (args.includes("project") && args.includes("list")) {
                 return {
@@ -77,16 +83,14 @@ describe("IssueHost", () => {
                       : [{ id: "last-project", name: "Last project" }],
                 };
               }
-              if (args.includes("teams")) {
-                if (!args.includes("projectId=last-project")) return { value: [] };
-                return {
-                  value: args.includes("$skip=0")
-                    ? Array.from({ length: 100 }, (_, i) => ({
-                        id: `team-${i}`,
-                        name: `Team ${i}`,
-                      }))
-                    : [{ id: "last-team", name: "Last team" }],
-                };
+              if (args.includes("team") && args.includes("list")) {
+                if (args[args.indexOf("--project") + 1] !== "last-project") return [];
+                return args[args.indexOf("--skip") + 1] === "0"
+                  ? Array.from({ length: 100 }, (_, i) => ({
+                      id: `team-${i}`,
+                      name: `Team ${i}`,
+                    }))
+                  : [{ id: "last-team", name: "Last team" }];
               }
               return {
                 value: args.includes("team=last-team") ? [{ id: "stories", name: "Stories" }] : [],
@@ -110,7 +114,10 @@ describe("IssueHost", () => {
         );
         assert.strictEqual(
           calls.some(
-            (args) => args.includes("$skip=100") && args.includes("projectId=last-project"),
+            (args) =>
+              args.includes("team") &&
+              args[args.indexOf("--skip") + 1] === "100" &&
+              args[args.indexOf("--project") + 1] === "last-project",
           ),
           true,
         );
@@ -147,6 +154,7 @@ describe("IssueHost", () => {
           const api = yield* host({
             azure: ({ args }) =>
               Effect.sync(() => {
+                rejectPreviewTeamsInvoke(args);
                 calls.push(args);
                 if (args.includes("project") && args.includes("list")) {
                   return {
@@ -156,8 +164,8 @@ describe("IssueHost", () => {
                     ],
                   };
                 }
-                if (args.includes("teams")) {
-                  return { value: [{ id: "team-one", name: "Team" }] };
+                if (args.includes("team") && args.includes("list")) {
+                  return [{ id: "team-one", name: "Team" }];
                 }
                 if (args.includes("boards")) {
                   return { value: [{ id: "stories", name: "Stories" }] };
