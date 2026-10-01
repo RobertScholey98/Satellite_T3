@@ -16,7 +16,6 @@ import {
   validateIdeaUpdateSources,
   validateIdeaUpdateCoverage,
 } from "./IdeaUpdateGeneration.ts";
-import { constrainClaudeIdeaOptions } from "./ClaudeIdeaPolicy.ts";
 import { validateIdeaIssueDrafts } from "./IdeaPromotion.ts";
 
 const decodeIdeaUpdateGenerationResult = Schema.decodeSync(IdeaUpdateGenerationResult);
@@ -183,29 +182,6 @@ describe("idea update boundaries", () => {
         context,
       ),
     ).toContain("Shorten");
-  });
-  it("removes configured execution paths from the Claude idea policy", () => {
-    const options = constrainClaudeIdeaOptions({
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      resume: "native-session",
-      agent: "writer",
-      agents: {},
-      tools: ["Bash", "Write"],
-      additionalDirectories: ["/project"],
-      settingSources: ["user", "project"],
-      extraArgs: { "dangerously-skip-permissions": null },
-      hooks: {},
-      persistSession: true,
-    });
-    expect(options.tools).toEqual(["AskUserQuestion"]);
-    expect(options.resume).toBeUndefined();
-    expect(options.agent).toBeUndefined();
-    expect(options.additionalDirectories).toEqual([]);
-    expect(options.settingSources).toEqual([]);
-    expect(options.extraArgs).toEqual({ bare: null, "disable-slash-commands": null });
-    expect(options.persistSession).toBe(false);
-    expect(options.allowDangerouslySkipPermissions).toBe(false);
   });
   it("refuses issue drafts that depend on local idea artifacts", () => {
     expect(

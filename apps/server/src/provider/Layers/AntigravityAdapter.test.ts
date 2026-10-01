@@ -1262,7 +1262,7 @@ it.layer(layer)("AntigravityAdapter", (it) => {
     }),
   );
 
-  it.effect("keeps idea files read-only while allowing notebook tools", () =>
+  it.effect("allows normal file and tool access inside an idea session", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -1286,17 +1286,9 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       const read = h.fileHandlers.read;
       const write = h.fileHandlers.write;
       if (!read || !write) return yield* Effect.die("File handlers were not registered.");
-      expect(
-        Exit.isFailure(
-          yield* write({ sessionId: nativeSessionId, path: target, content: "changed" }).pipe(
-            Effect.exit,
-          ),
-        ),
-      ).toBe(true);
-      expect(
-        Exit.isFailure(yield* read({ sessionId: nativeSessionId, path: target }).pipe(Effect.exit)),
-      ).toBe(true);
-      expect(yield* fs.readFileString(target)).toBe("original");
+      yield* write({ sessionId: nativeSessionId, path: target, content: "changed" });
+      expect((yield* read({ sessionId: nativeSessionId, path: target })).content).toBe("changed");
+      expect(yield* fs.readFileString(target)).toBe("changed");
       const permission = (title: string, isMcp = false) =>
         h.invokePermission({
           sessionId: nativeSessionId,
@@ -1309,14 +1301,20 @@ it.layer(layer)("AntigravityAdapter", (it) => {
           },
           options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
         });
-      expect(yield* permission("Run run_terminal_command?")).toEqual({
-        outcome: { outcome: "cancelled" },
-      });
-      expect(yield* permission("Run idea_write_document?", true)).toEqual({
-        outcome: { outcome: "selected", optionId: "allow" },
-      });
-      expect(h.calls).toContain("mode:default");
-      expect(h.launches[0]?.additionalDirectories).toEqual([]);
+      for (const title of ["Run run_terminal_command?", "Run idea_write_document?"]) {
+        const pending = yield* permission(title, title.includes("idea_")).pipe(Effect.forkChild);
+        const opened = yield* h.waitForEvent((event) => event.type === "request.opened");
+        yield* h.adapter.respondToRequest(
+          threadId,
+          ApprovalRequestId.make(opened.requestId!),
+          "accept",
+        );
+        expect(yield* Fiber.join(pending)).toEqual({
+          outcome: { outcome: "selected", optionId: "allow" },
+        });
+      }
+      expect(h.calls).toContain("mode:yolo");
+      expect(h.launches[0]?.additionalDirectories).toEqual([(yield* ServerConfig).attachmentsDir]);
     }).pipe(Effect.scoped),
   );
 

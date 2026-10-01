@@ -4982,24 +4982,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           },
         ]
       : []),
-    ...(ideaMode
-      ? []
-      : [
-          {
-            id: "mode",
-            content: (
-              <ComposerFooterModeControls
-                showInteractionModeToggle={planModeUiEnabled}
-                interactionMode={interactionMode}
-                runtimeMode={runtimeMode}
-                size={composerControlsInStrip ? "xs" : "sm"}
-                hidden={composerControlsHidden || restingHiddenBlockCount > 0}
-                onToggleInteractionMode={toggleInteractionMode}
-                onRuntimeModeChange={handleRuntimeModeChange}
-              />
-            ),
-          },
-        ]),
+    {
+      id: "mode",
+      content: (
+        <ComposerFooterModeControls
+          showInteractionModeToggle={planModeUiEnabled}
+          interactionMode={interactionMode}
+          runtimeMode={runtimeMode}
+          size={composerControlsInStrip ? "xs" : "sm"}
+          hidden={composerControlsHidden || restingHiddenBlockCount > 0}
+          onToggleInteractionMode={toggleInteractionMode}
+          onRuntimeModeChange={handleRuntimeModeChange}
+        />
+      ),
+    },
   ];
   const hiddenRestingBlockIds = restingBlockDefs
     .slice(restingBlockDefs.length - restingHiddenBlockCount)

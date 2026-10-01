@@ -160,36 +160,39 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
-  it.effect(
-    "keeps idea turns read-only without approval escalation in every user-selected runtime mode",
-    () =>
-      Effect.gen(function* () {
-        for (const runtimeMode of [
-          "approval-required",
-          "auto-accept-edits",
-          "auto",
-          "full-access",
-        ] as const) {
-          const params = yield* buildTurnStartParams({
-            threadId: "idea-native-thread",
-            runtimeMode,
-            idea: true,
-            prompt: "Consider a refactor",
-            model: "custom-gpt-model",
-            effort: "high",
-            interactionMode: "default",
-          });
-          NodeAssert.equal(params.approvalPolicy, "never");
-          NodeAssert.equal(params.approvalsReviewer, "user");
-          NodeAssert.deepEqual(params.sandboxPolicy, { type: "readOnly" });
-          NodeAssert.equal(params.model, "custom-gpt-model");
-          NodeAssert.equal(params.effort, "high");
-          NodeAssert.match(
-            params.collaborationMode?.settings.developer_instructions ?? "",
-            /Project code is read-only/,
-          );
-        }
-      }),
+  it.effect("uses normal approval and sandbox settings for idea turns in every runtime mode", () =>
+    Effect.gen(function* () {
+      for (const runtimeMode of [
+        "approval-required",
+        "auto-accept-edits",
+        "auto",
+        "full-access",
+      ] as const) {
+        const params = yield* buildTurnStartParams({
+          threadId: "idea-native-thread",
+          runtimeMode,
+          idea: true,
+          prompt: "Consider a refactor",
+          model: "custom-gpt-model",
+          effort: "high",
+          interactionMode: "default",
+        });
+        const normal = yield* buildTurnStartParams({
+          threadId: "normal-thread",
+          runtimeMode,
+          prompt: "Consider a refactor",
+        });
+        NodeAssert.equal(params.approvalPolicy, normal.approvalPolicy);
+        NodeAssert.equal(params.approvalsReviewer, normal.approvalsReviewer);
+        NodeAssert.deepEqual(params.sandboxPolicy, normal.sandboxPolicy);
+        NodeAssert.equal(params.model, "custom-gpt-model");
+        NodeAssert.equal(params.effort, "high");
+        NodeAssert.match(
+          params.collaborationMode?.settings.developer_instructions ?? "",
+          /same tools and skills as a normal thread/,
+        );
+      }
+    }),
   );
 
   it.effect("starts ideas ephemerally even if a stale provider resume cursor is supplied", () =>
@@ -213,7 +216,7 @@ describe("buildTurnStartParams", () => {
         idea: true,
       });
       NodeAssert.equal(payload?.ephemeral, true);
-      NodeAssert.equal(payload?.sandbox, "read-only");
+      NodeAssert.equal(payload?.sandbox, "danger-full-access");
       NodeAssert.equal(payload?.approvalPolicy, "never");
       NodeAssert.equal(payload?.model, "custom-gpt-model");
       NodeAssert.equal(payload?.serviceTier, "fast");

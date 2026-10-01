@@ -992,9 +992,9 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
   );
 
   it.effect.each([
-    { title: "run_terminal_command", outcome: "cancelled" },
+    { title: "run_terminal_command", outcome: "selected" },
     { title: "mcp__t3-code__idea_write_document", outcome: "selected" },
-  ])("restricts full-access idea permissions for $title", ({ title, outcome }) =>
+  ])("permits normal full-access idea tools for $title", ({ title, outcome }) =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
       const serverSettings = yield* ServerSettingsService;
@@ -1042,8 +1042,8 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
           (entry) => isPermissionResult(entry) && entry.result.outcome.outcome === outcome,
         ),
       );
-      assert.equal(session.cwd, NodePath.join(tempDir, "runtime", "cursor-thread"));
-      assert.deepEqual(yield* Effect.promise(() => readArgvLog(argvLogPath)), [["acp"]]);
+      assert.equal(session.cwd, tempDir);
+      assert.deepEqual(yield* Effect.promise(() => readArgvLog(argvLogPath)), [["--force", "acp"]]);
       yield* adapter.stopSession(threadId);
     }).pipe(Effect.scoped),
   );

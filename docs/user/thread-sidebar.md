@@ -20,12 +20,14 @@ to implementation. Each idea belongs to its project and environment and keeps on
 conversation. Return to it through **Ideas** in the sidebar footer. Idea activity
 stays out of the ordinary thread list and work notifications.
 
-Ideas use your selected provider and model. The agent reads the project's default branch and
-can create documents inside the idea. It cannot edit project code. Your current
-checkout and uncommitted changes stay in place.
+Ideas use your selected provider and model, with the same tools, skills and access
+settings as ordinary threads. Ask the agent to save previews and documents in the
+notebook so they stay with the idea. Background notebook updates run separately
+and cannot use the conversation's general-purpose tools.
 
-OpenCode ideas use the environment's local OpenCode installation. If ordinary threads
-connect to an external OpenCode server, configure the required model and sign-in locally too.
+OpenCode ideas use the environment's local OpenCode installation so the agent can
+access notebook tools and documents. If ordinary threads use an external OpenCode
+server, configure the model and sign-in locally too.
 
 The notebook starts with an empty pitch. Background updates organise the discussion
 into notes and keep the pitch current. Choose their model in **Settings → General

@@ -2265,13 +2265,13 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
   );
 
   it.effect.each([
-    { title: "run_terminal_command", outcome: "cancelled", tool: "" },
+    { title: "run_terminal_command", outcome: "selected", tool: "" },
     ...IDEA_TOOL_NAMES.map((tool) => ({
       title: `Readable ${tool} label`,
       outcome: "selected",
       tool: `t3-code__${tool}`,
     })),
-  ])("restricts full-access idea permissions for $title", ({ title, outcome, tool }) =>
+  ])("permits normal full-access idea tools for $title", ({ title, outcome, tool }) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make(`grok-idea-${title}`);
       const tempDir = yield* Effect.promise(() =>

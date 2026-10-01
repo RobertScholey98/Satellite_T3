@@ -689,7 +689,7 @@ const questionRequest = (id: string, sessionID: string): QuestionRequest => ({
 });
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
-  it.effect("keeps an idea local, denies native writes, and permits its six notebook tools", () =>
+  it.effect("allows normal tools alongside notebook tools on the local idea runtime", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
       const fs = yield* FileSystem.FileSystem;
@@ -722,6 +722,11 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
           }),
       );
       const permissions = ["bash", ...IDEA_TOOL_NAMES.map((name) => `t3-code_${name}`)];
+      const repliesDone = promiseWithResolvers<void>();
+      runtimeMock.state.permissionReplyImplementation = async () => {
+        if (runtimeMock.state.permissionReplyCalls.length === permissions.length)
+          repliesDone.resolve(undefined);
+      };
       runtimeMock.state.subscribedEvents = [
         ...permissions.map((permission) => ({
           id: `event-${permission}`,
@@ -754,6 +759,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         resumeCursor: { sessionId: "ordinary-session" },
       });
       const observed = yield* Fiber.join(events);
+      yield* Effect.promise(() => repliesDone.promise);
       NodeAssert.equal(
         observed.some((event) => event.type === "request.opened"),
         false,
@@ -762,7 +768,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         runtimeMock.state.permissionReplyCalls,
         permissions.map((permission) => ({
           requestID: permission,
-          reply: permission === "bash" ? "reject" : "once",
+          reply: "once",
         })),
       );
       NodeAssert.deepEqual(runtimeMock.state.sessionCreateUrls, ["http://127.0.0.1:4301"]);
@@ -779,13 +785,8 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         },
       ]);
       NodeAssert.deepEqual(runtimeMock.state.sessionCreateInputs[0]?.permission, [
-        { permission: "*", pattern: "*", action: "deny" },
-        { permission: "question", pattern: "*", action: "allow" },
-        ...IDEA_TOOL_NAMES.map((name) => ({
-          permission: `t3-code_${name}`,
-          pattern: "*",
-          action: "allow",
-        })),
+        { permission: "*", pattern: "*", action: "allow" },
+        { permission: "external_directory", pattern: "*", action: "allow" },
       ]);
       yield* adapter.stopSession(threadId);
       NodeAssert.deepEqual(runtimeMock.state.sessionDeleteIds, [sessionID]);

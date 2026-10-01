@@ -5157,7 +5157,7 @@ it.effect.each(["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravi
         });
         assert.equal(session.provider, driver);
         assert.equal(session.cwd, execution.cwd);
-        assert.deepEqual(capabilities, [["ideas"]]);
+        assert.deepEqual(capabilities, [["pull-requests", "preview", "ideas", "documents"]]);
         const turn = yield* provider.sendTurn({
           threadId,
           modelSelection,
@@ -5166,7 +5166,7 @@ it.effect.each(["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravi
         assert.equal(turn.threadId, threadId);
         const input = adapter.sendTurn.mock.calls[0]?.[0];
         assert.deepEqual(input?.modelSelection, modelSelection);
-        assert.include(input?.input, "Project code is read-only");
+        assert.include(input?.input, "same tools and skills as a normal thread");
         assert.include(input?.input, "Saved discussion");
         assert.include(input?.input, "Saved pitch");
         assert.include(input?.input, "Discuss the creation flow");

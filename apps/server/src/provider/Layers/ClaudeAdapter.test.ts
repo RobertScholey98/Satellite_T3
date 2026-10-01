@@ -15,6 +15,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   ClaudeSettings,
   ProviderDriverKind,
   ProviderItemId,
@@ -37,6 +38,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import { setIdeaExecution, clearIdeaExecution } from "../../ideas/IdeaExecution.ts";
+import { setMcpProviderSession, clearMcpProviderSession } from "../../mcp/McpProviderSession.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -436,6 +439,52 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(layer),
+    );
+  });
+
+  it.effect("keeps normal tools, settings and permissions for an idea conversation", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      setIdeaExecution(THREAD_ID, {
+        cwd: "/owned/idea",
+        projectDirectory: "/project",
+        mainRevision: "main",
+        deletionEpoch: 0,
+        context: "Idea",
+      });
+      setMcpProviderSession({
+        environmentId: EnvironmentId.make("test"),
+        threadId: THREAD_ID,
+        providerSessionId: "test-session",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        endpoint: "http://localhost/idea-mcp",
+        authorizationHeader: "Bearer test",
+        capabilities: new Set(["ideas"]),
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          clearIdeaExecution(THREAD_ID);
+          clearMcpProviderSession(THREAD_ID);
+        }),
+      );
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        cwd: "/owned/idea",
+        runtimeMode: "full-access",
+      });
+      const options = harness.getLastCreateQueryInput()?.options;
+      assert.deepEqual(options?.settingSources, ["user", "project", "local"]);
+      assert.equal(options?.permissionMode, "bypassPermissions");
+      assert.equal(options?.allowDangerouslySkipPermissions, true);
+      assert.equal(options?.tools, undefined);
+      assert.equal(options?.allowedTools, undefined);
+      assert.equal(options?.persistSession, false);
+      assert.property(options?.mcpServers, "t3-code");
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
     );
   });
 

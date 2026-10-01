@@ -530,109 +530,109 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect(
-    "keeps Idea MCP tools available in the constrained runtime for a configured Codex model",
-    () => {
-      const factory = makeRuntimeFactory();
-      const instanceId = ProviderInstanceId.make("codex-ideas-custom");
-      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-idea-"));
-      const ideaDirectory = NodePath.join(directory, "idea");
-      const homePath = NodePath.join(directory, "provider-home");
-      NodeFS.mkdirSync(homePath);
-      NodeFS.writeFileSync(NodePath.join(homePath, "auth.json"), '{"OPENAI_API_KEY":"test"}');
-      const threadId = asThreadId("configured-codex-idea");
-      const layer = Layer.effect(
-        CodexAdapter,
-        makeCodexAdapter(
-          decodeCodexSettings({
-            homePath,
-            launchArgs: '--yolo -c model_provider="custom" -c sandbox_mode="danger-full-access"',
-          }),
-          { instanceId, makeRuntime: factory.factory },
-        ),
-      ).pipe(
-        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
-        Layer.provideMerge(NodeServices.layer),
+  it.effect("adds notebook tools without restricting the configured Codex runtime", () => {
+    const factory = makeRuntimeFactory();
+    const instanceId = ProviderInstanceId.make("codex-ideas-custom");
+    const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-idea-"));
+    const ideaDirectory = NodePath.join(directory, "idea");
+    const homePath = NodePath.join(directory, "provider-home");
+    NodeFS.mkdirSync(homePath);
+    NodeFS.writeFileSync(NodePath.join(homePath, "auth.json"), '{"OPENAI_API_KEY":"test"}');
+    const threadId = asThreadId("configured-codex-idea");
+    const layer = Layer.effect(
+      CodexAdapter,
+      makeCodexAdapter(
+        decodeCodexSettings({
+          homePath,
+          launchArgs: '--yolo -c model_provider="custom" -c sandbox_mode="danger-full-access"',
+        }),
+        { instanceId, makeRuntime: factory.factory },
+      ),
+    ).pipe(
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          clearIdeaExecution(threadId);
+          clearMcpProviderSession(threadId);
+          NodeFS.rmSync(directory, { recursive: true, force: true });
+        }),
       );
-      return Effect.gen(function* () {
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            clearIdeaExecution(threadId);
-            clearMcpProviderSession(threadId);
-            NodeFS.rmSync(directory, { recursive: true, force: true });
-          }),
-        );
-        setIdeaExecution(threadId, {
-          cwd: ideaDirectory,
-          projectDirectory: "/must-not-be-used",
-          mainRevision: "main-revision",
-          deletionEpoch: 0,
-          context: "Idea context",
-        });
-        setMcpProviderSession({
-          environmentId: EnvironmentId.make("idea-test-environment"),
-          threadId,
-          providerSessionId: "idea-test-session",
-          providerInstanceId: instanceId,
-          endpoint: "http://127.0.0.1:54321/api/mcp",
-          authorizationHeader: "Bearer idea-test-token",
-          capabilities: new Set(["ideas"]),
-        });
-        const adapter = yield* CodexAdapter;
-        yield* adapter.startSession({
-          provider: ProviderDriverKind.make("codex"),
-          threadId,
-          runtimeMode: "full-access",
-          cwd: "/must-not-be-used",
-          modelSelection: { instanceId, model: "custom-gpt-model" },
-          resumeCursor: { threadId: "ordinary-native-history" },
-        });
-        const runtime = factory.lastRuntime;
-        NodeAssert.ok(runtime);
-        NodeAssert.equal(runtime.options.idea, true);
-        NodeAssert.equal(runtime.options.cwd, ideaDirectory);
-        NodeAssert.equal(runtime.options.model, "custom-gpt-model");
-        NodeAssert.equal(runtime.options.resumeCursor, undefined);
-        NodeAssert.equal(runtime.options.launchArgs, "");
-        NodeAssert.equal(runtime.options.homePath, NodePath.join(ideaDirectory, ".codex"));
-        NodeAssert.ok(runtime.options.appServerArgs?.includes('sandbox_mode="read-only"'));
-        NodeAssert.ok(runtime.options.appServerArgs?.includes("model_provider=custom"));
-        NodeAssert.ok(!runtime.options.appServerArgs?.includes("--yolo"));
-        const runtimeArgs = runtime.options.appServerArgs ?? [];
-        const runtimeConfig = new Map(
-          runtimeArgs.flatMap((argument, index) => {
-            const setting = argument === "-c" ? runtimeArgs[index + 1] : undefined;
-            if (!setting) return [];
-            const separator = setting.indexOf("=");
-            return [[setting.slice(0, separator), setting.slice(separator + 1)] as const];
-          }),
-        );
-        const ideaServer = [...runtimeConfig.keys()].find((key) =>
-          /^mcp_servers\.t3-code-idea-[a-f0-9]+\.url$/.test(key),
-        );
-        NodeAssert.ok(ideaServer);
-        const ideaServerPrefix = ideaServer.slice(0, -4);
-        NodeAssert.equal(runtimeConfig.get(ideaServer), "http://127.0.0.1:54321/api/mcp");
-        NodeAssert.equal(runtimeConfig.get(`${ideaServerPrefix}.enabled`), "true");
-        NodeAssert.equal(
-          runtimeConfig.get(`${ideaServerPrefix}.default_tools_approval_mode`),
-          '"approve"',
-        );
-        NodeAssert.equal(
-          runtimeConfig.get(`${ideaServerPrefix}.bearer_token_env_var`),
-          '"T3_MCP_BEARER_TOKEN"',
-        );
-        NodeAssert.equal(runtime.options.environment?.T3_MCP_BEARER_TOKEN, "idea-test-token");
-        NodeAssert.deepStrictEqual(runtime.options.mcpCapabilities, new Set(["ideas"]));
-        NodeAssert.equal(runtimeConfig.get("features.code_mode"), "true");
-        NodeAssert.equal(runtimeConfig.get("features.code_mode_host"), "true");
-        NodeAssert.equal(runtimeConfig.get("features.shell_tool"), "false");
-        NodeAssert.equal(runtimeConfig.get("features.unified_exec"), "false");
-        NodeAssert.equal(runtimeConfig.get("approval_policy"), '"never"');
-        yield* adapter.stopSession(threadId);
-      }).pipe(Effect.scoped, Effect.provide(layer));
-    },
-  );
+      setIdeaExecution(threadId, {
+        cwd: ideaDirectory,
+        projectDirectory: "/must-not-be-used",
+        mainRevision: "main-revision",
+        deletionEpoch: 0,
+        context: "Idea context",
+      });
+      setMcpProviderSession({
+        environmentId: EnvironmentId.make("idea-test-environment"),
+        threadId,
+        providerSessionId: "idea-test-session",
+        providerInstanceId: instanceId,
+        endpoint: "http://127.0.0.1:54321/api/mcp",
+        authorizationHeader: "Bearer idea-test-token",
+        capabilities: new Set(["ideas"]),
+      });
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+        cwd: "/must-not-be-used",
+        modelSelection: { instanceId, model: "custom-gpt-model" },
+        resumeCursor: { threadId: "ordinary-native-history" },
+      });
+      const runtime = factory.lastRuntime;
+      NodeAssert.ok(runtime);
+      NodeAssert.equal(runtime.options.idea, true);
+      NodeAssert.equal(runtime.options.cwd, ideaDirectory);
+      NodeAssert.equal(runtime.options.model, "custom-gpt-model");
+      NodeAssert.equal(runtime.options.resumeCursor, undefined);
+      NodeAssert.equal(
+        runtime.options.launchArgs,
+        '--yolo -c model_provider="custom" -c sandbox_mode="danger-full-access"',
+      );
+      NodeAssert.equal(runtime.options.homePath, homePath);
+      NodeAssert.ok(!runtime.options.appServerArgs?.includes('sandbox_mode="read-only"'));
+      NodeAssert.equal(runtime.options.runtimeMode, "full-access");
+      NodeAssert.ok(!runtime.options.appServerArgs?.includes("--yolo"));
+      const runtimeArgs = runtime.options.appServerArgs ?? [];
+      const runtimeConfig = new Map(
+        runtimeArgs.flatMap((argument, index) => {
+          const setting = argument === "-c" ? runtimeArgs[index + 1] : undefined;
+          if (!setting) return [];
+          const separator = setting.indexOf("=");
+          return [[setting.slice(0, separator), setting.slice(separator + 1)] as const];
+        }),
+      );
+      const ideaServer = [...runtimeConfig.keys()].find((key) =>
+        /^mcp_servers\.t3-code-idea-[a-f0-9]+\.url$/.test(key),
+      );
+      NodeAssert.ok(ideaServer);
+      const ideaServerPrefix = ideaServer.slice(0, -4);
+      NodeAssert.equal(runtimeConfig.get(ideaServer), "http://127.0.0.1:54321/api/mcp");
+      NodeAssert.equal(runtimeConfig.get(`${ideaServerPrefix}.enabled`), "true");
+      NodeAssert.equal(
+        runtimeConfig.get(`${ideaServerPrefix}.tools.idea_write_document.approval_mode`),
+        '"approve"',
+      );
+      NodeAssert.equal(
+        runtimeConfig.get(`${ideaServerPrefix}.bearer_token_env_var`),
+        '"T3_MCP_BEARER_TOKEN"',
+      );
+      NodeAssert.equal(runtime.options.environment?.T3_MCP_BEARER_TOKEN, "idea-test-token");
+      NodeAssert.deepStrictEqual(runtime.options.mcpCapabilities, new Set(["ideas"]));
+      NodeAssert.equal(runtimeConfig.get("features.code_mode"), undefined);
+      NodeAssert.equal(runtimeConfig.get("features.code_mode_host"), undefined);
+      NodeAssert.equal(runtimeConfig.get("features.shell_tool"), undefined);
+      NodeAssert.equal(runtimeConfig.get("features.unified_exec"), undefined);
+      NodeAssert.equal(runtimeConfig.get("approval_policy"), undefined);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped, Effect.provide(layer));
+  });
 
   it.effect("uses T3CODE_CODEX_LAUNCH_ARGS for the session runtime", () => {
     const runtimeFactory = makeRuntimeFactory();

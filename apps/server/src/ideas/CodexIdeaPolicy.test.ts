@@ -35,11 +35,12 @@ it.effect(
       const result = yield* prepareCodexIdeaPolicy({
         cwd,
         homePath: sourceHome,
+        purpose: "updates",
         environment: { ACCESS_TOKEN: "managed-test-token", T3CODE_CODEX_LAUNCH_ARGS: "--yolo" },
         launchArgs:
           '-c model_provider="custom" -c model_providers.custom.env_key="ACCESS_TOKEN" --disable hooks -c sandbox_mode="danger-full-access" -c mcp_servers.other.command="unsafe" --yolo',
       });
-      expect(result.homePath).toBe(path.join(cwd, ".codex"));
+      expect(result.homePath).toBe(path.join(cwd, ".codex-updates"));
       expect(result.environment.ACCESS_TOKEN).toBe("managed-test-token");
       expect(result.environment.CODEX_SQLITE_HOME).toBe(result.homePath);
       expect(result.environment.TMP).toBe(path.join(result.homePath, "tmp"));
@@ -56,8 +57,8 @@ it.effect(
       expect(result.args).toContain('approval_policy="never"');
       expect(result.args).toContain("features.shell_tool=false");
       expect(result.args).toContain("features.hooks=false");
-      expect(result.args).toContain("features.code_mode=true");
-      expect(result.args).toContain("features.code_mode_host=true");
+      expect(result.args).toContain("features.code_mode=false");
+      expect(result.args).toContain("features.code_mode_host=false");
       expect(result.args).toContain("mcp_servers={}");
       expect(result.args.join(" ")).not.toContain("danger-full-access");
       expect(result.args.join(" ")).not.toContain("mcp_servers.other");
@@ -90,6 +91,7 @@ it.effect("retains a selected configuration profile's model routing without its 
     const result = yield* prepareCodexIdeaPolicy({
       cwd: path.join(directory, "idea"),
       homePath: sourceHome,
+      purpose: "updates",
       launchArgs: '-c profile="personal"',
       environment: { ACCESS_TOKEN: "test-token" },
     });
@@ -121,8 +123,8 @@ it.effect(
       const result = yield* prepareCodexIdeaPolicy({
         cwd,
         homePath: sourceHome,
-        environment: {},
         purpose: "updates",
+        environment: {},
       });
       expect(result.homePath).toBe(sourceHome);
       expect(result.environment.CODEX_HOME).toBe(sourceHome);
@@ -138,4 +140,28 @@ it.effect(
         'mcp_servers={"external"={"enabled"=false},"other"={"enabled"=false}}',
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("keeps foreground skills, plugins and tools from the configured Codex home", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped();
+    const sourceHome = path.join(directory, "configured-home");
+    const cwd = path.join(directory, "idea");
+    yield* fs.makeDirectory(sourceHome);
+    const config = '[mcp_servers.custom]\ncommand="custom-tool"\n[features]\nplugins=true\n';
+    yield* fs.writeFileString(path.join(sourceHome, "config.toml"), config);
+    const result = yield* prepareCodexIdeaPolicy({
+      cwd,
+      homePath: sourceHome,
+      environment: { CUSTOM_SETTING: "retained" },
+    });
+    expect(result.homePath).toBe(sourceHome);
+    expect(result.environment.CODEX_HOME).toBe(sourceHome);
+    expect(result.environment.CUSTOM_SETTING).toBe("retained");
+    expect(result.environment.CODEX_SQLITE_HOME).toBe(path.join(cwd, ".codex"));
+    expect(result.args.join(" ")).not.toMatch(/sandbox|approval|features|mcp_servers/);
+    expect(yield* fs.readFileString(path.join(sourceHome, "config.toml"))).toBe(config);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

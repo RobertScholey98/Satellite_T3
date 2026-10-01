@@ -1018,9 +1018,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
-      const capabilities = readIdeaExecution(threadId)
-        ? new Set<McpInvocationContext.McpCapability>(["ideas"])
-        : yield* agentAccessCapabilities(threadId);
+      const capabilities = yield* agentAccessCapabilities(threadId);
+      if (readIdeaExecution(threadId)) {
+        capabilities.add("ideas");
+        capabilities.add("documents");
+      }
       const credential = yield* issueMcpCredential({ threadId, providerInstanceId, capabilities });
       if (credential) {
         const deviceEnvironment = capabilities.has("device")
@@ -1801,7 +1803,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (Option.isNone(ideaRuntime))
           return yield* toValidationError(
             "ProviderService.sendTurn",
-            "The constrained idea runtime is unavailable.",
+            "The idea notebook is unavailable.",
           );
         yield* ideaRuntime.value
           .importAttachments(input.threadId, attachments)
@@ -2160,7 +2162,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (Option.isNone(ideaRuntime))
           return yield* toValidationError(
             "ProviderService.respondToUserInput",
-            "The constrained idea runtime is unavailable.",
+            "The idea notebook is unavailable.",
           );
         yield* ideaRuntime.value
           .importAttachments(

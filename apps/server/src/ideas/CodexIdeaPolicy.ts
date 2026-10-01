@@ -119,6 +119,22 @@ export const prepareCodexIdeaPolicy = Effect.fn("prepareCodexIdeaPolicy")(functi
   const sourceHome = path.resolve(
     expandHomePath(input.homePath?.trim() || environment.CODEX_HOME || "~/.codex"),
   );
+  if (input.purpose !== "updates") {
+    const ownedHome = path.join(input.cwd, ".codex");
+    yield* fs.makeDirectory(ownedHome, { recursive: true });
+    return {
+      homePath: sourceHome,
+      environment: { ...environment, CODEX_HOME: sourceHome, CODEX_SQLITE_HOME: ownedHome },
+      args: [
+        "-c",
+        `sqlite_home=${encodeJson(ownedHome)}`,
+        "-c",
+        `log_dir=${encodeJson(path.join(ownedHome, "log"))}`,
+        "-c",
+        'history.persistence="none"',
+      ],
+    };
+  }
   const configPath = path.join(sourceHome, "config.toml");
   const sourceConfig = (yield* fs.exists(configPath))
     ? yield* fs.readFileString(configPath).pipe(
@@ -149,7 +165,7 @@ export const prepareCodexIdeaPolicy = Effect.fn("prepareCodexIdeaPolicy")(functi
       for (const name of Object.keys(config.mcp_servers)) inheritedMcpNames.add(name);
     }
   }
-  const ownedHome = path.join(input.cwd, input.purpose === "updates" ? ".codex-updates" : ".codex");
+  const ownedHome = path.join(input.cwd, ".codex-updates");
   const hasAuthFile = yield* fs.exists(path.join(sourceHome, "auth.json"));
   // Native keyring credentials are keyed by the canonical CODEX_HOME. Keep that
   // identity when no file/token is available; conversation storage is still owned.
@@ -178,8 +194,8 @@ export const prepareCodexIdeaPolicy = Effect.fn("prepareCodexIdeaPolicy")(functi
   );
   const config = {
     ...CODEX_IDEA_CONFIG,
-    "features.code_mode": input.purpose !== "updates",
-    "features.code_mode_host": input.purpose !== "updates",
+    "features.code_mode": false,
+    "features.code_mode_host": false,
     ...(hasAuthFile ? { cli_auth_credentials_store: "file" } : {}),
     sqlite_home: ownedHome,
     log_dir: path.join(ownedHome, "log"),

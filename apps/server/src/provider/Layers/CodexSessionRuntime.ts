@@ -567,9 +567,6 @@ function buildThreadStartParams(input: {
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
     ...(input.idea
       ? {
-          approvalPolicy: "never" as const,
-          sandbox: "read-only" as const,
-          approvalsReviewer: "user" as const,
           ephemeral: true,
           developerInstructions: IDEA_SESSION_INSTRUCTIONS,
         }
@@ -681,22 +678,20 @@ export function buildTurnStartParams(input: {
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
     ...turnInstructions,
-    ...(input.idea
+    ...(input.idea && turnInstructions.collaborationMode
       ? {
-          approvalPolicy: "never",
-          approvalsReviewer: "user",
-          sandboxPolicy: { type: "readOnly" },
-          ...(turnInstructions.collaborationMode
-            ? {
-                collaborationMode: {
-                  ...turnInstructions.collaborationMode,
-                  settings: {
-                    ...turnInstructions.collaborationMode.settings,
-                    developer_instructions: IDEA_SESSION_INSTRUCTIONS,
-                  },
-                },
-              }
-            : {}),
+          collaborationMode: {
+            ...turnInstructions.collaborationMode,
+            settings: {
+              ...turnInstructions.collaborationMode.settings,
+              developer_instructions: [
+                turnInstructions.collaborationMode.settings.developer_instructions,
+                IDEA_SESSION_INSTRUCTIONS,
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            },
+          },
         }
       : {}),
   }).pipe(
@@ -2137,7 +2132,6 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
       Effect.gen(function* () {
-        if (options.idea) return { decision: "decline" as const };
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("command-approval-request"));
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
@@ -2194,7 +2188,6 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
       Effect.gen(function* () {
-        if (options.idea) return { decision: "decline" as const };
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("file-change-approval-request"),
         );
@@ -2318,7 +2311,6 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/permissions/requestApproval", (payload) =>
       Effect.gen(function* () {
-        if (options.idea) return { permissions: {} };
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("app-permission-approval-request"),
         );

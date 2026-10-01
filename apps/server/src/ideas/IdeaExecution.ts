@@ -48,9 +48,9 @@ export const isIdeaTool = (name: string) =>
   IDEA_TOOL_NAMES.some((tool) => name === `mcp__t3-code__${tool}`);
 
 export const IDEA_SESSION_INSTRUCTIONS = [
-  "This is an idea discussion. Project code is read-only. Use the idea tools for project reads and documents.",
+  "This is an idea discussion. You have the same tools and skills as a normal thread, plus the idea notebook tools. Focus on exploration; implement project changes only when the user asks.",
   "Use idea_read_main to inspect the current main revision and idea_write_document for generated documents.",
-  "All documents belong to this idea. Do not register them in a separate library or write project files.",
+  "Save generated idea documents with idea_write_document so they stay with this idea rather than a separate library.",
   "The notebook is maintained by T3. Read its pitch first, then relevant entries and discussion.",
   "Suggestions are possibilities until the user agrees. Distinguish accepted decisions from unresolved choices.",
   "When the user sends /promote, use idea_read with resource promote to load the promotion workflow.",

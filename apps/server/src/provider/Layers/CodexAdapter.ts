@@ -50,7 +50,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { readIdeaExecution } from "../../ideas/IdeaExecution.ts";
+import { IDEA_TOOL_NAMES, readIdeaExecution } from "../../ideas/IdeaExecution.ts";
 import { prepareCodexIdeaPolicy } from "../../ideas/CodexIdeaPolicy.ts";
 
 import {
@@ -2339,9 +2339,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           cwd: idea?.cwd ?? input.cwd ?? process.cwd(),
           ...(options?.models ? { models: options.models } : {}),
           binaryPath: effectiveConfig.binaryPath,
-          launchArgs: ideaPolicy
-            ? ""
-            : resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment),
+          launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment),
           ...(effectiveEnvironment ? { environment: effectiveEnvironment } : {}),
           ...(ideaPolicy
             ? {
@@ -2380,9 +2378,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                     ? [
                         "-c",
                         `mcp_servers.${mcpServerName}.enabled=true`,
-                        // Only this idea's scoped tools are trusted. Native writes stay disabled.
-                        "-c",
-                        `mcp_servers.${mcpServerName}.default_tools_approval_mode="approve"`,
+                        ...IDEA_TOOL_NAMES.flatMap((name) => [
+                          "-c",
+                          `mcp_servers.${mcpServerName}.tools.${name}.approval_mode="approve"`,
+                        ]),
                       ]
                     : []),
                 ],
