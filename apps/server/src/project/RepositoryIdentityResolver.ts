@@ -118,7 +118,19 @@ const resolveRepositoryIdentityCacheKey = Effect.fn("RepositoryIdentityResolver.
       })
       .pipe(Effect.option);
     if (topLevelResult._tag === "None" || topLevelResult.value.code !== 0) {
-      return null;
+      // git refuses --show-toplevel in a bare repository, but remote -v works there.
+      const bareResult = yield* processRunner
+        .run({
+          command: "git",
+          args: ["-C", cwd, "rev-parse", "--is-bare-repository"],
+          timeoutBehavior: "timedOutResult",
+        })
+        .pipe(Effect.option);
+      return bareResult._tag === "Some" &&
+        bareResult.value.code === 0 &&
+        bareResult.value.stdout.trim() === "true"
+        ? cwd
+        : null;
     }
 
     const candidate = topLevelResult.value.stdout.trim();
