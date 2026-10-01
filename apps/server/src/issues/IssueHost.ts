@@ -168,6 +168,7 @@ const validateIssue = (scope: IssueHostScope, raw: unknown) =>
   );
 const JsonRecord = Schema.fromJsonString(record);
 const decodeRecordJson = Schema.decodeEffect(JsonRecord);
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const isRecord = Schema.is(record);
 const isArray = Schema.is(Schema.Array(Schema.Unknown));
 const decodeIssueDetail = Schema.decodeEffect(IssueDetail);
@@ -870,9 +871,9 @@ export const makeIssueHost = (options: {
         }
         if (ref.hostKind === "azure-devops") {
           const { organization } = azureScope(ref);
-          const namedList = Schema.Struct({
-            value: Schema.Array(Schema.Struct({ id: TrimmedNonEmptyString, name: Schema.String })),
-          });
+          const named = Schema.Struct({ id: TrimmedNonEmptyString, name: Schema.String });
+          const namedList = Schema.Struct({ value: Schema.Array(named) });
+          const organizationUrl = `https://dev.azure.com/${segment(organization)}`;
           const pageSize = 100;
           const projects: { id: string; name: string }[] = [];
           for (let skip = 0; ; skip += pageSize) {
@@ -884,7 +885,7 @@ export const makeIssueHost = (options: {
                   "project",
                   "list",
                   "--organization",
-                  `https://dev.azure.com/${segment(organization)}`,
+                  organizationUrl,
                   "--top",
                   String(pageSize),
                   "--skip",
@@ -907,21 +908,34 @@ export const makeIssueHost = (options: {
               Effect.gen(function* () {
                 const teams: { id: string; name: string }[] = [];
                 for (let skip = 0; ; skip += pageSize) {
+                  const output = yield* azure
+                    .execute({
+                      cwd,
+                      args: [
+                        "devops",
+                        "team",
+                        "list",
+                        "--organization",
+                        organizationUrl,
+                        "--project",
+                        project.id,
+                        "--top",
+                        String(pageSize),
+                        "--skip",
+                        String(skip),
+                        "--only-show-errors",
+                        "--output",
+                        "json",
+                      ],
+                      maxOutputBytes: 4 * 1024 * 1024,
+                    })
+                    .pipe(Effect.mapError(remoteError));
                   const page = yield* validate(
-                    namedList,
-                    yield* readRecord(
-                      yield* az(
-                        cwd,
-                        organization,
-                        "core",
-                        "teams",
-                        { projectId: project.id },
-                        { $top: String(pageSize), $skip: String(skip) },
-                      ),
-                    ),
+                    Schema.Array(named),
+                    yield* decodeJson(output.stdout).pipe(Effect.mapError(invalid)),
                   );
-                  teams.push(...page.value);
-                  if (page.value.length < pageSize) break;
+                  teams.push(...page);
+                  if (page.length < pageSize) break;
                 }
                 const boards: { title: string; locator: IssueBoardLocator }[] = [];
                 for (const team of teams) {
