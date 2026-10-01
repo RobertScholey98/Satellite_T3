@@ -457,12 +457,12 @@ export const makeIssueHost = (options: {
               parameters,
               undefined,
               "GET",
-              "7.1-preview.4",
+              "7.1-preview",
             ),
           );
           entries = (yield* validate(Schema.Struct({ comments: Schema.Array(record) }), response))
             .comments;
-          continuation = str(response.continuationToken) || null;
+          continuation = str(response.continuation_token) || null;
         }
         commentEntries.push(...entries);
         more =
