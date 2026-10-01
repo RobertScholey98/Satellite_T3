@@ -2376,7 +2376,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   `mcp_servers.${mcpServerName}.url=${mcpSession.endpoint}`,
                   "-c",
                   `mcp_servers.${mcpServerName}.bearer_token_env_var="T3_MCP_BEARER_TOKEN"`,
-                  ...(idea ? ["-c", `mcp_servers.${mcpServerName}.enabled=true`] : []),
+                  ...(idea
+                    ? [
+                        "-c",
+                        `mcp_servers.${mcpServerName}.enabled=true`,
+                        // Only this idea's scoped tools are trusted. Native writes stay disabled.
+                        "-c",
+                        `mcp_servers.${mcpServerName}.default_tools_approval_mode="approve"`,
+                      ]
+                    : []),
                 ],
                 mcpCapabilities: mcpSession.capabilities,
               }

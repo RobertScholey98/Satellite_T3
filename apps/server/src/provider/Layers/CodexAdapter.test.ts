@@ -615,6 +615,10 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
         NodeAssert.equal(runtimeConfig.get(ideaServer), "http://127.0.0.1:54321/api/mcp");
         NodeAssert.equal(runtimeConfig.get(`${ideaServerPrefix}.enabled`), "true");
         NodeAssert.equal(
+          runtimeConfig.get(`${ideaServerPrefix}.default_tools_approval_mode`),
+          '"approve"',
+        );
+        NodeAssert.equal(
           runtimeConfig.get(`${ideaServerPrefix}.bearer_token_env_var`),
           '"T3_MCP_BEARER_TOKEN"',
         );
