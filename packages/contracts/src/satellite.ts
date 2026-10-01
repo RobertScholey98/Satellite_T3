@@ -1,5 +1,20 @@
 import * as Schema from "effect/Schema";
 
+/** Resolved workspace colors, shared with the isolated pill renderer. */
+export const SatellitePillTheme = Schema.Struct({
+  "--background": Schema.String,
+  "--foreground": Schema.String,
+  "--muted-foreground": Schema.String,
+  "--border": Schema.String,
+  "--primary": Schema.String,
+  "--ring": Schema.String,
+  "--warning": Schema.String,
+  "--success": Schema.String,
+  "--destructive": Schema.String,
+  "--font-sans": Schema.String,
+});
+export type SatellitePillTheme = typeof SatellitePillTheme.Type;
+
 /** A view of the selected conversation; the renderer owns its source of truth. */
 export const SatellitePillState = Schema.Struct({
   threadId: Schema.NullOr(Schema.String),
@@ -8,6 +23,7 @@ export const SatellitePillState = Schema.Struct({
   state: Schema.Literals(["working", "awaiting-input", "completed", "idle", "unknown", "error"]),
   detail: Schema.String,
   attention: Schema.Boolean,
+  theme: Schema.optionalKey(SatellitePillTheme),
 });
 export type SatellitePillState = typeof SatellitePillState.Type;
 

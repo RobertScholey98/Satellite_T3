@@ -120,6 +120,7 @@ export function resolvePillBounds(
 
 export function unavailablePillState(previous?: SatellitePillState): SatellitePillState {
   return {
+    ...(previous?.theme ? { theme: previous.theme } : {}),
     threadId: previous?.threadId ?? null,
     environmentId: previous?.environmentId ?? null,
     title: previous?.title ?? "SatelliteT3",

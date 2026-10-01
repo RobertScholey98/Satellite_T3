@@ -1,6 +1,6 @@
 import type { SatellitePillBridge, SatellitePillState } from "@t3tools/contracts";
 import { MoreVerticalIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 
 const INITIAL_PILL: SatellitePillState = {
   threadId: null,
@@ -27,6 +27,7 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
   return (
     <div
       data-satellite="pill"
+      style={pill.theme as CSSProperties | undefined}
       data-state={pill.state}
       data-keyboard-focus={keyboardFocus || undefined}
       aria-live="polite"

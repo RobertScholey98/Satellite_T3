@@ -130,6 +130,14 @@ const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right
  */
 export const SETTINGS_SEARCH_ITEMS = [
   {
+    id: "pill-mode",
+    title: "Pill mode",
+    to: "/settings/general",
+    searchTerms: ["satellite", "floating", "window", "taskbar", "desktop"],
+    desktopOnly: true,
+    windowsOnly: true,
+  },
+  {
     id: "storage-worktrees",
     title: "Worktree cleanup",
     to: "/settings/storage",

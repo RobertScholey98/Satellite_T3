@@ -266,17 +266,38 @@ describe("independent native Satellite surfaces", () => {
     expect(pill.isVisible()).toBe(true);
   });
   it("marks stale and crashed workspace status unavailable", () => {
-    send(main, Channels.SATELLITE_PUBLISH, state);
+    const theme = {
+      "--background": "#163024",
+      "--foreground": "#fafafa",
+      "--muted-foreground": "#aaaaaa",
+      "--border": "#335544",
+      "--primary": "#558866",
+      "--ring": "#669977",
+      "--warning": "#f0d060",
+      "--success": "#60c060",
+      "--destructive": "#d06060",
+      "--font-sans": "Segoe UI",
+    };
+    send(main, Channels.SATELLITE_PUBLISH, { ...state, theme });
+    expect(pill.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_STATE, {
+      ...state,
+      theme,
+    });
     vi.advanceTimersByTime(30_000);
     expect(pill.webContents.send).toHaveBeenLastCalledWith(
       Channels.SATELLITE_PILL_STATE,
-      expect.objectContaining({ state: "unknown" }),
+      expect.objectContaining({ state: "unknown", theme }),
     );
     expand();
     main.webContents.emit("render-process-gone");
     expect(pill.isVisible()).toBe(true);
     pill.webContents.emit("render-process-gone");
     expect(pill.webContents.reload).toHaveBeenCalledOnce();
+    send(pill, Channels.SATELLITE_PILL_READY);
+    expect(pill.webContents.send).toHaveBeenLastCalledWith(
+      Channels.SATELLITE_PILL_STATE,
+      expect.objectContaining({ state: "unknown", theme }),
+    );
   });
   it("clamps keyboard movement and topology recovery but ignores scale-only notifications", () => {
     collapse();

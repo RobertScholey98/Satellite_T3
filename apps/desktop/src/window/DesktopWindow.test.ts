@@ -1,7 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
-import { DesktopSnapShotId } from "@t3tools/contracts";
+import {
+  DesktopSnapShotId,
+  DEFAULT_CLIENT_SETTINGS,
+  type ClientSettings,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -226,6 +230,7 @@ function makeTestLayer(input: {
   readonly mainWindow: Ref.Ref<Option.Option<Electron.BrowserWindow>>;
   readonly createdWindowOptions?: Electron.BrowserWindowConstructorOptions[];
   readonly desktopSettings?: DesktopAppSettings.DesktopSettings;
+  readonly clientSettings?: ClientSettings;
   readonly mainWindowBoundsUpdates?: DesktopAppSettings.DesktopWindowBounds[];
   readonly mainWindowMaximizedUpdates?: boolean[];
   readonly beforeMainWindowBoundsUpdate?: (
@@ -298,7 +303,11 @@ function makeTestLayer(input: {
         desktopAssetsLayer,
         input.platform ? makeDesktopEnvironmentLayer(input.platform) : desktopEnvironmentLayer,
         desktopAppSettingsLayer,
-        desktopClientSettingsLayer,
+        input.clientSettings
+          ? Layer.mock(DesktopClientSettings.DesktopClientSettings)({
+              get: Effect.succeedSome(input.clientSettings),
+            })
+          : desktopClientSettingsLayer,
         desktopServerExposureLayer,
         DesktopState.layer,
         electronAppLayer,
@@ -843,7 +852,7 @@ describe("DesktopWindow", () => {
   );
 
   it.effect(
-    "Satellite boots into its pill without restoring a maximized workspace or persisting pill bounds",
+    "Satellite owns its first reveal without restoring a maximized workspace or persisting pill bounds",
     () =>
       Effect.gen(function* () {
         vi.stubEnv("T3CODE_SATELLITE_PILL", "1");
@@ -884,6 +893,49 @@ describe("DesktopWindow", () => {
         }).pipe(Effect.provide(layer));
       }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
   );
+
+  for (const [flag, preference, enabled] of [
+    ["1", false, false],
+    ["0", true, true],
+    ["1", null, true],
+    ["0", null, false],
+  ] as const) {
+    it.effect(`uses pill preference ${preference} with launcher flag ${flag}`, () =>
+      Effect.gen(function* () {
+        vi.stubEnv("T3CODE_SATELLITE_PILL", flag);
+        const installCount = vi.mocked(SatellitePill.installSatellitePill).mock.calls.length;
+        const fakeWindow = makeFakeBrowserWindow();
+        const createCount = yield* Ref.make(0);
+        const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+        const createdWindowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+        const layer = makeTestLayer({
+          platform: "win32",
+          window: fakeWindow.window,
+          createCount,
+          mainWindow,
+          createdWindowOptions,
+          clientSettings: { ...DEFAULT_CLIENT_SETTINGS, satellitePillEnabled: preference },
+        });
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+          const options = createdWindowOptions[0]!;
+          assert.equal(options.skipTaskbar ?? false, enabled);
+          assert.equal(options.alwaysOnTop ?? false, enabled);
+          assert.equal(options.frame ?? true, !enabled);
+          assert.equal(options.maximizable ?? true, !enabled);
+          assert.equal(
+            options.webPreferences?.additionalArguments?.includes("--satellite-pill") ?? false,
+            enabled,
+          );
+          assert.equal(
+            vi.mocked(SatellitePill.installSatellitePill).mock.calls.length - installCount,
+            enabled ? 1 : 0,
+          );
+        }).pipe(Effect.provide(layer));
+      }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+    );
+  }
 
   for (const platform of ["darwin", "linux"] as const) {
     it.effect(`keeps the normal desktop on ${platform} when the Satellite flag is present`, () =>

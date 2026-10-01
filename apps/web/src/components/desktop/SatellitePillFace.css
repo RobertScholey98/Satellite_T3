@@ -20,8 +20,8 @@ body,
   gap: 10px;
   box-sizing: border-box;
   padding: 0 9px 0 12px;
-  color: #f0f1f3;
-  font-family: Bahnschrift, "Segoe UI", sans-serif;
+  color: var(--foreground, #f0f1f3);
+  font-family: var(--font-sans, "Segoe UI", sans-serif);
   user-select: none;
   touch-action: none;
 }
@@ -38,7 +38,7 @@ body,
 }
 
 [data-satellite="pill"][data-keyboard-focus] button:focus-visible {
-  outline: 1px solid #88b8f5;
+  outline: 1px solid var(--ring, #88b8f5);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -48,20 +48,20 @@ body,
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #929a96;
+  background: var(--muted-foreground, #929a96);
 }
 
 [data-satellite="pill"][data-state="working"] [data-satellite="pill-dot"] {
-  background: #88b8f5;
+  background: var(--primary, #88b8f5);
 }
 [data-satellite="pill"][data-state="awaiting-input"] [data-satellite="pill-dot"] {
-  background: #ebc37a;
+  background: var(--warning, #ebc37a);
 }
 [data-satellite="pill"][data-state="completed"] [data-satellite="pill-dot"] {
-  background: #a6d8bd;
+  background: var(--success, #a6d8bd);
 }
 [data-satellite="pill"][data-state="error"] [data-satellite="pill-dot"] {
-  background: #ef8b83;
+  background: var(--destructive, #ef8b83);
 }
 
 [data-satellite="pill-content"] {
@@ -87,11 +87,11 @@ body,
   font-weight: 600;
 }
 [data-satellite="pill-detail"] {
-  color: #a8afb9;
+  color: var(--muted-foreground, #a8afb9);
   font-size: 11px;
 }
 [data-satellite="pill-attention"] {
-  color: #ebc37a;
+  color: var(--warning, #ebc37a);
   font-size: 11px;
 }
 [data-satellite="pill"] [data-satellite="pill-menu"] {
@@ -99,7 +99,7 @@ body,
   place-items: center;
   width: 22px;
   height: 38px;
-  color: #a8afb9;
+  color: var(--muted-foreground, #a8afb9);
 }
 [data-satellite="pill-menu"] svg {
   width: 18px;
@@ -109,7 +109,7 @@ body,
 [data-satellite="pill"] {
   width: 100%;
   height: 100%;
-  border: 1px solid #363d47;
+  border: 1px solid var(--border, #363d47);
   border-radius: 35px;
-  background: #181a1e;
+  background: var(--background, #181a1e);
 }

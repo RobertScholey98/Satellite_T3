@@ -75,6 +75,11 @@ import {
 } from "../../hooks/useTheme";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import {
+  useClientSettings,
+  useClientSettingsHydrated,
+  useUpdateClientSettings,
+} from "../../hooks/useSettings";
+import {
   useScopedSettings,
   useScopedSettingsMixed,
   useUpdateScopedSettings,
@@ -94,7 +99,7 @@ import {
   sortProviderInstanceEntries,
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
-import { isMacPlatform } from "../../lib/utils";
+import { isMacPlatform, isWindowsPlatform } from "../../lib/utils";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -2143,6 +2148,11 @@ function LegacyFeaturesSection() {
 }
 
 export function GeneralSettingsPanel() {
+  const pillPreference = useClientSettings((settings) => settings.satellitePillEnabled);
+  const clientSettingsHydrated = useClientSettingsHydrated();
+  const updateClientSettings = useUpdateClientSettings();
+  const pillActive = Boolean(window.satelliteBridge);
+  const pillEnabled = pillPreference ?? pillActive;
   const modifierLabel = isMacPlatform(navigator.platform) ? "⌘" : "Ctrl";
   const sendShortcutOptions = [
     { value: "enter", label: "Enter" },
@@ -2258,6 +2268,28 @@ export function GeneralSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      {isElectron && isWindowsPlatform(navigator.platform) ? (
+        <SettingsSection id="desktop-window" title="Desktop window">
+          <SettingsRow
+            {...searchableSetting("pill-mode")}
+            description={
+              pillEnabled !== pillActive
+                ? "Restart the app to apply. When off, the app uses a normal window with a taskbar entry."
+                : "Collapse to a floating pill. When off, use a normal window with a taskbar entry. Changes apply after restarting the app."
+            }
+            control={
+              <Switch
+                checked={pillEnabled}
+                disabled={!clientSettingsHydrated}
+                onCheckedChange={(checked) =>
+                  void updateClientSettings({ satellitePillEnabled: checked })
+                }
+                aria-label="Pill mode"
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
       <ProjectDefaultsSettings category="general" />
       <SettingsSection id="organization" title="Organization">
         <SettingsRow

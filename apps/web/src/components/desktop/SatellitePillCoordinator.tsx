@@ -8,6 +8,7 @@ import { useThreadDetail, useThreadShell, useThreadStatus } from "../../state/en
 import { useEnvironment } from "../../state/environments";
 import { environmentShell } from "../../state/shell";
 import { resolveThreadRouteRef } from "../../threadRoutes";
+import { readSatellitePillTheme, watchSatellitePillTheme } from "./satellitePillTheme";
 
 function usePublishPill(projection: SatellitePillState) {
   const { threadId, environmentId, title, state, detail, attention } = projection;
@@ -15,11 +16,23 @@ function usePublishPill(projection: SatellitePillState) {
     const bridge = window.satelliteBridge;
     if (!bridge) return;
     const publish = () =>
-      bridge.publish({ threadId, environmentId, title, state, detail, attention });
+      bridge.publish({
+        threadId,
+        environmentId,
+        title,
+        state,
+        detail,
+        attention,
+        theme: readSatellitePillTheme(),
+      });
     publish();
+    const stopWatchingTheme = watchSatellitePillTheme(publish);
     // Native stale detection also catches renderer crashes while the main window is hidden.
     const heartbeat = window.setInterval(publish, 10_000);
-    return () => window.clearInterval(heartbeat);
+    return () => {
+      window.clearInterval(heartbeat);
+      stopWatchingTheme();
+    };
   }, [threadId, environmentId, title, state, detail, attention]);
 }
 

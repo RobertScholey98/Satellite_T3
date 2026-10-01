@@ -341,6 +341,20 @@ export const make = Effect.gen(function* () {
   const runPromise = Effect.runPromiseWith(context);
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
 
+  const pillEnabled = Effect.gen(function* () {
+    if (environment.platform !== "win32") return false;
+    const settings = yield* clientSettings.get.pipe(
+      Effect.catch((cause) =>
+        logWindowWarning("failed to read pill preference; using launcher default", { cause }).pipe(
+          Effect.as(Option.none()),
+        ),
+      ),
+    );
+    return (
+      Option.getOrNull(settings)?.satellitePillEnabled ?? process.env.T3CODE_SATELLITE_PILL === "1"
+    );
+  });
+
   const dismissConnectingSplash = Effect.gen(function* () {
     const splash = yield* Ref.getAndSet(splashWindowRef, Option.none());
     if (Option.isSome(splash) && !splash.value.isDestroyed()) {
@@ -399,7 +413,7 @@ export const make = Effect.gen(function* () {
     if (persistedBounds !== null && initialBounds === DesktopAppSettings.DEFAULT_MAIN_WINDOW_SIZE) {
       yield* logWindowWarning("saved main window bounds could not be restored; using defaults");
     }
-    const satellite = process.env.T3CODE_SATELLITE_PILL === "1" && environment.platform === "win32";
+    const satellite = yield* pillEnabled;
     const window = yield* electronWindow.create({
       ...initialBounds,
       minWidth: 840,
@@ -935,7 +949,7 @@ export const make = Effect.gen(function* () {
       frame: false,
       center: true,
       show: false,
-      skipTaskbar: process.env.T3CODE_SATELLITE_PILL === "1" && environment.platform === "win32",
+      skipTaskbar: yield* pillEnabled,
       backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
       title: environment.displayName,
       webPreferences: {
