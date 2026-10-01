@@ -136,7 +136,7 @@ export function parsePersistedServerObservabilitySettings(
   return { otlpTracesUrl: undefined, otlpMetricsUrl: undefined, otlpLogsUrl: undefined };
 }
 
-function shouldReplaceTextGenerationModelSelection(
+function shouldReplaceModelSelection(
   patch: ServerSettingsPatch["textGenerationModelSelection"] | undefined,
 ): boolean {
   return Boolean(patch && (patch.instanceId !== undefined || patch.model !== undefined));
@@ -268,6 +268,23 @@ export function applyServerSettingsPatch(
 ): ServerSettings {
   const patch = translateLegacyProjectOverridePatch(current, rawPatch);
   const selectionPatch = patch.textGenerationModelSelection;
+  const ideaSelectionPatch = patch.ideaUpdatesModelSelection;
+  let ideaUpdatesModelSelection = current.ideaUpdatesModelSelection;
+  if (ideaSelectionPatch === null) {
+    ideaUpdatesModelSelection = null;
+  } else if (ideaSelectionPatch !== undefined) {
+    const instanceId = ideaSelectionPatch.instanceId ?? ideaUpdatesModelSelection?.instanceId;
+    const model = ideaSelectionPatch.model ?? ideaUpdatesModelSelection?.model;
+    if (instanceId !== undefined && model !== undefined) {
+      const options = shouldReplaceModelSelection(ideaSelectionPatch)
+        ? ideaSelectionPatch.options
+        : mergeModelSelectionOptionsById({
+            current: ideaUpdatesModelSelection?.options,
+            patch: ideaSelectionPatch.options,
+          });
+      ideaUpdatesModelSelection = createModelSelection(instanceId, model, options);
+    }
+  }
   const {
     automaticGitFetchInterval,
     providerHealthRefreshInterval,
@@ -324,6 +341,7 @@ export function applyServerSettingsPatch(
   const next = deepMerge(current, patchForMerge);
   const nextWithReplacementsBase = {
     ...next,
+    ideaUpdatesModelSelection,
     ...(worktreeCleanupPatch === undefined
       ? {}
       : {
@@ -417,7 +435,7 @@ export function applyServerSettingsPatch(
 
   const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
   const model = selectionPatch.model ?? current.textGenerationModelSelection.model;
-  const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
+  const options = shouldReplaceModelSelection(selectionPatch)
     ? selectionPatch.options
     : mergeModelSelectionOptionsById({
         current: current.textGenerationModelSelection.options,

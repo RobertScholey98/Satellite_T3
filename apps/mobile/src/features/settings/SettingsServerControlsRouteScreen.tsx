@@ -1,5 +1,10 @@
 import { buildModelOptions } from "../../lib/modelOptions";
 import { MaterialButton } from "../../components/MaterialButton";
+import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
+import {
+  applyProviderOptionSelection,
+  resolveProviderOptionDescriptors,
+} from "../../lib/providerOptions";
 import type { SettingsTarget } from "./settings-environment-filter";
 import { useNavigation } from "@react-navigation/native";
 import { SettingsRow } from "./components/SettingsRow";
@@ -7,6 +12,8 @@ import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollVie
 import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import {
+  DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
+  type ProviderOptionSelection,
   type ResponseStreamingMode,
   type ServerSettings,
   type ServerSettingsPatch,
@@ -15,6 +22,12 @@ import {
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   type ProjectScopedServerSettingKey,
 } from "@t3tools/contracts";
+import {
+  createModelSelection,
+  getProviderOptionCurrentLabel,
+  getProviderOptionCurrentValue,
+  getProviderOptionStringSelectionValue,
+} from "@t3tools/shared/model";
 import { useRef, useState, type ComponentProps } from "react";
 import { Alert, Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -577,6 +590,23 @@ function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
   const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: true });
   const selection = target.serverConfig.settings.ideaUpdatesModelSelection;
   const models = buildModelOptions(target.serverConfig, selection);
+  const selectedModel = models.find(
+    (model) =>
+      model.selection.instanceId === selection?.instanceId &&
+      model.selection.model === selection.model,
+  );
+  const options =
+    selectedModel?.providerDriver === "codex" &&
+    getProviderOptionStringSelectionValue(selection?.options, "reasoningEffort") === undefined
+      ? [
+          ...(selection?.options ?? []),
+          { id: "reasoningEffort", value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT },
+        ]
+      : selection?.options;
+  const descriptors = resolveProviderOptionDescriptors({
+    capabilities: selectedModel?.capabilities,
+    selections: options,
+  });
   const choose = async (model: typeof selection) => {
     setSaving(true);
     const result = await update({
@@ -585,6 +615,12 @@ function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
     });
     setSaving(false);
     if (result._tag !== "Failure") setExpanded(false);
+  };
+  const changeOption = (change: ProviderOptionSelection) => {
+    if (!selection || saving) return;
+    const nextOptions = applyProviderOptionSelection(descriptors, change);
+    if (nextOptions)
+      void choose(createModelSelection(selection.instanceId, selection.model, nextOptions));
   };
   return (
     <SettingsSection title={`Idea updates · ${target.label}`}>
@@ -608,7 +644,24 @@ function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
               tone="text"
               label={`${model.providerLabel} · ${model.label}`}
               disabled={saving || model.isUnavailable}
-              onPress={() => void choose(model.selection)}
+              onPress={() =>
+                void choose(
+                  createModelSelection(
+                    model.selection.instanceId,
+                    model.selection.model,
+                    model === selectedModel
+                      ? options
+                      : model.providerDriver === "codex"
+                        ? [
+                            {
+                              id: "reasoningEffort",
+                              value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
+                            },
+                          ]
+                        : undefined,
+                  ),
+                )
+              }
             />
           ))}
           {!models.length ? (
@@ -618,6 +671,51 @@ function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
           ) : null}
         </View>
       ) : null}
+      {descriptors.map((descriptor) =>
+        descriptor.type === "boolean" ? (
+          <SettingsSwitchRow
+            key={descriptor.id}
+            icon="brain"
+            label={descriptor.label}
+            disabled={saving}
+            value={descriptor.currentValue ?? false}
+            onValueChange={(value) => changeOption({ id: descriptor.id, value })}
+          />
+        ) : (
+          <SettingsControlRow
+            key={descriptor.id}
+            icon="brain"
+            label={descriptor.label}
+            disabled={saving}
+          >
+            <ControlPillMenu
+              accessibilityLabel={descriptor.label}
+              title={descriptor.label}
+              actions={descriptor.options
+                .filter((choice) => !descriptor.promptInjectedValues?.includes(choice.id))
+                .map((choice) => ({
+                  id: choice.id,
+                  title: choice.label,
+                  state:
+                    choice.id === getProviderOptionCurrentValue(descriptor)
+                      ? ("on" as const)
+                      : ("off" as const),
+                  attributes: { disabled: saving },
+                }))}
+              onPressAction={({ nativeEvent }) =>
+                changeOption({ id: descriptor.id, value: nativeEvent.event })
+              }
+            >
+              <ControlPill
+                variant="pill"
+                label={getProviderOptionCurrentLabel(descriptor) ?? "Default"}
+                accessibilityLabel={descriptor.label}
+                disabled={saving}
+              />
+            </ControlPillMenu>
+          </SettingsControlRow>
+        ),
+      )}
     </SettingsSection>
   );
 }

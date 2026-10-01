@@ -291,6 +291,76 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("replaces idea update models without retaining old effort options", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      ideaUpdatesModelSelection: createModelSelection(
+        ProviderInstanceId.make("codex"),
+        "gpt-5.4-mini",
+        [{ id: "reasoningEffort", value: "high" }],
+      ),
+    };
+    expect(
+      applyServerSettingsPatch(current, {
+        ideaUpdatesModelSelection: {
+          instanceId: ProviderInstanceId.make("claude"),
+          model: "claude-sonnet-4-6",
+        },
+      }).ideaUpdatesModelSelection,
+    ).toEqual({ instanceId: "claude", model: "claude-sonnet-4-6" });
+  });
+
+  it("merges idea update options by id and supports clearing them", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      ideaUpdatesModelSelection: createModelSelection(
+        ProviderInstanceId.make("codex"),
+        "gpt-5.4-mini",
+        [
+          { id: "reasoningEffort", value: "high" },
+          { id: "fastMode", value: true },
+        ],
+      ),
+    };
+    const updated = applyServerSettingsPatch(current, {
+      ideaUpdatesModelSelection: { options: [{ id: "reasoningEffort", value: "low" }] },
+    });
+    expect(updated.ideaUpdatesModelSelection).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.4-mini",
+      options: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "fastMode", value: true },
+      ],
+    });
+    expect(
+      applyServerSettingsPatch(updated, {
+        ideaUpdatesModelSelection: { options: [] },
+      }).ideaUpdatesModelSelection,
+    ).toEqual({ instanceId: "codex", model: "gpt-5.4-mini" });
+  });
+
+  it("resets idea updates to Automatic and accepts a complete selection afterwards", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
+      { id: "reasoningEffort", value: "high" },
+    ]);
+    const configured = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      ideaUpdatesModelSelection: selection,
+    });
+    expect(configured.ideaUpdatesModelSelection).toEqual(selection);
+    const automatic = applyServerSettingsPatch(configured, { ideaUpdatesModelSelection: null });
+    expect(automatic.ideaUpdatesModelSelection).toBeNull();
+    expect(
+      applyServerSettingsPatch(automatic, { ideaUpdatesModelSelection: selection })
+        .ideaUpdatesModelSelection,
+    ).toEqual(selection);
+    expect(
+      applyServerSettingsPatch(automatic, {
+        ideaUpdatesModelSelection: { options: [{ id: "reasoningEffort", value: "high" }] },
+      }).ideaUpdatesModelSelection,
+    ).toBeNull();
+  });
+
   it("still deep merges text generation selection when only options are provided", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,

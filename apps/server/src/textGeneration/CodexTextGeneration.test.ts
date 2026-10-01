@@ -227,25 +227,32 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
     ),
   );
 
-  it.effect("generates notebook edits with the selected model and tools disabled", () =>
-    withFakeCodexEnv(
-      {
-        output: '{"edits":[],"summary":"No new decisions."}',
-        requireArg: "--model gpt-5.6-luna",
-        forbidArg: "--dangerously-bypass-approvals-and-sandbox",
-        launchArgs: "--dangerously-bypass-approvals-and-sandbox",
-        requireOwnedOutput: true,
-      },
-      (generation, cwd) =>
-        Effect.gen(function* () {
-          const result = yield* generation.generateIdeaUpdate!({
-            cwd,
-            prompt: "Organize the notebook.",
-            modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna"),
-          });
-          expect(result).toEqual({ edits: [], summary: "No new decisions." });
-        }),
-    ),
+  it.effect(
+    "generates notebook edits with the selected model and effort while tools stay disabled",
+    () =>
+      withFakeCodexEnv(
+        {
+          output: '{"edits":[],"summary":"No new decisions."}',
+          requireArg: "--model gpt-5.6-luna",
+          requireReasoningEffort: "high",
+          forbidArg: "--dangerously-bypass-approvals-and-sandbox",
+          launchArgs: "--dangerously-bypass-approvals-and-sandbox",
+          requireOwnedOutput: true,
+        },
+        (generation, cwd) =>
+          Effect.gen(function* () {
+            const result = yield* generation.generateIdeaUpdate!({
+              cwd,
+              prompt: "Organize the notebook.",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("codex"),
+                "gpt-5.6-luna",
+                [{ id: "reasoningEffort", value: "high" }],
+              ),
+            });
+            expect(result).toEqual({ edits: [], summary: "No new decisions." });
+          }),
+      ),
   );
 
   for (const selectedModel of ["gpt-5.6-luna", "openai.gpt-5.6-luna"]) {

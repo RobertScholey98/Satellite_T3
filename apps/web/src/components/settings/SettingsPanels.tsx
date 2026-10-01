@@ -6,6 +6,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import type { CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
   type BackgroundActivityProfile,
   type DesktopUpdateChannel,
   ProviderDriverKind,
@@ -45,7 +46,7 @@ import {
   type QuitConfirmationMode,
 } from "@t3tools/contracts/settings";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
-import { createModelSelection } from "@t3tools/shared/model";
+import { createModelSelection, getProviderOptionStringSelectionValue } from "@t3tools/shared/model";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
@@ -2225,6 +2226,19 @@ export function GeneralSettingsPanel() {
     settings.ideaUpdatesModelSelection?.model,
   );
   const ideaModelDisabledReason = useScopedModelDisabledReason(settings, ideaModelInstanceEntries);
+  const ideaModelSelection = settings.ideaUpdatesModelSelection;
+  const ideaModelInstanceEntry = ideaModelInstanceEntries.find(
+    (entry) => entry.instanceId === ideaModelSelection?.instanceId,
+  );
+  const ideaModelTraits =
+    ideaModelInstanceEntry?.driverKind === "codex" &&
+    getProviderOptionStringSelectionValue(ideaModelSelection?.options, "reasoningEffort") ===
+      undefined
+      ? [
+          ...(ideaModelSelection?.options ?? []),
+          { id: "reasoningEffort", value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT },
+        ]
+      : ideaModelSelection?.options;
   const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
   const activeBackgroundActivityProfile = resolvedBackgroundActivity.profile;
   const backgroundActivityProfileOption = resolveBackgroundActivityProfileOption(settings);
@@ -3144,7 +3158,7 @@ export function GeneralSettingsPanel() {
                 Connect an environment with an enabled provider.
               </span>
             ) : (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
                 <ProviderModelPicker
                   activeInstanceId={
                     settings.ideaUpdatesModelSelection?.instanceId ?? textGenInstanceId
@@ -3159,12 +3173,49 @@ export function GeneralSettingsPanel() {
                     : {})}
                   getModelDisabledReason={ideaModelDisabledReason}
                   onInstanceModelChange={(instanceId, model) => {
-                    if (!ideaModelDisabledReason(instanceId, model))
-                      updateSettings({
-                        ideaUpdatesModelSelection: createModelSelection(instanceId, model),
-                      });
+                    if (ideaModelDisabledReason(instanceId, model)) return;
+                    const entry = ideaModelInstanceEntries.find(
+                      (candidate) => candidate.instanceId === instanceId,
+                    );
+                    const options =
+                      ideaModelSelection?.instanceId === instanceId &&
+                      ideaModelSelection.model === model
+                        ? ideaModelTraits
+                        : entry?.driverKind === "codex"
+                          ? [
+                              {
+                                id: "reasoningEffort",
+                                value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
+                              },
+                            ]
+                          : undefined;
+                    updateSettings({
+                      ideaUpdatesModelSelection: createModelSelection(instanceId, model, options),
+                    });
                   }}
                 />
+                {ideaModelSelection && ideaModelInstanceEntry ? (
+                  <TraitsPicker
+                    provider={ideaModelInstanceEntry.driverKind}
+                    models={ideaModelInstanceEntry.models}
+                    model={ideaModelSelection.model}
+                    prompt=""
+                    onPromptChange={() => {}}
+                    modelOptions={ideaModelTraits}
+                    allowPromptInjectedEffort={false}
+                    planModeEnabled={settings.planModeEnabled}
+                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                    onModelOptionsChange={(options) => {
+                      updateSettings({
+                        ideaUpdatesModelSelection: createModelSelection(
+                          ideaModelSelection.instanceId,
+                          ideaModelSelection.model,
+                          options,
+                        ),
+                      });
+                    }}
+                  />
+                ) : null}
                 {settings.ideaUpdatesModelSelection !== null ? (
                   <SettingResetButton
                     label="idea updates model"

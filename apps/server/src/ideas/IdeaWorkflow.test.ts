@@ -73,6 +73,13 @@ it.effect.each([
   ({ deletionMode, modelSource, driver, model }) =>
     Effect.gen(function* () {
       const driverKind = ProviderDriverKind.make(driver);
+      const updateModelSelection = {
+        instanceId,
+        model,
+        ...(modelSource === "configured"
+          ? { options: [{ id: "reasoningEffort", value: "high" }] }
+          : {}),
+      };
       let generated = 0;
       let posted = 0;
       let published: { number: number; title: string; body: string; html_url: string } | null =
@@ -113,7 +120,7 @@ it.effect.each([
           generateThreadTitle: unused,
           generateIdeaUpdate: (input) =>
             Effect.sync(() => {
-              assert.deepEqual(input.modelSelection, { instanceId, model });
+              assert.deepEqual(input.modelSelection, updateModelSelection);
               assert.include(input.prompt, '"edits"');
               assert.include(input.prompt, '"baseRevision"');
               assert.include(input.prompt, "Assistant decision from two chunks.");
@@ -210,8 +217,7 @@ it.effect.each([
           Layer.mock(ServerSettingsService)({
             getSettings: Effect.succeed({
               ...DEFAULT_SERVER_SETTINGS,
-              ideaUpdatesModelSelection:
-                modelSource === "configured" ? { instanceId, model } : null,
+              ideaUpdatesModelSelection: modelSource === "configured" ? updateModelSelection : null,
             }),
           }),
         ),
