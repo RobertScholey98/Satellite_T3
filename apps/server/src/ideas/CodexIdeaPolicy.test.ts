@@ -56,6 +56,8 @@ it.effect(
       expect(result.args).toContain('approval_policy="never"');
       expect(result.args).toContain("features.shell_tool=false");
       expect(result.args).toContain("features.hooks=false");
+      expect(result.args).toContain("features.code_mode=true");
+      expect(result.args).toContain("features.code_mode_host=true");
       expect(result.args).toContain("mcp_servers={}");
       expect(result.args.join(" ")).not.toContain("danger-full-access");
       expect(result.args.join(" ")).not.toContain("mcp_servers.other");
@@ -129,6 +131,8 @@ it.effect(
         `log_dir=${encodeJsonString(path.join(cwd, ".codex-updates", "log"))}`,
       );
       expect(result.args).toContain('history.persistence="none"');
+      expect(result.args).toContain("features.code_mode=false");
+      expect(result.args).toContain("features.code_mode_host=false");
       expect(result.args).not.toContain('cli_auth_credentials_store="file"');
       expect(result.args).toContain(
         'mcp_servers={"external"={"enabled"=false},"other"={"enabled"=false}}',

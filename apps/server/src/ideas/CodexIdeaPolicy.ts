@@ -59,8 +59,6 @@ const disabledFeatures = [
   "computer_use",
   "browser_use",
   "image_generation",
-  "code_mode",
-  "code_mode_host",
   "workspace_dependencies",
   "skill_mcp_dependency_install",
 ] as const;
@@ -180,6 +178,8 @@ export const prepareCodexIdeaPolicy = Effect.fn("prepareCodexIdeaPolicy")(functi
   );
   const config = {
     ...CODEX_IDEA_CONFIG,
+    "features.code_mode": input.purpose !== "updates",
+    "features.code_mode_host": input.purpose !== "updates",
     ...(hasAuthFile ? { cli_auth_credentials_store: "file" } : {}),
     sqlite_home: ownedHome,
     log_dir: path.join(ownedHome, "log"),
