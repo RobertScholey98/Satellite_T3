@@ -71,7 +71,7 @@ export function installSatellitePill(
     width: Math.max(840, position?.workspaceWidth ?? initial.width),
     height: Math.max(620, position?.workspaceHeight ?? initial.height),
   };
-  let shell: SatelliteShellState = { mode: "pill", pinned: false };
+  let shell: SatelliteShellState = { mode: "workspace", pinned: false };
   let snapshot = unavailablePillState();
   let quitting = false;
   let menuOpen = false;
@@ -194,6 +194,12 @@ export function installSatellitePill(
     savePosition();
   };
   shells.set(main, { expand });
+  main.once("ready-to-show", () => {
+    if (quitting || main.isDestroyed() || shell.mode !== "workspace") return;
+    main.show();
+    main.focus();
+    pill.hide();
+  });
   const openMain = () => {
     if (!main.isDestroyed()) options.revealMain();
   };

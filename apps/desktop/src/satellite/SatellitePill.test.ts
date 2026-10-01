@@ -144,9 +144,7 @@ describe("independent native Satellite surfaces", () => {
   const saved = () => JSON.parse(vi.mocked(NodeFS.writeFileSync).mock.lastCall?.[1] as string);
   const expand = () => expandSatelliteWindow(main);
   const collapse = () => send(main, Channels.SATELLITE_HIDE_MAIN);
-  beforeEach(async () => {
-    vi.useFakeTimers();
-    vi.clearAllMocks();
+  const createShell = () => {
     main = new Electron.BrowserWindow({});
     reveal = vi.fn(() => {
       expand();
@@ -157,21 +155,44 @@ describe("independent native Satellite surfaces", () => {
       pillPreloadPath: "/pill.cjs",
     });
     pill = Electron.BrowserWindow.getAllWindows().find((window) => window !== main)!;
+  };
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    createShell();
     await Promise.resolve();
     send(main, Channels.SATELLITE_WORKSPACE_READY);
     send(pill, Channels.SATELLITE_PILL_READY);
+    reveal.mockClear();
   });
   afterEach(() => {
     for (const window of Electron.BrowserWindow.getAllWindows()) window.destroy();
     vi.useRealTimers();
   });
-  it("boots a small visible pill and retains a hidden resizable workspace", () => {
+  it("boots an expanded resizable workspace and keeps the pill hidden", () => {
     expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
-    expect(pill.isVisible()).toBe(true);
-    expect(main.isVisible()).toBe(false);
+    expect(pill.isVisible()).toBe(false);
+    expect(main.isVisible()).toBe(true);
     expect(main.setResizable).toHaveBeenCalledWith(true);
     expect(main.setShape).not.toHaveBeenCalled();
     expect(pill.webContents.setZoomFactor).toHaveBeenCalledWith(1);
+  });
+  it("shows the loader at first paint before the workspace renderer is ready", () => {
+    main.destroy();
+    createShell();
+    send(pill, Channels.SATELLITE_PILL_READY);
+    expect(main.isVisible()).toBe(false);
+    expect(pill.isVisible()).toBe(false);
+    main.emit("ready-to-show");
+    expect(main.isVisible()).toBe(true);
+    expect(main.isFocused()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+    send(main, Channels.SATELLITE_WORKSPACE_READY);
+    expect(main.isVisible()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+    collapse();
+    expect(main.isVisible()).toBe(false);
+    expect(pill.isVisible()).toBe(true);
   });
   it("switches surfaces without destroying the mounted workspace", () => {
     expand();
@@ -197,6 +218,7 @@ describe("independent native Satellite surfaces", () => {
     expect(pill.getBounds()).toMatchObject({ x: -100, y: -20, width: 320, height: 70 });
   });
   it("accepts only the pill sender for drag and only the main sender for publication", async () => {
+    collapse();
     const start = await vi.mocked(loadWindowsPillDrag).mock.results[0]!.value;
     send(main, Channels.SATELLITE_PILL_DRAG_BEGIN);
     expect(start).not.toHaveBeenCalled();
@@ -257,6 +279,7 @@ describe("independent native Satellite surfaces", () => {
     expect(pill.webContents.reload).toHaveBeenCalledOnce();
   });
   it("clamps keyboard movement and topology recovery but ignores scale-only notifications", () => {
+    collapse();
     pill.setPosition(-50, -50);
     send(pill, Channels.SATELLITE_PILL_MOVE, "ArrowLeft");
     expect(pill.getBounds()).toMatchObject({ x: 0, y: 0 });
@@ -281,6 +304,7 @@ describe("independent native Satellite surfaces", () => {
     expect(pill.getBounds()).toEqual({ x: 0, y: 0, width: 320, height: 70 });
   });
   it("caps native minimums to a small work area without changing preferred workspace size", () => {
+    collapse();
     const primary = {
       id: 1,
       workArea: { x: 0, y: 0, width: 700, height: 500 },
@@ -296,6 +320,7 @@ describe("independent native Satellite surfaces", () => {
     displaysSpy.mockRestore();
   });
   it("keeps a recovering workspace hidden until its renderer is ready", () => {
+    collapse();
     main.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
     expect(expandSatelliteWindow(main)).toBe(false);
     expect(main.isVisible()).toBe(false);
