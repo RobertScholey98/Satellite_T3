@@ -2212,6 +2212,19 @@ export function GeneralSettingsPanel() {
     settings,
     textGenerationModelInstanceEntries,
   );
+  const ideaModelInstanceEntries = sortProviderInstanceEntries(
+    applyProviderInstanceSettings(deriveProviderInstanceEntries(serverProviders), settings),
+  );
+  const hasIdeaProvider = ideaModelInstanceEntries.some(
+    (entry) => entry.enabled && entry.isAvailable,
+  );
+  const ideaModelOptionsByInstance = getCustomModelOptionsByInstance(
+    settings,
+    serverProviders,
+    settings.ideaUpdatesModelSelection?.instanceId,
+    settings.ideaUpdatesModelSelection?.model,
+  );
+  const ideaModelDisabledReason = useScopedModelDisabledReason(settings, ideaModelInstanceEntries);
   const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
   const activeBackgroundActivityProfile = resolvedBackgroundActivity.profile;
   const backgroundActivityProfileOption = resolveBackgroundActivityProfileOption(settings);
@@ -3126,33 +3139,27 @@ export function GeneralSettingsPanel() {
           title="Idea updates"
           description="The provider and model that organize idea notes and update their pitches. This is independent of thread titles."
           control={
-            !hasServerTargets || !hasTextGenerationProvider ? (
+            !hasServerTargets || !hasIdeaProvider ? (
               <span className="text-sm text-muted-foreground">
-                Connect an environment with a text generation provider.
+                Connect an environment with an enabled provider.
               </span>
             ) : (
               <div className="flex items-center gap-2">
                 <ProviderModelPicker
                   activeInstanceId={
-                    settings.ideaUpdatesModelSelection?.instanceId ??
-                    textGenerationModelInstanceEntries.find(
-                      (entry) => entry.driverKind === "claudeAgent",
-                    )?.instanceId ??
-                    textGenInstanceId
+                    settings.ideaUpdatesModelSelection?.instanceId ?? textGenInstanceId
                   }
                   model={settings.ideaUpdatesModelSelection?.model ?? textGenModel}
                   lockedProvider={null}
-                  instanceEntries={textGenerationModelInstanceEntries.filter(
-                    (entry) => entry.driverKind === "claudeAgent",
-                  )}
-                  modelOptionsByInstance={textGenerationModelOptionsByInstance}
+                  instanceEntries={ideaModelInstanceEntries}
+                  modelOptionsByInstance={ideaModelOptionsByInstance}
                   triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                   {...(settings.ideaUpdatesModelSelection === null
                     ? { triggerLabel: "Automatic" }
                     : {})}
-                  getModelDisabledReason={textGenerationModelDisabledReason}
+                  getModelDisabledReason={ideaModelDisabledReason}
                   onInstanceModelChange={(instanceId, model) => {
-                    if (!textGenerationModelDisabledReason(instanceId, model))
+                    if (!ideaModelDisabledReason(instanceId, model))
                       updateSettings({
                         ideaUpdatesModelSelection: createModelSelection(instanceId, model),
                       });

@@ -41,6 +41,8 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
+import { readIdeaExecution } from "../../ideas/IdeaExecution.ts";
+import { ideaAcpPermissionResponse, prepareGrokIdeaEnvironment } from "../acp/IdeaAcpPolicy.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
   ProviderAdapterProcessError,
@@ -971,7 +973,8 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             });
           }
 
-          const cwd = path.resolve(input.cwd.trim());
+          const idea = readIdeaExecution(input.threadId);
+          const cwd = path.resolve(idea?.cwd ?? input.cwd.trim());
           const grokModelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const existing = sessions.get(input.threadId);
@@ -988,7 +991,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             sessionScopeTransferred ? Effect.void : Scope.close(sessionScope, Exit.void),
           );
 
-          const resumeSessionId = parseGrokResume(input.resumeCursor)?.sessionId;
+          const resumeSessionId = idea ? undefined : parseGrokResume(input.resumeCursor)?.sessionId;
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
             provider: PROVIDER,
@@ -996,19 +999,32 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           });
 
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          const baseEnvironment = McpProviderSession.withAgentDeviceEnvironment(
+            options?.environment ?? hostEnvironment,
+            mcpSession,
+          );
+          const environment = idea
+            ? yield* prepareGrokIdeaEnvironment(idea.cwd, baseEnvironment, "thread").pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, path),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      detail: "Could not prepare the Grok idea profile.",
+                      threadId: input.threadId,
+                      cause,
+                    }),
+                ),
+              )
+            : baseEnvironment;
           const acp = yield* makeGrokAcpRuntime({
             grokSettings,
-            ...(options?.environment || mcpSession?.agentDeviceEnvironment
-              ? {
-                  environment: McpProviderSession.withAgentDeviceEnvironment(
-                    options?.environment ?? process.env,
-                    mcpSession,
-                  ),
-                }
-              : {}),
+            environment,
             childProcessSpawner,
             cwd,
             runtimeMode: input.runtimeMode,
+            ...(idea ? { ideaPurpose: "thread" as const } : {}),
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
             ...(mcpSession
@@ -1149,6 +1165,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               mapAcpCallbackFailure(
                 Effect.gen(function* () {
                   yield* logNative(input.threadId, "session/request_permission", params);
+                  if (idea) return ideaAcpPermissionResponse(params);
                   const permissionRequest = parsePermissionRequest(params);
                   const command = permissionRequest.toolCall?.command;
                   const { kind, title, rawInput, locations } = params.toolCall;

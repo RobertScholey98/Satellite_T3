@@ -1,4 +1,7 @@
+import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import {
@@ -28,8 +31,10 @@ import {
 } from "./TextGenerationUtils.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 import * as OpenCodeServerOwner from "../provider/OpenCodeServerOwner.ts";
+import { prepareOpenCodeIdeaEnvironment } from "../ideas/OpenCodeIdeaEnvironment.ts";
 
 const OpenCodeTextGenerationOperation = Schema.Literals([
+  "generateIdeaUpdate",
   "generateCommitMessage",
   "generatePrContent",
   "generateBranchName",
@@ -172,10 +177,13 @@ function getOpenCodeTextResponse(parts: ReadonlyArray<unknown> | undefined): str
 
 export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration")(function* (
   openCodeSettings: OpenCodeSettings,
+  environment: NodeJS.ProcessEnv = process.env,
 ) {
   const serverConfig = yield* ServerConfig.ServerConfig;
   const openCodeRuntime = yield* OpenCodeRuntime.OpenCodeRuntime;
   const serverOwner = yield* OpenCodeServerOwner.OpenCodeServerOwner;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
 
   const runOpenCodeJson = Effect.fn("runOpenCodeJson")(function* <S extends Schema.Top>(input: {
     readonly operation: OpenCodeTextGenerationOperation;
@@ -230,6 +238,20 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
             cwd: input.cwd,
           });
         }
+        if (input.operation === "generateIdeaUpdate") {
+          const sessionID = session.data.id;
+          yield* Effect.addFinalizer(() =>
+            Effect.tryPromise({
+              try: () => client.session.delete({ sessionID }),
+              catch: (cause) =>
+                new TextGenerationError({
+                  operation: input.operation,
+                  detail: "Could not remove the OpenCode idea update session.",
+                  cause,
+                }),
+            }).pipe(Effect.catch((error) => Effect.logWarning(error.message))),
+          );
+        }
         const selectedAgent = getModelSelectionStringOptionValue(input.modelSelection, "agent");
         const selectedVariant = getModelSelectionStringOptionValue(input.modelSelection, "variant");
         const promptContext = {
@@ -264,6 +286,15 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           });
         }
         const responseParts = result.data?.parts ?? [];
+        if (
+          input.operation === "generateIdeaUpdate" &&
+          responseParts.some((part) => part.type === "tool")
+        ) {
+          return yield* new TextGenerationError({
+            operation: input.operation,
+            detail: "Idea updates cannot use tools.",
+          });
+        }
         const rawText = getOpenCodeTextResponse(responseParts);
         if (rawText.length === 0) {
           return yield* new OpenCodeTextGenerationEmptyOutputError({
@@ -274,6 +305,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         }
         return rawText;
       },
+      Effect.scoped,
       Effect.catchTags({
         OpenCodeTextGenerationSessionRequestError: (cause) =>
           Effect.fail(
@@ -318,8 +350,34 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       }),
     );
 
-    const serverOutput =
-      openCodeSettings.serverUrl.length > 0
+    const ideaEnvironment =
+      input.operation === "generateIdeaUpdate"
+        ? yield* prepareOpenCodeIdeaEnvironment({
+            directory: input.cwd,
+            environment,
+            purpose: "updates",
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.mapError(
+              (cause) =>
+                new TextGenerationError({
+                  operation: input.operation,
+                  detail: "Could not prepare the OpenCode idea update runtime.",
+                  cause,
+                }),
+            ),
+          )
+        : undefined;
+    const serverOutput = ideaEnvironment
+      ? openCodeRuntime
+          .startOpenCodeServerProcess({
+            binaryPath: openCodeSettings.binaryPath,
+            directory: input.cwd,
+            environment: ideaEnvironment,
+          })
+          .pipe(Effect.flatMap(runAgainstServer), Effect.scoped)
+      : openCodeSettings.serverUrl.length > 0
         ? openCodeRuntime
             .connectToOpenCodeServer({
               binaryPath: openCodeSettings.binaryPath,
@@ -453,7 +511,17 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       };
     });
 
+  const generateIdeaUpdate = (input: IdeaUpdateInput) =>
+    runOpenCodeJson({
+      operation: "generateIdeaUpdate",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: IdeaUpdateResult,
+      modelSelection: input.modelSelection,
+    });
+
   return {
+    generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

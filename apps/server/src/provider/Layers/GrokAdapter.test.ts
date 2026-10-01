@@ -27,6 +27,11 @@ import {
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import { ServerConfig } from "../../config.ts";
+import {
+  IDEA_TOOL_NAMES,
+  clearIdeaExecution,
+  setIdeaExecution,
+} from "../../ideas/IdeaExecution.ts";
 import { execScriptSource, writeFakeCli } from "../../testUtils/fakeCli.ts";
 import {
   grokPromptSettlementBelongsToContext,
@@ -40,6 +45,9 @@ const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+const isPermissionResult = Schema.is(
+  Schema.Struct({ result: Schema.Struct({ outcome: Schema.Struct({ outcome: Schema.String }) }) }),
+);
 // Stopping a session kills the agent with SIGTERM; Windows terminates the
 // process instead, so the mock never sees a signal to log.
 const windowsHost = HostProcessPlatform.defaultValue() === "win32";
@@ -2254,6 +2262,53 @@ it.layer(grokAdapterTestLayer)("GrokAdapterLive", (it) => {
       yield* Fiber.interrupt(eventsFiber);
       yield* adapter.stopSession(threadId);
     }),
+  );
+
+  it.effect.each([
+    { title: "run_terminal_command", outcome: "cancelled", tool: "" },
+    ...IDEA_TOOL_NAMES.map((tool) => ({
+      title: `Readable ${tool} label`,
+      outcome: "selected",
+      tool: `t3-code__${tool}`,
+    })),
+  ])("restricts full-access idea permissions for $title", ({ title, outcome, tool }) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make(`grok-idea-${title}`);
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "grok-idea-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          setIdeaExecution(threadId, {
+            cwd: tempDir,
+            projectDirectory: tempDir,
+            mainRevision: "main",
+            deletionEpoch: 0,
+            context: "Idea",
+          }),
+        ),
+        () => Effect.sync(() => clearIdeaExecution(threadId)),
+      );
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockGrokWrapper({
+          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+          T3_ACP_PERMISSION_TITLE: title,
+          T3_ACP_PERMISSION_MCP_TOOL: tool,
+        }),
+      );
+      const adapter = yield* makeTestAdapter(wrapperPath);
+      yield* adapter.startSession({ threadId, cwd: tempDir, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, input: "Use this tool" });
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      assert.isTrue(
+        requests.some(
+          (entry) => isPermissionResult(entry) && entry.result.outcome.outcome === outcome,
+        ),
+      );
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("keeps a Grok turn running when Always allow has no allow_always option", () =>

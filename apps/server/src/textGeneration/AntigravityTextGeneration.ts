@@ -1,3 +1,4 @@
+import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
 import {
   type ModelSelection,
   type ProviderSetupError,
@@ -70,6 +71,7 @@ export interface AntigravityTextGenerationOptions {
   /** Uses the instance's personal Google login, with no injected MCP servers or client tools. */
   readonly makeRuntime: (
     cwd: string,
+    ideaWorkspace?: string,
   ) => Effect.Effect<AntigravityTextRuntime, AcpError | ProviderSetupError, Scope.Scope>;
   /** Registers the whole helper so sign-out can stop it before clearing credentials. */
   readonly withProcess: <A, E, R>(
@@ -125,12 +127,13 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       readonly prompt: string;
       readonly outputSchema: S;
       readonly modelSelection: ModelSelection;
+      readonly ideaWorkspace?: string;
     }) {
       const { operation } = input;
       const scope = yield* Scope.make();
       yield* Effect.addFinalizer((exit) => Scope.close(scope, exit));
       const helper = Effect.gen(function* () {
-        if (!(yield* available)) {
+        if (!input.ideaWorkspace && !(yield* available)) {
           return yield* new TextGenerationError({
             operation,
             detail:
@@ -138,7 +141,12 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
           });
         }
 
-        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-antigravity-text-" });
+        const helperDirectory = yield* fs.makeTempDirectoryScoped({
+          prefix: "t3-antigravity-text-",
+          ...(input.ideaWorkspace ? { directory: input.ideaWorkspace } : {}),
+        });
+        const cwd = input.ideaWorkspace ? path.join(helperDirectory, "workspace") : helperDirectory;
+        if (input.ideaWorkspace) yield* fs.makeDirectory(cwd);
         let sessionId: string | undefined;
         yield* Effect.addFinalizer(() =>
           removeAntigravitySessionFiles({
@@ -152,7 +160,10 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
         );
 
         const rawResult = yield* Effect.gen(function* () {
-          const runtime = yield* options.makeRuntime(cwd);
+          const runtime = yield* options.makeRuntime(
+            cwd,
+            input.ideaWorkspace ? helperDirectory : undefined,
+          );
           yield* runtime.getEvents().pipe(
             Stream.runForEach((event) =>
               event._tag === "EventStreamBarrier"
@@ -405,7 +416,17 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       };
     });
 
+  const generateIdeaUpdate = (input: IdeaUpdateInput) =>
+    runAntigravityJson({
+      operation: "generateIdeaUpdate",
+      ideaWorkspace: input.cwd,
+      prompt: input.prompt,
+      outputSchema: IdeaUpdateResult,
+      modelSelection: input.modelSelection,
+    });
+
   return {
+    generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

@@ -33,14 +33,17 @@ function makeAcpGrokWrapper(dir: string, env: Record<string, string>): string {
     env,
     source: execScriptSource({
       scriptPath: mockAgentPath,
-      expectedArgs: ["agent", "stdio"],
+      argvLogPath: NodePath.join(dir, "argv.txt"),
     }),
   });
 }
 
 function withFakeAcpGrok<A, E, R>(
   env: Record<string, string>,
-  effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
+  effectFn: (
+    textGeneration: TextGeneration.TextGeneration["Service"],
+    cwd: string,
+  ) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-grok-text-acp-"));
@@ -49,10 +52,13 @@ function withFakeAcpGrok<A, E, R>(
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }),
     );
-    const binaryPath = makeAcpGrokWrapper(tempDir, env);
+    const binaryPath = makeAcpGrokWrapper(tempDir, {
+      T3_ACP_REQUEST_LOG_PATH: NodePath.join(tempDir, "requests.ndjson"),
+      ...env,
+    });
     const config = decodeGrokSettings({ binaryPath });
     const textGeneration = yield* makeGrokTextGeneration(config);
-    return yield* effectFn(textGeneration);
+    return yield* effectFn(textGeneration, tempDir);
   }).pipe(Effect.scoped);
 }
 
@@ -67,6 +73,63 @@ function readJsonRpcRequests(
 }
 
 it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
+  it.effect("rejects invalid notebook edits", () =>
+    withFakeAcpGrok(
+      { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":"invalid","summary":"Bad update"}' },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const error = yield* generation.generateIdeaUpdate!({
+            cwd,
+            prompt: "Organize the notebook.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
+          }).pipe(Effect.flip);
+          expect(error.detail).toContain("invalid structured output");
+        }),
+    ),
+  );
+
+  it.effect("generates notebook edits with the selected model", () =>
+    withFakeAcpGrok(
+      { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":[],"summary":"No new decisions."}' },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateIdeaUpdate!({
+            cwd,
+            prompt: "Organize the supplied notebook.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-mock-alt"),
+          });
+          expect(result).toEqual({ edits: [], summary: "No new decisions." });
+          expect(NodeFS.readFileSync(NodePath.join(cwd, "argv.txt"), "utf8")).toContain(
+            "--disallowed-tools\t*\tagent\tstdio",
+          );
+          expect(readJsonRpcRequests(NodePath.join(cwd, "requests.ndjson"))).toContainEqual(
+            expect.objectContaining({
+              method: "session/set_model",
+              params: { sessionId: "mock-session-1", modelId: "grok-mock-alt" },
+            }),
+          );
+        }),
+    ),
+  );
+
+  it.effect("rejects tool activity during notebook updates", () =>
+    withFakeAcpGrok(
+      {
+        T3_ACP_EMIT_TOOL_CALLS: "1",
+        T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":[],"summary":"No new decisions."}',
+      },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateIdeaUpdate!({
+            cwd,
+            prompt: "Organize the supplied notebook.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
+          }).pipe(Effect.flip);
+          expect(result.detail).toContain("cannot use tools");
+        }),
+    ),
+  );
+
   it.effect("uses ACP with disabled tool capabilities and forwards the requested model id", () => {
     const requestLogDir = NodeFS.mkdtempSync(
       NodePath.join(NodeOS.tmpdir(), "t3code-grok-text-log-"),

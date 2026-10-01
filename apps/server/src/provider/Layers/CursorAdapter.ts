@@ -44,6 +44,12 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { readIdeaExecution } from "../../ideas/IdeaExecution.ts";
+import {
+  ideaAcpPermissionResponse,
+  prepareCursorIdeaEnvironment,
+  prepareCursorIdeaWorkspace,
+} from "../acp/IdeaAcpPolicy.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -508,7 +514,22 @@ export function makeCursorAdapter(
             });
           }
 
-          const cwd = path.resolve(input.cwd.trim());
+          const idea = readIdeaExecution(input.threadId);
+          const cwd = idea
+            ? yield* prepareCursorIdeaWorkspace(idea.cwd, "thread").pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, path),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      detail: "Could not prepare the idea workspace.",
+                      cause,
+                    }),
+                ),
+              )
+            : path.resolve(input.cwd.trim());
           const cursorModelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
           const existing = sessions.get(input.threadId);
@@ -525,7 +546,9 @@ export function makeCursorAdapter(
           );
           let ctx!: CursorSessionContext;
 
-          const resumeSessionId = parseCursorResume(input.resumeCursor)?.sessionId;
+          const resumeSessionId = idea
+            ? undefined
+            : parseCursorResume(input.resumeCursor)?.sessionId;
           const acpNativeLoggers = makeAcpNativeLoggers({
             nativeEventLogger,
             provider: PROVIDER,
@@ -545,19 +568,31 @@ export function makeCursorAdapter(
             : cursorSettings;
 
           const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          const baseEnvironment = McpProviderSession.withAgentDeviceEnvironment(
+            options?.environment ?? process.env,
+            mcpSession,
+          );
+          const environment = idea
+            ? yield* prepareCursorIdeaEnvironment(cwd, baseEnvironment).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, path),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterProcessError({
+                      provider: PROVIDER,
+                      detail: "Could not prepare the Cursor idea profile.",
+                      threadId: input.threadId,
+                      cause,
+                    }),
+                ),
+              )
+            : baseEnvironment;
           const acp = yield* makeCursorAcpRuntime({
             cursorSettings: effectiveCursorSettings,
-            ...(options?.environment || mcpSession?.agentDeviceEnvironment
-              ? {
-                  environment: McpProviderSession.withAgentDeviceEnvironment(
-                    options?.environment ?? process.env,
-                    mcpSession,
-                  ),
-                }
-              : {}),
+            environment,
             childProcessSpawner,
             cwd,
-            runtimeMode: input.runtimeMode,
+            runtimeMode: idea ? "approval-required" : input.runtimeMode,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
             ...(mcpSession
@@ -693,6 +728,7 @@ export function makeCursorAdapter(
                     params,
                     "acp.jsonrpc",
                   );
+                  if (idea) return ideaAcpPermissionResponse(params);
                   if (input.runtimeMode === "full-access") {
                     const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
                     if (autoApprovedOptionId !== undefined) {

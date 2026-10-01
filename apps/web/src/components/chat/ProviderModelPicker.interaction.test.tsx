@@ -86,7 +86,7 @@ afterEach(async () => {
 });
 
 describe("Idea model picker", () => {
-  it("opens from a choice prompt, rejects the retained work model, and accepts a Claude model", async () => {
+  it("keeps the selected GPT model available and allows selecting another provider", async () => {
     const selections: Array<{ instanceId: ProviderInstanceId; model: string }> = [];
     await act(async () =>
       root.render(
@@ -96,24 +96,20 @@ describe("Idea model picker", () => {
           lockedProvider={null}
           instanceEntries={entries}
           modelOptionsByInstance={new Map(entries.map((entry) => [entry.instanceId, entry.models]))}
-          triggerLabel="Choose a Claude model"
-          triggerAriaLabel="Choose a Claude model"
-          getModelDisabledReason={(instanceId) =>
-            instanceId === claude ? null : "Ideas currently require Claude."
-          }
           onInstanceModelChange={(instanceId, model) => selections.push({ instanceId, model })}
         />,
       ),
     );
     const trigger = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Choose a Claude model"]',
+      'button[data-chat-provider-model-picker="true"]',
     )!;
-    expect(trigger.textContent).not.toContain("GPT-6 Luna");
+    expect(trigger.textContent).toContain("GPT-6 Luna");
     await act(async () => trigger.click());
     const codexOption = document.querySelector<HTMLElement>('[role="option"]')!;
     expect(codexOption.textContent).toContain("GPT-6 Luna");
     await act(async () => codexOption.click());
-    expect(selections).toEqual([]);
+    expect(selections).toEqual([{ instanceId: codex, model: "gpt-6-luna" }]);
+    await act(async () => trigger.click());
     const claudeButton = document.querySelector<HTMLButtonElement>(
       '[data-model-picker-provider="claude_work"] button',
     )!;
@@ -121,6 +117,9 @@ describe("Idea model picker", () => {
     const claudeOption = document.querySelector<HTMLElement>('[role="option"]')!;
     expect(claudeOption.textContent).toContain("Sonnet");
     await act(async () => claudeOption.click());
-    expect(selections).toEqual([{ instanceId: claude, model: "sonnet" }]);
+    expect(selections).toEqual([
+      { instanceId: codex, model: "gpt-6-luna" },
+      { instanceId: claude, model: "sonnet" },
+    ]);
   });
 });

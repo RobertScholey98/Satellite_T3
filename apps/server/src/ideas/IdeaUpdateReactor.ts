@@ -2,6 +2,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import * as Schema from "effect/Schema";
 import {
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
   CommandId,
   type IdeaSystemMutation,
   type IdeaSource,
@@ -30,6 +31,7 @@ import { ideaActivityDiscussion } from "./IdeaDiscussion.ts";
 import { IdeaRuntime, IdeaRuntimeError, isIdeaTextDocument } from "./IdeaRuntime.ts";
 import {
   IDEA_UPDATE_INSTRUCTIONS,
+  IDEA_UPDATE_OUTPUT_SCHEMA,
   IDEA_UPDATE_MESSAGE_CHARS,
   IDEA_UPDATE_DOCUMENT_CHARS,
   IDEA_UPDATE_PROMPT_BYTES,
@@ -88,39 +90,39 @@ export class IdeaUpdateReactor extends Context.Service<
         yield* apply(threadId, initial.deletionEpoch, { kind: "update.start", runId });
         yield* Effect.gen(function* () {
           const notebook = yield* store.requireActive(threadId);
-          const initialTitle =
-            notebook.update.processedSequence === 0
-              ? yield* snapshots.getThreadShellById(threadId)
-              : Option.none();
+          const thread = yield* snapshots.getThreadShellById(threadId);
+          const initialTitle = notebook.update.processedSequence === 0 ? thread : Option.none();
           const selected = (yield* settings.getSettings).ideaUpdatesModelSelection;
-          const automatic = selected
-            ? undefined
-            : (yield* providers.listInstances).find(
-                (instance) => instance.enabled && instance.driverKind === "claudeAgent",
+          const candidates = selected
+            ? []
+            : (yield* providers.listInstances).filter(
+                (instance) => instance.enabled && instance.textGeneration.generateIdeaUpdate,
               );
+          const automatic =
+            candidates.find(
+              (instance) =>
+                Option.isSome(thread) &&
+                instance.instanceId === thread.value.modelSelection.instanceId,
+            ) ?? candidates[0];
+          const defaultModel = automatic
+            ? (DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[automatic.driverKind] ??
+              DEFAULT_MODEL_BY_PROVIDER[automatic.driverKind])
+            : undefined;
           const modelSelection =
             selected ??
-            (automatic
-              ? createModelSelection(
-                  automatic.instanceId,
-                  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[automatic.driverKind] ??
-                    "claude-haiku-4-5",
-                )
+            (automatic && defaultModel
+              ? createModelSelection(automatic.instanceId, defaultModel)
               : undefined);
           if (!modelSelection)
             return yield* new IdeaRuntimeError({
               message:
-                "Configure a Claude provider in Settings → Idea updates, then retry this notebook update.",
+                "Choose an enabled model in Settings → Idea updates, then retry this notebook update.",
             });
           const provider = yield* providers.getInstance(modelSelection.instanceId);
-          if (
-            !provider?.enabled ||
-            provider.driverKind !== "claudeAgent" ||
-            !provider.textGeneration.generateIdeaUpdate
-          )
+          if (!provider?.enabled || !provider.textGeneration.generateIdeaUpdate)
             return yield* new IdeaRuntimeError({
               message:
-                "Idea updates currently require an enabled Claude model with the constrained notebook runtime.",
+                "The selected provider is unavailable for idea updates. Choose an enabled model in Settings → Idea updates.",
             });
           const cwd = yield* runtime.workingDirectory(threadId);
           const sourceEvents = yield* events
@@ -214,9 +216,13 @@ export class IdeaUpdateReactor extends Context.Service<
             sourceSequences,
           );
           if (incomplete) return yield* new IdeaRuntimeError({ message: incomplete });
-          const prompt = [IDEA_UPDATE_INSTRUCTIONS, yield* encodeUpdateContext(context)].join(
-            "\n\n",
-          );
+          const prompt = [
+            IDEA_UPDATE_INSTRUCTIONS,
+            "Return only a JSON object matching this schema:",
+            yield* encodeUpdateContext(IDEA_UPDATE_OUTPUT_SCHEMA),
+            "Notebook context:",
+            yield* encodeUpdateContext(context),
+          ].join("\n\n");
           if (Buffer.byteLength(prompt, "utf8") > IDEA_UPDATE_PROMPT_BYTES)
             return yield* new IdeaRuntimeError({
               message:

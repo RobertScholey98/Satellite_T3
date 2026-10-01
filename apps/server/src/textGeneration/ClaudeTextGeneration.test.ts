@@ -260,6 +260,45 @@ function withFakeClaudeEnv<A, E, R>(
 }
 
 it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
+  it.effect("rejects invalid notebook edits", () =>
+    withFakeClaudeEnv(
+      { output: '{"structured_output":{"edits":"invalid","summary":"Bad update"}}' },
+      (generation) =>
+        Effect.gen(function* () {
+          const error = yield* generation.generateIdeaUpdate!({
+            cwd: process.cwd(),
+            prompt: "Organize the notebook.",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_THINKING_MODEL,
+            ),
+          }).pipe(Effect.flip);
+          expect(error.detail).toContain("invalid structured output");
+        }),
+    ),
+  );
+
+  it.effect("generates notebook edits without tools or persistent sessions", () =>
+    withFakeClaudeEnv(
+      {
+        output: '{"structured_output":{"edits":[],"summary":"No new decisions."}}',
+        argsMustContain: "--bare --no-session-persistence --setting-sources",
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateIdeaUpdate!({
+            cwd: process.cwd(),
+            prompt: "Organize the notebook.",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_THINKING_MODEL,
+            ),
+          });
+          expect(result).toEqual({ edits: [], summary: "No new decisions." });
+        }),
+    ),
+  );
+
   it.effect("forwards Claude thinking settings without passing unsupported effort", () =>
     withFakeClaudeEnv(
       {

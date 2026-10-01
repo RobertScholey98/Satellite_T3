@@ -37,6 +37,8 @@ import * as NodeCrypto from "node:crypto";
 import * as Crypto from "effect/Crypto";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -48,6 +50,8 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { readIdeaExecution } from "../../ideas/IdeaExecution.ts";
+import { prepareCodexIdeaPolicy } from "../../ideas/CodexIdeaPolicy.ts";
 
 import {
   ProviderAdapterRequestError,
@@ -2248,6 +2252,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("codex");
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* Effect.service(ServerConfig);
   const nativeEventLogger =
@@ -2303,16 +2309,51 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const idea = readIdeaExecution(input.threadId);
+        const mcpServerName = idea
+          ? `t3-code-idea-${NodeCrypto.createHash("sha256").update(input.threadId).digest("hex").slice(0, 12)}`
+          : "t3-code";
+        const ideaPolicy = idea
+          ? yield* prepareCodexIdeaPolicy({
+              cwd: idea.cwd,
+              homePath: effectiveConfig.homePath,
+              launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment),
+              ...(effectiveEnvironment ? { environment: effectiveEnvironment } : {}),
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterProcessError({
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    detail: "Could not prepare the idea's Codex runtime.",
+                    cause,
+                  }),
+              ),
+            )
+          : undefined;
         const runtimeInput: CodexSessionRuntimeOptions = {
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
-          cwd: input.cwd ?? process.cwd(),
+          cwd: idea?.cwd ?? input.cwd ?? process.cwd(),
           ...(options?.models ? { models: options.models } : {}),
           binaryPath: effectiveConfig.binaryPath,
-          launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment),
+          launchArgs: ideaPolicy
+            ? ""
+            : resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment),
           ...(effectiveEnvironment ? { environment: effectiveEnvironment } : {}),
-          ...(effectiveConfig.homePath ? { homePath: effectiveConfig.homePath } : {}),
-          ...(isCodexResumeCursorSchema(input.resumeCursor)
+          ...(ideaPolicy
+            ? {
+                idea: true,
+                homePath: ideaPolicy.homePath,
+                environment: ideaPolicy.environment,
+                appServerArgs: ideaPolicy.args,
+              }
+            : effectiveConfig.homePath
+              ? { homePath: effectiveConfig.homePath }
+              : {}),
+          ...(!idea && isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
             : {}),
           runtimeMode: input.runtimeMode,
@@ -2324,16 +2365,18 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? {
                 environment: {
                   ...McpProviderSession.withAgentDeviceEnvironment(
-                    effectiveEnvironment ?? process.env,
+                    ideaPolicy?.environment ?? effectiveEnvironment ?? process.env,
                     mcpSession,
                   ),
                   T3_MCP_BEARER_TOKEN: mcpSession.authorizationHeader.replace(/^Bearer\s+/, ""),
                 },
                 appServerArgs: [
+                  ...(ideaPolicy?.args ?? []),
                   "-c",
-                  `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
+                  `mcp_servers.${mcpServerName}.url=${mcpSession.endpoint}`,
                   "-c",
-                  'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+                  `mcp_servers.${mcpServerName}.bearer_token_env_var="T3_MCP_BEARER_TOKEN"`,
+                  ...(idea ? ["-c", `mcp_servers.${mcpServerName}.enabled=true`] : []),
                 ],
                 mcpCapabilities: mcpSession.capabilities,
               }

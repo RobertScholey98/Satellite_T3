@@ -78,6 +78,7 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
   const enteredPrompt = yield* Deferred.make<void>();
   const state = {
     workspaces: [] as Array<string>,
+    ideaWorkspaces: [] as Array<string | undefined>,
     closed: [] as Array<string>,
     prompts: [] as Array<Parameters<TextRuntime["prompt"]>[0]>,
     selectedModels: [] as Array<string>,
@@ -118,10 +119,11 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
       );
     });
 
-  const makeRuntime: AntigravityTextGenerationOptions["makeRuntime"] = (cwd) =>
+  const makeRuntime: AntigravityTextGenerationOptions["makeRuntime"] = (cwd, ideaWorkspace) =>
     Effect.gen(function* () {
       const events = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
       state.workspaces.push(cwd);
+      state.ideaWorkspaces.push(ideaWorkspace);
       expect(yield* fs.readDirectory(cwd).pipe(Effect.orDie)).toEqual([]);
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
@@ -278,6 +280,71 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
 });
 
 it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
+  it.effect("rejects invalid notebook edits and cleans helper state", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture({
+        outputs: ['{"edits":"invalid","summary":"Bad update"}'],
+      });
+      const error = yield* fixture.textGeneration
+        .generateIdeaUpdate({
+          cwd: fixture.projectDirectory,
+          prompt: "Organize the notebook.",
+          modelSelection,
+        })
+        .pipe(Effect.flip);
+      expect(error.detail).toContain("invalid structured output");
+      yield* fixture.assertCleaned;
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("generates notebook edits with the selected model and cleans helper state", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture({
+        outputs: ['{"edits":[],"summary":"No new decisions."}'],
+      });
+      const result = yield* fixture.textGeneration.generateIdeaUpdate({
+        cwd: fixture.projectDirectory,
+        prompt: "Organize the notebook.",
+        modelSelection,
+      });
+      expect(result).toEqual({ edits: [], summary: "No new decisions." });
+      expect(fixture.state.selectedModels).toEqual([modelSelection.model]);
+      expect(fixture.state.workspaces).not.toContain(fixture.projectDirectory);
+      expect(fixture.state.ideaWorkspaces).toEqual(
+        fixture.state.workspaces.map(fixture.path.dirname),
+      );
+      expect(
+        fixture.state.workspaces.map((cwd) => fixture.path.dirname(fixture.path.dirname(cwd))),
+      ).toEqual([fixture.projectDirectory]);
+      yield* fixture.assertCleaned;
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("uses the owned idea profile despite hooks in the ordinary profile", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture({
+        outputs: ['{"edits":[],"summary":"No new decisions."}'],
+      });
+      const configDirectory = fixture.path.join(fixture.profileDirectory, "config");
+      yield* fixture.fs.makeDirectory(configDirectory, { recursive: true });
+      yield* fixture.fs.writeFileString(
+        fixture.path.join(configDirectory, "hooks.json"),
+        '{"hooks":{"before":["native-hook"]}}',
+      );
+      expect(yield* isAntigravityTextGenerationAvailable(fixture.profileDirectory)).toBe(false);
+      const result = yield* fixture.textGeneration.generateIdeaUpdate({
+        cwd: fixture.projectDirectory,
+        prompt: "Organize the notebook.",
+        modelSelection,
+      });
+      expect(result.summary).toBe("No new decisions.");
+      expect(fixture.state.ideaWorkspaces).toEqual(
+        fixture.state.workspaces.map(fixture.path.dirname),
+      );
+      yield* fixture.assertCleaned;
+    }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "generates all helper types in empty workspaces and removes only owned session files",
     () =>

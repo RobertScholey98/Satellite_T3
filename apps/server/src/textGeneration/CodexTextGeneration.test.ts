@@ -36,6 +36,7 @@ interface FakeCodexInput {
   forbidReasoningEffort?: boolean;
   requireArg?: string;
   forbidArg?: string;
+  requireOwnedOutput?: boolean;
   stdinMustContain?: string;
   stdinMustNotContain?: string;
 }
@@ -52,6 +53,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     forbidReasoningEffort: input.forbidReasoningEffort ?? false,
     requireArg: input.requireArg ?? null,
     forbidArg: input.forbidArg ?? null,
+    requireOwnedOutput: input.requireOwnedOutput ?? false,
     stdinMustContain: input.stdinMustContain ?? null,
     stdinMustNotContain: input.stdinMustNotContain ?? null,
     stderr: input.stderr ?? null,
@@ -65,10 +67,12 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
       name: "codex",
       source: [
         'import * as NodeFS from "node:fs";',
+        'import * as NodePath from "node:path";',
         `const check = ${check};`,
         "const args = process.argv.slice(2);",
         'const originalArgs = ` ${args.join(" ")} `;',
         "let outputPath = null;",
+        "let schemaPath = null;",
         "let seenImage = false;",
         'let seenServiceTier = "";',
         'let seenReasoningEffort = "";',
@@ -84,6 +88,9 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         '  } else if (args[index] === "--output-last-message") {',
         "    index += 1;",
         "    outputPath = args[index] ?? null;",
+        '  } else if (args[index] === "--output-schema") {',
+        "    index += 1;",
+        "    schemaPath = args[index] ?? null;",
         "  }",
         "}",
         "const chunks = [];",
@@ -92,6 +99,9 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         "function fail(message, code) {",
         '  process.stderr.write(message + "\\n");',
         "  process.exit(code);",
+        "}",
+        "if (check.requireOwnedOutput && [schemaPath, outputPath].some(file => !file || NodePath.relative(process.cwd(), file).startsWith('..') || NodePath.isAbsolute(NodePath.relative(process.cwd(), file)))) {",
+        '  fail("structured output files are outside the idea workspace", 10);',
         "}",
         "if (check.requireArg !== null && !originalArgs.includes(` ${check.requireArg} `)) {",
         '  fail("missing arg: " + check.requireArg, 8);',
@@ -137,13 +147,20 @@ function withFakeCodexEnv<A, E, R>(
     models?: ReadonlyArray<string>;
     managedRuntime?: boolean;
   },
-  effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
+  effectFn: (
+    textGeneration: TextGeneration.TextGeneration["Service"],
+    cwd: string,
+  ) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-codex-text-" });
     const codexPath = yield* makeFakeCodexBinary(tempDir, input);
-    const config = decodeCodexSettings({ binaryPath: codexPath, launchArgs: input.launchArgs });
+    const config = decodeCodexSettings({
+      binaryPath: codexPath,
+      launchArgs: input.launchArgs,
+      homePath: tempDir,
+    });
     const textGeneration = yield* makeCodexTextGeneration(
       config,
       input.environment,
@@ -163,11 +180,74 @@ function withFakeCodexEnv<A, E, R>(
           })
         : undefined,
     );
-    return yield* effectFn(textGeneration);
+    return yield* effectFn(textGeneration, tempDir);
   }).pipe(Effect.scoped);
 }
 
 it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
+  it.effect(
+    "keeps environment model routing for notebook updates while stripping unsafe flags",
+    () =>
+      withFakeCodexEnv(
+        {
+          output: '{"edits":[],"summary":"No new decisions."}',
+          environment: {
+            ...process.env,
+            T3CODE_CODEX_LAUNCH_ARGS: '-c model_provider="environment-model" --yolo',
+          },
+          launchArgs: '-c model_provider="ignored-config-model"',
+          requireArg: "-c model_provider=environment-model",
+          forbidArg: "--yolo",
+        },
+        (generation, cwd) =>
+          Effect.gen(function* () {
+            const result = yield* generation.generateIdeaUpdate!({
+              cwd,
+              prompt: "Organize the notebook.",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("codex"),
+                "custom-model",
+              ),
+            });
+            expect(result).toEqual({ edits: [], summary: "No new decisions." });
+          }),
+      ),
+  );
+
+  it.effect("rejects invalid notebook edits", () =>
+    withFakeCodexEnv({ output: '{"edits":"invalid","summary":"Bad update"}' }, (generation, cwd) =>
+      Effect.gen(function* () {
+        const error = yield* generation.generateIdeaUpdate!({
+          cwd,
+          prompt: "Organize the notebook.",
+          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna"),
+        }).pipe(Effect.flip);
+        expect(error.detail).toContain("invalid structured output");
+      }),
+    ),
+  );
+
+  it.effect("generates notebook edits with the selected model and tools disabled", () =>
+    withFakeCodexEnv(
+      {
+        output: '{"edits":[],"summary":"No new decisions."}',
+        requireArg: "--model gpt-5.6-luna",
+        forbidArg: "--dangerously-bypass-approvals-and-sandbox",
+        launchArgs: "--dangerously-bypass-approvals-and-sandbox",
+        requireOwnedOutput: true,
+      },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateIdeaUpdate!({
+            cwd,
+            prompt: "Organize the notebook.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna"),
+          });
+          expect(result).toEqual({ edits: [], summary: "No new decisions." });
+        }),
+    ),
+  );
+
   for (const selectedModel of ["gpt-5.6-luna", "openai.gpt-5.6-luna"]) {
     it.effect(`dispatches the qualified live model for ${selectedModel}`, () =>
       withFakeCodexEnv(

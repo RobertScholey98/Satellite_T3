@@ -1093,11 +1093,17 @@ const program = Effect.gen(function* () {
               title: process.env.T3_ACP_PERMISSION_TITLE ?? `\`${command}\``,
               kind: "execute",
               status: "pending",
-              rawInput: {
-                variant: "Bash",
-                command,
-                description: index === 0 ? "Read package metadata" : "Read it again",
-              },
+              rawInput: process.env.T3_ACP_PERMISSION_MCP_TOOL
+                ? {
+                    variant: "MCPTool",
+                    tool_name: process.env.T3_ACP_PERMISSION_MCP_TOOL,
+                    tool_input: {},
+                  }
+                : {
+                    variant: "Bash",
+                    command,
+                    description: index === 0 ? "Read package metadata" : "Read it again",
+                  },
               content: [
                 {
                   type: "content",

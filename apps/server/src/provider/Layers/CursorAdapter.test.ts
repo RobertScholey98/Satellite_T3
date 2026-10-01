@@ -26,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { clearIdeaExecution, setIdeaExecution } from "../../ideas/IdeaExecution.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
@@ -41,6 +42,9 @@ class CursorAdapter extends Context.Service<CursorAdapter, CursorAdapterShape>()
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const mockAgentPath = NodePath.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+const isPermissionResult = Schema.is(
+  Schema.Struct({ result: Schema.Struct({ outcome: Schema.Struct({ outcome: Schema.String }) }) }),
+);
 // Stopping a session kills the agent with SIGTERM; Windows terminates the
 // process instead, so the mock never sees a signal to log.
 const windowsHost = HostProcessPlatform.defaultValue() === "win32";
@@ -985,6 +989,63 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
         yield* adapter.stopSession(threadId);
       }),
+  );
+
+  it.effect.each([
+    { title: "run_terminal_command", outcome: "cancelled" },
+    { title: "mcp__t3-code__idea_write_document", outcome: "selected" },
+  ])("restricts full-access idea permissions for $title", ({ title, outcome }) =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make(`cursor-idea-${title}`);
+      const tempDir = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "cursor-idea-")),
+      );
+      const requestLogPath = NodePath.join(tempDir, "requests.ndjson");
+      const argvLogPath = NodePath.join(tempDir, "argv.txt");
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          setIdeaExecution(threadId, {
+            cwd: tempDir,
+            projectDirectory: tempDir,
+            mainRevision: "main",
+            deletionEpoch: 0,
+            context: "Idea",
+          }),
+        ),
+        () => Effect.sync(() => clearIdeaExecution(threadId)),
+      );
+      const wrapperPath = yield* Effect.promise(() =>
+        makeProbeWrapper(requestLogPath, argvLogPath, {
+          T3_ACP_EMIT_TOOL_CALLS: "1",
+          T3_ACP_PERMISSION_TITLE: title,
+        }),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const completed = yield* Deferred.make<void>();
+      yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        event.type === "turn.completed" && event.threadId === threadId
+          ? Deferred.succeed(completed, undefined)
+          : Effect.void,
+      ).pipe(Effect.forkScoped);
+      const session = yield* adapter.startSession({
+        threadId,
+        cwd: tempDir,
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId, input: "Use this tool" });
+      yield* Deferred.await(completed);
+      const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
+      assert.isTrue(
+        requests.some(
+          (entry) => isPermissionResult(entry) && entry.result.outcome.outcome === outcome,
+        ),
+      );
+      assert.equal(session.cwd, NodePath.join(tempDir, "runtime", "cursor-thread"));
+      assert.deepEqual(yield* Effect.promise(() => readArgvLog(argvLogPath)), [["acp"]]);
+      yield* adapter.stopSession(threadId);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("segments assistant messages around ACP tool activity in full-access mode", () =>

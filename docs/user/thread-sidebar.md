@@ -20,13 +20,18 @@ to implementation. Each idea belongs to its project and environment and keeps on
 conversation. Return to it through **Ideas** in the sidebar footer. Idea activity
 stays out of the ordinary thread list and work notifications.
 
-Ideas currently require Claude. The agent reads the project's default branch and
+Ideas use your selected provider and model. The agent reads the project's default branch and
 can create documents inside the idea. It cannot edit project code. Your current
 checkout and uncommitted changes stay in place.
+
+OpenCode ideas use the environment's local OpenCode installation. If ordinary threads
+connect to an external OpenCode server, configure the required model and sign-in locally too.
 
 The notebook starts with an empty pitch. Background updates organise the discussion
 into notes and keep the pitch current. Choose their model in **Settings → General
 → Text generation → Idea updates**. This setting is separate from thread titles.
+Automatic uses a default model from the idea's provider. If that provider is disabled
+or removed, it uses another enabled provider.
 You can edit the pitch and notes, add attachments, and follow linked phrases to
 their supporting notes. If an update conflicts with your edits, review its proposal
 in the notebook. Failed updates can be retried while you continue the conversation.

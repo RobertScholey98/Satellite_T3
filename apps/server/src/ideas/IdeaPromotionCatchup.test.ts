@@ -34,7 +34,6 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime } from "./IdeaRuntime.ts";
 import { IdeaUpdateReactor } from "./IdeaUpdateReactor.ts";
-import { IDEA_UPDATE_INSTRUCTIONS } from "./IdeaUpdateGeneration.ts";
 
 const threadId = ThreadId.make("promotion-catchup");
 const projectId = ProjectId.make("catchup-project");
@@ -291,7 +290,7 @@ const runCatchup = Effect.fn(function* (
       assert.include(prompt, '"activityId":"answer-activity"');
       if (hasStudy) {
         const context = yield* decodeContextDocuments(
-          prompt.slice(IDEA_UPDATE_INSTRUCTIONS.length + 2),
+          prompt.split("\n\nNotebook context:\n\n")[1] ?? "",
         );
         const supplied = context.documents.find((document) => document.id === studyArtifactId);
         assert.equal(supplied?.text, studyText);

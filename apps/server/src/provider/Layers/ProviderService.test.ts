@@ -16,6 +16,7 @@ import {
   ASSISTANT_CITATION_MAX_TEXT_LENGTH,
   AssistantCitation,
   ApprovalRequestId,
+  defaultInstanceIdForDriver,
   EnvironmentId,
   EventId,
   MessageId,
@@ -5062,94 +5063,115 @@ boundedListing.layer("ProviderServiceLive session listing", (it) => {
 
 const decodeBrowserAccessThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 
-it.effect("starts and continues an idea with the canonical Claude driver", () =>
-  Effect.gen(function* () {
-    const threadId = asThreadId("idea-claude-driver");
-    const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
-    const execution = {
-      cwd: fixtureCwd("idea-owned"),
-      projectDirectory: fixtureCwd("idea-project"),
-      mainRevision: "a".repeat(40),
-      deletionEpoch: 0,
-      context: "Saved discussion",
-    };
-    yield* Effect.addFinalizer(() => Effect.sync(() => clearIdeaExecution(threadId)));
-    const shell = yield* decodeBrowserAccessThreadShell({
-      id: threadId,
-      projectId: ProjectId.make("idea-project"),
-      purpose: "idea",
-      title: "Idea driver test",
-      modelSelection: createModelSelection(claudeAgentInstanceId, "claude-sonnet-4-5"),
-      runtimeMode: "full-access",
-      branch: null,
-      worktreePath: null,
-      latestTurn: null,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-      session: null,
-      latestUserMessageAt: null,
-      hasPendingApprovals: false,
-      hasPendingUserInput: false,
-      hasActionableProposedPlan: false,
-    });
-    const layer = makeProviderServiceLive({
-      issueMcpCredential: () => Effect.succeed(undefined),
-    }).pipe(
-      Layer.provide(
-        Layer.succeed(
-          ProviderAdapterRegistry.ProviderAdapterRegistry,
-          makeAdapterRegistryMock({ [CLAUDE_AGENT_DRIVER]: claude.adapter }),
-        ),
-      ),
-      Layer.provide(
-        ProviderSessionDirectoryLive.pipe(
-          Layer.provide(ProviderSessionRuntime.layer.pipe(Layer.provide(SqlitePersistenceMemory))),
-        ),
-      ),
-      Layer.provide(
-        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-          getThreadShellById: () => Effect.succeedSome(shell),
-        }),
-      ),
-      Layer.provide(
-        Layer.mock(IdeaRuntime)({
-          prepare: () =>
-            Effect.sync(() => {
-              setIdeaExecution(threadId, execution);
-              return execution;
-            }),
-          foregroundContext: () => Effect.succeed("Saved pitch"),
-          importAttachments: () => Effect.void,
-        }),
-      ),
-      Layer.provide(defaultServerSettingsLayer),
-      Layer.provide(serverConfigTestLayer),
-      Layer.provide(AnalyticsService.layerTest),
-      Layer.provide(
-        Layer.succeed(
-          ProviderEventLoggers.ProviderEventLoggers,
-          ProviderEventLoggers.NoOpProviderEventLoggers,
-        ),
-      ),
-    );
-    yield* Effect.gen(function* () {
-      const provider = yield* ProviderService.ProviderService;
-      const session = yield* provider.startSession(threadId, {
-        provider: CLAUDE_AGENT_DRIVER,
-        providerInstanceId: claudeAgentInstanceId,
-        threadId,
+it.effect.each(["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravity"])(
+  "starts and continues an idea with %s",
+  (driverName) =>
+    Effect.gen(function* () {
+      const driver = ProviderDriverKind.make(driverName);
+      const instanceId = defaultInstanceIdForDriver(driver);
+      const modelSelection = createModelSelection(instanceId, "configured-idea-model");
+      const threadId = asThreadId(`idea-${driverName}-driver`);
+      const adapter = makeFakeCodexAdapter(driver);
+      const capabilities: Array<ReadonlyArray<string>> = [];
+      const execution = {
+        cwd: fixtureCwd("idea-owned"),
+        projectDirectory: fixtureCwd("idea-project"),
+        mainRevision: "a".repeat(40),
+        deletionEpoch: 0,
+        context: "Saved discussion",
+      };
+      yield* Effect.addFinalizer(() => Effect.sync(() => clearIdeaExecution(threadId)));
+      const shell = yield* decodeBrowserAccessThreadShell({
+        id: threadId,
+        projectId: ProjectId.make("idea-project"),
+        purpose: "idea",
+        title: "Idea driver test",
+        modelSelection,
         runtimeMode: "full-access",
-        cwd: execution.projectDirectory,
+        branch: null,
+        worktreePath: null,
+        latestTurn: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        session: null,
+        latestUserMessageAt: null,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        hasActionableProposedPlan: false,
       });
-      assert.equal(session.provider, CLAUDE_AGENT_DRIVER);
-      assert.equal(session.cwd, execution.cwd);
-      const turn = yield* provider.sendTurn({ threadId, input: "Discuss the creation flow" });
-      assert.equal(turn.threadId, threadId);
-      assert.include(claude.sendTurn.mock.calls[0]?.[0].input, "Saved discussion");
-      assert.include(claude.sendTurn.mock.calls[0]?.[0].input, "Saved pitch");
-      assert.include(claude.sendTurn.mock.calls[0]?.[0].input, "Discuss the creation flow");
-    }).pipe(Effect.provide(layer));
-  }).pipe(Effect.provide(NodeServices.layer)),
+      const layer = makeProviderServiceLive({
+        issueMcpCredential: (request) =>
+          Effect.sync(() => {
+            capabilities.push([...request.capabilities]);
+            return undefined;
+          }),
+      }).pipe(
+        Layer.provide(
+          Layer.succeed(
+            ProviderAdapterRegistry.ProviderAdapterRegistry,
+            makeAdapterRegistryMock({ [driver]: adapter.adapter }),
+          ),
+        ),
+        Layer.provide(
+          ProviderSessionDirectoryLive.pipe(
+            Layer.provide(
+              ProviderSessionRuntime.layer.pipe(Layer.provide(SqlitePersistenceMemory)),
+            ),
+          ),
+        ),
+        Layer.provide(
+          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+            getThreadShellById: () => Effect.succeedSome(shell),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(IdeaRuntime)({
+            prepare: () =>
+              Effect.sync(() => {
+                setIdeaExecution(threadId, execution);
+                return execution;
+              }),
+            foregroundContext: () => Effect.succeed("Saved pitch"),
+            importAttachments: () => Effect.void,
+          }),
+        ),
+        Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(serverConfigTestLayer),
+        Layer.provide(AnalyticsService.layerTest),
+        Layer.provide(
+          Layer.succeed(
+            ProviderEventLoggers.ProviderEventLoggers,
+            ProviderEventLoggers.NoOpProviderEventLoggers,
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const session = yield* provider.startSession(threadId, {
+          provider: driver,
+          providerInstanceId: instanceId,
+          modelSelection,
+          threadId,
+          runtimeMode: "full-access",
+          cwd: execution.projectDirectory,
+        });
+        assert.equal(session.provider, driver);
+        assert.equal(session.cwd, execution.cwd);
+        assert.deepEqual(capabilities, [["ideas"]]);
+        const turn = yield* provider.sendTurn({
+          threadId,
+          modelSelection,
+          input: "Discuss the creation flow",
+        });
+        assert.equal(turn.threadId, threadId);
+        const input = adapter.sendTurn.mock.calls[0]?.[0];
+        assert.deepEqual(input?.modelSelection, modelSelection);
+        assert.include(input?.input, "Project code is read-only");
+        assert.include(input?.input, "Saved discussion");
+        assert.include(input?.input, "Saved pitch");
+        assert.include(input?.input, "Discuss the creation flow");
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 describe("agent browser access", () => {

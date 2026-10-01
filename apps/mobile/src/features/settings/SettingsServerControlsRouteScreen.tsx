@@ -576,9 +576,7 @@ function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
   const [saving, setSaving] = useState(false);
   const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: true });
   const selection = target.serverConfig.settings.ideaUpdatesModelSelection;
-  const models = buildModelOptions(target.serverConfig, selection).filter(
-    (model) => model.providerDriver === "claudeAgent",
-  );
+  const models = buildModelOptions(target.serverConfig, selection);
   const choose = async (model: typeof selection) => {
     setSaving(true);
     const result = await update({
@@ -615,7 +613,7 @@ function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
           ))}
           {!models.length ? (
             <Text className="text-sm text-foreground-muted">
-              Connect a Claude provider to update ideas.
+              Connect a provider to update ideas.
             </Text>
           ) : null}
         </View>

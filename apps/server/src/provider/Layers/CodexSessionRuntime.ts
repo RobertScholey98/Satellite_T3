@@ -40,6 +40,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
+import { IDEA_SESSION_INSTRUCTIONS } from "../../ideas/IdeaExecution.ts";
 import {
   buildCodexAdditionalContext,
   buildCodexDeveloperInstructions,
@@ -187,6 +188,7 @@ export interface CodexSessionRuntimeOptions {
   readonly models?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   /** Capabilities the session's `t3-code` MCP credential grants; drives the prompt blocks. */
   readonly mcpCapabilities?: ReadonlySet<string>;
+  readonly idea?: boolean;
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
@@ -553,6 +555,7 @@ function buildThreadStartParams(input: {
   readonly runtimeMode: RuntimeMode;
   readonly model: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
+  readonly idea?: boolean;
 }): EffectCodexSchema.V2ThreadStartParams {
   const config = runtimeModeToThreadConfig(input.runtimeMode);
   return {
@@ -562,6 +565,15 @@ function buildThreadStartParams(input: {
     approvalsReviewer: config.approvalsReviewer,
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    ...(input.idea
+      ? {
+          approvalPolicy: "never" as const,
+          sandbox: "read-only" as const,
+          approvalsReviewer: "user" as const,
+          ephemeral: true,
+          developerInstructions: IDEA_SESSION_INSTRUCTIONS,
+        }
+      : {}),
   };
 }
 
@@ -634,6 +646,7 @@ export function buildTurnStartParams(input: {
   readonly interactionMode?: ProviderInteractionMode;
   /** Defaults to true so callers that predate the agent-access gate are unchanged. */
   readonly browserToolsAvailable?: boolean | T3CodeToolAvailability;
+  readonly idea?: boolean;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -668,6 +681,24 @@ export function buildTurnStartParams(input: {
     ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
     ...turnInstructions,
+    ...(input.idea
+      ? {
+          approvalPolicy: "never",
+          approvalsReviewer: "user",
+          sandboxPolicy: { type: "readOnly" },
+          ...(turnInstructions.collaborationMode
+            ? {
+                collaborationMode: {
+                  ...turnInstructions.collaborationMode,
+                  settings: {
+                    ...turnInstructions.collaborationMode.settings,
+                    developer_instructions: IDEA_SESSION_INSTRUCTIONS,
+                  },
+                },
+              }
+            : {}),
+        }
+      : {}),
   }).pipe(
     Effect.mapError((cause) =>
       CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
@@ -740,13 +771,15 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly idea?: boolean;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
-  const resumeThreadId = input.resumeThreadId;
+  const resumeThreadId = input.idea ? undefined : input.resumeThreadId;
   const startParams = buildThreadStartParams({
     cwd: input.cwd,
     runtimeMode: input.runtimeMode,
     model: input.requestedModel,
     serviceTier: input.serviceTier,
+    ...(input.idea ? { idea: true } : {}),
   });
 
   if (resumeThreadId === undefined) {
@@ -2104,6 +2137,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
       Effect.gen(function* () {
+        if (options.idea) return { decision: "decline" as const };
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("command-approval-request"));
         const turnId = TurnId.make(payload.turnId);
         const itemId = ProviderItemId.make(payload.itemId);
@@ -2160,6 +2194,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
       Effect.gen(function* () {
+        if (options.idea) return { decision: "decline" as const };
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("file-change-approval-request"),
         );
@@ -2283,6 +2318,7 @@ export const makeCodexSessionRuntime = (
 
     yield* client.handleServerRequest("item/permissions/requestApproval", (payload) =>
       Effect.gen(function* () {
+        if (options.idea) return { permissions: {} };
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("app-permission-approval-request"),
         );
@@ -2493,6 +2529,7 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        ...(options.idea ? { idea: true } : {}),
       });
 
       const providerThreadId = opened.thread.id;
@@ -2567,6 +2604,7 @@ export const makeCodexSessionRuntime = (
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
+            ...(options.idea ? { idea: true } : {}),
             ...(input.input ? { prompt: input.input } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),

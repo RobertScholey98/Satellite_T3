@@ -10,6 +10,7 @@ import { normalizeModelSlug } from "@t3tools/shared/model";
 
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
 import { makeXAiPromptCompletionRuntime } from "./XAiAcpExtension.ts";
+import { grokIdeaArguments, type IdeaAcpPurpose } from "./IdeaAcpPolicy.ts";
 
 const GROK_API_KEY_ENV = "XAI_API_KEY";
 const GROK_OAUTH2_REFERRER_ENV = "GROK_OAUTH2_REFERRER";
@@ -28,6 +29,7 @@ interface GrokAcpRuntimeInput extends Omit<
   readonly grokSettings: GrokAcpRuntimeGrokSettings | null | undefined;
   readonly environment?: NodeJS.ProcessEnv;
   readonly runtimeMode?: RuntimeMode;
+  readonly ideaPurpose?: IdeaAcpPurpose;
 }
 
 export function grokAcpSpawnArgs(runtimeMode?: RuntimeMode): ReadonlyArray<string> {
@@ -50,11 +52,13 @@ export function buildGrokAcpSpawnInput(
   cwd: string,
   environment?: NodeJS.ProcessEnv,
   runtimeMode?: RuntimeMode,
+  ideaPurpose?: IdeaAcpPurpose,
 ): AcpSessionRuntime.AcpSpawnInput {
   return {
     command: grokSettings?.binaryPath || "grok",
-    args: [...grokAcpSpawnArgs(runtimeMode)],
+    args: [...(ideaPurpose ? grokIdeaArguments(ideaPurpose) : grokAcpSpawnArgs(runtimeMode))],
     cwd,
+    ...(ideaPurpose ? { extendEnv: false } : {}),
     env: {
       ...environment,
       [GROK_OAUTH2_REFERRER_ENV]: T3_CODE_OAUTH_REFERRER,
@@ -84,6 +88,7 @@ export const makeGrokAcpRuntime = (
           input.cwd,
           input.environment,
           input.runtimeMode,
+          input.ideaPurpose,
         ),
         authMethodId: resolveGrokAuthMethodId(input.environment),
       }).pipe(

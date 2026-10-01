@@ -1,5 +1,6 @@
 import { IdeaRuntime } from "../../ideas/IdeaRuntime.ts";
 import {
+  IDEA_SESSION_INSTRUCTIONS,
   readIdeaExecution,
   takeIdeaInitialContext,
   withIdeaLock,
@@ -503,18 +504,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const ideaRuntime = yield* Effect.serviceOption(IdeaRuntime);
   const prepareIdeaSession = Effect.fn("ProviderService.prepareIdeaSession")(function* (
     threadId: ThreadId,
-    provider: string,
   ) {
     if (Option.isNone(projectionQuery)) return undefined;
     const shell = yield* projectionQuery.value
       .getThreadShellById(threadId)
       .pipe(Effect.mapError((e) => toValidationError("ProviderService.startSession", e.message)));
     if (Option.isNone(shell) || shell.value.purpose !== "idea") return undefined;
-    if (provider !== "claudeAgent")
-      return yield* toValidationError(
-        "ProviderService.startSession",
-        "Ideas support has not been implemented for this provider. Select a Claude model to continue.",
-      );
     if (Option.isNone(ideaRuntime))
       return yield* toValidationError(
         "ProviderService.startSession",
@@ -1320,7 +1315,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     });
     return yield* Effect.gen(function* () {
       const adapter = yield* registry.getByInstance(bindingInstanceId);
-      const idea = yield* prepareIdeaSession(input.binding.threadId, input.binding.provider);
+      const idea = yield* prepareIdeaSession(input.binding.threadId);
       const hasResumeCursor =
         !idea && input.binding.resumeCursor !== null && input.binding.resumeCursor !== undefined;
       const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
@@ -1542,7 +1537,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             );
           }
         }
-        const idea = yield* prepareIdeaSession(threadId, resolvedProvider);
+        const idea = yield* prepareIdeaSession(threadId);
         const effectiveResumeCursor = idea
           ? undefined
           : (input.resumeCursor ??
@@ -1803,7 +1798,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         });
       }
       if (readIdeaExecution(input.threadId)) {
-        if (Option.isNone(ideaRuntime) || routed.adapter.provider !== "claudeAgent")
+        if (Option.isNone(ideaRuntime))
           return yield* toValidationError(
             "ProviderService.sendTurn",
             "The constrained idea runtime is unavailable.",
@@ -1825,6 +1820,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         input = {
           ...input,
           input: [
+            IDEA_SESSION_INSTRUCTIONS,
             initial,
             "Current idea notebook:",
             notebook,

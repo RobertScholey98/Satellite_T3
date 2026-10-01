@@ -1,5 +1,9 @@
+import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
+import { installTextGenerationToolGuard } from "./AcpTextGenerationGuard.ts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -31,6 +35,7 @@ import {
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
 } from "../provider/acp/GrokAcpSupport.ts";
+import { prepareGrokIdeaEnvironment } from "../provider/acp/IdeaAcpPolicy.ts";
 
 const GROK_TIMEOUT_MS = 180_000;
 
@@ -42,6 +47,8 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
 ) {
   const crypto = yield* Crypto.Crypto;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
 
   const runGrokJson = <S extends Schema.Top>({
     operation,
@@ -54,7 +61,8 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateIdeaUpdate";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -63,16 +71,35 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     Effect.gen(function* () {
       const resolvedModel = resolveGrokAcpBaseModelId(modelSelection.model);
       const outputRef = yield* Ref.make("");
+      const runtimeEnvironment =
+        operation === "generateIdeaUpdate"
+          ? yield* prepareGrokIdeaEnvironment(cwd, environment, "updates").pipe(
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
+            )
+          : environment;
       const runtime = yield* makeGrokAcpRuntime({
         grokSettings,
-        environment,
+        environment: runtimeEnvironment,
         childProcessSpawner: commandSpawner,
         cwd,
+        ...(operation === "generateIdeaUpdate" ? { ideaPurpose: "updates" as const } : {}),
         clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
       }).pipe(Effect.provideService(Crypto.Crypto, crypto));
 
+      const guard =
+        operation === "generateIdeaUpdate"
+          ? yield* installTextGenerationToolGuard(runtime, operation)
+          : undefined;
+
       yield* runtime.handleSessionUpdate((notification) => {
         const update = notification.update;
+        if (
+          guard &&
+          (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")
+        ) {
+          return guard.reject();
+        }
         if (update.sessionUpdate !== "agent_message_chunk") {
           return Effect.void;
         }
@@ -109,6 +136,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
           prompt: [{ type: "text", text: prompt }],
         });
       }).pipe(
+        Effect.raceFirst(guard?.failure ?? Effect.never),
         Effect.timeoutOption(GROK_TIMEOUT_MS),
         Effect.flatMap(
           Option.match({
@@ -263,7 +291,17 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
+  const generateIdeaUpdate = (input: IdeaUpdateInput) =>
+    runGrokJson({
+      operation: "generateIdeaUpdate",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: IdeaUpdateResult,
+      modelSelection: input.modelSelection,
+    });
+
   return {
+    generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

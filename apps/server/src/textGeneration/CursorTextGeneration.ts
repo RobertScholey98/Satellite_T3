@@ -1,3 +1,11 @@
+import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
+import { installTextGenerationToolGuard } from "./AcpTextGenerationGuard.ts";
+import {
+  prepareCursorIdeaEnvironment,
+  prepareCursorIdeaWorkspace,
+} from "../provider/acp/IdeaAcpPolicy.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -41,6 +49,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
 ) {
   const crypto = yield* Crypto.Crypto;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const resolvedEnvironment = environment ?? process.env;
 
   const runCursorJson = <S extends Schema.Top>({
@@ -54,7 +64,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateIdeaUpdate";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -62,16 +73,40 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
+      const workingDirectory =
+        operation === "generateIdeaUpdate"
+          ? yield* prepareCursorIdeaWorkspace(cwd, "updates").pipe(
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path),
+            )
+          : cwd;
       const runtime = yield* makeCursorAcpRuntime({
         cursorSettings,
-        environment: resolvedEnvironment,
+        environment:
+          operation === "generateIdeaUpdate"
+            ? yield* prepareCursorIdeaEnvironment(workingDirectory, resolvedEnvironment).pipe(
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(Path.Path, path),
+              )
+            : resolvedEnvironment,
         childProcessSpawner: commandSpawner,
-        cwd,
+        cwd: workingDirectory,
         clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
       }).pipe(Effect.provideService(Crypto.Crypto, crypto));
 
+      const guard =
+        operation === "generateIdeaUpdate"
+          ? yield* installTextGenerationToolGuard(runtime, operation)
+          : undefined;
+
       yield* runtime.handleSessionUpdate((notification) => {
         const update = notification.update;
+        if (
+          guard &&
+          (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")
+        ) {
+          return guard.reject();
+        }
         if (update.sessionUpdate !== "agent_message_chunk") {
           return Effect.void;
         }
@@ -84,7 +119,8 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
 
       const promptResult = yield* Effect.gen(function* () {
         yield* runtime.start();
-        yield* Effect.ignore(runtime.setMode("ask"));
+        if (guard) yield* runtime.setMode("ask");
+        else yield* Effect.ignore(runtime.setMode("ask"));
         yield* applyCursorAcpModelSelection({
           runtime,
           model: modelSelection.model,
@@ -104,6 +140,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
           prompt: [{ type: "text", text: prompt }],
         });
       }).pipe(
+        Effect.raceFirst(guard?.failure ?? Effect.never),
         Effect.timeoutOption(CURSOR_TIMEOUT_MS),
         Effect.flatMap(
           Option.match({
@@ -261,7 +298,17 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
+  const generateIdeaUpdate = (input: IdeaUpdateInput) =>
+    runCursorJson({
+      operation: "generateIdeaUpdate",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: IdeaUpdateResult,
+      modelSelection: input.modelSelection,
+    });
+
   return {
+    generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

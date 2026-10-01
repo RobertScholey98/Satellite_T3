@@ -44,7 +44,10 @@ function makeAcpAgentWrapper(dir: string, env: Record<string, string>): string {
 
 function withFakeAcpAgent<A, E, R>(
   env: Record<string, string>,
-  effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
+  effectFn: (
+    textGeneration: TextGeneration.TextGeneration["Service"],
+    cwd: string,
+  ) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-cursor-text-acp-"));
@@ -53,10 +56,13 @@ function withFakeAcpAgent<A, E, R>(
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }),
     );
-    const agentPath = makeAcpAgentWrapper(tempDir, env);
+    const agentPath = makeAcpAgentWrapper(tempDir, {
+      T3_ACP_REQUEST_LOG_PATH: NodePath.join(tempDir, "requests.ndjson"),
+      ...env,
+    });
     const config = decodeCursorSettings({ binaryPath: agentPath });
     const textGeneration = yield* makeCursorTextGeneration(config);
-    return yield* effectFn(textGeneration);
+    return yield* effectFn(textGeneration, tempDir);
   }).pipe(Effect.scoped);
 }
 
@@ -79,6 +85,81 @@ function waitForFileContent(path: string): Effect.Effect<string> {
 }
 
 it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
+  it.effect("rejects invalid notebook edits", () =>
+    withFakeAcpAgent(
+      { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":"invalid","summary":"Bad update"}' },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const error = yield* generation.generateIdeaUpdate!({
+            cwd,
+            prompt: "Organize the notebook.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("cursor"), "composer-2"),
+          }).pipe(Effect.flip);
+          expect(error.detail).toContain("invalid structured output");
+        }),
+    ),
+  );
+
+  it.effect("does not prompt when the provider cannot enter ask mode", () =>
+    withFakeAcpAgent(
+      { T3_ACP_ANTIGRAVITY: "1", T3_ACP_FAIL_SET_CONFIG_OPTION: "1" },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const error = yield* generation.generateIdeaUpdate!({
+            cwd,
+            prompt: "Organize the notebook.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("cursor"), "composer-2"),
+          }).pipe(Effect.flip);
+          expect(error._tag).toBe("TextGenerationError");
+          const requests = NodeFS.readFileSync(NodePath.join(cwd, "requests.ndjson"), "utf8");
+          expect(requests).not.toContain('"method":"session/prompt"');
+        }),
+    ),
+  );
+
+  it.effect("generates notebook edits with the selected model", () =>
+    withFakeAcpAgent(
+      { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":[],"summary":"No new decisions."}' },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateIdeaUpdate!({
+            cwd,
+            prompt: "Organize the supplied notebook.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("cursor"), "composer-2"),
+          });
+          expect(result).toEqual({ edits: [], summary: "No new decisions." });
+          const requests = NodeFS.readFileSync(NodePath.join(cwd, "requests.ndjson"), "utf8")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          expect(requests).toContainEqual(
+            expect.objectContaining({
+              method: "session/set_config_option",
+              params: { sessionId: "mock-session-1", configId: "model", value: "composer-2" },
+            }),
+          );
+        }),
+    ),
+  );
+
+  it.effect("rejects tool activity during notebook updates", () =>
+    withFakeAcpAgent(
+      {
+        T3_ACP_EMIT_TOOL_CALLS: "1",
+        T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":[],"summary":"No new decisions."}',
+      },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateIdeaUpdate!({
+            cwd,
+            prompt: "Organize the supplied notebook.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("cursor"), "composer-2"),
+          }).pipe(Effect.flip);
+          expect(result.detail).toContain("cannot use tools");
+        }),
+    ),
+  );
+
   it.effect("uses ACP model config options instead of raw CLI model ids", () => {
     const requestLogDir = NodeFS.mkdtempSync(
       NodePath.join(NodeOS.tmpdir(), "t3code-cursor-text-log-"),

@@ -23,6 +23,7 @@ import * as AcpErrors from "effect-acp/errors";
 import type * as AcpSchema from "effect-acp/schema";
 
 import { ServerConfig } from "../../config.ts";
+import { clearIdeaExecution, setIdeaExecution } from "../../ideas/IdeaExecution.ts";
 import { ANTIGRAVITY_SIGN_IN_REQUIRED_MESSAGE } from "../antigravityAuthSupport.ts";
 import type { AcpSessionRuntimeEvent } from "../acp/AcpSessionRuntime.ts";
 import { makeAntigravityAcpRuntime } from "../acp/AntigravityAcpSupport.ts";
@@ -1259,6 +1260,64 @@ it.layer(layer)("AntigravityAdapter", (it) => {
       expect(h.controls.closed).toBe(1);
       expect(yield* h.adapter.hasSession(threadId)).toBe(false);
     }),
+  );
+
+  it.effect("keeps idea files read-only while allowing notebook tools", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-agy-idea-" });
+      const target = path.join(cwd, "project.txt");
+      yield* fs.writeFileString(target, "original");
+      yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          setIdeaExecution(threadId, {
+            cwd,
+            projectDirectory: cwd,
+            mainRevision: "main",
+            deletionEpoch: 0,
+            context: "Idea",
+          }),
+        ),
+        () => Effect.sync(() => clearIdeaExecution(threadId)),
+      );
+      const h = yield* makeHarness();
+      yield* h.adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+      const read = h.fileHandlers.read;
+      const write = h.fileHandlers.write;
+      if (!read || !write) return yield* Effect.die("File handlers were not registered.");
+      expect(
+        Exit.isFailure(
+          yield* write({ sessionId: nativeSessionId, path: target, content: "changed" }).pipe(
+            Effect.exit,
+          ),
+        ),
+      ).toBe(true);
+      expect(
+        Exit.isFailure(yield* read({ sessionId: nativeSessionId, path: target }).pipe(Effect.exit)),
+      ).toBe(true);
+      expect(yield* fs.readFileString(target)).toBe("original");
+      const permission = (title: string, isMcp = false) =>
+        h.invokePermission({
+          sessionId: nativeSessionId,
+          toolCall: {
+            toolCallId: "idea-tool",
+            title,
+            status: "pending",
+            kind: "other",
+            _meta: { is_mcp_tool_call: isMcp },
+          },
+          options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }],
+        });
+      expect(yield* permission("Run run_terminal_command?")).toEqual({
+        outcome: { outcome: "cancelled" },
+      });
+      expect(yield* permission("Run idea_write_document?", true)).toEqual({
+        outcome: { outcome: "selected", optionId: "allow" },
+      });
+      expect(h.calls).toContain("mode:default");
+      expect(h.launches[0]?.additionalDirectories).toEqual([]);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("serves client file reads and writes only inside the session roots", () =>

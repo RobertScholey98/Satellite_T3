@@ -1,4 +1,5 @@
 import { withAgentDeviceEnvironment } from "../../mcp/McpProviderSession.ts";
+import { prepareAntigravityIdeaProfile } from "../acp/IdeaAcpPolicy.ts";
 import { AntigravitySettings, ProviderDriverKind, ProviderSetupError } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import {
@@ -178,12 +179,28 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
                 }),
             ),
           );
+        const runtimeProfileDirectory = input.ideaWorkspace
+          ? yield* prepareAntigravityIdeaProfile(input.ideaWorkspace, profileDirectory).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderSetupError({
+                    instanceId,
+                    operation: "start",
+                    detail: "Could not prepare the Antigravity idea profile.",
+                    cause,
+                  }),
+              ),
+            )
+          : profileDirectory;
         const profile = yield* prepareAntigravityProfile({
-          profileDirectory,
+          profileDirectory: runtimeProfileDirectory,
           baseEnv: processEnvironment,
           auth,
           userHome,
           tempDirectory: directories.runtimeTemp,
+          includeUserSkills: input.ideaWorkspace === undefined,
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
@@ -410,9 +427,10 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         profileDirectory,
         defaultModel,
         withProcess: authFlow.withProcess,
-        makeRuntime: (cwd) =>
+        makeRuntime: (cwd, ideaWorkspace) =>
           makeRuntime({
             cwd,
+            ...(ideaWorkspace ? { ideaWorkspace } : {}),
             clientInfo: { name: "t3-code-text", version: "0.0.0" },
             mcpServers: [],
           }),

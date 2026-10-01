@@ -27,6 +27,7 @@ import type {
 
 import {
   ApprovalRequestId,
+  EnvironmentId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -34,6 +35,12 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
+import {
+  IDEA_TOOL_NAMES,
+  clearIdeaExecution,
+  setIdeaExecution,
+} from "../../ideas/IdeaExecution.ts";
+import { clearMcpProviderSession, setMcpProviderSession } from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
@@ -71,6 +78,8 @@ const runtimeMock = {
     startCalls: [] as string[],
     sessionCreateUrls: [] as string[],
     sessionCreateInputs: [] as Array<Record<string, unknown>>,
+    sessionDeleteIds: [] as string[],
+    mcpAddInputs: [] as unknown[],
     createdSessionIds: [] as string[],
     authHeaders: [] as Array<string | null>,
     abortCalls: [] as string[],
@@ -141,6 +150,8 @@ const runtimeMock = {
     this.state.startCalls.length = 0;
     this.state.sessionCreateUrls.length = 0;
     this.state.sessionCreateInputs.length = 0;
+    this.state.sessionDeleteIds.length = 0;
+    this.state.mcpAddInputs.length = 0;
     this.state.createdSessionIds.length = 0;
     this.state.authHeaders.length = 0;
     this.state.abortCalls.length = 0;
@@ -243,12 +254,22 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({
+      mcp: {
+        add: async (input: unknown) => {
+          runtimeMock.state.mcpAddInputs.push(input);
+          return { data: {} };
+        },
+      },
       command: {
         list: async () => ({
           data: [{ name: "review", source: "command", hints: ["$ARGUMENTS"] }],
         }),
       },
       session: {
+        delete: async ({ sessionID }: { sessionID: string }) => {
+          runtimeMock.state.sessionDeleteIds.push(sessionID);
+          return { data: true };
+        },
         create: async (input: Record<string, unknown>) => {
           runtimeMock.state.sessionCreateUrls.push(baseUrl);
           runtimeMock.state.sessionCreateInputs.push(input);
@@ -668,6 +689,109 @@ const questionRequest = (id: string, sessionID: string): QuestionRequest => ({
 });
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  it.effect("keeps an idea local, denies native writes, and permits its six notebook tools", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const fs = yield* FileSystem.FileSystem;
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "opencode-idea-" });
+      const threadId = asThreadId("opencode-idea");
+      const sessionID = "http://127.0.0.1:4301/session";
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          setIdeaExecution(threadId, {
+            cwd,
+            projectDirectory: cwd,
+            mainRevision: "main",
+            deletionEpoch: 0,
+            context: "Idea",
+          });
+          setMcpProviderSession({
+            environmentId: EnvironmentId.make("test"),
+            threadId,
+            providerSessionId: "session",
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            endpoint: "http://localhost/idea-mcp",
+            authorizationHeader: "Bearer test",
+            capabilities: new Set(["idea"]),
+          });
+        }),
+        () =>
+          Effect.sync(() => {
+            clearIdeaExecution(threadId);
+            clearMcpProviderSession(threadId);
+          }),
+      );
+      const permissions = ["bash", ...IDEA_TOOL_NAMES.map((name) => `t3-code_${name}`)];
+      runtimeMock.state.subscribedEvents = [
+        ...permissions.map((permission) => ({
+          id: `event-${permission}`,
+          type: "permission.asked",
+          properties: {
+            id: permission,
+            sessionID,
+            permission,
+            patterns: ["*"],
+            always: [],
+            metadata: {},
+          },
+        })),
+        {
+          id: "question",
+          type: "question.asked",
+          properties: questionRequest("question", sessionID),
+        },
+      ];
+      const events = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId),
+        Stream.takeUntil((event) => event.type === "user-input.requested"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId,
+        cwd,
+        runtimeMode: "full-access",
+        resumeCursor: { sessionId: "ordinary-session" },
+      });
+      const observed = yield* Fiber.join(events);
+      NodeAssert.equal(
+        observed.some((event) => event.type === "request.opened"),
+        false,
+      );
+      NodeAssert.deepEqual(
+        runtimeMock.state.permissionReplyCalls,
+        permissions.map((permission) => ({
+          requestID: permission,
+          reply: permission === "bash" ? "reject" : "once",
+        })),
+      );
+      NodeAssert.deepEqual(runtimeMock.state.sessionCreateUrls, ["http://127.0.0.1:4301"]);
+      NodeAssert.deepEqual(runtimeMock.state.authHeaders, [null]);
+      NodeAssert.deepEqual(runtimeMock.state.mcpAddInputs, [
+        {
+          name: "t3-code",
+          config: {
+            type: "remote",
+            url: "http://localhost/idea-mcp",
+            headers: { Authorization: "Bearer test" },
+            oauth: false,
+          },
+        },
+      ]);
+      NodeAssert.deepEqual(runtimeMock.state.sessionCreateInputs[0]?.permission, [
+        { permission: "*", pattern: "*", action: "deny" },
+        { permission: "question", pattern: "*", action: "allow" },
+        ...IDEA_TOOL_NAMES.map((name) => ({
+          permission: `t3-code_${name}`,
+          pattern: "*",
+          action: "allow",
+        })),
+      ]);
+      yield* adapter.stopSession(threadId);
+      NodeAssert.deepEqual(runtimeMock.state.sessionDeleteIds, [sessionID]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;

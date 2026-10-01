@@ -35,6 +35,9 @@ import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { IDEA_TOOL_NAMES, readIdeaExecution } from "../../ideas/IdeaExecution.ts";
+import { openCodeIdeaPermissions } from "../../ideas/OpenCodeIdeaPolicy.ts";
+import { prepareOpenCodeIdeaEnvironment } from "../../ideas/OpenCodeIdeaEnvironment.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
@@ -931,6 +934,16 @@ const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
   // but we still want to tell OpenCode that this session is done.
   yield* abortOpenCodeSessionForTeardown(context);
 
+  if (readIdeaExecution(context.session.threadId)) {
+    yield* runOpenCodeSdk("session.delete", () =>
+      context.client.session.delete({ sessionID: context.openCodeSessionId }),
+    ).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not delete the temporary OpenCode idea session.", cause),
+      ),
+    );
+  }
+
   // Closing the session scope interrupts every fiber forked into it and
   // runs each finalizer we registered — the `AbortController.abort()` call,
   // the child-process termination, etc.
@@ -1818,6 +1831,25 @@ export function makeOpenCodeAdapter(
       if (event.type === "permission.asked") {
         const request = event.properties;
         if (context.pendingPermissions.has(request.id)) {
+          return;
+        }
+        if (readIdeaExecution(context.session.threadId)) {
+          context.resolvedRequestIds.add(request.id);
+          yield* runOpenCodeSdk("permission.reply", (signal) =>
+            context.client.permission.reply(
+              {
+                requestID: request.id,
+                reply: IDEA_TOOL_NAMES.some((name) => request.permission === `t3-code_${name}`)
+                  ? "once"
+                  : "reject",
+              },
+              { signal },
+            ),
+          ).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not answer an OpenCode idea permission request.", cause),
+            ),
+          );
           return;
         }
         if (context.session.runtimeMode === "full-access") {
@@ -2830,11 +2862,17 @@ export function makeOpenCodeAdapter(
 
     const startSession: OpenCodeAdapterShape["startSession"] = Effect.fn("startSession")(
       function* (input) {
+        const idea = readIdeaExecution(input.threadId);
+        const permissions = idea
+          ? openCodeIdeaPermissions()
+          : buildOpenCodePermissionRules(input.runtimeMode);
         const binaryPath = openCodeSettings.binaryPath;
-        const serverUrl = openCodeSettings.serverUrl;
-        const serverPassword = openCodeSettings.serverPassword;
-        const directory = input.cwd ?? serverConfig.cwd;
-        const resumeSessionId = parseOpenCodeResume(input.resumeCursor)?.sessionId;
+        const serverUrl = idea ? undefined : openCodeSettings.serverUrl;
+        const serverPassword = idea ? undefined : openCodeSettings.serverPassword;
+        const directory = idea?.cwd ?? input.cwd ?? serverConfig.cwd;
+        const resumeSessionId = idea
+          ? undefined
+          : parseOpenCodeResume(input.resumeCursor)?.sessionId;
         const existing = sessions.get(input.threadId);
         if (existing) {
           if (existing.session.status === "connecting" && !(yield* Ref.get(existing.stopped))) {
@@ -2852,16 +2890,47 @@ export function makeOpenCodeAdapter(
               // we provide below — closing `sessionScope` kills the child
               // process automatically. No manual `server.close()` needed.
               const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-              const server = yield* openCodeRuntime.connectToOpenCodeServer({
-                binaryPath,
-                directory,
-                serverUrl,
-                ...(serverPassword ? { serverPassword } : {}),
-                environment: McpProviderSession.withAgentDeviceEnvironment(
-                  options?.environment ?? process.env,
-                  mcpSession,
-                ),
-              });
+              const baseEnvironment = McpProviderSession.withAgentDeviceEnvironment(
+                options?.environment ?? process.env,
+                mcpSession,
+              );
+              const environment = idea
+                ? yield* prepareOpenCodeIdeaEnvironment({
+                    directory,
+                    environment: baseEnvironment,
+                    purpose: "thread",
+                  }).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(Path.Path, path),
+                    Effect.mapError(
+                      (cause) =>
+                        new OpenCodeRuntimeError({
+                          operation: "idea-profile",
+                          detail: "Could not prepare the OpenCode idea profile.",
+                          cause,
+                        }),
+                    ),
+                  )
+                : baseEnvironment;
+              const server = yield* openCodeRuntime
+                .connectToOpenCodeServer({
+                  binaryPath,
+                  directory,
+                  ...(serverUrl ? { serverUrl } : {}),
+                  ...(serverPassword ? { serverPassword } : {}),
+                  environment,
+                })
+                .pipe(
+                  Effect.mapError((cause) =>
+                    idea && openCodeSettings.serverUrl
+                      ? new OpenCodeRuntimeError({
+                          operation: cause.operation,
+                          detail: `Idea threads run OpenCode locally to keep notebook tools private. Configure the same model and authentication on this environment. ${cause.detail}`,
+                          cause,
+                        })
+                      : cause,
+                  ),
+                );
               const client = openCodeRuntime.createOpenCodeSdkClient({
                 baseUrl: server.url,
                 directory,
@@ -2914,7 +2983,7 @@ export function makeOpenCodeAdapter(
                   yield* runOpenCodeSdk("session.update", () =>
                     client.session.update({
                       sessionID: reusable.id,
-                      permission: buildOpenCodePermissionRules(input.runtimeMode),
+                      permission: permissions,
                     }),
                   );
                   return { openCodeSession: reusable, created: false };
@@ -2941,7 +3010,7 @@ export function makeOpenCodeAdapter(
                   yield* runOpenCodeSdk("session.update", () =>
                     client.session.update({
                       sessionID: forked.id,
-                      permission: buildOpenCodePermissionRules(input.runtimeMode),
+                      permission: permissions,
                     }),
                   );
                   return { openCodeSession: forked, created: true };
@@ -2955,7 +3024,7 @@ export function makeOpenCodeAdapter(
                 const createdSession = yield* runOpenCodeSdk("session.create", () =>
                   client.session.create({
                     ...(input.title ? { title: input.title } : {}),
-                    permission: buildOpenCodePermissionRules(input.runtimeMode),
+                    permission: permissions,
                   }),
                 );
                 if (!createdSession.data) {
@@ -3074,6 +3143,17 @@ export function makeOpenCodeAdapter(
           yield* schedulePendingRequestRecovery(context);
         }
 
+        if (idea && openCodeSettings.serverUrl) {
+          yield* emit({
+            ...(yield* buildEventBase({ threadId: input.threadId })),
+            type: "runtime.warning",
+            payload: {
+              message:
+                "This idea uses OpenCode on the T3 server so its notebook tools stay private. The selected model must be authenticated here; credentials on a separate OpenCode server are not available.",
+            },
+          });
+        }
+
         yield* emit({
           ...(yield* buildEventBase({ threadId: input.threadId })),
           type: "session.started",
@@ -3119,12 +3199,13 @@ export function makeOpenCodeAdapter(
 
       const text = input.input?.trim();
       const commandMatch = text?.match(/^\/([^\s/]+)(?:\s+([\s\S]*))?$/);
-      const nativeCommand = commandMatch
-        ? (yield* loadOpenCodeCommands(context.client).pipe(
-            Effect.timeout("10 seconds"),
-            Effect.orElseSucceed(() => []),
-          )).find((command) => command.name === commandMatch[1])
-        : undefined;
+      const nativeCommand =
+        commandMatch && !readIdeaExecution(input.threadId)
+          ? (yield* loadOpenCodeCommands(context.client).pipe(
+              Effect.timeout("10 seconds"),
+              Effect.orElseSucceed(() => []),
+            )).find((command) => command.name === commandMatch[1])
+          : undefined;
       // OpenCode ingests images, text, and PDFs natively; formats its model
       // paths reject ride only as the prompt's file path line.
       const fileParts = toOpenCodeFileParts({
@@ -3979,7 +4060,9 @@ export function makeOpenCodeAdapter(
           yield* runOpenCodeSdk("session.update", () =>
             context.client.session.update({
               sessionID: forkedSessionId,
-              permission: buildOpenCodePermissionRules(context.session.runtimeMode),
+              permission: readIdeaExecution(threadId)
+                ? openCodeIdeaPermissions()
+                : buildOpenCodePermissionRules(context.session.runtimeMode),
             }),
           ).pipe(Effect.mapError(toRequestError));
           yield* clearPendingOpenCodeRequests(context, { type: "session.fork" });

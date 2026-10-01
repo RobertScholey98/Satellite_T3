@@ -37,6 +37,8 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { ServerConfig } from "../../config.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
+import { readIdeaExecution } from "../../ideas/IdeaExecution.ts";
+import { ideaAcpPermissionResponse } from "../acp/IdeaAcpPolicy.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import type { AntigravityAuth } from "../AntigravityAuth.ts";
 import {
@@ -501,6 +503,8 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
       }).pipe(Effect.ensuring(Effect.sync(() => context.questions.delete(requestId))));
     }
 
+    if (readIdeaExecution(context.threadId)) return ideaAcpPermissionResponse(request);
+
     const response = yield* Deferred.make<{
       decision: ProviderApprovalDecision;
       result: NativePermissionResponse;
@@ -758,8 +762,9 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             issue: "The session requires a workspace directory.",
           });
         }
+        const idea = readIdeaExecution(input.threadId);
         const cursor = decodeResumeCursor(input.resumeCursor);
-        if (input.resumeCursor !== undefined && Option.isNone(cursor)) {
+        if (!idea && input.resumeCursor !== undefined && Option.isNone(cursor)) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,
             operation: "startSession",
@@ -768,7 +773,7 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
         }
         const previous = sessions.get(input.threadId);
         if (previous) yield* stopContext(previous);
-        const cwd = path.resolve(input.cwd);
+        const cwd = path.resolve(idea?.cwd ?? input.cwd);
         const sessionScope = yield* Scope.make("sequential");
         let transferred = false;
         let context: SessionContext | undefined;
@@ -791,13 +796,16 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
               // a leaf directory holding only uploads.
               const runtime = yield* options.makeRuntime({
                 cwd,
+                ...(idea ? { ideaWorkspace: idea.cwd } : {}),
                 clientInfo: { name: "t3-code", version: "0.0.0" },
                 clientFileSystem: true,
                 ...(mcp?.agentDeviceEnvironment
                   ? { agentDeviceEnvironment: mcp.agentDeviceEnvironment }
                   : {}),
-                additionalDirectories: [serverConfig.attachmentsDir],
-                ...(Option.isSome(cursor) ? { resumeSessionId: cursor.value.sessionId } : {}),
+                additionalDirectories: idea ? [] : [serverConfig.attachmentsDir],
+                ...(!idea && Option.isSome(cursor)
+                  ? { resumeSessionId: cursor.value.sessionId }
+                  : {}),
                 mcpServers: mcp
                   ? [
                       {
@@ -820,10 +828,22 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
               // checked here.
               const allowedRoots = [cwd, serverConfig.attachmentsDir];
               yield* runtime.handleReadTextFile((request) =>
-                readClientTextFile({ fileSystem, path, allowedRoots, request }),
+                idea
+                  ? Effect.fail(
+                      EffectAcpErrors.AcpRequestError.invalidParams(
+                        "Read project code with idea_read_main and notebook content with idea_read.",
+                      ),
+                    )
+                  : readClientTextFile({ fileSystem, path, allowedRoots, request }),
               );
               yield* runtime.handleWriteTextFile((request) =>
-                writeClientTextFile({ fileSystem, path, allowedRoots, request }),
+                idea
+                  ? Effect.fail(
+                      EffectAcpErrors.AcpRequestError.invalidParams(
+                        "Save idea documents with idea_write_document. Project files are read-only.",
+                      ),
+                    )
+                  : writeClientTextFile({ fileSystem, path, allowedRoots, request }),
               );
               yield* runtime.handleRequestPermission((request) =>
                 context
@@ -847,7 +867,9 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
                 defaultModel: yield* options.defaultModel ?? Effect.undefined,
                 mapError: (cause) => cause,
               });
-              yield* runtime.setMode(antigravityPermissionMode(input.runtimeMode));
+              yield* runtime.setMode(
+                idea ? "default" : antigravityPermissionMode(input.runtimeMode),
+              );
               yield* options.onSessionStarted?.(started, cwd) ?? Effect.void;
               const createdAt = yield* nowIso;
               const session: ProviderSession = {
@@ -1069,7 +1091,11 @@ export const makeAntigravityAdapter = Effect.fn("makeAntigravityAdapter")(functi
             model,
             mapError: (cause) => cause,
           });
-          yield* context.runtime.setMode(antigravityPermissionMode(context.session.runtimeMode));
+          yield* context.runtime.setMode(
+            readIdeaExecution(input.threadId)
+              ? "default"
+              : antigravityPermissionMode(context.session.runtimeMode),
+          );
           context.session = {
             ...context.session,
             status: "running",

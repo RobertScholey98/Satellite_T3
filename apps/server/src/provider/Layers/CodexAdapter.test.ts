@@ -47,6 +47,7 @@ import {
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
+import { clearIdeaExecution, setIdeaExecution } from "../../ideas/IdeaExecution.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CodexAdapter`.
@@ -526,6 +527,69 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       NodeAssert.equal(runtime.options.launchArgs, "--strict-config --enable foo");
     }).pipe(Effect.provide(layer));
   });
+
+  it.effect(
+    "uses the owned idea workspace and constrained runtime for a configured Codex model",
+    () => {
+      const factory = makeRuntimeFactory();
+      const instanceId = ProviderInstanceId.make("codex-ideas-custom");
+      const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-codex-idea-"));
+      const ideaDirectory = NodePath.join(directory, "idea");
+      const homePath = NodePath.join(directory, "provider-home");
+      NodeFS.mkdirSync(homePath);
+      NodeFS.writeFileSync(NodePath.join(homePath, "auth.json"), '{"OPENAI_API_KEY":"test"}');
+      const threadId = asThreadId("configured-codex-idea");
+      const layer = Layer.effect(
+        CodexAdapter,
+        makeCodexAdapter(
+          decodeCodexSettings({
+            homePath,
+            launchArgs: '--yolo -c model_provider="custom" -c sandbox_mode="danger-full-access"',
+          }),
+          { instanceId, makeRuntime: factory.factory },
+        ),
+      ).pipe(
+        Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      return Effect.gen(function* () {
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            clearIdeaExecution(threadId);
+            NodeFS.rmSync(directory, { recursive: true, force: true });
+          }),
+        );
+        setIdeaExecution(threadId, {
+          cwd: ideaDirectory,
+          projectDirectory: "/must-not-be-used",
+          mainRevision: "main-revision",
+          deletionEpoch: 0,
+          context: "Idea context",
+        });
+        const adapter = yield* CodexAdapter;
+        yield* adapter.startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          runtimeMode: "full-access",
+          cwd: "/must-not-be-used",
+          modelSelection: { instanceId, model: "custom-gpt-model" },
+          resumeCursor: { threadId: "ordinary-native-history" },
+        });
+        const runtime = factory.lastRuntime;
+        NodeAssert.ok(runtime);
+        NodeAssert.equal(runtime.options.idea, true);
+        NodeAssert.equal(runtime.options.cwd, ideaDirectory);
+        NodeAssert.equal(runtime.options.model, "custom-gpt-model");
+        NodeAssert.equal(runtime.options.resumeCursor, undefined);
+        NodeAssert.equal(runtime.options.launchArgs, "");
+        NodeAssert.equal(runtime.options.homePath, NodePath.join(ideaDirectory, ".codex"));
+        NodeAssert.ok(runtime.options.appServerArgs?.includes('sandbox_mode="read-only"'));
+        NodeAssert.ok(runtime.options.appServerArgs?.includes("model_provider=custom"));
+        NodeAssert.ok(!runtime.options.appServerArgs?.includes("--yolo"));
+        yield* adapter.stopSession(threadId);
+      }).pipe(Effect.scoped, Effect.provide(layer));
+    },
+  );
 
   it.effect("uses T3CODE_CODEX_LAUNCH_ARGS for the session runtime", () => {
     const runtimeFactory = makeRuntimeFactory();

@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
@@ -23,6 +24,10 @@ const runtimeMock = {
     authHeaders: [] as Array<string | null>,
     closeCalls: [] as string[],
     sessionCreateCalls: 0,
+    sessionPermissions: [] as Array<unknown>,
+    selectedModels: [] as Array<unknown>,
+    runtimeEnvironments: [] as Array<NodeJS.ProcessEnv | undefined>,
+    deletedSessions: [] as string[],
     connectionError: undefined as Error | undefined,
     sessionCreateError: undefined as unknown,
     sessionResult: undefined as { data?: { id: string } } | undefined,
@@ -38,6 +43,10 @@ const runtimeMock = {
     this.state.authHeaders.length = 0;
     this.state.closeCalls.length = 0;
     this.state.sessionCreateCalls = 0;
+    this.state.sessionPermissions.length = 0;
+    this.state.selectedModels.length = 0;
+    this.state.runtimeEnvironments.length = 0;
+    this.state.deletedSessions.length = 0;
     this.state.connectionError = undefined;
     this.state.sessionCreateError = undefined;
     this.state.sessionResult = undefined;
@@ -52,6 +61,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntime.OpenCodeRuntimeShape = {
       const index = runtimeMock.state.startCalls.length + 1;
       const url = `http://127.0.0.1:${4_300 + index}`;
       runtimeMock.state.startCalls.push(binaryPath);
+      runtimeMock.state.runtimeEnvironments.push(environment);
       // The production runtime binds server lifetime to the caller's scope.
       // Mirror that here so the closeCalls probe observes scope close.
       yield* Effect.addFinalizer(() =>
@@ -94,14 +104,23 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntime.OpenCodeRuntimeShape = {
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({
       session: {
-        create: async () => {
+        create: async (input: { readonly permission: unknown }) => {
           runtimeMock.state.sessionCreateCalls += 1;
+          runtimeMock.state.sessionPermissions.push(input.permission);
           if (runtimeMock.state.sessionCreateError !== undefined) {
             throw runtimeMock.state.sessionCreateError;
           }
           return runtimeMock.state.sessionResult ?? { data: { id: `${baseUrl}/session` } };
         },
-        prompt: async (input: { readonly parts: ReadonlyArray<unknown> }) => {
+        delete: async (input: { readonly sessionID: string }) => {
+          runtimeMock.state.deletedSessions.push(input.sessionID);
+          return { data: true };
+        },
+        prompt: async (input: {
+          readonly parts: ReadonlyArray<unknown>;
+          readonly model?: unknown;
+        }) => {
+          runtimeMock.state.selectedModels.push(input.model);
           runtimeMock.state.promptUrls.push(baseUrl);
           runtimeMock.state.promptParts.push(input.parts);
           runtimeMock.state.authHeaders.push(
@@ -217,9 +236,10 @@ function withOpenCodeTextGeneration<A, E, R>(
       ...(settings.serverPassword ? { serverPassword: settings.serverPassword } : {}),
       ...(environment ? { environment } : {}),
     });
-    const textGeneration = yield* OpenCodeTextGeneration.makeOpenCodeTextGeneration(settings).pipe(
-      Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
-    );
+    const textGeneration = yield* OpenCodeTextGeneration.makeOpenCodeTextGeneration(
+      settings,
+      environment,
+    ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
@@ -235,6 +255,60 @@ const advanceIdleClock = Effect.gen(function* () {
 });
 
 it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
+  it.effect("rejects invalid notebook edits and deletes the helper session", () =>
+    withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (generation) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-idea-test-" });
+        runtimeMock.state.promptResult = {
+          data: { parts: [{ type: "text", text: '{"edits":"invalid","summary":"Bad update"}' }] },
+        };
+        const error = yield* generation.generateIdeaUpdate!({
+          cwd,
+          prompt: "Organize the notebook.",
+          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        }).pipe(Effect.flip);
+        expect(error.detail).toContain("invalid structured output");
+        expect(runtimeMock.state.deletedSessions).toEqual(["http://127.0.0.1:4301/session"]);
+      }),
+    ),
+  );
+
+  it.effect.each([
+    { label: "local", settings: DEFAULT_OPENCODE_SETTINGS },
+    { label: "external", settings: EXISTING_SERVER_OPENCODE_SETTINGS },
+  ])("generates $label provider notebook edits in an isolated local runtime", ({ settings }) =>
+    withOpenCodeTextGeneration(settings, (generation) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-idea-test-" });
+        runtimeMock.state.promptResult = {
+          data: { parts: [{ type: "text", text: '{"edits":[],"summary":"No new decisions."}' }] },
+        };
+        const result = yield* generation.generateIdeaUpdate!({
+          cwd,
+          prompt: "Organize the notebook.",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("opencode"),
+            model: "custom/custom-model",
+          },
+        });
+        expect(result).toEqual({ edits: [], summary: "No new decisions." });
+        expect(runtimeMock.state.selectedModels).toEqual([
+          { providerID: "custom", modelID: "custom-model" },
+        ]);
+        expect(runtimeMock.state.sessionPermissions).toEqual([
+          [{ permission: "*", pattern: "*", action: "deny" }],
+        ]);
+        expect(runtimeMock.state.deletedSessions).toEqual(["http://127.0.0.1:4301/session"]);
+        expect(runtimeMock.state.closeCalls).toEqual(["http://127.0.0.1:4301"]);
+        expect(runtimeMock.state.runtimeEnvironments[0]?.OPENCODE_CONFIG_DIR).toContain(
+          "opencode-updates",
+        );
+      }),
+    ),
+  );
+
   it.effect("excludes generic files from thread title generation", () =>
     withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
       Effect.gen(function* () {

@@ -312,6 +312,7 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
   readonly userHome?: string;
   /** Parent of per-process temp directories. Defaults to one inside the profile. */
   readonly tempDirectory?: string;
+  readonly includeUserSkills?: boolean;
 }) {
   const auth = input.auth ?? ANTIGRAVITY_PERSONAL_AUTH;
   const fs = yield* FileSystem.FileSystem;
@@ -426,7 +427,9 @@ export const prepareAntigravityProfile = Effect.fn("prepareAntigravityProfile")(
         authSupportError("The Antigravity profile settings could not be written."),
       ),
     );
-  yield* linkAntigravityUserSkills({ profileDirectory: geminiHome, userHome, platform });
+  if (input.includeUserSkills !== false) {
+    yield* linkAntigravityUserSkills({ profileDirectory: geminiHome, userHome, platform });
+  }
   return profile;
 });
 

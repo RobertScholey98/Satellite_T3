@@ -1,3 +1,5 @@
+import { IdeaUpdateResult, type IdeaUpdateInput } from "../ideas/IdeaUpdateGeneration.ts";
+import { prepareCodexIdeaPolicy } from "../ideas/CodexIdeaPolicy.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -83,10 +85,12 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     operation: string,
     prefix: string,
     content: string,
+    directory?: string,
   ): Effect.Effect<string, TextGenerationError, Scope.Scope> =>
     fileSystem
       .makeTempFileScoped({
         prefix: `t3code-${prefix}-${process.pid}-`,
+        ...(directory ? { directory } : {}),
       })
       .pipe(
         Effect.tap((filePath) => fileSystem.writeFileString(filePath, content)),
@@ -108,7 +112,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "generateIdeaUpdate",
     value: unknown,
   ): Effect.Effect<string, TextGenerationError> =>
     encodeJsonString(value).pipe(
@@ -127,7 +132,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle",
+      | "generateThreadTitle"
+      | "generateIdeaUpdate",
     attachments: TextGeneration.BranchNameGenerationInput["attachments"],
   ): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
     if (!attachments || attachments.length === 0) {
@@ -169,7 +175,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateIdeaUpdate";
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -181,8 +188,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       operation,
       toJsonSchemaObject(outputSchemaJson),
     );
-    const schemaPath = yield* writeTempFile(operation, "codex-schema", schemaJson);
-    const outputPath = yield* writeTempFile(operation, "codex-output", "");
+    const tempDirectory = operation === "generateIdeaUpdate" ? cwd : undefined;
+    const schemaPath = yield* writeTempFile(operation, "codex-schema", schemaJson, tempDirectory);
+    const outputPath = yield* writeTempFile(operation, "codex-output", "", tempDirectory);
 
     const runCodexCommand = Effect.fn("runCodexJson.runCodexCommand")(function* () {
       const resolved = resolveRuntime
@@ -194,6 +202,28 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         : undefined;
       const effectiveConfig = resolved?.config ?? codexConfig;
       const effectiveEnvironment = resolved?.environment ?? resolvedEnvironment;
+      const launchArgs = resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment);
+      const ideaPolicy =
+        operation === "generateIdeaUpdate"
+          ? yield* prepareCodexIdeaPolicy({
+              cwd,
+              homePath: effectiveConfig.homePath,
+              launchArgs,
+              environment: effectiveEnvironment,
+              purpose: "updates",
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+              Effect.mapError((cause) =>
+                normalizeCliError(
+                  "codex",
+                  operation,
+                  cause,
+                  "Could not prepare idea update permissions",
+                ),
+              ),
+            )
+          : undefined;
       const models = yield* getModels;
       const requestedModel = modelSelection.model;
       const model =
@@ -202,7 +232,6 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           (candidate) => !candidate.isCustom && codexModelFamily(candidate.slug) === requestedModel,
         )?.slug ??
         requestedModel;
-      const launchArgs = resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment);
       const reasoningEffort =
         getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
         DEFAULT_TEXT_GENERATION_REASONING_EFFORT;
@@ -211,7 +240,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         effectiveConfig.binaryPath || "codex",
         [
           "exec",
-          ...codexExecLaunchArgs(launchArgs),
+          ...(ideaPolicy?.args ?? codexExecLaunchArgs(launchArgs)),
           "--ephemeral",
           "--skip-git-repo-check",
           "-s",
@@ -228,12 +257,12 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
           "-",
         ],
-        { env: effectiveEnvironment },
+        { env: ideaPolicy?.environment ?? effectiveEnvironment },
       );
       const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         env: {
-          ...effectiveEnvironment,
-          ...(effectiveConfig.homePath
+          ...(ideaPolicy?.environment ?? effectiveEnvironment),
+          ...(!ideaPolicy && effectiveConfig.homePath
             ? { CODEX_HOME: expandHomePath(effectiveConfig.homePath) }
             : {}),
         },
@@ -434,7 +463,17 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
+  const generateIdeaUpdate = (input: IdeaUpdateInput) =>
+    runCodexJson({
+      operation: "generateIdeaUpdate",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: IdeaUpdateResult,
+      modelSelection: input.modelSelection,
+    });
+
   return {
+    generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

@@ -37,6 +37,7 @@ export interface AntigravityAcpRuntimeInput extends Omit<
 > {
   /** Device CLI environment supplied for this provider session. */
   readonly agentDeviceEnvironment?: Readonly<Record<string, string>>;
+  readonly ideaWorkspace?: string;
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly onAuthorizationUrl?: (url: string) => Effect.Effect<void, EffectAcpErrors.AcpError>;
   /**

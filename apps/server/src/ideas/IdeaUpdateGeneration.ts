@@ -1,6 +1,7 @@
 import { IdeaContentEdit, type IdeaNotebook, type ModelSelection } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { ideaSourceKey } from "./IdeaDiscussion.ts";
+import { toJsonSchemaObject } from "../textGeneration/TextGenerationUtils.ts";
 
 export const IDEA_UPDATE_MESSAGE_CHARS = 40_000;
 export const IDEA_UPDATE_DOCUMENT_CHARS = 125_000;
@@ -12,6 +13,7 @@ export const IdeaUpdateResult = Schema.Struct({
   title: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80))),
 });
 export type IdeaUpdateResult = typeof IdeaUpdateResult.Type;
+export const IDEA_UPDATE_OUTPUT_SCHEMA = toJsonSchemaObject(IdeaUpdateResult);
 export interface IdeaUpdateInput {
   readonly cwd: string;
   readonly modelSelection: ModelSelection;

@@ -1937,12 +1937,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     selectedProviderEntry?.snapshot,
     selectedModel,
   );
-  const ideaModelDisabledReason = ideaMode
-    ? getModelDisabledReason(selectedInstanceId, selectedModel)
-    : null;
   const sendDisabledReason =
     externalSendDisabledReason ??
-    ideaModelDisabledReason ??
     (multipleModelSelections?.length === 0 ? "Select at least one model." : null) ??
     (activePendingProgress
       ? attachmentBlockReason
@@ -2641,20 +2637,18 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
-  const providerTraitsMenuContent = ideaModelDisabledReason
-    ? null
-    : renderProviderTraitsMenuContent({
-        provider: selectedProvider,
-        instanceId: selectedInstanceId,
-        ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
-        ...(routeKind === "draft" && draftId ? { draftId } : {}),
-        model: selectedModel,
-        models: selectedProviderModels,
-        modelOptions: composerModelOptions?.[selectedInstanceId],
-        prompt,
-        onPromptChange: setPromptFromTraits,
-        planModeEnabled: settings.planModeEnabled,
-      });
+  const providerTraitsMenuContent = renderProviderTraitsMenuContent({
+    provider: selectedProvider,
+    instanceId: selectedInstanceId,
+    ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
+    ...(routeKind === "draft" && draftId ? { draftId } : {}),
+    model: selectedModel,
+    models: selectedProviderModels,
+    modelOptions: composerModelOptions?.[selectedInstanceId],
+    prompt,
+    onPromptChange: setPromptFromTraits,
+    planModeEnabled: settings.planModeEnabled,
+  });
   const providerTraitsPickerInput = {
     provider: selectedProvider,
     instanceId: selectedInstanceId,
@@ -2668,9 +2662,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     planModeEnabled: settings.planModeEnabled,
     isComposerOwned: true,
   } satisfies Parameters<typeof renderProviderTraitsPicker>[0];
-  const providerTraitsPicker = ideaModelDisabledReason
-    ? null
-    : renderProviderTraitsPicker(providerTraitsPickerInput);
+  const providerTraitsPicker = renderProviderTraitsPicker(providerTraitsPickerInput);
   const {
     controlsRef: restingComposerControlsRef,
     attachControls: attachRestingComposerControls,
@@ -5113,9 +5105,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           : {})}
         onOpenChange={setIsComposerModelPickerOpen}
         getModelDisabledReason={getModelDisabledReason}
-        {...(ideaModelDisabledReason
-          ? { triggerLabel: "Choose a Claude model", triggerAriaLabel: "Choose a Claude model" }
-          : {})}
         onInstanceModelChange={(instanceId, model) => {
           setMultipleModelSelections(null);
           onProviderModelSelect(instanceId, model);

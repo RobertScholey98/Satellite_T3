@@ -1276,16 +1276,6 @@ export function NewTaskDraftScreen(props: {
     if (!message) {
       return;
     }
-    if (
-      message.creation?.purpose === "idea" &&
-      flow.selectedProviderStatus?.driver !== "claudeAgent"
-    ) {
-      Alert.alert(
-        "Choose Claude for this idea",
-        "Ideas support has not been implemented for this provider. Select a Claude model to continue.",
-      );
-      return;
-    }
     if (!queuesInsteadOfStarting && message.creation?.purpose !== "idea") {
       // Arm the lock-screen card before the async thread creation: backgrounding
       // the app right after tapping submit would otherwise reject the foreground

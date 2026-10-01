@@ -50,17 +50,29 @@ const threadId = ThreadId.make("workflow-idea");
 const projectId = ProjectId.make("workflow-project");
 const messageId = MessageId.make("workflow-message");
 const instanceId = ProviderInstanceId.make("claude");
-const driverKind = ProviderDriverKind.make("claudeAgent");
 const now = "2026-09-30T12:00:00.000Z";
 const unused = () => Effect.die("Unexpected provider operation in notebook workflow");
 
 it.effect.each([
-  { deletionMode: "idea", modelSource: "configured" },
-  { deletionMode: "project", modelSource: "automatic" },
+  {
+    deletionMode: "idea",
+    modelSource: "configured",
+    driver: "codex",
+    model: "custom-update-model",
+  },
+  { deletionMode: "project", modelSource: "automatic", driver: "grok", model: "grok-build" },
+  {
+    deletionMode: "idea",
+    modelSource: "automatic",
+    driver: "claudeAgent",
+    model: "claude-haiku-4-5",
+  },
+  { deletionMode: "project", modelSource: "fallback", driver: "cursor", model: "composer-2" },
 ] as const)(
-  "maintains, promotes, settles, reopens and permanently deletes via $deletionMode using $modelSource updates",
-  ({ deletionMode, modelSource }) =>
+  "maintains, promotes, settles, reopens and permanently deletes via $deletionMode using $modelSource $driver updates",
+  ({ deletionMode, modelSource, driver, model }) =>
     Effect.gen(function* () {
+      const driverKind = ProviderDriverKind.make(driver);
       let generated = 0;
       let posted = 0;
       let published: { number: number; title: string; body: string; html_url: string } | null =
@@ -101,6 +113,9 @@ it.effect.each([
           generateThreadTitle: unused,
           generateIdeaUpdate: (input) =>
             Effect.sync(() => {
+              assert.deepEqual(input.modelSelection, { instanceId, model });
+              assert.include(input.prompt, '"edits"');
+              assert.include(input.prompt, '"baseRevision"');
               assert.include(input.prompt, "Assistant decision from two chunks.");
               generated++;
               return {
@@ -196,13 +211,25 @@ it.effect.each([
             getSettings: Effect.succeed({
               ...DEFAULT_SERVER_SETTINGS,
               ideaUpdatesModelSelection:
-                modelSource === "configured" ? { instanceId, model: "haiku" } : null,
+                modelSource === "configured" ? { instanceId, model } : null,
             }),
           }),
         ),
         Layer.provide(
           Layer.mock(ProviderInstanceRegistry)({
-            listInstances: Effect.succeed([provider]),
+            listInstances: Effect.succeed([
+              ...(modelSource === "fallback"
+                ? []
+                : [
+                    {
+                      ...provider,
+                      instanceId: ProviderInstanceId.make("other-provider"),
+                      driverKind: ProviderDriverKind.make("opencode"),
+                      textGeneration: { ...provider.textGeneration, generateIdeaUpdate: unused },
+                    },
+                  ]),
+              provider,
+            ]),
             getInstance: () => Effect.succeed(provider),
           }),
         ),
@@ -250,7 +277,11 @@ it.effect.each([
           projectId,
           purpose: "idea",
           title: "Agent notebook",
-          modelSelection: { instanceId, model: "sonnet" },
+          modelSelection: {
+            instanceId:
+              modelSource === "fallback" ? ProviderInstanceId.make("removed-provider") : instanceId,
+            model: "thread-model",
+          },
           runtimeMode: "approval-required",
           interactionMode: "default",
           branch: null,

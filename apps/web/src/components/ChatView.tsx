@@ -7507,13 +7507,6 @@ export default function ChatView(props: ChatViewProps) {
       interactionMode: sendInteractionMode,
       interactionModeEnabled: sendInteractionModeEnabled,
     } = sendCtx;
-    if (isIdea && ctxSelectedProvider !== "claudeAgent") {
-      setThreadError(
-        activeThreadId,
-        "Ideas currently require Claude. Select a Claude model to continue.",
-      );
-      return;
-    }
     const annotationImageAlreadyAttached =
       directAnnotation?.image !== undefined &&
       sendContextImages.some((image) => image.id === directAnnotation.image?.id);
@@ -9339,12 +9332,6 @@ export default function ChatView(props: ChatViewProps) {
 
   const getModelDisabledReason = useCallback(
     (instanceId: ProviderInstanceId, model: string): string | null => {
-      if (
-        isIdea &&
-        providerStatuses.find((provider) => provider.instanceId === instanceId)?.driver !==
-          "claudeAgent"
-      )
-        return "Ideas currently require Claude.";
       if (!activeThread) {
         return null;
       }
@@ -9357,7 +9344,7 @@ export default function ChatView(props: ChatViewProps) {
       });
       return reason ? `${reason.description} Start a new thread to use this model.` : null;
     },
-    [activeThread, isIdea, providerStatuses],
+    [activeThread, providerStatuses],
   );
 
   const onProviderModelSelect = useCallback(
