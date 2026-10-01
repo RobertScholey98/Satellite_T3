@@ -14,9 +14,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+  appPath: "/Applications/Satellite.app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
+  resourcesPath: "/Applications/Satellite.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -78,7 +78,7 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assert.equal(environment.backendCwd, "/repo");
       assert.equal(environment.appUserModelId, "com.satellitet3.prototype.dev");
-      assert.equal(environment.displayName, "SatelliteT3 (Dev)");
+      assert.equal(environment.displayName, "Satellite (Dev)");
       assert.equal(environment.userDataDirName, "satellite-t3-dev");
       assert.equal(environment.legacyUserDataDirName, "satellite-t3-dev");
       assert.equal(environment.linuxWmClass, "t3code-dev");

@@ -16,5 +16,7 @@
       "sizes": "180x180",
       "type": "image/png"
     }
-  ]
+  ],
+  "name": "Satellite",
+  "short_name": "Satellite"
 }

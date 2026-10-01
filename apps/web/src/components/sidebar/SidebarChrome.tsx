@@ -13,7 +13,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { useEnvironments } from "../../state/environments";
-import { T3Wordmark } from "../T3Wordmark";
+import { SatelliteMark } from "../SatelliteMark";
 import {
   resolveEnvironmentIdentificationPillLabel,
   resolveSidebarStageBackdropVariant,
@@ -54,19 +54,14 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
       : null;
 
   return (
-    // The titlebar row, not a padded SidebarHeader: it aligns to the window controls.
     <div
       className={cn(
-        "@container/sidebar-header relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 px-3 md:px-0",
+        "@container/sidebar-header relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 pt-2 pr-3 pl-(--workspace-controls-left)",
         isElectron && "drag-region",
       )}
     >
       {backdropVariant ? <SidebarStageBackdrop variant={backdropVariant} /> : null}
-      <SidebarTrigger
-        // Over the stage artwork: the media viewer's control-on-imagery treatment.
-        variant={backdropVariant ? "media-navigation" : "ghost"}
-        className="relative top-auto z-10 translate-y-0 md:hidden"
-      />
+      <SidebarHeaderToggle />
       <SidebarBrand onBackdrop={backdropVariant !== null} />
       {pillLabel ? (
         <Badge
@@ -78,6 +73,22 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
           {pillLabel}
         </Badge>
       ) : null}
+      <Link
+        aria-label="Go to threads"
+        className={cn(
+          "relative z-10 ml-auto flex h-8 shrink-0 items-center rounded-md outline-hidden ring-ring [-webkit-app-region:no-drag] focus-visible:ring-2",
+          backdropVariant !== null ? "text-white" : "text-foreground",
+        )}
+        to="/"
+      >
+        <SatelliteMark
+          className="size-7 shrink-0"
+          preserveAspectRatio="xMidYMid meet"
+          shapeRendering="geometricPrecision"
+          aria-hidden="true"
+          focusable="false"
+        />
+      </Link>
     </div>
   );
 });
@@ -87,24 +98,26 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
     <Link
       aria-label="Go to threads"
       className={cn(
-        "relative z-10 ml-[var(--workspace-titlebar-content-left)] hidden h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 md:flex",
+        "relative z-10 flex h-8 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring [-webkit-app-region:no-drag] focus-visible:ring-2",
         onBackdrop ? "text-white" : "text-foreground",
       )}
       to="/"
     >
-      {/* Center the visible capitals, without the font's ascender/descender space. */}
-      <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-        <T3Wordmark aria-label="T3" className="h-[1cap] w-auto shrink-0" />
-        <span
-          className={cn(
-            "truncate [text-box:trim-both_cap_alphabetic]",
-            onBackdrop ? "text-white/70" : "text-muted-foreground",
-          )}
-        >
-          Code
-        </span>
+      <span className="inline-flex min-w-0 items-center gap-2 text-base font-medium tracking-tight">
+        <span className="truncate">Satellite</span>
       </span>
     </Link>
+  );
+}
+
+function SidebarHeaderToggle() {
+  return (
+    <div className="relative z-10 shrink-0 [-webkit-app-region:no-drag]">
+      <Tooltip>
+        <TooltipTrigger render={<SidebarTrigger aria-label="Toggle main sidebar" />} />
+        <TooltipPopup side="bottom">Toggle main sidebar</TooltipPopup>
+      </Tooltip>
+    </div>
   );
 }
 

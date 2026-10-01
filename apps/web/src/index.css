@@ -1020,6 +1020,25 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   background-size: var(--surface-grain-size);
 }
 
+@media (prefers-reduced-motion: no-preference) {
+  [data-sidebar-animations="true"] [data-slot="workspace-page-header"] {
+    transition:
+      padding-left var(--sidebar-animation-duration) ease-out,
+      padding-right var(--sidebar-animation-duration) ease-out;
+  }
+
+  [data-sidebar-animations="true"] [data-slot="sidebar-gap"] {
+    transition: width var(--sidebar-animation-duration) ease-out;
+  }
+
+  [data-sidebar-animations="true"] [data-slot="sidebar-container"] {
+    transition:
+      left var(--sidebar-animation-duration) ease-out,
+      right var(--sidebar-animation-duration) ease-out,
+      width var(--sidebar-animation-duration) ease-out;
+  }
+}
+
 /* Suppress all transitions during theme changes */
 .no-transitions,
 .no-transitions *,
