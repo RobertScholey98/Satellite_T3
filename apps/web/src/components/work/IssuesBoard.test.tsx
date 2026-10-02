@@ -3,6 +3,7 @@ import {
   ProjectId,
   type IssueBoardColumn,
   type IssueBoardSummary,
+  type IssueBoardSync,
   type IssueBoardView,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -20,14 +21,33 @@ const commands = vi.hoisted(() => ({
   disconnectBoard: vi.fn(),
   configureBoard: vi.fn(),
 }));
-const state = vi.hoisted(() => ({ projects: [] as unknown[], environments: [] as unknown[] }));
+const state = vi.hoisted(() => ({
+  projects: [] as unknown[],
+  environments: [] as unknown[],
+  boardSync: undefined as IssueBoardSync | null | undefined,
+}));
+const draggable = vi.hoisted(() =>
+  vi.fn((_options: { id: string; disabled: boolean }) => ({
+    setNodeRef: () => {},
+    transform: null,
+    isDragging: false,
+  })),
+);
 
 vi.mock("~/state/entities", () => ({ useProjects: () => state.projects }));
 vi.mock("~/state/environments", () => ({
   useEnvironments: () => ({ environments: state.environments }),
 }));
-vi.mock("~/state/issues", () => ({ issuesEnvironment: commands }));
+vi.mock("~/state/issues", () => ({
+  issuesEnvironment: commands,
+  useIssueBoardSync: (ref: unknown) => (ref ? state.boardSync : undefined),
+}));
+vi.mock("~/hooks/useSettings", () => ({
+  useClientSettings: <T,>(select: (settings: { timestampFormat: "24-hour" }) => T) =>
+    select({ timestampFormat: "24-hour" }),
+}));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
+vi.mock("~/hooks/useLiveRefresh", () => ({ useLiveRefresh: () => {} }));
 vi.mock("~/lib/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/lib/utils")>()),
   randomUUID: () => "request-id",
@@ -35,7 +55,7 @@ vi.mock("~/lib/utils", async (importOriginal) => ({
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("@dnd-kit/core", () => ({
   DndContext: ({ children }: { children: ReactNode }) => <div data-board-content>{children}</div>,
-  useDraggable: () => ({ setNodeRef: vi.fn(), transform: null, isDragging: false }),
+  useDraggable: draggable,
   useDroppable: () => ({ setNodeRef: vi.fn(), isOver: false }),
 }));
 vi.mock("../ui/button", () => ({ Button: "button" }));
@@ -150,6 +170,13 @@ const saved: IssueBoardSummary = {
   },
 };
 
+const synced: IssueBoardSync = {
+  revision: 1,
+  syncedAt: "2026-10-02T09:14:00.000Z",
+  syncing: false,
+  failure: null,
+};
+
 function boardView(board: IssueBoardSummary): IssueBoardView {
   return {
     board,
@@ -179,6 +206,7 @@ function boardView(board: IssueBoardSummary): IssueBoardView {
     ],
     attempts: [],
     moves: [],
+    sync: synced,
   };
 }
 
@@ -202,11 +230,26 @@ async function click(label: string, root = renderer!.root) {
 function boardText() {
   return renderer!.root.findAllByProps({ "data-board-content": true }).map(text).join("");
 }
-async function mount(target?: Parameters<typeof IssuesBoard>[0]["target"]) {
+let mounted: ReactElement | null = null;
+async function mount(
+  target?: Parameters<typeof IssuesBoard>[0]["target"],
+  onSyncChange?: (syncing: boolean) => void,
+) {
+  mounted = (
+    <IssuesBoard
+      {...(target ? { target } : {})}
+      {...(onSyncChange ? { onSyncChange } : {})}
+      onSelectBoard={onSelectBoard}
+    />
+  );
   await act(async () => {
-    renderer = create(
-      <IssuesBoard {...(target ? { target } : {})} onSelectBoard={onSelectBoard} />,
-    );
+    renderer = create(mounted!);
+  });
+}
+async function serverSync(sync: IssueBoardSync | null | undefined) {
+  state.boardSync = sync;
+  await act(async () => {
+    renderer!.update(cloneElement(mounted!));
   });
 }
 function deferred<T>() {
@@ -263,6 +306,8 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   for (const command of Object.values(commands)) command.mockReset();
   onSelectBoard.mockClear();
+  draggable.mockClear();
+  state.boardSync = undefined;
   state.projects = [
     { id: firstProjectId, environmentId, title: "First project", workspaceRoot: "C:/first" },
     { id: secondProjectId, environmentId, title: "Second project", workspaceRoot: "C:/second" },
@@ -288,7 +333,9 @@ afterEach(async () => {
 
 describe("project board selection", () => {
   it("shows a discovery failure in the picker and retries without entering board details", async () => {
-    commands.listBoards.mockRejectedValueOnce(new Error("Azure CLI request failed"));
+    commands.listBoards
+      .mockResolvedValueOnce(AsyncResult.success([]))
+      .mockRejectedValueOnce(new Error("Azure CLI request failed"));
     await mount();
     await click("Connect board");
     let dialog = renderer!.root.findByProps({ role: "dialog" });
@@ -305,7 +352,9 @@ describe("project board selection", () => {
   it("keeps the picker visible while discovery loads and updates it when boards arrive", async () => {
     const discovery =
       deferred<ReturnType<typeof AsyncResult.success<readonly IssueBoardSummary[]>>>();
-    commands.listBoards.mockReturnValueOnce(discovery.promise);
+    commands.listBoards
+      .mockResolvedValueOnce(AsyncResult.success([]))
+      .mockReturnValueOnce(discovery.promise);
     await mount();
     await click("Connect board");
     const dialog = renderer!.root.findByProps({ role: "dialog" });
@@ -314,6 +363,99 @@ describe("project board selection", () => {
     await act(async () => discovery.resolve(AsyncResult.success([discovered])));
     expect(text(renderer!.root.findByProps({ role: "dialog" }))).toContain(discovered.title);
   });
+  it("enters with connected boards only and asks the host only for the Connect board dialog", async () => {
+    restoreSavedBoard();
+    await mount();
+    expect(commands.listBoards.mock.calls.map(([call]) => call.input)).toEqual([
+      { projectId: firstProjectId, connectedOnly: true },
+    ]);
+    await click("Connect board");
+    expect(commands.listBoards.mock.calls.map(([call]) => call.input)).toEqual([
+      { projectId: firstProjectId, connectedOnly: true },
+      { projectId: firstProjectId },
+    ]);
+  });
+
+  it("opens the board named by the URL without waiting for the board list", async () => {
+    const listing =
+      deferred<ReturnType<typeof AsyncResult.success<readonly IssueBoardSummary[]>>>();
+    commands.listBoards.mockReturnValueOnce(listing.promise);
+    commands.openBoard.mockResolvedValueOnce(AsyncResult.success(boardView(saved)));
+    await mount({ environmentId, projectId: firstProjectId, boardId: saved.id });
+    expect(commands.openBoard.mock.calls.map(([call]) => call.input)).toEqual([
+      { projectId: firstProjectId, boardId: saved.id },
+    ]);
+    await act(async () => listing.resolve(AsyncResult.success([saved])));
+    expect(commands.openBoard).toHaveBeenCalledTimes(1);
+    expect(boardText()).toContain(`${saved.title} issue`);
+  });
+
+  it("keeps cards draggable while the server syncs and reports the sync", async () => {
+    restoreSavedBoard();
+    const syncing = vi.fn();
+    state.boardSync = { ...synced, syncing: true };
+    await mount(undefined, syncing);
+    expect(draggable).toHaveBeenLastCalledWith({ id: "saved-board-item", disabled: false });
+    expect(syncing).toHaveBeenLastCalledWith(true);
+    expect(text(renderer!.root)).toContain("Syncing…");
+    await serverSync(synced);
+    expect(syncing).toHaveBeenLastCalledWith(false);
+  });
+
+  it("reopens the stored board once for a higher server revision and not for an equal one", async () => {
+    restoreSavedBoard();
+    await mount();
+    commands.openBoard.mockResolvedValue(
+      AsyncResult.success({ ...boardView(saved), sync: { ...synced, revision: 2 } }),
+    );
+    await serverSync(synced);
+    expect(commands.openBoard).toHaveBeenCalledTimes(1);
+    await serverSync({ ...synced, revision: 2, syncing: true });
+    await serverSync({ ...synced, revision: 2 });
+    expect(commands.openBoard.mock.calls.map(([call]) => call.input)).toEqual([
+      { projectId: firstProjectId, boardId: saved.id },
+      { projectId: firstProjectId, boardId: saved.id },
+    ]);
+  });
+
+  it("clears the board when the server reports it disconnected elsewhere", async () => {
+    restoreSavedBoard();
+    await mount();
+    expect(boardText()).toContain(`${saved.title} issue`);
+    await serverSync(null);
+    expect(boardText()).toBe("");
+    expect(onSelectBoard).toHaveBeenLastCalledWith({ environmentId, projectId: firstProjectId });
+  });
+
+  it("asks the server to read the host on Refresh board", async () => {
+    restoreSavedBoard();
+    await mount();
+    await click("Refresh board");
+    expect(commands.openBoard.mock.calls.at(-1)![0].input).toEqual({
+      projectId: firstProjectId,
+      boardId: saved.id,
+      refresh: true,
+    });
+  });
+
+  it("shows when the board last synced and offers Retry after a failed sync", async () => {
+    restoreSavedBoard();
+    await mount();
+    expect(text(renderer!.root)).toContain("Synced ");
+    await serverSync({
+      ...synced,
+      failure: { at: "2026-10-02T09:20:00.000Z", message: "Board unavailable" },
+    });
+    expect(text(renderer!.root)).toContain("Sync failed");
+    expect(text(renderer!.root)).toContain("Board unavailable");
+    await click("Retry");
+    expect(commands.openBoard.mock.calls.at(-1)![0].input).toEqual({
+      projectId: firstProjectId,
+      boardId: saved.id,
+      refresh: true,
+    });
+  });
+
   it("leaves account-wide discoveries unselected on entering a project", async () => {
     await mount();
     expect(commands.openBoard).not.toHaveBeenCalled();
@@ -338,9 +480,15 @@ describe("project board selection", () => {
 
   it("does not restore another board for an explicit unconnected target", async () => {
     restoreSavedBoard();
+    commands.openBoard
+      .mockReset()
+      .mockRejectedValue(new Error("This board is no longer connected."));
     await mount({ environmentId, projectId: firstProjectId, boardId: discovered.id });
 
-    expect(commands.openBoard).not.toHaveBeenCalled();
+    expect(commands.openBoard.mock.calls.map(([call]) => call.input)).toEqual([
+      { projectId: firstProjectId, boardId: discovered.id },
+    ]);
+    expect(text(renderer!.root)).toContain("The requested board is unavailable");
     expect(boardText()).toBe("");
     expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
   });
@@ -597,6 +745,7 @@ describe("cached issues navigation", () => {
     await mount({ environmentId, projectId: firstProjectId, boardId: saved.id });
     expect(boardText()).toContain(saved.title + " issue");
     commands.listBoards.mockReturnValue(new Promise(() => {}));
+    commands.openBoard.mockReturnValue(new Promise(() => {}));
     await act(async () => {
       renderer!.update(
         <IssuesBoard
@@ -662,6 +811,7 @@ describe("cached issues navigation", () => {
     });
     await act(async () => renderer!.unmount());
     commands.listBoards.mockReturnValue(new Promise(() => {}));
+    commands.openBoard.mockReturnValue(new Promise(() => {}));
     await mount({ environmentId, projectId: firstProjectId, boardId: "another-board" });
     expect(boardText()).toBe("");
     expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);

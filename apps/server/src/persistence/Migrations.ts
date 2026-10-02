@@ -70,6 +70,7 @@ import Migration0055 from "./Migrations/055_ManagedDocuments.ts";
 import Migration0056 from "./Migrations/056_IssueBoards.ts";
 import Migration0057 from "./Migrations/057_OpenWork.ts";
 import Migration0058 from "./Migrations/058_IdeaNotebooks.ts";
+import Migration0059 from "./Migrations/059_IssueBoardSnapshots.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -140,6 +141,7 @@ const migrationEntries = [
   [56, "IssueBoards", Migration0056],
   [57, "OpenWork", Migration0057],
   [58, "IdeaNotebooks", Migration0058],
+  [59, "IssueBoardSnapshots", Migration0059],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

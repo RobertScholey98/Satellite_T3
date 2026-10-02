@@ -3263,6 +3263,8 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.issuesBoardsList, issues.listBoards(input)),
         [WS_METHODS.issuesBoardsOpen]: (input) =>
           observeRpcEffect(WS_METHODS.issuesBoardsOpen, issues.openBoard(input)),
+        [WS_METHODS.issuesBoardsSubscribe]: (input) =>
+          observeRpcStream(WS_METHODS.issuesBoardsSubscribe, issues.subscribeBoard(input)),
         [WS_METHODS.issuesBoardsConfigure]: (input) =>
           observeRpcEffect(WS_METHODS.issuesBoardsConfigure, issues.configureBoard(input)),
         [WS_METHODS.issuesBoardsDisconnect]: (input) =>

@@ -168,11 +168,13 @@ const validateIssue = (scope: IssueHostScope, raw: unknown) =>
   );
 const JsonRecord = Schema.fromJsonString(record);
 const decodeRecordJson = Schema.decodeEffect(JsonRecord);
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const isRecord = Schema.is(record);
 const isArray = Schema.is(Schema.Array(Schema.Unknown));
 const decodeIssueDetail = Schema.decodeEffect(IssueDetail);
 const decodeIssueSummary = Schema.decodeEffect(IssueSummary);
 const readRecord = (text: string) => decodeRecordJson(text).pipe(Effect.mapError(invalid));
+const readJson = (text: string) => decodeJson(text).pipe(Effect.mapError(invalid));
 const str = (value: unknown, fallback = ""): string =>
   typeof value === "string" ? value : fallback;
 const num = (value: unknown): number => (typeof value === "number" ? value : 0);
@@ -277,6 +279,24 @@ export const makeIssueHost = (options: {
           Effect.map((output) => output.stdout),
           Effect.mapError(remoteError),
         );
+    const azCli = (cwd: string, organization: string, args: ReadonlyArray<string>) =>
+      azure
+        .execute({
+          cwd,
+          args: [
+            ...args,
+            "--organization",
+            `https://dev.azure.com/${segment(organization)}`,
+            "--only-show-errors",
+            "--output",
+            "json",
+          ],
+          maxOutputBytes: 4 * 1024 * 1024,
+        })
+        .pipe(
+          Effect.map((output) => output.stdout),
+          Effect.mapError(remoteError),
+        );
     const az = Effect.fnUntraced(function* (
       cwd: string,
       organization: string,
@@ -286,13 +306,12 @@ export const makeIssueHost = (options: {
       query: Record<string, string> = {},
       body?: unknown,
       method = "GET",
+      // The CLI parses this as a float after stripping "-preview", so "7.1-preview.4" is rejected.
       apiVersion = "7.1",
     ) {
       const args = [
         "devops",
         "invoke",
-        "--organization",
-        `https://dev.azure.com/${segment(organization)}`,
         "--area",
         area,
         "--resource",
@@ -301,9 +320,6 @@ export const makeIssueHost = (options: {
         apiVersion,
         "--http-method",
         method,
-        "--only-show-errors",
-        "--output",
-        "json",
       ];
       if (Object.keys(route).length)
         args.push(
@@ -322,9 +338,8 @@ export const makeIssueHost = (options: {
             const file = path.join(directory, "request.json");
             yield* fs.writeFileString(file, json(body));
             args.push("--in-file", file);
-            if (method === "PATCH") args.push("--media-type", "application/json-patch+json");
           }
-          return (yield* azure.execute({ cwd, args, maxOutputBytes: 4 * 1024 * 1024 })).stdout;
+          return yield* azCli(cwd, organization, args);
         }),
       ).pipe(Effect.mapError(remoteError));
     });
@@ -352,44 +367,44 @@ export const makeIssueHost = (options: {
     };
     const get: IssueHostShape["get"] = Effect.fn("IssueHost.get")(function* (scope) {
       const { ref, cwd } = scope;
-      let text: string;
+      let raw: Record<string, unknown>;
       if (ref.hostKind === "github")
-        text = yield* gh(cwd, ref.host, [`repos/${ref.repository}/issues/${segment(ref.id)}`]);
+        raw = yield* readRecord(
+          yield* gh(cwd, ref.host, [`repos/${ref.repository}/issues/${segment(ref.id)}`]),
+        );
       else if (ref.hostKind === "gitlab")
-        text = yield* gl(
-          cwd,
-          ref.host,
-          `projects/${segment(ref.repository)}/issues/${segment(ref.id)}`,
+        raw = yield* readRecord(
+          yield* gl(cwd, ref.host, `projects/${segment(ref.repository)}/issues/${segment(ref.id)}`),
         );
       else if (ref.hostKind === "forgejo")
-        text = (yield* forgejo
-          .api({
-            cwd,
-            host: ref.host,
-            repository: ref.repository,
-            path: `repos/${ref.repository}/issues/${segment(ref.id)}`,
-          })
-          .pipe(Effect.mapError(remoteError))).stdout;
+        raw = yield* readRecord(
+          (yield* forgejo
+            .api({
+              cwd,
+              host: ref.host,
+              repository: ref.repository,
+              path: `repos/${ref.repository}/issues/${segment(ref.id)}`,
+            })
+            .pipe(Effect.mapError(remoteError))).stdout,
+        );
       else if (ref.hostKind === "bitbucket")
-        text = (yield* bitbucket
-          .request({
-            method: "GET",
-            url: `repositories/${ref.repository}/issues/${segment(ref.id)}`,
-            maxBytes: 4 * 1024 * 1024,
-          })
-          .pipe(Effect.mapError(remoteError))).body;
+        raw = yield* readRecord(
+          (yield* bitbucket
+            .request({
+              method: "GET",
+              url: `repositories/${ref.repository}/issues/${segment(ref.id)}`,
+              maxBytes: 4 * 1024 * 1024,
+            })
+            .pipe(Effect.mapError(remoteError))).body,
+        );
       else if (ref.hostKind === "azure-devops") {
-        const scope = azureScope(ref);
-        text = yield* az(cwd, scope.organization, "wit", "workitems", {
-          project: scope.project,
-          id: ref.id,
-        });
+        const { organization, project } = azureScope(ref);
+        raw = yield* azureWorkItem(cwd, organization, project, ref.id);
       } else
         return yield* new IssueOperationError({
           reason: "unavailable",
           message: "This repository host does not expose issues.",
         });
-      const raw = yield* readRecord(text);
       yield* validateIssue(scope, raw);
       const detail = issueFromHost(scope, raw);
       const commentEntries: unknown[] = [];
@@ -452,12 +467,12 @@ export const makeIssueHost = (options: {
               parameters,
               undefined,
               "GET",
-              "7.1-preview.4",
+              "7.1-preview",
             ),
           );
           entries = (yield* validate(Schema.Struct({ comments: Schema.Array(record) }), response))
             .comments;
-          continuation = str(response.continuationToken) || null;
+          continuation = str(response.continuation_token) || null;
         }
         commentEntries.push(...entries);
         more =
@@ -548,21 +563,7 @@ export const makeIssueHost = (options: {
         const ids = (yield* validate(AzureQueryResponse, response)).workItems.map(
           (entry) => entry.id,
         );
-        entries = ids.length
-          ? (yield* validate(
-              AzureWorkItemList,
-              yield* readRecord(
-                yield* az(
-                  cwd,
-                  organization,
-                  "wit",
-                  "workitems",
-                  { project },
-                  { ids: ids.join(",") },
-                ),
-              ),
-            )).value
-          : [];
+        entries = ids.length ? yield* azureWorkItems(cwd, organization, project, ids) : [];
         if (ids.length === 100) nextCursor = String(ids.at(-1));
       } else
         return yield* new IssueOperationError({
@@ -708,6 +709,31 @@ export const makeIssueHost = (options: {
       } while (cursor);
       return { title: str(project.title), locator: resolved, columns, items };
     });
+    const azureWorkItems = Effect.fnUntraced(function* (
+      cwd: string,
+      organization: string,
+      project: string,
+      ids: ReadonlyArray<number>,
+    ) {
+      const batch = yield* readRecord(
+        yield* az(cwd, organization, "wit", "workItemsBatch", { project }, {}, { ids }, "POST"),
+      );
+      return (yield* validate(AzureWorkItemList, batch)).value;
+    });
+    const azureWorkItem = Effect.fnUntraced(function* (
+      cwd: string,
+      organization: string,
+      project: string,
+      id: string,
+    ) {
+      const [workItem] = yield* azureWorkItems(cwd, organization, project, [Number(id)]);
+      if (!workItem)
+        return yield* new IssueOperationError({
+          reason: "not-found",
+          message: "This work item no longer exists.",
+        });
+      return workItem;
+    });
     const azureBoardMetadata = Effect.fnUntraced(function* (
       cwd: string,
       locator: Extract<IssueBoardLocator, { kind: "azure-board" }>,
@@ -776,17 +802,14 @@ export const makeIssueHost = (options: {
         });
       const entries: unknown[] = [];
       for (let offset = 0; offset < ids.length; offset += 200) {
-        const batch = yield* readRecord(
-          yield* az(
+        entries.push(
+          ...(yield* azureWorkItems(
             cwd,
             locator.organization,
-            "wit",
-            "workitems",
-            { project: locator.project },
-            { ids: ids.slice(offset, offset + 200).join(",") },
-          ),
+            locator.project,
+            ids.slice(offset, offset + 200),
+          )),
         );
-        entries.push(...(yield* validate(AzureWorkItemList, batch)).value);
       }
       const items = yield* Effect.forEach(entries, (entry) =>
         Effect.gen(function* () {
@@ -870,33 +893,21 @@ export const makeIssueHost = (options: {
         }
         if (ref.hostKind === "azure-devops") {
           const { organization } = azureScope(ref);
-          const namedList = Schema.Struct({
-            value: Schema.Array(Schema.Struct({ id: TrimmedNonEmptyString, name: Schema.String })),
-          });
+          const named = Schema.Struct({ id: TrimmedNonEmptyString, name: Schema.String });
+          const namedList = Schema.Struct({ value: Schema.Array(named) });
           const pageSize = 100;
           const projects: { id: string; name: string }[] = [];
           for (let skip = 0; ; skip += pageSize) {
-            const output = yield* azure
-              .execute({
-                cwd,
-                args: [
-                  "devops",
-                  "project",
-                  "list",
-                  "--organization",
-                  `https://dev.azure.com/${segment(organization)}`,
-                  "--top",
-                  String(pageSize),
-                  "--skip",
-                  String(skip),
-                  "--only-show-errors",
-                  "--output",
-                  "json",
-                ],
-                maxOutputBytes: 4 * 1024 * 1024,
-              })
-              .pipe(Effect.mapError(remoteError));
-            const page = yield* validate(namedList, yield* readRecord(output.stdout));
+            const output = yield* azCli(cwd, organization, [
+              "devops",
+              "project",
+              "list",
+              "--top",
+              String(pageSize),
+              "--skip",
+              String(skip),
+            ]);
+            const page = yield* validate(namedList, yield* readRecord(output));
             projects.push(...page.value);
             if (page.value.length < pageSize) break;
           }
@@ -907,21 +918,20 @@ export const makeIssueHost = (options: {
               Effect.gen(function* () {
                 const teams: { id: string; name: string }[] = [];
                 for (let skip = 0; ; skip += pageSize) {
-                  const page = yield* validate(
-                    namedList,
-                    yield* readRecord(
-                      yield* az(
-                        cwd,
-                        organization,
-                        "core",
-                        "teams",
-                        { projectId: project.id },
-                        { $top: String(pageSize), $skip: String(skip) },
-                      ),
-                    ),
-                  );
-                  teams.push(...page.value);
-                  if (page.value.length < pageSize) break;
+                  const output = yield* azCli(cwd, organization, [
+                    "devops",
+                    "team",
+                    "list",
+                    "--project",
+                    project.id,
+                    "--top",
+                    String(pageSize),
+                    "--skip",
+                    String(skip),
+                  ]);
+                  const page = yield* validate(Schema.Array(named), yield* readJson(output));
+                  teams.push(...page);
+                  if (page.length < pageSize) break;
                 }
                 const boards: { title: string; locator: IssueBoardLocator }[] = [];
                 for (const team of teams) {
@@ -997,7 +1007,13 @@ export const makeIssueHost = (options: {
           );
           return;
         }
-        const metadata = yield* azureBoardMetadata(cwd, locator);
+        const [metadata, workItem] = yield* Effect.all(
+          [
+            azureBoardMetadata(cwd, locator),
+            azureWorkItem(cwd, locator.organization, locator.project, item.issue.ref.id),
+          ],
+          { concurrency: 2 },
+        );
         const column = arr(metadata.columns)
           .map(obj)
           .find((column) => column.id === columnId);
@@ -1006,12 +1022,6 @@ export const makeIssueHost = (options: {
             reason: "invalid",
             message: "The selected Azure board column no longer exists.",
           });
-        const workItem = yield* readRecord(
-          yield* az(cwd, locator.organization, "wit", "workitems", {
-            project: locator.project,
-            id: item.issue.ref.id,
-          }),
-        );
         yield* validate(AzureIssueResponse, workItem);
         const fields = obj(workItem.fields);
         const state = str(obj(column.stateMappings)[str(fields["System.WorkItemType"])]);
@@ -1021,23 +1031,19 @@ export const makeIssueHost = (options: {
             reason: "invalid",
             message: "The selected column does not map this work item type.",
           });
-        const patch: { op: string; path: string; value: unknown }[] = [
-          { op: "test", path: "/rev", value: num(workItem.rev) },
-          { op: "add", path: "/fields/System.State", value: state },
-          { op: "add", path: `/fields/${columnField}`, value: str(column.name) },
-        ];
         const doneField = str(obj(obj(metadata.fields).doneField).referenceName);
-        if (doneField) patch.push({ op: "add", path: `/fields/${doneField}`, value: false });
-        yield* az(
-          cwd,
-          locator.organization,
-          "wit",
-          "workitems",
-          { project: locator.project, id: item.issue.ref.id },
-          {},
-          patch,
-          "PATCH",
-        );
+        yield* azCli(cwd, locator.organization, [
+          "boards",
+          "work-item",
+          "update",
+          "--id",
+          item.issue.ref.id,
+          "--state",
+          state,
+          "--fields",
+          `${columnField}=${str(column.name)}`,
+          ...(doneField ? [`${doneField}=false`] : []),
+        ]);
       },
     );
     return { list, get, listBoards, board, move } satisfies IssueHostShape;

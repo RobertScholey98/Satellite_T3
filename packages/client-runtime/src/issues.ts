@@ -8,7 +8,10 @@ import {
 } from "@t3tools/contracts";
 import type { Atom } from "effect/unstable/reactivity";
 import type { EnvironmentRegistry } from "./connection/registry.ts";
-import { createEnvironmentRpcCommand } from "./state/runtime.ts";
+import {
+  createEnvironmentRpcCommand,
+  createEnvironmentRpcSubscriptionAtomFamily,
+} from "./state/runtime.ts";
 
 export function createIssuesEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
@@ -26,6 +29,10 @@ export function createIssuesEnvironmentAtoms<R, E>(
     openBoard: createEnvironmentRpcCommand(runtime, {
       label: "issues:boards:open",
       tag: WS_METHODS.issuesBoardsOpen,
+    }),
+    boardSync: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:issues:board-sync",
+      tag: WS_METHODS.issuesBoardsSubscribe,
     }),
     configureBoard: createEnvironmentRpcCommand(runtime, {
       label: "issues:boards:configure",
