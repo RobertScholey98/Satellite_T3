@@ -5,6 +5,16 @@
 This document is a reference for upstream T3 Code's stable and nightly release infrastructure.
 SatelliteT3 removes those upstream workflows and does not publish through them.
 
+## SatelliteT3 releases
+
+In GitHub Actions, open **SatelliteT3 Release**, choose **Run workflow**, select the
+branch to build, and enter a version without the `v` prefix, such as `0.1.3` or
+`0.1.3-beta.1`. The workflow builds that branch's commit, then creates the version
+tag and publishes the Windows installer, updater files, and checksums after the
+build and checks succeed. An existing tag must point to the commit being built.
+Pushing a `vX.Y.Z` tag still starts a release. Versions with `-alpha.N`, `-beta.N`,
+or `-rc.N` publish as prereleases and do not replace the latest stable release.
+
 ## What the workflow does
 
 - Workflow: `.github/workflows/release.yml`

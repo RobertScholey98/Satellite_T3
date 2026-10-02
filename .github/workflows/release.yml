@@ -6,8 +6,8 @@ on:
       - "v*.*.*"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing version tag to release, e.g. v0.1.0 or v0.1.0-alpha.1"
+      version:
+        description: "Version to release without v, e.g. 0.1.3 or 0.1.3-beta.1. Builds the selected branch and creates its tag."
         required: true
         type: string
 
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: satellite-release-${{ inputs.tag || github.ref_name }}
+  group: satellite-release-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -30,11 +30,14 @@ jobs:
     env:
       T3CODE_DESKTOP_DEV: "0"
       T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ steps.commit.outputs.sha }}
     steps:
       - name: Validate version tag
         id: version
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
         run: |
           $tag = $env:RELEASE_TAG
           if ($tag -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-(alpha|beta|rc)\.(0|[1-9]\d*))?$') {
@@ -43,14 +46,32 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "version=$($tag.Substring(1))" >> $env:GITHUB_OUTPUT
 
-      - name: Checkout release tag
+      - name: Checkout release commit
         uses: actions/checkout@v6
         with:
-          ref: refs/tags/${{ steps.version.outputs.tag }}
+          ref: ${{ github.sha }}
           sparse-checkout: |
             /*
             !/.repos/
           sparse-checkout-cone-mode: false
+
+      - name: Resolve release commit
+        id: commit
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $commit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw "Failed to resolve release commit" }
+          $tag = $env:RELEASE_TAG
+          $tagRefs = @(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")
+          if ($LASTEXITCODE -ne 0) { throw "Failed to check existing release tag" }
+          # Annotated tags have a separate peeled ref pointing to the commit.
+          $existingRef = $tagRefs | Where-Object { $_.EndsWith("refs/tags/$tag^{}") } | Select-Object -First 1
+          if (-not $existingRef) { $existingRef = $tagRefs | Select-Object -First 1 }
+          if ($existingRef -and $existingRef.Split()[0] -ne $commit) {
+            throw "$tag already points to a different commit. Choose a new version or run the workflow from that tag."
+          }
+          "sha=$commit" >> $env:GITHUB_OUTPUT
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -156,10 +177,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ needs.windows.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.windows.outputs.commit }}
+          RELEASE_EVENT: ${{ github.event_name }}
         shell: bash
         run: |
-          args=(--verify-tag --generate-notes --title "SatelliteT3 $RELEASE_TAG")
+          args=(--target "$RELEASE_COMMIT" --generate-notes --title "SatelliteT3 $RELEASE_TAG")
+          if [[ "$RELEASE_EVENT" != "workflow_dispatch" ]]; then
+            args+=(--verify-tag)
+          fi
           if [[ "$RELEASE_TAG" == *-* ]]; then
             args+=(--prerelease --latest=false)
           else
