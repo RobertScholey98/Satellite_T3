@@ -1,9 +1,8 @@
 import type { IssueBoardSync } from "@t3tools/contracts";
 
+import { useClientSettings } from "~/hooks/useSettings";
+import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "~/timestampFormat";
 import { Button } from "../ui/button";
-
-const time = (at: string) =>
-  new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 export function BoardSyncStatus({
   sync,
@@ -14,31 +13,31 @@ export function BoardSyncStatus({
   retryDisabled: boolean;
   onRetry: () => void;
 }) {
-  if (!sync || sync.revision === 0) return null;
-  if (sync.syncing)
-    return (
-      <span role="status" className="text-xs text-muted-foreground">
-        Syncing…
-      </span>
-    );
-  if (sync.failure)
-    return (
-      <span role="status" className="flex items-center gap-1 text-xs text-muted-foreground">
-        <span title={new Date(sync.failure.at).toLocaleString()}>
-          Sync failed {time(sync.failure.at)}. {sync.failure.message}
-        </span>
-        <Button size="micro" variant="link" disabled={retryDisabled} onClick={onRetry}>
-          Retry
-        </Button>
-      </span>
-    );
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
+  if (!sync) return null;
+  const failure = sync.syncing ? null : sync.failure;
+  const at = failure?.at ?? sync.syncedAt;
+  const shown = formatDayAwareTimestamp(at, timestampFormat);
+  const label = sync.syncing
+    ? "Syncing…"
+    : failure
+      ? `Sync failed ${shown}. ${failure.message}`
+      : `Synced ${shown}`;
   return (
     <span
       role="status"
-      title={new Date(sync.syncedAt).toLocaleString()}
+      title={sync.syncing ? undefined : formatChatTimestampTooltip(at, timestampFormat)}
       className="text-xs text-muted-foreground"
     >
-      Synced {time(sync.syncedAt)}
+      {label}
+      {failure ? (
+        <>
+          {" "}
+          <Button size="micro" variant="link" disabled={retryDisabled} onClick={onRetry}>
+            Retry
+          </Button>
+        </>
+      ) : null}
     </span>
   );
 }

@@ -33,6 +33,10 @@ vi.mock("~/state/issues", () => ({
   issuesEnvironment: commands,
   useIssueBoardSync: () => undefined,
 }));
+vi.mock("~/hooks/useSettings", () => ({
+  useClientSettings: <T,>(select: (settings: { timestampFormat: "24-hour" }) => T) =>
+    select({ timestampFormat: "24-hour" }),
+}));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("./IssueStartDialog", () => ({ IssueStartDialog: () => null }));

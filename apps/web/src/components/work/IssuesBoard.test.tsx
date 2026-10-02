@@ -42,6 +42,10 @@ vi.mock("~/state/issues", () => ({
   issuesEnvironment: commands,
   useIssueBoardSync: (ref: unknown) => (ref ? state.boardSync : undefined),
 }));
+vi.mock("~/hooks/useSettings", () => ({
+  useClientSettings: <T,>(select: (settings: { timestampFormat: "24-hour" }) => T) =>
+    select({ timestampFormat: "24-hour" }),
+}));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
 vi.mock("~/hooks/useLiveRefresh", () => ({ useLiveRefresh: () => {} }));
 vi.mock("~/lib/utils", async (importOriginal) => ({
