@@ -55,6 +55,7 @@ import {
   detectSourceControlProviderFromRemoteUrl,
 } from "@t3tools/shared/sourceControl";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
+import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
 
 export interface AttachIssueAttemptInput {
   readonly link: IssueAttemptLink;
@@ -197,6 +198,7 @@ export const issueBoardId = (projectId: ProjectId, locator: IssueBoardLocator) =
 export const makeIssueService = (options: {
   readonly host: IssueHostShape;
   readonly environmentId: EnvironmentId;
+  readonly resolveRepositoryIdentity?: RepositoryIdentityResolver["Service"]["resolve"];
   readonly getProject: (
     projectId: ProjectId,
   ) => Effect.Effect<OrchestrationProjectShell | null, IssueOperationError>;
@@ -218,7 +220,16 @@ export const makeIssueService = (options: {
       projectId: ProjectId,
     ): Effect.fn.Return<IssueHostScope, IssueOperationError> {
       const value = yield* project(projectId);
-      const identity = value.repositoryIdentity;
+      // Imported projects can lack a saved identity even when their checkout has a remote.
+      let identity = value.repositoryIdentity;
+      if (
+        (!identity?.provider || identity.provider === "unknown") &&
+        options.resolveRepositoryIdentity
+      ) {
+        identity =
+          (yield* options.resolveRepositoryIdentity(value.workspaceRoot, { refresh: true })) ??
+          identity;
+      }
       const repository =
         identity?.provider === "azure-devops"
           ? identity.displayName?.split("/_git/")[0]
@@ -880,8 +891,10 @@ export const make = Effect.gen(function* () {
   const host = yield* IssueHost;
   const projection = yield* ProjectionSnapshotQuery;
   const environment = yield* ServerEnvironmentIdentity;
+  const repositoryIdentityResolver = yield* RepositoryIdentityResolver;
   return yield* makeIssueService({
     host,
+    resolveRepositoryIdentity: repositoryIdentityResolver.resolve,
     environmentId: yield* environment.getEnvironmentId,
     getProject: (id) =>
       projection
