@@ -1,4 +1,6 @@
 import * as NodeCrypto from "node:crypto";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -58,6 +60,7 @@ import {
   sourceControlRepositorySelector,
   detectSourceControlProviderFromRemoteUrl,
 } from "@t3tools/shared/sourceControl";
+import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 
 export interface AttachIssueAttemptInput {
@@ -123,6 +126,8 @@ export interface IssueServiceShape {
     input: ObserveIssuePullRequestInput,
   ) => Effect.Effect<void, IssueOperationError>;
   readonly drain: Effect.Effect<void, IssueOperationError>;
+  /** Resolves once every board refresh requested so far has stored, dropped or failed its read. */
+  readonly drainRefreshes: Effect.Effect<void>;
 }
 export class IssueService extends Context.Service<IssueService, IssueServiceShape>()(
   "t3/issues/IssueService",
@@ -147,6 +152,8 @@ const RemoteBoard = Schema.Struct({
   columns: Schema.Array(IssueBoardColumn),
   items: Schema.Array(IssueBoardItem),
 });
+/** A stored board younger than this, counted from its last refresh attempt, opens without one. */
+const ISSUE_BOARD_FRESH_WINDOW_MS = 30_000;
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
   Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(storageError));
 interface BoardRow {
@@ -228,6 +235,7 @@ export const makeIssueService = (options: {
       effect.pipe(Effect.mapError(preserveError));
     const lock = <A, E>(effect: Effect.Effect<A, E>) => protect(mutex.withPermits(1)(effect));
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => protect(sql.withTransaction(effect));
+    const syncing = new Set<string>();
     const project = Effect.fnUntraced(function* (id: ProjectId) {
       const value = yield* options.getProject(id);
       if (!value) return yield* error("not-found", "The selected project is unavailable.");
@@ -340,14 +348,31 @@ export const makeIssueService = (options: {
         yield* sql<SnapshotRow>`SELECT * FROM issue_board_snapshots WHERE board_id=${boardId}`;
       return rows[0];
     });
-    /** Stores a host read of a configured board. Callers hold the mutex, so the write is unconditional. */
-    const storeSnapshot = Effect.fnUntraced(function* (boardId: string, remote: RemoteIssueBoard) {
+    /**
+     * Stores a host read of a configured board. Callers holding the mutex write unconditionally;
+     * the unlocked refresh passes the revision it started from and loses to any write since.
+     */
+    const storeSnapshot = Effect.fnUntraced(function* (
+      boardId: string,
+      remote: RemoteIssueBoard,
+      expectedRevision?: number,
+    ) {
       const board = json(remote);
+      const contentHash = digest(board);
+      const at = yield* now;
+      if (expectedRevision !== undefined) {
+        const rows = yield* sql`UPDATE issue_board_snapshots SET
+        revision=CASE WHEN content_hash=${contentHash} THEN revision ELSE revision+1 END,
+        content_hash=${contentHash},board_json=${board},synced_at=${at},failed_at=NULL,failure=NULL
+        WHERE board_id=${boardId} AND revision=${expectedRevision} RETURNING board_id`;
+        return rows.length > 0;
+      }
       yield* sql`INSERT INTO issue_board_snapshots(board_id,revision,content_hash,board_json,synced_at)
-      SELECT ${boardId},1,${digest(board)},${board},${yield* now} WHERE EXISTS (SELECT 1 FROM issue_boards WHERE id=${boardId})
+      SELECT ${boardId},1,${contentHash},${board},${at} WHERE EXISTS (SELECT 1 FROM issue_boards WHERE id=${boardId})
       ON CONFLICT(board_id) DO UPDATE SET
         revision=CASE WHEN issue_board_snapshots.content_hash=excluded.content_hash THEN issue_board_snapshots.revision ELSE issue_board_snapshots.revision+1 END,
         content_hash=excluded.content_hash,board_json=excluded.board_json,synced_at=excluded.synced_at,failed_at=NULL,failure=NULL`;
+      return true;
     });
     const bumpRevision = (boardId: string) =>
       sql`UPDATE issue_board_snapshots SET revision=revision+1 WHERE board_id=${boardId}`;
@@ -360,10 +385,44 @@ export const makeIssueService = (options: {
       yield* storeSnapshot(boardId, remote);
       return remote;
     });
+    /** One host read per queued board, retried once when a locked write landed during the read. */
+    const refreshBoard = (boardId: string) =>
+      Effect.gen(function* () {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const row = yield* readSnapshot(boardId);
+          if (!row) return;
+          const board = yield* readBoard(boardId);
+          const remote = yield* project(board.projectId).pipe(
+            Effect.flatMap((value) => options.host.board(value.workspaceRoot, board.locator)),
+            Effect.result,
+          );
+          if (remote._tag === "Failure") {
+            yield* sql`UPDATE issue_board_snapshots SET failed_at=${yield* now},failure=${remote.failure.message}
+            WHERE board_id=${boardId} AND revision=${row.revision}`;
+            return;
+          }
+          if (yield* storeSnapshot(boardId, remote.success, row.revision)) return;
+        }
+      }).pipe(
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("issue board refresh failed", { cause: Cause.pretty(cause) }),
+        ),
+        Effect.ensuring(Effect.sync(() => syncing.delete(boardId))),
+      );
+    const refreshes = yield* makeDrainableWorker(refreshBoard);
+    /** A board stays in `syncing` until its refresh finishes, so requests meanwhile share it. */
+    const requestRefresh = (boardId: string) =>
+      Effect.suspend(() => {
+        if (syncing.has(boardId)) return Effect.void;
+        syncing.add(boardId);
+        return refreshes.enqueue(boardId);
+      });
     const syncOf = (row: SnapshotRow): IssueBoardSync => ({
       revision: row.revision,
       syncedAt: row.synced_at,
-      syncing: false,
+      syncing: syncing.has(row.board_id),
       failure: row.failed_at === null ? null : { at: row.failed_at, message: row.failure ?? "" },
     });
     const enqueueMove = Effect.fnUntraced(function* (
@@ -478,6 +537,16 @@ export const makeIssueService = (options: {
           yield* locked ? store : lock(store);
           row = yield* readSnapshot(board.id);
           if (!row) return yield* error("not-found", "This board is no longer connected.");
+        } else {
+          const attempted = Math.max(
+            Date.parse(row.synced_at),
+            row.failed_at === null ? 0 : Date.parse(row.failed_at),
+          );
+          if (
+            input.refresh ||
+            (yield* Clock.currentTimeMillis) - attempted > ISSUE_BOARD_FRESH_WINDOW_MS
+          )
+            yield* requestRefresh(board.id);
         }
         remote = yield* parse(RemoteBoard, row.board_json);
         sync = syncOf(row);
@@ -950,6 +1019,7 @@ export const makeIssueService = (options: {
       firstPromptSent,
       observePullRequest,
       drain: lock(flush),
+      drainRefreshes: refreshes.drain,
     } satisfies IssueServiceShape;
   });
 export const make = Effect.gen(function* () {
