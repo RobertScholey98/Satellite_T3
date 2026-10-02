@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -12,6 +14,7 @@ import {
   IssueOperationError,
   type IssueRef,
   type IssueBoardLocator,
+  type IssueBoardSyncEvent,
   type OrchestrationProjectShell,
 } from "@t3tools/contracts";
 import migration from "../persistence/Migrations/056_IssueBoards.ts";
@@ -294,6 +297,81 @@ describe("IssueService", () => {
         });
         assert.deepStrictEqual(recovered.items.map((item) => item.columnId), ["progress"]);
         assert.strictEqual(test.reads(), 3);
+      }),
+    ),
+  );
+  it.effect("a subscription follows the stored revision through a refresh and a move", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const events: IssueBoardSyncEvent[] = [];
+        const subscribed = yield* Deferred.make<void>();
+        const collector = yield* test.service
+          .subscribeBoard({ projectId, boardId: test.boardId })
+          .pipe(
+            Stream.take(6),
+            Stream.runForEach((event) =>
+              Effect.sync(() => events.push(event)).pipe(
+                Effect.andThen(Deferred.succeed(subscribed, undefined)),
+              ),
+            ),
+            Effect.forkChild,
+          );
+        yield* Deferred.await(subscribed);
+        yield* TestClock.adjust("31 seconds");
+        yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        yield* test.service.drainRefreshes;
+        yield* test.service.move({
+          requestId: "move-while-subscribed",
+          boardId: test.boardId,
+          issue,
+          columnId: "progress",
+        });
+        yield* Fiber.join(collector);
+        const later = "1970-01-01T00:00:31.000Z";
+        const sync = (revision: number, syncedAt: string, syncing: boolean) => ({
+          boardId: test.boardId,
+          sync: { revision, syncedAt, syncing, failure: null },
+        });
+        assert.deepStrictEqual(events, [
+          sync(1, epoch, false),
+          sync(1, epoch, true),
+          sync(1, later, true),
+          sync(1, later, false),
+          sync(2, later, false),
+          sync(3, later, false),
+        ]);
+      }),
+    ),
+  );
+  it.effect("disconnecting during a refresh ends subscriptions and leaves nothing stored", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const subscribe = test.service
+          .subscribeBoard({ projectId, boardId: test.boardId })
+          .pipe(Stream.runCollect);
+        yield* TestClock.adjust("31 seconds");
+        const held = yield* test.hold;
+        yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        yield* Deferred.await(held.started);
+        const subscriber = yield* Effect.forkChild(subscribe);
+        const disconnect = { requestId: "disconnect-during-refresh", boardId: test.boardId };
+        yield* test.service.disconnectBoard(disconnect);
+        yield* Deferred.succeed(held.release, undefined);
+        yield* test.service.drainRefreshes;
+        assert.deepStrictEqual((yield* Fiber.join(subscriber)).at(-1), {
+          boardId: test.boardId,
+          sync: null,
+        });
+        yield* test.service.disconnectBoard(disconnect);
+        assert.deepStrictEqual(yield* subscribe, [{ boardId: test.boardId, sync: null }]);
+        const reopened = yield* test.service
+          .openBoard({ projectId, boardId: test.boardId })
+          .pipe(Effect.result);
+        assert.strictEqual(reopened._tag, "Failure");
+        if (reopened._tag === "Failure") assert.strictEqual(reopened.failure.reason, "not-found");
+        assert.strictEqual(test.reads(), 2);
       }),
     ),
   );
