@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
 import * as FileSystem from "effect/FileSystem";
@@ -7,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { type IssueBoardLocator, type IssueRef } from "@t3tools/contracts";
 import { makeIssueHost, type IssueHostScope } from "./IssueHost.ts";
+import { CredentialScope } from "../sourceControl/SourceControlRateLimit.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -63,6 +65,101 @@ const withNode = <A, E>(
   effect: Effect.Effect<A, E, FileSystem.FileSystem | import("effect/Path").Path>,
 ) => effect.pipe(Effect.provide(NodeServices.layer));
 describe("IssueHost", () => {
+  it.effect("discovers teams concurrently with a bounded number of requests", () =>
+    withNode(
+      Effect.gen(function* () {
+        let active = 0;
+        let peak = 0;
+        const api = yield* host({
+          azure: ({ args }) =>
+            Effect.gen(function* () {
+              if (args.slice(0, 3).join(" ") === "devops project list")
+                return { value: [{ id: "project", name: "Project" }] };
+              if (args.slice(0, 3).join(" ") === "devops team list")
+                return Array.from({ length: 8 }, (_, i) => ({
+                  id: `team-${i}`,
+                  name: `Team ${i}`,
+                }));
+              active++;
+              peak = Math.max(peak, active);
+              yield* Effect.yieldNow;
+              active--;
+              return { value: [{ id: "board", name: "Board" }] };
+            }),
+        });
+        const results = yield* api.listBoards({
+          cwd: "/repo",
+          ref: { ...issue, hostKind: "azure-devops", repository: "acme/platform" },
+        });
+        assert.strictEqual(results.length, 8);
+        assert.isAbove(peak, 1);
+        assert.isAtMost(peak, 3);
+        assert.deepStrictEqual(
+          results.map(({ title }) => title),
+          Array.from({ length: 8 }, (_, i) => `Project / Team ${i} / Board`),
+        );
+      }),
+    ),
+  );
+  it.effect("reuses Azure board discovery until expiry and separates credential scopes", () =>
+    withNode(
+      Effect.gen(function* () {
+        let requests = 0;
+        const api = yield* host({
+          azure: ({ args }) =>
+            Effect.sync(() => {
+              requests++;
+              if (args.slice(0, 3).join(" ") === "devops project list")
+                return { value: [{ id: "project", name: "Project" }] };
+              if (args.slice(0, 3).join(" ") === "devops team list")
+                return [{ id: "team", name: "Team" }];
+              return { value: [{ id: "board", name: "Board" }] };
+            }),
+        });
+        const input = {
+          cwd: "/repo",
+          ref: {
+            ...issue,
+            hostKind: "azure-devops" as const,
+            host: "dev.azure.com",
+            repository: "acme/platform",
+          },
+        };
+        const first = yield* api.listBoards(input);
+        assert.strictEqual(first.length, 1);
+        assert.deepStrictEqual(yield* api.listBoards({ ...input, ref: { ...input.ref } }), first);
+        assert.strictEqual(requests, 3);
+        yield* api.listBoards(input).pipe(Effect.provideService(CredentialScope, "other-account"));
+        assert.strictEqual(requests, 6);
+        yield* TestClock.adjust("61 seconds");
+        yield* Effect.all([api.listBoards(input), api.listBoards(input)], {
+          concurrency: "unbounded",
+        });
+        assert.strictEqual(requests, 9);
+      }),
+    ),
+  );
+  it.effect("does not cache failed Azure board discovery", () =>
+    withNode(
+      Effect.gen(function* () {
+        let calls = 0;
+        const api = yield* host({
+          azure: () =>
+            Effect.sync(() => {
+              calls++;
+              return calls === 1 ? {} : { value: [] };
+            }),
+        });
+        const input = {
+          cwd: "/repo",
+          ref: { ...issue, hostKind: "azure-devops" as const, repository: "acme/platform" },
+        };
+        assert.strictEqual((yield* api.listBoards(input).pipe(Effect.result))._tag, "Failure");
+        assert.deepStrictEqual(yield* api.listBoards(input), []);
+        assert.strictEqual(calls, 2);
+      }),
+    ),
+  );
   it.effect("paginates Azure projects and teams instead of dropping later boards", () =>
     withNode(
       Effect.gen(function* () {
