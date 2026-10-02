@@ -34,11 +34,13 @@ import { useProjects } from "~/state/entities";
 
 import { useEnvironments } from "~/state/environments";
 
-import { issuesEnvironment } from "~/state/issues";
+import { issuesEnvironment, useIssueBoardSync } from "~/state/issues";
 
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { randomUUID } from "~/lib/utils";
+
+import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 
 import { SatelliteLoader } from "../SatelliteLoader";
 import { Button } from "../ui/button";
@@ -88,6 +90,7 @@ import {
   DialogFooter,
 } from "../ui/dialog";
 
+import { BoardSyncStatus } from "./BoardSyncStatus";
 import { IssueStartDialog } from "./IssueStartDialog";
 import { IssueReadyColumnsPicker } from "./IssueReadyColumnsPicker";
 
@@ -272,9 +275,6 @@ export function IssuesBoard({
     }
   }, []);
   useEffect(() => {
-    onSyncChange?.(syncCount > 0);
-  }, [onSyncChange, syncCount]);
-  useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
@@ -338,36 +338,32 @@ export function IssuesBoard({
 
   const navigate = useNavigate();
 
+  /**
+   * Opens a board from the server's stored copy. `force` asks the server to read the host now;
+   * `quiet` reopens after a server-side change without counting as a request in flight.
+   */
   const refresh = useCallback(
-    async (boardId: string) => {
+    async (boardId: string, options: { force?: boolean; quiet?: boolean } = {}) => {
       if (!scope || !connected) return;
 
       const current = ++generation.current;
 
-      setPending(true);
-      setError(null);
+      if (!options.quiet) setError(null);
+      const request = () =>
+        open({
+          environmentId: scope.environmentId,
+          input: { projectId: scope.id, boardId, ...(options.force ? { refresh: true } : {}) },
+        });
 
       try {
-        const result = unwrapWorkResult(
-          await trackSync(() =>
-            open({
-              environmentId: scope.environmentId,
-              input: {
-                projectId: scope.id,
-                boardId,
-              },
-            }),
-          ),
-        );
+        const result = unwrapWorkResult(await (options.quiet ? request() : trackSync(request)));
 
         if (current === generation.current) {
           setView(result);
           return result;
         }
       } catch (failure) {
-        if (current === generation.current) setError(workError(failure));
-      } finally {
-        if (current === generation.current) setPending(false);
+        if (current === generation.current && !options.quiet) setError(workError(failure));
       }
     },
     [open, scope, connected, trackSync],
@@ -449,10 +445,16 @@ export function IssuesBoard({
         if (current === scopeGeneration.current) setError(workError(failure));
       });
 
-    setBoardDiscoveryPending(true);
-    setBoardDiscoveryError(null);
+    setBoardDiscoveryPending(false);
+    // Both reads are local to the server. A board named by the URL opens alongside the listing
+    // instead of after it; the listing then decides whether that board is still connected.
+    const targetBoardId = activeTarget?.boardId;
+    const opening = targetBoardId ? refresh(targetBoardId) : undefined;
     void trackSync(() =>
-      list({ environmentId: scope.environmentId, input: { projectId: scope.id } }),
+      list({
+        environmentId: scope.environmentId,
+        input: { projectId: scope.id, connectedOnly: true },
+      }),
     )
       .then(unwrapWorkResult)
       .then(async (result) => {
@@ -460,11 +462,8 @@ export function IssuesBoard({
 
         setBoards(result);
 
-        // Discovery includes every board available to the account. Only a saved
-        // mapping connects one to this local project; browsing cannot create that link.
         const requested = result.find(
-          (board) =>
-            board.mapping !== null && (!activeTarget?.boardId || board.id === activeTarget.boardId),
+          (board) => board.mapping !== null && (!targetBoardId || board.id === targetBoardId),
         );
         if (requested) {
           if (activeTarget?.boardId !== requested.id || activeTarget?.projectId !== scope.id)
@@ -473,26 +472,21 @@ export function IssuesBoard({
               projectId: scope.id,
               boardId: requested.id,
             });
-          await refresh(requested.id);
+          await (opening ?? refresh(requested.id));
         } else {
+          generation.current++;
           setView(null);
-          if (activeTarget?.boardId)
+          if (targetBoardId)
             setError(
               "The requested board is unavailable. Choose another board or connect it again.",
             );
         }
       })
       .catch((failure) => {
-        if (current === scopeGeneration.current) {
-          setBoardDiscoveryError(workError(failure));
-          setError(workError(failure));
-        }
+        if (current === scopeGeneration.current) setError(workError(failure));
       })
       .finally(() => {
-        if (current === scopeGeneration.current) {
-          setPending(false);
-          setBoardDiscoveryPending(false);
-        }
+        if (current === scopeGeneration.current) setPending(false);
       });
 
     return () => {
@@ -579,6 +573,45 @@ export function IssuesBoard({
     select,
     activeTarget,
   ]);
+
+  const forgetBoard = (boardId: string) => {
+    if (!scope) return;
+    setView(null);
+    setBoards((current) =>
+      current.map((board) => (board.id === boardId ? { ...board, mapping: null } : board)),
+    );
+    setDismissedTargetKey(targetKey);
+    onSelectBoard?.({ environmentId: scope.environmentId, projectId: scope.id });
+  };
+
+  const serverSync = useIssueBoardSync(
+    view && scope && connected
+      ? { environmentId: scope.environmentId, projectId: scope.id, boardId: view.board.id }
+      : null,
+  );
+  const reopened = useRef<{ boardId: string; revision: number } | null>(null);
+  useEffect(() => {
+    // Views from servers that predate stored boards carry no sync and never subscribe usefully.
+    if (!view?.sync || serverSync === undefined) return;
+    if (serverSync === null) {
+      forgetBoard(view.board.id);
+      return;
+    }
+    const requested = reopened.current?.boardId === view.board.id ? reopened.current.revision : 0;
+    if (serverSync.revision <= Math.max(view.sync.revision, requested)) return;
+    reopened.current = { boardId: view.board.id, revision: serverSync.revision };
+    void refresh(view.board.id, { quiet: true });
+  }, [serverSync]);
+
+  const displaySync = serverSync ?? view?.sync;
+  const syncing = syncCount > 0 || displaySync?.syncing === true;
+  useEffect(() => {
+    onSyncChange?.(syncing);
+  }, [onSyncChange, syncing]);
+
+  useLiveRefresh(view && connected ? () => void refresh(view.board.id, { quiet: true }) : null, {
+    key: `issues:${dataKey}:${view?.board.id ?? "none"}`,
+  });
 
   const moveItem = async (item: IssueBoardItem, columnId: string) => {
     if (!scope || !connected || !view || item.columnId === columnId) return;
@@ -684,9 +717,30 @@ export function IssuesBoard({
         });
     }
   };
+  /** Host discovery can take seconds on Azure DevOps, so only the Connect board dialog waits. */
+  const loadDiscovery = () => {
+    if (!scope || !connected) return;
+    const current = scopeGeneration.current;
+    setBoardDiscoveryPending(true);
+    setBoardDiscoveryError(null);
+    void trackSync(() =>
+      list({ environmentId: scope.environmentId, input: { projectId: scope.id } }),
+    )
+      .then(unwrapWorkResult)
+      .then((result) => {
+        if (current === scopeGeneration.current) setBoards(result);
+      })
+      .catch((failure) => {
+        if (current === scopeGeneration.current) setBoardDiscoveryError(workError(failure));
+      })
+      .finally(() => {
+        if (current === scopeGeneration.current) setBoardDiscoveryPending(false);
+      });
+  };
   const connectBoard = () => {
     setMode("board");
     setConfiguration({ initial: null, scopeGeneration: scopeGeneration.current });
+    loadDiscovery();
   };
 
   return (
@@ -794,6 +848,13 @@ export function IssuesBoard({
             </>
           ) : null}
         </WorkspaceBreadcrumb>
+        {mode === "board" && view ? (
+          <BoardSyncStatus
+            sync={displaySync}
+            retryDisabled={!connected}
+            onRetry={() => void refresh(view.board.id, { force: true })}
+          />
+        ) : null}
         <div className="ml-auto flex items-center gap-1" role="group" aria-label="Issues view">
           <Button
             size="icon-sm"
@@ -837,7 +898,7 @@ export function IssuesBoard({
                 <>
                   <MenuItem
                     disabled={!connected || pending}
-                    onClick={() => void refresh(view.board.id)}
+                    onClick={() => void refresh(view.board.id, { force: true })}
                   >
                     Refresh board
                   </MenuItem>
@@ -855,18 +916,7 @@ export function IssuesBoard({
                       })
                         .then(unwrapWorkResult)
                         .then(() => {
-                          if (currentScope !== scopeGeneration.current) return;
-                          setView(null);
-                          setBoards((current) =>
-                            current.map((board) =>
-                              board.id === view.board.id ? { ...board, mapping: null } : board,
-                            ),
-                          );
-                          setDismissedTargetKey(targetKey);
-                          onSelectBoard?.({
-                            environmentId: scope.environmentId,
-                            projectId: scope.id,
-                          });
+                          if (currentScope === scopeGeneration.current) forgetBoard(view.board.id);
                         })
                         .catch((failure) => {
                           if (currentScope === scopeGeneration.current)

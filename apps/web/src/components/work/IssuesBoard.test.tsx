@@ -43,6 +43,7 @@ vi.mock("~/state/issues", () => ({
   useIssueBoardSync: (ref: unknown) => (ref ? state.boardSync : undefined),
 }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
+vi.mock("~/hooks/useLiveRefresh", () => ({ useLiveRefresh: () => {} }));
 vi.mock("~/lib/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("~/lib/utils")>()),
   randomUUID: () => "request-id",
@@ -476,9 +477,15 @@ describe("project board selection", () => {
 
   it("does not restore another board for an explicit unconnected target", async () => {
     restoreSavedBoard();
+    commands.openBoard
+      .mockReset()
+      .mockRejectedValue(new Error("This board is no longer connected."));
     await mount({ environmentId, projectId: firstProjectId, boardId: discovered.id });
 
-    expect(commands.openBoard).not.toHaveBeenCalled();
+    expect(commands.openBoard.mock.calls.map(([call]) => call.input)).toEqual([
+      { projectId: firstProjectId, boardId: discovered.id },
+    ]);
+    expect(text(renderer!.root)).toContain("The requested board is unavailable");
     expect(boardText()).toBe("");
     expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
   });
@@ -735,6 +742,7 @@ describe("cached issues navigation", () => {
     await mount({ environmentId, projectId: firstProjectId, boardId: saved.id });
     expect(boardText()).toContain(saved.title + " issue");
     commands.listBoards.mockReturnValue(new Promise(() => {}));
+    commands.openBoard.mockReturnValue(new Promise(() => {}));
     await act(async () => {
       renderer!.update(
         <IssuesBoard
@@ -800,6 +808,7 @@ describe("cached issues navigation", () => {
     });
     await act(async () => renderer!.unmount());
     commands.listBoards.mockReturnValue(new Promise(() => {}));
+    commands.openBoard.mockReturnValue(new Promise(() => {}));
     await mount({ environmentId, projectId: firstProjectId, boardId: "another-board" });
     expect(boardText()).toBe("");
     expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
