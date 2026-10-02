@@ -4,10 +4,14 @@ import * as Electron from "electron";
 import * as NodeFS from "node:fs";
 import { expandSatelliteWindow, installSatellitePill } from "./SatellitePill.ts";
 import { loadWindowsPillDrag } from "./WindowsPillDrag.ts";
+import { installWindowsDoubleControl } from "./WindowsDoubleControl.ts";
 import * as Channels from "./channels.ts";
 
 vi.mock("./WindowsPillDrag.ts", () => ({
   loadWindowsPillDrag: vi.fn(async () => vi.fn(() => true)),
+}));
+vi.mock("./WindowsDoubleControl.ts", () => ({
+  installWindowsDoubleControl: vi.fn(async () => vi.fn()),
 }));
 vi.mock("node:fs", () => ({
   readFileSync: vi.fn(() => '{"x":100,"y":100}'),
@@ -176,6 +180,39 @@ describe("independent native Satellite surfaces", () => {
     expect(main.setResizable).toHaveBeenCalledWith(true);
     expect(main.setShape).not.toHaveBeenCalled();
     expect(pill.webContents.setZoomFactor).toHaveBeenCalledWith(1);
+  });
+  it("opens the pill and toggles pinning only in a focused workspace", () => {
+    const shortcut = vi.mocked(installWindowsDoubleControl).mock.calls[0]![1];
+    collapse();
+    shortcut();
+    expect(reveal).toHaveBeenCalledOnce();
+    expect(main.isVisible()).toBe(true);
+    expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
+      mode: "workspace",
+      pinned: false,
+    });
+    shortcut();
+    expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
+      mode: "workspace",
+      pinned: true,
+    });
+    shortcut();
+    expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
+      mode: "workspace",
+      pinned: false,
+    });
+    main.blur();
+    vi.mocked(main.webContents.send).mockClear();
+    shortcut();
+    expect(main.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it("disposes the keyboard listener on shutdown", async () => {
+    const dispose = await vi.mocked(installWindowsDoubleControl).mock.results[0]!.value;
+    Electron.app.emit("before-quit");
+    expect(dispose).toHaveBeenCalledOnce();
+    main.destroy();
+    expect(dispose).toHaveBeenCalledOnce();
   });
   it("shows the loader at first paint before the workspace renderer is ready", () => {
     main.destroy();

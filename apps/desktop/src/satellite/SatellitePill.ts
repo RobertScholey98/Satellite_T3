@@ -16,6 +16,7 @@ import {
   unavailablePillState,
 } from "./pillModel.ts";
 import { loadWindowsPillDrag } from "./WindowsPillDrag.ts";
+import { installWindowsDoubleControl } from "./WindowsDoubleControl.ts";
 
 const Position = Schema.Struct({
   x: Schema.Finite,
@@ -83,6 +84,7 @@ export function installSatellitePill(
   let staleTimer: ReturnType<typeof setTimeout> | undefined;
   let blurTimer: ReturnType<typeof setTimeout> | undefined;
   let nativeDrag: ((handle: Buffer) => boolean) | undefined;
+  let disposeDoubleControl: (() => void) | undefined;
   const pill = new Electron.BrowserWindow({
     ...pillBounds,
     minWidth: 1,
@@ -234,6 +236,16 @@ export function installSatellitePill(
   tray.setToolTip("SatelliteT3 — open workspace");
   tray.setContextMenu(menu());
   tray.on("click", openMain);
+  void installWindowsDoubleControl(main, () => {
+    if (quitting || main.isDestroyed()) return;
+    if (shell.mode === "pill") openMain();
+    else if (main.isFocused()) setPinned(!shell.pinned);
+  })
+    .then((dispose) => {
+      if (quitting || main.isDestroyed()) dispose();
+      else disposeDoubleControl = dispose;
+    })
+    .catch((error) => console.warn("SatelliteT3 could not register double-Ctrl", error));
   const mainSender = (event: Electron.IpcMainEvent) => event.sender === main.webContents;
   const pillSender = (event: Electron.IpcMainEvent) => event.sender === pill.webContents;
   const listeners = {
@@ -392,6 +404,8 @@ export function installSatellitePill(
   const beforeQuit = () => {
     rememberPill();
     quitting = true;
+    disposeDoubleControl?.();
+    disposeDoubleControl = undefined;
   };
   const displayChanged = () => {
     if (main.isDestroyed() || pill.isDestroyed()) return;
@@ -426,6 +440,8 @@ export function installSatellitePill(
   main.once("closed", () => {
     shells.delete(main);
     quitting = true;
+    disposeDoubleControl?.();
+    disposeDoubleControl = undefined;
     clearTimeout(staleTimer);
     clearTimeout(blurTimer);
     Electron.app.removeListener("before-quit", beforeQuit);

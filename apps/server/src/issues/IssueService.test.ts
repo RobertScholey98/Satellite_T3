@@ -473,6 +473,68 @@ describe("IssueService", () => {
       }),
     ),
   );
+  it.effect("discovers Azure boards when the saved project identity is missing", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const freshProjectId = ProjectId.make("missing-identity");
+        const resolutions: string[] = [];
+        const scopes: string[] = [];
+        const azureLocator: IssueBoardLocator = {
+          kind: "azure-board",
+          host: "dev.azure.com",
+          organization: "FSGB",
+          project: "Hub Redesign",
+          team: "team",
+          boardId: "stories",
+        };
+        const service = yield* makeIssueService({
+          ...test.options,
+          getProject: () =>
+            Effect.succeed({ ...project, id: freshProjectId, repositoryIdentity: null }),
+          resolveRepositoryIdentity: (cwd: string) =>
+            Effect.sync(() => {
+              resolutions.push(cwd);
+              return {
+                canonicalKey: "dev.azure.com/FSGB/Hub Redesign/_git/Fleet.Hub",
+                provider: "azure-devops" as const,
+                displayName: "FSGB/Hub Redesign/_git/Fleet.Hub",
+                locator: {
+                  source: "git-remote" as const,
+                  remoteName: "origin",
+                  remoteUrl: "https://dev.azure.com/FSGB/Hub%20Redesign/_git/Fleet.Hub",
+                },
+              };
+            }),
+          host: {
+            ...test.options.host,
+            listBoards: (scope) =>
+              Effect.sync(() => {
+                scopes.push(scope.ref.repository);
+                return [{ title: "Stories", locator: azureLocator }];
+              }),
+          },
+        });
+        const boards = yield* service.listBoards({ projectId: freshProjectId });
+        assert.strictEqual(boards.length, 1);
+        assert.deepStrictEqual(resolutions, ["/repo"]);
+        assert.deepStrictEqual(scopes, ["FSGB/Hub Redesign"]);
+        yield* service.listBoards({ projectId: freshProjectId, connectedOnly: true });
+        assert.deepStrictEqual(resolutions, ["/repo"]);
+
+        const missingRemote = yield* makeIssueService({
+          ...test.options,
+          getProject: () =>
+            Effect.succeed({ ...project, id: freshProjectId, repositoryIdentity: null }),
+          resolveRepositoryIdentity: () => Effect.succeed(null),
+        });
+        const failure = yield* missingRemote
+          .listBoards({ projectId: freshProjectId })
+          .pipe(Effect.flip);
+        assert.strictEqual(failure.reason, "unavailable");
+      }),
+    ),
+  );
   it.effect("lists saved board connections without querying repository hosts", () =>
     run(
       Effect.gen(function* () {

@@ -7,9 +7,14 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as NodeFSP from "node:fs/promises";
 import { ServerConfig } from "../config.ts";
-import { IdeaArtifactId } from "@t3tools/contracts";
+import {
+  IdeaArtifactId,
+  OrchestrationThreadShell,
+  OrchestrationProjectShell,
+} from "@t3tools/contracts";
 import { appendIdeaUserInputAttachments } from "../provider/userInputAttachments.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
@@ -35,8 +40,100 @@ const testLayer = Layer.mergeAll(
   ProcessRunner.layer,
 ).pipe(Layer.provideMerge(NodeServices.layer));
 const text = Buffer.from("Owned notebook document").toString("base64");
+const decodeThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
+const decodeProjectShell = Schema.decodeUnknownEffect(OrchestrationProjectShell);
 
 describe("idea runtime boundaries", () => {
+  it.effect.each(["directory", "unborn", "feature-only"])(
+    "prepares an idea in a %s project and discovers main after its first commit",
+    (kind) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const runner = yield* ProcessRunner.ProcessRunner;
+        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "idea-new-project-" });
+        const git = (args: readonly string[]) =>
+          runner
+            .run({
+              command: "git",
+              cwd,
+              args: [
+                "-c",
+                "core.hooksPath=" + path.join(cwd, "no-hooks"),
+                "-c",
+                "user.name=Ideas test",
+                "-c",
+                "user.email=ideas@example.invalid",
+                ...args,
+              ],
+            })
+            .pipe(Effect.tap((result) => Effect.sync(() => assert.equal(result.code, 0))));
+        if (kind !== "directory") yield* git(["init", "--initial-branch=feature"]);
+        if (kind === "feature-only") yield* git(["commit", "--allow-empty", "-m", "fixture"]);
+        const now = "2026-10-01T12:00:00.000Z";
+        const shell = yield* decodeThreadShell({
+          id: testIdeaId,
+          projectId: "new-project",
+          purpose: "idea",
+          title: "New idea",
+          modelSelection: { instanceId: "codex", model: "test" },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          latestTurn: null,
+          createdAt: now,
+          updatedAt: now,
+          session: null,
+          latestUserMessageAt: null,
+          hasPendingApprovals: false,
+          hasPendingUserInput: false,
+          hasActionableProposedPlan: false,
+        });
+        const project = yield* decodeProjectShell({
+          id: shell.projectId,
+          title: "New project",
+          workspaceRoot: cwd,
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        });
+        const state = ideaStateFixture();
+        const runtime = yield* IdeaRuntime.pipe(
+          Effect.provide(IdeaRuntime.layer),
+          Effect.provideService(IdeaNotebookStore, state.store),
+          Effect.provideService(OrchestrationEngineService, state.engine),
+          Effect.provideService(ProjectionSnapshotQuery, {
+            ...unusedIdeaSnapshots,
+            getThreadShellById: () => Effect.succeedSome(shell),
+            getProjectShellById: () => Effect.succeedSome(project),
+            getThreadDetailById: () => Effect.succeedNone,
+          }),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => clearIdeaExecution(testIdeaId)));
+        const execution = yield* runtime.prepare(testIdeaId);
+        assert.isNull(execution.mainRevision);
+        assert.isTrue(yield* fs.exists(execution.cwd));
+        assert.include(yield* runtime.foregroundContext(testIdeaId, true), '"mainRevision":null');
+        const missing = yield* runtime.readMain({ threadId: testIdeaId }).pipe(Effect.flip);
+        assert.include(missing.message, "default branch is unavailable");
+        if (kind === "directory") {
+          assert.isFalse(yield* fs.exists(path.join(cwd, ".git")));
+          yield* git(["init", "--initial-branch=main"]);
+        } else {
+          assert.equal((yield* git(["branch", "--show-current"])).stdout.trim(), "feature");
+          yield* git(["checkout", "-b", "main"]);
+        }
+        yield* fs.writeFileString(path.join(cwd, "README.md"), "First project commit\n");
+        yield* git(["add", "README.md"]);
+        yield* git(["commit", "-m", "First project commit"]);
+        const revision = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
+        assert.include(yield* runtime.foregroundContext(testIdeaId, true), revision);
+        const result = yield* runtime.readMain({ threadId: testIdeaId, path: "README.md" });
+        assert.equal(result.revision, revision);
+        assert.equal(result.text.trim(), "First project commit");
+      }).pipe(Effect.provide(testLayer)),
+  );
   it.effect(
     "imports a question attachment and supplies an owned artifact reference while preserving the answer",
     () =>
