@@ -291,7 +291,7 @@ function DocumentReview(props: {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [conflicted, setConflicted] = useState(false);
-  const webView = useRef<WebView>(null);
+  const webView = useRef<WebView<object>>(null);
   const binding = useMemo(
     () => ({ sessionId: uuidv4(), documentId: detail.document.id, revisionId: detail.revision.id }),
     [detail.document.id, detail.revision.id],
@@ -537,7 +537,7 @@ function DocumentReview(props: {
         {readOnly ? detail.answerVersion : draft.answerVersion}
       </AppText>
       {detail.revision.format === "html" ? (
-        <WebView
+        <WebView<object>
           ref={webView}
           source={{ html, baseUrl: "about:blank" }}
           style={{ height: 420, backgroundColor: "transparent" }}
