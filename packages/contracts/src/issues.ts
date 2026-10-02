@@ -126,12 +126,28 @@ export const IssueMoveReceipt = Schema.Struct({
   createdAt: Schema.String,
 });
 export type IssueMoveReceipt = typeof IssueMoveReceipt.Type;
+export const IssueBoardSyncFailure = Schema.Struct({ at: Schema.String, message: Schema.String });
+export type IssueBoardSyncFailure = typeof IssueBoardSyncFailure.Type;
+/** Freshness of the server's stored board copy. `syncing` and `failure` are independent facts. */
+export const IssueBoardSync = Schema.Struct({
+  /** Changes only when the board's columns, items, title or mapping changed. */
+  revision: NonNegativeInt,
+  /** Last successful read from the repository host. */
+  syncedAt: Schema.String,
+  /** A refresh is queued or running on the server. */
+  syncing: Schema.Boolean,
+  /** Outcome of the last finished refresh. */
+  failure: Schema.NullOr(IssueBoardSyncFailure),
+});
+export type IssueBoardSync = typeof IssueBoardSync.Type;
 export const IssueBoardView = Schema.Struct({
   board: IssueBoardSummary,
   columns: Schema.Array(IssueBoardColumn),
   items: Schema.Array(IssueBoardItem),
   attempts: Schema.Array(IssueAttempt),
   moves: Schema.Array(IssueMoveReceipt),
+  /** Absent from servers that predate stored boards; those always read the host live. */
+  sync: Schema.optional(IssueBoardSync),
 });
 export type IssueBoardView = typeof IssueBoardView.Type;
 export const IssuePullRequestKey = Schema.Struct({
@@ -188,8 +204,21 @@ export const IssueBoardsOpenInput = Schema.Struct({
   projectId: ProjectId,
   boardId: Schema.optional(Id),
   locator: Schema.optional(IssueBoardLocator),
+  /** Queue a host refresh even when the stored copy is recent. */
+  refresh: Schema.optional(Schema.Boolean),
 });
 export type IssueBoardsOpenInput = typeof IssueBoardsOpenInput.Type;
+export const IssueBoardsSubscribeInput = Schema.Struct({ projectId: ProjectId, boardId: Id });
+export type IssueBoardsSubscribeInput = typeof IssueBoardsSubscribeInput.Type;
+/**
+ * `sync` is null when the server holds no stored copy, which after a successful open means the
+ * board was disconnected.
+ */
+export const IssueBoardSyncEvent = Schema.Struct({
+  boardId: Id,
+  sync: Schema.NullOr(IssueBoardSync),
+});
+export type IssueBoardSyncEvent = typeof IssueBoardSyncEvent.Type;
 export const IssueBoardsConfigureInput = Schema.Struct({
   requestId: Id,
   projectId: ProjectId,
