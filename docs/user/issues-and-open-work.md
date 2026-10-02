@@ -10,9 +10,13 @@ For Azure DevOps, choose from boards across the projects and teams you can acces
 in the repository's organisation. Your Azure CLI account must be signed in on
 the computer hosting the project.
 
-Reopening the workspace returns to your last tab and selection. Cached tickets,
-pull requests, and worktree history remain visible while **Syncing** refreshes them.
-If a refresh fails, you can keep viewing the cached content and retry.
+Reopening the workspace returns to your last tab and selection. Connected boards
+are kept on the computer hosting the project, so they open straight away, even
+after a restart, and check for changes in the background. The board header shows
+when it last synced, or **Syncing** while it checks. Choose **Refresh board** to
+sync now. If a sync fails, the last copy stays visible with the reason and
+**Retry**. Cached tickets, pull requests, and worktree history also remain visible
+while **Syncing** refreshes them.
 
 Open a ticket to see its details. Tickets in any of your Ready columns offer **Start**.
 Choose the project in the usual new-thread prompt, name the worktree, and send
