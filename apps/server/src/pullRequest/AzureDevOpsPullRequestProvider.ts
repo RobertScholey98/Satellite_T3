@@ -35,20 +35,16 @@ import type {
 } from "./azureDevOpsPullRequestJson.ts";
 
 /**
- * How many of a slice's files are read at once. Every file is two `az` invocations, each paying a
- * Python interpreter's start-up, so reading them one after another is most of what the Code tab
- * waits for. Four files means eight processes at once: the fan-out the GitHub CLI reads its
- * per-file stats with here, and low enough not to swamp the host's throttling or the machine.
+ * Each changed file needs both revisions. Four files at once keeps the diff moving without
+ * overwhelming Azure with requests.
  */
 const DIFF_FILE_CONCURRENCY = 4;
 
 /**
- * How many `az` processes this build will have out at once, counted across every reader rather
- * than per request. The fan-out above bounds one Code tab, so two people opening two Azure reviews
- * had sixteen Python interpreters starting at once and nothing above them. Held at what one
- * request at full width spends, so a second reader waits behind the first instead of adding to it.
+ * The file-read allowance is shared by all clients connected to this server, so opening more
+ * reviews does not multiply the load on Azure.
  */
-export const MAX_DIFF_SPAWNS = 2 * DIFF_FILE_CONCURRENCY;
+export const MAX_DIFF_READS = 2 * DIFF_FILE_CONCURRENCY;
 
 /** How many pull requests' repository locations one provider remembers at once. */
 export const LOCATION_CACHE_CAPACITY = 128;
@@ -150,9 +146,9 @@ export const make = Effect.gen(function* () {
   const cli = yield* AzureDevOpsPullRequestCli.AzureDevOpsPullRequestCli;
   // Made once with the provider, which the registry builds once, so this is the whole build's
   // allowance rather than one request's.
-  const diffSpawns = yield* Semaphore.make(MAX_DIFF_SPAWNS);
+  const diffReads = yield* Semaphore.make(MAX_DIFF_READS);
   const readItemContent = (input: Parameters<typeof cli.readItemContent>[0]) =>
-    diffSpawns.withPermits(1)(cli.readItemContent(input));
+    diffReads.withPermits(1)(cli.readItemContent(input));
 
   const fail =
     (operation: string) => (error: AzureDevOpsPullRequestCli.AzureDevOpsPullRequestCliError) =>
@@ -229,8 +225,7 @@ export const make = Effect.gen(function* () {
   const EMPTY_ITEM: AzureDevOpsItemContent = { contents: "", isBinary: false };
 
   /**
-   * Both sides of one changed file, read at once because neither answer depends on the other and
-   * `az` pays a Python interpreter's start-up for each. Only the sides a change actually has are
+   * Both sides of one changed file are independent and read at once. Only the sides a change has are
    * asked for: Azure answers for a file that is not at a commit with a failure rather than with
    * nothing.
    */
@@ -325,7 +320,7 @@ export const make = Effect.gen(function* () {
           })),
         ),
 
-    // The polled path a linked thread's row stays live on: one `az` read, no iterations or
+    // The polled path a linked thread's row stays live on: one API read, no iterations or
     // changes behind it, since the file count that would cost is not shown here.
     getChangeRequestSummary: (input) =>
       cli.getPullRequest({ cwd: input.cwd, number: input.number }).pipe(

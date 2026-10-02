@@ -1609,6 +1609,15 @@ function BoardConfiguration({
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
+          {busy ? (
+            <div
+              role="status"
+              className="mb-3 flex items-center gap-2 text-sm text-muted-foreground"
+            >
+              <SatelliteLoader loading size={22} role="presentation" />
+              {view ? "Saving board mapping…" : "Loading board columns…"}
+            </div>
+          ) : null}
           {!view && !manual ? (
             <div className="grid gap-2">
               {discoveryPending || retryingDiscovery ? (

@@ -5,11 +5,13 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
+import * as Path from "effect/Path";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import { VcsProcessExitError, VcsProcessSpawnError } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as AzureDevOpsCli from "./AzureDevOpsCli.ts";
+import * as AzureDevOpsReadApi from "./AzureDevOpsReadApi.ts";
 
 const processOutput = (stdout: string): VcsProcess.VcsProcessOutput => ({
   exitCode: ChildProcessSpawner.ExitCode(0),
@@ -26,8 +28,14 @@ const supportLayer = Layer.mergeAll(
     run: mockRun,
   }),
   NodeServices.layer,
+  Layer.mock(AzureDevOpsReadApi.AzureDevOpsReadApi)({ read: () => Effect.succeed(null) }),
 );
-const layer = Layer.mergeAll(AzureDevOpsCli.layer.pipe(Layer.provide(supportLayer)), supportLayer);
+const layer = Layer.mergeAll(
+  Layer.effect(AzureDevOpsCli.AzureDevOpsCli, AzureDevOpsCli.make).pipe(
+    Layer.provide(supportLayer),
+  ),
+  supportLayer,
+);
 
 afterEach(() => {
   mockRun.mockReset();
@@ -279,7 +287,11 @@ describe("AzureDevOpsCli.layer", () => {
   it.effect("creates pull requests using the body file as the Azure description", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const bodyFile = `/tmp/t3code-azure-devops-cli-.md`;
+      const path = yield* Path.Path;
+      const directory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3code-azure-devops-cli-",
+      });
+      const bodyFile = path.join(directory, "body.md");
       yield* fileSystem.writeFileString(bodyFile, "Generated body");
       mockRun.mockReturnValueOnce(Effect.succeed(processOutput("{}")));
 
@@ -300,7 +312,7 @@ describe("AzureDevOpsCli.layer", () => {
         }),
       );
       expect(mockRun.mock.calls[0]?.[0].args).not.toContain("--output");
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
   it.effect("does not force JSON output on checkout side-effect commands", () =>
