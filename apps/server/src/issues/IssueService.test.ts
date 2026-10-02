@@ -1,5 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
+import * as TestClock from "effect/testing/TestClock";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
@@ -61,7 +64,9 @@ const setup = Effect.gen(function* () {
   yield* snapshotMigration;
   let column = "ready";
   let fail = false;
+  let failReads = false;
   let reads = 0;
+  let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null = null;
   const writes: string[] = [];
   const host: IssueHostShape = {
     list: () => Effect.succeed({ issues: [], nextCursor: null }),
@@ -76,22 +81,34 @@ const setup = Effect.gen(function* () {
       }),
     listBoards: () => Effect.succeed([{ title: "Board", locator }]),
     board: () =>
-      Effect.sync(() => ({
-        title: "Board",
-        locator,
-        columns: ["ready", "ready-next", "progress", "pr", "done"].map((id) => ({
-          id,
-          title: id,
-        })),
-        items: [
-          {
-            issue: { ref: issue, title: "Issue", state: "open", labels: [], updatedAt: "now" },
-            itemId: "I1",
-            columnId: column,
-            version: "1",
-          },
-        ],
-      })).pipe(Effect.tap(() => Effect.sync(() => reads++))),
+      Effect.gen(function* () {
+        reads++;
+        if (failReads)
+          return yield* new IssueOperationError({ reason: "remote", message: "Board unavailable" });
+        const remote = {
+          title: "Board",
+          locator,
+          columns: ["ready", "ready-next", "progress", "pr", "done"].map((id) => ({
+            id,
+            title: id,
+          })),
+          items: [
+            {
+              issue: { ref: issue, title: "Issue", state: "open", labels: [], updatedAt: "now" },
+              itemId: "I1",
+              columnId: column,
+              version: "1",
+            },
+          ],
+        };
+        const held = gate;
+        gate = null;
+        if (held) {
+          yield* Deferred.succeed(held.started, undefined);
+          yield* Deferred.await(held.release);
+        }
+        return remote;
+      }),
     move: (_cwd, _locator, _item, next) =>
       fail
         ? Effect.fail(new IssueOperationError({ reason: "remote", message: "Host unavailable" }))
@@ -136,9 +153,18 @@ const setup = Effect.gen(function* () {
     fail: (value: boolean) => {
       fail = value;
     },
+    failReads: (value: boolean) => {
+      failReads = value;
+    },
+    /** Holds the next host read after it captured the board, until `release`. */
+    hold: Effect.gen(function* () {
+      const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+      gate = held;
+      return held;
+    }),
   };
 });
-const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient | Scope.Scope>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 const epoch = "1970-01-01T00:00:00.000Z";
@@ -161,6 +187,113 @@ describe("IssueService", () => {
           fresh,
         );
         assert.strictEqual(test.reads(), 1);
+      }),
+    ),
+  );
+  it.effect("serves the stored copy while one background refresh reads an aged board", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        yield* TestClock.adjust("31 seconds");
+        test.setColumn("ready-next");
+        const held = yield* test.hold;
+        const views = yield* Effect.forEach([1, 2, 3, 4, 5], () =>
+          test.service.openBoard({ projectId, boardId: test.boardId }),
+        );
+        for (const view of views) {
+          assert.deepStrictEqual(view.sync, {
+            revision: 1,
+            syncedAt: epoch,
+            syncing: true,
+            failure: null,
+          });
+          assert.deepStrictEqual(view.items.map((item) => item.columnId), ["ready"]);
+        }
+        yield* Deferred.succeed(held.release, undefined);
+        yield* test.service.drainRefreshes;
+        const refreshed = yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        assert.deepStrictEqual(refreshed.sync, {
+          revision: 2,
+          syncedAt: "1970-01-01T00:00:31.000Z",
+          syncing: false,
+          failure: null,
+        });
+        assert.deepStrictEqual(refreshed.items.map((item) => item.columnId), ["ready-next"]);
+        assert.strictEqual(test.reads(), 2);
+      }),
+    ),
+  );
+  it.effect("keeps the revision when a refresh finds the board unchanged", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        yield* TestClock.adjust("31 seconds");
+        yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        yield* test.service.drainRefreshes;
+        assert.deepStrictEqual(
+          (yield* test.service.openBoard({ projectId, boardId: test.boardId })).sync,
+          { revision: 1, syncedAt: "1970-01-01T00:00:31.000Z", syncing: false, failure: null },
+        );
+        assert.strictEqual(test.reads(), 2);
+      }),
+    ),
+  );
+  it.effect("a refresh that read the board before a move never undoes the move", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        yield* TestClock.adjust("31 seconds");
+        const held = yield* test.hold;
+        yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        yield* Deferred.await(held.started);
+        const receipt = yield* test.service.move({
+          requestId: "move-during-refresh",
+          boardId: test.boardId,
+          issue,
+          columnId: "progress",
+        });
+        assert.strictEqual(receipt.status, "applied");
+        yield* Deferred.succeed(held.release, undefined);
+        yield* test.service.drainRefreshes;
+        const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        assert.deepStrictEqual(view.items.map((item) => item.columnId), ["progress"]);
+        assert.strictEqual(view.moves[0]?.status, "applied");
+        assert.strictEqual(view.sync?.revision, 3);
+        assert.strictEqual(test.reads(), 6);
+      }),
+    ),
+  );
+  it.effect("a failed refresh keeps the stored board until someone asks to refresh again", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        yield* TestClock.adjust("31 seconds");
+        test.failReads(true);
+        yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        yield* test.service.drainRefreshes;
+        yield* TestClock.adjust("10 seconds");
+        const failed = yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        assert.deepStrictEqual(failed.sync, {
+          revision: 1,
+          syncedAt: epoch,
+          syncing: false,
+          failure: { at: "1970-01-01T00:00:31.000Z", message: "Board unavailable" },
+        });
+        assert.deepStrictEqual(failed.items.map((item) => item.columnId), ["ready"]);
+        assert.strictEqual(test.reads(), 2);
+        test.failReads(false);
+        test.setColumn("progress");
+        yield* test.service.openBoard({ projectId, boardId: test.boardId, refresh: true });
+        yield* test.service.drainRefreshes;
+        const recovered = yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        assert.deepStrictEqual(recovered.sync, {
+          revision: 2,
+          syncedAt: "1970-01-01T00:00:41.000Z",
+          syncing: false,
+          failure: null,
+        });
+        assert.deepStrictEqual(recovered.items.map((item) => item.columnId), ["progress"]);
+        assert.strictEqual(test.reads(), 3);
       }),
     ),
   );
