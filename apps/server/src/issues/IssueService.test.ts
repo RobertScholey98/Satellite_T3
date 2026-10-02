@@ -344,13 +344,16 @@ describe("IssueService", () => {
       }),
     ),
   );
-  it.effect("disconnecting during a refresh ends subscriptions and leaves nothing stored", () =>
+  it.effect("disconnecting during a refresh reports null and leaves nothing stored", () =>
     run(
       Effect.gen(function* () {
         const test = yield* setup;
         const subscribe = test.service
           .subscribeBoard({ projectId, boardId: test.boardId })
-          .pipe(Stream.runCollect);
+          .pipe(
+            Stream.takeUntil((event) => event.sync === null),
+            Stream.runCollect,
+          );
         yield* TestClock.adjust("31 seconds");
         const held = yield* test.hold;
         yield* test.service.openBoard({ projectId, boardId: test.boardId });
@@ -372,6 +375,50 @@ describe("IssueService", () => {
         assert.strictEqual(reopened._tag, "Failure");
         if (reopened._tag === "Failure") assert.strictEqual(reopened.failure.reason, "not-found");
         assert.strictEqual(test.reads(), 2);
+      }),
+    ),
+  );
+  it.effect("a subscription that saw a disconnect follows the reconnected board", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const events: IssueBoardSyncEvent[] = [];
+        const subscribed = yield* Deferred.make<void>();
+        const collector = yield* test.service
+          .subscribeBoard({ projectId, boardId: test.boardId })
+          .pipe(
+            Stream.take(3),
+            Stream.runForEach((event) =>
+              Effect.sync(() => events.push(event)).pipe(
+                Effect.andThen(Deferred.succeed(subscribed, undefined)),
+              ),
+            ),
+            Effect.forkChild,
+          );
+        yield* Deferred.await(subscribed);
+        yield* test.service.disconnectBoard({ requestId: "disconnect", boardId: test.boardId });
+        yield* test.service.configureBoard({
+          requestId: "reconnect",
+          projectId,
+          locator,
+          mapping: {
+            ready: "ready",
+            inProgress: "progress",
+            inPullRequest: "pr",
+            completed: "done",
+            moveOnMerge: true,
+          },
+        });
+        yield* Fiber.join(collector);
+        const connected = {
+          boardId: test.boardId,
+          sync: { revision: 1, syncedAt: epoch, syncing: false, failure: null },
+        };
+        assert.deepStrictEqual(events, [
+          connected,
+          { boardId: test.boardId, sync: null },
+          connected,
+        ]);
       }),
     ),
   );
