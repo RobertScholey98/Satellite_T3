@@ -12,6 +12,7 @@ import {
   type OrchestrationProjectShell,
 } from "@t3tools/contracts";
 import migration from "../persistence/Migrations/056_IssueBoards.ts";
+import snapshotMigration from "../persistence/Migrations/059_IssueBoardSnapshots.ts";
 import { makeIssueService } from "./IssueService.ts";
 import { canonicalIssueKey, type IssueHostShape } from "./IssueHost.ts";
 
@@ -57,8 +58,10 @@ const project: OrchestrationProjectShell = {
 };
 const setup = Effect.gen(function* () {
   yield* migration;
+  yield* snapshotMigration;
   let column = "ready";
   let fail = false;
+  let reads = 0;
   const writes: string[] = [];
   const host: IssueHostShape = {
     list: () => Effect.succeed({ issues: [], nextCursor: null }),
@@ -73,7 +76,7 @@ const setup = Effect.gen(function* () {
       }),
     listBoards: () => Effect.succeed([{ title: "Board", locator }]),
     board: () =>
-      Effect.succeed({
+      Effect.sync(() => ({
         title: "Board",
         locator,
         columns: ["ready", "ready-next", "progress", "pr", "done"].map((id) => ({
@@ -88,7 +91,7 @@ const setup = Effect.gen(function* () {
             version: "1",
           },
         ],
-      }),
+      })).pipe(Effect.tap(() => Effect.sync(() => reads++))),
     move: (_cwd, _locator, _item, next) =>
       fail
         ? Effect.fail(new IssueOperationError({ reason: "remote", message: "Host unavailable" }))
@@ -125,6 +128,7 @@ const setup = Effect.gen(function* () {
     boardId: view.board.id,
     reserve,
     writes,
+    reads: () => reads,
     column: () => column,
     setColumn: (next: string) => {
       column = next;
@@ -137,7 +141,68 @@ const setup = Effect.gen(function* () {
 const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 
+const epoch = "1970-01-01T00:00:00.000Z";
+
 describe("IssueService", () => {
+  it.effect("opens a configured board from its stored copy, even after a restart", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        assert.strictEqual(test.reads(), 1);
+        const fresh = { revision: 1, syncedAt: epoch, syncing: false, failure: null };
+        const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        assert.deepStrictEqual(view.sync, fresh);
+        assert.strictEqual(view.board.title, "Board");
+        assert.deepStrictEqual(view.items.map((item) => item.columnId), ["ready"]);
+        assert.deepStrictEqual((yield* test.service.openBoard({ projectId, locator })).sync, fresh);
+        const restarted = yield* makeIssueService(test.options);
+        assert.deepStrictEqual(
+          (yield* restarted.openBoard({ projectId, boardId: test.boardId })).sync,
+          fresh,
+        );
+        assert.strictEqual(test.reads(), 1);
+      }),
+    ),
+  );
+  it.effect("reads unsaved boards live every time and stores nothing", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const unsaved = { ...locator, projectNumber: 2 };
+        const view = yield* test.service.openBoard({ projectId, locator: unsaved });
+        assert.deepStrictEqual(view.sync, {
+          revision: 0,
+          syncedAt: epoch,
+          syncing: false,
+          failure: null,
+        });
+        assert.strictEqual(view.board.mapping, null);
+        yield* test.service.openBoard({ projectId, locator: unsaved });
+        assert.strictEqual(test.reads(), 3);
+      }),
+    ),
+  );
+  it.effect("checks the host for Start and moves, and stores what the move confirmed", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        yield* test.reserve("reserve-live");
+        assert.strictEqual(test.reads(), 2);
+        const receipt = yield* test.service.move({
+          requestId: "move-live",
+          boardId: test.boardId,
+          issue,
+          columnId: "progress",
+        });
+        assert.strictEqual(receipt.status, "applied");
+        assert.strictEqual(test.reads(), 5);
+        const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        assert.strictEqual(test.reads(), 5);
+        assert.deepStrictEqual(view.items.map((item) => item.columnId), ["progress"]);
+        assert.strictEqual(view.sync?.revision, 3);
+      }),
+    ),
+  );
   it.effect("lists saved board connections without querying repository hosts", () =>
     run(
       Effect.gen(function* () {
