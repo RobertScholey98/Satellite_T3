@@ -338,31 +338,40 @@ export function IssuesBoard({
 
   const navigate = useNavigate();
 
-  const refresh = useCallback(
-    async (boardId: string, options: { force?: boolean; quiet?: boolean } = {}) => {
+  const requestView = useCallback(
+    async (boardId: string, force: boolean, track: boolean) => {
       if (!scope || !connected) return;
 
       const current = ++generation.current;
 
-      if (!options.quiet) setError(null);
+      if (track) setError(null);
       const request = () =>
         open({
           environmentId: scope.environmentId,
-          input: { projectId: scope.id, boardId, ...(options.force ? { refresh: true } : {}) },
+          input: { projectId: scope.id, boardId, ...(force ? { refresh: true } : {}) },
         });
 
       try {
-        const result = unwrapWorkResult(await (options.quiet ? request() : trackSync(request)));
+        const result = unwrapWorkResult(await (track ? trackSync(request) : request()));
 
         if (current === generation.current) {
           setView(result);
           return result;
         }
       } catch (failure) {
-        if (current === generation.current && !options.quiet) setError(workError(failure));
+        if (current === generation.current && track) setError(workError(failure));
       }
     },
     [open, scope, connected, trackSync],
+  );
+  const refreshBoard = useCallback(
+    (boardId: string, { force = false }: { force?: boolean } = {}) =>
+      requestView(boardId, force, true),
+    [requestView],
+  );
+  const reopenBoard = useCallback(
+    (boardId: string) => requestView(boardId, false, false),
+    [requestView],
   );
 
   useLayoutEffect(() => {
@@ -443,7 +452,7 @@ export function IssuesBoard({
 
     setBoardDiscoveryPending(false);
     const targetBoardId = activeTarget?.boardId;
-    const opening = targetBoardId ? refresh(targetBoardId) : undefined;
+    const opening = targetBoardId ? refreshBoard(targetBoardId) : undefined;
     void trackSync(() =>
       list({
         environmentId: scope.environmentId,
@@ -466,7 +475,7 @@ export function IssuesBoard({
               projectId: scope.id,
               boardId: requested.id,
             });
-          await (opening ?? refresh(requested.id));
+          await (opening ?? refreshBoard(requested.id));
         } else {
           generation.current++;
           setView(null);
@@ -583,18 +592,14 @@ export function IssuesBoard({
       ? { environmentId: scope.environmentId, projectId: scope.id, boardId: view.board.id }
       : null,
   );
-  const reopened = useRef<{ boardId: string; revision: number } | null>(null);
   useEffect(() => {
     if (!view?.sync || serverSync === undefined) return;
     if (serverSync === null) {
       forgetBoard(view.board.id);
       return;
     }
-    const requested = reopened.current?.boardId === view.board.id ? reopened.current.revision : 0;
-    if (serverSync.revision <= Math.max(view.sync.revision, requested)) return;
-    reopened.current = { boardId: view.board.id, revision: serverSync.revision };
-    void refresh(view.board.id, { quiet: true });
-  }, [serverSync]);
+    if (serverSync.revision > view.sync.revision) void reopenBoard(view.board.id);
+  }, [serverSync?.revision, serverSync === null, view?.board.id]);
 
   const displaySync = serverSync ?? view?.sync;
   const syncing = syncCount > 0 || displaySync?.syncing === true;
@@ -602,7 +607,7 @@ export function IssuesBoard({
     onSyncChange?.(syncing);
   }, [onSyncChange, syncing]);
 
-  useLiveRefresh(view && connected ? () => void refresh(view.board.id, { quiet: true }) : null, {
+  useLiveRefresh(view && connected ? () => void reopenBoard(view.board.id) : null, {
     key: `issues:${dataKey}:${view?.board.id ?? "none"}`,
   });
 
@@ -632,7 +637,7 @@ export function IssuesBoard({
       if (receipt.status === "failed")
         throw new Error(receipt.error ?? "The remote board rejected this move.");
 
-      await refresh(view.board.id);
+      await refreshBoard(view.board.id);
 
       if (currentScope === scopeGeneration.current) setSelected(null);
     } catch (failure) {
@@ -814,7 +819,7 @@ export function IssuesBoard({
                             disabled={!connected || pending}
                             onClick={() => {
                               setDismissedTargetKey(targetKey);
-                              void refresh(board.id).then((result) => {
+                              void refreshBoard(board.id).then((result) => {
                                 if (result && scope)
                                   onSelectBoard?.({
                                     environmentId: scope.environmentId,
@@ -844,7 +849,7 @@ export function IssuesBoard({
           <BoardSyncStatus
             sync={displaySync}
             retryDisabled={!connected}
-            onRetry={() => void refresh(view.board.id, { force: true })}
+            onRetry={() => void refreshBoard(view.board.id, { force: true })}
           />
         ) : null}
         <div className="ml-auto flex items-center gap-1" role="group" aria-label="Issues view">
@@ -890,7 +895,7 @@ export function IssuesBoard({
                 <>
                   <MenuItem
                     disabled={!connected || pending}
-                    onClick={() => void refresh(view.board.id, { force: true })}
+                    onClick={() => void refreshBoard(view.board.id, { force: true })}
                   >
                     Refresh board
                   </MenuItem>
@@ -1001,7 +1006,8 @@ export function IssuesBoard({
                     })
                       .then(unwrapWorkResult)
                       .then(() => {
-                        if (currentScope === scopeGeneration.current) return refresh(view.board.id);
+                        if (currentScope === scopeGeneration.current)
+                          return refreshBoard(view.board.id);
                       })
                       .catch((failure) => {
                         if (currentScope === scopeGeneration.current) setError(workError(failure));
