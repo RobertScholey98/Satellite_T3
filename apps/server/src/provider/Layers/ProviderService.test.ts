@@ -5063,9 +5063,13 @@ boundedListing.layer("ProviderServiceLive session listing", (it) => {
 
 const decodeBrowserAccessThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 
-it.effect.each(["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravity"])(
-  "starts and continues an idea with %s",
-  (driverName) =>
+it.effect.each(
+  ["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravity"].flatMap((driverName) =>
+    ["a".repeat(40), null].map((mainRevision) => ({ driverName, mainRevision })),
+  ),
+)(
+  "starts and continues an idea with $driverName and main revision $mainRevision",
+  ({ driverName, mainRevision }) =>
     Effect.gen(function* () {
       const driver = ProviderDriverKind.make(driverName);
       const instanceId = defaultInstanceIdForDriver(driver);
@@ -5076,7 +5080,7 @@ it.effect.each(["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravi
       const execution = {
         cwd: fixtureCwd("idea-owned"),
         projectDirectory: fixtureCwd("idea-project"),
-        mainRevision: "a".repeat(40),
+        mainRevision,
         deletionEpoch: 0,
         context: "Saved discussion",
       };
