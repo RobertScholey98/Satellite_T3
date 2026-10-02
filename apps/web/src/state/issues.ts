@@ -31,10 +31,6 @@ const boardSyncAtom = Atom.family((key: string) => {
   }).pipe(Atom.withLabel(`web-issue-board-sync:${key}`));
 });
 
-/**
- * The server's freshness for an open board: `undefined` until the subscription delivers (or on
- * servers that predate stored boards), `null` once the server holds no stored copy.
- */
 export function useIssueBoardSync(ref: IssueBoardRef | null): IssueBoardSync | null | undefined {
   return useAtomValue(
     ref === null

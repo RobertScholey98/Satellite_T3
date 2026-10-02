@@ -242,7 +242,6 @@ async function mount(
     renderer = create(mounted!);
   });
 }
-/** Delivers a new server sync state to the mounted board. */
 async function serverSync(sync: IssueBoardSync | null | undefined) {
   state.boardSync = sync;
   await act(async () => {

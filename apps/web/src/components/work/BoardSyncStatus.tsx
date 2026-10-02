@@ -5,10 +5,6 @@ import { Button } from "../ui/button";
 const time = (at: string) =>
   new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-/**
- * How fresh the server's stored copy of a board is. Absolute times keep this static at rest; a
- * stale board simply shows an old time.
- */
 export function BoardSyncStatus({
   sync,
   retryDisabled,

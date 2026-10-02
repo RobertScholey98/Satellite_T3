@@ -159,7 +159,6 @@ const setup = Effect.gen(function* () {
     failReads: (value: boolean) => {
       failReads = value;
     },
-    /** Holds the next host read after it captured the board, until `release`. */
     hold: Effect.gen(function* () {
       const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
       gate = held;
@@ -190,6 +189,25 @@ describe("IssueService", () => {
           fresh,
         );
         assert.strictEqual(test.reads(), 1);
+      }),
+    ),
+  );
+  it.effect("stores a board connected before snapshots on its first open", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM issue_board_snapshots`;
+        const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        assert.deepStrictEqual(view.sync, {
+          revision: 1,
+          syncedAt: epoch,
+          syncing: false,
+          failure: null,
+        });
+        assert.deepStrictEqual(view.items.map((item) => item.columnId), ["ready"]);
+        yield* test.service.openBoard({ projectId, boardId: test.boardId });
+        assert.strictEqual(test.reads(), 2);
       }),
     ),
   );
@@ -262,7 +280,7 @@ describe("IssueService", () => {
         assert.deepStrictEqual(view.items.map((item) => item.columnId), ["progress"]);
         assert.strictEqual(view.moves[0]?.status, "applied");
         assert.strictEqual(view.sync?.revision, 3);
-        assert.strictEqual(test.reads(), 6);
+        assert.strictEqual(test.reads(), 5);
       }),
     ),
   );
@@ -309,7 +327,7 @@ describe("IssueService", () => {
         const collector = yield* test.service
           .subscribeBoard({ projectId, boardId: test.boardId })
           .pipe(
-            Stream.take(6),
+            Stream.take(5),
             Stream.runForEach((event) =>
               Effect.sync(() => events.push(event)).pipe(
                 Effect.andThen(Deferred.succeed(subscribed, undefined)),
@@ -336,7 +354,6 @@ describe("IssueService", () => {
         assert.deepStrictEqual(events, [
           sync(1, epoch, false),
           sync(1, epoch, true),
-          sync(1, later, true),
           sync(1, later, false),
           sync(2, later, false),
           sync(3, later, false),
@@ -428,12 +445,7 @@ describe("IssueService", () => {
         const test = yield* setup;
         const unsaved = { ...locator, projectNumber: 2 };
         const view = yield* test.service.openBoard({ projectId, locator: unsaved });
-        assert.deepStrictEqual(view.sync, {
-          revision: 0,
-          syncedAt: epoch,
-          syncing: false,
-          failure: null,
-        });
+        assert.strictEqual(view.sync, undefined);
         assert.strictEqual(view.board.mapping, null);
         yield* test.service.openBoard({ projectId, locator: unsaved });
         assert.strictEqual(test.reads(), 3);

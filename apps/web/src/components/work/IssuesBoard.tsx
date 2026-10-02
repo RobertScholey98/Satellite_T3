@@ -338,10 +338,6 @@ export function IssuesBoard({
 
   const navigate = useNavigate();
 
-  /**
-   * Opens a board from the server's stored copy. `force` asks the server to read the host now;
-   * `quiet` reopens after a server-side change without counting as a request in flight.
-   */
   const refresh = useCallback(
     async (boardId: string, options: { force?: boolean; quiet?: boolean } = {}) => {
       if (!scope || !connected) return;
@@ -446,8 +442,6 @@ export function IssuesBoard({
       });
 
     setBoardDiscoveryPending(false);
-    // Both reads are local to the server. A board named by the URL opens alongside the listing
-    // instead of after it; the listing then decides whether that board is still connected.
     const targetBoardId = activeTarget?.boardId;
     const opening = targetBoardId ? refresh(targetBoardId) : undefined;
     void trackSync(() =>
@@ -591,7 +585,6 @@ export function IssuesBoard({
   );
   const reopened = useRef<{ boardId: string; revision: number } | null>(null);
   useEffect(() => {
-    // Views from servers that predate stored boards carry no sync and never subscribe usefully.
     if (!view?.sync || serverSync === undefined) return;
     if (serverSync === null) {
       forgetBoard(view.board.id);
@@ -717,7 +710,6 @@ export function IssuesBoard({
         });
     }
   };
-  /** Host discovery can take seconds on Azure DevOps, so only the Connect board dialog waits. */
   const loadDiscovery = () => {
     if (!scope || !connected) return;
     const current = scopeGeneration.current;
