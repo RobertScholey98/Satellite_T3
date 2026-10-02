@@ -89,7 +89,7 @@ export interface IssueServiceShape {
   readonly openBoard: (
     input: IssueBoardsOpenInput,
   ) => Effect.Effect<IssueBoardView, IssueOperationError>;
-  /** The stored copy's current sync state, then each change; ends after reporting `null`. */
+  /** The stored copy's current sync state, then each change, including `null` on disconnect. */
   readonly subscribeBoard: (
     input: IssueBoardsSubscribeInput,
   ) => Stream.Stream<IssueBoardSyncEvent, IssueOperationError>;
@@ -606,7 +606,6 @@ export const makeIssueService = (options: {
         }).pipe(Effect.mapError(preserveError)),
       ).pipe(
         Stream.changesWith((left, right) => json(left) === json(right)),
-        Stream.takeUntil((event) => event.sync === null),
         Stream.scoped,
       );
     const configureBoard: IssueServiceShape["configureBoard"] = (input) =>
