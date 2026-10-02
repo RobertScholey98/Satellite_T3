@@ -29,7 +29,10 @@ vi.mock("~/state/entities", () => ({ useProjects: () => state.projects }));
 vi.mock("~/state/environments", () => ({
   useEnvironments: () => ({ environments: state.environments }),
 }));
-vi.mock("~/state/issues", () => ({ issuesEnvironment: commands }));
+vi.mock("~/state/issues", () => ({
+  issuesEnvironment: commands,
+  useIssueBoardSync: () => undefined,
+}));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("./IssueStartDialog", () => ({ IssueStartDialog: () => null }));
@@ -157,6 +160,7 @@ beforeEach(() => {
       items: [],
       attempts: [],
       moves: [],
+      sync: { revision: 1, syncedAt: "2026-10-02T09:14:00.000Z", syncing: false, failure: null },
     };
     return AsyncResult.success(view);
   });
@@ -295,7 +299,7 @@ describe("IssuesBoard menus", () => {
     expect(button("Second project")).toBeDefined();
     expect(commands.listBoards).toHaveBeenLastCalledWith({
       environmentId,
-      input: { projectId: secondProjectId },
+      input: { projectId: secondProjectId, connectedOnly: true },
     });
   });
 
