@@ -16,6 +16,15 @@ import {
 } from "./providerSetup.ts";
 import * as Schema from "effect/Schema";
 import {
+  RevdocInput,
+  RevdocStartInput,
+  RevdocTestStartInput,
+  RevdocDetail,
+  RevdocSaveInput,
+  RevdocRunState,
+  RevdocError,
+} from "./revdoc.ts";
+import {
   IssuesListInput,
   IssuesListResult,
   IssuesGetInput,
@@ -355,6 +364,12 @@ import {
 } from "./documents.ts";
 
 export const WS_METHODS = {
+  revdocGet: "revdoc.get",
+  revdocStart: "revdoc.start",
+  revdocTestStart: "revdoc.testStart",
+  revdocCancel: "revdoc.cancel",
+  revdocSave: "revdoc.save",
+  revdocChanges: "revdoc.changes",
   documentsList: "documents.list",
   issuesList: "issues.list",
   issuesGet: "issues.get",
@@ -1097,6 +1112,39 @@ const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
 });
 
+const revdocRpcError = Schema.Union([RevdocError, EnvironmentAuthorizationError]);
+const WsRevdocGetRpc = Rpc.make(WS_METHODS.revdocGet, {
+  payload: RevdocInput,
+  success: RevdocDetail,
+  error: revdocRpcError,
+});
+const WsRevdocStartRpc = Rpc.make(WS_METHODS.revdocStart, {
+  payload: RevdocStartInput,
+  success: Schema.Void,
+  error: revdocRpcError,
+});
+const WsRevdocTestStartRpc = Rpc.make(WS_METHODS.revdocTestStart, {
+  payload: RevdocTestStartInput,
+  success: Schema.Void,
+  error: revdocRpcError,
+});
+const WsRevdocCancelRpc = Rpc.make(WS_METHODS.revdocCancel, {
+  payload: RevdocInput,
+  success: Schema.Void,
+  error: revdocRpcError,
+});
+const WsRevdocSaveRpc = Rpc.make(WS_METHODS.revdocSave, {
+  payload: RevdocSaveInput,
+  success: RevdocDetail,
+  error: revdocRpcError,
+});
+const WsRevdocChangesRpc = Rpc.make(WS_METHODS.revdocChanges, {
+  payload: RevdocInput,
+  success: RevdocRunState,
+  error: revdocRpcError,
+  stream: true,
+});
+
 const documentRpcError = Schema.Union([DocumentOperationError, EnvironmentAuthorizationError]);
 const WsDocumentsListRpc = Rpc.make(WS_METHODS.documentsList, {
   payload: DocumentsListInput,
@@ -1721,6 +1769,12 @@ export const WsRpcGroup = RpcGroup.make(
     success: OpenWorkReadLinkedResult,
     error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
   }),
+  WsRevdocGetRpc,
+  WsRevdocStartRpc,
+  WsRevdocTestStartRpc,
+  WsRevdocCancelRpc,
+  WsRevdocSaveRpc,
+  WsRevdocChangesRpc,
   WsDocumentsListRpc,
   WsDocumentsGetRpc,
   WsDocumentsPublishRpc,

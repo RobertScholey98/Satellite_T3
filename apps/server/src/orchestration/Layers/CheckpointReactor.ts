@@ -677,7 +677,7 @@ const make = Effect.gen(function* () {
 
     const threadId = event.payload.threadId;
     const thread = yield* resolveThreadDetail(threadId);
-    if (!thread || thread.purpose === "idea") {
+    if (!thread || (thread.purpose ?? "work") !== "work") {
       return;
     }
     if (event.type === "thread.turn-start-requested") pending.add(threadId);
@@ -936,8 +936,8 @@ const make = Effect.gen(function* () {
   const processRuntimeEvent = Effect.fn("processRuntimeEvent")(function* (
     event: ProviderRuntimeEvent,
   ) {
-    const ideaShell = yield* projectionSnapshotQuery.getThreadShellById(event.threadId);
-    if (Option.isSome(ideaShell) && ideaShell.value.purpose === "idea") return;
+    const threadShell = yield* projectionSnapshotQuery.getThreadShellById(event.threadId);
+    if (Option.isSome(threadShell) && (threadShell.value.purpose ?? "work") !== "work") return;
     if (event.type === "session.exited") {
       startedTurns.delete(event.threadId);
       pending.delete(event.threadId);

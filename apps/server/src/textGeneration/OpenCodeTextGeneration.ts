@@ -1,3 +1,4 @@
+import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
 import {
   IdeaUpdateGenerationResult,
   normalizeIdeaUpdateResult,
@@ -39,6 +40,7 @@ import { prepareOpenCodeIdeaEnvironment } from "../ideas/OpenCodeIdeaEnvironment
 
 const OpenCodeTextGenerationOperation = Schema.Literals([
   "generateIdeaUpdate",
+  "generateRevdoc",
   "generateCommitMessage",
   "generatePrContent",
   "generateBranchName",
@@ -242,7 +244,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
             cwd: input.cwd,
           });
         }
-        if (input.operation === "generateIdeaUpdate") {
+        if (input.operation === "generateIdeaUpdate" || input.operation === "generateRevdoc") {
           const sessionID = session.data.id;
           yield* Effect.addFinalizer(() =>
             Effect.tryPromise({
@@ -291,7 +293,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         }
         const responseParts = result.data?.parts ?? [];
         if (
-          input.operation === "generateIdeaUpdate" &&
+          (input.operation === "generateIdeaUpdate" || input.operation === "generateRevdoc") &&
           responseParts.some((part) => part.type === "tool")
         ) {
           return yield* new TextGenerationError({
@@ -355,7 +357,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     );
 
     const ideaEnvironment =
-      input.operation === "generateIdeaUpdate"
+      input.operation === "generateIdeaUpdate" || input.operation === "generateRevdoc"
         ? yield* prepareOpenCodeIdeaEnvironment({
             directory: input.cwd,
             environment,
@@ -515,6 +517,15 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       };
     });
 
+  const generateRevdoc = (input: RevdocGenerationInput) =>
+    runOpenCodeJson({
+      operation: "generateRevdoc",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: RevdocGenerationResult,
+      modelSelection: input.modelSelection,
+    });
+
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>
     runOpenCodeJson({
       operation: "generateIdeaUpdate",
@@ -525,6 +536,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     }).pipe(Effect.map(normalizeIdeaUpdateResult));
 
   return {
+    generateRevdoc,
     generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,

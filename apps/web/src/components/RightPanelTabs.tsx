@@ -1,3 +1,4 @@
+import { BookOpenCheckIcon } from "lucide-react";
 import { pullRequestHostOf, type SourceControlProviderKind } from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { useProjects, useServerConfigs, useThreadShells } from "~/state/entities";
@@ -615,6 +616,8 @@ function surfaceTitle(
       return "Diff";
     case "files":
       return "Files";
+    case "revdoc":
+      return "Revdoc";
     case "file":
       return surface.relativePath.slice(
         Math.max(surface.relativePath.lastIndexOf("/"), surface.relativePath.lastIndexOf("\\")) + 1,
@@ -692,6 +695,8 @@ function SurfaceIcon({
       return <FileDiff className="size-3 shrink-0" />;
     case "files":
       return <Files className="size-3 shrink-0" />;
+    case "revdoc":
+      return <BookOpenCheckIcon className="size-3 shrink-0" />;
     case "file":
       return (
         <PierreEntryIcon

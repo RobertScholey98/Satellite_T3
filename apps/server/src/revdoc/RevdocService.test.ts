@@ -1,0 +1,799 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { it } from "@effect/vitest";
+import { describe, expect } from "vite-plus/test";
+import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import * as PubSub from "effect/PubSub";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import {
+  CodexSettings,
+  EnvironmentId,
+  OrchestrationEvent,
+  type OrchestrationCommand,
+  type RevdocReview,
+  DEFAULT_SERVER_SETTINGS,
+  OrchestrationProjectShell,
+  OrchestrationThreadShell,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  TextGenerationError,
+  type ModelSelection,
+} from "@t3tools/contracts";
+import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
+import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
+import * as ServerConfig from "../config.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "../provider/ProviderDriver.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as RevdocService from "./RevdocService.ts";
+import type { RevdocGenerationInput, RevdocGenerationResult } from "./RevdocGeneration.ts";
+import { makeCodexTextGeneration } from "../textGeneration/CodexTextGeneration.ts";
+import { writeFakeCli } from "../testUtils/fakeCli.ts";
+
+const threadId = ThreadId.make("review-thread");
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeEvent = Schema.decodeUnknownSync(OrchestrationEvent);
+const decodeThreadShell = Schema.decodeSync(OrchestrationThreadShell);
+const decodeProjectShell = Schema.decodeEffect(OrchestrationProjectShell);
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
+const siblingId = ThreadId.make("same-worktree-thread");
+const otherId = ThreadId.make("other-worktree-thread");
+const defaultModel = { instanceId: ProviderInstanceId.make("codex"), model: "thread-model" };
+const generated: RevdocGenerationResult = {
+  title: "Worktree review",
+  summary: "Changed behavior",
+  context: "Review manually",
+  sections: [
+    {
+      id: "area",
+      area: "Area",
+      items: [
+        {
+          id: "feature",
+          name: "Feature",
+          summary: "New feature",
+          status: "done",
+          prd: [],
+          quirks: [],
+          flags: [],
+          endpoints: [],
+          tests: [{ id: "check", title: "Open the feature", expected: "It opens" }],
+        },
+      ],
+    },
+  ],
+};
+const platform = GitVcsDriver.layer.pipe(
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "revdoc-test-home-" })),
+  Layer.provideMerge(NodeServices.layer),
+);
+const setup = (
+  options: {
+    model?: ModelSelection | null;
+    testingModel?: ModelSelection | null;
+    defaultAction?: "generate" | "generate-and-test";
+    generate?: (
+      input: RevdocGenerationInput,
+    ) => Effect.Effect<RevdocGenerationResult, TextGenerationError>;
+    unavailable?: boolean;
+    assumeDifferentOwner?: boolean;
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const temp = yield* fs.makeTempDirectoryScoped({ prefix: "t3-revdoc-" });
+    const project = path.join(temp, "project");
+    const worktree = path.join(temp, "feature");
+    yield* fs.makeDirectory(project);
+    const command = (cwd: string, args: readonly string[]) =>
+      git.execute({ cwd, args, operation: "test", timeoutMs: 10_000 });
+    yield* command(project, ["init", "-b", "main"]);
+    yield* fs.writeFileString(path.join(project, "app.txt"), "Before\n");
+    yield* command(project, ["add", "app.txt"]);
+    yield* command(project, [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.test",
+      "commit",
+      "-m",
+      "Initial",
+    ]);
+    yield* command(project, ["worktree", "add", "-b", "feature", worktree]);
+    yield* fs.writeFileString(path.join(worktree, "app.txt"), "After\n");
+    const projectId = ProjectId.make("revdoc-project");
+    const timestamp = "2026-10-04T12:00:00.000Z";
+    const shell = (id: ThreadId) =>
+      decodeThreadShell({
+        id,
+        projectId,
+        title: "Review work",
+        modelSelection: defaultModel,
+        runtimeMode: "full-access",
+        branch: "feature",
+        worktreePath: id === otherId ? project : worktree,
+        latestTurn: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        session: null,
+        latestUserMessageAt: null,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        hasActionableProposedPlan: false,
+      });
+    const projectShell = yield* decodeProjectShell({
+      id: projectId,
+      title: "Project",
+      workspaceRoot: project,
+      defaultModelSelection: null,
+      scripts: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const calls: RevdocGenerationInput[] = [];
+    const instance = {
+      instanceId: defaultModel.instanceId,
+      enabled: true,
+      textGeneration: {
+        generateRevdoc: (input: RevdocGenerationInput) => {
+          calls.push(input);
+          return options.generate?.(input) ?? Effect.succeed(generated);
+        },
+      },
+    } as ProviderInstance;
+    const events = yield* PubSub.unbounded<OrchestrationEvent>();
+    const starts = yield* Queue.unbounded<ThreadId>();
+    const dispatched: OrchestrationCommand[] = [];
+    const captured: string[] = [];
+    const png =
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=";
+    const services = yield* Layer.build(
+      RevdocService.layer.pipe(
+        Layer.provide(
+          Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
+            subscribeDomainEvents: PubSub.subscribe(events).pipe(
+              Effect.map(Stream.fromSubscription),
+            ),
+            dispatch: (command) =>
+              Effect.gen(function* () {
+                dispatched.push(command);
+                if (command.type === "thread.turn.start")
+                  yield* Queue.offer(starts, command.threadId);
+                return { sequence: dispatched.length };
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({
+            invoke: <A>(request: PreviewAutomationBroker.PreviewAutomationInvokeInput) =>
+              Effect.sync(() => {
+                captured.push(request.operation);
+                return {
+                  url: "http://localhost/test",
+                  title: "Test",
+                  loading: false,
+                  visibleText: "Feature open",
+                  interactiveElements: [],
+                  accessibilityTree: {},
+                  consoleEntries: [],
+                  networkEntries: [],
+                  actionTimeline: [],
+                  screenshot: { mimeType: "image/png", data: png, width: 1, height: 1 },
+                } as A;
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.succeed(GitVcsDriver.GitVcsDriver, {
+            ...git,
+            execute: (input) =>
+              git.execute({
+                ...input,
+                ...(options.assumeDifferentOwner
+                  ? { env: { ...input.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" } }
+                  : {}),
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+            getThreadShellById: (id) => Effect.succeedSome(shell(id)),
+            getProjectShellById: () => Effect.succeedSome(projectShell),
+            getThreadDetailSnapshot: () => Effect.succeedNone,
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getInstance: () => Effect.succeed(options.unavailable ? undefined : instance),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ServerSettings.ServerSettingsService)({
+            getSettings: Effect.succeed({
+              ...DEFAULT_SERVER_SETTINGS,
+              revdocModelSelection: options.model ?? null,
+              revdocTestingModelSelection: options.testingModel ?? null,
+              revdocDefaultAction: options.defaultAction ?? "generate",
+            }),
+          }),
+        ),
+      ),
+    );
+    const service = Context.get(services, RevdocService.RevdocService);
+    const finished = () =>
+      service.changes({ threadId }).pipe(
+        Stream.filter((state) => !state.running && state.version > 0),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+    const settle = (id: ThreadId, settled = true, status = "ready") =>
+      PubSub.publish(
+        events,
+        decodeEvent({
+          type: "thread.session-set",
+          sequence: 1,
+          eventId: "test-event",
+          aggregateKind: "thread",
+          aggregateId: id,
+          occurredAt: timestamp,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          payload: {
+            threadId: id,
+            ...(settled ? { turnSettled: true } : {}),
+            session: {
+              threadId: id,
+              status,
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: timestamp,
+            },
+          },
+        }),
+      );
+    const tester = Effect.gen(function* () {
+      const id = yield* Queue.take(starts);
+      const detail = yield* service.get({ threadId });
+      return {
+        invocation: {
+          environmentId: EnvironmentId.make("test"),
+          threadId: id,
+          providerSessionId: "session",
+          providerInstanceId: defaultModel.instanceId,
+          capabilities: new Set(["documents", "preview"] as const),
+          issuedAt: 0,
+        } satisfies McpInvocationScope,
+        target: { runId: detail.review!.testing!.id, testId: "check" },
+      };
+    });
+    const saveReview = (review: RevdocReview) =>
+      fs.writeFileString(path.join(worktree, ".revdoc", "review.json"), encodeJson(review));
+    return {
+      fs,
+      path,
+      worktree,
+      project,
+      command,
+      service,
+      calls,
+      finished,
+      settle,
+      tester,
+      dispatched,
+      captured,
+      png,
+      saveReview,
+    };
+  });
+
+describe("worktree Revdoc service", () => {
+  it.effect(
+    "keeps provider resources alive after the start request ends and releases them after the pass",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const requestEnded = yield* Deferred.make<void>();
+        const cliDirectory = yield* fs.makeTempDirectoryScoped({ prefix: "revdoc-provider-" });
+        const cwdRecord = path.join(cliDirectory, "generation-cwd");
+        const binaryPath = yield* Effect.sync(() =>
+          writeFakeCli({
+            directory: cliDirectory,
+            name: "codex",
+            source: [
+              'import { readFileSync, writeFileSync } from "node:fs";',
+              "const args = process.argv.slice(2);",
+              'JSON.parse(readFileSync(args[args.indexOf("--output-schema") + 1], "utf8"));',
+              "for await (const chunk of process.stdin) {}",
+              `writeFileSync(${encodeJson(cwdRecord)}, process.cwd());`,
+              `writeFileSync(args[args.indexOf("--output-last-message") + 1], ${encodeJson(encodeJson(generated))});`,
+            ].join("\n"),
+          }),
+        );
+        const generation = yield* makeCodexTextGeneration(
+          yield* decodeCodexSettings({ binaryPath, homePath: cliDirectory }),
+        );
+        const env = yield* setup({
+          generate: (input) =>
+            Deferred.await(requestEnded).pipe(Effect.andThen(generation.generateRevdoc(input))),
+        });
+        yield* env.service.start({ threadId }).pipe(Effect.scoped);
+        yield* Deferred.succeed(requestEnded, undefined);
+        expect((yield* env.finished()).error).toBeNull();
+        expect((yield* env.service.get({ threadId })).review?.title).toBe(generated.title);
+        const generationCwd = yield* fs.readFileString(cwdRecord);
+        expect(generationCwd).not.toBe(env.worktree);
+        expect(yield* fs.exists(generationCwd)).toBe(false);
+        expect(yield* fs.exists(path.join(env.worktree, ".codex-updates"))).toBe(false);
+        expect(
+          (yield* fs.readDirectory(env.worktree)).filter((name) =>
+            name.startsWith("t3code-codex-"),
+          ),
+        ).toEqual([]);
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect(
+    "prepares an unconfigured worktree before generation and keeps setup on cancellation",
+    () =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const env = yield* setup({
+          generate: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+        });
+        const directory = env.path.join(env.worktree, ".revdoc");
+        expect(yield* env.fs.exists(directory)).toBe(false);
+        yield* env.service.start({ threadId });
+        yield* Deferred.await(entered);
+        expect((yield* env.fs.stat(env.path.join(directory, "evidence"))).type).toBe("Directory");
+        yield* env.fs.writeFileString(
+          env.path.join(directory, "evidence", "capture.png"),
+          "evidence",
+        );
+        expect((yield* env.command(env.worktree, ["status", "--porcelain"])).stdout).not.toContain(
+          ".revdoc",
+        );
+        expect(yield* env.fs.exists(env.path.join(env.project, ".revdoc"))).toBe(false);
+        yield* env.service.cancel({ threadId });
+        expect((yield* env.finished()).result).toBe("cancelled");
+        expect((yield* env.service.get({ threadId })).review).toBeNull();
+        expect(yield* env.fs.exists(directory)).toBe(true);
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("preserves existing configuration and evidence on repeated passes", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      const directory = env.path.join(env.worktree, ".revdoc");
+      yield* env.fs.makeDirectory(env.path.join(directory, "evidence"), { recursive: true });
+      const ignore = env.path.join(directory, ".gitignore");
+      const config = env.path.join(directory, "config.json");
+      const evidence = env.path.join(directory, "evidence", "capture.png");
+      yield* env.fs.writeFileString(ignore, "# Keep local\n*\n");
+      yield* env.fs.writeFileString(config, '{"policy":"manual"}');
+      yield* env.fs.writeFileString(evidence, "existing evidence");
+      for (let pass = 0; pass < 2; pass++) {
+        yield* env.service.start({ threadId });
+        expect((yield* env.finished()).result).toBe("completed");
+      }
+      expect(yield* env.fs.readFileString(ignore)).toBe("# Keep local\n*\n");
+      expect(yield* env.fs.readFileString(config)).toBe('{"policy":"manual"}');
+      expect(yield* env.fs.readFileString(evidence)).toBe("existing evidence");
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect(
+    "explains Git's ownership rejection without running the provider or changing repository trust",
+    () =>
+      Effect.gen(function* () {
+        const env = yield* setup({ assumeDifferentOwner: true });
+        yield* env.service.start({ threadId });
+        const state = yield* env.finished();
+        expect(state.error).toContain("owned by another account");
+        expect(state.error).toContain(env.worktree);
+        expect(state.error).toContain("trust");
+        expect(env.calls).toHaveLength(0);
+        expect((yield* env.service.get({ threadId })).review).toBeNull();
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("allows a new pass as soon as completion is reported", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      for (let pass = 0; pass < 2; pass++) {
+        yield* env.service.start({ threadId });
+        expect((yield* env.finished()).result).toBe("completed");
+        expect(env.calls).toHaveLength(pass + 1);
+      }
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("includes committed changes after Commit and untracked files in the pass", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      yield* env.command(env.worktree, ["add", "app.txt"]);
+      yield* env.command(env.worktree, [
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.test",
+        "commit",
+        "-m",
+        "Feature",
+      ]);
+      yield* env.fs.writeFileString(env.path.join(env.worktree, "new.txt"), "New behavior");
+      yield* env.service.start({ threadId, worktreePath: env.worktree });
+      expect((yield* env.finished()).result).toBe("completed");
+      expect(env.calls[0]?.prompt).toContain("+After");
+      expect(env.calls[0]?.prompt).toContain("New behavior");
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("rejects requests from a panel still showing the thread's previous worktree", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      const result = yield* env.service
+        .start({ threadId, worktreePath: env.project })
+        .pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      expect(env.calls).toHaveLength(0);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("rejects invalid review files without replacing them", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      const directory = env.path.join(env.worktree, ".revdoc");
+      yield* env.fs.makeDirectory(directory);
+      const file = env.path.join(directory, "review.json");
+      yield* env.fs.writeFileString(file, "{");
+      expect((yield* env.service.start({ threadId }).pipe(Effect.result))._tag).toBe("Failure");
+      expect(yield* env.fs.readFileString(file)).toBe("{");
+      expect(env.calls).toHaveLength(0);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect(
+    "generates in the selected worktree, shares it between threads, and keeps it out of Git",
+    () =>
+      Effect.gen(function* () {
+        const env = yield* setup();
+        yield* env.service.start({ threadId });
+        expect((yield* env.finished()).error).toBeNull();
+        const result = yield* env.service.get({ threadId: siblingId });
+        expect(result.review?.title).toBe(generated.title);
+        expect(result.cwd.replaceAll("\\", "/")).toBe(env.worktree.replaceAll("\\", "/"));
+        expect(env.calls[0]?.modelSelection).toEqual(defaultModel);
+        expect(env.calls[0]?.prompt).toContain("+After");
+        expect((yield* env.service.get({ threadId: otherId })).review).toBeNull();
+        expect((yield* env.command(env.worktree, ["status", "--porcelain"])).stdout).not.toContain(
+          ".revdoc",
+        );
+        expect(result.review?.sections[0]?.items[0]?.tests[0]?.outcome).toBe("untested");
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("uses the configured model and prevents duplicate passes in the same worktree", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<RevdocGenerationResult>();
+      const entered = yield* Deferred.make<void>();
+      const configured = {
+        instanceId: ProviderInstanceId.make("claude"),
+        model: "configured-model",
+        options: [{ id: "effort", value: "high" }],
+      };
+      const env = yield* setup({
+        model: configured,
+        generate: () =>
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(gate))),
+      });
+      yield* env.service.start({ threadId });
+      yield* Deferred.await(entered);
+      yield* env.service.start({ threadId: siblingId });
+      expect(env.calls).toHaveLength(1);
+      expect(env.calls[0]?.modelSelection).toEqual(configured);
+      yield* Deferred.succeed(gate, generated);
+      expect((yield* env.finished()).error).toBeNull();
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("persists human feedback and rejects stale saves from a second client", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      yield* env.service.start({ threadId });
+      yield* env.finished();
+      const initial = yield* env.service.get({ threadId });
+      const change = {
+        kind: "test" as const,
+        id: "check",
+        outcome: "broken" as const,
+        feedback: "Cannot open",
+      };
+      const saved = yield* env.service.save({
+        threadId,
+        expectedRevision: initial.revision!,
+        change,
+      });
+      expect(saved.revision).not.toBe(initial.revision);
+      const stale = yield* env.service
+        .save({
+          threadId: siblingId,
+          expectedRevision: initial.revision!,
+          change: { ...change, outcome: "complete" },
+        })
+        .pipe(Effect.result);
+      expect(stale._tag).toBe("Failure");
+      const result = yield* env.service.get({ threadId: siblingId });
+      expect(result.review?.sections[0]?.items[0]?.tests[0]).toMatchObject({
+        outcome: "broken",
+        feedback: "Cannot open",
+      });
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("preserves a review edited while generation is running", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<RevdocGenerationResult>();
+      const entered = yield* Deferred.make<void>();
+      const env = yield* setup({
+        generate: () =>
+          Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(gate))),
+      });
+      yield* env.service.start({ threadId });
+      yield* Deferred.await(entered);
+      yield* env.fs.writeFileString(
+        env.path.join(env.worktree, ".revdoc", "review.json"),
+        encodeJson({ ...generated, notes: "External edit", title: "Updated elsewhere" }),
+      );
+      yield* Deferred.succeed(gate, generated);
+      expect((yield* env.finished()).error).toContain("review changed");
+      expect((yield* env.service.get({ threadId })).review?.title).toBe("Updated elsewhere");
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("cancels the background pass without creating or replacing a review", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const env = yield* setup({
+        generate: () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      });
+      yield* env.service.start({ threadId });
+      yield* Deferred.await(entered);
+      yield* env.service.cancel({ threadId: siblingId });
+      expect((yield* env.finished()).result).toBe("cancelled");
+      expect((yield* env.service.get({ threadId })).review).toBeNull();
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("reports a provider failure and leaves the previous review intact", () =>
+    Effect.gen(function* () {
+      const env = yield* setup({
+        generate: () =>
+          Effect.fail(
+            new TextGenerationError({
+              operation: "generateRevdoc",
+              detail: "Provider unavailable",
+            }),
+          ),
+      });
+      yield* env.fs.makeDirectory(env.path.join(env.worktree, ".revdoc"));
+      yield* env.fs.writeFileString(
+        env.path.join(env.worktree, ".revdoc", "review.json"),
+        encodeJson(generated),
+      );
+      const initial = yield* env.service.get({ threadId });
+      yield* env.service.start({ threadId });
+      expect((yield* env.finished()).error).toContain("Provider unavailable");
+      expect((yield* env.service.get({ threadId })).revision).toBe(initial.revision);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("rejects an unavailable configured provider before starting a job", () =>
+    Effect.gen(function* () {
+      const env = yield* setup({ unavailable: true });
+      const result = yield* env.service.start({ threadId }).pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+      expect(env.calls).toHaveLength(0);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+});
+
+describe("Revdoc AI testing", () => {
+  it.effect(
+    "dispatches a configurable background thread and records real captures without changing human decisions",
+    () =>
+      Effect.gen(function* () {
+        const selected = {
+          instanceId: defaultModel.instanceId,
+          model: "tester-model",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        };
+        const env = yield* setup({ testingModel: selected });
+        yield* env.service.start({ threadId });
+        yield* env.finished();
+        const initial = yield* env.service.get({ threadId });
+        yield* env.service.save({
+          threadId,
+          expectedRevision: initial.revision!,
+          change: { kind: "test", id: "check", outcome: "change", feedback: "Keep my review" },
+        });
+        yield* env.service.startTesting({ threadId, selection: "all" });
+        const { invocation, target } = yield* env.tester;
+        expect(env.dispatched.find((c) => c.type === "thread.turn.start")).toMatchObject({
+          modelSelection: selected,
+          threadId: invocation.threadId,
+        });
+        expect(invocation.threadId).not.toBe(threadId);
+        expect(env.dispatched.find((command) => command.type === "thread.create")).toMatchObject({
+          purpose: "revdoc",
+        });
+        expect((yield* env.service.get({ threadId })).review?.testing?.audience).toBe("revdoc");
+        // A ready session during startup is not a completed turn.
+        yield* env.settle(invocation.threadId, false);
+        yield* env.service.beginTest(invocation, target);
+        const result = {
+          ...target,
+          result: "passed" as const,
+          method: "browser" as const,
+          steps: "Opened the feature",
+          observed: "Feature opens",
+        };
+        expect(
+          (yield* env.service.recordTest(invocation, result).pipe(Effect.flip)).message,
+        ).toContain("Capture Browser evidence");
+        yield* env.service.captureEvidence(invocation, { ...target, caption: "Feature opened" });
+        yield* env.service.recordTest(invocation, result);
+        yield* env.settle(invocation.threadId);
+        expect((yield* env.finished()).error).toBeNull();
+        const detail = yield* env.service.get({ threadId });
+        const test = detail.review!.sections[0]!.items[0]!.tests[0]!;
+        expect(test).toMatchObject({
+          outcome: "change",
+          feedback: "Keep my review",
+          attempts: [
+            {
+              state: "passed",
+              by: "codex / tester-model",
+              evidence: [{ caption: "Feature opened" }],
+            },
+          ],
+        });
+        expect(detail.review?.testing?.status).toBe("completed");
+        expect(detail.staleTestIds).toEqual([]);
+        const evidence = test.attempts![0]!.evidence[0]!;
+        const bytes = yield* env.fs.readFile(env.path.join(env.worktree, ".revdoc", evidence.path));
+        expect(Buffer.from(bytes).toString("base64")).toBe(env.png);
+        expect(env.captured).toEqual(["snapshot"]);
+        yield* env.fs.writeFileString(env.path.join(env.worktree, "app.txt"), "New code");
+        expect((yield* env.service.get({ threadId })).staleTestIds).toEqual(["check"]);
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect("preserves partial results on cancellation and retries only remaining checks", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      yield* env.service.start({ threadId });
+      yield* env.finished();
+      const review = (yield* env.service.get({ threadId })).review!;
+      const item = review.sections[0]!.items[0]!;
+      yield* env.saveReview({
+        ...review,
+        sections: [
+          {
+            ...review.sections[0]!,
+            items: [{ ...item, tests: [...item.tests, { id: "second", title: "Second check" }] }],
+          },
+        ],
+      });
+      yield* env.service.startTesting({ threadId, selection: "all" });
+      const first = yield* env.tester;
+      yield* env.service.beginTest(first.invocation, first.target);
+      yield* env.service.recordTest(first.invocation, {
+        ...first.target,
+        result: "passed",
+        method: "command",
+        steps: "test app",
+        observed: "exit 0",
+      });
+      yield* env.service.cancel({ threadId: siblingId });
+      const cancelled = (yield* env.service.get({ threadId })).review!;
+      expect(cancelled.testing?.status).toBe("cancelled");
+      expect(cancelled.sections[0]!.items[0]!.tests.map((t) => t.attempts?.at(-1)?.state)).toEqual([
+        "passed",
+        "blocked",
+      ]);
+      expect(env.dispatched.at(-1)).toMatchObject({
+        type: "thread.turn.interrupt",
+        threadId: first.invocation.threadId,
+      });
+      yield* env.service.startTesting({ threadId, selection: "remaining" });
+      const second = yield* env.tester;
+      expect((yield* env.service.get({ threadId })).review?.testing?.testIds).toEqual(["second"]);
+      expect(
+        (yield* env.service.beginTest(first.invocation, first.target).pipe(Effect.flip)).message,
+      ).toContain("Only the active");
+      yield* env.settle(second.invocation.threadId);
+      yield* env.finished();
+      const final = (yield* env.service.get({ threadId })).review!;
+      expect(final.sections[0]!.items[0]!.tests[0]!.attempts).toHaveLength(1);
+      expect(final.sections[0]!.items[0]!.tests[1]!.attempts).toHaveLength(2);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect(
+    "rejects reports from another thread and from changed code, including large binary files",
+    () =>
+      Effect.gen(function* () {
+        const env = yield* setup();
+        yield* env.service.start({ threadId });
+        yield* env.finished();
+        const binary = env.path.join(env.worktree, "asset.bin");
+        yield* env.fs.writeFile(binary, new Uint8Array(60_000));
+        yield* env.service.startTesting({ threadId, selection: "all" });
+        const { invocation, target } = yield* env.tester;
+        expect(
+          (yield* env.service.beginTest({ ...invocation, threadId }, target).pipe(Effect.flip))
+            .message,
+        ).toContain("Only the active");
+        yield* env.service.beginTest(invocation, target);
+        yield* env.fs.writeFile(binary, new Uint8Array(60_000).fill(1));
+        expect(
+          (yield* env.service
+            .recordTest(invocation, {
+              ...target,
+              result: "passed",
+              method: "command",
+              steps: "Ran command",
+              observed: "exit 0",
+            })
+            .pipe(Effect.flip)).message,
+        ).toContain("changed during testing");
+        yield* env.service.cancel({ threadId });
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect(
+    "generate-and-test starts the tester after saving the generated review and handles provider errors",
+    () =>
+      Effect.gen(function* () {
+        const env = yield* setup({ defaultAction: "generate-and-test" });
+        yield* env.service.start({ threadId });
+        const { invocation } = yield* env.tester;
+        expect((yield* env.service.get({ threadId })).review?.title).toBe(generated.title);
+        yield* env.settle(invocation.threadId, true, "error");
+        expect((yield* env.finished()).error).toContain("interrupted");
+        const review = (yield* env.service.get({ threadId })).review!;
+        expect(review.testing?.status).toBe("failed");
+        expect(review.sections[0]!.items[0]!.tests[0]!.attempts?.at(-1)?.state).toBe("blocked");
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect(
+    "recovers an abandoned run after restart instead of displaying a permanent spinner",
+    () =>
+      Effect.gen(function* () {
+        const env = yield* setup();
+        yield* env.service.start({ threadId });
+        yield* env.finished();
+        const review = (yield* env.service.get({ threadId })).review!;
+        yield* env.saveReview({
+          ...review,
+          testing: {
+            id: "old-run",
+            threadId,
+            status: "running",
+            sourceRevision: "old",
+            startedAt: "2026-10-04T12:00:00Z",
+            testIds: ["check"],
+          },
+        });
+        expect((yield* env.service.get({ threadId })).review?.testing).toMatchObject({
+          status: "interrupted",
+          error: expect.stringContaining("restarted"),
+        });
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+});

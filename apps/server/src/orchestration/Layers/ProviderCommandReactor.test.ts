@@ -172,7 +172,7 @@ describe("ProviderCommandReactor", () => {
   async function createHarness(input?: {
     readonly baseDir?: string;
     readonly initialTitle?: string;
-    readonly purpose?: "work" | "idea";
+    readonly purpose?: "work" | "idea" | "revdoc";
     readonly deferReactorStart?: boolean;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
@@ -690,38 +690,40 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
-  effectIt.effect("keeps idea prompts out of issue work and worktree setup", () =>
-    Effect.gen(function* () {
-      const harness = yield* Effect.promise(() => createHarness({ purpose: "idea" }));
-      const sending = yield* Deferred.make<Effect.Effect<unknown>>();
-      harness.sendTurn.mockImplementation(() =>
-        Effect.withFiber((fiber) =>
-          Deferred.succeed(sending, Fiber.await(fiber)).pipe(
-            Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+  effectIt.effect.each(["idea", "revdoc"] as const)(
+    "keeps %s prompts out of issue work and worktree setup",
+    (purpose) =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() => createHarness({ purpose }));
+        const sending = yield* Deferred.make<Effect.Effect<unknown>>();
+        harness.sendTurn.mockImplementation(() =>
+          Effect.withFiber((fiber) =>
+            Deferred.succeed(sending, Fiber.await(fiber)).pipe(
+              Effect.as({ threadId: ThreadId.make("thread-1"), turnId: asTurnId("turn-1") }),
+            ),
           ),
-        ),
-      );
-      yield* harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("idea-first-send"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: MessageId.make("idea-prompt"),
-          role: "user",
-          text: "Explore this idea",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      });
-      yield* yield* Deferred.await(sending);
-      yield* Effect.promise(harness.drain);
-      expect(harness.sendTurn).toHaveBeenCalledOnce();
-      expect(harness.firstPromptSent).not.toHaveBeenCalled();
-      expect(harness.createWorktree).not.toHaveBeenCalled();
-      expect(harness.generateBranchName).not.toHaveBeenCalled();
-    }),
+        );
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("idea-first-send"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: MessageId.make("idea-prompt"),
+            role: "user",
+            text: "Explore this idea",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* yield* Deferred.await(sending);
+        yield* Effect.promise(harness.drain);
+        expect(harness.sendTurn).toHaveBeenCalledOnce();
+        expect(harness.firstPromptSent).not.toHaveBeenCalled();
+        expect(harness.createWorktree).not.toHaveBeenCalled();
+        expect(harness.generateBranchName).not.toHaveBeenCalled();
+      }),
   );
 
   effectIt.effect.each(["new", "ready", "stopped"] as const)(

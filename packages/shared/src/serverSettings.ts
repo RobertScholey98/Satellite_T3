@@ -285,6 +285,41 @@ export function applyServerSettingsPatch(
       ideaUpdatesModelSelection = createModelSelection(instanceId, model, options);
     }
   }
+  const revdocSelectionPatch = patch.revdocModelSelection;
+  let revdocModelSelection = current.revdocModelSelection;
+  if (revdocSelectionPatch === null) {
+    revdocModelSelection = null;
+  } else if (revdocSelectionPatch !== undefined) {
+    const instanceId = revdocSelectionPatch.instanceId ?? revdocModelSelection?.instanceId;
+    const model = revdocSelectionPatch.model ?? revdocModelSelection?.model;
+    if (instanceId !== undefined && model !== undefined) {
+      const options = shouldReplaceModelSelection(revdocSelectionPatch)
+        ? revdocSelectionPatch.options
+        : mergeModelSelectionOptionsById({
+            current: revdocModelSelection?.options,
+            patch: revdocSelectionPatch.options,
+          });
+      revdocModelSelection = createModelSelection(instanceId, model, options);
+    }
+  }
+  const revdocTestingSelectionPatch = patch.revdocTestingModelSelection;
+  let revdocTestingModelSelection = current.revdocTestingModelSelection;
+  if (revdocTestingSelectionPatch === null) {
+    revdocTestingModelSelection = null;
+  } else if (revdocTestingSelectionPatch !== undefined) {
+    const instanceId =
+      revdocTestingSelectionPatch.instanceId ?? revdocTestingModelSelection?.instanceId;
+    const model = revdocTestingSelectionPatch.model ?? revdocTestingModelSelection?.model;
+    if (instanceId !== undefined && model !== undefined) {
+      const options = shouldReplaceModelSelection(revdocTestingSelectionPatch)
+        ? revdocTestingSelectionPatch.options
+        : mergeModelSelectionOptionsById({
+            current: revdocTestingModelSelection?.options,
+            patch: revdocTestingSelectionPatch.options,
+          });
+      revdocTestingModelSelection = createModelSelection(instanceId, model, options);
+    }
+  }
   const {
     automaticGitFetchInterval,
     providerHealthRefreshInterval,
@@ -342,6 +377,8 @@ export function applyServerSettingsPatch(
   const nextWithReplacementsBase = {
     ...next,
     ideaUpdatesModelSelection,
+    revdocModelSelection,
+    revdocTestingModelSelection,
     ...(worktreeCleanupPatch === undefined
       ? {}
       : {

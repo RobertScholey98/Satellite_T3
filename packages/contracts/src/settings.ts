@@ -1251,6 +1251,15 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  revdocTestingModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  revdocDefaultAction: Schema.Literals(["generate", "generate-and-test"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("generate" as const)),
+  ),
+  revdocModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   ideaUpdatesModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -1553,6 +1562,9 @@ export const ServerSettingsPatch = Schema.Struct({
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   ideaUpdatesModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
+  revdocModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
+  revdocTestingModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
+  revdocDefaultAction: Schema.optionalKey(Schema.Literals(["generate", "generate-and-test"])),
   sourceControlWritingStyle: Schema.optionalKey(
     Schema.Struct({
       mode: Schema.optionalKey(SourceControlWritingStyleMode),

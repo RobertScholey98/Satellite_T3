@@ -542,6 +542,8 @@ import {
   recallableComposerPrompt,
 } from "./chat/composerPromptHistory";
 
+const RevdocPanel = lazy(() => import("./revdoc/RevdocPanel"));
+
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
@@ -9756,6 +9758,14 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
+    ) : renderedRightPanelSurface?.kind === "revdoc" && activeThreadRef && gitCwd ? (
+      <Suspense fallback={null}>
+        <RevdocPanel
+          key={`${activeThreadRef.environmentId}:${activeThreadRef.threadId}:${gitCwd}`}
+          threadRef={activeThreadRef}
+          worktreePath={gitCwd}
+        />
+      </Suspense>
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         model={agentPanelModel}

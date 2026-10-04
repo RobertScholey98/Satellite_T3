@@ -1,3 +1,4 @@
+import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
 import {
   IdeaUpdateGenerationResult,
   normalizeIdeaUpdateResult,
@@ -107,6 +108,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
+      | "generateRevdoc"
       | "generateIdeaUpdate"
       | "generateThreadTitle",
     value: unknown,
@@ -138,6 +140,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
+      | "generateRevdoc"
       | "generateIdeaUpdate"
       | "generateThreadTitle";
     cwd: string;
@@ -195,7 +198,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       // Titles and notebook updates need only the supplied prompt, not checkout context.
       // Avoid --bare: it also skips the subscription's OAuth credentials.
       const workingDirectory =
-        operation === "generateThreadTitle" || operation === "generateIdeaUpdate"
+        operation === "generateThreadTitle" ||
+        operation === "generateIdeaUpdate" ||
+        operation === "generateRevdoc"
           ? yield* fileSystem
               .makeTempDirectoryScoped({ prefix: "t3code-claude-title-" })
               .pipe(
@@ -208,7 +213,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         claudeSettings.binaryPath || "claude",
         [
           "-p",
-          ...(operation === "generateIdeaUpdate"
+          ...(operation === "generateIdeaUpdate" || operation === "generateRevdoc"
             ? ["--no-session-persistence", "--setting-sources", ""]
             : []),
           "--output-format",
@@ -421,6 +426,15 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       };
     });
 
+  const generateRevdoc = (input: RevdocGenerationInput) =>
+    runClaudeJson({
+      operation: "generateRevdoc",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: RevdocGenerationResult,
+      modelSelection: input.modelSelection,
+    });
+
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>
     runClaudeJson({
       operation: "generateIdeaUpdate",
@@ -430,6 +444,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       modelSelection: input.modelSelection,
     }).pipe(Effect.map(normalizeIdeaUpdateResult));
   return {
+    generateRevdoc,
     generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,

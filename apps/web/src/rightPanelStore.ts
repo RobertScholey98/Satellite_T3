@@ -29,6 +29,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "agents",
+  "revdoc",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -53,6 +54,7 @@ export type RightPanelSurface =
     }
   | { id: "diff"; kind: "diff" }
   | { id: "files"; kind: "files" }
+  | { id: "revdoc"; kind: "revdoc" }
   | {
       id: `file:${string}` | `attachment:${string}`;
       kind: "file";
@@ -187,6 +189,8 @@ const singletonSurface = (
       return { id: "diff", kind };
     case "files":
       return { id: "files", kind };
+    case "revdoc":
+      return { id: "revdoc", kind };
     case "pull-requests":
       return { id: "pull-requests", kind };
     case "agents":

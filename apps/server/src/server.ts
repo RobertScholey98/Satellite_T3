@@ -49,6 +49,7 @@ import { pullRequestHttpApiLayer } from "./pullRequest/http.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import * as RevdocService from "./revdoc/RevdocService.ts";
 import { DocumentService } from "./documents/DocumentService.ts";
 import { OpenWorkService } from "./openWork/OpenWorkService.ts";
 import * as IssueService from "./issues/IssueService.ts";
@@ -651,6 +652,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
   Layer.provide(DocumentService.layer),
+  Layer.provide(RevdocService.layer),
   Layer.provide(OpenWorkService.layer),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),

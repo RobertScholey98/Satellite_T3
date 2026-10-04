@@ -307,6 +307,30 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
       ),
   );
 
+  it.effect("generates Revdoc outside the worktree without tools or persistent sessions", () =>
+    withFakeClaudeEnv(
+      {
+        output:
+          '{"structured_output":{"title":"Review","summary":"Changes","context":"Verify manually","sections":[]}}',
+        argsMustContain: "--no-session-persistence --setting-sources",
+        argsMustNotContain: "--bare",
+        cwdMustNotBe: process.cwd(),
+      },
+      (generation) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateRevdoc!({
+            cwd: process.cwd(),
+            prompt: "Create the worktree review.",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_THINKING_MODEL,
+            ),
+          });
+          expect(result.title).toBe("Review");
+        }),
+    ),
+  );
+
   it.effect("forwards Claude thinking settings without passing unsupported effort", () =>
     withFakeClaudeEnv(
       {
