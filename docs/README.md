@@ -1,10 +1,16 @@
-# T3 Code docs
+# Satellite docs
 
-## Using T3 Code
+Start with the [README](../README.md) for Satellite's purpose, Windows installation,
+and source setup. Guides for inherited features remain available; references to
+T3's hosted services and app-store clients describe upstream infrastructure.
 
-- [Install T3 Code](./user/install.md)
+## Using Satellite
+
+- [Install Satellite](./user/install.md)
 - [Messages and context](./user/composer.md)
-- [Working with threads](./user/thread-sidebar.md)
+- [Ideas and threads](./user/thread-sidebar.md)
+- [Issues and worktree history](./user/issues-and-open-work.md)
+- [Documents and manual reviews](./user/documents.md)
 - [Permission modes](./user/permission-modes.md)
 - [Terminal history](./user/terminal.md)
 - [Source control](./user/source-control.md)
@@ -18,12 +24,12 @@
 - [Product usage data](./user/telemetry.md)
 - [Remote access](./user/remote-access.md)
 - [Running in the background](./user/background-service.md)
-- [Updating T3 Code](./user/updating.md)
+- [Updating Satellite](./user/updating.md)
 - Provider guides: [Codex](./user/providers-codex.md) · [Claude](./user/providers-claude.md) · [OpenCode](./user/providers-opencode.md) · [Antigravity](./user/providers-antigravity.md)
 
 ---
 
-## Working on T3 Code
+## Working on Satellite
 
 Start with the [development runbook](./operations/development.md) and
 [contribution policy](../CONTRIBUTING.md).
@@ -55,7 +61,8 @@ source alone does not explain. Most code changes do not need an internal documen
 
 - [Development and local builds](./operations/development.md)
 - [T3 Connect setup](./operations/connect-setup.md)
-- [Release](./operations/release.md)
+- [Satellite Windows releases](./operations/release.md)
+- [Document authoring](./operations/document-authoring.md)
 - [Observability](./operations/observability.md)
 - [Relay observability](./operations/relay-observability.md)
 - [Mobile app store screenshots](./operations/mobile-app-store-screenshots.md)
