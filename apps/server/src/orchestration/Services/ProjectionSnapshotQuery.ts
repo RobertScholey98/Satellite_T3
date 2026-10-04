@@ -8,6 +8,7 @@
  */
 import type {
   AgentSessionImportSource,
+  CommitRecommendation,
   ApprovalRequestId,
   CheckpointRef,
   MessageId,
@@ -83,6 +84,12 @@ export interface ProjectionThreadDetailQuery {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  /** Read only retained advice, including archived threads, for checkout expiry. */
+  readonly listThreadsWithCommitRecommendations: () => Effect.Effect<
+    ReadonlyArray<{ readonly id: ThreadId; readonly commitRecommendation: CommitRecommendation }>,
+    ProjectionRepositoryError
+  >;
+
   /** Read the latest request or resolution without loading the thread history. */
   readonly getUserInputActivity: (input: {
     readonly threadId: ThreadId;

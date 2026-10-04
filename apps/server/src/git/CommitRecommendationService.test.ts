@@ -5,6 +5,7 @@ import {
   OrchestrationThreadShell,
   ThreadId,
   type OrchestrationCommand,
+  type CommitRecommendation,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -53,16 +54,25 @@ const makeHarness = Effect.fn(function* (
 ) {
   const commands: OrchestrationCommand[] = [];
   const reads: string[] = [];
+  let dirty = options.dirty ?? true;
+  let recommendation: CommitRecommendation | null = null;
   const dependencies = Layer.mergeAll(
     NodeServices.layer,
     Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
       dispatch: (command) =>
         Effect.sync(() => {
           commands.push(command);
+          if (command.type === "thread.meta.update" && command.commitRecommendation !== undefined) {
+            recommendation = command.commitRecommendation;
+          }
           return { sequence: commands.length };
         }),
     }),
     Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+      listThreadsWithCommitRecommendations: () =>
+        Effect.sync(() =>
+          recommendation === null ? [] : [{ id: threadId, commitRecommendation: recommendation }],
+        ),
       getThreadShellById: (id) =>
         Effect.succeed(
           options.missing || id !== threadId
@@ -83,7 +93,7 @@ const makeHarness = Effect.fn(function* (
             isRepo: true,
             branch: "feature",
             headCommit: options.headCommit === undefined ? "head-1" : options.headCommit,
-            hasWorkingTreeChanges: options.dirty ?? true,
+            hasWorkingTreeChanges: dirty,
             workingTree: { files: [], insertions: 0, deletions: 0 },
             hasOriginRemote: false,
             isDefaultBranch: false,
@@ -99,7 +109,15 @@ const makeHarness = Effect.fn(function* (
   const service = yield* CommitRecommendationService.CommitRecommendationService.pipe(
     Effect.provide(CommitRecommendationService.layer.pipe(Layer.provide(dependencies))),
   );
-  return { service, commands, reads };
+  return {
+    service,
+    commands,
+    reads,
+    setDirty: (value: boolean) => {
+      dirty = value;
+    },
+    recommendation: () => recommendation,
+  };
 });
 
 it.effect("anchors and replaces advice using fresh Git state in the thread's worktree", () =>
@@ -162,4 +180,27 @@ it.effect("does not write advice for a missing thread", () =>
     expect(commands).toEqual([]);
     expect(reads).toEqual([]);
   }),
+);
+
+it.effect(
+  "retires persisted advice after a clean status before unrelated edits at the same HEAD",
+  () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.service.set(threadId, { level: "overdue", reason: "Assessed work." });
+      yield* harness.service.readLocalStatus("/repo/worktree");
+      expect(harness.recommendation()).not.toBeNull();
+      harness.setDirty(false);
+      yield* harness.service.readLocalStatus("/another/checkout");
+      expect(harness.recommendation()).not.toBeNull();
+      yield* harness.service.readLocalStatus("/repo/worktree");
+      expect(harness.recommendation()).toBeNull();
+      harness.setDirty(true);
+      yield* harness.service.readLocalStatus("/repo/worktree");
+      expect(harness.recommendation()).toBeNull();
+      expect(harness.commands).toHaveLength(2);
+      expect(harness.commands.at(-1)).toMatchObject({ threadId, commitRecommendation: null });
+      yield* harness.service.set(threadId, { level: "recommended", reason: "New assessment." });
+      expect(harness.recommendation()?.reason).toBe("New assessment.");
+    }),
 );

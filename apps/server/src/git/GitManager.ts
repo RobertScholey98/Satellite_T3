@@ -40,6 +40,7 @@ import {
   hasProjectSettingsOverrides,
   resolveProjectSettings,
 } from "@t3tools/shared/projectSettings";
+import * as CommitRecommendationService from "./CommitRecommendationService.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   detectSourceControlProviderFromGitRemoteUrl,
@@ -695,6 +696,10 @@ function toPullRequestHeadRemoteInfo(pr: {
 
 export const make = Effect.gen(function* () {
   const gitCore = yield* GitVcsDriver.GitVcsDriver;
+  // Standalone CLI Git operations have no durable thread recommendations.
+  const recommendations = yield* Effect.serviceOption(
+    CommitRecommendationService.CommitRecommendationService,
+  );
   const sourceControlProviders = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   const textGeneration = yield* TextGeneration.TextGeneration;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
@@ -1014,11 +1019,27 @@ export const make = Effect.gen(function* () {
     aheadOfDefaultCount: 0,
   } satisfies GitVcsDriver.GitStatusDetails;
   const readLocalStatus = Effect.fn("readLocalStatus")(function* (cwd: string) {
-    const details = yield* gitCore
-      .statusDetailsLocal(cwd)
-      .pipe(
-        Effect.catchIf(isNotGitRepositoryError, () => Effect.succeed(nonRepositoryStatusDetails)),
-      );
+    const details = yield* (
+      Option.isSome(recommendations)
+        ? recommendations.value.readLocalStatus(cwd).pipe(
+            Effect.mapError((cause) =>
+              cause._tag === "CommitRecommendationError"
+                ? new GitManagerError({
+                    operation: "readLocalStatus",
+                    cwd,
+                    detail: cause.message,
+                    cause,
+                  })
+                : cause,
+            ),
+          )
+        : gitCore.statusDetailsLocal(cwd)
+    ).pipe(
+      Effect.catchIf(
+        (cause) => cause._tag === "GitCommandError" && isNotGitRepositoryError(cause),
+        () => Effect.succeed(nonRepositoryStatusDetails),
+      ),
+    );
     const hostingProvider = details.isRepo
       ? yield* resolveHostingProvider(cwd, details.branch)
       : null;

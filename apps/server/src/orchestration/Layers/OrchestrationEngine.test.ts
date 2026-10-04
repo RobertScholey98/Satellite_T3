@@ -29,6 +29,8 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import * as CommitRecommendationService from "../../git/CommitRecommendationService.ts";
+import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import * as OrchestrationCommandReceipts from "../../persistence/Services/OrchestrationCommandReceipts.ts";
@@ -131,7 +133,7 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
-  it("persists commit recommendations through snapshots, restart, and dismissal", async () => {
+  it("persists commit recommendations and their dismissal or clean-checkout expiry across restart", async () => {
     const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-commit-advice-"));
     const databasePath = NodePath.join(directory, "state.sqlite");
     let system = await createOrchestrationSystem(databasePath);
@@ -221,6 +223,56 @@ describe("OrchestrationEngine", () => {
         (await system.run(system.snapshotQuery.getShellSnapshot())).threads[0]
           ?.commitRecommendation,
       ).toBeNull();
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("commit-advice-reassess"),
+          threadId,
+          commitRecommendation: recommendation,
+        }),
+      );
+      const advice = await system.run(
+        CommitRecommendationService.CommitRecommendationService.pipe(
+          Effect.provide(
+            CommitRecommendationService.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(OrchestrationEngineService, system.engine),
+                  Layer.succeed(ProjectionSnapshotQuery, system.snapshotQuery),
+                  Layer.mock(GitVcsDriver.GitVcsDriver)({
+                    statusDetailsLocal: () =>
+                      Effect.succeed({
+                        isRepo: true,
+                        branch: recommendation.branch,
+                        headCommit: recommendation.headCommit,
+                        hasWorkingTreeChanges: false,
+                        workingTree: { files: [], insertions: 0, deletions: 0 },
+                        hasOriginRemote: false,
+                        isDefaultBranch: false,
+                        upstreamRef: null,
+                        hasUpstream: false,
+                        aheadCount: 0,
+                        behindCount: 0,
+                        aheadOfDefaultCount: 0,
+                      }),
+                  }),
+                  NodeServices.layer,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(await system.run(system.snapshotQuery.listThreadsWithCommitRecommendations())).toEqual(
+        [{ id: threadId, commitRecommendation: recommendation }],
+      );
+      await system.run(advice.readLocalStatus(recommendation.cwd));
+      expect(await system.run(system.snapshotQuery.listThreadsWithCommitRecommendations())).toEqual(
+        [],
+      );
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+      expect((await system.readModel()).threads[0]?.commitRecommendation).toBeNull();
     } finally {
       await system.dispose();
       await NodeFSP.rm(directory, { recursive: true, force: true });
@@ -532,6 +584,7 @@ describe("OrchestrationEngine", () => {
               updatedAt: projectionSnapshot.updatedAt,
             }),
           getDeletedWorktreeThreads: () => Effect.die("unused"),
+          listThreadsWithCommitRecommendations: () => Effect.die("unused"),
           listThreadsWithPullRequests: () => Effect.die("unused"),
           getArchivedShellSnapshot: () =>
             Effect.succeed({

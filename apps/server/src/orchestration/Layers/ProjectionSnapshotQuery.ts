@@ -2845,6 +2845,30 @@ pending_approval_requests AS (
       );
   };
 
+  const listCommitRecommendationRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      id: ThreadId,
+      commitRecommendation: Schema.fromJsonString(CommitRecommendation),
+    }),
+    execute: () => sql`
+      SELECT thread_id AS "id", commit_recommendation_json AS "commitRecommendation"
+      FROM projection_threads
+      WHERE deleted_at IS NULL
+        AND commit_recommendation_json IS NOT NULL
+        AND commit_recommendation_json != 'null'
+    `,
+  });
+  const listThreadsWithCommitRecommendations = () =>
+    listCommitRecommendationRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listThreadsWithCommitRecommendations:query",
+          "ProjectionSnapshotQuery.listThreadsWithCommitRecommendations:decodeRows",
+        ),
+      ),
+    );
+
   const listThreadsWithPullRequests: ProjectionSnapshotQueryShape["listThreadsWithPullRequests"] =
     () =>
       listActiveThreadPullRequestSyncRows(undefined).pipe(
@@ -3868,6 +3892,7 @@ pending_approval_requests AS (
     getSnapshot,
     getShellSnapshot,
     listThreadsWithPullRequests,
+    listThreadsWithCommitRecommendations,
     getArchivedShellSnapshot,
     getDeletedWorktreeThreads,
     searchThreads,
