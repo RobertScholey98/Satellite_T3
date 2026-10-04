@@ -147,7 +147,7 @@ const CHANGE_ENTRIES_PER_PAGE = 2000;
  * Where following the pages stops, counted in the entries Azure was asked to skip rather than in
  * the files that survived decoding: a page can be entirely folders and other entries a review has
  * nothing to show for, and bounding on what was kept would follow such a change forever. Every
- * page is an `az` process of its own, so the read gives up and reports itself incomplete rather
+ * page is a request of its own, so the read gives up and reports itself incomplete rather
  * than presenting five pages as the whole change.
  */
 const MAX_CHANGE_ENTRIES = 10_000;
@@ -360,11 +360,9 @@ export const make = Effect.gen(function* () {
     });
 
   /**
-   * A REST route reached through `az devops invoke`, which addresses it by area, resource and
-   * route parameters rather than by URL. Used in place of `az rest` because it signs in the way
-   * the azure-devops extension does: `az rest` mints its own token against the tenant `az`
-   * defaults to, and an organisation in any other tenant answers that with a sign-in page, which
-   * arrives here as unreadable output rather than as a failure.
+   * The shared Azure transport recognizes these read commands and calls REST with reusable
+   * credentials. Keeping its resource names here also preserves the CLI fallback when the
+   * checkout cannot be resolved.
    */
   const invoke = <A>(input: {
     readonly cwd: string;
