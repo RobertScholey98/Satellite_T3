@@ -331,6 +331,34 @@ describe("applyThreadDetailEvent", () => {
   });
 
   describe("thread.meta-updated", () => {
+    it("applies and withdraws commit advice from another client or agent", () => {
+      const recommendation = {
+        level: "recommended" as const,
+        reason: "Ready to commit.",
+        cwd: "/repo",
+        branch: "feature",
+        headCommit: "head-1",
+        assessedAt: baseThread.updatedAt,
+      };
+      let thread = baseThread;
+      for (const commitRecommendation of [recommendation, null]) {
+        const result = applyThreadDetailEvent(thread, {
+          ...baseEventFields,
+          sequence: 5,
+          occurredAt: baseThread.updatedAt,
+          aggregateKind: "thread",
+          aggregateId: thread.id,
+          type: "thread.meta-updated",
+          payload: { threadId: thread.id, commitRecommendation, updatedAt: thread.updatedAt },
+        });
+        expect(result.kind).toBe("updated");
+        if (result.kind === "updated") {
+          expect(result.thread.commitRecommendation).toEqual(commitRecommendation);
+          thread = result.thread;
+        }
+      }
+    });
+
     it.each(["f", null] as const)(
       "updates the active key to %s without activity",
       (activeOrderKey) => {

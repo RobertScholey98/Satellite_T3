@@ -71,6 +71,7 @@ import Migration0056 from "./Migrations/056_IssueBoards.ts";
 import Migration0057 from "./Migrations/057_OpenWork.ts";
 import Migration0058 from "./Migrations/058_IdeaNotebooks.ts";
 import Migration0059 from "./Migrations/059_IssueBoardSnapshots.ts";
+import Migration0060 from "./Migrations/060_ProjectionThreadsCommitRecommendation.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -142,6 +143,7 @@ const migrationEntries = [
   [57, "OpenWork", Migration0057],
   [58, "IdeaNotebooks", Migration0058],
   [59, "IssueBoardSnapshots", Migration0059],
+  [60, "ProjectionThreadsCommitRecommendation", Migration0060],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

@@ -128,7 +128,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         capabilities: new Set<McpInvocationContext.McpCapability>([
           ...(request.capabilities.has("ideas")
             ? []
-            : ["pull-requests" as const, "documents" as const]),
+            : ["pull-requests" as const, "documents" as const, "commits" as const]),
           ...request.capabilities,
         ]),
         issuedAt,

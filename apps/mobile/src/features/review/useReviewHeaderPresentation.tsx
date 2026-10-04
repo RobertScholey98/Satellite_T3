@@ -1,3 +1,4 @@
+import { activeCommitRecommendation } from "@t3tools/client-runtime/commit-recommendation";
 import { useEnvironmentQuery } from "../../state/query";
 import { useSelectedThreadGitActions } from "../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-state";
@@ -46,6 +47,11 @@ export function useReviewHeaderPresentation(props: {
     environmentId: props.environmentId,
     threadId: props.threadId,
     currentBranch: selectedThread?.branch ?? null,
+    commitRecommendation: activeCommitRecommendation(
+      selectedThread?.commitRecommendation,
+      gitStatusQuery.data,
+      props.selectedThreadCwd,
+    ),
     gitStatus: gitStatusQuery.data,
     gitOperationLabel: gitState.gitOperationLabel,
     onPull: gitActions.onPullSelectedThreadBranch,

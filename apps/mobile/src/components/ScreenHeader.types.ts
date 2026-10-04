@@ -32,6 +32,7 @@ export type ScreenHeaderMenuItem =
 
 export interface ScreenHeaderMenu {
   readonly title: string;
+  readonly tintColor?: ColorValue;
   readonly icon: AppSymbolName;
   readonly status?: string;
   readonly separateBackground?: boolean;

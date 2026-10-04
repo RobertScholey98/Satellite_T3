@@ -86,9 +86,23 @@ it.effect(
           .resolve(issued.config.authorizationHeader.replace(/^Bearer\s+/, ""))
           .pipe(Effect.map((scope) => [...(scope?.capabilities ?? [])].sort()));
 
-      expect(yield* capabilitiesOf(withPreview)).toEqual(["documents", "preview", "pull-requests"]);
-      expect(yield* capabilitiesOf(withoutPreview)).toEqual(["documents", "pull-requests"]);
-      expect(yield* capabilitiesOf(withDevice)).toEqual(["device", "documents", "pull-requests"]);
+      expect(yield* capabilitiesOf(withPreview)).toEqual([
+        "commits",
+        "documents",
+        "preview",
+        "pull-requests",
+      ]);
+      expect(yield* capabilitiesOf(withoutPreview)).toEqual([
+        "commits",
+        "documents",
+        "pull-requests",
+      ]);
+      expect(yield* capabilitiesOf(withDevice)).toEqual([
+        "commits",
+        "device",
+        "documents",
+        "pull-requests",
+      ]);
       expect(yield* capabilitiesOf(idea)).toEqual(["ideas"]);
     }),
 );

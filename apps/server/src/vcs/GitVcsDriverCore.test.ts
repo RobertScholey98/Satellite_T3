@@ -339,6 +339,30 @@ it.effect("uses stable diagnostics for every parsed non-repository command", () 
   }).pipe(Effect.provide(layer));
 });
 
+it.effect("reports HEAD for commit advice across unborn, partial-commit, and detached states", () =>
+  Effect.gen(function* () {
+    const driver = yield* GitVcsDriver.GitVcsDriver;
+    const cwd = yield* makeTmpDir();
+    yield* driver.initRepo({ cwd });
+    yield* writeTextFile(cwd, "first.txt", "first\n");
+    const initial = yield* driver.statusDetailsLocal(cwd);
+    assert.equal(initial.headCommit, null);
+    assert.equal(initial.hasWorkingTreeChanges, true);
+    yield* git(cwd, ["config", "user.email", "test@test.com"]);
+    yield* git(cwd, ["config", "user.name", "Test"]);
+    yield* writeTextFile(cwd, "second.txt", "second\n");
+    yield* git(cwd, ["add", "first.txt"]);
+    yield* git(cwd, ["commit", "-m", "First milestone"]);
+    const afterCommit = yield* driver.statusDetailsLocal(cwd);
+    assert.equal(afterCommit.headCommit, yield* git(cwd, ["rev-parse", "HEAD"]));
+    assert.equal(afterCommit.hasWorkingTreeChanges, true);
+    yield* git(cwd, ["checkout", "--detach", "HEAD"]);
+    const detached = yield* driver.status({ cwd });
+    assert.equal(detached.refName, null);
+    assert.equal(detached.headCommit, afterCommit.headCommit);
+  }).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("invalidates origin remote cache when a driver mutation adds origin", () =>
   Effect.gen(function* () {
     const driver = yield* GitVcsDriver.GitVcsDriver;

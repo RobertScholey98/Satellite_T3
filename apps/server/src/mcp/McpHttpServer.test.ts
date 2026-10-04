@@ -15,6 +15,7 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { DocumentService } from "../documents/DocumentService.ts";
+import * as CommitRecommendationService from "../git/CommitRecommendationService.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -445,6 +446,48 @@ it.effect("reports a tagged error when the screenshot cannot be saved", () =>
       });
     }),
   ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("registers commit guidance with validated input and the caller's thread scope", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    expect(server.tools.map(({ tool }) => tool.name)).toEqual(["set_commit_recommendation"]);
+    const call = (
+      args: Record<string, unknown>,
+      capabilities: McpInvocationContext.McpCapability[],
+    ) =>
+      server.callTool({ name: "set_commit_recommendation", arguments: args }).pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, {
+          ...invocation,
+          capabilities: new Set(capabilities),
+        }),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect((yield* call({ level: "none" }, ["preview"])).isError).toBe(true);
+    expect((yield* call({ level: "none" }, ["ideas"])).isError).toBe(true);
+    expect(yield* call({ level: "overdue" }, ["commits"]).pipe(Effect.flip)).toMatchObject({
+      _tag: "InvalidParams",
+    });
+    expect((yield* call({ level: "none" }, ["commits"])).structuredContent).toEqual({
+      recommendation: null,
+    });
+  }).pipe(
+    Effect.provide(
+      McpHttpServer.CommitsToolkitRegistrationLive.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(
+          Layer.mock(CommitRecommendationService.CommitRecommendationService)({
+            set: (id, input) =>
+              Effect.sync(() => {
+                expect(id).toBe(threadId);
+                expect(input).toEqual({ level: "none" });
+                return null;
+              }),
+          }),
+        ),
+      ),
+    ),
+  ),
 );
 
 it.effect(

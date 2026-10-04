@@ -104,6 +104,10 @@ make your first commit before pushing.
 Use a thread's Git actions to commit, push, and create a pull request. T3 Code can generate commit
 messages, review titles, and descriptions from your changes.
 
+Agents can recommend a sensible commit point or flag uncommitted work as overdue, with a short
+explanation. These suggestions are advisory: you decide when to commit and can dismiss them from
+Git actions. A suggestion stops applying after a commit or when the checkout is clean.
+
 Choose the writing style and model in **Settings → Source Control**. **Repository conventions**
 uses the project's instructions and recent commit subjects.
 

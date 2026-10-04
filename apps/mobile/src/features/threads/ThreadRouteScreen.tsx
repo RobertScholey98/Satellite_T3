@@ -1,3 +1,4 @@
+import { activeCommitRecommendation } from "@t3tools/client-runtime/commit-recommendation";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
 import {
@@ -794,6 +795,11 @@ function ThreadRouteContent(
       fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
     onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
     currentBranch: selectedThread?.branch ?? null,
+    commitRecommendation: activeCommitRecommendation(
+      selectedThread?.commitRecommendation,
+      gitStatus.data,
+      selectedThreadCwd,
+    ),
     gitStatus: gitStatus.data,
     gitOperationLabel: gitState.gitOperationLabel,
     canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),

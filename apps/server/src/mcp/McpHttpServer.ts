@@ -40,6 +40,8 @@ import { PullRequestsToolkitHandlersLive } from "./toolkits/pullRequests/handler
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import { DocumentsToolkitHandlersLive } from "./toolkits/documents/handlers.ts";
 import { DocumentsToolkit } from "./toolkits/documents/tools.ts";
+import { CommitsToolkitHandlersLive } from "./toolkits/commits/handlers.ts";
+import { CommitsToolkit } from "./toolkits/commits/tools.ts";
 import {
   DeviceScreenshotToolkitHandlersLive,
   DeviceStandardToolkitHandlersLive,
@@ -659,6 +661,10 @@ export const DocumentsToolkitRegistrationLive = McpServer.toolkit(DocumentsToolk
   Layer.provide(DocumentsToolkitHandlersLive),
 );
 
+export const CommitsToolkitRegistrationLive = McpServer.toolkit(CommitsToolkit).pipe(
+  Layer.provide(CommitsToolkitHandlersLive),
+);
+
 const DeviceStandardToolkitRegistrationLive = McpServer.toolkit(DeviceStandardToolkit).pipe(
   Layer.provide(DeviceStandardToolkitHandlersLive),
 );
@@ -703,5 +709,6 @@ export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DocumentsToolkitRegistrationLive,
+  CommitsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

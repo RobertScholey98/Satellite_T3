@@ -33,6 +33,7 @@ export function createNativeHeaderMenu(menu: ScreenHeaderMenu) {
     <NativeHeaderToolbar.Menu
       key={menu.title}
       title={menu.title}
+      tintColor={menu.tintColor}
       accessibilityLabel={menu.title}
       icon={typeof menu.icon === "string" ? menu.icon : menu.icon.ios}
       separateBackground={menu.separateBackground ?? true}
