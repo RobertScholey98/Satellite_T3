@@ -1,9 +1,17 @@
 # Install Satellite
 
-Satellite's release workflow publishes Windows x64 installers. Download the `.exe`
-from [this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
-These builds are unsigned and use `~/.satellite-t3/userdata`; they do not migrate
+Satellite's release workflow publishes Windows x64 installers and macOS disk images.
+Download the `.exe` for Windows or the `.dmg` for macOS (`arm64` for Apple Silicon,
+`x64` for Intel) from [this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
+These builds use `~/.satellite-t3/userdata`; they do not migrate
 existing T3 Code or development data.
+
+On macOS, open the DMG and drag Satellite into Applications. The macOS builds have
+an ad-hoc signature but are not signed with an Apple Developer ID or notarized.
+If macOS blocks the app, try opening it once, then go to **System Settings → Privacy
+& Security → Open Anyway** and confirm. Only do this for a download you trust from
+this fork. To update, quit Satellite and replace it with the newer app from the
+DMG; your data stays in place.
 
 For a source checkout, use the [README setup](../../README.md#build-and-run-from-source).
 The development launcher uses separate data and disables automatic updates.
@@ -16,8 +24,9 @@ Connect account or `.env` file.
 
 ## Desktop workspace
 
-The workspace opens on launch. In pill mode, closing or minimizing collapses it
-while agents continue working. Click the pill or double-tap Ctrl on Windows to
+The workspace opens on launch. macOS uses a normal window with a Dock entry and
+does not show Pill mode in Settings. On Windows, closing or minimizing in Pill mode
+collapses the workspace while agents continue working. Click the pill or double-tap Ctrl to
 return. See [desktop usage](../../README.md#use-the-desktop-workspace) for pinning,
 position, status, and switching to a normal window.
 
@@ -31,7 +40,7 @@ The [original T3 installation commands](../../README.md#original-t3-installation
 are retained for the upstream CLI, desktop packages, and mobile apps. They install
 upstream T3 Code and do not provide Satellite's fork features. The hosted app at
 `app.t3.codes` is also upstream. Satellite currently publishes no standalone CLI,
-macOS/Linux installer, mobile store release, or bundled WSL runtime.
+Linux installer, mobile store release, or bundled WSL runtime.
 
 ## Providers
 

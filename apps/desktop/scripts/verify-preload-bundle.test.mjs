@@ -15,6 +15,20 @@ const validPreload = `
 `;
 
 describe("desktop preload bundle verifier", () => {
+  it("executes DOM-ready preload setup with Electron's zoom API", () => {
+    assert.doesNotThrow(() =>
+      verifyPreloadBundle(`
+        window.addEventListener("DOMContentLoaded", () => {
+          document.documentElement.style.setProperty(
+            "--desktop-window-controls-inset",
+            String(90 / require("electron").webFrame.getZoomFactor()),
+          );
+          ${validPreload}
+        }, { once: true });
+      `),
+    );
+  });
+
   it("supplies Electron arguments for preload mode selection", () => {
     assert.doesNotThrow(() =>
       verifyPreloadBundle(`

@@ -72,6 +72,9 @@ const createSandboxModules = (exposedGlobals) => {
     webUtils: {
       getPathForFile: () => "",
     },
+    webFrame: {
+      getZoomFactor: () => 1,
+    },
   };
 
   return new Map([
@@ -88,6 +91,8 @@ const createSandboxModules = (exposedGlobals) => {
 };
 
 const executeBundle = (source, sandboxModules) => {
+  const windowEvents = new NodeEvents.EventEmitter();
+  const styleProperties = new Map();
   const sandboxProcess = {
     argv: [],
     contextIsolated: true,
@@ -109,12 +114,25 @@ const executeBundle = (source, sandboxModules) => {
     {
       process: sandboxProcess,
       require: requireSandboxModule,
+      window: {
+        addEventListener: (name, listener, options) => {
+          if (options?.once) windowEvents.once(name, listener);
+          else windowEvents.on(name, listener);
+        },
+      },
+      document: {
+        documentElement: {
+          style: { setProperty: (name, value) => styleProperties.set(name, value) },
+        },
+      },
     },
     {
       filename: "desktop-preload.cjs",
       timeout: preloadExecutionTimeoutMs,
     },
   );
+  // macOS reserves space for native window controls once its DOM is ready.
+  windowEvents.emit("DOMContentLoaded");
 };
 
 export const verifyPreloadBundle = (source) => {
