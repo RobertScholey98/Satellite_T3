@@ -1,3 +1,4 @@
+import { RevdocToolkit, RevdocToolkitHandlersLive } from "./toolkits/revdoc/tools.ts";
 import { IdeaRuntime } from "../ideas/IdeaRuntime.ts";
 import { IdeasToolkit, IdeasImageToolkit, IdeaImageTool } from "./toolkits/ideas/tools.ts";
 import {
@@ -665,6 +666,10 @@ export const CommitsToolkitRegistrationLive = McpServer.toolkit(CommitsToolkit).
   Layer.provide(CommitsToolkitHandlersLive),
 );
 
+export const RevdocToolkitRegistrationLive = McpServer.toolkit(RevdocToolkit).pipe(
+  Layer.provide(RevdocToolkitHandlersLive),
+);
+
 const DeviceStandardToolkitRegistrationLive = McpServer.toolkit(DeviceStandardToolkit).pipe(
   Layer.provide(DeviceStandardToolkitHandlersLive),
 );
@@ -710,5 +715,6 @@ export const layer = Layer.mergeAll(
   PullRequestsToolkitRegistrationLive,
   DocumentsToolkitRegistrationLive,
   CommitsToolkitRegistrationLive,
+  RevdocToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive));

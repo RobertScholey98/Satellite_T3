@@ -1,5 +1,9 @@
 import * as Context from "effect/Context";
+import * as Cache from "effect/Cache";
+import * as Data from "effect/Data";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
@@ -21,6 +25,14 @@ import { GitLabCli } from "../sourceControl/GitLabCli.ts";
 import { AzureDevOpsCli } from "../sourceControl/AzureDevOpsCli.ts";
 import { ForgejoCli } from "../sourceControl/ForgejoCli.ts";
 import { BitbucketApi } from "../sourceControl/BitbucketApi.ts";
+import { CredentialScope } from "../sourceControl/SourceControlRateLimit.ts";
+
+class AzureBoardsKey extends Data.Class<{
+  readonly cwd: string;
+  readonly host: string;
+  readonly organization: string;
+  readonly credentialScope: string;
+}> {}
 
 export interface IssueHostScope {
   readonly cwd: string;
@@ -845,7 +857,7 @@ export const makeIssueHost = (options: {
     });
     const board: IssueHostShape["board"] = (cwd, locator) =>
       locator.kind === "github-project" ? githubBoard(cwd, locator) : azureBoard(cwd, locator);
-    const listBoards: IssueHostShape["listBoards"] = Effect.fn("IssueHost.listBoards")(
+    const loadBoards: IssueHostShape["listBoards"] = Effect.fn("IssueHost.listBoards")(
       function* (scope) {
         const { ref, cwd } = scope;
         if (ref.hostKind === "github") {
@@ -911,7 +923,7 @@ export const makeIssueHost = (options: {
             projects.push(...page.value);
             if (page.value.length < pageSize) break;
           }
-          // Limit concurrent CLI processes: each Azure invocation starts Python.
+          // Bound organization-wide discovery even when the read transport uses HTTP.
           const results = yield* Effect.forEach(
             projects,
             (project) =>
@@ -933,32 +945,37 @@ export const makeIssueHost = (options: {
                   teams.push(...page);
                   if (page.length < pageSize) break;
                 }
-                const boards: { title: string; locator: IssueBoardLocator }[] = [];
-                for (const team of teams) {
-                  const response = yield* validate(
-                    namedList,
-                    yield* readRecord(
-                      yield* az(cwd, organization, "work", "boards", {
-                        project: project.id,
-                        team: team.id,
-                      }),
-                    ),
-                  );
-                  for (const board of response.value) {
-                    boards.push({
-                      title: `${project.name} / ${team.name} / ${board.name}`,
-                      locator: {
-                        kind: "azure-board",
-                        host: ref.host,
-                        organization,
-                        project: project.name,
-                        team: team.id,
-                        boardId: board.id,
-                      },
-                    });
-                  }
-                }
-                return boards;
+                const boards = yield* Effect.forEach(
+                  teams,
+                  (team) =>
+                    Effect.gen(function* () {
+                      const response = yield* validate(
+                        namedList,
+                        yield* readRecord(
+                          yield* az(cwd, organization, "work", "boards", {
+                            project: project.id,
+                            team: team.id,
+                          }),
+                        ),
+                      );
+                      return response.value.map(
+                        (board) =>
+                          ({
+                            title: `${project.name} / ${team.name} / ${board.name}`,
+                            locator: {
+                              kind: "azure-board",
+                              host: ref.host,
+                              organization,
+                              project: project.name,
+                              team: team.id,
+                              boardId: board.id,
+                            },
+                          }) satisfies { title: string; locator: IssueBoardLocator },
+                      );
+                    }),
+                  { concurrency: 3 },
+                );
+                return boards.flat();
               }),
             { concurrency: 3 },
           );
@@ -971,6 +988,39 @@ export const makeIssueHost = (options: {
         });
       },
     );
+    const azureBoards = yield* Cache.makeWith(
+      (key: AzureBoardsKey) =>
+        loadBoards({
+          cwd: key.cwd,
+          ref: {
+            hostKind: "azure-devops",
+            host: key.host,
+            repository: key.organization,
+            id: "0",
+            number: 0,
+            url: "",
+          },
+        }).pipe(Effect.provideService(CredentialScope, key.credentialScope)),
+      {
+        capacity: 32,
+        timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.seconds(60) : Duration.zero),
+      },
+    );
+    const listBoards: IssueHostShape["listBoards"] = (scope) =>
+      scope.ref.hostKind !== "azure-devops"
+        ? loadBoards(scope)
+        : Effect.gen(function* () {
+            const credentialScope = yield* CredentialScope;
+            return yield* Cache.get(
+              azureBoards,
+              new AzureBoardsKey({
+                cwd: scope.cwd,
+                host: scope.ref.host,
+                organization: azureScope(scope.ref).organization,
+                credentialScope,
+              }),
+            );
+          });
     const move: IssueHostShape["move"] = Effect.fn("IssueHost.move")(
       function* (cwd, locator, item, columnId) {
         if (locator.kind === "github-project") {

@@ -25,137 +25,141 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 
 describe("issue launch recovery", () => {
-  it.effect("records work acceptance without issuing lifecycle receipts for an idea", () =>
-    Effect.gen(function* () {
-      yield* projectionMigration;
-      yield* issueMigration;
-      const sourceEnvironmentId = EnvironmentId.make("source");
-      const destinationEnvironmentId = EnvironmentId.make("destination");
-      const projectId = ProjectId.make("destination-project");
-      const unavailable = Effect.fail(
-        new IssueOperationError({
-          reason: "unavailable",
-          message: "The destination must not contact the issue host.",
-        }),
-      );
-      const service = yield* makeIssueService({
-        environmentId: destinationEnvironmentId,
-        getProject: () => Effect.succeed(null),
-        host: {
-          list: () => unavailable,
-          get: () => unavailable,
-          listBoards: () => unavailable,
-          board: () => unavailable,
-          move: () => unavailable,
-        },
-      });
-      const now = "2026-09-30T12:00:00Z";
-      const threads: OrchestrationThreadShell[] = [];
-      const events: OrchestrationEvent[] = [];
-      for (const purpose of ["idea", "work"] as const) {
-        const threadId = ThreadId.make(purpose);
-        threads.push({
-          id: threadId,
-          purpose,
-          projectId,
-          title: purpose,
-          modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
-          runtimeMode: "approval-required",
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-          pullRequests: [],
-          latestTurn: null,
-          createdAt: now,
-          updatedAt: now,
-          archivedAt: null,
-          settledOverride: null,
-          settledAt: null,
-          session: null,
-          latestUserMessageAt: now,
-          hasPendingApprovals: false,
-          hasPendingUserInput: false,
-          hasActionableProposedPlan: false,
-        });
-        yield* service.attachAttempt({
-          link: {
-            attemptId: purpose,
-            reservationId: `reservation-${purpose}`,
-            boardId: "board",
-            sourceEnvironmentId,
-            destinationEnvironmentId,
-            sourceProjectId: projectId,
-            sourceGeneration: 0,
-            issue: {
-              hostKind: "github",
-              host: "github.com",
-              repository: "owner/repo",
-              id: purpose,
-              number: 1,
-              url: "https://github.com/owner/repo/issues/1",
-            },
+  it.effect(
+    "records work acceptance without issuing lifecycle receipts for background agents",
+    () =>
+      Effect.gen(function* () {
+        yield* projectionMigration;
+        yield* issueMigration;
+        const sourceEnvironmentId = EnvironmentId.make("source");
+        const destinationEnvironmentId = EnvironmentId.make("destination");
+        const projectId = ProjectId.make("destination-project");
+        const unavailable = Effect.fail(
+          new IssueOperationError({
+            reason: "unavailable",
+            message: "The destination must not contact the issue host.",
+          }),
+        );
+        const service = yield* makeIssueService({
+          environmentId: destinationEnvironmentId,
+          getProject: () => Effect.succeed(null),
+          host: {
+            list: () => unavailable,
+            get: () => unavailable,
+            listBoards: () => unavailable,
+            board: () => unavailable,
+            move: () => unavailable,
           },
-          threadId,
-          projectId,
-          worktreePath: `/work/${purpose}`,
         });
-        events.push({
-          type: "thread.session-set",
-          sequence: events.length + 1,
-          eventId: EventId.make(purpose),
-          aggregateKind: "thread",
-          aggregateId: threadId,
-          occurredAt: now,
-          commandId: null,
-          causationEventId: null,
-          correlationId: null,
-          metadata: {},
-          payload: {
+        const now = "2026-09-30T12:00:00Z";
+        const threads: OrchestrationThreadShell[] = [];
+        const events: OrchestrationEvent[] = [];
+        for (const purpose of ["idea", "revdoc", "work"] as const) {
+          const threadId = ThreadId.make(purpose);
+          threads.push({
+            id: threadId,
+            purpose,
+            projectId,
+            title: purpose,
+            modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            pullRequests: [],
+            latestTurn: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            session: null,
+            latestUserMessageAt: now,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          });
+          yield* service.attachAttempt({
+            link: {
+              attemptId: purpose,
+              reservationId: `reservation-${purpose}`,
+              boardId: "board",
+              sourceEnvironmentId,
+              destinationEnvironmentId,
+              sourceProjectId: projectId,
+              sourceGeneration: 0,
+              issue: {
+                hostKind: "github",
+                host: "github.com",
+                repository: "owner/repo",
+                id: purpose,
+                number: 1,
+                url: "https://github.com/owner/repo/issues/1",
+              },
+            },
             threadId,
-            session: {
+            projectId,
+            worktreePath: `/work/${purpose}`,
+          });
+          events.push({
+            type: "thread.session-set",
+            sequence: events.length + 1,
+            eventId: EventId.make(purpose),
+            aggregateKind: "thread",
+            aggregateId: threadId,
+            occurredAt: now,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            payload: {
               threadId,
-              status: "running",
-              providerName: "claude",
-              runtimeMode: "approval-required",
-              activeTurnId: TurnId.make(purpose),
-              lastError: null,
-              updatedAt: now,
+              session: {
+                threadId,
+                status: "running",
+                providerName: "claude",
+                runtimeMode: "approval-required",
+                activeTurnId: TurnId.make(purpose),
+                lastError: null,
+                updatedAt: now,
+              },
             },
-          },
-        });
-      }
-      const enqueued = yield* Deferred.make<void>();
-      const reactor = yield* make.pipe(
-        Effect.provideService(IssueService, service),
-        Effect.provide(
-          Layer.mergeAll(
-            Layer.mock(OrchestrationEngineService, {
-              subscribeDomainEvents: Effect.succeed(
-                Stream.fromIterable(events).pipe(
-                  Stream.ensuring(Deferred.succeed(enqueued, undefined)),
+          });
+        }
+        const enqueued = yield* Deferred.make<void>();
+        const reactor = yield* make.pipe(
+          Effect.provideService(IssueService, service),
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.mock(OrchestrationEngineService, {
+                subscribeDomainEvents: Effect.succeed(
+                  Stream.fromIterable(events).pipe(
+                    Stream.ensuring(Deferred.succeed(enqueued, undefined)),
+                  ),
                 ),
-              ),
-            }),
-            Layer.mock(ProjectionSnapshotQuery, {
-              getThreadShellById: (id) =>
-                Effect.succeed(Option.fromUndefinedOr(threads.find((thread) => thread.id === id))),
-              listThreadsWithPullRequests: () => Effect.succeed([]),
-            }),
+              }),
+              Layer.mock(ProjectionSnapshotQuery, {
+                getThreadShellById: (id) =>
+                  Effect.succeed(
+                    Option.fromUndefinedOr(threads.find((thread) => thread.id === id)),
+                  ),
+                listThreadsWithPullRequests: () => Effect.succeed([]),
+              }),
+            ),
           ),
-        ),
-      );
-      yield* reactor.start();
-      yield* Deferred.await(enqueued);
-      yield* reactor.drain;
-      const receipts = yield* service.listReceipts({});
-      assert.deepEqual(
-        receipts.receipts.map((receipt) => [receipt.kind, receipt.threadId]),
-        [["started", ThreadId.make("work")]],
-      );
-      const attempts = yield* service.listAttempts({});
-      assert.equal(attempts.find((attempt) => attempt.threadId === "idea")?.status, "attached");
-      assert.equal(attempts.find((attempt) => attempt.threadId === "work")?.status, "started");
-    }).pipe(Effect.scoped, Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+        );
+        yield* reactor.start();
+        yield* Deferred.await(enqueued);
+        yield* reactor.drain;
+        const receipts = yield* service.listReceipts({});
+        assert.deepEqual(
+          receipts.receipts.map((receipt) => [receipt.kind, receipt.threadId]),
+          [["started", ThreadId.make("work")]],
+        );
+        const attempts = yield* service.listAttempts({});
+        assert.equal(attempts.find((attempt) => attempt.threadId === "idea")?.status, "attached");
+        assert.equal(attempts.find((attempt) => attempt.threadId === "work")?.status, "started");
+      }).pipe(Effect.scoped, Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect(

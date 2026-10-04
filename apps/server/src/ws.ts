@@ -106,6 +106,7 @@ import {
   normalizeDispatchCommand,
 } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
+import * as RevdocService from "./revdoc/RevdocService.ts";
 import { DocumentService } from "./documents/DocumentService.ts";
 import { IssueService } from "./issues/IssueService.ts";
 import { OpenWorkService } from "./openWork/OpenWorkService.ts";
@@ -529,6 +530,7 @@ const makeWsRpcLayer = (
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const ideaStore = yield* IdeaNotebookStore;
       const documents = yield* DocumentService;
+      const revdoc = yield* RevdocService.RevdocService;
       const issues = yield* IssueService;
       const openWork = yield* OpenWorkService;
       const threadDeletionReactor = yield* ThreadDeletionReactor;
@@ -971,7 +973,7 @@ const makeWsRpcLayer = (
                     threadId,
                   }),
                 onSome: (nextThread) =>
-                  nextThread.purpose === "idea"
+                  (nextThread.purpose ?? "work") !== "work"
                     ? Option.none()
                     : Option.some<OrchestrationShellStreamEvent>({
                         kind: "thread-upserted" as const,
@@ -3524,6 +3526,17 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "workspace" },
           ),
+        [WS_METHODS.revdocGet]: (input) =>
+          observeRpcEffect(WS_METHODS.revdocGet, revdoc.get(input)),
+        [WS_METHODS.revdocTestStart]: (input) =>
+          observeRpcEffect(WS_METHODS.revdocTestStart, revdoc.startTesting(input)),
+        [WS_METHODS.revdocStart]: (input) =>
+          observeRpcEffect(WS_METHODS.revdocStart, revdoc.start(input)),
+        [WS_METHODS.revdocCancel]: (input) =>
+          observeRpcEffect(WS_METHODS.revdocCancel, revdoc.cancel(input)),
+        [WS_METHODS.revdocSave]: (input) =>
+          observeRpcEffect(WS_METHODS.revdocSave, revdoc.save(input)),
+        [WS_METHODS.revdocChanges]: (input) => revdoc.changes(input),
         [WS_METHODS.documentsList]: (input) =>
           observeRpcEffect(WS_METHODS.documentsList, documents.list(input)),
         [WS_METHODS.issuesList]: (input) =>
@@ -4313,6 +4326,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     });
     const pullRequests = yield* PullRequestService.PullRequestService;
     const documents = yield* DocumentService;
+    const revdoc = yield* RevdocService.RevdocService;
     const issues = yield* IssueService;
     const openWork = yield* OpenWorkService;
     const sql = yield* SqlClient.SqlClient;
@@ -4364,6 +4378,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               // mutation invalidates the HTTP diff cache that every client reads from.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
               Layer.provide(Layer.succeed(DocumentService, documents)),
+              Layer.provide(Layer.succeed(RevdocService.RevdocService, revdoc)),
               Layer.provide(Layer.succeed(IssueService, issues)),
               Layer.provide(Layer.succeed(OpenWorkService, openWork)),
               Layer.provide(

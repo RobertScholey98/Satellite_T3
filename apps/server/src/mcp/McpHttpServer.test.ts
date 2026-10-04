@@ -16,6 +16,7 @@ import { OrchestrationEngineService } from "../orchestration/Services/Orchestrat
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { DocumentService } from "../documents/DocumentService.ts";
 import * as CommitRecommendationService from "../git/CommitRecommendationService.ts";
+import { RevdocService } from "../revdoc/RevdocService.ts";
 import * as ServerConfig from "../config.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
@@ -72,6 +73,47 @@ const DocumentsTestLayer = McpHttpServer.DocumentsToolkitRegistrationLive.pipe(
         Effect.sync(() => {
           expect(input.threadId).toBe(threadId);
           return [];
+        }),
+    }),
+  ),
+);
+
+const RevdocTestLayer = McpHttpServer.RevdocToolkitRegistrationLive.pipe(
+  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(
+    Layer.mock(RevdocService)({
+      get: (input) =>
+        Effect.sync(() => {
+          expect(input.threadId).toBe(threadId);
+          return { cwd: "/worktree", revision: null, review: null };
+        }),
+      start: (input) =>
+        Effect.sync(() => {
+          expect(input.threadId).toBe(threadId);
+        }),
+      startTesting: (input) =>
+        Effect.sync(() => {
+          expect(input.threadId).toBe(threadId);
+          expect(input.selection).toBe("remaining");
+        }),
+      beginTest: (scope, input) =>
+        Effect.sync(() => {
+          expect(scope.threadId).toBe(threadId);
+          expect(input).toEqual({ runId: "run", testId: "test" });
+        }),
+      captureEvidence: (scope, input) =>
+        Effect.sync(() => {
+          expect(scope.threadId).toBe(threadId);
+          expect(input.caption).toBe("Proof");
+        }),
+      recordTest: (scope, input) =>
+        Effect.sync(() => {
+          expect(scope.threadId).toBe(threadId);
+          expect(input.result).toBe("blocked");
+        }),
+      cancel: (input) =>
+        Effect.sync(() => {
+          expect(input.threadId).toBe(threadId);
         }),
     }),
   ),
@@ -139,6 +181,68 @@ it("normalizes empty successful notification responses to accepted", () => {
   );
   expect(resultResponse.status).toBe(200);
 });
+
+it.effect.each(["read_revdoc", "run_revdoc", "cancel_revdoc"])(
+  "scopes %s to the credential's thread and document capability",
+  (name) =>
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const denied = yield* server
+        .callTool({ name, arguments: {} })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(denied.isError).toBe(true);
+      const allowed = yield* server.callTool({ name, arguments: {} }).pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, {
+          ...invocation,
+          capabilities: new Set(["documents"] as const),
+        }),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+      expect(allowed.isError).toBe(false);
+      if (name === "read_revdoc") {
+        expect(allowed.structuredContent).toEqual({
+          cwd: "/worktree",
+          revision: null,
+          review: null,
+        });
+      }
+    }).pipe(Effect.provide(RevdocTestLayer)),
+);
+
+it.effect.each([
+  { name: "test_revdoc", args: { selection: "remaining" } },
+  { name: "begin_revdoc_test", args: { runId: "run", testId: "test" } },
+  { name: "capture_revdoc_evidence", args: { runId: "run", testId: "test", caption: "Proof" } },
+  {
+    name: "record_revdoc_test",
+    args: {
+      runId: "run",
+      testId: "test",
+      result: "blocked",
+      method: "browser",
+      steps: "Open preview",
+      observed: "No host available",
+    },
+  },
+])("enforces document capability for the testing tool $name", ({ name, args }) =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const call = (scope: typeof invocation | McpInvocationContext.McpInvocationScope) =>
+      server
+        .callTool({ name, arguments: args })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    expect((yield* call(invocation)).isError).toBe(true);
+    expect(
+      (yield* call({ ...invocation, capabilities: new Set(["documents"] as const) })).isError,
+    ).toBe(false);
+  }).pipe(Effect.provide(RevdocTestLayer)),
+);
 
 it.effect.each([{}, { includeImage: false }])(
   "returns bounded structural preview snapshot failures %#",

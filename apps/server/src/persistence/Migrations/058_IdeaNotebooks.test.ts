@@ -96,7 +96,7 @@ const assertCurrentLedger = Effect.gen(function* () {
 it.effect("fresh startup creates usable Ideas, Documents, Issues and Open Work schemas", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations();
+    yield* runMigrations({ toMigrationInclusive: 58 });
     yield* seedThread;
     yield* seedSatelliteContent;
     yield* sql`INSERT INTO projection_idea_notebooks (
@@ -107,7 +107,7 @@ it.effect("fresh startup creates usable Ideas, Documents, Issues and Open Work s
       { excerpt: "A new idea" },
     ]);
     yield* assertCurrentLedger;
-    assert.deepEqual(yield* runMigrations(), []);
+    assert.deepEqual(yield* runMigrations({ toMigrationInclusive: 58 }), []);
     yield* assertSatelliteContent;
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
@@ -118,12 +118,12 @@ it.effect("existing Satellite data survives the Ideas upgrade and another startu
     yield* runMigrations({ toMigrationInclusive: 57 });
     yield* seedThread;
     yield* seedSatelliteContent;
-    assert.deepEqual(yield* runMigrations(), [[58, "IdeaNotebooks"]]);
+    assert.deepEqual(yield* runMigrations({ toMigrationInclusive: 58 }), [[58, "IdeaNotebooks"]]);
     yield* assertSatelliteContent;
     assert.deepEqual(yield* sql`SELECT title, purpose FROM projection_threads`, [
       { title: "Existing thread", purpose: "work" },
     ]);
-    assert.deepEqual(yield* runMigrations(), []);
+    assert.deepEqual(yield* runMigrations({ toMigrationInclusive: 58 }), []);
     yield* assertSatelliteContent;
     yield* assertCurrentLedger;
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -134,7 +134,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* seedLegacyIdeas;
-      assert.deepEqual(yield* runMigrations(), [
+      assert.deepEqual(yield* runMigrations({ toMigrationInclusive: 58 }), [
         [56, "IssueBoards"],
         [57, "OpenWork"],
         [58, "IdeaNotebooks"],
@@ -142,7 +142,7 @@ it.effect(
       yield* assertLegacyIdeasContent;
       yield* assertCurrentLedger;
       yield* seedSatelliteContent;
-      assert.deepEqual(yield* runMigrations(), []);
+      assert.deepEqual(yield* runMigrations({ toMigrationInclusive: 58 }), []);
       yield* assertLegacyIdeasContent;
       yield* assertSatelliteContent;
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -155,7 +155,9 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* seedLegacyIdeas;
       yield* sql`CREATE TABLE managed_documents (sentinel TEXT)`;
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(runMigrations({ toMigrationInclusive: 58 }))),
+      );
       assert.deepEqual(
         yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 55`,
         [{ migration_id: 55, name: "IdeaNotebooks" }],
@@ -166,7 +168,7 @@ it.effect(
       );
       yield* assertLegacyIdeasContent;
       yield* sql`DROP TABLE managed_documents`;
-      yield* runMigrations();
+      yield* runMigrations({ toMigrationInclusive: 58 });
       yield* assertCurrentLedger;
       yield* assertLegacyIdeasContent;
       yield* seedSatelliteContent;
@@ -179,7 +181,7 @@ it.effect("an incomplete legacy Ideas schema fails without creating a false migr
     const sql = yield* SqlClient.SqlClient;
     yield* seedLegacyIdeas;
     yield* sql`DROP TABLE idea_deletion_markers`;
-    assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations())));
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(runMigrations({ toMigrationInclusive: 58 }))));
     assert.deepEqual(
       yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id >= 55`,
       [{ migration_id: 55, name: "IdeaNotebooks" }],

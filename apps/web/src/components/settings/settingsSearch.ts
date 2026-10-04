@@ -470,6 +470,27 @@ export const SETTINGS_SEARCH_ITEMS = [
     desktopOnly: true,
   },
   {
+    id: "revdoc-model",
+    title: "Revdoc",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["review document checklist background agent provider model to-rev-doc"],
+  },
+  {
+    id: "revdoc-testing-model",
+    title: "Revdoc testing model",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["ai test tester browser screenshot proof evidence background provider model"],
+  },
+  {
+    id: "revdoc-auto-test",
+    title: "Test after generating Revdoc",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["generate test automatic default revdoc button"],
+  },
+  {
     id: "text-generation-model",
     title: "Text generation model",
     to: "/settings/general",

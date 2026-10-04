@@ -42,7 +42,7 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           return yield* projectionSnapshotQuery.getCommandReadModel().pipe(
             Effect.map((snapshot) => ({
               ...snapshot,
-              threads: snapshot.threads.filter((thread) => thread.purpose !== "idea"),
+              threads: snapshot.threads.filter((thread) => (thread.purpose ?? "work") === "work"),
             })),
             Effect.catch((cause) =>
               failEnvironmentInternal("orchestration_snapshot_failed", cause),

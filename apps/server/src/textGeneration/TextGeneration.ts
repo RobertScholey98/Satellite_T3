@@ -1,4 +1,5 @@
 import type { IdeaUpdateInput, IdeaUpdateResult } from "../ideas/IdeaUpdateGeneration.ts";
+import type { RevdocGenerationInput, RevdocGenerationResult } from "../revdoc/RevdocGeneration.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -82,6 +83,9 @@ export interface ThreadTitleGenerationResult {
 export class TextGeneration extends Context.Service<
   TextGeneration,
   {
+    readonly generateRevdoc?: (
+      input: RevdocGenerationInput,
+    ) => Effect.Effect<RevdocGenerationResult, TextGenerationError>;
     readonly generateIdeaUpdate?: (
       input: IdeaUpdateInput,
     ) => Effect.Effect<IdeaUpdateResult, TextGenerationError>;

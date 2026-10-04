@@ -71,4 +71,5 @@ it("context file carries every path the playbook depends on", () => {
   assert.include(context, "/home/u/.t3/source");
   assert.include(context, "npx t3 triage");
   assert.include(context, "v0.0.33");
+  assert.include(context, "Repo: https://github.com/RobertScholey98/Satellite_T3");
 });

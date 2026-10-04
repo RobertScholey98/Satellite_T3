@@ -3292,6 +3292,139 @@ export function GeneralSettingsPanel() {
           }
         />
 
+        {(
+          [
+            {
+              settingKey: "revdocModelSelection",
+              id: "revdoc-model",
+              label: "Revdoc model",
+              description:
+                "Runs background review-document passes for the current worktree. Automatic uses the thread’s provider and model.",
+            },
+            {
+              settingKey: "revdocTestingModelSelection",
+              id: "revdoc-testing-model",
+              label: "Revdoc testing model",
+              description:
+                "Runs checks in the review sidebar and records results and screenshots. Automatic uses the Revdoc model, then the thread’s model.",
+            },
+          ] as const
+        ).map(({ settingKey, id, label, description }) => {
+          const selection = settings[settingKey];
+          const instanceEntry = ideaModelInstanceEntries.find(
+            (entry) => entry.instanceId === selection?.instanceId,
+          );
+          const traits =
+            instanceEntry?.driverKind === "codex" &&
+            getProviderOptionStringSelectionValue(selection?.options, "reasoningEffort") ===
+              undefined
+              ? [
+                  ...(selection?.options ?? []),
+                  { id: "reasoningEffort", value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT },
+                ]
+              : selection?.options;
+          const modelOptionsByInstance = getCustomModelOptionsByInstance(
+            settings,
+            serverProviders,
+            selection?.instanceId,
+            selection?.model,
+          );
+          return (
+            <SettingsRow
+              key={settingKey}
+              serverScoped
+              settingKeys={[settingKey]}
+              {...searchableSetting(id)}
+              description={description}
+              control={
+                !hasServerTargets || !hasIdeaProvider ? (
+                  <span className="text-sm text-muted-foreground">
+                    Connect an environment with an enabled provider.
+                  </span>
+                ) : (
+                  <div className="flex flex-wrap items-center justify-end gap-1.5">
+                    <ProviderModelPicker
+                      activeInstanceId={selection?.instanceId ?? textGenInstanceId}
+                      model={selection?.model ?? textGenModel}
+                      lockedProvider={null}
+                      instanceEntries={ideaModelInstanceEntries}
+                      modelOptionsByInstance={modelOptionsByInstance}
+                      triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                      {...(selection === null ? { triggerLabel: "Automatic" } : {})}
+                      getModelDisabledReason={ideaModelDisabledReason}
+                      onInstanceModelChange={(instanceId, model) => {
+                        if (ideaModelDisabledReason(instanceId, model)) return;
+                        const entry = ideaModelInstanceEntries.find(
+                          (candidate) => candidate.instanceId === instanceId,
+                        );
+                        const options =
+                          selection?.instanceId === instanceId && selection.model === model
+                            ? traits
+                            : entry?.driverKind === "codex"
+                              ? [
+                                  {
+                                    id: "reasoningEffort",
+                                    value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
+                                  },
+                                ]
+                              : undefined;
+                        updateSettings({
+                          [settingKey]: createModelSelection(instanceId, model, options),
+                        });
+                      }}
+                    />
+                    {selection && instanceEntry ? (
+                      <TraitsPicker
+                        provider={instanceEntry.driverKind}
+                        models={instanceEntry.models}
+                        model={selection.model}
+                        prompt=""
+                        onPromptChange={() => {}}
+                        modelOptions={traits}
+                        allowPromptInjectedEffort={false}
+                        planModeEnabled={settings.planModeEnabled}
+                        triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                        onModelOptionsChange={(options) => {
+                          updateSettings({
+                            [settingKey]: createModelSelection(
+                              selection.instanceId,
+                              selection.model,
+                              options,
+                            ),
+                          });
+                        }}
+                      />
+                    ) : null}
+                    {selection !== null ? (
+                      <SettingResetButton
+                        label={label}
+                        onClick={() => updateSettings({ [settingKey]: null })}
+                      />
+                    ) : null}
+                  </div>
+                )
+              }
+            />
+          );
+        })}
+
+        <SettingsRow
+          serverScoped
+          settingKeys={["revdocDefaultAction"]}
+          {...searchableSetting("revdoc-auto-test")}
+          description="The Revdoc button generates a review, then starts AI testing. You can still generate without testing from its menu."
+          control={
+            <Switch
+              aria-label="Test after generating Revdoc"
+              disabled={!hasServerTargets}
+              checked={settings.revdocDefaultAction === "generate-and-test"}
+              onCheckedChange={(checked) =>
+                updateSettings({ revdocDefaultAction: checked ? "generate-and-test" : "generate" })
+              }
+            />
+          }
+        />
+
         <SettingsRow
           serverScoped
           settingKeys={["textGenerationModelSelection"]}

@@ -332,6 +332,17 @@ afterEach(async () => {
 });
 
 describe("project board selection", () => {
+  it("shows progress while opening a discovered board and clears it when columns arrive", async () => {
+    const opening = deferred<ReturnType<typeof AsyncResult.success<IssueBoardView>>>();
+    commands.openBoard.mockReturnValue(opening.promise);
+    await mount();
+    await previewDiscovery();
+    const dialog = renderer!.root.findByProps({ role: "dialog" });
+    expect(text(dialog)).toContain("Loading board columns");
+    await act(async () => opening.resolve(AsyncResult.success(boardView(discovered))));
+    expect(text(dialog)).not.toContain("Loading board columns");
+    expect(text(dialog)).toContain("Ready for development");
+  });
   it("shows a discovery failure in the picker and retries without entering board details", async () => {
     commands.listBoards
       .mockResolvedValueOnce(AsyncResult.success([]))

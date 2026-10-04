@@ -185,7 +185,7 @@ function cachedThreadState(value: EnvironmentThreadState): EnvironmentThreadStat
 export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make")(function* (
   threadId: ThreadIdType,
   resumeCache?: ThreadResumeCache,
-  audience: "work" | "idea" = "work",
+  audience: "work" | "idea" | "revdoc" = "work",
 ) {
   const supervisor = yield* EnvironmentSupervisor;
   const cache = yield* EnvironmentCacheStore;
@@ -279,7 +279,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const persist = Effect.fn("EnvironmentThreadState.persist")(function* (
     snapshot: OrchestrationThreadDetailSnapshot,
   ) {
-    if (audience === "idea") return;
+    if (audience !== "work") return;
     if (resumeCache !== undefined && resumeCache.owner !== owner) return;
     if (
       committed.persisted &&
@@ -424,7 +424,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       page: Option.none(),
     });
     yield* remember;
-    if (audience === "idea") return;
+    if (audience !== "work") return;
     if (resumeCache !== undefined && resumeCache.owner !== owner) return;
     yield* cache.removeThread(environmentId, threadId).pipe(
       Effect.catch((error) =>
@@ -843,7 +843,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
 
         return {
           threadId,
-          ...(audience === "idea" ? { audience } : {}),
+          ...(audience !== "work" ? { audience } : {}),
           ...(canResume ? { afterSequence: sequence } : {}),
           ...(supportsCompletionMarker ? { requestCompletionMarker: true as const } : {}),
           ...(supportsReasoningMessages ? { reasoningMessages: true as const } : {}),
@@ -918,7 +918,7 @@ function threadStateChanges(
   environmentId: EnvironmentIdType,
   threadId: ThreadIdType,
   resumeCache?: ThreadResumeCache,
-  audience: "work" | "idea" = "work",
+  audience: "work" | "idea" | "revdoc" = "work",
 ) {
   return followStreamInEnvironment(
     environmentId,
@@ -935,7 +935,7 @@ export function createEnvironmentThreadStateAtoms<R, E>(
     EnvironmentRegistry | EnvironmentCacheStore | ThreadSnapshotLoader | R,
     E
   >,
-  audience: "work" | "idea" = "work",
+  audience: "work" | "idea" | "revdoc" = "work",
 ) {
   // Cache definitions must outlive collectible live-atom definitions. The
   // registry retains these nodes without retaining environment or RPC scopes.

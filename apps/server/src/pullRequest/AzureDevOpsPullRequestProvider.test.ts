@@ -3,11 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as AzureDevOpsPullRequestCli from "./AzureDevOpsPullRequestCli.ts";
-import {
-  LOCATION_CACHE_CAPACITY,
-  make,
-  MAX_DIFF_SPAWNS,
-} from "./AzureDevOpsPullRequestProvider.ts";
+import { LOCATION_CACHE_CAPACITY, make, MAX_DIFF_READS } from "./AzureDevOpsPullRequestProvider.ts";
 import {
   byteLength,
   MAX_DIFF_SLICE_BYTES,
@@ -231,7 +227,7 @@ describe("getDiff reads", () => {
 
       yield* Effect.all([readDiff(7), readDiff(8)], { concurrency: 2 });
 
-      expect(peakInFlight).toBeLessThanOrEqual(MAX_DIFF_SPAWNS);
+      expect(peakInFlight).toBeLessThanOrEqual(MAX_DIFF_READS);
     }),
   );
 
@@ -246,12 +242,22 @@ describe("getDiff reads", () => {
       const read = yield* readSlice({ paths, lines: 2, width: 4, refused: paths });
 
       expect(patchedPaths(read.slice.patch)).toHaveLength(MAX_DIFF_SLICE_FILES);
+      expect(read.reads.length).toBeLessThanOrEqual(64);
       // Well inside the byte budget, so the file count is what stopped it rather than either of
       // the budgets that were already there.
       expect(byteLength(read.slice.patch)).toBeLessThan(MAX_DIFF_SLICE_BYTES);
       expect(parseAzureDevOpsDiffCursor(read.slice.nextCursor)?.fileIndex).toBe(
         MAX_DIFF_SLICE_FILES,
       );
+      const next = yield* readSlice({
+        paths,
+        lines: 2,
+        width: 4,
+        refused: paths,
+        cursor: read.slice.nextCursor!,
+      });
+      expect([...patchedPaths(read.slice.patch), ...patchedPaths(next.slice.patch)]).toEqual(paths);
+      expect(next.slice.nextCursor).toBeNull();
     }),
   );
 

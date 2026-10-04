@@ -98,8 +98,10 @@ export const MAX_DIFF_SLICE_BYTES = 256 * 1024;
 /**
  * How many files one slice carries however little each one weighs. A binary, oversize, or
  * unreadable entry is just a header, so neither budget above stops a run of thousands of them.
+ * Each file can require two remote reads; keep the first page within eight batches of four
+ * files so large PRs can show code before the rest is requested.
  */
-export const MAX_DIFF_SLICE_FILES = 300;
+export const MAX_DIFF_SLICE_FILES = 32;
 
 /** Git's own note for a side whose last line has no newline after it. */
 const NO_NEWLINE_MARKER = "\\ No newline at end of file";

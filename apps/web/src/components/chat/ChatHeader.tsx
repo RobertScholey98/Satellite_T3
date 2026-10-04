@@ -1,3 +1,4 @@
+import { RevdocControl } from "../revdoc/RevdocControl";
 import {
   type EnvironmentId,
   type EditorId,
@@ -400,6 +401,15 @@ export const ChatHeader = memo(function ChatHeader({
             onOpenPullRequest={onOpenPullRequest}
             {...(draftId ? { draftId } : {})}
           />
+          {isServerThread && (
+            <RevdocControl
+              key={`${activeThreadEnvironmentId}:${activeThreadId}:${gitCwd}`}
+              threadRef={activeThreadRef}
+              worktreePath={gitCwd}
+              presentation={actionsCollapsed ? "menu" : "toolbar"}
+              onOpen={() => setActionsOpen(false)}
+            />
+          )}
         </>
       )}
     </>
