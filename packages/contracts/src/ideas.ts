@@ -10,7 +10,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 
-export const ThreadPurpose = Schema.Literals(["work", "idea"]);
+export const ThreadPurpose = Schema.Literals(["work", "idea", "revdoc"]);
 export type ThreadPurpose = typeof ThreadPurpose.Type;
 export const IdeaEntryId = TrimmedNonEmptyString.pipe(Schema.brand("IdeaEntryId"));
 export type IdeaEntryId = typeof IdeaEntryId.Type;

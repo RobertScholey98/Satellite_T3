@@ -110,6 +110,37 @@ const projectionSnapshotLayer = it.layer(
   ),
 );
 
+it.effect(
+  "keeps Revdoc testing runs out of the conversation shell while retaining their detail",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+    VALUES ('review-project', 'Project', '/worktree', '[]', '2026-10-04T12:00:00Z', '2026-10-04T12:00:00Z')`;
+      for (const purpose of ["work", "revdoc"] as const) {
+        yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, purpose, created_at, updated_at)
+      VALUES (${purpose}, 'review-project', 'Run', '{"instanceId":"codex","model":"test"}', 'full-access', 'default', ${purpose}, '2026-10-04T12:00:00Z', '2026-10-04T12:00:00Z')`;
+      }
+      assert.deepEqual(
+        (yield* query.getShellSnapshot()).threads.map((thread) => thread.id),
+        ["work"],
+      );
+      const detail = yield* query.getThreadDetailSnapshot(ThreadId.make("revdoc"));
+      assert.strictEqual(Option.getOrThrow(detail).thread.purpose, "revdoc");
+    }).pipe(
+      Effect.provide(
+        OrchestrationProjectionSnapshotQueryLive.pipe(
+          Layer.provide(ThreadBackgroundLiveness.layer),
+          Layer.provide(ThreadPlanProgress.layer),
+          Layer.provide(RepositoryIdentityResolver.layer),
+          Layer.provideMerge(SqlitePersistenceMemory),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
+);
+
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
   it.effect("hydrates read model from projection tables and computes snapshot sequence", () =>
     Effect.gen(function* () {

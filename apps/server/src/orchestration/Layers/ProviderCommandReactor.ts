@@ -716,7 +716,7 @@ const make = Effect.gen(function* () {
       projects: project ? [project] : [],
     });
     const refreshWorkspaceSnapshot =
-      thread.purpose !== "idea" && effectiveCwd
+      (thread.purpose ?? "work") === "work" && effectiveCwd
         ? providerRegistry
             .refreshWorkspaceSnapshot({ instanceId: desiredInstanceId, cwd: effectiveCwd })
             .pipe(Effect.forkDetach)
@@ -1348,10 +1348,10 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    if (thread.purpose !== "idea") yield* ensureThreadWorktree(thread);
+    if ((thread.purpose ?? "work") === "work") yield* ensureThreadWorktree(thread);
 
     const isCompactCommand = isCompactCommandMessage(message);
-    if (thread.purpose !== "idea" && !hasOtherUserMessages && !isCompactCommand) {
+    if ((thread.purpose ?? "work") === "work" && !hasOtherUserMessages && !isCompactCommand) {
       const project = yield* resolveProject(thread.projectId);
       const generationCwd =
         resolveThreadWorkspaceCwd({
@@ -1524,7 +1524,7 @@ const make = Effect.gen(function* () {
 
     const send = providerService.sendTurn(sendTurnRequest.value).pipe(
       Effect.tap(() =>
-        thread.purpose === "idea"
+        (thread.purpose ?? "work") !== "work"
           ? Effect.void
           : issues
               .firstPromptSent({

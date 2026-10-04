@@ -1,3 +1,4 @@
+import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
 import {
   IdeaUpdateGenerationResult,
   normalizeIdeaUpdateResult,
@@ -420,6 +421,14 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       };
     });
 
+  const generateRevdoc = (input: RevdocGenerationInput) =>
+    runAntigravityJson({
+      operation: "generateRevdoc",
+      prompt: input.prompt,
+      outputSchema: RevdocGenerationResult,
+      modelSelection: input.modelSelection,
+    });
+
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>
     runAntigravityJson({
       operation: "generateIdeaUpdate",
@@ -430,6 +439,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
     }).pipe(Effect.map(normalizeIdeaUpdateResult));
 
   return {
+    generateRevdoc,
     generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,

@@ -199,6 +199,54 @@ function withFakeCodexEnv<A, E, R>(
 }
 
 it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
+  it.effect("generates a Revdoc using the selected model and effort with strict output", () => {
+    const review = {
+      title: "Feature review",
+      summary: "New behavior",
+      context: "Test the changes",
+      sections: [
+        {
+          id: "area",
+          area: "Area",
+          items: [
+            {
+              id: "feature",
+              name: "Feature",
+              status: "done",
+              summary: "Implemented",
+              prd: [],
+              quirks: [],
+              flags: [],
+              endpoints: [],
+              tests: [{ id: "test", title: "Open it", expected: "It opens" }],
+            },
+          ],
+        },
+      ],
+    };
+    return withFakeCodexEnv(
+      {
+        output: JSON.stringify(review),
+        requireStrictSchema: true,
+        requireOwnedOutput: true,
+        requireArg: "--model gpt-5.6-luna",
+        requireReasoningEffort: "high",
+        forbidArg: "--dangerously-bypass-approvals-and-sandbox",
+        launchArgs: "--dangerously-bypass-approvals-and-sandbox",
+      },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const result = yield* generation.generateRevdoc!({
+            cwd,
+            prompt: "Create the worktree review.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna", [
+              { id: "reasoningEffort", value: "high" },
+            ]),
+          });
+          expect(result).toEqual(review);
+        }),
+    );
+  });
   it.effect("sends a strict response schema for notebook updates", () => {
     const update = {
       edits: [

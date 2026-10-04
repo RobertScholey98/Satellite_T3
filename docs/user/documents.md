@@ -35,3 +35,39 @@ The [Open work timeline](issues-and-open-work.md) places published versions besi
 the worktree's commits. A publication keeps its original worktree association
 even if its thread later moves. Folder-linked Markdown and HTML files are live
 references and remain separate from retained publications.
+
+## Worktree reviews
+
+Run **Revdoc** beside Commit to create or update a review checklist in the
+background. The first pass automatically sets up the worktree's `.revdoc/` storage
+and evidence folder; no separate Revdoc installation is needed.
+Open the review from its dropdown to record outcomes, notes, and
+inspect any attached evidence. Threads in the same worktree share the same
+review, saved in the gitignored `.revdoc/review.json`. Agents can read that file
+or use `read_revdoc` to pick up your feedback without an export.
+
+Choose the provider, model, and effort under **Settings → General → Text
+generation → Revdoc**. Automatic uses the current thread's provider and model.
+A pass gathers the thread's recent conversation and the worktree's changes,
+including commits since its default branch. The generation pass creates a checklist. Reruns preserve notes and outcomes, while
+changed test instructions return to Not tested. If another device or agent edits
+the review during a pass, the saved review is preserved and the pass reports a
+conflict. Refresh the review to load edits made outside Satellite.
+
+Use **Test with AI** in the review to run remaining checks in the background.
+Progress, agent activity, questions, and approvals stay in the review sidebar. Choose its provider, model, and effort under **Revdoc testing model** in
+Settings. Automatic uses the review model, falling back to the original thread's
+model. **Generate & test** runs both steps; **Test after generating Revdoc** makes
+that the header button's default.
+
+AI results save as each check finishes, with observed behavior and captured
+Browser screenshots. Browser checks require agent Browser access and a connected
+Browser host; unavailable checks are marked blocked. Expand agent activity to
+inspect the run; answer questions and approvals directly in the review. Stopping a pass preserves
+completed results. Retry remaining checks, failed checks, or an individual check.
+
+Your review verdict and notes stay separate from AI results. Refresh the review
+to compare results with the current code; changes to code or check instructions
+mark older results as needing a retest. Previous attempts and their evidence remain
+available. **Draft fix request** adds failed checks to your composer for you to
+review and send.

@@ -28,7 +28,7 @@ import {
   getProviderOptionCurrentValue,
   getProviderOptionStringSelectionValue,
 } from "@t3tools/shared/model";
-import { useRef, useState, type ComponentProps } from "react";
+import { Fragment, useRef, useState, type ComponentProps } from "react";
 import { Alert, Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -404,7 +404,11 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   </SettingsSection>
                   {!projectSelected
                     ? selectedTargets.map((target) => (
-                        <IdeaUpdatesModelSetting key={target.environmentId} target={target} />
+                        <Fragment key={target.environmentId}>
+                          <BackgroundModelSetting target={target} kind="ideas" />
+                          <BackgroundModelSetting target={target} kind="revdoc" />
+                          <BackgroundModelSetting target={target} kind="revdoc-testing" />
+                        </Fragment>
                       ))
                     : null}
                   <SettingsSection title="Preview browser">
@@ -584,11 +588,23 @@ function FanoutSwitchRow(props: {
   );
 }
 
-function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
+function BackgroundModelSetting({
+  target,
+  kind,
+}: {
+  target: SettingsTarget;
+  kind: "ideas" | "revdoc" | "revdoc-testing";
+}) {
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
   const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: true });
-  const selection = target.serverConfig.settings.ideaUpdatesModelSelection;
+  const settingKey =
+    kind === "ideas"
+      ? "ideaUpdatesModelSelection"
+      : kind === "revdoc"
+        ? "revdocModelSelection"
+        : "revdocTestingModelSelection";
+  const selection = target.serverConfig.settings[settingKey];
   const models = buildModelOptions(target.serverConfig, selection);
   const selectedModel = models.find(
     (model) =>
@@ -611,7 +627,7 @@ function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
     setSaving(true);
     const result = await update({
       environmentId: target.environmentId,
-      input: { patch: { ideaUpdatesModelSelection: model } },
+      input: { patch: { [settingKey]: model } },
     });
     setSaving(false);
     if (result._tag !== "Failure") setExpanded(false);
@@ -623,18 +639,40 @@ function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
       void choose(createModelSelection(selection.instanceId, selection.model, nextOptions));
   };
   return (
-    <SettingsSection title={`Idea updates · ${target.label}`}>
+    <SettingsSection
+      title={`${kind === "ideas" ? "Idea updates" : kind === "revdoc" ? "Revdoc" : "Revdoc testing"} · ${target.label}`}
+    >
       <SettingsRow
         icon="brain"
-        label="Notebook model"
+        label={
+          kind === "ideas" ? "Notebook model" : kind === "revdoc" ? "Review model" : "Testing model"
+        }
         value={selection?.model ?? "Automatic"}
         onPress={() => setExpanded((value) => !value)}
       />
       <View className="px-4 pb-3">
         <Text className="text-sm text-foreground-muted">
-          Organizes notes and updates pitches independently of thread titles.
+          {kind === "ideas"
+            ? "Organizes notes and updates pitches independently of thread titles."
+            : kind === "revdoc"
+              ? "Generates worktree reviews in the background. Automatic uses the thread’s provider and model."
+              : "Tests the worktree in the review sidebar. Automatic uses the Revdoc model, then the thread’s model."}
         </Text>
       </View>
+      {kind === "revdoc-testing" ? (
+        <SettingsSwitchRow
+          icon="brain"
+          label="Test after generating Revdoc"
+          disabled={saving}
+          value={target.serverConfig.settings.revdocDefaultAction === "generate-and-test"}
+          onValueChange={(checked) => {
+            void update({
+              environmentId: target.environmentId,
+              input: { patch: { revdocDefaultAction: checked ? "generate-and-test" : "generate" } },
+            });
+          }}
+        />
+      ) : null}
       {expanded ? (
         <View className="gap-1 p-3">
           <MaterialButton label="Automatic" disabled={saving} onPress={() => void choose(null)} />
@@ -666,7 +704,7 @@ function IdeaUpdatesModelSetting({ target }: { target: SettingsTarget }) {
           ))}
           {!models.length ? (
             <Text className="text-sm text-foreground-muted">
-              Connect a provider to update ideas.
+              Connect a provider to choose a background model.
             </Text>
           ) : null}
         </View>

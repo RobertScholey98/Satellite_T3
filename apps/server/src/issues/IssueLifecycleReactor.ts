@@ -60,7 +60,7 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (event !== null) {
         const thread = yield* projection.getThreadShellById(event.payload.threadId);
-        if (Option.isSome(thread) && thread.value.purpose === "idea") return;
+        if (Option.isSome(thread) && (thread.value.purpose ?? "work") !== "work") return;
       }
       if (event?.type === "thread.pull-request-linked") {
         const link = event.payload.link;
