@@ -2,33 +2,40 @@
 
 ## First checkout
 
-Install `vp` using the [root README](../../README.md#install-vp). The checkout requires Node 24;
-Bun is optional. From the repository root:
+Follow the [root README](../../README.md#build-and-run-from-source) to clone the fork
+and install Node 24 and pnpm 11. From the repository root:
 
-```sh
-vp i
-vp run dev
+```powershell
+pnpm install --frozen-lockfile
+pnpm run dev:satellite
 ```
 
-Open the pairing URL printed by the dev runner. The bare origin does not authenticate
-a new browser.
+This launches Satellite's Windows desktop workspace with isolated server data.
+Install [Vite+](../../README.md#install-vp) to use the `vp` commands below directly;
+`pnpm exec vp` also runs the checkout's installed version. Bun is optional.
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
 
 ## Choosing a dev process
 
+Use `pnpm run dev:satellite` for the Satellite desktop configuration.
 Use `vp run dev` for server and web, or `vp run dev:desktop` for the Electron client.
 `dev:server` and `dev:web` start those processes separately.
 See the [mobile README](../../apps/mobile/README.md) for native builds and Metro.
 
 Flags go directly after the task name, for example `vp run dev --home-dir /tmp/t3code-dev`.
-Add `--browser` to open a browser automatically.
+Add `--browser` to open a browser automatically. For web runs, open the pairing
+URL printed by the dev runner; the bare origin does not authenticate a new browser.
 
 ### State and ports
 
-Linked worktrees default to their own `.t3/userdata`, even when `T3CODE_HOME` is set.
+The Satellite launcher explicitly selects `<checkout>/.t3/satellite/userdata`,
+uses the `satellite-t3-dev` Chromium profile, and disables automatic updates and
+URL-handler registration. It does not migrate installed-app data.
+
+With the general dev runner, linked worktrees default to their own `.t3/userdata`, even when `T3CODE_HOME` is set.
 The main checkout defaults to `~/.t3/dev/userdata`. An explicit `--home-dir` wins in both cases.
-Never run a development server against the live `~/.t3/userdata`.
+Never run a development server against live `~/.satellite-t3/userdata` or `~/.t3/userdata`.
 See [test data](../../AGENTS.md#test-data) for copying a consistent database snapshot.
 
 Read ports from the `[dev-runner]` output. Worktrees derive stable preferences from their paths,
@@ -129,6 +136,15 @@ export check's workspace selectors as more workspaces become clean. Review calle
 deleting code; production mode can also report development scripts and test fixtures.
 Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](../../knip.jsonc).
 
+### Native Satellite fixture
+
+After building the desktop pipeline, `node scripts/satellite-smoke.mjs` runs the
+Windows fixture using separate `.t3/verification` data and no provider turns. It
+checks native window clipping, expansion/collapse motion, zoom, pinning, quit,
+and position restoration. Evidence is written to
+`.t3/verification/native-smoke/artifacts`. This is a native UI check; agents must
+get the maintainer's permission before running it.
+
 ## Desktop artifacts
 
 Local artifact builds are unsigned by default and write to `release/`:
@@ -190,12 +206,14 @@ rustup target add x86_64-pc-windows-msvc
 rustup target add aarch64-pc-windows-msvc
 ```
 
-NSIS is downloaded by electron-builder. WSL support additionally needs the Linux CLI archive
-passed as `--wsl-runtime`; see the
-[release runbook](./release.md#windows-payload-topology-and-update-validation).
+NSIS is downloaded by electron-builder. Satellite's release workflow does not
+bundle a WSL runtime. Custom builds with WSL support need a matching Linux CLI
+archive passed as `--wsl-runtime`; see the
+[upstream packaging reference](https://github.com/pingdotgg/t3code/blob/main/docs/operations/release.md#windows-payload-topology-and-update-validation).
 
 ### Signing and passkeys
 
-Add `--signed` after configuring the platform credentials in the
-[release runbook](./release.md). macOS passkeys need a signed, provisioned app; follow the
+Satellite's Windows release workflow builds unsigned installers. For custom signed
+builds, add `--signed` after configuring the platform credentials described in the
+[upstream signing reference](https://github.com/pingdotgg/t3code/blob/main/docs/operations/release.md). macOS passkeys need a signed, provisioned app; follow the
 [Connect setup](./connect-setup.md#desktop-passkeys) for local signing and renderer HMR.

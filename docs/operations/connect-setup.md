@@ -6,14 +6,15 @@ provisioning instructions.
 
 ## Public application configuration
 
-T3 Connect is disabled in a fresh clone. To build against the production deployment, copy the
-repository-root example:
+Hosted connections are optional and disabled in a fresh Satellite clone. This fork
+does not ship credentials for T3's production deployment. To configure a relay you
+operate, copy the repository-root example:
 
 ```sh
 cp .env.example .env
 ```
 
-For another deployment, set these values in the repository-root `.env` or `.env.local`:
+Uncomment and fill in these values in the repository-root `.env` or `.env.local`:
 
 ```dotenv
 T3CODE_CLERK_PUBLISHABLE_KEY=<publishable key>
@@ -97,7 +98,7 @@ For a production macOS app with bundle ID `com.t3tools.t3code`:
    This setting also configures Electron/macOS passkeys.
 4. Check `https://<frontend-api>/.well-known/apple-app-site-association`. Its
    `webcredentials.apps` must include `<TEAM_ID>.com.t3tools.t3code`.
-5. Configure signing as described in the [release runbook](./release.md#2-apple-signing--notarization-setup-macos).
+5. Configure signing as described in the [upstream signing reference](https://github.com/pingdotgg/t3code/blob/main/docs/operations/release.md#2-apple-signing--notarization-setup-macos).
 
 Local signed builds additionally use:
 

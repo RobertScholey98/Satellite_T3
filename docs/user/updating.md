@@ -1,4 +1,22 @@
-# Updating T3 Code
+# Updating Satellite
+
+## Satellite desktop and source builds
+
+Installed SatelliteT3 builds use this fork's desktop update feed. Install the
+offered update, or download the Windows installer from
+[this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
+Stable installs follow stable releases. Updating the desktop app also updates
+its bundled local server.
+
+The `dev:satellite` launcher disables automatic updates. Update your checkout,
+run `pnpm install --frozen-lockfile`, and restart `pnpm run dev:satellite`.
+
+Satellite does not publish the npm `t3` package or standalone CLI archives. The
+`t3 update` and `npx t3` commands below apply to an upstream T3 server you have
+connected to, not to a Satellite source checkout or desktop installation. App
+Store and Google Play updates likewise apply to upstream mobile clients.
+
+## Connected environments
 
 The app you use and the server running your agents can be on different machines.
 When a server is behind your web or desktop app, an update notice appears in the
