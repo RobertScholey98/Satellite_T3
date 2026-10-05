@@ -73,6 +73,7 @@ import Migration0058 from "./Migrations/058_IdeaNotebooks.ts";
 import Migration0059 from "./Migrations/059_IssueBoardSnapshots.ts";
 import Migration0060 from "./Migrations/060_RevdocTesting.ts";
 import Migration0061 from "./Migrations/061_ProjectionThreadsCommitRecommendation.ts";
+import Migration0062 from "./Migrations/062_ProjectionRequestLifecycleIndex.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -146,6 +147,7 @@ const migrationEntries = [
   [59, "IssueBoardSnapshots", Migration0059],
   [60, "RevdocTesting", Migration0060],
   [61, "ProjectionThreadsCommitRecommendation", Migration0061],
+  [62, "ProjectionRequestLifecycleIndex", Migration0062],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

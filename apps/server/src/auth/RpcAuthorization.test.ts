@@ -3,6 +3,7 @@ import {
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
+  ORCHESTRATION_WS_METHODS,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -17,6 +18,12 @@ import {
 describe("RPC authorization scopes", () => {
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
+  });
+
+  it("allows request lifecycle recovery with read access", () => {
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_WS_METHODS.getRequestLifecycle)).toBe(
+      AuthOrchestrationReadScope,
+    );
   });
 
   it("authorizes background policy reporting and observation deliberately", () => {
