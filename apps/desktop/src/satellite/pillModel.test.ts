@@ -47,68 +47,84 @@ describe("Satellite action wing placement", () => {
   const area = { x: 0, y: 0, width: 1920, height: 1040 };
   const anchor = { x: 1576, y: 946, width: 320, height: 70 };
 
-  it("expands upward without moving the compact pill anchor", () => {
+  it("clamps the whole row at the right edge and opens above it", () => {
     const result = resolvePillLayout(anchor, { mode: "panel", wing: true }, [area]);
     expect(result).toEqual({
-      bounds: { x: 1456, y: 434, width: 440, height: 582 },
+      bounds: { x: 1480, y: 434, width: 440, height: 582 },
       layout: {
         mode: "panel",
         width: 440,
         height: 582,
-        pill: { x: 120, y: 512, width: 320, height: 70 },
-        wing: { x: 30, y: 512, width: 90, height: 70 },
+        pill: { x: 30, y: 512, width: 320, height: 70 },
+        wing: { x: 350, y: 512, width: 90, height: 70 },
         panel: { x: 0, y: 0, width: 440, height: 500 },
       },
       shape: [
-        { x: 120, y: 512, width: 320, height: 70 },
-        { x: 30, y: 512, width: 90, height: 70 },
+        { x: 30, y: 512, width: 320, height: 70 },
+        { x: 350, y: 512, width: 90, height: 70 },
         { x: 0, y: 0, width: 440, height: 500 },
       ],
     });
   });
 
-  it("grows the preview on the same side and restores the original compact bounds", () => {
-    expect(resolvePillLayout(anchor, { mode: "preview", wing: true }, [area]).bounds).toEqual({
-      x: 1256,
-      y: 946,
-      width: 640,
-      height: 70,
-    });
-    expect(resolvePillLayout(anchor, { mode: "compact", wing: true }, [area]).bounds).toEqual({
-      x: 1486,
-      y: 946,
-      width: 410,
-      height: 70,
-    });
+  it("keeps native bounds and row coordinates stable through every wing mode", () => {
+    for (const mode of ["compact", "preview", "panel"] as const) {
+      const result = resolvePillLayout(anchor, { mode, wing: true }, [area]);
+      expect(result.bounds).toEqual({ x: 1480, y: 434, width: 440, height: 582 });
+      expect(result.layout.pill).toEqual({ x: 30, y: 512, width: 320, height: 70 });
+      expect(result.layout.wing).toEqual({ x: 350, y: 512, width: 90, height: 70 });
+      expect(result.shape).toEqual([
+        { x: 30, y: 512, width: 320, height: 70 },
+        { x: 350, y: 512, width: 90, height: 70 },
+        ...(mode === "panel" ? [{ x: 0, y: 0, width: 440, height: 500 }] : []),
+      ]);
+    }
     expect(resolvePillLayout(anchor, { mode: "compact", wing: false }, [area]).bounds).toEqual(
       anchor,
     );
   });
 
-  it("uses content height and opens below a pill near the top edge", () => {
-    const result = resolvePillLayout(
-      { x: 100, y: 100, width: 320, height: 70 },
-      { mode: "panel", wing: true, panelHeight: 300 },
-      [area],
-    );
-    expect(result.bounds).toEqual({ x: 70, y: 100, width: 440, height: 382 });
-    expect(result.layout.panel).toEqual({ x: 0, y: 82, width: 440, height: 300 });
-    expect(result.layout.pill).toEqual({ x: 30, y: 0, width: 320, height: 70 });
+  it("reserves the panel and preview below a top-edge pill without making blank space interactive", () => {
+    for (const mode of ["compact", "preview", "panel"] as const) {
+      const result = resolvePillLayout(
+        { x: 100, y: 100, width: 320, height: 70 },
+        { mode, wing: true },
+        [area],
+      );
+      expect(result.bounds).toEqual({ x: 70, y: 100, width: 670, height: 582 });
+      expect(result.layout.pill).toEqual({ x: 30, y: 0, width: 320, height: 70 });
+      expect(result.layout.wing).toEqual({
+        x: 350,
+        y: 0,
+        width: mode === "preview" ? 320 : 90,
+        height: 70,
+      });
+      expect(result.layout.panel).toEqual(
+        mode === "panel" ? { x: 0, y: 82, width: 440, height: 500 } : null,
+      );
+      expect(
+        result.shape.some(
+          (rect) =>
+            rect.x <= 600 &&
+            rect.x + rect.width > 600 &&
+            rect.y <= 100 &&
+            rect.y + rect.height > 100,
+        ),
+      ).toBe(false);
+    }
   });
 
   it("clamps panel height and preview width to the work area", () => {
     const small = { x: 0, y: 0, width: 700, height: 500 };
     const position = { x: 190, y: 100, width: 320, height: 70 };
-    const result = resolvePillLayout(position, { mode: "panel", wing: true, panelHeight: 640 }, [
-      small,
-    ]);
-    expect(result.bounds).toEqual({ x: 160, y: 100, width: 440, height: 400 });
+    const result = resolvePillLayout(position, { mode: "panel", wing: true }, [small]);
+    expect(result.bounds).toEqual({ x: 160, y: 100, width: 540, height: 400 });
     expect(result.layout.panel).toEqual({ x: 0, y: 82, width: 440, height: 318 });
     expect(resolvePillLayout(position, { mode: "preview", wing: true }, [small]).bounds).toEqual({
-      x: 190,
+      x: 160,
       y: 100,
-      width: 510,
-      height: 70,
+      width: 540,
+      height: 400,
     });
   });
 
@@ -119,19 +135,20 @@ describe("Satellite action wing placement", () => {
       { mode: "panel", wing: true },
       [area, secondary],
     );
-    expect(result.bounds).toEqual({ x: -520, y: 88, width: 440, height: 582 });
-    expect(result.layout.pill).toEqual({ x: 120, y: 512, width: 320, height: 70 });
+    expect(result.bounds).toEqual({ x: -440, y: 88, width: 440, height: 582 });
+    expect(result.layout.pill).toEqual({ x: 30, y: 512, width: 320, height: 70 });
   });
 
-  it("stacks a wing when a monitor is too narrow for horizontal attachment", () => {
+  it("narrows the main pill so the wing stays on the right on a small monitor", () => {
     const result = resolvePillLayout(
       { x: 0, y: 0, width: 320, height: 70 },
       { mode: "panel", wing: true },
       [{ x: 0, y: 0, width: 320, height: 500 }],
     );
     expect(result.bounds).toEqual({ x: 0, y: 0, width: 320, height: 500 });
-    expect(result.layout.wing).toEqual({ x: 0, y: 70, width: 90, height: 70 });
-    expect(result.layout.panel).toEqual({ x: 0, y: 152, width: 320, height: 348 });
+    expect(result.layout.pill).toEqual({ x: 0, y: 0, width: 230, height: 70 });
+    expect(result.layout.wing).toEqual({ x: 230, y: 0, width: 90, height: 70 });
+    expect(result.layout.panel).toEqual({ x: 0, y: 82, width: 320, height: 418 });
   });
 });
 
