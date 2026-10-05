@@ -27,6 +27,8 @@ describe("retained Satellite workspace", () => {
     root = createRoot(host);
     bridge = {
       publish: vi.fn(),
+      openMain: vi.fn(),
+      onAttentionIntent: () => vi.fn(),
       hideMain: vi.fn(),
       setPinned: vi.fn(),
       onShellState: (next) => {

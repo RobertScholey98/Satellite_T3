@@ -11,6 +11,7 @@ export const testIdeaId = ThreadId.make("boundary-idea");
 export const unusedIdeaSnapshots = ProjectionSnapshotQuery.of({
   getTurnStartMessage: () => Effect.die("unused"),
   getImportedAgentSessionSources: () => Effect.die("unused"),
+  getRequestLifecycle: () => Effect.die("unused"),
   getUserInputActivity: () => Effect.die("unused"),
   listActivitiesByKind: () => Effect.die("unused"),
   getCommandReadModel: () => Effect.die("unused"),

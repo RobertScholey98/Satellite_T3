@@ -14,6 +14,9 @@ import type {
   MessageId,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
+  OrchestrationGetRequestLifecycleInput,
+  OrchestrationGetRequestLifecycleResult,
+  OrchestrationGetRequestLifecycleError,
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
@@ -84,6 +87,13 @@ export interface ProjectionThreadDetailQuery {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  readonly getRequestLifecycle: (
+    input: OrchestrationGetRequestLifecycleInput,
+  ) => Effect.Effect<
+    OrchestrationGetRequestLifecycleResult,
+    ProjectionRepositoryError | OrchestrationGetRequestLifecycleError
+  >;
+
   /** Read only retained advice, including archived threads, for checkout expiry. */
   readonly listThreadsWithCommitRecommendations: () => Effect.Effect<
     ReadonlyArray<{ readonly id: ThreadId; readonly commitRecommendation: CommitRecommendation }>,

@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   clampPillBounds,
   handleMainClose,
   resolvePillBounds,
+  resolvePillLayout,
   resolveWorkspaceBounds,
   unavailablePillState,
 } from "./pillModel.ts";
@@ -39,6 +41,138 @@ describe("Satellite pill placement", () => {
       height: 70,
     });
   });
+});
+
+describe("Satellite action wing placement", () => {
+  const area = { x: 0, y: 0, width: 1920, height: 1040 };
+  const anchor = { x: 1576, y: 946, width: 320, height: 70 };
+
+  it("clamps the whole row at the right edge and opens above it", () => {
+    const result = resolvePillLayout(anchor, { mode: "panel", wing: true }, [area]);
+    expect(result).toEqual({
+      bounds: { x: 1480, y: 434, width: 440, height: 582 },
+      layout: {
+        mode: "panel",
+        width: 440,
+        height: 582,
+        pill: { x: 30, y: 512, width: 320, height: 70 },
+        wing: { x: 350, y: 512, width: 90, height: 70 },
+        panel: { x: 0, y: 0, width: 440, height: 500 },
+      },
+      shape: [
+        { x: 30, y: 512, width: 320, height: 70 },
+        { x: 350, y: 512, width: 90, height: 70 },
+        { x: 0, y: 0, width: 440, height: 500 },
+      ],
+    });
+  });
+
+  it("keeps native bounds and row coordinates stable through every wing mode", () => {
+    for (const mode of ["compact", "preview", "panel"] as const) {
+      const result = resolvePillLayout(anchor, { mode, wing: true }, [area]);
+      expect(result.bounds).toEqual({ x: 1480, y: 434, width: 440, height: 582 });
+      expect(result.layout.pill).toEqual({ x: 30, y: 512, width: 320, height: 70 });
+      expect(result.layout.wing).toEqual({ x: 350, y: 512, width: 90, height: 70 });
+      expect(result.shape).toEqual([
+        { x: 30, y: 512, width: 320, height: 70 },
+        { x: 350, y: 512, width: 90, height: 70 },
+        ...(mode === "panel" ? [{ x: 0, y: 0, width: 440, height: 500 }] : []),
+      ]);
+    }
+    expect(resolvePillLayout(anchor, { mode: "compact", wing: false }, [area]).bounds).toEqual(
+      anchor,
+    );
+  });
+
+  it("reserves the panel and preview below a top-edge pill without making blank space interactive", () => {
+    for (const mode of ["compact", "preview", "panel"] as const) {
+      const result = resolvePillLayout(
+        { x: 100, y: 100, width: 320, height: 70 },
+        { mode, wing: true },
+        [area],
+      );
+      expect(result.bounds).toEqual({ x: 70, y: 100, width: 670, height: 582 });
+      expect(result.layout.pill).toEqual({ x: 30, y: 0, width: 320, height: 70 });
+      expect(result.layout.wing).toEqual({
+        x: 350,
+        y: 0,
+        width: mode === "preview" ? 320 : 90,
+        height: 70,
+      });
+      expect(result.layout.panel).toEqual(
+        mode === "panel" ? { x: 0, y: 82, width: 440, height: 500 } : null,
+      );
+      expect(
+        result.shape.some(
+          (rect) =>
+            rect.x <= 600 &&
+            rect.x + rect.width > 600 &&
+            rect.y <= 100 &&
+            rect.y + rect.height > 100,
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("clamps panel height and preview width to the work area", () => {
+    const small = { x: 0, y: 0, width: 700, height: 500 };
+    const position = { x: 190, y: 100, width: 320, height: 70 };
+    const result = resolvePillLayout(position, { mode: "panel", wing: true }, [small]);
+    expect(result.bounds).toEqual({ x: 160, y: 100, width: 540, height: 400 });
+    expect(result.layout.panel).toEqual({ x: 0, y: 82, width: 440, height: 318 });
+    expect(resolvePillLayout(position, { mode: "preview", wing: true }, [small]).bounds).toEqual({
+      x: 160,
+      y: 100,
+      width: 540,
+      height: 400,
+    });
+  });
+
+  it("keeps all controls within a negative-coordinate monitor", () => {
+    const secondary = { x: -1600, y: -200, width: 1600, height: 900 };
+    const result = resolvePillLayout(
+      { x: -400, y: 600, width: 320, height: 70 },
+      { mode: "panel", wing: true },
+      [area, secondary],
+    );
+    expect(result.bounds).toEqual({ x: -440, y: 88, width: 440, height: 582 });
+    expect(result.layout.pill).toEqual({ x: 30, y: 512, width: 320, height: 70 });
+  });
+
+  it("narrows the main pill so the wing stays on the right on a small monitor", () => {
+    const result = resolvePillLayout(
+      { x: 0, y: 0, width: 320, height: 70 },
+      { mode: "panel", wing: true },
+      [{ x: 0, y: 0, width: 320, height: 500 }],
+    );
+    expect(result.bounds).toEqual({ x: 0, y: 0, width: 320, height: 500 });
+    expect(result.layout.pill).toEqual({ x: 0, y: 0, width: 230, height: 70 });
+    expect(result.layout.wing).toEqual({ x: 230, y: 0, width: 90, height: 70 });
+    expect(result.layout.panel).toEqual({ x: 0, y: 82, width: 320, height: 418 });
+  });
+
+  it.each([
+    { area, start: anchor, expected: { x: 1480, y: 434, width: 440, height: 582 } },
+    {
+      area: { x: -320, y: 0, width: 320, height: 500 },
+      start: { x: -320, y: 0, width: 320, height: 70 },
+      expected: { x: -320, y: 0, width: 320, height: 500 },
+    },
+  ])(
+    "preserves the envelope when the controller feeds back its clamped anchor in $area",
+    ({ area, start, expected }) => {
+      let current = start;
+      for (const mode of ["compact", "panel", "preview", "compact", "panel"] as const) {
+        const result = resolvePillLayout(current, { mode, wing: true }, [area]);
+        expect(result.bounds).toEqual(expected);
+        current = {
+          ...result.layout.pill,
+          x: result.bounds.x + result.layout.pill.x,
+          y: result.bounds.y + result.layout.pill.y,
+        };
+      }
+    },
+  );
 });
 
 describe("Satellite workspace placement", () => {
@@ -146,5 +280,56 @@ describe("Satellite lifecycle", () => {
       detail: "Status unavailable — reconnecting",
       attention: false,
     });
+  });
+  it("retains last-known requests and drafts while making them unavailable", () => {
+    const ref = {
+      environmentId: EnvironmentId.make("remote-1"),
+      threadId: ThreadId.make("thread-1"),
+      kind: "question" as const,
+      requestId: ApprovalRequestId.make("question-1"),
+    };
+    const result = unavailablePillState({
+      threadId: "thread-1",
+      environmentId: "remote-1",
+      title: "Fix the build",
+      state: "awaiting-input",
+      detail: "Choose",
+      attention: true,
+      dark: true,
+      actionWing: {
+        items: [
+          {
+            ref,
+            title: "Fix the build",
+            environmentName: "Workstation",
+            label: "Question",
+            preview: "Choose an option",
+            createdAt: "2026-10-05T12:00:00.000Z",
+            available: true,
+            muted: false,
+          },
+        ],
+        selected: {
+          ref,
+          status: "ready",
+          delivery: "sending",
+          questionIndex: 0,
+          answers: { choice: { customAnswer: "Keep it" } },
+        },
+        incompleteEnvironments: [],
+        workingCount: 2,
+        completedCount: 1,
+      },
+    });
+    expect(result.actionWing?.items[0]).toMatchObject({ ref, available: false, muted: false });
+    expect(result.actionWing?.selected).toEqual({
+      ref,
+      status: "unavailable",
+      delivery: "sending",
+      questionIndex: 0,
+      answers: { choice: { customAnswer: "Keep it" } },
+    });
+    expect(result.actionWing?.incompleteEnvironments).toEqual(["Workstation"]);
+    expect(result.dark).toBe(true);
   });
 });

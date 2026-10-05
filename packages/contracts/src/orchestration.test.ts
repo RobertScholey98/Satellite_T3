@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
-import { CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
+import { ApprovalRequestId, CommandId, EventId, ProjectId, ThreadId } from "./baseSchemas.ts";
 
 import {
   ProjectIconOverride,
@@ -15,6 +15,8 @@ import {
   OrchestrationDispatchCommandError,
   OrchestrationEvent,
   OrchestrationGetFullThreadDiffInput,
+  OrchestrationGetRequestLifecycleInput,
+  OrchestrationGetRequestLifecycleResult,
   OrchestrationGetTurnDiffInput,
   OrchestrationLatestTurn,
   ProjectCreatedPayload,
@@ -57,6 +59,7 @@ const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(Orchestration
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
 const decodeOrchestrationThread = Schema.decodeUnknownEffect(OrchestrationThread);
 const decodeOrchestrationThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
+const encodeOrchestrationThreadShell = Schema.encodeEffect(OrchestrationThreadShell);
 const encodeThreadCreatedPayload = Schema.encodeEffect(ThreadCreatedPayload);
 
 function getOptionValue(
@@ -71,6 +74,46 @@ const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 const decodeDispatchCommandError = Schema.decodeUnknownEffect(OrchestrationDispatchCommandError);
 const decodeSnapShotAccessibility = Schema.decodeUnknownEffect(SnapShotAccessibility);
+
+it.effect("preserves exact request submission timestamps and requires a supported audience", () =>
+  Effect.gen(function* () {
+    const input = {
+      threadId: "thread-1",
+      audience: "idea",
+      kind: "question",
+      requestId: "request-1",
+      submittedAt: "2026-10-01T00:01:00.000Z",
+    };
+    const decode = Schema.decodeUnknownEffect(OrchestrationGetRequestLifecycleInput);
+    assert.strictEqual((yield* decode(input)).submittedAt, input.submittedAt);
+    assert.strictEqual(
+      (yield* Effect.exit(decode({ ...input, audience: "revdoc" })))._tag,
+      "Failure",
+    );
+    assert.strictEqual((yield* Effect.exit(decode({ ...input, kind: "plan" })))._tag, "Failure");
+  }),
+);
+
+it.effect(
+  "bounds request lifecycle evidence to four rows while preserving empty unknown results",
+  () =>
+    Effect.gen(function* () {
+      const decode = Schema.decodeUnknownEffect(OrchestrationGetRequestLifecycleResult);
+      const activity = {
+        id: EventId.make("activity"),
+        kind: "user-input.requested",
+        tone: "info" as const,
+        summary: "Request",
+        payload: { requestId: "request" },
+        turnId: null,
+        createdAt: "2026-10-01T00:00:00.000Z",
+      };
+      assert.deepStrictEqual(yield* decode([]), []);
+      const evidence = Array.from({ length: 4 }, () => ({ ...activity }));
+      assert.strictEqual((yield* decode(evidence)).length, 4);
+      assert.strictEqual((yield* Effect.exit(decode([...evidence, activity])))._tag, "Failure");
+    }),
+);
 
 it.effect("decodes a dispatch error after its bootstrap thread was deleted", () =>
   Effect.gen(function* () {
@@ -719,13 +762,41 @@ it.effect("defaults settled fields when decoding historical thread data", () =>
     });
     assert.deepStrictEqual(oldServerShell.pullRequests, []);
     assert.deepStrictEqual(oldServerShell.linkedPullRequest, legacyLink);
+    assert.strictEqual(Object.hasOwn(oldServerShell, "pendingRequests"), false);
+
+    const quietShell = yield* decodeOrchestrationThreadShell({
+      ...oldServerShell,
+      pendingRequests: [],
+    });
+    assert.deepStrictEqual(quietShell.pendingRequests, []);
+    const summary = {
+      kind: "question",
+      requestId: ApprovalRequestId.make("request-1"),
+      createdAt: "2026-01-01T00:01:00.000Z",
+      label: "Destination",
+      preview: "Which environment should run the build?",
+    } as const;
+    const pendingShell = yield* decodeOrchestrationThreadShell({
+      ...quietShell,
+      pendingRequests: [summary],
+    });
+    assert.deepStrictEqual(pendingShell.pendingRequests, [summary]);
+    for (const invalidSummary of [
+      { ...summary, label: "x".repeat(121) },
+      { ...summary, preview: "x".repeat(241) },
+    ]) {
+      const invalid = yield* Effect.exit(
+        decodeOrchestrationThreadShell({ ...quietShell, pendingRequests: [invalidSummary] }),
+      );
+      assert.strictEqual(invalid._tag, "Failure");
+    }
 
     // A decoder from before the array must still read its single-link field
     // after a new server encodes the expanded snapshot.
     const oldLinkFields = Schema.Struct({
       linkedPullRequest: Schema.optional(ThreadLinkedPullRequest),
     });
-    const newServerWire = yield* Schema.encodeEffect(OrchestrationThreadShell)({
+    const newServerWire = yield* encodeOrchestrationThreadShell({
       ...oldServerShell,
       pullRequests: [
         {

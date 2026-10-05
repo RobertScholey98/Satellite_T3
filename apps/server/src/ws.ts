@@ -47,6 +47,7 @@ import {
   type OrchestrationShellStreamItem,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
+  OrchestrationGetRequestLifecycleError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
@@ -2555,6 +2556,20 @@ const makeWsRpcLayer = (
                   }),
               ),
             ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getRequestLifecycle,
+            projectionSnapshotQuery
+              .getRequestLifecycle(input)
+              .pipe(
+                Effect.mapError((cause) =>
+                  cause._tag === "OrchestrationGetRequestLifecycleError"
+                    ? cause
+                    : new OrchestrationGetRequestLifecycleError({ reason: "query-failed" }),
+                ),
+              ),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.subscribeThread]: (input) =>

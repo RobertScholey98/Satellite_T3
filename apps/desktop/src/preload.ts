@@ -1,6 +1,7 @@
 import type {
   DesktopBridge,
   SatelliteBridge,
+  SatelliteAttentionIntent,
   SatelliteShellState,
   DesktopPreviewPointerEvent,
   DesktopPreviewRecordingInputEvent,
@@ -18,6 +19,14 @@ if (process.argv.includes("--satellite-pill"))
   contextBridge.exposeInMainWorld("satelliteBridge", {
     publish: (state) => ipcRenderer.send(SatelliteChannels.SATELLITE_PUBLISH, state),
     hideMain: () => ipcRenderer.send(SatelliteChannels.SATELLITE_HIDE_MAIN),
+    openMain: () => ipcRenderer.send(SatelliteChannels.SATELLITE_OPEN_MAIN),
+    onAttentionIntent: (listener) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, intent: SatelliteAttentionIntent) =>
+        listener(intent);
+      ipcRenderer.on(SatelliteChannels.SATELLITE_ATTENTION_INTENT, wrapped);
+      return () =>
+        ipcRenderer.removeListener(SatelliteChannels.SATELLITE_ATTENTION_INTENT, wrapped);
+    },
     setPinned: (pinned) => ipcRenderer.send(SatelliteChannels.SATELLITE_SET_PINNED, pinned),
     onShellState: (listener) => {
       const wrapped = (_event: Electron.IpcRendererEvent, state: SatelliteShellState) =>

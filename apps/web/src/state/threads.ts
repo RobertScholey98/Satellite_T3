@@ -19,12 +19,25 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { environmentSnapshotAtom } from "./shell";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 
 export const threadEnvironment = createThreadEnvironmentAtoms(
   connectionAtomRuntime,
   environmentSnapshotAtom,
 );
 const environmentThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime);
+export function refreshThreadDetail(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  audience: "work" | "idea" = "work",
+): void {
+  appAtomRegistry.refresh(
+    (audience === "idea" ? environmentIdeaThreads : environmentThreads).stateAtom(
+      environmentId,
+      threadId,
+    ),
+  );
+}
 export const environmentIdeaThreads = createEnvironmentThreadStateAtoms(
   connectionAtomRuntime,
   "idea",

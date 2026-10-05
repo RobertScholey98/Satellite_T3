@@ -50,6 +50,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
+  getRequestLifecycle: "orchestration.getRequestLifecycle",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -894,6 +895,15 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
+export const OrchestrationPendingRequestSummary = Schema.Struct({
+  kind: Schema.Literals(["question", "approval"]),
+  requestId: ApprovalRequestId,
+  createdAt: IsoDateTime,
+  label: Schema.String.check(Schema.isMaxLength(120)),
+  preview: Schema.String.check(Schema.isMaxLength(240)),
+});
+export type OrchestrationPendingRequestSummary = typeof OrchestrationPendingRequestSummary.Type;
+
 export const OrchestrationThreadShell = Schema.Struct({
   purpose: Schema.optional(ThreadPurpose),
   id: ThreadId,
@@ -934,6 +944,8 @@ export const OrchestrationThreadShell = Schema.Struct({
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
+  // Absence means an older server cannot enumerate requests. An empty array is authoritative.
+  pendingRequests: Schema.optionalKey(Schema.Array(OrchestrationPendingRequestSummary)),
   hasActionableProposedPlan: Schema.Boolean,
   /**
    * Native background work alive after the turn settles: "working" while
@@ -2406,6 +2418,43 @@ export class OrchestrationGetWorkflowScriptError extends Schema.TaggedError<Orch
   }
 }
 
+export const ORCHESTRATION_REQUEST_LIFECYCLE_MAX_ROWS = 4;
+export const ORCHESTRATION_REQUEST_LIFECYCLE_MAX_ROW_BYTES = 65_536;
+
+export const OrchestrationGetRequestLifecycleInput = Schema.Struct({
+  threadId: ThreadId,
+  audience: Schema.Literals(["work", "idea"]),
+  kind: Schema.Literals(["question", "approval"]),
+  requestId: ApprovalRequestId,
+  submittedAt: Schema.optionalKey(IsoDateTime),
+});
+export type OrchestrationGetRequestLifecycleInput =
+  typeof OrchestrationGetRequestLifecycleInput.Type;
+
+export const OrchestrationGetRequestLifecycleResult = Schema.Array(
+  OrchestrationThreadActivity,
+).check(Schema.isMaxLength(ORCHESTRATION_REQUEST_LIFECYCLE_MAX_ROWS));
+export type OrchestrationGetRequestLifecycleResult =
+  typeof OrchestrationGetRequestLifecycleResult.Type;
+
+export class OrchestrationGetRequestLifecycleError extends Schema.TaggedError<OrchestrationGetRequestLifecycleError>()(
+  "OrchestrationGetRequestLifecycleError",
+  {
+    reason: Schema.Literals(["thread-unavailable", "payload-too-large", "query-failed"]),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "thread-unavailable":
+        return "This request is unavailable in the selected workspace.";
+      case "payload-too-large":
+        return "This request is too large to check here. Open its thread to review it.";
+      case "query-failed":
+        return "Could not check this request. Try again.";
+    }
+  }
+}
+
 export const OrchestrationRpcSchemas = {
   dispatchCommand: {
     input: ClientOrchestrationCommand,
@@ -2430,6 +2479,10 @@ export const OrchestrationRpcSchemas = {
   getArchivedShellSnapshot: {
     input: Schema.Struct({}),
     output: OrchestrationShellSnapshot,
+  },
+  getRequestLifecycle: {
+    input: OrchestrationGetRequestLifecycleInput,
+    output: OrchestrationGetRequestLifecycleResult,
   },
   subscribeThread: {
     input: OrchestrationSubscribeThreadInput,
