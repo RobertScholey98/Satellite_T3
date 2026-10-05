@@ -13,9 +13,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  windows-desktop:
-    name: Windows desktop
-    runs-on: windows-latest
+  desktop:
+    name: Desktop (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-2025
+          - platform: macos-arm64
+            os: macos-15
+          - platform: macos-x64
+            os: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     env:
       T3CODE_DESKTOP_DEV: "0"
@@ -37,14 +50,13 @@ jobs:
 
       - name: Resolve package cache path
         id: package_cache_path
-        shell: pwsh
-        run: '"path=$(vp pm cache dir)" >> $env:GITHUB_OUTPUT'
+        run: echo "path=$(vp pm cache dir)" >> "$GITHUB_OUTPUT"
 
       - name: Cache packages
         uses: actions/cache@v6
         with:
           path: ${{ steps.package_cache_path.outputs.path }}
-          key: satellite-windows-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
+          key: satellite-${{ matrix.platform }}-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Install dependencies
         run: vp install --frozen-lockfile
@@ -62,7 +74,7 @@ jobs:
 
       - name: Test desktop shell and native integration
         working-directory: apps/desktop
-        run: vp test run src/satellite/SatellitePill.test.ts src/satellite/pillModel.test.ts src/window/DesktopWindow.test.ts src/ssh/DesktopSshPasswordPrompts.test.ts
+        run: vp test run src/satellite/SatellitePill.test.ts src/satellite/pillModel.test.ts src/window/DesktopWindow.test.ts src/ssh/DesktopSshPasswordPrompts.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopLifecycle.test.ts src/shell/DesktopShellEnvironment.test.ts src/ipc/methods/notificationBadge.test.ts src/snapShot/ActiveWindow.test.ts src/snapShot/DesktopSnapShot.test.ts
 
       - name: Test web shell and pill projection
         working-directory: apps/web
@@ -71,6 +83,9 @@ jobs:
       - name: Test desktop startup and preload verifier
         working-directory: apps/desktop
         run: vp test run scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
+
+      - name: Test packaging
+        run: vp test run scripts/build-desktop-artifact.test.ts
 
       - name: Build desktop pipeline
         run: vp run build:desktop

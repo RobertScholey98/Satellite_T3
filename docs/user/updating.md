@@ -2,11 +2,16 @@
 
 ## Satellite desktop and source builds
 
-Installed SatelliteT3 builds use this fork's desktop update feed. Install the
+Windows SatelliteT3 builds use this fork's desktop update feed. Install the
 offered update, or download the Windows installer from
 [this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
 Stable installs follow stable releases. Updating the desktop app also updates
 its bundled local server.
+
+macOS releases use manual updates because the builds are not signed with an Apple
+Developer ID. Download the latest DMG for your Mac from the same releases page,
+quit Satellite, and replace the app in Applications. Your saved data stays in
+`~/.satellite-t3/userdata`.
 
 The `dev:satellite` launcher disables automatic updates. Update your checkout,
 run `pnpm install --frozen-lockfile`, and restart `pnpm run dev:satellite`.

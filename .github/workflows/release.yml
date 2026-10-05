@@ -19,33 +19,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  windows:
-    name: Build Windows x64
-    # Keep Visual Studio 2022 aligned with the packager's node-gyp configuration.
-    runs-on: windows-2025
-    timeout-minutes: 45
-    defaults:
-      run:
-        shell: pwsh
-    env:
-      T3CODE_DESKTOP_DEV: "0"
-      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+  prepare:
+    name: Resolve release
+    runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
-      commit: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
-      - name: Validate version tag
-        id: version
-        env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
-        run: |
-          $tag = $env:RELEASE_TAG
-          if ($tag -cnotmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-(alpha|beta|rc)\.(0|[1-9]\d*))?$') {
-            throw "Expected vX.Y.Z or vX.Y.Z-alpha.N/beta.N/rc.N"
-          }
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-          "version=$($tag.Substring(1))" >> $env:GITHUB_OUTPUT
-
       - name: Checkout release commit
         uses: actions/checkout@v6
         with:
@@ -55,23 +36,48 @@ jobs:
             !/.repos/
           sparse-checkout-cone-mode: false
 
-      - name: Resolve release commit
-        id: commit
+      - name: Validate version and resolve commit
+        id: version
         env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
+        shell: bash
         run: |
-          $commit = git rev-parse HEAD
-          if ($LASTEXITCODE -ne 0) { throw "Failed to resolve release commit" }
-          $tag = $env:RELEASE_TAG
-          $tagRefs = @(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")
-          if ($LASTEXITCODE -ne 0) { throw "Failed to check existing release tag" }
-          # Annotated tags have a separate peeled ref pointing to the commit.
-          $existingRef = $tagRefs | Where-Object { $_.EndsWith("refs/tags/$tag^{}") } | Select-Object -First 1
-          if (-not $existingRef) { $existingRef = $tagRefs | Select-Object -First 1 }
-          if ($existingRef -and $existingRef.Split()[0] -ne $commit) {
-            throw "$tag already points to a different commit. Choose a new version or run the workflow from that tag."
-          }
-          "sha=$commit" >> $env:GITHUB_OUTPUT
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]]; then
+            echo "Expected vX.Y.Z or vX.Y.Z-alpha.N/beta.N/rc.N" >&2
+            exit 1
+          fi
+          commit=$(git rev-parse HEAD)
+          refs=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
+          existing=$(printf '%s\n' "$refs" | awk '/\^\{\}$/ { print $1; found=1 } END { if (!found) print first } NR==1 { first=$1 }')
+          if [[ -n "$existing" && "$existing" != "$commit" ]]; then
+            echo "$RELEASE_TAG already points to a different commit. Choose a new version or run from that tag." >&2
+            exit 1
+          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Build Windows x64
+    needs: prepare
+    # Keep Visual Studio 2022 aligned with the packager's node-gyp configuration.
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      T3CODE_DESKTOP_DEV: "0"
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
@@ -127,7 +133,7 @@ jobs:
 
       - name: Build unsigned installer and updater files
         env:
-          T3CODE_DESKTOP_VERSION: ${{ steps.version.outputs.version }}
+          T3CODE_DESKTOP_VERSION: ${{ needs.prepare.outputs.version }}
           npm_config_python: ${{ steps.python.outputs.python-path }}
         run: vp run dist:desktop:win:x64
 
@@ -136,18 +142,12 @@ jobs:
 
       - name: Collect release assets
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           $installer = "release/SatelliteT3-$env:RELEASE_VERSION-x64.exe"
           foreach ($path in @($installer, "$installer.blockmap", 'release/latest.yml')) {
             if (-not (Test-Path -LiteralPath $path)) { throw "Missing release asset: $path" }
           }
-          $assets = @($installer, "$installer.blockmap", 'release/latest.yml')
-          $sums = $assets | ForEach-Object {
-            $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $([IO.Path]::GetFileName($_))"
-          }
-          $sums | Set-Content -LiteralPath release/SHA256SUMS -Encoding utf8NoBOM
 
       - name: Upload release assets
         uses: actions/upload-artifact@v4
@@ -158,11 +158,131 @@ jobs:
             release/SatelliteT3-*-x64.exe
             release/SatelliteT3-*-x64.exe.blockmap
             release/latest.yml
-            release/SHA256SUMS
+
+  macos:
+    name: Build macOS ${{ matrix.arch }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            os: macos-15
+            rust-target: aarch64-apple-darwin
+          - arch: x64
+            os: macos-15-intel
+            rust-target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      T3CODE_DESKTOP_DEV: "0"
+      T3CODE_DESKTOP_VERSION: ${{ needs.prepare.outputs.version }}
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Resolve package cache path
+        id: package_cache_path
+        run: echo "path=$(vp pm cache dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.package_cache_path.outputs.path }}
+          key: satellite-macos-${{ matrix.arch }}-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Setup Python for native dependencies
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Ensure native build tools
+        env:
+          RUST_TARGET: ${{ matrix.rust-target }}
+        run: |
+          xcrun --find clang
+          rustup target add "$RUST_TARGET"
+          vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Typecheck desktop and web
+        run: |
+          vp run --filter @t3tools/desktop typecheck
+          vp run --filter @t3tools/web typecheck
+
+      - name: Test macOS desktop behavior and startup
+        working-directory: apps/desktop
+        run: vp test run src/window/DesktopWindow.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopEarlyElectronStartup.test.ts src/app/DesktopLifecycle.test.ts src/shell/DesktopShellEnvironment.test.ts src/ipc/methods/notificationBadge.test.ts src/snapShot/ActiveWindow.test.ts src/snapShot/DesktopSnapShot.test.ts scripts/main-process-bundle.test.mjs scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
+
+      - name: Test packaging
+        run: vp test run scripts/build-desktop-artifact.test.ts
+
+      - name: Build unsigned DMG and ZIP
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: vp run "dist:desktop:dmg:$BUILD_ARCH"
+
+      - name: Verify preload bundle output
+        run: node apps/desktop/scripts/verify-preload-bundle.mjs
+
+      - name: Collect release assets
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          for extension in dmg zip; do
+            asset="release/SatelliteT3-$T3CODE_DESKTOP_VERSION-$BUILD_ARCH.$extension"
+            test -s "$asset" || { echo "Missing release asset: $asset" >&2; exit 1; }
+          done
+          # Ad-hoc signed builds cannot use Squirrel.Mac automatic updates.
+          test ! -e release/latest-mac.yml
+
+      - name: Verify packaged macOS app
+        env:
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          archive="release/SatelliteT3-$T3CODE_DESKTOP_VERSION-$BUILD_ARCH.zip"
+          smoke_dir="$RUNNER_TEMP/satellite-release"
+          ditto -x -k "$archive" "$smoke_dir"
+          apps=("$smoke_dir"/*.app)
+          test "${#apps[@]}" -eq 1
+          app="${apps[0]}"
+          codesign --verify --deep --strict "$app"
+          test ! -e "$app/Contents/Resources/app-update.yml"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")
+          ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/$executable" "$app/Contents/Resources/app.asar/apps/server/dist/bin.mjs" --help
+          hdiutil verify "release/SatelliteT3-$T3CODE_DESKTOP_VERSION-$BUILD_ARCH.dmg"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}-release
+          if-no-files-found: error
+          path: |
+            release/SatelliteT3-*.dmg
+            release/SatelliteT3-*.zip
 
   publish:
     name: Publish GitHub Release
-    needs: windows
+    needs: [prepare, windows, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -170,15 +290,31 @@ jobs:
       - name: Download release assets
         uses: actions/download-artifact@v4
         with:
-          name: windows-release
+          pattern: "*-release"
+          merge-multiple: true
           path: release
+
+      - name: Check assets and generate checksums
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        shell: bash
+        run: |
+          cd release
+          for asset in "SatelliteT3-$RELEASE_VERSION-x64.exe" "SatelliteT3-$RELEASE_VERSION-x64.exe.blockmap" latest.yml; do
+            test -s "$asset"
+          done
+          for arch in arm64 x64; do
+            test -s "SatelliteT3-$RELEASE_VERSION-$arch.dmg"
+            test -s "SatelliteT3-$RELEASE_VERSION-$arch.zip"
+          done
+          sha256sum * > SHA256SUMS
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.windows.outputs.tag }}
-          RELEASE_COMMIT: ${{ needs.windows.outputs.commit }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
           RELEASE_EVENT: ${{ github.event_name }}
         shell: bash
         run: |

@@ -2,7 +2,7 @@
 
 Satellite is a personal fork of [T3 Code](https://github.com/pingdotgg/t3code), where
 I experiment with integrating ideas that relate directly to my own workflow.
-Windows installers and the development launcher use the name **SatelliteT3**.
+Release artifacts and the development launcher use the name **SatelliteT3**.
 
 ## Why this fork exists
 
@@ -35,14 +35,18 @@ services, app-store listings, and release channels are operated by upstream.
 
 ## Install Satellite
 
-Download the Windows x64 `.exe` from
+Download the Windows x64 `.exe` or macOS `.dmg` (`arm64` for Apple Silicon,
+`x64` for Intel) from
 [this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
-The installers are currently unsigned. Installed builds use
-`~/.satellite-t3/userdata` and receive desktop updates from this fork.
+Windows installers are currently unsigned. Installed builds use
+`~/.satellite-t3/userdata`. Windows receives desktop updates from this fork;
+macOS builds are ad-hoc signed, not notarized, and updated manually. Drag the app
+from the DMG into Applications. See [installation guidance](docs/user/install.md)
+if macOS blocks its first launch.
 
-For source builds, follow the setup below. macOS, Linux, web, and mobile source
-remain in the repository, but the Satellite release workflow currently ships
-Windows x64 only. It does not bundle a WSL runtime or publish a standalone CLI.
+For source builds, follow the setup below. The Satellite release workflow ships
+Windows x64 and macOS arm64/x64. Linux, web, and mobile source remain in the
+repository. It does not bundle a WSL runtime or publish a standalone CLI.
 
 ### Set up a provider
 
@@ -111,7 +115,8 @@ Release tagging and GitHub Actions are covered in the
 
 ## Use the desktop workspace
 
-Satellite opens the workspace on launch. In pill mode, closing, minimizing,
+Satellite opens the workspace on launch. macOS uses a normal desktop window with
+a Dock entry; Pill mode is available only on Windows. In pill mode, closing, minimizing,
 pressing Escape, or clicking outside collapses it while agents keep running.
 Click the pill or double-tap Ctrl on Windows to bring the workspace back. Use
 **Keep workspace open** to prevent collapse when clicking outside.

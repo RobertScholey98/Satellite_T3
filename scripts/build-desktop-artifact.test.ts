@@ -333,7 +333,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "mac",
         "dmg",
         "0.0.33-pr.8182.1",
-        false,
+        true,
         false,
         undefined,
         undefined,
@@ -342,7 +342,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "mac",
         "dmg",
         "0.0.33",
-        false,
+        true,
         false,
         undefined,
         undefined,
@@ -352,7 +352,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "mac",
         "dmg",
         "0.0.41-preview.20260912.1589",
-        false,
+        true,
         false,
         undefined,
         undefined,
@@ -375,6 +375,56 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       ),
     ),
+  );
+
+  it.effect(
+    "ships unsigned macOS builds for manual installation without an unusable update feed",
+    () =>
+      Effect.gen(function* () {
+        for (const arch of ["arm64", "x64"] as const) {
+          const config = yield* createBuildConfig(
+            "mac",
+            "dmg",
+            "1.2.3",
+            false,
+            false,
+            undefined,
+            undefined,
+            false,
+            arch,
+          );
+          assert.isNull(config.publish);
+          assert.include(config.mac, { identity: "-", hardenedRuntime: false });
+          assert.deepStrictEqual((config.mac as Record<string, unknown>).target, ["dmg", "zip"]);
+        }
+        const windows = yield* createBuildConfig(
+          "win",
+          "nsis",
+          "1.2.3",
+          false,
+          false,
+          undefined,
+          undefined,
+        );
+        assert.deepStrictEqual(windows.publish, [
+          {
+            provider: "github",
+            owner: "RobertScholey98",
+            repo: "Satellite_T3",
+            releaseType: "release",
+          },
+        ]);
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                T3CODE_DESKTOP_UPDATE_REPOSITORY: "RobertScholey98/Satellite_T3",
+              },
+            }),
+          ),
+        ),
+      ),
   );
 
   it("stages only the desktop main-process externals", () => {
