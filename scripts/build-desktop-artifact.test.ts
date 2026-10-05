@@ -120,8 +120,11 @@ const makeLinuxCliArchiveFixture = Effect.fn("test.makeLinuxCliArchiveFixture")(
     yield* fs.writeFileString(memberPath, member);
   }
   const archivePath = path.join(input.root, `${input.stem}.tar.gz`);
+  // Git Bash's GNU tar treats drive-letter paths as remote hosts. Relative paths
+  // work with both it and Windows bsdtar.
   const tar = yield* spawner.spawn(
-    ChildProcess.make("tar", ["-czf", archivePath, "-C", contentRoot, "."], {
+    ChildProcess.make("tar", ["-czf", path.basename(archivePath), "-C", "content", "."], {
+      cwd: input.root,
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
