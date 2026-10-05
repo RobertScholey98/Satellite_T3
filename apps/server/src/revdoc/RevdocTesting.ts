@@ -68,7 +68,7 @@ export function withTestAttempt(test: RevdocTest, attempt: RevdocAttempt): Revdo
   const attempts =
     history.at(-1)?.runId === attempt.runId
       ? [...history.slice(0, -1), attempt]
-      : [...history.slice(-9), attempt];
+      : [...history, attempt];
   const result = attempt.state;
   return {
     ...test,

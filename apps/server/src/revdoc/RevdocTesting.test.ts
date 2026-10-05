@@ -107,3 +107,54 @@ it("keeps standalone verification current while retaining previous evidence and 
     evidence: [{ id: "old" }],
   });
 });
+
+it("retains every result and capture through repeated runs and same-run progress updates", () => {
+  let test: RevdocTest = {
+    id: "test",
+    title: "Check",
+    outcome: "change",
+    feedback: "Keep this",
+    verification: { result: "passed", sourceRevision: "previous" },
+    evidence: [{ id: "original", path: "evidence/original.png" }],
+  };
+  const completed = checked("test", "passed").attempts![0]!;
+  for (let index = 0; index < 12; index++) {
+    const attempt = { ...completed, runId: `run-${index}` };
+    test = withTestAttempt(test, { ...attempt, state: "queued", evidence: [] });
+    const evidence = [{ id: `capture-${index}`, path: `evidence/${index}.png` }];
+    test = withTestAttempt(test, { ...attempt, state: "running", evidence });
+    test = withTestAttempt(test, {
+      ...attempt,
+      finishedAt: "2026-10-04T12:01:00Z",
+      observed: `Observation ${index}`,
+      evidence,
+    });
+  }
+
+  expect(test.attempts).toHaveLength(13);
+  expect(test.attempts?.[0]).toMatchObject({
+    runId: "imported-test",
+    evidence: [{ id: "original", path: "evidence/original.png" }],
+  });
+  expect(
+    test.attempts?.slice(1).map(({ runId, state, observed, evidence }) => ({
+      runId,
+      state,
+      observed,
+      evidence,
+    })),
+  ).toEqual(
+    Array.from({ length: 12 }, (_, index) => ({
+      runId: `run-${index}`,
+      state: "passed",
+      observed: `Observation ${index}`,
+      evidence: [{ id: `capture-${index}`, path: `evidence/${index}.png` }],
+    })),
+  );
+  expect(test).toMatchObject({
+    outcome: "change",
+    feedback: "Keep this",
+    verification: { result: "passed", sourceRevision: "current" },
+    evidence: [{ id: "capture-11" }],
+  });
+});
