@@ -152,23 +152,36 @@ const make = Effect.gen(function* () {
           operation: "AzureDevOpsReadApi.remote",
           command: "git",
           cwd,
-          args: ["config", "--get-regexp", "^remote\\..*\\.url$"],
+          args: ["remote", "-v"],
           allowNonZeroExit: true,
         })
         .pipe(
           Effect.map((output) => {
-            const rows = output.stdout
-              .trim()
-              .split(/\r?\n/)
-              .sort(
-                (a, b) =>
-                  Number(b.startsWith("remote.origin.url ")) -
-                  Number(a.startsWith("remote.origin.url ")),
-              );
-            for (const row of rows) {
-              const remote = row.slice(row.indexOf(" ") + 1).trim();
+            // Azure CLI keeps the last effective push URL for each remote,
+            // including Git URL rewrites, then prefers origin.
+            const pushes = new Map<string, string>();
+            for (const row of output.stdout.trim().split(/\r?\n/)) {
+              const match = /^(\S+)\s+(\S+)\s+\(push\)$/.exec(row.trim());
+              if (match) pushes.set(match[1]!, match[2]!);
+            }
+            const rows = [...pushes].sort(
+              ([a], [b]) => Number(b === "origin") - Number(a === "origin"),
+            );
+            for (const [, remote] of rows) {
               const scope = repositoryScope(remote);
               if (scope) return scope;
+              const host = /^(?:(?:https?|ssh):\/\/)?(?:[^/@]+@)?([^/:]+)(?:[/:]|$)/i
+                .exec(remote)?.[1]
+                ?.toLowerCase();
+              // Leave unsupported Azure URL forms to the CLI rather than
+              // silently selecting a different repository.
+              if (
+                host &&
+                (host === "dev.azure.com" ||
+                  host.endsWith(".dev.azure.com") ||
+                  host.endsWith(".visualstudio.com"))
+              )
+                return null;
             }
             return null;
           }),

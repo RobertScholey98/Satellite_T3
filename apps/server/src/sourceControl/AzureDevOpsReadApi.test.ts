@@ -61,6 +61,7 @@ function fixture(
   options: {
     pat?: string;
     remote?: string;
+    remotes?: string;
     response?: (url: URL, authorization: string) => Response;
     wait?: (url: URL) => Effect.Effect<void>;
     tokenLifetime?: number;
@@ -103,10 +104,14 @@ function fixture(
         run: (input) =>
           Effect.gen(function* () {
             processes.push(`${input.command} ${input.args.slice(0, 3).join(" ")}`);
-            if (input.command === "git")
+            if (input.command === "git") {
+              const remote = options.remote ?? "https://dev.azure.com/acme/platform/_git/web";
               return output(
-                `remote.origin.url ${options.remote ?? "https://dev.azure.com/acme/platform/_git/web"}`,
+                input.args[0] === "remote"
+                  ? (options.remotes ?? `origin\t${remote} (fetch)\norigin\t${remote} (push)`)
+                  : `remote.origin.url ${remote}`,
               );
+            }
             if (input.args[0] === "account" && input.args[1] === "get-access-token") {
               tokenReads++;
               expect(input.args).toContain("--tenant");
@@ -159,6 +164,101 @@ it.effect(
         ).toBe(true);
       }).pipe(Effect.provide(test.layer));
     }),
+);
+
+it.effect("reads the effective origin push repository used by Azure CLI mutations", () =>
+  Effect.gen(function* () {
+    const fetch = "https://dev.azure.com/upstream/platform/_git/web";
+    const push = "https://dev.azure.com/acme/fork/_git/custom-web";
+    const test = fixture({
+      pat: "pat",
+      remote: fetch,
+      remotes: `other\t${fetch} (push)\norigin\t${fetch} (fetch)\norigin\t${push} (push)`,
+      response: (url) =>
+        url.pathname.endsWith("/pullrequests")
+          ? Response.json({ value: [{ ...pr, status: "active" }] })
+          : Response.json({
+              name: "custom-web",
+              webUrl: push,
+              remoteUrl: push,
+              sshUrl: "git@ssh.dev.azure.com:v3/acme/fork/custom-web",
+              defaultBranch: "refs/heads/main",
+            }),
+    });
+    yield* Effect.gen(function* () {
+      const azure = yield* AzureDevOpsCli.AzureDevOpsCli;
+      expect(
+        yield* azure.listPullRequests({ cwd: "/repo", headSelector: "feature", state: "open" }),
+      ).toHaveLength(1);
+      expect(yield* azure.getDefaultBranch({ cwd: "/repo" })).toBe("main");
+      expect(test.requests.map(({ url }) => url.pathname)).toEqual([
+        "/acme/fork/_apis/git/repositories/custom-web/pullrequests",
+        "/acme/fork/_apis/git/repositories/custom-web",
+      ]);
+    }).pipe(Effect.provide(test.layer));
+  }),
+);
+
+it.effect("uses another Azure push remote when origin only pushes to GitHub", () =>
+  Effect.gen(function* () {
+    const fetch = "https://dev.azure.com/upstream/platform/_git/web";
+    const test = fixture({
+      pat: "pat",
+      remote: fetch,
+      remotes: [
+        `origin\t${fetch} (fetch)`,
+        "origin\thttps://github.com/acme/web (push)",
+        "azure\tgit@ssh.dev.azure.com:v3/acme/fork/custom-web (push)",
+      ].join("\n"),
+    });
+    yield* read(["repos", "pr", "show", "--id", "42"]).pipe(Effect.provide(test.layer));
+    expect(test.requests[0]?.url.pathname).toBe("/acme/fork/_apis/git/pullrequests/42");
+  }),
+);
+
+it.effect("leaves detection to Azure CLI when there is no supported Azure push remote", () =>
+  Effect.gen(function* () {
+    const fetch = "https://dev.azure.com/upstream/platform/_git/web";
+    const test = fixture({
+      pat: "pat",
+      remote: fetch,
+      remotes: `origin\t${fetch} (fetch)\norigin\thttps://github.com/acme/web (push)`,
+    });
+    yield* read(["repos", "pr", "show", "--id", "42"]).pipe(Effect.provide(test.layer));
+    expect(test.requests).toHaveLength(0);
+    expect(test.processes.at(-1)).toBe("az repos pr show");
+  }),
+);
+
+it.effect(
+  "keeps an unsupported Azure origin on the CLI instead of reading another repository",
+  () =>
+    Effect.gen(function* () {
+      const test = fixture({
+        pat: "pat",
+        remotes: [
+          "other\thttps://dev.azure.com/other/platform/_git/web (push)",
+          "origin\tacme@vs-ssh.visualstudio.com:v3/acme/project/repo (push)",
+        ].join("\n"),
+      });
+      yield* read(["repos", "pr", "show", "--id", "42"]).pipe(Effect.provide(test.layer));
+      expect(test.requests).toHaveLength(0);
+      expect(test.processes.at(-1)).toBe("az repos pr show");
+    }),
+);
+
+it.effect("uses the last effective push URL for a remote, matching Azure CLI detection", () =>
+  Effect.gen(function* () {
+    const test = fixture({
+      pat: "pat",
+      remotes: [
+        "origin\thttps://dev.azure.com/first/platform/_git/web (push)",
+        "origin\thttps://dev.azure.com/acme/fork/_git/custom-web (push)",
+      ].join("\n"),
+    });
+    yield* read(["repos", "pr", "show", "--id", "42"]).pipe(Effect.provide(test.layer));
+    expect(test.requests[0]?.url.pathname).toBe("/acme/fork/_apis/git/pullrequests/42");
+  }),
 );
 
 it.effect("reads board discovery over HTTP without requiring an Azure Git remote", () =>
