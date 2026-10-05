@@ -4,14 +4,20 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
 import * as Electron from "electron";
-import { SatellitePillState, type SatelliteShellState } from "@t3tools/contracts";
+import {
+  SatelliteAttentionIntent,
+  SatellitePillLayoutRequest,
+  SatellitePillState,
+  type SatelliteShellState,
+} from "@t3tools/contracts";
 import * as Channels from "./channels.ts";
 import {
   clampPillBounds,
   handleMainClose,
-  PILL_SIZE,
   resolvePillBounds,
+  resolvePillLayout,
   resolveWorkspaceBounds,
   unavailablePillState,
 } from "./pillModel.ts";
@@ -26,6 +32,8 @@ const Position = Schema.Struct({
 });
 const isPosition = Schema.is(Position);
 const isPillState = Schema.is(SatellitePillState);
+const decodeAttentionIntent = Schema.decodeUnknownOption(SatelliteAttentionIntent);
+const decodeLayoutRequest = Schema.decodeUnknownOption(SatellitePillLayoutRequest);
 const isMoveDirection = Schema.is(
   Schema.Literals(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]),
 );
@@ -67,6 +75,9 @@ export function installSatellitePill(
     ].map((display) => display.workArea);
   };
   let pillBounds = clampPillBounds(position, workAreas());
+  let layoutRequest: SatellitePillLayoutRequest = { mode: "compact", wing: false };
+  let pillGeometry = resolvePillLayout(pillBounds, layoutRequest, workAreas());
+  let pendingLayout: SatellitePillLayoutRequest | undefined;
   const initial = main.getBounds();
   let workspaceSize = {
     width: Math.max(840, position?.workspaceWidth ?? initial.width),
@@ -83,14 +94,13 @@ export function installSatellitePill(
   let workspaceGesture: "idle" | "moving" | "resizing" = "idle";
   let staleTimer: ReturnType<typeof setTimeout> | undefined;
   let blurTimer: ReturnType<typeof setTimeout> | undefined;
+  let pillBlurTimer: ReturnType<typeof setTimeout> | undefined;
   let nativeDrag: ((handle: Buffer) => boolean) | undefined;
   let disposeDoubleControl: (() => void) | undefined;
   const pill = new Electron.BrowserWindow({
     ...pillBounds,
     minWidth: 1,
     minHeight: 1,
-    maxWidth: PILL_SIZE.width,
-    maxHeight: PILL_SIZE.height,
     show: false,
     frame: false,
     thickFrame: false,
@@ -113,8 +123,9 @@ export function installSatellitePill(
   });
   // Reusing getBounds() dimensions for placement accumulates enclosing-pixel rounding.
   pill.setMinimumSize(1, 1);
-  pill.setMaximumSize(PILL_SIZE.width, PILL_SIZE.height);
+  pill.setMaximumSize(0, 0);
   pill.setBounds(pillBounds);
+  pill.setShape(pillGeometry.shape);
   pill.setVisibleOnAllWorkspaces(true);
   pill.webContents.setZoomFactor(1);
   const pillScheme = new URL(options.pillUrl).protocol.slice(0, -1);
@@ -139,6 +150,53 @@ export function installSatellitePill(
   const sendState = () => {
     if (!pill.isDestroyed()) pill.webContents.send(Channels.SATELLITE_PILL_STATE, snapshot);
   };
+  const sendLayout = () => {
+    if (!pill.isDestroyed())
+      pill.webContents.send(Channels.SATELLITE_PILL_LAYOUT, {
+        ...pillGeometry.layout,
+        ...(layoutRequest.requestId === undefined ? {} : { requestId: layoutRequest.requestId }),
+      });
+  };
+  const applyLayout = (request: SatellitePillLayoutRequest) => {
+    if (pill.isDestroyed()) return;
+    if (nativePillMove || menuOpen) {
+      pendingLayout = request;
+      return;
+    }
+    pendingLayout = undefined;
+    const previousMode = pillGeometry.layout.mode;
+    layoutRequest = request;
+    pillGeometry = resolvePillLayout(pillBounds, request, workAreas());
+    pillBounds = {
+      ...pillGeometry.layout.pill,
+      x: pillGeometry.bounds.x + pillGeometry.layout.pill.x,
+      y: pillGeometry.bounds.y + pillGeometry.layout.pill.y,
+    };
+    pill.setBounds(pillGeometry.bounds);
+    pill.setShape(pillGeometry.shape);
+    sendLayout();
+    if (shell.mode === "pill" && previousMode !== "panel" && pillGeometry.layout.mode === "panel") {
+      pill.show();
+      pill.focus();
+    }
+  };
+  const schedulePanelCollapse = () => {
+    clearTimeout(pillBlurTimer);
+    pillBlurTimer = setTimeout(() => {
+      if (
+        pill.isDestroyed() ||
+        shell.mode !== "pill" ||
+        pillGeometry.layout.mode !== "panel" ||
+        menuOpen ||
+        nativePillMove ||
+        pill.isFocused() ||
+        !pill.isEnabled() ||
+        pill.getChildWindows().some((child) => child.isVisible())
+      )
+        return;
+      applyLayout({ ...layoutRequest, mode: "compact" });
+    }, 150);
+  };
   const savePosition = () => {
     try {
       NodeFS.mkdirSync(NodePath.dirname(positionPath), { recursive: true });
@@ -159,7 +217,11 @@ export function installSatellitePill(
   const rememberPill = () => {
     if (pill.isDestroyed()) return;
     const actual = pill.getBounds();
-    pillBounds = { ...PILL_SIZE, x: actual.x, y: actual.y };
+    pillBounds = {
+      ...pillGeometry.layout.pill,
+      x: actual.x + pillGeometry.layout.pill.x,
+      y: actual.y + pillGeometry.layout.pill.y,
+    };
     savePosition();
   };
   const markUnknown = () => {
@@ -171,7 +233,9 @@ export function installSatellitePill(
     if (quitting || main.isDestroyed()) return false;
     if (shell.mode === "workspace") return mainReady;
     clearTimeout(blurTimer);
+    clearTimeout(pillBlurTimer);
     rememberPill();
+    applyLayout({ ...(pendingLayout ?? layoutRequest), mode: "compact" });
     setWorkspaceBounds(resolveWorkspaceBounds(pillBounds, workspaceSize, workAreas()));
     shell = { ...shell, mode: "workspace" };
     sendShell();
@@ -186,7 +250,7 @@ export function installSatellitePill(
     if (quitting || main.isDestroyed() || shell.mode === "pill") return;
     clearTimeout(blurTimer);
     pillBounds = resolvePillBounds(main.getBounds(), workAreas(), pillBounds);
-    pill.setBounds(pillBounds);
+    applyLayout({ ...(pendingLayout ?? layoutRequest), mode: "compact" });
     shell = { ...shell, mode: "pill" };
     sendShell();
     if (pillReady) {
@@ -259,6 +323,21 @@ export function installSatellitePill(
     [Channels.SATELLITE_HIDE_MAIN]: (event: Electron.IpcMainEvent) => {
       if (mainSender(event)) collapse();
     },
+    [Channels.SATELLITE_OPEN_MAIN]: (event: Electron.IpcMainEvent) => {
+      if (mainSender(event)) openMain();
+    },
+    [Channels.SATELLITE_ATTENTION_INTENT]: (event: Electron.IpcMainEvent, value: unknown) => {
+      if (!pillSender(event) || !mainReady || main.isDestroyed()) return;
+      const intent = decodeAttentionIntent(value);
+      if (Option.isSome(intent))
+        main.webContents.send(Channels.SATELLITE_ATTENTION_INTENT, intent.value);
+    },
+    [Channels.SATELLITE_PILL_LAYOUT_REQUEST]: (event: Electron.IpcMainEvent, value: unknown) => {
+      if (!pillSender(event)) return;
+      const request = decodeLayoutRequest(value);
+      if (Option.isNone(request)) return;
+      applyLayout(shell.mode === "pill" ? request.value : { ...request.value, mode: "compact" });
+    },
     [Channels.SATELLITE_WORKSPACE_READY]: (event: Electron.IpcMainEvent) => {
       if (!mainSender(event)) return;
       mainReady = true;
@@ -273,6 +352,7 @@ export function installSatellitePill(
     [Channels.SATELLITE_PILL_READY]: (event: Electron.IpcMainEvent) => {
       if (!pillSender(event)) return;
       pillReady = true;
+      sendLayout();
       sendState();
       if (shell.mode === "pill") {
         pill.showInactive();
@@ -286,10 +366,13 @@ export function installSatellitePill(
       if (!pillSender(event) || nativePillMove) return;
       menuOpen = true;
       clearTimeout(blurTimer);
+      clearTimeout(pillBlurTimer);
       menu().popup({
         window: pill,
         callback: () => {
           menuOpen = false;
+          if (pendingLayout) applyLayout(pendingLayout);
+          if (!pill.isFocused()) schedulePanelCollapse();
         },
       });
     },
@@ -301,16 +384,16 @@ export function installSatellitePill(
         shell.mode !== "pill"
       )
         return;
-      const actual = pill.getBounds();
+      rememberPill();
       pillBounds = clampPillBounds(
         {
-          x: actual.x + (direction === "ArrowLeft" ? -16 : direction === "ArrowRight" ? 16 : 0),
-          y: actual.y + (direction === "ArrowUp" ? -16 : direction === "ArrowDown" ? 16 : 0),
+          x: pillBounds.x + (direction === "ArrowLeft" ? -16 : direction === "ArrowRight" ? 16 : 0),
+          y: pillBounds.y + (direction === "ArrowUp" ? -16 : direction === "ArrowDown" ? 16 : 0),
         },
         workAreas(),
       );
-      pill.setBounds(pillBounds);
-      rememberPill();
+      applyLayout(layoutRequest);
+      savePosition();
     },
     [Channels.SATELLITE_PILL_DRAG_BEGIN]: (event: Electron.IpcMainEvent) => {
       if (
@@ -337,6 +420,11 @@ export function installSatellitePill(
     nativePillMove = false;
     rememberPill();
     if (topologyRecoveryPending) displayChanged();
+    else if (pendingLayout || layoutRequest.wing || layoutRequest.mode !== "compact") {
+      applyLayout(pendingLayout ?? layoutRequest);
+      savePosition();
+    }
+    if (!pill.isFocused()) schedulePanelCollapse();
   });
   main.hookWindowMessage(0x0231, () => {
     workspaceGesture = "moving";
@@ -359,6 +447,8 @@ export function installSatellitePill(
   pill.on("close", (event) => {
     if (!quitting) event.preventDefault();
   });
+  pill.on("blur", schedulePanelCollapse);
+  pill.on("focus", () => clearTimeout(pillBlurTimer));
   main.on("close", (event) => handleMainClose(event, quitting, collapse));
   main.on("minimize", () => {
     if (!quitting) {
@@ -414,8 +504,9 @@ export function installSatellitePill(
       return;
     }
     topologyRecoveryPending = false;
-    pillBounds = clampPillBounds(pill.getBounds(), workAreas());
-    pill.setBounds(pillBounds);
+    rememberPill();
+    pillBounds = clampPillBounds(pillBounds, workAreas());
+    applyLayout(pendingLayout ?? layoutRequest);
     if (shell.mode === "workspace")
       setWorkspaceBounds(
         resolveWorkspaceBounds(
@@ -444,6 +535,7 @@ export function installSatellitePill(
     disposeDoubleControl = undefined;
     clearTimeout(staleTimer);
     clearTimeout(blurTimer);
+    clearTimeout(pillBlurTimer);
     Electron.app.removeListener("before-quit", beforeQuit);
     Electron.screen.removeListener("display-added", displayChanged);
     Electron.screen.removeListener("display-removed", displayChanged);

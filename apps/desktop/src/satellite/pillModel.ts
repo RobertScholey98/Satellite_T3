@@ -1,4 +1,8 @@
-import type { SatellitePillState } from "@t3tools/contracts";
+import type {
+  SatellitePillLayout,
+  SatellitePillLayoutRequest,
+  SatellitePillState,
+} from "@t3tools/contracts";
 
 export const PILL_SIZE = { width: 320, height: 70 } as const;
 export interface PillRectangle {
@@ -27,10 +31,13 @@ export function clampPillBounds(
     (nearest, candidate) => (distance(candidate) < distance(nearest) ? candidate : nearest),
     primary,
   );
+  const width = Math.min(PILL_SIZE.width, area.width);
+  const height = Math.min(PILL_SIZE.height, area.height);
   return {
-    ...PILL_SIZE,
-    x: Math.round(Math.max(area.x, Math.min(target.x, area.x + area.width - PILL_SIZE.width))),
-    y: Math.round(Math.max(area.y, Math.min(target.y, area.y + area.height - PILL_SIZE.height))),
+    width,
+    height,
+    x: Math.round(Math.max(area.x, Math.min(target.x, area.x + area.width - width))),
+    y: Math.round(Math.max(area.y, Math.min(target.y, area.y + area.height - height))),
   };
 }
 
@@ -51,6 +58,75 @@ function nearestWorkArea(
     (nearest, candidate) => (distance(candidate) < distance(nearest) ? candidate : nearest),
     primary,
   );
+}
+
+export function resolvePillLayout(
+  anchor: PillRectangle,
+  request: SatellitePillLayoutRequest,
+  workAreas: readonly PillRectangle[],
+) {
+  const pill = clampPillBounds(anchor, workAreas);
+  const area = nearestWorkArea(pill, workAreas);
+  const right = area.x + area.width;
+  const bottom = area.y + area.height;
+  const leftSpace = pill.x - area.x;
+  const rightSpace = right - pill.x - pill.width;
+  const wingOnRight = rightSpace >= leftSpace;
+  const wingSpace = Math.max(leftSpace, rightSpace);
+  const wingWidth = Math.min(request.mode === "preview" ? 320 : 90, Math.max(0, wingSpace));
+  let wing: PillRectangle | null = null;
+  if (request.wing && wingWidth > 0) {
+    wing = {
+      x: wingOnRight ? pill.x + pill.width : pill.x - wingWidth,
+      y: pill.y,
+      width: wingWidth,
+      height: pill.height,
+    };
+  } else if (request.wing) {
+    const below = bottom - pill.y - pill.height;
+    const above = pill.y - area.y;
+    const height = Math.min(pill.height, Math.max(above, below));
+    if (height > 0) {
+      wing = {
+        x: pill.x,
+        y: below >= above ? pill.y + pill.height : pill.y - height,
+        width: Math.min(request.mode === "preview" ? 320 : 90, pill.width),
+        height,
+      };
+    }
+  }
+  const rowTop = Math.min(pill.y, wing?.y ?? pill.y);
+  const rowBottom = Math.max(pill.y + pill.height, wing ? wing.y + wing.height : 0);
+  const rowRight = Math.max(pill.x + pill.width, wing ? wing.x + wing.width : pill.x);
+  const above = rowTop - area.y - 12;
+  const below = bottom - rowBottom - 12;
+  const panelBelow = below >= above;
+  const panelHeight = Math.min(request.panelHeight ?? 500, Math.max(above, below));
+  let panel: PillRectangle | null = null;
+  if (request.mode === "panel" && panelHeight > 0) {
+    const width = Math.min(440, area.width);
+    panel = {
+      x: Math.round(Math.max(area.x, Math.min(rowRight - width, right - width))),
+      y: panelBelow ? rowBottom + 12 : rowTop - panelHeight - 12,
+      width,
+      height: panelHeight,
+    };
+  }
+  const regions = [pill, ...(wing ? [wing] : []), ...(panel ? [panel] : [])];
+  const x = Math.min(...regions.map((rect) => rect.x));
+  const y = Math.min(...regions.map((rect) => rect.y));
+  const width = Math.max(...regions.map((rect) => rect.x + rect.width)) - x;
+  const height = Math.max(...regions.map((rect) => rect.y + rect.height)) - y;
+  const local = (rect: PillRectangle): PillRectangle => ({ ...rect, x: rect.x - x, y: rect.y - y });
+  const layout: SatellitePillLayout = {
+    mode: request.mode === "panel" && !panel ? "compact" : request.mode,
+    width,
+    height,
+    pill: local(pill),
+    wing: wing ? local(wing) : null,
+    panel: panel ? local(panel) : null,
+  };
+  return { bounds: { x, y, width, height }, layout, shape: regions.map(local) };
 }
 
 function normalizedAnchor(position: number, origin: number, span: number, fallback = 0.5) {
@@ -121,12 +197,30 @@ export function resolvePillBounds(
 export function unavailablePillState(previous?: SatellitePillState): SatellitePillState {
   return {
     ...(previous?.theme ? { theme: previous.theme } : {}),
+    ...(previous?.dark !== undefined ? { dark: previous.dark } : {}),
     threadId: previous?.threadId ?? null,
     environmentId: previous?.environmentId ?? null,
     title: previous?.title ?? "SatelliteT3",
     state: "unknown",
     detail: previous ? "Status unavailable — reconnecting" : "Waiting for conversation state",
     attention: false,
+    ...(previous?.actionWing
+      ? {
+          actionWing: {
+            ...previous.actionWing,
+            items: previous.actionWing.items.map((item) => ({ ...item, available: false })),
+            selected: previous.actionWing.selected
+              ? { ...previous.actionWing.selected, status: "unavailable" as const }
+              : null,
+            incompleteEnvironments: [
+              ...new Set([
+                ...previous.actionWing.incompleteEnvironments,
+                ...previous.actionWing.items.map((item) => item.environmentName),
+              ]),
+            ],
+          },
+        }
+      : {}),
   };
 }
 

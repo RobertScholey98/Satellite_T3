@@ -13,6 +13,7 @@ import { composerFloatingLayerProps } from "./composerEventScope";
 interface ComposerPendingApprovalActionsProps {
   requestId: ApprovalRequestId;
   isResponding: boolean;
+  collisionBoundary?: Element | undefined;
   options?: ReadonlyArray<ProviderApprovalOption> | undefined;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
@@ -32,6 +33,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   isResponding,
   options = DEFAULT_APPROVAL_OPTIONS,
   onRespondToApproval,
+  collisionBoundary,
 }: ComposerPendingApprovalActionsProps) {
   const primaryOptions = options.filter(
     (option) => option.decision === "decline" || option.decision === "accept",
@@ -59,7 +61,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
         return option.warning ? (
           <Tooltip key={option.decision}>
             <TooltipTrigger render={button} />
-            <TooltipPopup side="top">{option.warning}</TooltipPopup>
+            <TooltipPopup side="top" collisionBoundary={collisionBoundary}>
+              {option.warning}
+            </TooltipPopup>
           </Tooltip>
         ) : (
           button
@@ -73,7 +77,12 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           >
             <EllipsisIcon />
           </MenuTrigger>
-          <MenuPopup {...composerFloatingLayerProps} side="top" align="end">
+          <MenuPopup
+            {...composerFloatingLayerProps}
+            side="top"
+            align="end"
+            collisionBoundary={collisionBoundary}
+          >
             {moreOptions.map((option) => {
               const item = (
                 <MenuItem
@@ -91,7 +100,9 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
               return option.warning ? (
                 <Tooltip key={option.decision}>
                   <TooltipTrigger render={item} />
-                  <TooltipPopup side="top">{option.warning}</TooltipPopup>
+                  <TooltipPopup side="top" collisionBoundary={collisionBoundary}>
+                    {option.warning}
+                  </TooltipPopup>
                 </Tooltip>
               ) : (
                 item

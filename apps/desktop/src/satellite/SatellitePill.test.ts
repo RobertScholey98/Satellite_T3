@@ -146,6 +146,11 @@ describe("independent native Satellite surfaces", () => {
     attention: false,
   } as const;
   const saved = () => JSON.parse(vi.mocked(NodeFS.writeFileSync).mock.lastCall?.[1] as string);
+  const publishedLayouts = () =>
+    vi
+      .mocked(pill.webContents.send)
+      .mock.calls.filter(([channel]) => channel === Channels.SATELLITE_PILL_LAYOUT)
+      .map(([, layout]) => layout);
   const expand = () => expandSatelliteWindow(main);
   const collapse = () => send(main, Channels.SATELLITE_HIDE_MAIN);
   const createShell = () => {
@@ -287,6 +292,268 @@ describe("independent native Satellite surfaces", () => {
     collapse();
     expand();
     expect(main.getBounds()).toMatchObject({ width: 1200, height: 820 });
+  });
+  it("relays only valid pill attention intents to the retained workspace", () => {
+    const ref = { environmentId: "remote", threadId: "t1", kind: "question", requestId: "q1" };
+    const intent = {
+      type: "answer",
+      ref,
+      questionId: "choice",
+      answer: { customAnswer: "Keep it" },
+    };
+    vi.mocked(main.webContents.send).mockClear();
+    send(main, Channels.SATELLITE_ATTENTION_INTENT, intent);
+    send(pill, Channels.SATELLITE_ATTENTION_INTENT, {
+      ...intent,
+      ref: { ...ref, kind: "approval" },
+    });
+    send(pill, Channels.SATELLITE_ATTENTION_INTENT, { ...intent, answer: null });
+    send(pill, Channels.SATELLITE_ATTENTION_INTENT, { ...intent, extra: "discard" });
+    expect(vi.mocked(main.webContents.send).mock.calls).toEqual([
+      [Channels.SATELLITE_ATTENTION_INTENT, intent],
+    ]);
+  });
+  it("lets the workspace open itself only through its own guarded channel", () => {
+    collapse();
+    send(pill, Channels.SATELLITE_OPEN_MAIN);
+    expect(main.isVisible()).toBe(false);
+    send(main, Channels.SATELLITE_OPEN_MAIN);
+    expect(main.isVisible()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+  });
+  it("publishes native panel geometry and excludes the transparent gaps from its shape", () => {
+    collapse();
+    send(main, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "other", wing: true });
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+      mode: "panel",
+      wing: true,
+      panelHeight: Infinity,
+    });
+    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+      mode: "panel",
+      wing: true,
+      panelHeight: 300,
+    });
+    expect(pill.getBounds()).toEqual({ x: 70, y: 100, width: 440, height: 382 });
+    expect(pill.setShape).toHaveBeenLastCalledWith([
+      { x: 30, y: 0, width: 320, height: 70 },
+      { x: 350, y: 0, width: 90, height: 70 },
+      { x: 0, y: 82, width: 440, height: 300 },
+    ]);
+    expect(pill.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_LAYOUT, {
+      mode: "panel",
+      width: 440,
+      height: 382,
+      pill: { x: 30, y: 0, width: 320, height: 70 },
+      wing: { x: 350, y: 0, width: 90, height: 70 },
+      panel: { x: 0, y: 82, width: 440, height: 300 },
+    });
+    expect(pill.isFocused()).toBe(true);
+    expect(main.isVisible()).toBe(false);
+  });
+  it("preserves the compact anchor and workspace size across repeated wing expansion", () => {
+    collapse();
+    for (let index = 0; index < 5; index++) {
+      send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "preview", wing: true });
+      send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
+      expand();
+      expect(main.getBounds()).toMatchObject({ width: 1100, height: 780 });
+      collapse();
+    }
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: false });
+    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
+    expect(saved()).toEqual({ x: 100, y: 100, workspaceWidth: 1100, workspaceHeight: 780 });
+  });
+  it("moves the compact anchor while the panel extends above it", () => {
+    collapse();
+    pill.setPosition(1576, 946);
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
+    expect(pill.getBounds()).toEqual({ x: 1456, y: 434, width: 440, height: 582 });
+    send(pill, Channels.SATELLITE_PILL_MOVE, "ArrowLeft");
+    expect(saved()).toMatchObject({ x: 1560, y: 946 });
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: false });
+    expect(pill.getBounds()).toEqual({ x: 1560, y: 946, width: 320, height: 70 });
+  });
+  it("defers layout changes during native capture and persists the control anchor", () => {
+    collapse();
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
+    message(pill, 0x0231);
+    pill.setPosition(270, 300);
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: true });
+    expect(pill.getBounds()).toEqual({ x: 270, y: 300, width: 440, height: 582 });
+    message(pill, 0x0232);
+    expect(pill.getBounds()).toEqual({ x: 300, y: 300, width: 410, height: 70 });
+    expect(saved()).toMatchObject({ x: 300, y: 300 });
+  });
+  it.each(["capture", "menu"] as const)(
+    "acknowledges only applied layout requests while %s coalesces pending changes",
+    (blocker) => {
+      collapse();
+      send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+        requestId: "applied",
+        mode: "panel",
+        wing: true,
+      });
+      if (blocker === "capture") message(pill, 0x0231);
+      else send(pill, Channels.SATELLITE_PILL_MENU);
+      vi.mocked(pill.webContents.send).mockClear();
+      send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+        requestId: "superseded",
+        mode: "preview",
+        wing: true,
+      });
+      send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+        requestId: "latest",
+        mode: "panel",
+        wing: true,
+        panelHeight: 300,
+      });
+      expect(publishedLayouts()).toEqual([]);
+      expect(pill.getBounds()).toMatchObject({ width: 440, height: 582 });
+      send(pill, Channels.SATELLITE_PILL_READY);
+      expect(publishedLayouts()).toEqual([
+        expect.objectContaining({ requestId: "applied", mode: "panel", height: 582 }),
+      ]);
+      if (blocker === "capture") message(pill, 0x0232);
+      else {
+        const menu = vi.mocked(Electron.Menu.buildFromTemplate).mock.results.at(-1)!.value;
+        vi.mocked(menu.popup).mock.calls[0]![0]!.callback!();
+      }
+      expect(pill.getBounds()).toMatchObject({ width: 440, height: 382 });
+      expect(publishedLayouts()).toEqual([
+        expect.objectContaining({ requestId: "applied", mode: "panel", height: 582 }),
+        expect.objectContaining({ requestId: "latest", mode: "panel", height: 382 }),
+      ]);
+    },
+  );
+  it("retains the applied request ID through movement, autonomous blur, and ready snapshots", () => {
+    collapse();
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+      requestId: "opened-panel",
+      mode: "panel",
+      wing: true,
+    });
+    send(pill, Channels.SATELLITE_PILL_MOVE, "ArrowRight");
+    expect(publishedLayouts().at(-1)).toMatchObject({ requestId: "opened-panel", mode: "panel" });
+    pill.blur();
+    vi.advanceTimersByTime(150);
+    expect(publishedLayouts().at(-1)).toMatchObject({
+      requestId: "opened-panel",
+      mode: "compact",
+      panel: null,
+    });
+    vi.mocked(pill.webContents.send).mockClear();
+    send(pill, Channels.SATELLITE_PILL_READY);
+    expect(publishedLayouts()).toEqual([
+      expect.objectContaining({ requestId: "opened-panel", mode: "compact", panel: null }),
+    ]);
+  });
+  it.each([
+    { blocker: "capture", returnWhileBlocked: false },
+    { blocker: "menu", returnWhileBlocked: false },
+    { blocker: "capture", returnWhileBlocked: true },
+    { blocker: "menu", returnWhileBlocked: true },
+  ])(
+    "acknowledges cancelled layout intent across workspace transitions with $blocker, returning while blocked: $returnWhileBlocked",
+    ({ blocker, returnWhileBlocked }) => {
+      collapse();
+      send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+        requestId: "applied",
+        mode: "panel",
+        wing: true,
+      });
+      if (blocker === "capture") message(pill, 0x0231);
+      else send(pill, Channels.SATELLITE_PILL_MENU);
+      vi.mocked(pill.webContents.send).mockClear();
+      send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+        requestId: "opening",
+        mode: "panel",
+        wing: true,
+        panelHeight: 300,
+      });
+      expand();
+      if (returnWhileBlocked) {
+        send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+          requestId: "workspace-update",
+          mode: "panel",
+          wing: true,
+          panelHeight: 350,
+        });
+        collapse();
+      }
+      expect(publishedLayouts()).toEqual([]);
+      if (blocker === "capture") message(pill, 0x0232);
+      else {
+        const menu = vi.mocked(Electron.Menu.buildFromTemplate).mock.results.at(-1)!.value;
+        vi.mocked(menu.popup).mock.calls[0]![0]!.callback!();
+      }
+      const compact = expect.objectContaining({
+        requestId: returnWhileBlocked ? "workspace-update" : "opening",
+        mode: "compact",
+        panel: null,
+      });
+      expect(publishedLayouts()).toEqual([compact]);
+      if (!returnWhileBlocked) collapse();
+      expect(publishedLayouts().at(-1)).toEqual(compact);
+      expect(pill.getBounds()).toMatchObject({ width: 410, height: 70 });
+      expect(pill.isVisible()).toBe(true);
+      send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
+        requestId: "reopened",
+        mode: "panel",
+        wing: true,
+      });
+      expect(publishedLayouts().at(-1)).toMatchObject({ requestId: "reopened", mode: "panel" });
+    },
+  );
+  it("collapses panel blur without opening or moving the workspace", () => {
+    collapse();
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
+    pill.blur();
+    vi.advanceTimersByTime(150);
+    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 410, height: 70 });
+    expect(pill.webContents.send).toHaveBeenLastCalledWith(
+      Channels.SATELLITE_PILL_LAYOUT,
+      expect.objectContaining({ mode: "compact", panel: null }),
+    );
+    expect(main.isVisible()).toBe(false);
+  });
+  it("keeps a panel open during native drag capture and native menus", () => {
+    collapse();
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
+    message(pill, 0x0231);
+    pill.blur();
+    vi.advanceTimersByTime(150);
+    expect(pill.getBounds()).toMatchObject({ width: 440, height: 582 });
+    message(pill, 0x0232);
+    send(pill, Channels.SATELLITE_PILL_MENU);
+    pill.blur();
+    vi.advanceTimersByTime(150);
+    expect(pill.getBounds()).toMatchObject({ width: 440, height: 582 });
+    const menu = vi.mocked(Electron.Menu.buildFromTemplate).mock.results.at(-1)!.value;
+    vi.mocked(menu.popup).mock.calls[0]![0]!.callback!();
+    vi.advanceTimersByTime(150);
+    expect(pill.getBounds()).toMatchObject({ width: 410, height: 70 });
+  });
+  it("reflows the panel after a native drag to the opposite display edge", () => {
+    collapse();
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
+    message(pill, 0x0231);
+    pill.setPosition(1546, 946);
+    message(pill, 0x0232);
+    expect(pill.getBounds()).toEqual({ x: 1456, y: 434, width: 440, height: 582 });
+    expect(pill.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_LAYOUT, {
+      mode: "panel",
+      width: 440,
+      height: 582,
+      pill: { x: 120, y: 512, width: 320, height: 70 },
+      wing: { x: 30, y: 512, width: 90, height: 70 },
+      panel: { x: 0, y: 0, width: 440, height: 500 },
+    });
+    expect(saved()).toMatchObject({ x: 1576, y: 946, workspaceWidth: 1100, workspaceHeight: 780 });
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: false });
+    expect(pill.getBounds()).toEqual({ x: 1576, y: 946, width: 320, height: 70 });
   });
   it("collapses on outside blur and close while respecting pin", () => {
     expand();

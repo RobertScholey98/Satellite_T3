@@ -17,6 +17,7 @@ function TooltipPopup({
   side = "top",
   variant = "default",
   anchor,
+  collisionBoundary,
   children,
   ...props
 }: TooltipPrimitive.Popup.Props & {
@@ -26,6 +27,7 @@ function TooltipPopup({
   /** `code` renders monospace content that breaks anywhere, for paths and commands. */
   variant?: "default" | "glass" | "code";
   anchor?: TooltipPrimitive.Positioner.Props["anchor"];
+  collisionBoundary?: TooltipPrimitive.Positioner.Props["collisionBoundary"];
 }) {
   return (
     <TooltipPrimitive.Portal>
@@ -36,6 +38,7 @@ function TooltipPopup({
         data-slot="tooltip-positioner"
         side={side}
         sideOffset={sideOffset}
+        collisionBoundary={collisionBoundary}
       >
         <TooltipPrimitive.Popup
           className={cn(

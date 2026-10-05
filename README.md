@@ -122,10 +122,12 @@ Click the pill or double-tap Ctrl on Windows to bring the workspace back. Use
 **Keep workspace open** to prevent collapse when clicking outside.
 
 Drag the pill, or focus it and press Alt+arrow keys. Its position survives
-relaunch. The pill follows the selected conversation: blue means working,
-amber means input or approval is needed, green means the latest turn explicitly
-completed, red means an error, and gray means idle or unavailable. Opening the
-workspace does not approve pending requests.
+relaunch. The attached action wing collects requests across connected environments.
+Open it to answer questions or review approval requests without opening the full
+workspace. You can mute a request in the pill and restore it from the muted list.
+**Open in thread** carries your answer draft to that conversation. Clicking the main
+pill restores your previous workspace. Disconnected or older environments show an
+incomplete request count. Opening the workspace does not approve pending requests.
 
 Turn off **Settings → General → Pill mode** and restart to use a normal window
 with a taskbar entry. The pill menu and system tray can open the workspace or quit.

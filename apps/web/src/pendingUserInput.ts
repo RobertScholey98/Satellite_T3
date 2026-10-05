@@ -1,7 +1,7 @@
 import type { UserInputQuestion } from "@t3tools/contracts";
 
 export interface PendingUserInputDraftAnswer {
-  selectedOptionValues?: string[];
+  selectedOptionValues?: ReadonlyArray<string>;
   customAnswer?: string;
   attachmentCount?: number;
   attachmentsBlocked?: boolean;
@@ -30,7 +30,7 @@ function normalizeDraftAnswer(value: string | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function normalizeSelectedOptionValues(value: string[] | undefined): string[] {
+function normalizeSelectedOptionValues(value: ReadonlyArray<string> | undefined): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
