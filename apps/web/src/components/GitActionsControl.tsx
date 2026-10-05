@@ -1,4 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
+import {
+  activeCommitRecommendation,
+  commitRecommendationLabel,
+} from "@t3tools/client-runtime/commit-recommendation";
 import { type ScopedThreadRef } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
@@ -66,7 +70,7 @@ import {
 } from "./GitActionsControl.logic";
 import { WizardPopup, WizardHeader, WizardSteps, WizardPanel, WizardFooter } from "./ui/wizard";
 import { StartTruncatedPath } from "./StartTruncatedPath";
-import { Button } from "~/components/ui/button";
+import { Button, InlineButton } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/checkbox";
 import {
   Dialog,
@@ -1071,6 +1075,21 @@ export default function GitActionsControl({
     reportFailure: false,
   });
   const { data: gitStatus, error: gitStatusError } = gitStatusQuery;
+  const commitRecommendation = activeCommitRecommendation(
+    activeServerThread?.commitRecommendation,
+    gitStatus,
+    gitCwd,
+  );
+  const commitGuidance = commitRecommendation
+    ? `${commitRecommendationLabel(commitRecommendation)}: ${commitRecommendation.reason}`
+    : null;
+  const dismissCommitRecommendation = () => {
+    if (!activeThreadRef) return;
+    void updateThreadMetadata({
+      environmentId: activeThreadRef.environmentId,
+      input: { threadId: activeThreadRef.threadId, commitRecommendation: null },
+    });
+  };
   const sourceControlPresentation = useMemo(
     () => getSourceControlPresentation(gitStatus?.sourceControlProvider),
     [gitStatus?.sourceControlProvider],
@@ -1707,6 +1726,14 @@ export default function GitActionsControl({
           </MenuItem>
         );
       })}
+      {commitRecommendation && (
+        <MenuItem
+          density={presentation === "menu" ? "touch" : "default"}
+          onClick={dismissCommitRecommendation}
+        >
+          <MenuItemLabel>Dismiss commit suggestion</MenuItemLabel>
+        </MenuItem>
+      )}
       {canPublishRepository ? (
         <MenuItem
           density={presentation === "menu" ? "touch" : "default"}
@@ -1767,6 +1794,9 @@ export default function GitActionsControl({
               />
               <MenuItemLabel>{quickAction.label}</MenuItemLabel>
             </MenuItem>
+            {commitGuidance && (
+              <p className="max-w-64 px-2 py-1.5 text-xs text-muted-foreground">{commitGuidance}</p>
+            )}
             {quickActionDisabledReason && (
               <p className="max-w-64 px-2 py-1.5 text-xs text-warning">
                 {quickActionDisabledReason}
@@ -1813,17 +1843,38 @@ export default function GitActionsControl({
               </PopoverPopup>
             </Popover>
           ) : (
-            <Button
-              variant="outline"
-              size="xs"
-              disabled={isGitActionRunning || quickAction.disabled}
-              onClick={runQuickAction}
-            >
-              <GitQuickActionIcon quickAction={quickAction} SourceControlIcon={SourceControlIcon} />
-              <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-                {quickAction.label}
-              </span>
-            </Button>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant={
+                      commitRecommendation?.level === "overdue"
+                        ? "destructive"
+                        : commitRecommendation
+                          ? "warning-outline"
+                          : "outline"
+                    }
+                    size="xs"
+                    aria-label={
+                      commitGuidance ? `${quickAction.label}. ${commitGuidance}` : quickAction.label
+                    }
+                    disabled={isGitActionRunning || quickAction.disabled}
+                    onClick={runQuickAction}
+                  />
+                }
+              >
+                <GitQuickActionIcon
+                  quickAction={quickAction}
+                  SourceControlIcon={SourceControlIcon}
+                />
+                <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
+                  {quickAction.label}
+                </span>
+              </TooltipTrigger>
+              <TooltipPopup side="bottom">
+                {commitGuidance ? `${quickAction.label}. ${commitGuidance}` : quickAction.label}
+              </TooltipPopup>
+            </Tooltip>
           )}
           <GroupSeparator className="hidden @3xl/header-actions:block" />
           <Menu
@@ -1859,6 +1910,23 @@ export default function GitActionsControl({
           <DialogHeader>
             <DialogTitle>{COMMIT_DIALOG_TITLE}</DialogTitle>
             <DialogDescription>{COMMIT_DIALOG_DESCRIPTION}</DialogDescription>
+            {commitRecommendation && (
+              <div className="mt-2 space-y-1 text-sm">
+                <p
+                  className={
+                    commitRecommendation.level === "overdue"
+                      ? "text-destructive-foreground"
+                      : "text-warning-foreground"
+                  }
+                >
+                  <strong>{commitRecommendationLabel(commitRecommendation)}.</strong>{" "}
+                  {commitRecommendation.reason}
+                </p>
+                <InlineButton tone="muted" onClick={dismissCommitRecommendation}>
+                  Dismiss suggestion
+                </InlineButton>
+              </div>
+            )}
           </DialogHeader>
           <DialogPanel>
             <div className="space-y-3 rounded-xl bg-zinc-25 p-3 text-sm ring-1 ring-black/5 dark:bg-white/[0.035] dark:ring-white/5">

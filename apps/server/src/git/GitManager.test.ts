@@ -745,6 +745,17 @@ const GitManagerTestLayer = GitVcsDriver.layer.pipe(
 );
 
 it.layer(GitManagerTestLayer)("GitManager", (it) => {
+  it.effect("local status includes HEAD for commit recommendations", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTempDir("t3code-git-commit-advice-");
+      yield* initRepo(cwd);
+      const { manager } = yield* makeManager();
+      const local = yield* manager.localStatus({ cwd });
+      const head = yield* runGit(cwd, ["rev-parse", "HEAD"]);
+      expect(local.headCommit).toBe(head.stdout.trim());
+    }),
+  );
+
   it.effect("status includes draft PR metadata when branch already has a draft PR", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");

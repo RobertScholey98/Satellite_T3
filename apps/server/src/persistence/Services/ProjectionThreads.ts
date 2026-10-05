@@ -17,6 +17,7 @@ import {
   RuntimeMode,
   ThreadLinkedPullRequest,
   ThreadTitleState,
+  CommitRecommendation,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -40,6 +41,7 @@ export const ProjectionThread = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
   linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
+  commitRecommendation: Schema.optional(Schema.NullOr(CommitRecommendation)),
   latestTurnId: Schema.NullOr(TurnId),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

@@ -29,6 +29,8 @@ import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import * as CommitRecommendationService from "../../git/CommitRecommendationService.ts";
+import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import * as OrchestrationCommandReceipts from "../../persistence/Services/OrchestrationCommandReceipts.ts";
@@ -106,6 +108,7 @@ async function createOrchestrationSystem(
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
   return {
     engine,
+    snapshotQuery,
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     readThread: (threadId: ThreadId) =>
       runtime.runPromise(snapshotQuery.getThreadDetailById(threadId)),
@@ -130,6 +133,152 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("persists commit recommendations and their dismissal or clean-checkout expiry across restart", async () => {
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-commit-advice-"));
+    const databasePath = NodePath.join(directory, "state.sqlite");
+    let system = await createOrchestrationSystem(databasePath);
+    const threadId = ThreadId.make("commit-advice-thread");
+    const projectId = ProjectId.make("commit-advice-project");
+    const recommendation = {
+      level: "recommended" as const,
+      reason: "A verified milestone is ready.",
+      cwd: "/tmp/commit-advice",
+      branch: "feature",
+      headCommit: "commit-1",
+      assessedAt: now(),
+    };
+    try {
+      await system.run(
+        system.engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("commit-advice-project"),
+          projectId,
+          title: "Commit advice",
+          workspaceRoot: recommendation.cwd,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("commit-advice-thread"),
+          threadId,
+          projectId,
+          title: "Commit advice",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "feature",
+          worktreePath: null,
+          createdAt: now(),
+        }),
+      );
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("commit-advice-set"),
+          threadId,
+          commitRecommendation: recommendation,
+        }),
+      );
+      for (const snapshot of [
+        await system.readModel(),
+        await system.run(system.snapshotQuery.getShellSnapshot()),
+        await system.run(system.snapshotQuery.getCommandReadModel()),
+      ]) {
+        expect(
+          snapshot.threads.find((thread) => thread.id === threadId)?.commitRecommendation,
+        ).toEqual(recommendation);
+      }
+      expect(Option.getOrThrow(await system.readThread(threadId)).commitRecommendation).toEqual(
+        recommendation,
+      );
+      expect(
+        Option.getOrThrow(await system.run(system.snapshotQuery.getThreadShellById(threadId)))
+          .commitRecommendation,
+      ).toEqual(recommendation);
+
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+      expect((await system.readModel()).threads[0]?.commitRecommendation).toEqual(recommendation);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("commit-advice-rename"),
+          threadId,
+          title: "Renamed thread",
+        }),
+      );
+      expect((await system.readModel()).threads[0]?.commitRecommendation).toEqual(recommendation);
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("commit-advice-dismiss"),
+          threadId,
+          commitRecommendation: null,
+        }),
+      );
+      expect((await system.readModel()).threads[0]?.commitRecommendation).toBeNull();
+      expect(
+        (await system.run(system.snapshotQuery.getShellSnapshot())).threads[0]
+          ?.commitRecommendation,
+      ).toBeNull();
+      await system.run(
+        system.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.make("commit-advice-reassess"),
+          threadId,
+          commitRecommendation: recommendation,
+        }),
+      );
+      const advice = await system.run(
+        CommitRecommendationService.CommitRecommendationService.pipe(
+          Effect.provide(
+            CommitRecommendationService.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(OrchestrationEngineService, system.engine),
+                  Layer.succeed(ProjectionSnapshotQuery, system.snapshotQuery),
+                  Layer.mock(GitVcsDriver.GitVcsDriver)({
+                    statusDetailsLocal: () =>
+                      Effect.succeed({
+                        isRepo: true,
+                        branch: recommendation.branch,
+                        headCommit: recommendation.headCommit,
+                        hasWorkingTreeChanges: false,
+                        workingTree: { files: [], insertions: 0, deletions: 0 },
+                        hasOriginRemote: false,
+                        isDefaultBranch: false,
+                        upstreamRef: null,
+                        hasUpstream: false,
+                        aheadCount: 0,
+                        behindCount: 0,
+                        aheadOfDefaultCount: 0,
+                      }),
+                  }),
+                  NodeServices.layer,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(await system.run(system.snapshotQuery.listThreadsWithCommitRecommendations())).toEqual(
+        [{ id: threadId, commitRecommendation: recommendation }],
+      );
+      await system.run(advice.readLocalStatus(recommendation.cwd));
+      expect(await system.run(system.snapshotQuery.listThreadsWithCommitRecommendations())).toEqual(
+        [],
+      );
+      await system.dispose();
+      system = await createOrchestrationSystem(databasePath);
+      expect((await system.readModel()).threads[0]?.commitRecommendation).toBeNull();
+    } finally {
+      await system.dispose();
+      await NodeFSP.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["running", "stopped"] as const)(
     "sends async answers with a %s session and rejects old duplicate replies",
     async (status) => {
@@ -435,6 +584,7 @@ describe("OrchestrationEngine", () => {
               updatedAt: projectionSnapshot.updatedAt,
             }),
           getDeletedWorktreeThreads: () => Effect.die("unused"),
+          listThreadsWithCommitRecommendations: () => Effect.die("unused"),
           listThreadsWithPullRequests: () => Effect.die("unused"),
           getArchivedShellSnapshot: () =>
             Effect.succeed({

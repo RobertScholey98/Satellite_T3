@@ -5211,6 +5211,7 @@ describe("agent browser access", () => {
         getSnapshot: () => Effect.die("unused"),
         getShellSnapshot: () => Effect.die("unused"),
         getDeletedWorktreeThreads: () => Effect.die("unused"),
+        listThreadsWithCommitRecommendations: () => Effect.die("unused"),
         listThreadsWithPullRequests: () => Effect.die("unused"),
         getArchivedShellSnapshot: () => Effect.die("unused"),
         getSnapshotSequence: () => Effect.die("unused"),

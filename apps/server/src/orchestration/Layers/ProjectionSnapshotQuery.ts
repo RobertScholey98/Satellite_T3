@@ -31,6 +31,7 @@ import {
   ProjectId,
   ThreadLinkedPullRequest,
   ThreadTitleState,
+  CommitRecommendation,
   ThreadId,
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
@@ -132,6 +133,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     titleState: Schema.NullOr(Schema.fromJsonString(ThreadTitleState)),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
     branchPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
+    commitRecommendation: Schema.NullOr(Schema.fromJsonString(CommitRecommendation)),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -577,6 +579,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           branch_pull_request_json AS "branchPullRequest",
+          commit_recommendation_json AS "commitRecommendation",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -626,6 +629,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           branch_pull_request_json AS "branchPullRequest",
+          commit_recommendation_json AS "commitRecommendation",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -703,6 +707,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           branch_pull_request_json AS "branchPullRequest",
+          commit_recommendation_json AS "commitRecommendation",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1310,6 +1315,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           branch_pull_request_json AS "branchPullRequest",
+          commit_recommendation_json AS "commitRecommendation",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -2387,6 +2393,7 @@ pending_approval_requests AS (
                   repositoryIdentities.get(row.projectId),
                 ),
                 branchPullRequest: row.branchPullRequest,
+                commitRecommendation: row.commitRecommendation,
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -2634,6 +2641,7 @@ pending_approval_requests AS (
                     repositoryIdentities.get(row.projectId),
                   ),
                   branchPullRequest: row.branchPullRequest,
+                  commitRecommendation: row.commitRecommendation,
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -2791,6 +2799,7 @@ pending_approval_requests AS (
                         branch: row.branch,
                         worktreePath: row.worktreePath,
                         branchPullRequest: row.branchPullRequest,
+                        commitRecommendation: row.commitRecommendation,
                         ...mapThreadPullRequests(
                           pullRequestsByThread.get(row.threadId) ?? [],
                           row.projectId,
@@ -2835,6 +2844,30 @@ pending_approval_requests AS (
         }),
       );
   };
+
+  const listCommitRecommendationRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      id: ThreadId,
+      commitRecommendation: Schema.fromJsonString(CommitRecommendation),
+    }),
+    execute: () => sql`
+      SELECT thread_id AS "id", commit_recommendation_json AS "commitRecommendation"
+      FROM projection_threads
+      WHERE deleted_at IS NULL
+        AND commit_recommendation_json IS NOT NULL
+        AND commit_recommendation_json != 'null'
+    `,
+  });
+  const listThreadsWithCommitRecommendations = () =>
+    listCommitRecommendationRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listThreadsWithCommitRecommendations:query",
+          "ProjectionSnapshotQuery.listThreadsWithCommitRecommendations:decodeRows",
+        ),
+      ),
+    );
 
   const listThreadsWithPullRequests: ProjectionSnapshotQueryShape["listThreadsWithPullRequests"] =
     () =>
@@ -2978,6 +3011,7 @@ pending_approval_requests AS (
                   branch: row.branch,
                   worktreePath: row.worktreePath,
                   branchPullRequest: row.branchPullRequest,
+                  commitRecommendation: row.commitRecommendation,
                   ...mapThreadPullRequests(
                     pullRequestsByThread.get(row.threadId) ?? [],
                     row.projectId,
@@ -3333,6 +3367,7 @@ pending_approval_requests AS (
                 ?.repositoryIdentity,
         ),
         branchPullRequest: threadRow.value.branchPullRequest,
+        commitRecommendation: threadRow.value.commitRecommendation,
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -3636,6 +3671,7 @@ pending_approval_requests AS (
                 ?.repositoryIdentity,
         ),
         branchPullRequest: threadRow.value.branchPullRequest,
+        commitRecommendation: threadRow.value.commitRecommendation,
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -3856,6 +3892,7 @@ pending_approval_requests AS (
     getSnapshot,
     getShellSnapshot,
     listThreadsWithPullRequests,
+    listThreadsWithCommitRecommendations,
     getArchivedShellSnapshot,
     getDeletedWorktreeThreads,
     searchThreads,

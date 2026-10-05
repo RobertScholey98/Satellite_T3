@@ -16,6 +16,7 @@ import { useSelectedThreadGitState } from "../../../state/use-selected-thread-gi
 import { useSelectedThreadWorktree } from "../../../state/use-selected-thread-worktree";
 import { vcsEnvironment } from "../../../state/vcs";
 import { SheetActionButton } from "./gitSheetComponents";
+import { CommitRecommendationNotice } from "./CommitRecommendationNotice";
 
 type GitCommitSheetProps = StaticScreenProps<{
   readonly environmentId: string;
@@ -103,6 +104,7 @@ export function GitCommitSheet(_props: GitCommitSheetProps) {
               : undefined
           }
         >
+          <CommitRecommendationNotice status={gitStatus.data} />
           <View className="gap-3 bg-card p-4 android:rounded-[20px] ios:rounded-[22px] ios:border ios:border-border">
             <View className="android:gap-1 ios:flex-row ios:items-center ios:justify-between ios:gap-3">
               <Text className="text-foreground-muted text-sm font-medium">Branch</Text>

@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./commit-recommendation": {
+      "types": "./src/commitRecommendation.ts",
+      "default": "./src/commitRecommendation.ts"
+    },
     "./issues": {
       "types": "./src/issues.ts",
       "default": "./src/issues.ts"
