@@ -1864,19 +1864,21 @@ const makeWsRpcLayer = (
       );
 
       const fileSystem = yield* FileSystem.FileSystem;
-      // Each Scratch thread gets its own folder under the Scratch root, named
+      // Each Scratch work thread gets its own folder under the Scratch root, named
       // from its date, first words, and id. It rides in worktreePath like any
       // thread that runs outside its project root, so the provider, terminal,
       // and file tree all use it. Threads that already name a folder keep it.
       const scratchThreadFolder = (input: {
         readonly threadId: ThreadId;
         readonly projectId: ProjectId;
+        readonly purpose?: Extract<OrchestrationCommand, { type: "thread.create" }>["purpose"];
         readonly worktreePath: string | null;
         readonly createdAt: string;
         readonly text: string;
       }): Effect.Effect<string | null, OrchestrationDispatchCommandError> =>
         Effect.gen(function* () {
-          if (input.worktreePath !== null) return null;
+          // Ideas run in their owned notebook directory, without a worktree.
+          if (input.purpose === "idea" || input.worktreePath !== null) return null;
           const scratchRoot = yield* resolveScratchWorkspaceRoot;
           if (scratchRoot === undefined) return null;
           const project = yield* projectionSnapshotQuery.getProjectShellById(input.projectId).pipe(
