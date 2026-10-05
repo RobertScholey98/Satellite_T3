@@ -1161,6 +1161,12 @@ async function verifyActionWing(application, surfaces) {
       .locator('[data-satellite="action-panel"] textarea')
       .fill("Native selection remains editable.");
     const layout = await readWingLayout(surfaces, "panel");
+    NodeAssert.equal(await surfaces.pill.page.locator('[data-satellite="pill-menu"]').count(), 0);
+    NodeAssert.equal(
+      layout.wing.x,
+      layout.pill.x + layout.pill.width,
+      "The wing stays on the right",
+    );
     NodeAssert.ok(
       layout.panel && layout.wing,
       "The native layout includes a panel and an attached wing",
@@ -1188,6 +1194,25 @@ async function verifyActionWing(application, surfaces) {
     const compact = await readWingLayout(surfaces, "compact");
     const after = await snapshot(application, surfaces.pill.id);
     NodeAssert.deepEqual(
+      after.bounds,
+      before.bounds,
+      "Closing keeps the native window frame stable",
+    );
+    NodeAssert.deepEqual(compact.pill, layout.pill, "Closing keeps the rendered pill in place");
+    NodeAssert.deepEqual(compact.wing, layout.wing, "Closing keeps the wing in place");
+    NodeAssert.deepEqual(
+      (
+        await nativeRegion(application, surfaces.pill.id, {
+          pill: center(layout.pill),
+          wing: center(layout.wing),
+          panel: center(layout.panel),
+          gap,
+        })
+      ).contains,
+      { pill: true, wing: true, panel: false, gap: false },
+      "The hidden panel and gap are outside the compact native input region",
+    );
+    NodeAssert.deepEqual(
       { x: before.bounds.x + layout.pill.x, y: before.bounds.y + layout.pill.y },
       { x: after.bounds.x + compact.pill.x, y: after.bounds.y + compact.pill.y },
       "Escape preserves the compact pill's screen position",
@@ -1195,6 +1220,7 @@ async function verifyActionWing(application, surfaces) {
     await surfaces.pill.page.locator('[data-satellite="action-wing"]').click();
     const reopened = await readWingLayout(surfaces, "panel");
     NodeAssert.equal(reopened.panel.width, layout.panel.width);
+    NodeAssert.deepEqual((await snapshot(application, surfaces.pill.id)).bounds, before.bounds);
     const questionState = await application.evaluate(() => globalThis.satelliteSmokeWing.state);
     await application.evaluate(() => {
       const fixture = globalThis.satelliteSmokeWing;
@@ -1875,9 +1901,8 @@ try {
     BrowserWindow.fromId(id).setBounds({ x: a.x + 700, y: a.y + 500, width: 320, height: 70 });
   }, surfaces.pill.id);
   if (nativePointer && !actionWingOnly) {
-    stage("Dragging content, menu and padding with the native pointer");
-    for (const target of ["pill-content", "pill-menu", "pill"])
-      await dragPill(application, surfaces, target);
+    stage("Dragging content and padding with the native pointer");
+    for (const target of ["pill-content", "pill"]) await dragPill(application, surfaces, target);
     stage("Dragging while the pill renderer is busy");
     await dragPill(application, surfaces, "pill-content", {
       stallRenderer: true,

@@ -150,6 +150,29 @@ describe("Satellite action wing placement", () => {
     expect(result.layout.wing).toEqual({ x: 230, y: 0, width: 90, height: 70 });
     expect(result.layout.panel).toEqual({ x: 0, y: 82, width: 320, height: 418 });
   });
+
+  it.each([
+    { area, start: anchor, expected: { x: 1480, y: 434, width: 440, height: 582 } },
+    {
+      area: { x: -320, y: 0, width: 320, height: 500 },
+      start: { x: -320, y: 0, width: 320, height: 70 },
+      expected: { x: -320, y: 0, width: 320, height: 500 },
+    },
+  ])(
+    "preserves the envelope when the controller feeds back its clamped anchor in $area",
+    ({ area, start, expected }) => {
+      let current = start;
+      for (const mode of ["compact", "panel", "preview", "compact", "panel"] as const) {
+        const result = resolvePillLayout(current, { mode, wing: true }, [area]);
+        expect(result.bounds).toEqual(expected);
+        current = {
+          ...result.layout.pill,
+          x: result.bounds.x + result.layout.pill.x,
+          y: result.bounds.y + result.layout.pill.y,
+        };
+      }
+    },
+  );
 });
 
 describe("Satellite workspace placement", () => {

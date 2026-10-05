@@ -8,7 +8,6 @@ import * as Channels from "./satellite/channels.ts";
 
 contextBridge.exposeInMainWorld("satellitePillBridge", {
   openMain: () => ipcRenderer.send(Channels.SATELLITE_PILL_OPEN),
-  showMenu: () => ipcRenderer.send(Channels.SATELLITE_PILL_MENU),
   movePill: (direction) => ipcRenderer.send(Channels.SATELLITE_PILL_MOVE, direction),
   beginPillDrag: () => ipcRenderer.send(Channels.SATELLITE_PILL_DRAG_BEGIN),
   dispatchIntent: (intent) => ipcRenderer.send(Channels.SATELLITE_ATTENTION_INTENT, intent),

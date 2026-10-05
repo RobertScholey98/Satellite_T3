@@ -65,58 +65,52 @@ export function resolvePillLayout(
   request: SatellitePillLayoutRequest,
   workAreas: readonly PillRectangle[],
 ) {
-  const pill = clampPillBounds(anchor, workAreas);
-  const area = nearestWorkArea(pill, workAreas);
+  const clamped = clampPillBounds(anchor, workAreas);
+  const area = nearestWorkArea(clamped, workAreas);
   const right = area.x + area.width;
   const bottom = area.y + area.height;
-  const leftSpace = pill.x - area.x;
-  const rightSpace = right - pill.x - pill.width;
-  const wingOnRight = rightSpace >= leftSpace;
-  const wingSpace = Math.max(leftSpace, rightSpace);
-  const wingWidth = Math.min(request.mode === "preview" ? 320 : 90, Math.max(0, wingSpace));
-  let wing: PillRectangle | null = null;
-  if (request.wing && wingWidth > 0) {
-    wing = {
-      x: wingOnRight ? pill.x + pill.width : pill.x - wingWidth,
-      y: pill.y,
-      width: wingWidth,
-      height: pill.height,
-    };
-  } else if (request.wing) {
-    const below = bottom - pill.y - pill.height;
-    const above = pill.y - area.y;
-    const height = Math.min(pill.height, Math.max(above, below));
-    if (height > 0) {
-      wing = {
-        x: pill.x,
-        y: below >= above ? pill.y + pill.height : pill.y - height,
-        width: Math.min(request.mode === "preview" ? 320 : 90, pill.width),
-        height,
-      };
-    }
-  }
-  const rowTop = Math.min(pill.y, wing?.y ?? pill.y);
-  const rowBottom = Math.max(pill.y + pill.height, wing ? wing.y + wing.height : 0);
-  const rowRight = Math.max(pill.x + pill.width, wing ? wing.x + wing.width : pill.x);
-  const above = rowTop - area.y - 12;
+  const wingWidth = request.wing ? Math.min(90, Math.floor(area.width / 2)) : 0;
+  const pillWidth = Math.min(clamped.width, area.width - wingWidth);
+  const pill = {
+    ...clamped,
+    x: Math.min(clamped.x, right - pillWidth - wingWidth),
+    width: pillWidth,
+  };
+  const preview = request.wing
+    ? {
+        x: pill.x + pill.width,
+        y: pill.y,
+        width: Math.min(320, right - pill.x - pill.width),
+        height: pill.height,
+      }
+    : null;
+  const wing = preview
+    ? { ...preview, width: request.mode === "preview" ? preview.width : wingWidth }
+    : null;
+  const rowBottom = pill.y + pill.height;
+  const rowRight = pill.x + pill.width + wingWidth;
+  const above = pill.y - area.y - 12;
   const below = bottom - rowBottom - 12;
   const panelBelow = below >= above;
-  const panelHeight = Math.min(request.panelHeight ?? 500, Math.max(above, below));
-  let panel: PillRectangle | null = null;
-  if (request.mode === "panel" && panelHeight > 0) {
+  const panelHeight = Math.min(500, Math.max(above, below));
+  let panelSpace: PillRectangle | null = null;
+  if (request.wing && panelHeight > 0) {
     const width = Math.min(440, area.width);
-    panel = {
+    panelSpace = {
       x: Math.round(Math.max(area.x, Math.min(rowRight - width, right - width))),
-      y: panelBelow ? rowBottom + 12 : rowTop - panelHeight - 12,
+      y: panelBelow ? rowBottom + 12 : pill.y - panelHeight - 12,
       width,
       height: panelHeight,
     };
   }
+  const panel = request.mode === "panel" ? panelSpace : null;
   const regions = [pill, ...(wing ? [wing] : []), ...(panel ? [panel] : [])];
-  const x = Math.min(...regions.map((rect) => rect.x));
-  const y = Math.min(...regions.map((rect) => rect.y));
-  const width = Math.max(...regions.map((rect) => rect.x + rect.width)) - x;
-  const height = Math.max(...regions.map((rect) => rect.y + rect.height)) - y;
+  // Mode changes keep the same viewport so native clipping cannot outrun the renderer's frame.
+  const envelope = [pill, ...(preview ? [preview] : []), ...(panelSpace ? [panelSpace] : [])];
+  const x = Math.min(...envelope.map((rect) => rect.x));
+  const y = Math.min(...envelope.map((rect) => rect.y));
+  const width = Math.max(...envelope.map((rect) => rect.x + rect.width)) - x;
+  const height = Math.max(...envelope.map((rect) => rect.y + rect.height)) - y;
   const local = (rect: PillRectangle): PillRectangle => ({ ...rect, x: rect.x - x, y: rect.y - y });
   const layout: SatellitePillLayout = {
     mode: request.mode === "panel" && !panel ? "compact" : request.mode,

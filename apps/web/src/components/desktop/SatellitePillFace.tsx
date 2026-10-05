@@ -4,12 +4,7 @@ import type {
   SatellitePillLayout,
   SatellitePillState,
 } from "@t3tools/contracts";
-import {
-  BellOffIcon,
-  ChevronUpIcon,
-  MessageCircleQuestionIcon,
-  MoreVerticalIcon,
-} from "lucide-react";
+import { BellOffIcon, ChevronUpIcon, MessageCircleQuestionIcon } from "lucide-react";
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { randomUUID } from "../../lib/utils";
 import { pendingRequestKey } from "../../pendingRequestStore";
@@ -36,7 +31,6 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
     wing: null,
     panel: null,
   });
-  const [panelHeight, setPanelHeight] = useState(500);
   const [peek, setPeek] = useState<SatelliteAttentionSummary | null>(null);
   const wingButton = useRef<HTMLButtonElement>(null);
   const knownRequests = useRef(new Set<string>());
@@ -54,9 +48,9 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
     (nextMode: SatellitePillLayout["mode"], explicit = false) => {
       const requestId = randomUUID();
       pendingLayout.current = { requestId, mode: nextMode, explicit };
-      bridge.setLayout({ requestId, mode: nextMode, wing: hasWing, panelHeight });
+      bridge.setLayout({ requestId, mode: nextMode, wing: hasWing });
     },
-    [bridge, hasWing, panelHeight],
+    [bridge, hasWing],
   );
   const closePanel = useCallback(() => {
     requestLayout("compact", true);
@@ -126,9 +120,7 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
           width: layout.pill.width,
           height: layout.pill.height,
         }}
-        data-wing-side={
-          layout.wing ? (layout.wing.x < layout.pill.x ? "left" : "right") : undefined
-        }
+        data-wing-side={layout.wing ? "right" : undefined}
         data-state={pill.state}
         data-keyboard-focus={keyboardFocus || undefined}
         onKeyDown={(event) => {
@@ -207,21 +199,13 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
             !
           </span>
         ) : null}
-        <button
-          type="button"
-          data-satellite="pill-menu"
-          aria-label="SatelliteT3 menu"
-          onClick={() => bridge.showMenu()}
-        >
-          <MoreVerticalIcon />
-        </button>
       </div>
       {layout.wing && view ? (
         <button
           ref={wingButton}
           type="button"
           data-satellite="action-wing"
-          data-side={layout.wing.x < layout.pill.x ? "left" : "right"}
+          data-side="right"
           data-preview={mode === "preview" || undefined}
           style={{
             left: layout.wing.x,
@@ -267,7 +251,6 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
           layout={layout}
           dispatch={bridge.dispatchIntent}
           close={closePanel}
-          onHeight={setPanelHeight}
         />
       ) : null}
       <span data-satellite="announcement" role="status" aria-live="polite">

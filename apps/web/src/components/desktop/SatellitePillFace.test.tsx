@@ -120,7 +120,6 @@ describe("standalone Satellite pill gestures", () => {
     root = createRoot(host);
     bridge = {
       openMain: vi.fn(),
-      showMenu: vi.fn(),
       movePill: vi.fn(),
       beginPillDrag: vi.fn(),
       dispatchIntent: vi.fn(),
@@ -147,7 +146,7 @@ describe("standalone Satellite pill gestures", () => {
     if (!request.requestId) throw new Error("Renderer layout request did not include an ID");
     return { ...request, requestId: request.requestId };
   };
-  it.each(["pill-content", "pill-menu"])(
+  it.each(["pill-content", "pill"])(
     "hands off one drag started on %s and suppresses all trailing mouse clicks until a new press",
     (control) => {
       const button = host.querySelector<HTMLButtonElement>(`[data-satellite="${control}"]`)!;
@@ -163,11 +162,12 @@ describe("standalone Satellite pill gestures", () => {
       for (let i = 0; i < 2; i++)
         act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
       expect(bridge.openMain).not.toHaveBeenCalled();
-      expect(bridge.showMenu).not.toHaveBeenCalled();
       act(() => pointer(button, "pointerdown", 200, 100));
       act(() => pointer(button, "pointerup", 200, 100));
       act(() => button.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
-      expect(control === "pill-content" ? bridge.openMain : bridge.showMenu).toHaveBeenCalledOnce();
+      if (control === "pill-content") expect(bridge.openMain).toHaveBeenCalledOnce();
+      else expect(bridge.openMain).not.toHaveBeenCalled();
+      expect(host.querySelector('[data-satellite="pill-menu"]')).toBeNull();
     },
   );
   it("keeps keyboard activation available after native capture and supports arrow movement", () => {
@@ -332,16 +332,14 @@ describe("standalone Satellite pill gestures", () => {
     act(() => resize());
     expect(vi.mocked(bridge.setLayout).mock.calls.map(([request]) => request.mode)).toEqual([
       "compact",
-      "compact",
     ]);
     const closing = latestRequest();
-    expect(closing.panelHeight).toBe(302);
     act(() => listener(attentionState(["first", "second"])));
-    expect(bridge.setLayout).toHaveBeenCalledTimes(2);
+    expect(bridge.setLayout).toHaveBeenCalledTimes(1);
     expect(host.querySelector('[role="dialog"]')).not.toBeNull();
     act(() => layoutListener({ ...compactLayout, requestId: closing.requestId }));
     expect(host.querySelector('[role="dialog"]')).toBeNull();
-    expect(bridge.setLayout).toHaveBeenCalledTimes(2);
+    expect(bridge.setLayout).toHaveBeenCalledTimes(1);
   });
 
   it("acknowledges only the latest rapid toggle and accepts native collapse afterward", () => {
@@ -444,7 +442,6 @@ describe("standalone Satellite pill gestures", () => {
           }}
           dispatch={bridge.dispatchIntent}
           close={vi.fn()}
-          onHeight={vi.fn()}
         />,
       );
     act(() => render(view));

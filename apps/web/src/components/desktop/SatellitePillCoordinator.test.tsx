@@ -292,7 +292,6 @@ describe("retained Satellite request coordinator", () => {
             }}
             dispatch={receive}
             close={vi.fn()}
-            onHeight={vi.fn()}
           />,
         ),
       );

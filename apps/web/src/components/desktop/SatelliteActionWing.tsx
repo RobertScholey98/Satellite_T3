@@ -13,7 +13,7 @@ import {
   ShieldQuestionIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { hasPendingQuestionAttachments, pendingRequestKey } from "../../pendingRequestStore";
 import {
   derivePendingUserInputProgress,
@@ -234,19 +234,16 @@ export function SatelliteActionPanel({
   layout,
   dispatch,
   close,
-  onHeight,
 }: {
   view: SatelliteAttentionView;
   layout: SatellitePillLayout;
   dispatch: (intent: SatelliteAttentionIntent) => void;
   close: () => void;
-  onHeight: (height: number) => void;
 }) {
   const [showMuted, setShowMuted] = useState(
     () => view.items.length > 0 && view.items.every((item) => item.muted),
   );
   const [panel, setPanel] = useState<HTMLDivElement | null>(null);
-  const content = useRef<HTMLDivElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const visible = view.items.filter((item) => !item.muted);
   const muted = view.items.filter((item) => item.muted);
@@ -256,16 +253,6 @@ export function SatelliteActionPanel({
   useLayoutEffect(() => {
     closeButton.current?.focus();
   }, []);
-  useEffect(() => {
-    const node = content.current;
-    if (!node) return;
-    const measure = () =>
-      onHeight(Math.max(160, Math.min(640, Math.ceil(node.getBoundingClientRect().height) + 2)));
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [onHeight]);
   return (
     <div
       ref={setPanel}
@@ -308,7 +295,7 @@ export function SatelliteActionPanel({
         }
       }}
     >
-      <div ref={content} data-satellite="panel-content">
+      <div data-satellite="panel-content">
         <header data-satellite="panel-header">
           <strong>{showMuted ? "Muted requests" : "Needs your attention"}</strong>
           <span>{showMuted ? muted.length : visible.length}</span>

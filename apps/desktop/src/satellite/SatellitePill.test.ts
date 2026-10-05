@@ -327,28 +327,26 @@ describe("independent native Satellite surfaces", () => {
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "other", wing: true });
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
       mode: "panel",
-      wing: true,
-      panelHeight: Infinity,
+      wing: "invalid",
     });
     expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
       mode: "panel",
       wing: true,
-      panelHeight: 300,
     });
-    expect(pill.getBounds()).toEqual({ x: 70, y: 100, width: 440, height: 382 });
+    expect(pill.getBounds()).toEqual({ x: 70, y: 100, width: 670, height: 582 });
     expect(pill.setShape).toHaveBeenLastCalledWith([
       { x: 30, y: 0, width: 320, height: 70 },
       { x: 350, y: 0, width: 90, height: 70 },
-      { x: 0, y: 82, width: 440, height: 300 },
+      { x: 0, y: 82, width: 440, height: 500 },
     ]);
     expect(pill.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_LAYOUT, {
       mode: "panel",
-      width: 440,
-      height: 382,
+      width: 670,
+      height: 582,
       pill: { x: 30, y: 0, width: 320, height: 70 },
       wing: { x: 350, y: 0, width: 90, height: 70 },
-      panel: { x: 0, y: 82, width: 440, height: 300 },
+      panel: { x: 0, y: 82, width: 440, height: 500 },
     });
     expect(pill.isFocused()).toBe(true);
     expect(main.isVisible()).toBe(false);
@@ -370,11 +368,11 @@ describe("independent native Satellite surfaces", () => {
     collapse();
     pill.setPosition(1576, 946);
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
-    expect(pill.getBounds()).toEqual({ x: 1456, y: 434, width: 440, height: 582 });
+    expect(pill.getBounds()).toEqual({ x: 1480, y: 434, width: 440, height: 582 });
     send(pill, Channels.SATELLITE_PILL_MOVE, "ArrowLeft");
-    expect(saved()).toMatchObject({ x: 1560, y: 946 });
+    expect(saved()).toMatchObject({ x: 1494, y: 946 });
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: false });
-    expect(pill.getBounds()).toEqual({ x: 1560, y: 946, width: 320, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 1494, y: 946, width: 320, height: 70 });
   });
   it("defers layout changes during native capture and persists the control anchor", () => {
     collapse();
@@ -382,22 +380,21 @@ describe("independent native Satellite surfaces", () => {
     message(pill, 0x0231);
     pill.setPosition(270, 300);
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: true });
-    expect(pill.getBounds()).toEqual({ x: 270, y: 300, width: 440, height: 582 });
+    expect(pill.getBounds()).toEqual({ x: 270, y: 300, width: 670, height: 582 });
     message(pill, 0x0232);
-    expect(pill.getBounds()).toEqual({ x: 300, y: 300, width: 410, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 270, y: 300, width: 670, height: 582 });
     expect(saved()).toMatchObject({ x: 300, y: 300 });
   });
-  it.each(["capture", "menu"] as const)(
+  it.each(["capture"] as const)(
     "acknowledges only applied layout requests while %s coalesces pending changes",
-    (blocker) => {
+    () => {
       collapse();
       send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
         requestId: "applied",
         mode: "panel",
         wing: true,
       });
-      if (blocker === "capture") message(pill, 0x0231);
-      else send(pill, Channels.SATELLITE_PILL_MENU);
+      message(pill, 0x0231);
       vi.mocked(pill.webContents.send).mockClear();
       send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
         requestId: "superseded",
@@ -408,23 +405,18 @@ describe("independent native Satellite surfaces", () => {
         requestId: "latest",
         mode: "panel",
         wing: true,
-        panelHeight: 300,
       });
       expect(publishedLayouts()).toEqual([]);
-      expect(pill.getBounds()).toMatchObject({ width: 440, height: 582 });
+      expect(pill.getBounds()).toMatchObject({ width: 670, height: 582 });
       send(pill, Channels.SATELLITE_PILL_READY);
       expect(publishedLayouts()).toEqual([
         expect.objectContaining({ requestId: "applied", mode: "panel", height: 582 }),
       ]);
-      if (blocker === "capture") message(pill, 0x0232);
-      else {
-        const menu = vi.mocked(Electron.Menu.buildFromTemplate).mock.results.at(-1)!.value;
-        vi.mocked(menu.popup).mock.calls[0]![0]!.callback!();
-      }
-      expect(pill.getBounds()).toMatchObject({ width: 440, height: 382 });
+      message(pill, 0x0232);
+      expect(pill.getBounds()).toMatchObject({ width: 670, height: 582 });
       expect(publishedLayouts()).toEqual([
         expect.objectContaining({ requestId: "applied", mode: "panel", height: 582 }),
-        expect.objectContaining({ requestId: "latest", mode: "panel", height: 382 }),
+        expect.objectContaining({ requestId: "latest", mode: "panel", height: 582 }),
       ]);
     },
   );
@@ -452,26 +444,22 @@ describe("independent native Satellite surfaces", () => {
   });
   it.each([
     { blocker: "capture", returnWhileBlocked: false },
-    { blocker: "menu", returnWhileBlocked: false },
     { blocker: "capture", returnWhileBlocked: true },
-    { blocker: "menu", returnWhileBlocked: true },
   ])(
     "acknowledges cancelled layout intent across workspace transitions with $blocker, returning while blocked: $returnWhileBlocked",
-    ({ blocker, returnWhileBlocked }) => {
+    ({ returnWhileBlocked }) => {
       collapse();
       send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
         requestId: "applied",
         mode: "panel",
         wing: true,
       });
-      if (blocker === "capture") message(pill, 0x0231);
-      else send(pill, Channels.SATELLITE_PILL_MENU);
+      message(pill, 0x0231);
       vi.mocked(pill.webContents.send).mockClear();
       send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
         requestId: "opening",
         mode: "panel",
         wing: true,
-        panelHeight: 300,
       });
       expand();
       if (returnWhileBlocked) {
@@ -479,16 +467,11 @@ describe("independent native Satellite surfaces", () => {
           requestId: "workspace-update",
           mode: "panel",
           wing: true,
-          panelHeight: 350,
         });
         collapse();
       }
       expect(publishedLayouts()).toEqual([]);
-      if (blocker === "capture") message(pill, 0x0232);
-      else {
-        const menu = vi.mocked(Electron.Menu.buildFromTemplate).mock.results.at(-1)!.value;
-        vi.mocked(menu.popup).mock.calls[0]![0]!.callback!();
-      }
+      message(pill, 0x0232);
       const compact = expect.objectContaining({
         requestId: returnWhileBlocked ? "workspace-update" : "opening",
         mode: "compact",
@@ -497,7 +480,7 @@ describe("independent native Satellite surfaces", () => {
       expect(publishedLayouts()).toEqual([compact]);
       if (!returnWhileBlocked) collapse();
       expect(publishedLayouts().at(-1)).toEqual(compact);
-      expect(pill.getBounds()).toMatchObject({ width: 410, height: 70 });
+      expect(pill.getBounds()).toMatchObject({ width: 670, height: 582 });
       expect(pill.isVisible()).toBe(true);
       send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
         requestId: "reopened",
@@ -512,29 +495,38 @@ describe("independent native Satellite surfaces", () => {
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
     pill.blur();
     vi.advanceTimersByTime(150);
-    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 410, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 70, y: 100, width: 670, height: 582 });
     expect(pill.webContents.send).toHaveBeenLastCalledWith(
       Channels.SATELLITE_PILL_LAYOUT,
       expect.objectContaining({ mode: "compact", panel: null }),
     );
     expect(main.isVisible()).toBe(false);
   });
-  it("keeps a panel open during native drag capture and native menus", () => {
+  it("keeps a panel open during native capture and preserves tray actions", () => {
     collapse();
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
     message(pill, 0x0231);
     pill.blur();
     vi.advanceTimersByTime(150);
-    expect(pill.getBounds()).toMatchObject({ width: 440, height: 582 });
+    expect(publishedLayouts().at(-1)).toMatchObject({ mode: "panel", height: 582 });
     message(pill, 0x0232);
-    send(pill, Channels.SATELLITE_PILL_MENU);
-    pill.blur();
     vi.advanceTimersByTime(150);
-    expect(pill.getBounds()).toMatchObject({ width: 440, height: 582 });
-    const menu = vi.mocked(Electron.Menu.buildFromTemplate).mock.results.at(-1)!.value;
-    vi.mocked(menu.popup).mock.calls[0]![0]!.callback!();
-    vi.advanceTimersByTime(150);
-    expect(pill.getBounds()).toMatchObject({ width: 410, height: 70 });
+    expect(publishedLayouts().at(-1)).toMatchObject({ mode: "compact", panel: null });
+    const entries = vi.mocked(Electron.Menu.buildFromTemplate).mock.calls[0]![0];
+    expect(entries.map((entry) => entry.label).filter(Boolean)).toEqual([
+      "Open workspace",
+      "Collapse to pill",
+      "Keep workspace open",
+      "Quit SatelliteT3",
+    ]);
+    Reflect.apply(entries.find((entry) => entry.label === "Open workspace")!.click!, undefined, []);
+    expect(main.isVisible()).toBe(true);
+    Reflect.apply(
+      entries.find((entry) => entry.label === "Collapse to pill")!.click!,
+      undefined,
+      [],
+    );
+    expect(pill.isVisible()).toBe(true);
   });
   it("reflows the panel after a native drag to the opposite display edge", () => {
     collapse();
@@ -542,18 +534,18 @@ describe("independent native Satellite surfaces", () => {
     message(pill, 0x0231);
     pill.setPosition(1546, 946);
     message(pill, 0x0232);
-    expect(pill.getBounds()).toEqual({ x: 1456, y: 434, width: 440, height: 582 });
+    expect(pill.getBounds()).toEqual({ x: 1480, y: 434, width: 440, height: 582 });
     expect(pill.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_LAYOUT, {
       mode: "panel",
       width: 440,
       height: 582,
-      pill: { x: 120, y: 512, width: 320, height: 70 },
-      wing: { x: 30, y: 512, width: 90, height: 70 },
+      pill: { x: 30, y: 512, width: 320, height: 70 },
+      wing: { x: 350, y: 512, width: 90, height: 70 },
       panel: { x: 0, y: 0, width: 440, height: 500 },
     });
-    expect(saved()).toMatchObject({ x: 1576, y: 946, workspaceWidth: 1100, workspaceHeight: 780 });
+    expect(saved()).toMatchObject({ x: 1510, y: 946, workspaceWidth: 1100, workspaceHeight: 780 });
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: false });
-    expect(pill.getBounds()).toEqual({ x: 1576, y: 946, width: 320, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 1510, y: 946, width: 320, height: 70 });
   });
   it("collapses on outside blur and close while respecting pin", () => {
     expand();

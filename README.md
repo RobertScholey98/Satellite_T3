@@ -130,7 +130,7 @@ pill restores your previous workspace. Disconnected or older environments show a
 incomplete request count. Opening the workspace does not approve pending requests.
 
 Turn off **Settings → General → Pill mode** and restart to use a normal window
-with a taskbar entry. The pill menu and system tray can open the workspace or quit.
+with a taskbar entry. The system tray can open the workspace or quit.
 
 ### Data locations
 

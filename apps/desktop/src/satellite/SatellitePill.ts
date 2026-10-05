@@ -86,7 +86,6 @@ export function installSatellitePill(
   let shell: SatelliteShellState = { mode: "workspace", pinned: false };
   let snapshot = unavailablePillState();
   let quitting = false;
-  let menuOpen = false;
   let mainReady = false;
   let pillReady = false;
   let nativePillMove = false;
@@ -159,7 +158,7 @@ export function installSatellitePill(
   };
   const applyLayout = (request: SatellitePillLayoutRequest) => {
     if (pill.isDestroyed()) return;
-    if (nativePillMove || menuOpen) {
+    if (nativePillMove) {
       pendingLayout = request;
       return;
     }
@@ -187,7 +186,6 @@ export function installSatellitePill(
         pill.isDestroyed() ||
         shell.mode !== "pill" ||
         pillGeometry.layout.mode !== "panel" ||
-        menuOpen ||
         nativePillMove ||
         pill.isFocused() ||
         !pill.isEnabled() ||
@@ -362,20 +360,6 @@ export function installSatellitePill(
     [Channels.SATELLITE_PILL_OPEN]: (event: Electron.IpcMainEvent) => {
       if (pillSender(event)) openMain();
     },
-    [Channels.SATELLITE_PILL_MENU]: (event: Electron.IpcMainEvent) => {
-      if (!pillSender(event) || nativePillMove) return;
-      menuOpen = true;
-      clearTimeout(blurTimer);
-      clearTimeout(pillBlurTimer);
-      menu().popup({
-        window: pill,
-        callback: () => {
-          menuOpen = false;
-          if (pendingLayout) applyLayout(pendingLayout);
-          if (!pill.isFocused()) schedulePanelCollapse();
-        },
-      });
-    },
     [Channels.SATELLITE_PILL_MOVE]: (event: Electron.IpcMainEvent, direction: unknown) => {
       if (
         !pillSender(event) ||
@@ -399,7 +383,6 @@ export function installSatellitePill(
       if (
         !pillSender(event) ||
         quitting ||
-        menuOpen ||
         nativePillMove ||
         shell.mode !== "pill" ||
         pill.isDestroyed()
@@ -463,7 +446,6 @@ export function installSatellitePill(
         main.isDestroyed() ||
         shell.mode !== "workspace" ||
         shell.pinned ||
-        menuOpen ||
         main.isFocused() ||
         !main.isEnabled()
       )

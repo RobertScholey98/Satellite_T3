@@ -137,9 +137,6 @@ export const SatellitePillLayoutRequest = Schema.Struct({
   requestId: Schema.optionalKey(TrimmedNonEmptyString),
   mode: Schema.Literals(["compact", "preview", "panel"]),
   wing: Schema.Boolean,
-  panelHeight: Schema.optionalKey(
-    Schema.Int.check(Schema.isBetween({ minimum: 160, maximum: 640 })),
-  ),
 });
 export type SatellitePillLayoutRequest = typeof SatellitePillLayoutRequest.Type;
 const SatellitePillRectangle = Schema.Struct({
@@ -219,7 +216,6 @@ export interface SatelliteBridge {
 /** Only the standalone pill renderer receives these capabilities. */
 export interface SatellitePillBridge {
   readonly openMain: () => void;
-  readonly showMenu: () => void;
   readonly movePill: (direction: SatelliteMoveDirection) => void;
   readonly beginPillDrag: () => void;
   readonly onPillState: (listener: (state: SatellitePillState) => void) => () => void;
