@@ -92,3 +92,60 @@ jobs:
 
       - name: Verify preload bundle output
         run: node apps/desktop/scripts/verify-preload-bundle.mjs
+
+  server:
+    name: Server regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Resolve package cache path
+        id: package_cache_path
+        run: echo "path=$(vp pm cache dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.package_cache_path.outputs.path }}
+          key: satellite-linux-server-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Typecheck server
+        run: vp run --filter t3 typecheck
+
+      - name: Lint regression fixes
+        run: vp lint apps/server/src/revdoc/RevdocTesting.ts apps/server/src/revdoc/RevdocTesting.test.ts apps/server/src/sourceControl/AzureDevOpsReadApi.ts apps/server/src/sourceControl/AzureDevOpsReadApi.test.ts
+
+      - name: Test fork server services
+        working-directory: apps/server
+        run: >-
+          vp test run
+          src/documents/DocumentService.test.ts
+          src/ideas/IdeaRuntime.test.ts
+          src/git/CommitRecommendationService.test.ts
+          src/revdoc/RevdocGeneration.test.ts
+          src/revdoc/RevdocService.test.ts
+          src/revdoc/RevdocTesting.test.ts
+          src/sourceControl/AzureDevOpsReadApi.test.ts
+          src/sourceControl/AzureDevOpsCli.test.ts
+          src/pullRequest/AzureDevOpsPullRequestCli.test.ts
+          src/pullRequest/AzureDevOpsPullRequestProvider.test.ts
+          src/pullRequest/azureDevOpsDiff.test.ts
+          src/issues/IssueHost.test.ts
+          src/issues/IssueService.test.ts
