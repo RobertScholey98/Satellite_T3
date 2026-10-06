@@ -12,12 +12,12 @@ vi.mock("electron", () => ({
   },
 }));
 
-import { showWindowsCaptureOverlay } from "./WindowsCaptureFeedback.ts";
+import { hideWithoutAnimation, showInactiveWithoutAnimation } from "./WindowsWindowVisibility.ts";
 
 const animationSwitch = "wm-window-animations-disabled";
 
 function overlay(showInactive: () => void) {
-  return { showInactive } as Electron.BaseWindow;
+  return { showInactive, hide: showInactive } as Electron.BaseWindow;
 }
 
 beforeEach(() => {
@@ -25,24 +25,37 @@ beforeEach(() => {
   switches.add("unrelated-switch");
 });
 
-it("disables Chromium window animation only while showing the capture overlay", () => {
+it("disables Chromium window animation only while showing the window", () => {
   const flagsDuringShow: string[][] = [];
 
-  showWindowsCaptureOverlay(overlay(() => flagsDuringShow.push([...switches])));
+  showInactiveWithoutAnimation(overlay(() => flagsDuringShow.push([...switches])));
 
   expect(flagsDuringShow).toEqual([["unrelated-switch", animationSwitch]]);
   expect([...switches]).toEqual(["unrelated-switch"]);
 });
 
-it("preserves an animation switch supplied before capture", () => {
+it("preserves an animation switch supplied before showing the window", () => {
   switches.add(animationSwitch);
   const flagsDuringShow: string[][] = [];
 
-  showWindowsCaptureOverlay(overlay(() => flagsDuringShow.push([...switches])));
+  showInactiveWithoutAnimation(overlay(() => flagsDuringShow.push([...switches])));
 
   expect(flagsDuringShow).toEqual([["unrelated-switch", animationSwitch]]);
   expect([...switches]).toEqual(["unrelated-switch", animationSwitch]);
 });
+
+it.each([false, true])(
+  "scopes hide animation suppression to the window (preexisting: %s)",
+  (preexisting) => {
+    if (preexisting) switches.add(animationSwitch);
+    const flagsDuringHide: string[][] = [];
+    hideWithoutAnimation(overlay(() => flagsDuringHide.push([...switches])));
+    expect(flagsDuringHide).toEqual([["unrelated-switch", animationSwitch]]);
+    expect([...switches]).toEqual(
+      preexisting ? ["unrelated-switch", animationSwitch] : ["unrelated-switch"],
+    );
+  },
+);
 
 it.each([false, true])(
   "restores the original switch state when showing throws (preexisting: %s)",
@@ -55,7 +68,7 @@ it.each([false, true])(
       throw failure;
     });
 
-    expect(() => showWindowsCaptureOverlay(window)).toThrow(failure);
+    expect(() => showInactiveWithoutAnimation(window)).toThrow(failure);
     expect([...switches]).toEqual(original);
   },
 );

@@ -84,7 +84,7 @@ describe("retained Satellite workspace", () => {
     act(() => listener({ mode: "workspace", pinned: true }));
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Unpin workspace"]')!.click());
     expect(bridge.setPinned).toHaveBeenLastCalledWith(false);
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Collapse to pill"]')!.click());
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Collapse to widget"]')!.click());
     expect(bridge.hideMain).toHaveBeenCalledOnce();
   });
 });

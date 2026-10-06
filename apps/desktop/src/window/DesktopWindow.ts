@@ -31,6 +31,7 @@ import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
 import { installSatellitePill, isSatelliteWindow } from "../satellite/SatellitePill.ts";
+import { loadWindowsDwm } from "../electron/WindowsDwm.ts";
 
 const TITLEBAR_HEIGHT = 40;
 // Matches --workspace-topbar-height in apps/web/src/index.css. Native macOS
@@ -430,7 +431,7 @@ export const make = Effect.gen(function* () {
             thickFrame: true,
             transparent: false,
             resizable: true,
-            skipTaskbar: true,
+            skipTaskbar: false,
             alwaysOnTop: true,
             maximizable: true,
             fullscreenable: false,
@@ -452,6 +453,22 @@ export const make = Effect.gen(function* () {
       },
     });
 
+    const dwm =
+      environment.platform === "win32"
+        ? yield* Effect.tryPromise(() => loadWindowsDwm()).pipe(
+            Effect.flatMap((api) =>
+              Effect.try(() => {
+                api.disableTransitions(window.getNativeWindowHandle());
+                return api;
+              }),
+            ),
+            Effect.catch((cause) =>
+              logWindowWarning("failed to configure native window transitions", { cause }).pipe(
+                Effect.as(undefined),
+              ),
+            ),
+          )
+        : undefined;
     if (satellite) {
       yield* Effect.sync(() =>
         installSatellitePill(window, {
@@ -459,6 +476,7 @@ export const make = Effect.gen(function* () {
             void runPromise(electronWindow.reveal(window));
           },
           ...iconOption,
+          ...(dwm ? { dwm } : {}),
           pillUrl: new URL("/satellite-pill.html", applicationUrl).href,
           pillPreloadPath: environment.preloadPath.replace(
             /preload\.cjs$/,
@@ -949,7 +967,7 @@ export const make = Effect.gen(function* () {
       frame: false,
       center: true,
       show: false,
-      skipTaskbar: yield* pillEnabled,
+      skipTaskbar: false,
       backgroundColor: getInitialWindowBackgroundColor(shouldUseDarkColors),
       title: environment.displayName,
       webPreferences: {

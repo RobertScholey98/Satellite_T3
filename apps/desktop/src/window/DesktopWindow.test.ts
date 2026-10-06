@@ -26,6 +26,9 @@ vi.mock("../satellite/SatellitePill.ts", () => ({
   isSatelliteWindow: () => false,
   expandSatelliteWindow: vi.fn(),
 }));
+vi.mock("../electron/WindowsDwm.ts", () => ({
+  loadWindowsDwm: vi.fn(async () => ({ disableTransitions: vi.fn() })),
+}));
 
 vi.mock("electron", async (importOriginal) => ({
   ...(await importOriginal<typeof import("electron")>()),
@@ -110,6 +113,7 @@ function makeFakeBrowserWindow() {
     close: vi.fn(),
     focus: vi.fn(),
     getBounds: vi.fn(() => ({ x: 0, y: 0, width: 1100, height: 780 })),
+    getNativeWindowHandle: vi.fn(() => Buffer.from([1, 0, 0, 0])),
     getNormalBounds: vi.fn(() => ({ x: 0, y: 0, width: 1100, height: 780 })),
     isDestroyed: vi.fn(() => false),
     isFullScreen: vi.fn(() => false),
@@ -883,7 +887,7 @@ describe("DesktopWindow", () => {
           assert.equal(onReveal.mock.calls.length, 0);
           assert.equal(fakeWindow.maximize.mock.calls.length, 0);
           assert.deepEqual(mainWindowBoundsUpdates, []);
-          assert.equal(createdWindowOptions[0]?.skipTaskbar, true);
+          assert.equal(createdWindowOptions[0]?.skipTaskbar, false);
           assert.equal(createdWindowOptions[0]?.transparent, false);
           assert.equal(createdWindowOptions[0]?.frame, false);
           assert.equal(createdWindowOptions[0]?.resizable, true);
@@ -920,7 +924,7 @@ describe("DesktopWindow", () => {
           const desktopWindow = yield* DesktopWindow.DesktopWindow;
           yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
           const options = createdWindowOptions[0]!;
-          assert.equal(options.skipTaskbar ?? false, enabled);
+          assert.equal(options.skipTaskbar ?? false, false);
           assert.equal(options.alwaysOnTop ?? false, enabled);
           assert.equal(options.frame ?? true, !enabled);
           assert.equal(options.maximizable ?? true, true);

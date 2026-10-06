@@ -15,8 +15,8 @@ export function SatelliteDesktopShell({
   const [shell, setShell] = useState<SatelliteShellState>({ mode: "pill", pinned: false });
   const positionsLinked = shell.positionsLinked ?? true;
   const linkLabel = positionsLinked
-    ? "Unlink pill and window positions"
-    : "Link pill and window positions";
+    ? "Unlink widget and window positions"
+    : "Link widget and window positions";
   const previousFocus = useRef<HTMLElement | null>(null);
   const previousMode = useRef<SatelliteShellState["mode"]>("pill");
   useEffect(
@@ -87,7 +87,7 @@ export function SatelliteDesktopShell({
           >
             {shell.pinned ? <PinOffIcon /> : <PinIcon />}
           </button>
-          <button type="button" aria-label="Collapse to pill" onClick={() => bridge.hideMain()}>
+          <button type="button" aria-label="Collapse to widget" onClick={() => bridge.hideMain()}>
             <Minimize2Icon />
           </button>
         </div>

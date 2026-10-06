@@ -217,6 +217,7 @@ export interface SatelliteBridge {
 
 /** Only the standalone pill renderer receives these capabilities. */
 export interface SatellitePillBridge {
+  readonly onOpacityChange: (listener: (opacity: number) => void) => () => void;
   readonly openMain: () => void;
   readonly movePill: (direction: SatelliteMoveDirection) => void;
   readonly beginPillDrag: () => void;

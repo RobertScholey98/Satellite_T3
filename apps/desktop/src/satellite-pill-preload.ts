@@ -7,6 +7,11 @@ import { contextBridge, ipcRenderer } from "electron";
 import * as Channels from "./satellite/channels.ts";
 
 contextBridge.exposeInMainWorld("satellitePillBridge", {
+  onOpacityChange: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, opacity: number) => listener(opacity);
+    ipcRenderer.on(Channels.SATELLITE_PILL_OPACITY, wrapped);
+    return () => ipcRenderer.removeListener(Channels.SATELLITE_PILL_OPACITY, wrapped);
+  },
   openMain: () => ipcRenderer.send(Channels.SATELLITE_PILL_OPEN),
   movePill: (direction) => ipcRenderer.send(Channels.SATELLITE_PILL_MOVE, direction),
   beginPillDrag: () => ipcRenderer.send(Channels.SATELLITE_PILL_DRAG_BEGIN),

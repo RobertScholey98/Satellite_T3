@@ -6,6 +6,15 @@ import { expandSatelliteWindow, installSatellitePill } from "./SatellitePill.ts"
 import { loadWindowsPillDrag } from "./WindowsPillDrag.ts";
 import { installWindowsDoubleControl } from "./WindowsDoubleControl.ts";
 import * as Channels from "./channels.ts";
+import type { WindowsDwmApi } from "../electron/WindowsDwm.ts";
+
+const visibility = vi.hoisted(() => ({
+  switches: new Set<string>(),
+  transitions: [] as {
+    operation: "show-widget" | "hide-widget" | "minimize-workspace";
+    animationsDisabled: boolean;
+  }[],
+}));
 
 vi.mock("./WindowsPillDrag.ts", () => ({
   loadWindowsPillDrag: vi.fn(async () => vi.fn(() => true)),
@@ -29,7 +38,19 @@ vi.mock("electron", async () => {
     focused = false;
     maximized = false;
     minimized = false;
+    skipTaskbar = false;
+    minimizedBounds = this.bounds;
+    minimizedMaximized = false;
     normalBounds = this.bounds;
+    opacity = 1;
+    setOpacity = vi.fn((opacity: number) => {
+      this.opacity = opacity;
+    });
+    getOpacity = () => this.opacity;
+    ignoringMouseEvents = false;
+    setIgnoreMouseEvents = vi.fn((ignore: boolean) => {
+      this.ignoringMouseEvents = ignore;
+    });
     webContents = Object.assign(new EventEmitter(), {
       send: vi.fn(),
       getZoomFactor: vi.fn(() => 1),
@@ -38,11 +59,21 @@ vi.mock("electron", async () => {
     });
     hide = vi.fn(() => {
       this.visible = false;
+      if (this.skipTaskbar)
+        visibility.transitions.push({
+          operation: "hide-widget",
+          animationsDisabled: visibility.switches.has("wm-window-animations-disabled"),
+        });
     });
     showInactive = vi.fn(() => {
       this.visible = true;
+      visibility.transitions.push({
+        operation: "show-widget",
+        animationsDisabled: visibility.switches.has("wm-window-animations-disabled"),
+      });
     });
     show = vi.fn(() => {
+      if (this.minimized) this.restore();
       this.visible = true;
     });
     focus = vi.fn(() => {
@@ -55,7 +86,9 @@ vi.mock("electron", async () => {
     });
     setAlwaysOnTop = vi.fn();
     setVisibleOnAllWorkspaces = vi.fn();
-    setSkipTaskbar = vi.fn();
+    setSkipTaskbar = vi.fn((skip: boolean) => {
+      this.skipTaskbar = skip;
+    });
     setMinimumSize = vi.fn();
     setResizable = vi.fn();
     setShape = vi.fn();
@@ -70,8 +103,15 @@ vi.mock("electron", async () => {
       this.hooks.set(message, callback);
     };
     restore = vi.fn(() => {
-      this.minimized = false;
-      this.unmaximize();
+      if (this.minimized) {
+        this.minimized = false;
+        this.visible = true;
+        this.bounds = this.minimizedBounds;
+        this.maximized = this.minimizedMaximized;
+        this.emit("move");
+        this.emit("resize");
+        this.emit("restore");
+      } else this.unmaximize();
     });
     maximize = vi.fn(() => {
       this.visible = true;
@@ -89,7 +129,19 @@ vi.mock("electron", async () => {
       this.emit("resize");
     });
     minimize = vi.fn(() => {
+      if (this.minimized) return;
+      visibility.transitions.push({
+        operation: "minimize-workspace",
+        animationsDisabled: visibility.switches.has("wm-window-animations-disabled"),
+      });
+      this.minimizedBounds = this.bounds;
+      this.minimizedMaximized = this.maximized;
       this.minimized = true;
+      this.maximized = false;
+      this.bounds = { x: -32000, y: -32000, width: 160, height: 28 };
+      this.blur();
+      this.emit("move");
+      this.emit("resize");
       this.emit("minimize");
     });
     isMaximized = () => this.maximized;
@@ -99,6 +151,7 @@ vi.mock("electron", async () => {
     getChildWindows = vi.fn(() => []);
     constructor(_options: Electron.BrowserWindowConstructorOptions) {
       super();
+      this.skipTaskbar = _options.skipTaskbar ?? false;
       this.bounds = {
         ...this.bounds,
         ...(_options.x !== undefined ? { x: _options.x } : {}),
@@ -137,10 +190,24 @@ vi.mock("electron", async () => {
       if (!prevented) this.destroy();
     };
   }
-  const primary = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+  const primary = {
+    id: 1,
+    workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+    bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+    scaleFactor: 1,
+  };
   return {
     BrowserWindow: FakeWindow,
-    app: Object.assign(new EventEmitter(), { getPath: () => "/isolated", quit: vi.fn() }),
+    BaseWindow: FakeWindow,
+    app: Object.assign(new EventEmitter(), {
+      getPath: () => "/isolated",
+      quit: vi.fn(),
+      commandLine: {
+        hasSwitch: (name: string) => visibility.switches.has(name),
+        appendSwitch: (name: string) => visibility.switches.add(name),
+        removeSwitch: (name: string) => visibility.switches.delete(name),
+      },
+    }),
     screen: Object.assign(new EventEmitter(), {
       getPrimaryDisplay: () => primary,
       getAllDisplays: () => [primary],
@@ -181,7 +248,12 @@ describe("independent native Satellite surfaces", () => {
       .map(([, layout]) => layout);
   const expand = () => expandSatelliteWindow(main);
   const collapse = () => send(main, Channels.SATELLITE_HIDE_MAIN);
-  const createShell = () => {
+  const taskbarWindows = () =>
+    Electron.BrowserWindow.getAllWindows().filter(
+      (window) =>
+        window.isVisible() && !(window as unknown as { skipTaskbar: boolean }).skipTaskbar,
+    );
+  const createShell = (dwm?: WindowsDwmApi) => {
     main = new Electron.BrowserWindow({});
     reveal = vi.fn(() => {
       expand();
@@ -190,18 +262,41 @@ describe("independent native Satellite surfaces", () => {
       revealMain: reveal,
       pillUrl: "http://localhost/satellite-pill.html",
       pillPreloadPath: "/pill.cjs",
+      ...(dwm ? { dwm } : {}),
     });
     pill = Electron.BrowserWindow.getAllWindows().find((window) => window !== main)!;
   };
+  const enableAnimations = () => {
+    main.destroy();
+    const dwm = {
+      disableTransitions: vi.fn(),
+      registerThumbnail: vi.fn(() => 1n),
+      updateThumbnail: vi.fn(),
+      unregisterThumbnail: vi.fn(),
+    };
+    createShell(dwm);
+    send(main, Channels.SATELLITE_WORKSPACE_READY);
+    send(pill, Channels.SATELLITE_PILL_READY);
+    return dwm;
+  };
+  const widgetIgnoresMouse = () =>
+    (pill as unknown as { ignoringMouseEvents: boolean }).ignoringMouseEvents;
+  const widgetContentOpacity = () =>
+    vi
+      .mocked(pill.webContents.send)
+      .mock.calls.findLast(([channel]) => channel === Channels.SATELLITE_PILL_OPACITY)?.[1];
   beforeEach(async () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    visibility.switches.clear();
+    visibility.transitions.length = 0;
     vi.mocked(NodeFS.readFileSync).mockReturnValue('{"x":100,"y":100}');
     createShell();
     await Promise.resolve();
     send(main, Channels.SATELLITE_WORKSPACE_READY);
     send(pill, Channels.SATELLITE_PILL_READY);
     reveal.mockClear();
+    visibility.transitions.length = 0;
   });
   afterEach(() => {
     for (const window of Electron.BrowserWindow.getAllWindows()) window.destroy();
@@ -265,7 +360,7 @@ describe("independent native Satellite surfaces", () => {
     expect(main.isVisible()).toBe(true);
     expect(pill.isVisible()).toBe(false);
     collapse();
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
     expect(pill.isVisible()).toBe(true);
   });
   it("switches surfaces without destroying the mounted workspace", () => {
@@ -273,12 +368,300 @@ describe("independent native Satellite surfaces", () => {
     expect(main.isVisible()).toBe(true);
     expect(pill.isVisible()).toBe(false);
     collapse();
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
     expect(pill.isVisible()).toBe(true);
     expect(main.isDestroyed()).toBe(false);
     expand();
     expect(main.isVisible()).toBe(true);
     expect(Electron.BrowserWindow.getAllWindows()).toHaveLength(2);
+  });
+  it("keeps one taskbar entry through command collapse and native taskbar restore", () => {
+    expect(taskbarWindows()).toEqual([main]);
+    collapse();
+    expect(main.isMinimized()).toBe(true);
+    expect(pill.isVisible()).toBe(true);
+    expect(taskbarWindows()).toEqual([main]);
+    expect(main.restore).not.toHaveBeenCalled();
+    main.restore();
+    expect(main.isMinimized()).toBe(false);
+    expect(main.isFocused()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+    expect(taskbarWindows()).toEqual([main]);
+    expect(main.restore).toHaveBeenCalledTimes(1);
+    expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
+      mode: "workspace",
+      pinned: false,
+      positionsLinked: true,
+    });
+  });
+  it("restores the current content blend when the widget reloads during motion", () => {
+    enableAnimations();
+    collapse();
+    vi.advanceTimersByTime(112);
+    const opacity = widgetContentOpacity();
+    expect(opacity).toBeGreaterThan(0);
+    expect(opacity).toBeLessThan(1);
+    pill.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    send(pill, Channels.SATELLITE_PILL_READY);
+    expect(widgetContentOpacity()).toBe(opacity);
+    expect(widgetIgnoresMouse()).toBe(true);
+    vi.advanceTimersByTime(112);
+    expect(widgetContentOpacity()).toBe(1);
+    expect(widgetIgnoresMouse()).toBe(false);
+  });
+  it("anchors the fade to the compact pill when its action panel is open", () => {
+    const dwm = enableAnimations();
+    send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
+    collapse();
+    vi.advanceTimersByTime(224);
+    const anchor = pill.getBounds();
+    send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
+    expect(pill.getBounds().height).toBeGreaterThan(anchor.height);
+    expand();
+    expect(dwm.updateThumbnail).toHaveBeenLastCalledWith(expect.any(BigInt), anchor, 0);
+    vi.advanceTimersByTime(224);
+    collapse();
+    vi.advanceTimersByTime(224);
+    expect(dwm.updateThumbnail).toHaveBeenLastCalledWith(expect.any(BigInt), anchor, 0);
+    expect(widgetContentOpacity()).toBe(1);
+    expect(publishedLayouts().at(-1)).toMatchObject({ mode: "compact", wing: expect.any(Object) });
+  });
+  it("keeps native geometry retained while the visual opens and closes at the widget", () => {
+    enableAnimations();
+    const retained = main.getBounds();
+    vi.mocked(main.setBounds).mockClear();
+    collapse();
+    expect(main.isMinimized()).toBe(true);
+    expect(pill.isVisible()).toBe(true);
+    expect(widgetContentOpacity()).toBe(0);
+    expect(widgetIgnoresMouse()).toBe(true);
+    expect(taskbarWindows()).toEqual([main]);
+    vi.advanceTimersByTime(224);
+    expect(pill.isVisible()).toBe(true);
+    expect(pill.getOpacity()).toBe(1);
+    expect(widgetIgnoresMouse()).toBe(false);
+    expect(expand()).toBe(false);
+    expect(main.getOpacity()).toBe(0);
+    expect(widgetContentOpacity()).toBe(1);
+    expect(widgetIgnoresMouse()).toBe(true);
+    expect(main.getBounds()).toEqual(retained);
+    expect(expand()).toBe(false);
+    main.blur();
+    vi.advanceTimersByTime(150);
+    expect(main.isMinimized()).toBe(false);
+    expect(main.getOpacity()).toBe(0);
+    vi.advanceTimersByTime(74);
+    expect(main.getOpacity()).toBe(1);
+    expect(main.isFocused()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+    expect(pill.getOpacity()).toBe(1);
+    expect(widgetIgnoresMouse()).toBe(false);
+    expect(expand()).toBe(true);
+    expect(main.setBounds).not.toHaveBeenCalled();
+  });
+  it("realizes the latest target through rapid close-open-close and taskbar reopen", () => {
+    enableAnimations();
+    collapse();
+    vi.advanceTimersByTime(112);
+    expect(expand()).toBe(false);
+    vi.advanceTimersByTime(48);
+    collapse();
+    vi.advanceTimersByTime(224);
+    expect(main.isMinimized()).toBe(true);
+    expect(main.getOpacity()).toBe(1);
+    expect(pill.isVisible()).toBe(true);
+    main.restore();
+    expect(main.isMinimized()).toBe(false);
+    expect(main.getOpacity()).toBe(0);
+    vi.advanceTimersByTime(224);
+    expect(main.getOpacity()).toBe(1);
+    expect(main.isFocused()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+    expect(taskbarWindows()).toEqual([main]);
+  });
+  it.each(["native-error", "renderer-crash", "display-change", "quit"])(
+    "restores widget opacity and input after a crossfade ends through %s",
+    (reason) => {
+      const dwm = enableAnimations();
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      if (reason === "native-error")
+        dwm.registerThumbnail.mockImplementationOnce(() => {
+          throw new Error("DWM unavailable");
+        });
+      collapse();
+      if (reason === "renderer-crash") main.webContents.emit("render-process-gone");
+      if (reason === "display-change") Electron.screen.emit("display-removed");
+      if (reason === "quit") Electron.app.emit("before-quit");
+      expect(main.isMinimized()).toBe(true);
+      expect(pill.isVisible()).toBe(true);
+      expect(pill.getOpacity()).toBe(1);
+      expect(widgetIgnoresMouse()).toBe(false);
+      warning.mockRestore();
+    },
+  );
+  it.each(["expand", "taskbar"])(
+    "restores an interactive widget when %s reverses a crossfade while the renderer reloads",
+    (action) => {
+      enableAnimations();
+      collapse();
+      vi.advanceTimersByTime(48);
+      main.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+      if (action === "taskbar") main.restore();
+      else expect(expand()).toBe(false);
+      expect(main.isMinimized()).toBe(true);
+      expect(pill.isVisible()).toBe(true);
+      expect(pill.getOpacity()).toBe(1);
+      expect(widgetIgnoresMouse()).toBe(false);
+      send(main, Channels.SATELLITE_WORKSPACE_READY);
+      vi.advanceTimersByTime(224);
+      expect(main.isMinimized()).toBe(false);
+      expect(main.getOpacity()).toBe(1);
+      expect(pill.isVisible()).toBe(false);
+      expect(pill.getOpacity()).toBe(1);
+      expect(widgetIgnoresMouse()).toBe(false);
+    },
+  );
+  it("settles an interrupted opening onto the available display without leaving a transparent workspace", () => {
+    enableAnimations();
+    collapse();
+    vi.advanceTimersByTime(224);
+    expand();
+    vi.advanceTimersByTime(48);
+    Electron.screen.emit("display-removed");
+    expect(main.getOpacity()).toBe(1);
+    expect(main.isMinimized()).toBe(false);
+    expect(pill.isVisible()).toBe(false);
+    expect(Electron.BrowserWindow.getAllWindows()).toHaveLength(2);
+    vi.advanceTimersByTime(300);
+    expect(main.isMinimized()).toBe(false);
+    expect(main.getOpacity()).toBe(1);
+  });
+  it("keeps the widget usable if the renderer reloads or crashes during a transition", () => {
+    enableAnimations();
+    collapse();
+    vi.advanceTimersByTime(224);
+    expand();
+    main.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    vi.advanceTimersByTime(224);
+    expect(main.isMinimized()).toBe(true);
+    expect(main.getOpacity()).toBe(1);
+    expect(pill.isVisible()).toBe(true);
+    send(main, Channels.SATELLITE_WORKSPACE_READY);
+    vi.advanceTimersByTime(224);
+    expect(main.isMinimized()).toBe(false);
+    expect(main.getOpacity()).toBe(1);
+    collapse();
+    main.webContents.emit("render-process-gone");
+    expect(pill.isVisible()).toBe(true);
+    expect(main.isMinimized()).toBe(true);
+    vi.advanceTimersByTime(300);
+    expect(main.getOpacity()).toBe(1);
+    expect(pill.isVisible()).toBe(true);
+  });
+  it("defers an interrupted opening until renderer readiness after a display change", () => {
+    enableAnimations();
+    collapse();
+    vi.advanceTimersByTime(224);
+    expand();
+    main.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    Electron.screen.emit("display-removed");
+    expect(main.isMinimized()).toBe(true);
+    expect(main.getOpacity()).toBe(1);
+    expect(pill.isVisible()).toBe(true);
+    vi.advanceTimersByTime(300);
+    expect(main.isMinimized()).toBe(true);
+    send(main, Channels.SATELLITE_WORKSPACE_READY);
+    vi.advanceTimersByTime(224);
+    expect(main.isMinimized()).toBe(false);
+    expect(main.getOpacity()).toBe(1);
+    expect(main.isFocused()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+  });
+  it.each(["close", "collapse", "late-widget-ready"])(
+    "shows the widget without animating it while preserving main-window animation on %s",
+    (action) => {
+      if (action === "late-widget-ready") {
+        pill.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+      }
+      if (action === "close") main.close();
+      else collapse();
+      if (action === "late-widget-ready") {
+        expect(main.isMinimized()).toBe(false);
+        send(pill, Channels.SATELLITE_PILL_READY);
+      }
+      expect(pill.isVisible()).toBe(true);
+      expect(main.isMinimized()).toBe(true);
+      expect(visibility.transitions).toEqual([
+        { operation: "show-widget", animationsDisabled: true },
+        { operation: "minimize-workspace", animationsDisabled: false },
+      ]);
+      expect(Electron.app.commandLine.hasSwitch("wm-window-animations-disabled")).toBe(false);
+    },
+  );
+  it("scopes suppression to both widget transitions on repeated collapse and reopen", () => {
+    for (let cycle = 0; cycle < 3; cycle++) {
+      visibility.transitions.length = 0;
+      collapse();
+      expect(pill.isVisible()).toBe(true);
+      expect(main.isMinimized()).toBe(true);
+      expand();
+      expect(pill.isVisible()).toBe(false);
+      expect(main.isMinimized()).toBe(false);
+      expect(visibility.transitions).toEqual([
+        { operation: "show-widget", animationsDisabled: true },
+        { operation: "minimize-workspace", animationsDisabled: false },
+        { operation: "hide-widget", animationsDisabled: true },
+      ]);
+      expect(Electron.app.commandLine.hasSwitch("wm-window-animations-disabled")).toBe(false);
+    }
+  });
+  it("accepts native minimize without restoring and anchors from the last visible bounds", () => {
+    main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
+    main.minimize();
+    expect(main.isMinimized()).toBe(true);
+    expect(main.restore).not.toHaveBeenCalled();
+    expect(pill.getBounds()).toEqual({ x: 1668, y: 100, width: 252, height: 56 });
+    expect(saved().workspace).toEqual({
+      bounds: { x: 960, y: 0, width: 960, height: 1040 },
+      maximized: false,
+    });
+    vi.mocked(main.setBounds).mockClear();
+    main.restore();
+    expect(main.getBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+    expect(main.setBounds).not.toHaveBeenCalled();
+  });
+  it("waits for renderer readiness when the taskbar restores a recovering workspace", () => {
+    collapse();
+    main.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    main.restore();
+    expect(main.isMinimized()).toBe(true);
+    expect(pill.isVisible()).toBe(true);
+    expect(taskbarWindows()).toEqual([main]);
+    main.restore();
+    expect(main.isMinimized()).toBe(true);
+    expect(pill.isVisible()).toBe(true);
+    send(main, Channels.SATELLITE_WORKSPACE_READY);
+    expect(main.isMinimized()).toBe(false);
+    expect(main.isFocused()).toBe(true);
+    expect(pill.isVisible()).toBe(false);
+    expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
+      mode: "workspace",
+      pinned: false,
+      positionsLinked: true,
+    });
+  });
+  it("defers reanchoring a moved linked widget until the taskbar restores the workspace", () => {
+    main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
+    collapse();
+    vi.mocked(main.setBounds).mockClear();
+    pill.setPosition(0, 0);
+    expect(main.isMinimized()).toBe(true);
+    expect(main.setBounds).not.toHaveBeenCalled();
+    main.restore();
+    expect(main.getBounds()).toEqual({ x: 0, y: 0, width: 960, height: 1040 });
+    expect(main.isMinimized()).toBe(false);
+    expect(pill.isVisible()).toBe(false);
+    expect(saved().workspace.bounds).toEqual({ x: 0, y: 0, width: 960, height: 1040 });
   });
   it("persists actual native drag completion without moving or clamping on release", () => {
     const boundsBefore = vi.mocked(pill.setBounds).mock.calls.length;
@@ -349,7 +732,7 @@ describe("independent native Satellite surfaces", () => {
   it("lets the workspace open itself only through its own guarded channel", () => {
     collapse();
     send(pill, Channels.SATELLITE_OPEN_MAIN);
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
     send(main, Channels.SATELLITE_OPEN_MAIN);
     expect(main.isVisible()).toBe(true);
     expect(pill.isVisible()).toBe(false);
@@ -382,7 +765,7 @@ describe("independent native Satellite surfaces", () => {
       panel: { x: 0, y: 68, width: 440, height: 500 },
     });
     expect(pill.isFocused()).toBe(true);
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
   });
   it("preserves the compact anchor and workspace size across repeated wing expansion", () => {
     collapse();
@@ -537,7 +920,7 @@ describe("independent native Satellite surfaces", () => {
       Channels.SATELLITE_PILL_LAYOUT,
       expect.objectContaining({ mode: "compact", panel: null }),
     );
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
   });
   it("keeps a panel open during native capture and preserves tray actions", () => {
     collapse();
@@ -552,15 +935,15 @@ describe("independent native Satellite surfaces", () => {
     const entries = vi.mocked(Electron.Menu.buildFromTemplate).mock.calls[0]![0];
     expect(entries.map((entry) => entry.label).filter(Boolean)).toEqual([
       "Open workspace",
-      "Collapse to pill",
-      "Link pill and window positions",
+      "Collapse to widget",
+      "Link widget and window positions",
       "Keep workspace open",
       "Quit SatelliteT3",
     ]);
     Reflect.apply(entries.find((entry) => entry.label === "Open workspace")!.click!, undefined, []);
     expect(main.isVisible()).toBe(true);
     Reflect.apply(
-      entries.find((entry) => entry.label === "Collapse to pill")!.click!,
+      entries.find((entry) => entry.label === "Collapse to widget")!.click!,
       undefined,
       [],
     );
@@ -599,6 +982,7 @@ describe("independent native Satellite surfaces", () => {
     main.blur();
     vi.advanceTimersByTime(150);
     expect(main.isVisible()).toBe(true);
+    expect(main.isMinimized()).toBe(false);
     main.close();
     expect(main.isDestroyed()).toBe(false);
     expect(pill.isVisible()).toBe(true);
@@ -699,15 +1083,14 @@ describe("independent native Satellite surfaces", () => {
     expect(main.isMaximized()).toBe(true);
     expect(main.getNormalBounds()).toEqual({ x: 49, y: 26, width: 1100, height: 780 });
   });
-  it("relinks from the pill menu without moving the retained workspace on reveal", () => {
+  it("relinks from the tray menu without moving the retained workspace on reveal", () => {
     send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
     main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
     collapse();
     pill.setPosition(800, 0);
-    send(pill, Channels.SATELLITE_PILL_MENU);
     const link = vi
       .mocked(Electron.Menu.buildFromTemplate)
-      .mock.lastCall![0].find((item) => item.label === "Link pill and window positions")!;
+      .mock.lastCall![0].find((item) => item.label === "Link widget and window positions")!;
     link.click?.({ checked: true } as Electron.MenuItem, main, {} as Electron.KeyboardEvent);
     expect(pill.getBounds()).toEqual({ x: 800, y: 0, width: 252, height: 56 });
     expand();
@@ -732,20 +1115,20 @@ describe("independent native Satellite surfaces", () => {
     expect(main.isMaximized()).toBe(true);
     expect(main.getNormalBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
   });
-  it("repairs maximized restore bounds while keeping a collapsed workspace hidden", () => {
+  it("repairs maximized restore bounds while keeping a collapsed workspace minimized", () => {
     send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
     main.setBounds({ x: -1280, y: 0, width: 640, height: 900 });
     main.maximize();
     collapse();
     vi.mocked(main.maximize).mockClear();
     Electron.screen.emit("display-removed");
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
     expect(main.maximize).not.toHaveBeenCalled();
     expect(saved().workspace).toEqual({
       bounds: { x: 0, y: 0, width: 640, height: 900 },
       maximized: true,
     });
-    expand();
+    main.restore();
     expect(main.isMaximized()).toBe(true);
     expect(main.getNormalBounds()).toEqual({ x: 0, y: 0, width: 640, height: 900 });
   });
@@ -786,14 +1169,14 @@ describe("independent native Satellite surfaces", () => {
     expect(saved().workspace.bounds).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
     expect(main.isVisible()).toBe(true);
   });
-  it("recovers the hidden workspace independently when its monitor disappears", () => {
+  it("recovers the minimized workspace independently when its monitor disappears", () => {
     send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
     main.setBounds({ x: -1280, y: 0, width: 640, height: 900 });
     collapse();
     pill.setPosition(800, 0);
     Electron.screen.emit("display-removed");
-    expect(main.isVisible()).toBe(false);
-    expect(main.getBounds()).toEqual({ x: 0, y: 0, width: 640, height: 900 });
+    expect(main.isMinimized()).toBe(true);
+    expect(saved().workspace.bounds).toEqual({ x: 0, y: 0, width: 640, height: 900 });
     expect(pill.getBounds()).toEqual({ x: 800, y: 0, width: 252, height: 56 });
     expand();
     expect(main.getBounds()).toEqual({ x: 0, y: 0, width: 640, height: 900 });
@@ -831,10 +1214,14 @@ describe("independent native Satellite surfaces", () => {
     pill.webContents.emit("render-process-gone");
     expect(pill.webContents.reload).toHaveBeenCalledOnce();
     send(pill, Channels.SATELLITE_PILL_READY);
-    expect(pill.webContents.send).toHaveBeenLastCalledWith(
+    expect(
+      vi
+        .mocked(pill.webContents.send)
+        .mock.calls.findLast(([channel]) => channel === Channels.SATELLITE_PILL_STATE),
+    ).toEqual([
       Channels.SATELLITE_PILL_STATE,
       expect.objectContaining({ state: "unknown", theme }),
-    );
+    ]);
   });
   it("clamps keyboard movement and recovers after scale-only notifications", () => {
     collapse();
@@ -861,7 +1248,7 @@ describe("independent native Satellite surfaces", () => {
     message(pill, 0x0232);
     expect(pill.getBounds()).toEqual({ x: 0, y: 0, width: 252, height: 56 });
   });
-  it("recovers a hidden workspace on a small work area with usable native minimums", () => {
+  it("recovers a minimized workspace on a small work area with usable native minimums", () => {
     collapse();
     const primary = {
       id: 1,
@@ -870,7 +1257,7 @@ describe("independent native Satellite surfaces", () => {
     const primarySpy = vi.spyOn(Electron.screen, "getPrimaryDisplay").mockReturnValue(primary);
     const displaysSpy = vi.spyOn(Electron.screen, "getAllDisplays").mockReturnValue([primary]);
     Electron.screen.emit("display-removed");
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
     expand();
     expect(main.getBounds()).toMatchObject({ width: 700, height: 500 });
     expect(main.setMinimumSize).toHaveBeenLastCalledWith(480, 360);
@@ -879,11 +1266,11 @@ describe("independent native Satellite surfaces", () => {
     primarySpy.mockRestore();
     displaysSpy.mockRestore();
   });
-  it("keeps a recovering workspace hidden until its renderer is ready", () => {
+  it("keeps a recovering workspace minimized until its renderer is ready", () => {
     collapse();
     main.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
     expect(expandSatelliteWindow(main)).toBe(false);
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
     expect(pill.isVisible()).toBe(true);
     send(main, Channels.SATELLITE_WORKSPACE_READY);
     expect(main.isVisible()).toBe(true);
@@ -904,17 +1291,17 @@ describe("independent native Satellite surfaces", () => {
     expect(main.isVisible()).toBe(true);
     expect(pill.isVisible()).toBe(false);
     collapse();
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
     expect(pill.isVisible()).toBe(true);
   });
-  it("waits for a reloaded pill document before hiding the last workspace surface", () => {
+  it("waits for a reloaded widget document before minimizing the workspace", () => {
     expand();
     pill.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
     collapse();
     expect(main.isVisible()).toBe(true);
     expect(pill.isVisible()).toBe(false);
     send(pill, Channels.SATELLITE_PILL_READY);
-    expect(main.isVisible()).toBe(false);
+    expect(main.isMinimized()).toBe(true);
     expect(pill.isVisible()).toBe(true);
   });
 });
