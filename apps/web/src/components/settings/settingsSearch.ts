@@ -477,6 +477,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["review document checklist background agent provider model to-rev-doc"],
   },
   {
+    id: "revdoc-large-model",
+    title: "Large Revdoc model",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["large review batch parallel provider model effort"],
+  },
+  {
     id: "revdoc-testing-model",
     title: "Revdoc testing model",
     to: "/settings/general",

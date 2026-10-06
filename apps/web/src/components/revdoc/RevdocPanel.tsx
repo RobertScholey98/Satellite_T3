@@ -811,7 +811,11 @@ export default function RevdocPanel({
                   : run.data?.running
                     ? run.data.phase === "testing"
                       ? `Testing ${run.data.completed ?? 0}/${run.data.total ?? allTests.length} checks…`
-                      : "Generating review…"
+                      : run.data.generationStage === "combining"
+                        ? `Combining review sections · ${run.data.completed ?? 0}/${run.data.total ?? 0} complete…`
+                        : run.data.total && run.data.total > 1
+                          ? `Generating review · ${run.data.completed ?? 0}/${run.data.total} batches complete…`
+                          : "Generating review…"
                     : review
                       ? "Saved in this worktree"
                       : ""}

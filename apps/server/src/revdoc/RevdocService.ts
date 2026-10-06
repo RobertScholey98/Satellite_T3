@@ -49,11 +49,19 @@ import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSn
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { reconcileRevdoc, revdocPrompt } from "./RevdocGeneration.ts";
+import { reconcileRevdoc, type RevdocGenerationResult } from "./RevdocGeneration.ts";
+import {
+  MAX_REVDOC_PROMPT_BYTES,
+  mergeRevdocBatch,
+  planRevdocBatches,
+  revdocConsolidationGroups,
+  revdocConsolidationPrompt,
+} from "./RevdocBatching.ts";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 
 const MAX_REVIEW_BYTES = 2 * 1024 * 1024;
 const MAX_CONTEXT_BYTES = 180_000;
+const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const idle: RevdocRunState = { running: false, error: null, result: null, version: 0 };
 const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
 const fail = (message: string) => new RevdocError({ message });
@@ -352,20 +360,27 @@ const make = Effect.gen(function* () {
         break;
       }
     }
-    const diff = yield* execute(cwd, [
+    // Git writes the complete patch directly to a scoped file, bypassing the stdout cap.
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-revdoc-source-" });
+    const patch = path.join(directory, "changes.patch");
+    yield* execute(cwd, [
       "diff",
       "--no-ext-diff",
       "--no-textconv",
+      "--no-color",
       "--unified=4",
+      `--output=${patch}`,
       base,
       "--",
       ".",
       ":(exclude).revdoc",
     ]);
-    if (diff.stdoutTruncated)
+    const patchSize = (yield* fs.stat(patch)).size;
+    if (patchSize > BigInt(MAX_SOURCE_BYTES))
       return yield* fail(
-        "This worktree's diff is too large for a single Revdoc pass. Narrow the work before retrying.",
+        "The review source exceeds 64 MB. Narrow the comparison before generating a review; the saved review was preserved.",
       );
+    const diff = yield* fs.readFileString(patch);
     const untracked = yield* execute(cwd, [
       "ls-files",
       "--others",
@@ -377,8 +392,10 @@ const make = Effect.gen(function* () {
     ]);
     if (untracked.stdoutTruncated)
       return yield* fail("Too many untracked files for a single Revdoc pass.");
-    const parts = [diff.stdout];
-    let contextBytes = Buffer.byteLength(diff.stdout);
+    const parts = [diff];
+    const digest = NodeCrypto.createHash("sha256").update(base).update("\0").update(diff);
+    let contextBytes = Buffer.byteLength(diff);
+    const files = [...(diff.match(/^diff --git .+$/gm) ?? [])];
     for (const relative of untracked.stdout.split("\0").filter(Boolean)) {
       const file = path.join(cwd, relative);
       const resolved = yield* fs
@@ -389,12 +406,16 @@ const make = Effect.gen(function* () {
       const stat = yield* fs
         .stat(file)
         .pipe(Effect.mapError(() => fail("Could not read an untracked file.")));
-      if (stat.type !== "File" || stat.size > 40_000n) {
+      digest.update(relative).update("\0");
+      files.push(`Untracked file: ${relative}`);
+      if (stat.type !== "File" || stat.size > BigInt(MAX_SOURCE_BYTES)) {
         parts.push(`Untracked file: ${relative} (content omitted: binary or large file)`);
+        digest.update(String(stat.size)).update(String(stat.mtime));
       } else {
         const content = yield* fs
           .readFileString(file)
           .pipe(Effect.mapError(() => fail("Could not read an untracked file.")));
+        digest.update(content);
         parts.push(
           content.includes("\0")
             ? `Binary file: ${relative}`
@@ -402,15 +423,16 @@ const make = Effect.gen(function* () {
         );
       }
       contextBytes += Buffer.byteLength(parts.at(-1)!) + 1;
-      if (contextBytes > MAX_CONTEXT_BYTES) {
+      if (contextBytes > MAX_SOURCE_BYTES) {
         return yield* fail(
-          "This worktree's changes exceed the Revdoc context limit. Your existing review was preserved.",
+          "The review source exceeds 64 MB. Narrow the comparison before generating a review; the saved review was preserved.",
         );
       }
     }
     return {
       changes: parts.join("\n"),
-      sourceRevision: `${head}:${hash(parts.join("\n")).slice(0, 12)}`,
+      sourceRevision: `${head}:${digest.digest("hex")}`,
+      overview: `Comparison base: ${base}\nHEAD: ${head}\n${files.length} changed files\n${files.slice(0, 200).join("\n").slice(0, 16_000)}\n${files.length > 200 ? "Additional filenames omitted from this overview; their patches are included in the batches." : ""}`,
     };
   });
 
@@ -940,18 +962,10 @@ const make = Effect.gen(function* () {
           if (jobs.has(cwd)) return;
           cancellations.delete(cwd);
           const config = yield* settings.getSettings;
-          const modelSelection = config.revdocModelSelection ?? thread.modelSelection;
-          const instance = yield* providers.getInstance(modelSelection.instanceId);
-          if (!instance?.enabled || !instance.textGeneration.generateRevdoc) {
-            return yield* fail(
-              "Choose an available provider and model in Settings → Text generation → Revdoc.",
-            );
-          }
-          const generate = instance.textGeneration.generateRevdoc;
           const initial = yield* read(cwd);
           yield* notify(cwd, { running: true, phase: "generating", error: null, result: null });
           const job = yield* Effect.gen(function* () {
-            const source = yield* context(cwd);
+            const source = yield* context(cwd).pipe(Effect.scoped);
             yield* writes.withPermit(prepare(cwd));
             const detail = yield* snapshots
               .getThreadDetailSnapshot(input.threadId, { turnLimit: 30 })
@@ -967,18 +981,124 @@ const make = Effect.gen(function* () {
                   earlierTurnsOmitted: detail.value.page?.hasMore ?? false,
                 }
               : { title: thread.title };
-            const prompt = revdocPrompt({
+            const prompts = planRevdocBatches({
               thread: conversation,
               changes: source.changes,
               existing: initial.review,
+              overview: source.overview,
             });
-            if (Buffer.byteLength(prompt) > 450_000)
+            const large = prompts.length > 1;
+            const modelSelection =
+              (large ? config.revdocLargeModelSelection : null) ??
+              config.revdocModelSelection ??
+              thread.modelSelection;
+            const instance = yield* providers.getInstance(modelSelection.instanceId);
+            if (!instance?.enabled || !instance.textGeneration.generateRevdoc) {
               return yield* fail(
-                "The review context is too large for one pass. The existing review was preserved.",
+                `Choose an available provider and model in Settings → Text generation → ${large ? "Large Revdoc" : "Revdoc"}.`,
               );
-            const generated = yield* generate({ cwd, modelSelection, prompt }).pipe(
-              Effect.mapError((error) => fail(error.message)),
+            }
+            const generate = instance.textGeneration.generateRevdoc;
+            const generatePart = Effect.fnUntraced(function* (prompt: string) {
+              if (Buffer.byteLength(prompt) > MAX_REVDOC_PROMPT_BYTES)
+                return yield* fail(
+                  "A review batch exceeds the prompt limit. The saved review was preserved.",
+                );
+              const part = yield* generate({ cwd, modelSelection, prompt }).pipe(
+                Effect.mapError((error) => fail(error.message)),
+              );
+              if (!isReview(part))
+                return yield* fail(
+                  "The model returned an invalid review batch. The saved review was preserved.",
+                );
+              yield* validate(part);
+              return part;
+            }, Effect.scoped);
+            let completed = 0;
+            const generationProgress = (stage: "reviewing" | "combining", total: number) =>
+              notify(cwd, {
+                running: true,
+                phase: "generating",
+                generationStage: stage,
+                completed,
+                total,
+                error: null,
+                result: null,
+              });
+            yield* generationProgress("reviewing", prompts.length);
+            const fragments = yield* Effect.forEach(
+              prompts,
+              (prompt) =>
+                Effect.gen(function* () {
+                  const part = yield* generatePart(prompt);
+                  completed++;
+                  yield* generationProgress("reviewing", prompts.length);
+                  return part;
+                }),
+              { concurrency: 2 },
             );
+            let generated: RevdocReview = fragments[0]!;
+            if (large) {
+              generated = fragments.reduce<RevdocReview | null>(
+                (current, part) => mergeRevdocBatch(current, part, initial.review),
+                null,
+              )!;
+              if (!isReview(generated))
+                return yield* fail(
+                  "The combined review exceeds the document format limits. The saved review was preserved.",
+                );
+              yield* validate(generated);
+              const groups = revdocConsolidationGroups(generated);
+              completed = 0;
+              yield* generationProgress("combining", groups.length);
+              const organized = yield* Effect.forEach(
+                groups,
+                (group) =>
+                  Effect.gen(function* () {
+                    const part = yield* generatePart(
+                      revdocConsolidationPrompt(group, source.overview),
+                    );
+                    completed++;
+                    yield* generationProgress("combining", groups.length);
+                    return part;
+                  }),
+                { concurrency: 2 },
+              );
+              // Consolidation may reorganise checks, but cannot delete or rewrite their evidence.
+              const checks = new Map(
+                generated.sections.flatMap((s) =>
+                  s.items.flatMap((i) => i.tests.map((t) => [t.id, t] as const)),
+                ),
+              );
+              for (const part of organized) {
+                const retained: RevdocGenerationResult = {
+                  ...part,
+                  sections: part.sections.map((s) => ({
+                    ...s,
+                    items: s.items.map((i) => ({
+                      ...i,
+                      tests: i.tests.map((t) => ({
+                        ...t,
+                        ...checks.get(t.id),
+                        expected: checks.get(t.id)?.expected ?? t.expected,
+                      })),
+                    })),
+                  })),
+                };
+                generated = mergeRevdocBatch(generated, retained, generated);
+              }
+              generated = {
+                ...generated,
+                title: initial.review?.title ?? `${thread.title} review`,
+                summary: `Review changes to ${generated.sections.map((section) => section.area).join(", ")}.`,
+                context: source.overview,
+              };
+            }
+            const currentSource = yield* context(cwd).pipe(Effect.scoped);
+            if (currentSource.sourceRevision !== source.sourceRevision)
+              return yield* fail(
+                "The worktree changed during generation. Run Revdoc again for the current changes; the saved review was preserved.",
+              );
             const review = {
               ...reconcileRevdoc(initial.review, generated),
               sourceRevision: source.sourceRevision,

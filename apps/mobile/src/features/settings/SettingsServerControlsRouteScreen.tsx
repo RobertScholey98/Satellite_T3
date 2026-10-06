@@ -407,6 +407,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                         <Fragment key={target.environmentId}>
                           <BackgroundModelSetting target={target} kind="ideas" />
                           <BackgroundModelSetting target={target} kind="revdoc" />
+                          <BackgroundModelSetting target={target} kind="revdoc-large" />
                           <BackgroundModelSetting target={target} kind="revdoc-testing" />
                         </Fragment>
                       ))
@@ -593,7 +594,7 @@ function BackgroundModelSetting({
   kind,
 }: {
   target: SettingsTarget;
-  kind: "ideas" | "revdoc" | "revdoc-testing";
+  kind: "ideas" | "revdoc" | "revdoc-large" | "revdoc-testing";
 }) {
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -603,7 +604,9 @@ function BackgroundModelSetting({
       ? "ideaUpdatesModelSelection"
       : kind === "revdoc"
         ? "revdocModelSelection"
-        : "revdocTestingModelSelection";
+        : kind === "revdoc-large"
+          ? "revdocLargeModelSelection"
+          : "revdocTestingModelSelection";
   const selection = target.serverConfig.settings[settingKey];
   const models = buildModelOptions(target.serverConfig, selection);
   const selectedModel = models.find(
@@ -640,12 +643,16 @@ function BackgroundModelSetting({
   };
   return (
     <SettingsSection
-      title={`${kind === "ideas" ? "Idea updates" : kind === "revdoc" ? "Revdoc" : "Revdoc testing"} · ${target.label}`}
+      title={`${kind === "ideas" ? "Idea updates" : kind === "revdoc" ? "Revdoc" : kind === "revdoc-large" ? "Large Revdoc" : "Revdoc testing"} · ${target.label}`}
     >
       <SettingsRow
         icon="brain"
         label={
-          kind === "ideas" ? "Notebook model" : kind === "revdoc" ? "Review model" : "Testing model"
+          kind === "ideas"
+            ? "Notebook model"
+            : kind === "revdoc-testing"
+              ? "Testing model"
+              : "Review model"
         }
         value={selection?.model ?? "Automatic"}
         onPress={() => setExpanded((value) => !value)}
@@ -656,7 +663,9 @@ function BackgroundModelSetting({
             ? "Organizes notes and updates pitches independently of thread titles."
             : kind === "revdoc"
               ? "Generates worktree reviews in the background. Automatic uses the thread’s provider and model."
-              : "Tests the worktree in the review sidebar. Automatic uses the Revdoc model, then the thread’s model."}
+              : kind === "revdoc-large"
+                ? "Reviews large changes in parallel batches and combines the results. Automatic uses the Revdoc model, then the thread’s model."
+                : "Tests the worktree in the review sidebar. Automatic uses the Revdoc model, then the thread’s model."}
         </Text>
       </View>
       {kind === "revdoc-testing" ? (

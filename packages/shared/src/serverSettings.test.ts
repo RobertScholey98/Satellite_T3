@@ -361,56 +361,62 @@ describe("serverSettings helpers", () => {
     ).toBeNull();
   });
 
-  it.each(["revdocModelSelection", "revdocTestingModelSelection"] as const)(
-    "replaces Revdoc models without retaining old effort options · %s",
-    (settingKey) => {
-      const current = {
-        ...DEFAULT_SERVER_SETTINGS,
-        [settingKey]: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
-          { id: "reasoningEffort", value: "high" },
-        ]),
-      };
-      expect(
-        applyServerSettingsPatch(current, {
-          [settingKey]: {
-            instanceId: ProviderInstanceId.make("claude"),
-            model: "claude-sonnet-4-6",
-          },
-        })[settingKey],
-      ).toEqual({ instanceId: "claude", model: "claude-sonnet-4-6" });
-    },
-  );
+  it.each([
+    "revdocModelSelection",
+    "revdocLargeModelSelection",
+    "revdocTestingModelSelection",
+  ] as const)("replaces Revdoc models without retaining old effort options · %s", (settingKey) => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      [settingKey]: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
+        { id: "reasoningEffort", value: "high" },
+      ]),
+    };
+    expect(
+      applyServerSettingsPatch(current, {
+        [settingKey]: {
+          instanceId: ProviderInstanceId.make("claude"),
+          model: "claude-sonnet-4-6",
+        },
+      })[settingKey],
+    ).toEqual({ instanceId: "claude", model: "claude-sonnet-4-6" });
+  });
 
-  it.each(["revdocModelSelection", "revdocTestingModelSelection"] as const)(
-    "merges Revdoc options by id and supports clearing them · %s",
-    (settingKey) => {
-      const current = {
-        ...DEFAULT_SERVER_SETTINGS,
-        [settingKey]: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
-          { id: "reasoningEffort", value: "high" },
-          { id: "fastMode", value: true },
-        ]),
-      };
-      const updated = applyServerSettingsPatch(current, {
-        [settingKey]: { options: [{ id: "reasoningEffort", value: "low" }] },
-      });
-      expect(updated[settingKey]).toEqual({
-        instanceId: "codex",
-        model: "gpt-5.4-mini",
-        options: [
-          { id: "reasoningEffort", value: "low" },
-          { id: "fastMode", value: true },
-        ],
-      });
-      expect(
-        applyServerSettingsPatch(updated, {
-          [settingKey]: { options: [] },
-        })[settingKey],
-      ).toEqual({ instanceId: "codex", model: "gpt-5.4-mini" });
-    },
-  );
+  it.each([
+    "revdocModelSelection",
+    "revdocLargeModelSelection",
+    "revdocTestingModelSelection",
+  ] as const)("merges Revdoc options by id and supports clearing them · %s", (settingKey) => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      [settingKey]: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
+        { id: "reasoningEffort", value: "high" },
+        { id: "fastMode", value: true },
+      ]),
+    };
+    const updated = applyServerSettingsPatch(current, {
+      [settingKey]: { options: [{ id: "reasoningEffort", value: "low" }] },
+    });
+    expect(updated[settingKey]).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.4-mini",
+      options: [
+        { id: "reasoningEffort", value: "low" },
+        { id: "fastMode", value: true },
+      ],
+    });
+    expect(
+      applyServerSettingsPatch(updated, {
+        [settingKey]: { options: [] },
+      })[settingKey],
+    ).toEqual({ instanceId: "codex", model: "gpt-5.4-mini" });
+  });
 
-  it.each(["revdocModelSelection", "revdocTestingModelSelection"] as const)(
+  it.each([
+    "revdocModelSelection",
+    "revdocLargeModelSelection",
+    "revdocTestingModelSelection",
+  ] as const)(
     "resets Revdocs to Automatic and accepts a complete selection afterwards · %s",
     (settingKey) => {
       const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [

@@ -3302,6 +3302,13 @@ export function GeneralSettingsPanel() {
                 "Runs background review-document passes for the current worktree. Automatic uses the thread’s provider and model.",
             },
             {
+              settingKey: "revdocLargeModelSelection",
+              id: "revdoc-large-model",
+              label: "Large Revdoc model",
+              description:
+                "Reviews large changes in parallel batches and combines the results. Automatic uses the Revdoc model, then the thread’s model.",
+            },
+            {
               settingKey: "revdocTestingModelSelection",
               id: "revdoc-testing-model",
               label: "Revdoc testing model",
