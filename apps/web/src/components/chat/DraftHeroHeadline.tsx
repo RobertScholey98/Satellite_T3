@@ -40,6 +40,7 @@ import {
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { InlineButton } from "../ui/button";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { NewWorktreeButton } from "./NewWorktreeButton";
 
 // Menu value for "No project"; real entries are keyed by logical project key.
 const NO_PROJECT_VALUE = "no-project";
@@ -48,12 +49,14 @@ interface DraftHeroHeadlineProps {
   readonly draftId: DraftId | null;
   readonly activeProjectRef: ScopedProjectRef | null;
   readonly activeProjectTitle: string | null;
+  readonly canCreateWorktree: boolean;
 }
 
 export function DraftHeroHeadline({
   draftId,
   activeProjectRef,
   activeProjectTitle,
+  canCreateWorktree,
 }: DraftHeroHeadlineProps) {
   const projects = useProjects();
   const threads = useThreadShells();
@@ -375,11 +378,23 @@ export function DraftHeroHeadline({
       </h1>
       {/* Reserved whenever threads can skip a project, so the heading does not
           move. Without a project, the picker moves here to choose one. */}
-      {scratchWorkspaceRoot === null ? null : (
-        <p className="mt-2 flex h-6 items-center text-sm">
-          {isScratchDraft ? projectSelector : orStartWithoutProject}
-        </p>
-      )}
+      <div className="mt-2 flex min-h-6 flex-wrap items-center justify-center gap-x-4 gap-y-1 text-sm">
+        {scratchWorkspaceRoot === null
+          ? null
+          : isScratchDraft
+            ? projectSelector
+            : orStartWithoutProject}
+        {canCreateWorktree && draftId && activeProjectRef && activeProject && !isScratchDraft ? (
+          <span className="pointer-events-auto">
+            <NewWorktreeButton
+              key={`${draftId}:${scopedProjectKey(activeProjectRef)}`}
+              draftId={draftId}
+              projectRef={activeProjectRef}
+              workspaceRoot={activeProject.workspaceRoot}
+            />
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }
