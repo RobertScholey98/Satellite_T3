@@ -462,7 +462,7 @@ async function installQuietPill(application, surfaces) {
   );
   await surfaces.pill.page.locator('[data-satellite="action-wing"]').waitFor({ state: "detached" });
   await surfaces.pill.page.waitForFunction(
-    () => window.innerWidth === 320 && window.innerHeight === 70,
+    () => window.innerWidth === 252 && window.innerHeight === 56,
   );
 }
 
@@ -598,7 +598,14 @@ async function waitForPillGeometry(surfaces, expected = null) {
               nativeLayout.height !== expected.height)
           )
             return;
-          if (innerWidth !== nativeLayout.width || innerHeight !== nativeLayout.height) return;
+          // Windows encloses fractional physical bounds in the integer CSS viewport.
+          if (
+            innerWidth < nativeLayout.width ||
+            innerWidth > nativeLayout.width + 1 ||
+            innerHeight < nativeLayout.height ||
+            innerHeight > nativeLayout.height + 1
+          )
+            return;
           if (JSON.stringify(window.satelliteSmokeObservedLayout) !== JSON.stringify(nativeLayout))
             return;
           if (
@@ -703,7 +710,21 @@ async function nativeRegion(application, id, points) {
             }),
           ]),
         );
-        return { kind, contains };
+        const box = Buffer.alloc(16);
+        load({
+          library: "satellite-smoke-gdi32",
+          funcName: "GetRgnBox",
+          retType: DataType.I32,
+          paramsType: [DataType.BigInt, DataType.U8Array],
+          paramsValue: [region, box],
+        });
+        const bounds = {
+          x: box.readInt32LE(0),
+          y: box.readInt32LE(4),
+          width: box.readInt32LE(8) - box.readInt32LE(0),
+          height: box.readInt32LE(12) - box.readInt32LE(4),
+        };
+        return { kind, contains, bounds };
       } finally {
         load({
           library: "satellite-smoke-gdi32",
@@ -910,19 +931,40 @@ async function verifyWingPointer(application, surfaces) {
         released = resolve;
       });
       const timeout = setTimeout(() => released(null), 5000);
+      const eventTypes = [
+        "pointerdown",
+        "pointerup",
+        "pointercancel",
+        "keydown",
+        "keyup",
+        "beforeinput",
+        "input",
+      ];
       const observe = (event) => {
         events.push({
+          time: Date.now(),
           type: event.type,
           target: describe(event.target),
           x: event.clientX,
           y: event.clientY,
           buttons: event.buttons,
           trusted: event.isTrusted,
+          key:
+            event instanceof KeyboardEvent
+              ? event.key.length === 1
+                ? "<text>"
+                : event.key
+              : undefined,
+          inputType: event instanceof InputEvent ? event.inputType : undefined,
+          dataLength: event instanceof InputEvent ? event.data?.length : undefined,
+          valueLength: field.value.length,
+          selectionStart: field.selectionStart,
+          selectionEnd: field.selectionEnd,
         });
+        if (events.length > 100) events.shift();
         if (event.type === "pointerup") released(events.at(-1));
       };
-      for (const name of ["pointerdown", "pointerup", "pointercancel"])
-        document.addEventListener(name, observe, true);
+      for (const name of eventTypes) document.addEventListener(name, observe, true);
       return {
         done,
         read: () => ({
@@ -944,8 +986,7 @@ async function verifyWingPointer(application, surfaces) {
         }),
         dispose: () => {
           clearTimeout(timeout);
-          for (const name of ["pointerdown", "pointerup", "pointercancel"])
-            document.removeEventListener(name, observe, true);
+          for (const name of eventTypes) document.removeEventListener(name, observe, true);
         },
       };
     }, point);
@@ -1004,6 +1045,11 @@ async function verifyWingPointer(application, surfaces) {
       diagnostic.pointerup?.target?.isAnswer,
       true,
       "The textarea receives native pointer release",
+    );
+    NodeAssert.equal(
+      diagnostic.after.value,
+      diagnostic.before.value,
+      "The mouse-only selection gesture preserves the fixture answer",
     );
     NodeAssert.equal(
       diagnostic.after.selectionStart !== diagnostic.after.selectionEnd,
@@ -1137,17 +1183,57 @@ async function verifyWingPointer(application, surfaces) {
     (previous) => window.satelliteSmokeLayout?.pill.y !== previous.pill.y,
     beforeDragLayout,
   );
+  const afterGeometry = await waitForPillGeometry(surfaces);
   const afterDrag = await snapshot(application, surfaces.pill.id);
-  const workArea = await application.evaluate(
-    ({ screen }, bounds) => screen.getDisplayMatching(bounds).workArea,
-    afterDrag.bounds,
+  const areas = await application.evaluate(
+    ({ BrowserWindow, screen }, { bounds, id }) => {
+      const workArea = screen.getDisplayMatching(bounds).workArea;
+      return {
+        workArea,
+        physicalWorkArea: screen.dipToScreenRect(BrowserWindow.fromId(id), workArea),
+      };
+    },
+    { bounds: afterDrag.bounds, id: surfaces.pill.id },
+  );
+  const controls = await surfaces.pill.page.evaluate(() =>
+    Object.fromEntries(
+      [
+        ["pill", "pill"],
+        ["wing", "action-wing"],
+        ["panel", "action-panel"],
+      ].map(([name, selector]) => [
+        name,
+        document.querySelector(`[data-satellite="${selector}"]`)?.getBoundingClientRect().toJSON(),
+      ]),
+    ),
+  );
+  const region = await nativeRegion(application, surfaces.pill.id, {});
+  report.wingEdgeDrag = { native: afterDrag, geometry: afterGeometry, ...areas, controls, region };
+  for (const [name, rect] of Object.entries(controls)) {
+    NodeAssert.ok(rect, `The released ${name} remains visible`);
+    for (const key of ["x", "y", "width", "height"])
+      NodeAssert.ok(
+        Math.abs(rect[key] - afterGeometry.layout[name][key]) <= 0.5,
+        `The released ${name} matches its native layout`,
+      );
+  }
+  const physicalArea = areas.physicalWorkArea;
+  NodeAssert.equal(region.kind, 3, "The released window retains its interactive shape");
+  NodeAssert.ok(
+    afterDrag.physical.x + region.bounds.x >= physicalArea.x &&
+      afterDrag.physical.y + region.bounds.y >= physicalArea.y &&
+      afterDrag.physical.x + region.bounds.x + region.bounds.width <=
+        physicalArea.x + physicalArea.width &&
+      afterDrag.physical.y + region.bounds.y + region.bounds.height <=
+        physicalArea.y + physicalArea.height,
+    "All active native regions fit inside the physical monitor work area",
   );
   NodeAssert.ok(
-    afterDrag.bounds.x >= workArea.x &&
-      afterDrag.bounds.y >= workArea.y &&
-      afterDrag.bounds.x + afterDrag.bounds.width <= workArea.x + workArea.width &&
-      afterDrag.bounds.y + afterDrag.bounds.height <= workArea.y + workArea.height,
-    "Dragging the panel to the opposite edge reflows all native controls inside the monitor",
+    afterDrag.physical.x >= physicalArea.x - 1 &&
+      afterDrag.physical.y >= physicalArea.y - 1 &&
+      afterDrag.physical.x + afterDrag.physical.width <= physicalArea.x + physicalArea.width + 1 &&
+      afterDrag.physical.y + afterDrag.physical.height <= physicalArea.y + physicalArea.height + 1,
+    "The enclosing native frame fits apart from at most one outward physical pixel",
   );
   report.checks.push("Edge dragging reflows the expanded panel inside the monitor work area.");
 }
@@ -1315,7 +1401,7 @@ async function verifyActionWing(application, surfaces) {
       .locator('[data-satellite="action-wing"]')
       .waitFor({ state: "detached" });
     await surfaces.pill.page.waitForFunction(
-      () => window.innerWidth === 320 && window.innerHeight === 70,
+      () => window.innerWidth === 252 && window.innerHeight === 56,
     );
   }
 }
@@ -1898,7 +1984,7 @@ try {
   await collapse(application, surfaces);
   await application.evaluate(({ BrowserWindow, screen }, id) => {
     const a = screen.getPrimaryDisplay().workArea;
-    BrowserWindow.fromId(id).setBounds({ x: a.x + 700, y: a.y + 500, width: 320, height: 70 });
+    BrowserWindow.fromId(id).setBounds({ x: a.x + 700, y: a.y + 500, width: 252, height: 56 });
   }, surfaces.pill.id);
   if (nativePointer && !actionWingOnly) {
     stage("Dragging content and padding with the native pointer");
@@ -1929,7 +2015,7 @@ try {
       NodeAssert.equal((await snapshot(application, surfaces.pill.id)).display, display.id);
     }
     report.checks.push(
-      "Mixed-DPI round trip keeps 320 by 70 logical pixels throughout held movement.",
+      "Mixed-DPI round trip keeps 252 by 56 logical pixels throughout held movement.",
     );
   } else if (nativePointer && !actionWingOnly)
     report.skippedChecks.push("Mixed-DPI test: only one scale is connected.");

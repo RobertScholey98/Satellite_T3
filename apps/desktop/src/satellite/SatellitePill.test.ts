@@ -179,7 +179,7 @@ describe("independent native Satellite surfaces", () => {
     vi.useRealTimers();
   });
   it("boots an expanded resizable workspace and keeps the pill hidden", () => {
-    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 252, height: 56 });
     expect(pill.isVisible()).toBe(false);
     expect(main.isVisible()).toBe(true);
     expect(main.setResizable).toHaveBeenCalledWith(true);
@@ -257,7 +257,7 @@ describe("independent native Satellite surfaces", () => {
     expect(saved()).toMatchObject({ x: -100, y: -20 });
     expect(vi.mocked(pill.setPosition).mock.calls.length).toBe(before + 1);
     expect(vi.mocked(pill.setBounds).mock.calls.length).toBe(boundsBefore);
-    expect(pill.getBounds()).toMatchObject({ x: -100, y: -20, width: 320, height: 70 });
+    expect(pill.getBounds()).toMatchObject({ x: -100, y: -20, width: 252, height: 56 });
   });
   it("accepts only the pill sender for drag and only the main sender for publication", async () => {
     collapse();
@@ -329,24 +329,24 @@ describe("independent native Satellite surfaces", () => {
       mode: "panel",
       wing: "invalid",
     });
-    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 252, height: 56 });
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
       mode: "panel",
       wing: true,
     });
-    expect(pill.getBounds()).toEqual({ x: 70, y: 100, width: 670, height: 582 });
+    expect(pill.getBounds()).toEqual({ x: 0, y: 100, width: 672, height: 568 });
     expect(pill.setShape).toHaveBeenLastCalledWith([
-      { x: 30, y: 0, width: 320, height: 70 },
-      { x: 350, y: 0, width: 90, height: 70 },
-      { x: 0, y: 82, width: 440, height: 500 },
+      { x: 100, y: 0, width: 252, height: 56 },
+      { x: 352, y: 0, width: 64, height: 56 },
+      { x: 0, y: 68, width: 440, height: 500 },
     ]);
     expect(pill.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_LAYOUT, {
       mode: "panel",
-      width: 670,
-      height: 582,
-      pill: { x: 30, y: 0, width: 320, height: 70 },
-      wing: { x: 350, y: 0, width: 90, height: 70 },
-      panel: { x: 0, y: 82, width: 440, height: 500 },
+      width: 672,
+      height: 568,
+      pill: { x: 100, y: 0, width: 252, height: 56 },
+      wing: { x: 352, y: 0, width: 64, height: 56 },
+      panel: { x: 0, y: 68, width: 440, height: 500 },
     });
     expect(pill.isFocused()).toBe(true);
     expect(main.isVisible()).toBe(false);
@@ -361,18 +361,18 @@ describe("independent native Satellite surfaces", () => {
       collapse();
     }
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: false });
-    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 252, height: 56 });
     expect(saved()).toEqual({ x: 100, y: 100, workspaceWidth: 1100, workspaceHeight: 780 });
   });
   it("moves the compact anchor while the panel extends above it", () => {
     collapse();
-    pill.setPosition(1576, 946);
+    pill.setPosition(1644, 960);
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
-    expect(pill.getBounds()).toEqual({ x: 1480, y: 434, width: 440, height: 582 });
+    expect(pill.getBounds()).toEqual({ x: 1480, y: 448, width: 440, height: 568 });
     send(pill, Channels.SATELLITE_PILL_MOVE, "ArrowLeft");
-    expect(saved()).toMatchObject({ x: 1494, y: 946 });
+    expect(saved()).toMatchObject({ x: 1588, y: 960 });
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: false });
-    expect(pill.getBounds()).toEqual({ x: 1494, y: 946, width: 320, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 1588, y: 960, width: 252, height: 56 });
   });
   it("defers layout changes during native capture and persists the control anchor", () => {
     collapse();
@@ -380,10 +380,10 @@ describe("independent native Satellite surfaces", () => {
     message(pill, 0x0231);
     pill.setPosition(270, 300);
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: true });
-    expect(pill.getBounds()).toEqual({ x: 270, y: 300, width: 670, height: 582 });
+    expect(pill.getBounds()).toEqual({ x: 270, y: 300, width: 672, height: 568 });
     message(pill, 0x0232);
-    expect(pill.getBounds()).toEqual({ x: 270, y: 300, width: 670, height: 582 });
-    expect(saved()).toMatchObject({ x: 300, y: 300 });
+    expect(pill.getBounds()).toEqual({ x: 246, y: 300, width: 696, height: 568 });
+    expect(saved()).toMatchObject({ x: 370, y: 300 });
   });
   it.each(["capture"] as const)(
     "acknowledges only applied layout requests while %s coalesces pending changes",
@@ -407,16 +407,16 @@ describe("independent native Satellite surfaces", () => {
         wing: true,
       });
       expect(publishedLayouts()).toEqual([]);
-      expect(pill.getBounds()).toMatchObject({ width: 670, height: 582 });
+      expect(pill.getBounds()).toMatchObject({ width: 672, height: 568 });
       send(pill, Channels.SATELLITE_PILL_READY);
       expect(publishedLayouts()).toEqual([
-        expect.objectContaining({ requestId: "applied", mode: "panel", height: 582 }),
+        expect.objectContaining({ requestId: "applied", mode: "panel", height: 568 }),
       ]);
       message(pill, 0x0232);
-      expect(pill.getBounds()).toMatchObject({ width: 670, height: 582 });
+      expect(pill.getBounds()).toMatchObject({ width: 672, height: 568 });
       expect(publishedLayouts()).toEqual([
-        expect.objectContaining({ requestId: "applied", mode: "panel", height: 582 }),
-        expect.objectContaining({ requestId: "latest", mode: "panel", height: 582 }),
+        expect.objectContaining({ requestId: "applied", mode: "panel", height: 568 }),
+        expect.objectContaining({ requestId: "latest", mode: "panel", height: 568 }),
       ]);
     },
   );
@@ -480,7 +480,7 @@ describe("independent native Satellite surfaces", () => {
       expect(publishedLayouts()).toEqual([compact]);
       if (!returnWhileBlocked) collapse();
       expect(publishedLayouts().at(-1)).toEqual(compact);
-      expect(pill.getBounds()).toMatchObject({ width: 670, height: 582 });
+      expect(pill.getBounds()).toMatchObject({ width: 672, height: 568 });
       expect(pill.isVisible()).toBe(true);
       send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, {
         requestId: "reopened",
@@ -495,7 +495,7 @@ describe("independent native Satellite surfaces", () => {
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "panel", wing: true });
     pill.blur();
     vi.advanceTimersByTime(150);
-    expect(pill.getBounds()).toEqual({ x: 70, y: 100, width: 670, height: 582 });
+    expect(pill.getBounds()).toEqual({ x: 0, y: 100, width: 672, height: 568 });
     expect(pill.webContents.send).toHaveBeenLastCalledWith(
       Channels.SATELLITE_PILL_LAYOUT,
       expect.objectContaining({ mode: "compact", panel: null }),
@@ -508,7 +508,7 @@ describe("independent native Satellite surfaces", () => {
     message(pill, 0x0231);
     pill.blur();
     vi.advanceTimersByTime(150);
-    expect(publishedLayouts().at(-1)).toMatchObject({ mode: "panel", height: 582 });
+    expect(publishedLayouts().at(-1)).toMatchObject({ mode: "panel", height: 568 });
     message(pill, 0x0232);
     vi.advanceTimersByTime(150);
     expect(publishedLayouts().at(-1)).toMatchObject({ mode: "compact", panel: null });
@@ -534,18 +534,18 @@ describe("independent native Satellite surfaces", () => {
     message(pill, 0x0231);
     pill.setPosition(1546, 946);
     message(pill, 0x0232);
-    expect(pill.getBounds()).toEqual({ x: 1480, y: 434, width: 440, height: 582 });
+    expect(pill.getBounds()).toEqual({ x: 1480, y: 434, width: 440, height: 568 });
     expect(pill.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_PILL_LAYOUT, {
       mode: "panel",
       width: 440,
-      height: 582,
-      pill: { x: 30, y: 512, width: 320, height: 70 },
-      wing: { x: 350, y: 512, width: 90, height: 70 },
+      height: 568,
+      pill: { x: 124, y: 512, width: 252, height: 56 },
+      wing: { x: 376, y: 512, width: 64, height: 56 },
       panel: { x: 0, y: 0, width: 440, height: 500 },
     });
-    expect(saved()).toMatchObject({ x: 1510, y: 946, workspaceWidth: 1100, workspaceHeight: 780 });
+    expect(saved()).toMatchObject({ x: 1604, y: 946, workspaceWidth: 1100, workspaceHeight: 780 });
     send(pill, Channels.SATELLITE_PILL_LAYOUT_REQUEST, { mode: "compact", wing: false });
-    expect(pill.getBounds()).toEqual({ x: 1510, y: 946, width: 320, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 1604, y: 946, width: 252, height: 56 });
   });
   it("collapses on outside blur and close while respecting pin", () => {
     expand();
@@ -618,7 +618,7 @@ describe("independent native Satellite surfaces", () => {
     Electron.screen.emit("display-removed");
     expect(pill.getBounds().x).toBe(-80);
     message(pill, 0x0232);
-    expect(pill.getBounds()).toEqual({ x: 0, y: 0, width: 320, height: 70 });
+    expect(pill.getBounds()).toEqual({ x: 0, y: 0, width: 252, height: 56 });
   });
   it("caps native minimums to a small work area without changing preferred workspace size", () => {
     collapse();

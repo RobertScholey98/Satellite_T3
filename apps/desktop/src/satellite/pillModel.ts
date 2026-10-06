@@ -4,7 +4,7 @@ import type {
   SatellitePillState,
 } from "@t3tools/contracts";
 
-export const PILL_SIZE = { width: 320, height: 70 } as const;
+export const PILL_SIZE = { width: 252, height: 56 } as const;
 export interface PillRectangle {
   readonly x: number;
   readonly y: number;
@@ -69,7 +69,7 @@ export function resolvePillLayout(
   const area = nearestWorkArea(clamped, workAreas);
   const right = area.x + area.width;
   const bottom = area.y + area.height;
-  const wingWidth = request.wing ? Math.min(90, Math.floor(area.width / 2)) : 0;
+  const wingWidth = request.wing ? Math.min(64, Math.floor(area.width / 2)) : 0;
   const pillWidth = Math.min(clamped.width, area.width - wingWidth);
   const pill = {
     ...clamped,

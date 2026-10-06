@@ -4,7 +4,7 @@ import type {
   SatellitePillLayout,
   SatellitePillState,
 } from "@t3tools/contracts";
-import { BellOffIcon, ChevronUpIcon, MessageCircleQuestionIcon } from "lucide-react";
+import { BellIcon, BellOffIcon, PanelTopIcon } from "lucide-react";
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { randomUUID } from "../../lib/utils";
 import { pendingRequestKey } from "../../pendingRequestStore";
@@ -25,9 +25,9 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
   const [keyboardFocus, setKeyboardFocus] = useState(false);
   const [layout, setLayout] = useState<SatellitePillLayout>({
     mode: "compact",
-    width: 320,
-    height: 70,
-    pill: { x: 0, y: 0, width: 320, height: 70 },
+    width: 252,
+    height: 56,
+    pill: { x: 0, y: 0, width: 252, height: 56 },
     wing: null,
     panel: null,
   });
@@ -43,6 +43,8 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
   const view = pill.actionWing;
   const mode = layout.mode;
   const visibleCount = view?.items.filter((item) => !item.muted).length ?? 0;
+  const displayedCount =
+    visibleCount || (view?.incompleteEnvironments.length ? "?" : (view?.items.length ?? 0));
   const hasWing = (view?.items.length ?? 0) > 0 || (view?.incompleteEnvironments.length ?? 0) > 0;
   const requestLayout = useCallback(
     (nextMode: SatellitePillLayout["mode"], explicit = false) => {
@@ -180,18 +182,20 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
           }
         }}
       >
-        <span data-satellite="pill-dot" aria-hidden="true" />
         <button
           type="button"
           data-satellite="pill-content"
           aria-label="Expand SatelliteT3"
           onClick={() => bridge.openMain()}
         >
-          <span data-satellite="pill-title">{view ? "Satellite" : pill.title}</span>
-          <span data-satellite="pill-detail">
-            {view
-              ? `${view.workingCount} working · ${view.completedCount} finished${view.incompleteEnvironments.length ? " · offline" : ""}`
-              : pill.detail}
+          <PanelTopIcon data-satellite="pill-icon" aria-hidden="true" />
+          <span data-satellite="pill-copy">
+            <span data-satellite="pill-title">{view ? "Satellite" : pill.title}</span>
+            <span data-satellite="pill-detail">
+              {view
+                ? `${view.workingCount} working · ${view.completedCount} finished${view.incompleteEnvironments.length ? " · offline" : ""}`
+                : pill.detail}
+            </span>
           </span>
         </button>
         {pill.attention && !view ? (
@@ -217,7 +221,7 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
             visibleCount
               ? `${visibleCount} requests need attention${view.incompleteEnvironments.length ? ", count incomplete" : ""}`
               : view.items.length
-                ? "Show muted requests"
+                ? `Show ${view.items.length} muted requests`
                 : "Request status unavailable"
           }
           aria-haspopup="dialog"
@@ -231,11 +235,10 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
           }}
         >
           <span data-satellite="wing-count">
-            {visibleCount ? <MessageCircleQuestionIcon /> : <BellOffIcon />}
+            {visibleCount ? <BellIcon /> : <BellOffIcon />}
             <strong>
-              {visibleCount || (view.incompleteEnvironments.length ? "?" : view.items.length)}
+              {typeof displayedCount === "number" && displayedCount > 99 ? "99+" : displayedCount}
             </strong>
-            {mode === "panel" ? <ChevronUpIcon /> : null}
           </span>
           {mode === "preview" && peek ? (
             <span data-satellite="action-preview">
