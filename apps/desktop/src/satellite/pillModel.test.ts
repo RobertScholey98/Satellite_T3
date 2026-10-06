@@ -11,6 +11,18 @@ import {
 
 describe("Satellite pill placement", () => {
   const primary = { x: 0, y: 0, width: 1920, height: 1040 };
+  it("matches the reference control sizes and clamps the complete row at the right edge", () => {
+    const compact = clampPillBounds({ x: 1890, y: 100 }, [primary]);
+    expect(compact).toEqual({ x: 1668, y: 100, width: 252, height: 56 });
+    const attached = resolvePillLayout(compact, { mode: "compact", wing: true }, [primary]);
+    expect(attached.bounds).toEqual({ x: 1480, y: 100, width: 440, height: 568 });
+    expect(attached.layout.pill).toEqual({ x: 124, y: 0, width: 252, height: 56 });
+    expect(attached.layout.wing).toEqual({ x: 376, y: 0, width: 64, height: 56 });
+    expect(attached.shape).toEqual([
+      { x: 124, y: 0, width: 252, height: 56 },
+      { x: 376, y: 0, width: 64, height: 56 },
+    ]);
+  });
   it("starts above the taskbar in the primary work area", () => {
     expect(clampPillBounds(null, [primary])).toEqual({ x: 1576, y: 946, width: 320, height: 70 });
   });
