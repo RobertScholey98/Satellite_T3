@@ -84,5 +84,10 @@ export function createRevdocEnvironmentAtoms<R, E>(
       label: "revdoc:save",
       tag: WS_METHODS.revdocSave,
     }),
+    worktrees: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "revdoc:worktrees",
+      tag: WS_METHODS.revdocWorktrees,
+      staleTimeMs: 0,
+    }),
   };
 }

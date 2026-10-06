@@ -51,6 +51,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.openWorkReadLinkedDocument]: AuthOrchestrationReadScope,
   [WS_METHODS.revdocGet]: AuthOrchestrationReadScope,
   [WS_METHODS.revdocChanges]: AuthOrchestrationReadScope,
+  [WS_METHODS.revdocWorktrees]: AuthOrchestrationReadScope,
   [WS_METHODS.revdocStart]: AuthOrchestrationOperateScope,
   [WS_METHODS.revdocTestStart]: AuthOrchestrationOperateScope,
   [WS_METHODS.revdocCancel]: AuthOrchestrationOperateScope,

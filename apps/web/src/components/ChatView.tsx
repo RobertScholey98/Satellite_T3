@@ -207,6 +207,7 @@ import {
   type RightPanelSurface,
   useRightPanelStore,
 } from "../rightPanelStore";
+import { useRevdocWorktree } from "../revdocWorktreeStore";
 import {
   isPreviewSupportedInRuntime,
   setActivePreviewTab,
@@ -2034,6 +2035,7 @@ export default function ChatView(props: ChatViewProps) {
     [activeThreadEnvironmentId, activeThreadId],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const revdocWorktreePath = useRevdocWorktree(activeThreadRef);
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
@@ -9958,9 +9960,9 @@ export default function ChatView(props: ChatViewProps) {
     ) : renderedRightPanelSurface?.kind === "revdoc" && activeThreadRef && gitCwd ? (
       <Suspense fallback={null}>
         <RevdocPanel
-          key={`${activeThreadRef.environmentId}:${activeThreadRef.threadId}:${gitCwd}`}
+          key={`${activeThreadRef.environmentId}:${activeThreadRef.threadId}:${revdocWorktreePath ?? gitCwd}`}
           threadRef={activeThreadRef}
-          worktreePath={gitCwd}
+          worktreePath={revdocWorktreePath ?? gitCwd}
         />
       </Suspense>
     ) : renderedRightPanelSurface?.kind === "agents" ? (

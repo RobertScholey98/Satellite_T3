@@ -116,15 +116,22 @@ const setup = (
     yield* fs.writeFileString(path.join(worktree, "app.txt"), "After\n");
     const projectId = ProjectId.make("revdoc-project");
     const timestamp = "2026-10-04T12:00:00.000Z";
-    const shell = (id: ThreadId) =>
-      decodeThreadShell({
+    const dispatched: OrchestrationCommand[] = [];
+    // Threads created by the service (Revdoc testing threads) keep the
+    // checkout they were created with, like the real projection.
+    const shell = (id: ThreadId) => {
+      const created = dispatched.find(
+        (command) => command.type === "thread.create" && command.threadId === id,
+      );
+      return decodeThreadShell({
         id,
         projectId,
         title: "Review work",
         modelSelection: defaultModel,
         runtimeMode: "full-access",
-        branch: "feature",
-        worktreePath: id === otherId ? project : worktree,
+        ...(created?.type === "thread.create"
+          ? { branch: created.branch, worktreePath: created.worktreePath }
+          : { branch: "feature", worktreePath: id === otherId ? project : worktree }),
         latestTurn: null,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -134,6 +141,7 @@ const setup = (
         hasPendingUserInput: false,
         hasActionableProposedPlan: false,
       });
+    };
     const projectShell = yield* decodeProjectShell({
       id: projectId,
       title: "Project",
@@ -156,7 +164,6 @@ const setup = (
     } as ProviderInstance;
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     const starts = yield* Queue.unbounded<ThreadId>();
-    const dispatched: OrchestrationCommand[] = [];
     const captured: string[] = [];
     const png =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=";
@@ -296,6 +303,7 @@ const setup = (
       finished,
       settle,
       tester,
+      starts: Queue.take(starts),
       dispatched,
       captured,
       png,
@@ -440,13 +448,72 @@ describe("worktree Revdoc service", () => {
       expect(env.calls[0]?.prompt).toContain("New behavior");
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );
-  it.effect("rejects requests from a panel still showing the thread's previous worktree", () =>
+  it.effect("lists every checked-out worktree of the thread's repository", () =>
     Effect.gen(function* () {
       const env = yield* setup();
-      const result = yield* env.service
-        .start({ threadId, worktreePath: env.project })
-        .pipe(Effect.result);
-      expect(result._tag).toBe("Failure");
+      const detached = env.path.join(env.path.dirname(env.project), "detached");
+      yield* env.command(env.project, ["worktree", "add", "--detach", detached]);
+      const listing = yield* env.service.worktrees({ threadId });
+      expect(listing.defaultPath).toBe(yield* env.fs.realPath(env.worktree));
+      expect(listing.worktrees).toHaveLength(3);
+      expect(listing.worktrees).toEqual(
+        expect.arrayContaining([
+          { path: yield* env.fs.realPath(env.project), branch: "main" },
+          { path: yield* env.fs.realPath(env.worktree), branch: "feature" },
+          { path: yield* env.fs.realPath(detached), branch: null },
+        ]),
+      );
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("reviews and tests a selected worktree other than the thread's own", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      const selected = yield* env.fs.realPath(env.project);
+      yield* env.fs.writeFileString(env.path.join(env.project, "main.txt"), "Main checkout work");
+      const input = { threadId, worktreePath: env.project };
+      yield* env.service.start(input);
+      expect(
+        (yield* env.service.changes(input).pipe(
+          Stream.filter((state) => !state.running && state.version > 0),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        )).result,
+      ).toBe("completed");
+      expect(env.calls[0]?.cwd).toBe(selected);
+      expect(env.calls[0]?.prompt).toContain("Main checkout work");
+      expect((yield* env.service.get(input)).cwd).toBe(selected);
+      expect((yield* env.service.get({ threadId })).review).toBeNull();
+      yield* env.service.startTesting({ ...input, selection: "all" });
+      const testingThreadId = yield* env.starts;
+      expect(env.dispatched.find((command) => command.type === "thread.create")).toMatchObject({
+        branch: "main",
+        worktreePath: selected,
+      });
+      const detail = yield* env.service.get(input);
+      const invocation = {
+        environmentId: EnvironmentId.make("test"),
+        threadId: testingThreadId,
+        providerSessionId: "session",
+        providerInstanceId: defaultModel.instanceId,
+        capabilities: new Set(["documents", "preview"] as const),
+        issuedAt: 0,
+      } satisfies McpInvocationScope;
+      yield* env.service.beginTest(invocation, {
+        runId: detail.review!.testing!.id,
+        testId: "check",
+      });
+      yield* env.service.cancel(input);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("rejects a selected folder that is not a worktree of the thread's repository", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      const outside = yield* env.fs.makeTempDirectoryScoped({ prefix: "t3-revdoc-outside-" });
+      yield* env.command(outside, ["init", "-b", "main"]);
+      for (const worktreePath of [outside, env.path.join(outside, "missing")]) {
+        const error = yield* env.service.start({ threadId, worktreePath }).pipe(Effect.flip);
+        expect(error.message).toContain("selected worktree is unavailable");
+      }
       expect(env.calls).toHaveLength(0);
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );

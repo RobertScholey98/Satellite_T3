@@ -3554,6 +3554,8 @@ const makeWsRpcLayer = (
         [WS_METHODS.revdocSave]: (input) =>
           observeRpcEffect(WS_METHODS.revdocSave, revdoc.save(input)),
         [WS_METHODS.revdocChanges]: (input) => revdoc.changes(input),
+        [WS_METHODS.revdocWorktrees]: (input) =>
+          observeRpcEffect(WS_METHODS.revdocWorktrees, revdoc.worktrees(input)),
         [WS_METHODS.documentsList]: (input) =>
           observeRpcEffect(WS_METHODS.documentsList, documents.list(input)),
         [WS_METHODS.issuesList]: (input) =>

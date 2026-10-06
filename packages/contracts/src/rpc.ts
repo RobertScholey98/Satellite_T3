@@ -23,6 +23,8 @@ import {
   RevdocSaveInput,
   RevdocRunState,
   RevdocError,
+  RevdocWorktreesInput,
+  RevdocWorktrees,
 } from "./revdoc.ts";
 import {
   IssuesListInput,
@@ -371,6 +373,7 @@ export const WS_METHODS = {
   revdocCancel: "revdoc.cancel",
   revdocSave: "revdoc.save",
   revdocChanges: "revdoc.changes",
+  revdocWorktrees: "revdoc.worktrees",
   documentsList: "documents.list",
   issuesList: "issues.list",
   issuesGet: "issues.get",
@@ -1145,6 +1148,11 @@ const WsRevdocChangesRpc = Rpc.make(WS_METHODS.revdocChanges, {
   error: revdocRpcError,
   stream: true,
 });
+const WsRevdocWorktreesRpc = Rpc.make(WS_METHODS.revdocWorktrees, {
+  payload: RevdocWorktreesInput,
+  success: RevdocWorktrees,
+  error: revdocRpcError,
+});
 
 const documentRpcError = Schema.Union([DocumentOperationError, EnvironmentAuthorizationError]);
 const WsDocumentsListRpc = Rpc.make(WS_METHODS.documentsList, {
@@ -1785,6 +1793,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRevdocCancelRpc,
   WsRevdocSaveRpc,
   WsRevdocChangesRpc,
+  WsRevdocWorktreesRpc,
   WsDocumentsListRpc,
   WsDocumentsGetRpc,
   WsDocumentsPublishRpc,

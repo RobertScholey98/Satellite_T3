@@ -17,6 +17,8 @@ import {
   type RevdocInput,
   type RevdocRunState,
   type RevdocSaveInput,
+  type RevdocWorktrees,
+  type RevdocWorktreesInput,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
@@ -82,6 +84,9 @@ export class RevdocService extends Context.Service<
     readonly cancel: (input: RevdocInput) => Effect.Effect<void, RevdocError>;
     readonly save: (input: RevdocSaveInput) => Effect.Effect<RevdocDetail, RevdocError>;
     readonly changes: (input: RevdocInput) => Stream.Stream<RevdocRunState, RevdocError>;
+    readonly worktrees: (
+      input: RevdocWorktreesInput,
+    ) => Effect.Effect<RevdocWorktrees, RevdocError>;
   }
 >()("t3/revdoc/RevdocService") {}
 
@@ -107,27 +112,84 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const resolve = Effect.fn("RevdocService.resolve")(function* (input: RevdocInput) {
+  const threadRoot = Effect.fn("RevdocService.threadRoot")(function* (threadId: ThreadId) {
     const thread = yield* snapshots
-      .getThreadShellById(input.threadId)
+      .getThreadShellById(threadId)
       .pipe(Effect.mapError(() => fail("Could not read the thread.")));
     if (Option.isNone(thread)) return yield* fail("The thread no longer exists.");
     const project = yield* snapshots
       .getProjectShellById(thread.value.projectId)
       .pipe(Effect.mapError(() => fail("Could not read the project.")));
     if (Option.isNone(project)) return yield* fail("The project no longer exists.");
-    const cwd = yield* fs
+    const root = yield* fs
       .realPath(thread.value.worktreePath ?? project.value.workspaceRoot)
       .pipe(Effect.mapError(() => fail("The thread's worktree is unavailable.")));
-    if (input.worktreePath !== undefined) {
-      const expected = yield* fs
-        .realPath(input.worktreePath)
-        .pipe(Effect.mapError(() => fail("The thread's worktree changed. Reopen its review.")));
-      if (path.relative(cwd, expected) !== "") {
-        return yield* fail("The thread's worktree changed. Reopen its review.");
+    return { root, thread: thread.value };
+  });
+
+  // Every checked-out worktree of the repository containing `cwd`. Bare and
+  // missing entries are skipped, so a bare-repo container yields only its
+  // worktrees. Paths are real paths, comparable with `path.relative`.
+  const listWorktrees = Effect.fn("RevdocService.listWorktrees")(function* (cwd: string) {
+    const result = yield* git
+      .execute({
+        cwd,
+        args: ["worktree", "list", "--porcelain", "-z"],
+        operation: "Revdoc.worktrees",
+        allowNonZeroExit: true,
+        timeoutMs: 15_000,
+      })
+      .pipe(Effect.orElseSucceed(() => null));
+    if (!result || result.exitCode !== 0) return [];
+    const entries: Array<{ path: string; branch: string | null }> = [];
+    let entry: { path: string; branch: string | null; skip: boolean } | null = null;
+    for (const field of [...result.stdout.split("\0"), ""]) {
+      if (field === "") {
+        if (entry && !entry.skip) {
+          const resolved = yield* fs.realPath(entry.path).pipe(Effect.option);
+          if (Option.isSome(resolved)) entries.push({ path: resolved.value, branch: entry.branch });
+        }
+        entry = null;
+      } else if (field.startsWith("worktree ")) {
+        entry = { path: field.slice("worktree ".length), branch: null, skip: false };
+      } else if (entry && field.startsWith("branch ")) {
+        entry.branch = field.slice("branch ".length).replace(/^refs\/heads\//, "");
+      } else if (entry && (field === "bare" || field.startsWith("prunable"))) {
+        entry.skip = true;
       }
     }
-    return { cwd, thread: thread.value };
+    return entries;
+  });
+
+  // Revdoc targets the thread's worktree unless the caller picks another
+  // worktree of the same repository.
+  const resolve = Effect.fn("RevdocService.resolve")(function* (input: RevdocInput) {
+    const { root, thread } = yield* threadRoot(input.threadId);
+    const own = {
+      cwd: root,
+      thread,
+      checkout: { branch: thread.branch, worktreePath: thread.worktreePath },
+    };
+    if (input.worktreePath === undefined) return own;
+    const unavailable = "The selected worktree is unavailable. Pick another worktree for Revdoc.";
+    const requested = yield* fs
+      .realPath(input.worktreePath)
+      .pipe(Effect.mapError(() => fail(unavailable)));
+    if (path.relative(root, requested) === "") return own;
+    const match = (yield* listWorktrees(root)).find(
+      (worktree) => path.relative(worktree.path, requested) === "",
+    );
+    if (!match) return yield* fail(unavailable);
+    return {
+      cwd: match.path,
+      thread,
+      checkout: { branch: match.branch, worktreePath: match.path },
+    };
+  });
+
+  const worktrees = Effect.fn("RevdocService.worktrees")(function* (input: RevdocWorktreesInput) {
+    const { root } = yield* threadRoot(input.threadId);
+    return { defaultPath: root, worktrees: yield* listWorktrees(root) };
   });
 
   const checkedPath = Effect.fn("RevdocService.checkedPath")(
@@ -520,7 +582,7 @@ const make = Effect.gen(function* () {
   const testWorktree = Effect.fn("RevdocService.testWorktree")(function* (
     input: RevdocTestStartInput,
   ) {
-    const { cwd, thread } = yield* resolve(input);
+    const { cwd, thread, checkout } = yield* resolve(input);
     const config = yield* settings.getSettings;
     const modelSelection =
       config.revdocTestingModelSelection ?? config.revdocModelSelection ?? thread.modelSelection;
@@ -587,8 +649,9 @@ const make = Effect.gen(function* () {
               modelSelection,
               runtimeMode: thread.runtimeMode,
               interactionMode: "default",
-              branch: thread.branch,
-              worktreePath: thread.worktreePath,
+              // The testing thread works in the reviewed worktree, which is
+              // also how its MCP calls find this review again.
+              ...checkout,
               createdAt: startedAt,
             });
             created = true;
@@ -1025,6 +1088,7 @@ const make = Effect.gen(function* () {
     recordTest,
     cancel,
     save,
+    worktrees,
     changes: (input) =>
       Stream.unwrap(
         resolve(input).pipe(
