@@ -28,19 +28,19 @@ function pointer(target: Element, type: string, x: number, y: number, pointerId 
 
 const compactLayout: SatellitePillLayout = {
   mode: "compact",
-  width: 410,
-  height: 70,
-  pill: { x: 0, y: 0, width: 320, height: 70 },
-  wing: { x: 320, y: 0, width: 90, height: 70 },
+  width: 440,
+  height: 568,
+  pill: { x: 124, y: 512, width: 252, height: 56 },
+  wing: { x: 376, y: 512, width: 64, height: 56 },
   panel: null,
 };
 const panelLayout: SatellitePillLayout = {
   mode: "panel",
   width: 440,
-  height: 242,
-  pill: { x: 30, y: 172, width: 320, height: 70 },
-  wing: { x: 350, y: 172, width: 90, height: 70 },
-  panel: { x: 0, y: 0, width: 440, height: 160 },
+  height: 568,
+  pill: { x: 124, y: 512, width: 252, height: 56 },
+  wing: { x: 376, y: 512, width: 64, height: 56 },
+  panel: { x: 0, y: 0, width: 440, height: 500 },
 };
 function attentionState(requestIds: string[]): SatellitePillState {
   return {
@@ -146,6 +146,34 @@ describe("standalone Satellite pill gestures", () => {
     if (!request.requestId) throw new Error("Renderer layout request did not include an ID");
     return { ...request, requestId: request.requestId };
   };
+  it.each([false, true])(
+    "keeps large %s-muted counts readable and exposes the exact total",
+    (muted) => {
+      const state = attentionState(Array.from({ length: 105 }, (_, index) => `request-${index}`));
+      act(() =>
+        listener({
+          ...state,
+          actionWing: {
+            ...state.actionWing!,
+            items: state.actionWing!.items.map((item) => ({ ...item, muted })),
+          },
+        }),
+      );
+      act(() => layoutListener({ ...compactLayout, requestId: latestRequest().requestId }));
+      const wing = host.querySelector<HTMLButtonElement>('[data-satellite="action-wing"]')!;
+      expect(wing.querySelector("strong")?.textContent).toBe("99+");
+      expect(wing.getAttribute("aria-label")).toBe(
+        muted ? "Show 105 muted requests" : "105 requests need attention",
+      );
+      act(() => wing.click());
+      expect(latestRequest().mode).toBe("panel");
+      act(() => layoutListener({ ...panelLayout, requestId: latestRequest().requestId }));
+      expect(wing.getAttribute("aria-expanded")).toBe("true");
+      expect(host.querySelector('[role="dialog"]')?.textContent).toContain(
+        muted ? "Muted requests" : "Needs your attention",
+      );
+    },
+  );
   it.each(["pill-content", "pill"])(
     "hands off one drag started on %s and suppresses all trailing mouse clicks until a new press",
     (control) => {
@@ -216,22 +244,8 @@ describe("standalone Satellite pill gestures", () => {
         disconnect() {}
       },
     );
-    const compact: SatellitePillLayout = {
-      mode: "compact",
-      width: 410,
-      height: 70,
-      pill: { x: 0, y: 0, width: 320, height: 70 },
-      wing: { x: 320, y: 0, width: 90, height: 70 },
-      panel: null,
-    };
-    const panel: SatellitePillLayout = {
-      mode: "panel",
-      width: 440,
-      height: 242,
-      pill: { x: 30, y: 172, width: 320, height: 70 },
-      wing: { x: 350, y: 172, width: 90, height: 70 },
-      panel: { x: 0, y: 0, width: 440, height: 160 },
-    };
+    const compact = compactLayout;
+    const panel = panelLayout;
     act(() =>
       listener({
         threadId: null,
@@ -275,7 +289,7 @@ describe("standalone Satellite pill gestures", () => {
         ...panel,
         requestId: opening.requestId,
         pill: { ...panel.pill, x: 0 },
-        wing: { ...compact.wing!, x: 320, y: 172 },
+        wing: { ...compact.wing!, x: 252, y: 512 },
       }),
     );
     expect(host.querySelector<HTMLElement>('[data-satellite="pill"]')?.style.left).toBe("0px");
@@ -435,8 +449,8 @@ describe("standalone Satellite pill gestures", () => {
           layout={{
             mode: "panel",
             width: 440,
-            height: 570,
-            pill: { x: 0, y: 500, width: 320, height: 70 },
+            height: 556,
+            pill: { x: 0, y: 500, width: 252, height: 56 },
             wing: null,
             panel: { x: 0, y: 0, width: 440, height: 480 },
           }}
