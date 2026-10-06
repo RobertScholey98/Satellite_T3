@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   clampPillBounds,
+  clampWorkspaceBounds,
   handleMainClose,
   resolvePillBounds,
   resolveWorkspaceBounds,
@@ -44,6 +45,27 @@ describe("Satellite pill placement", () => {
 describe("Satellite workspace placement", () => {
   const primary = { x: 0, y: 0, width: 1920, height: 1040 };
   const workspaceSize = { width: 1120, height: 820 };
+
+  it("preserves a narrow half-screen placement on its own display", () => {
+    expect(
+      clampWorkspaceBounds({ x: -640, y: 0, width: 640, height: 900 }, [
+        primary,
+        { x: -1280, y: 0, width: 1280, height: 900 },
+      ]),
+    ).toEqual({ x: -640, y: 0, width: 640, height: 900 });
+  });
+  it("recovers independent bounds after scaling and caps minimums on tiny displays", () => {
+    expect(
+      clampWorkspaceBounds({ x: 960, y: 0, width: 960, height: 1040 }, [
+        { x: 0, y: 0, width: 1280, height: 680 },
+      ]),
+    ).toEqual({ x: 320, y: 0, width: 960, height: 680 });
+    expect(
+      clampWorkspaceBounds({ x: -200, y: -50, width: 200, height: 100 }, [
+        { x: 0, y: 0, width: 400, height: 300 },
+      ]),
+    ).toEqual({ x: 0, y: 0, width: 400, height: 300 });
+  });
 
   it.each([
     { pill: { x: 0, y: 0 }, workspace: { x: 0, y: 0 } },

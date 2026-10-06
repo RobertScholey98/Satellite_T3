@@ -1,6 +1,7 @@
 import type { SatelliteBridge, SatelliteShellState } from "@t3tools/contracts";
-import { Minimize2Icon, PinIcon, PinOffIcon } from "lucide-react";
+import { LinkIcon, UnlinkIcon, Minimize2Icon, PinIcon, PinOffIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import "./SatelliteDesktopShell.css";
 
 /** Native hiding retains the workspace, its conversation, and its browser sessions. */
@@ -12,6 +13,10 @@ export function SatelliteDesktopShell({
   children: ReactNode;
 }) {
   const [shell, setShell] = useState<SatelliteShellState>({ mode: "pill", pinned: false });
+  const positionsLinked = shell.positionsLinked ?? true;
+  const linkLabel = positionsLinked
+    ? "Unlink pill and window positions"
+    : "Link pill and window positions";
   const previousFocus = useRef<HTMLElement | null>(null);
   const previousMode = useRef<SatelliteShellState["mode"]>("pill");
   useEffect(
@@ -63,6 +68,17 @@ export function SatelliteDesktopShell({
       <div data-satellite="workspace" inert={shell.mode !== "workspace"}>
         {children}
         <div data-satellite="window-controls">
+          <Tooltip>
+            <TooltipTrigger
+              render={<button type="button" />}
+              aria-label={linkLabel}
+              aria-pressed={positionsLinked}
+              onClick={() => bridge.setPositionsLinked(!positionsLinked)}
+            >
+              {positionsLinked ? <LinkIcon /> : <UnlinkIcon />}
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">{linkLabel}</TooltipPopup>
+          </Tooltip>
           <button
             type="button"
             aria-label={shell.pinned ? "Unpin workspace" : "Keep workspace open"}

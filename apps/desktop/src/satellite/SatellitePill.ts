@@ -9,20 +9,33 @@ import { SatellitePillState, type SatelliteShellState } from "@t3tools/contracts
 import * as Channels from "./channels.ts";
 import {
   clampPillBounds,
+  clampWorkspaceBounds,
   handleMainClose,
   PILL_SIZE,
   resolvePillBounds,
   resolveWorkspaceBounds,
   unavailablePillState,
+  WORKSPACE_MIN_SIZE,
 } from "./pillModel.ts";
 import { loadWindowsPillDrag } from "./WindowsPillDrag.ts";
 import { installWindowsDoubleControl } from "./WindowsDoubleControl.ts";
 
+const WorkspacePlacement = Schema.Struct({
+  bounds: Schema.Struct({
+    x: Schema.Finite,
+    y: Schema.Finite,
+    width: Schema.Finite,
+    height: Schema.Finite,
+  }),
+  maximized: Schema.Boolean,
+});
 const Position = Schema.Struct({
   x: Schema.Finite,
   y: Schema.Finite,
   workspaceWidth: Schema.optionalKey(Schema.Finite),
   workspaceHeight: Schema.optionalKey(Schema.Finite),
+  positionsLinked: Schema.optionalKey(Schema.Boolean),
+  workspace: Schema.optionalKey(WorkspacePlacement),
 });
 const isPosition = Schema.is(Position);
 const isPillState = Schema.is(SatellitePillState);
@@ -68,11 +81,28 @@ export function installSatellitePill(
   };
   let pillBounds = clampPillBounds(position, workAreas());
   const initial = main.getBounds();
-  let workspaceSize = {
-    width: Math.max(840, position?.workspaceWidth ?? initial.width),
-    height: Math.max(620, position?.workspaceHeight ?? initial.height),
+  let workspace: typeof WorkspacePlacement.Type = {
+    bounds: clampWorkspaceBounds(
+      position?.workspace?.bounds ??
+        resolveWorkspaceBounds(
+          pillBounds,
+          {
+            width: position?.workspaceWidth ?? initial.width,
+            height: position?.workspaceHeight ?? initial.height,
+          },
+          workAreas(),
+        ),
+      workAreas(),
+    ),
+    maximized: position?.workspace?.maximized ?? false,
   };
-  let shell: SatelliteShellState = { mode: "workspace", pinned: false };
+  let workspaceAnchor = pillBounds;
+  let maximizeOnShow = workspace.maximized;
+  let shell: SatelliteShellState = {
+    mode: "workspace",
+    pinned: false,
+    positionsLinked: position?.positionsLinked ?? true,
+  };
   let snapshot = unavailablePillState();
   let quitting = false;
   let menuOpen = false;
@@ -80,9 +110,11 @@ export function installSatellitePill(
   let pillReady = false;
   let nativePillMove = false;
   let topologyRecoveryPending = false;
-  let workspaceGesture: "idle" | "moving" | "resizing" = "idle";
+  let workspaceGesture = false;
+  let applyingWorkspaceBounds = false;
   let staleTimer: ReturnType<typeof setTimeout> | undefined;
   let blurTimer: ReturnType<typeof setTimeout> | undefined;
+  let positionTimer: ReturnType<typeof setTimeout> | undefined;
   let nativeDrag: ((handle: Buffer) => boolean) | undefined;
   let disposeDoubleControl: (() => void) | undefined;
   const pill = new Electron.BrowserWindow({
@@ -128,10 +160,22 @@ export function installSatellitePill(
   main.setVisibleOnAllWorkspaces(true);
   main.setResizable(true);
   const setWorkspaceBounds = (bounds: Electron.Rectangle) => {
-    main.setMinimumSize(Math.min(840, bounds.width), Math.min(620, bounds.height));
+    main.setMinimumSize(
+      Math.min(WORKSPACE_MIN_SIZE.width, bounds.width),
+      Math.min(WORKSPACE_MIN_SIZE.height, bounds.height),
+    );
     main.setBounds(bounds);
   };
-  setWorkspaceBounds(resolveWorkspaceBounds(pillBounds, workspaceSize, workAreas()));
+  setWorkspaceBounds(workspace.bounds);
+  const showWorkspace = () => {
+    if (maximizeOnShow) {
+      maximizeOnShow = false;
+      main.maximize();
+    }
+    main.show();
+    main.focus();
+    pill.hide();
+  };
 
   const sendShell = () => {
     if (!main.isDestroyed()) main.webContents.send(Channels.SATELLITE_SHELL_STATE, shell);
@@ -139,7 +183,15 @@ export function installSatellitePill(
   const sendState = () => {
     if (!pill.isDestroyed()) pill.webContents.send(Channels.SATELLITE_PILL_STATE, snapshot);
   };
+  const rememberWorkspace = () => {
+    if (main.isDestroyed() || main.isMinimized() || applyingWorkspaceBounds || maximizeOnShow)
+      return;
+    const maximized = main.isMaximized();
+    workspace = { bounds: maximized ? main.getNormalBounds() : main.getBounds(), maximized };
+  };
   const savePosition = () => {
+    clearTimeout(positionTimer);
+    rememberWorkspace();
     try {
       NodeFS.mkdirSync(NodePath.dirname(positionPath), { recursive: true });
       NodeFS.writeFileSync(
@@ -147,8 +199,8 @@ export function installSatellitePill(
         JSON.stringify({
           x: pillBounds.x,
           y: pillBounds.y,
-          workspaceWidth: workspaceSize.width,
-          workspaceHeight: workspaceSize.height,
+          positionsLinked: shell.positionsLinked,
+          workspace,
         }),
         "utf8",
       );
@@ -172,21 +224,34 @@ export function installSatellitePill(
     if (shell.mode === "workspace") return mainReady;
     clearTimeout(blurTimer);
     rememberPill();
-    setWorkspaceBounds(resolveWorkspaceBounds(pillBounds, workspaceSize, workAreas()));
+    if (
+      shell.positionsLinked &&
+      (pillBounds.x !== workspaceAnchor.x || pillBounds.y !== workspaceAnchor.y)
+    ) {
+      applyingWorkspaceBounds = true;
+      maximizeOnShow = false;
+      if (main.isMaximized()) main.unmaximize();
+      setWorkspaceBounds(resolveWorkspaceBounds(pillBounds, workspace.bounds, workAreas()));
+      applyingWorkspaceBounds = false;
+      workspaceAnchor = pillBounds;
+      savePosition();
+    }
     shell = { ...shell, mode: "workspace" };
     sendShell();
     if (mainReady) {
-      main.show();
-      main.focus();
-      pill.hide();
+      showWorkspace();
     }
     return mainReady;
   };
   const collapse = () => {
     if (quitting || main.isDestroyed() || shell.mode === "pill") return;
     clearTimeout(blurTimer);
-    pillBounds = resolvePillBounds(main.getBounds(), workAreas(), pillBounds);
-    pill.setBounds(pillBounds);
+    rememberWorkspace();
+    if (shell.positionsLinked) {
+      pillBounds = resolvePillBounds(main.getBounds(), workAreas(), pillBounds);
+      pill.setBounds(pillBounds);
+      workspaceAnchor = pillBounds;
+    }
     shell = { ...shell, mode: "pill" };
     sendShell();
     if (pillReady) {
@@ -198,9 +263,7 @@ export function installSatellitePill(
   shells.set(main, { expand });
   main.once("ready-to-show", () => {
     if (quitting || main.isDestroyed() || shell.mode !== "workspace") return;
-    main.show();
-    main.focus();
-    pill.hide();
+    showWorkspace();
   });
   const openMain = () => {
     if (!main.isDestroyed()) options.revealMain();
@@ -211,10 +274,23 @@ export function installSatellitePill(
     sendShell();
     tray.setContextMenu(menu());
   };
+  const setPositionsLinked = (positionsLinked: boolean) => {
+    shell = { ...shell, positionsLinked };
+    rememberPill();
+    if (positionsLinked) workspaceAnchor = pillBounds;
+    sendShell();
+    tray.setContextMenu(menu());
+  };
   const menu = () =>
     Electron.Menu.buildFromTemplate([
       { label: "Open workspace", click: openMain },
       { label: "Collapse to pill", click: collapse },
+      {
+        label: "Link pill and window positions",
+        type: "checkbox",
+        checked: shell.positionsLinked ?? true,
+        click: (item) => setPositionsLinked(item.checked),
+      },
       {
         label: "Keep workspace open",
         type: "checkbox",
@@ -264,9 +340,7 @@ export function installSatellitePill(
       mainReady = true;
       sendShell();
       if (shell.mode === "workspace") {
-        main.show();
-        main.focus();
-        pill.hide();
+        showWorkspace();
         options.revealMain();
       }
     },
@@ -327,6 +401,9 @@ export function installSatellitePill(
     [Channels.SATELLITE_SET_PINNED]: (event: Electron.IpcMainEvent, pinned: unknown) => {
       if (mainSender(event) && typeof pinned === "boolean") setPinned(pinned);
     },
+    [Channels.SATELLITE_SET_POSITIONS_LINKED]: (event: Electron.IpcMainEvent, linked: unknown) => {
+      if (mainSender(event) && typeof linked === "boolean") setPositionsLinked(linked);
+    },
   };
   for (const [channel, listener] of Object.entries(listeners))
     Electron.ipcMain.on(channel, listener);
@@ -339,20 +416,25 @@ export function installSatellitePill(
     if (topologyRecoveryPending) displayChanged();
   });
   main.hookWindowMessage(0x0231, () => {
-    workspaceGesture = "moving";
-  });
-  main.on("will-resize", () => {
-    if (workspaceGesture !== "idle") workspaceGesture = "resizing";
+    workspaceGesture = true;
+    clearTimeout(blurTimer);
+    clearTimeout(positionTimer);
   });
   main.hookWindowMessage(0x0232, () => {
-    if (workspaceGesture === "resizing" && !topologyRecoveryPending) {
-      const bounds = main.getBounds();
-      workspaceSize = { width: bounds.width, height: bounds.height };
-      savePosition();
-    }
-    workspaceGesture = "idle";
+    workspaceGesture = false;
+    savePosition();
     if (topologyRecoveryPending) displayChanged();
   });
+  const workspaceChanged = () => {
+    if (applyingWorkspaceBounds || main.isMinimized()) return;
+    rememberWorkspace();
+    clearTimeout(positionTimer);
+    if (!workspaceGesture) positionTimer = setTimeout(savePosition, 250);
+  };
+  main.on("move", workspaceChanged);
+  main.on("resize", workspaceChanged);
+  main.on("maximize", workspaceChanged);
+  main.on("unmaximize", workspaceChanged);
   pill.on("moved", () => {
     if (!nativePillMove) rememberPill();
   });
@@ -362,7 +444,11 @@ export function installSatellitePill(
   main.on("close", (event) => handleMainClose(event, quitting, collapse));
   main.on("minimize", () => {
     if (!quitting) {
+      const maximized = workspace.maximized;
+      applyingWorkspaceBounds = true;
       main.restore();
+      if (maximized) main.maximize();
+      applyingWorkspaceBounds = false;
       collapse();
     }
   });
@@ -373,6 +459,7 @@ export function installSatellitePill(
         main.isDestroyed() ||
         shell.mode !== "workspace" ||
         shell.pinned ||
+        workspaceGesture ||
         menuOpen ||
         main.isFocused() ||
         !main.isEnabled()
@@ -409,21 +496,34 @@ export function installSatellitePill(
   };
   const displayChanged = () => {
     if (main.isDestroyed() || pill.isDestroyed()) return;
-    if (nativePillMove || workspaceGesture !== "idle") {
+    if (nativePillMove || workspaceGesture) {
       topologyRecoveryPending = true;
       return;
     }
     topologyRecoveryPending = false;
-    pillBounds = clampPillBounds(pill.getBounds(), workAreas());
-    pill.setBounds(pillBounds);
-    if (shell.mode === "workspace")
-      setWorkspaceBounds(
-        resolveWorkspaceBounds(
-          resolvePillBounds(main.getBounds(), workAreas(), pillBounds),
-          workspaceSize,
-          workAreas(),
-        ),
-      );
+    const areas = workAreas();
+    const actualPill = pill.getBounds();
+    pillBounds = clampPillBounds(actualPill, areas);
+    if (pillBounds.x !== actualPill.x || pillBounds.y !== actualPill.y) pill.setBounds(pillBounds);
+    rememberWorkspace();
+    const recovered = clampWorkspaceBounds(workspace.bounds, areas);
+    const bounds = workspace.bounds;
+    if (
+      recovered.x !== bounds.x ||
+      recovered.y !== bounds.y ||
+      recovered.width !== bounds.width ||
+      recovered.height !== bounds.height
+    ) {
+      const maximized = workspace.maximized;
+      applyingWorkspaceBounds = true;
+      if (main.isMaximized()) main.unmaximize();
+      setWorkspaceBounds(recovered);
+      workspace = { bounds: recovered, maximized };
+      maximizeOnShow = maximized && !main.isVisible();
+      if (maximized && !maximizeOnShow) main.maximize();
+      applyingWorkspaceBounds = false;
+    }
+    workspaceAnchor = clampPillBounds(workspaceAnchor, areas);
     savePosition();
   };
   const displayMetricsChanged = (
@@ -431,7 +531,8 @@ export function installSatellitePill(
     _display: Electron.Display,
     metrics: string[],
   ) => {
-    if (metrics.includes("workArea") || metrics.includes("bounds")) displayChanged();
+    if (metrics.some((metric) => ["workArea", "bounds", "scaleFactor"].includes(metric)))
+      displayChanged();
   };
   Electron.app.on("before-quit", beforeQuit);
   Electron.screen.on("display-added", displayChanged);
@@ -444,6 +545,7 @@ export function installSatellitePill(
     disposeDoubleControl = undefined;
     clearTimeout(staleTimer);
     clearTimeout(blurTimer);
+    clearTimeout(positionTimer);
     Electron.app.removeListener("before-quit", beforeQuit);
     Electron.screen.removeListener("display-added", displayChanged);
     Electron.screen.removeListener("display-removed", displayChanged);

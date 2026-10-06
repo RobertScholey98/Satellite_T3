@@ -1,6 +1,7 @@
 import type { SatellitePillState } from "@t3tools/contracts";
 
 export const PILL_SIZE = { width: 320, height: 70 } as const;
+export const WORKSPACE_MIN_SIZE = { width: 480, height: 360 } as const;
 export interface PillRectangle {
   readonly x: number;
   readonly y: number;
@@ -55,6 +56,22 @@ function nearestWorkArea(
 
 function normalizedAnchor(position: number, origin: number, span: number, fallback = 0.5) {
   return span > 0 ? Math.max(0, Math.min(1, (position - origin) / span)) : fallback;
+}
+
+/** Recover an independent workspace without deriving its position from the pill. */
+export function clampWorkspaceBounds(
+  bounds: PillRectangle,
+  workAreas: readonly PillRectangle[],
+): PillRectangle {
+  const area = nearestWorkArea(bounds, workAreas);
+  const width = Math.min(Math.max(WORKSPACE_MIN_SIZE.width, bounds.width), area.width);
+  const height = Math.min(Math.max(WORKSPACE_MIN_SIZE.height, bounds.height), area.height);
+  return {
+    x: Math.round(Math.max(area.x, Math.min(bounds.x, area.x + area.width - width))),
+    y: Math.round(Math.max(area.y, Math.min(bounds.y, area.y + area.height - height))),
+    width,
+    height,
+  };
 }
 
 function collapseAnchor(position: number, origin: number, span: number, savedAnchor: number) {

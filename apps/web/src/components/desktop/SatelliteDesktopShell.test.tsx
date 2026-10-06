@@ -29,6 +29,7 @@ describe("retained Satellite workspace", () => {
       publish: vi.fn(),
       hideMain: vi.fn(),
       setPinned: vi.fn(),
+      setPositionsLinked: vi.fn(),
       onShellState: (next) => {
         listener = next;
         return vi.fn();

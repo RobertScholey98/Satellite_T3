@@ -9,3 +9,4 @@ export const SATELLITE_PILL_DRAG_BEGIN = "satellite:pill-drag-begin";
 export const SATELLITE_SHELL_STATE = "satellite:shell-state";
 export const SATELLITE_WORKSPACE_READY = "satellite:workspace-ready";
 export const SATELLITE_SET_PINNED = "satellite:set-pinned";
+export const SATELLITE_SET_POSITIONS_LINKED = "satellite:set-positions-linked";

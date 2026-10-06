@@ -31,6 +31,7 @@ export type SatellitePillState = typeof SatellitePillState.Type;
 export interface SatelliteShellState {
   readonly mode: "pill" | "workspace";
   readonly pinned?: boolean;
+  readonly positionsLinked?: boolean;
 }
 
 export type SatelliteMoveDirection = "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown";
@@ -39,6 +40,7 @@ export interface SatelliteBridge {
   readonly publish: (state: SatellitePillState) => void;
   readonly hideMain: () => void;
   readonly setPinned: (pinned: boolean) => void;
+  readonly setPositionsLinked: (linked: boolean) => void;
   readonly onShellState: (listener: (state: SatelliteShellState) => void) => () => void;
 }
 

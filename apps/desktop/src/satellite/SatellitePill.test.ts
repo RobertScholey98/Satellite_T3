@@ -27,6 +27,9 @@ vi.mock("electron", async () => {
     destroyed = false;
     visible = false;
     focused = false;
+    maximized = false;
+    minimized = false;
+    normalBounds = this.bounds;
     webContents = Object.assign(new EventEmitter(), {
       send: vi.fn(),
       getZoomFactor: vi.fn(() => 1),
@@ -66,7 +69,32 @@ vi.mock("electron", async () => {
     hookWindowMessage = (message: number, callback: () => void) => {
       this.hooks.set(message, callback);
     };
-    restore = vi.fn();
+    restore = vi.fn(() => {
+      this.minimized = false;
+      this.unmaximize();
+    });
+    maximize = vi.fn(() => {
+      this.visible = true;
+      if (!this.maximized) this.normalBounds = this.bounds;
+      this.maximized = true;
+      this.bounds = { x: 0, y: 0, width: 1920, height: 1040 };
+      this.emit("maximize");
+      this.emit("resize");
+    });
+    unmaximize = vi.fn(() => {
+      if (!this.maximized) return;
+      this.maximized = false;
+      this.bounds = this.normalBounds;
+      this.emit("unmaximize");
+      this.emit("resize");
+    });
+    minimize = vi.fn(() => {
+      this.minimized = true;
+      this.emit("minimize");
+    });
+    isMaximized = () => this.maximized;
+    isMinimized = () => this.minimized;
+    getNormalBounds = () => (this.maximized ? this.normalBounds : this.bounds);
     isEnabled = vi.fn(() => true);
     getChildWindows = vi.fn(() => []);
     constructor(_options: Electron.BrowserWindowConstructorOptions) {
@@ -163,6 +191,7 @@ describe("independent native Satellite surfaces", () => {
   beforeEach(async () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
+    vi.mocked(NodeFS.readFileSync).mockReturnValue('{"x":100,"y":100}');
     createShell();
     await Promise.resolve();
     send(main, Channels.SATELLITE_WORKSPACE_READY);
@@ -190,16 +219,19 @@ describe("independent native Satellite surfaces", () => {
     expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
       mode: "workspace",
       pinned: false,
+      positionsLinked: true,
     });
     shortcut();
     expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
       mode: "workspace",
       pinned: true,
+      positionsLinked: true,
     });
     shortcut();
     expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
       mode: "workspace",
       pinned: false,
+      positionsLinked: true,
     });
     main.blur();
     vi.mocked(main.webContents.send).mockClear();
@@ -270,20 +302,21 @@ describe("independent native Satellite surfaces", () => {
     send(pill, Channels.SATELLITE_PILL_OPEN);
     expect(reveal).toHaveBeenCalledOnce();
   });
-  it("records preferred workspace size only when a native user resize finishes", () => {
+  it("remembers keyboard snap geometry without requiring a mouse gesture", () => {
     expand();
-    main.setBounds({ x: 20, y: 20, width: 1111, height: 788 });
-    main.emit("resize");
-    message(main, 0x0231);
-    message(main, 0x0232);
+    main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
+    vi.advanceTimersByTime(250);
+    expect(saved().workspace).toEqual({
+      bounds: { x: 960, y: 0, width: 960, height: 1040 },
+      maximized: false,
+    });
     collapse();
-    expect(saved()).toMatchObject({ workspaceWidth: 1100, workspaceHeight: 780 });
     expand();
     message(main, 0x0231);
     main.emit("will-resize");
     main.setBounds({ x: 20, y: 20, width: 1200, height: 820 });
     message(main, 0x0232);
-    expect(saved()).toMatchObject({ workspaceWidth: 1200, workspaceHeight: 820 });
+    expect(saved().workspace.bounds).toEqual({ x: 20, y: 20, width: 1200, height: 820 });
     collapse();
     expand();
     expect(main.getBounds()).toMatchObject({ width: 1200, height: 820 });
@@ -301,6 +334,205 @@ describe("independent native Satellite surfaces", () => {
     main.close();
     expect(main.isDestroyed()).toBe(false);
     expect(pill.isVisible()).toBe(true);
+  });
+  it("retains a right-hand workspace independently of the top-centre pill across cycles", () => {
+    send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
+    collapse();
+    pill.setPosition(800, 0);
+    expand();
+    main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
+    vi.mocked(main.setBounds).mockClear();
+    for (let cycle = 0; cycle < 20; cycle++) {
+      collapse();
+      expect(pill.getBounds()).toEqual({ x: 800, y: 0, width: 320, height: 70 });
+      expand();
+      expect(main.getBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+    }
+    expect(main.setBounds).not.toHaveBeenCalled();
+    collapse();
+    send(pill, Channels.SATELLITE_PILL_MOVE, "ArrowRight");
+    expand();
+    expect(main.getBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+    main.setPosition(900, 0);
+    collapse();
+    expect(pill.getBounds()).toEqual({ x: 816, y: 0, width: 320, height: 70 });
+  });
+  it("keeps linked native snap placement until the pill is deliberately moved", () => {
+    main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
+    vi.mocked(main.setBounds).mockClear();
+    for (let cycle = 0; cycle < 20; cycle++) {
+      collapse();
+      expand();
+    }
+    expect(main.getBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+    expect(main.setBounds).not.toHaveBeenCalled();
+    collapse();
+    pill.setPosition(0, 0);
+    expand();
+    expect(main.getBounds()).toEqual({ x: 0, y: 0, width: 960, height: 1040 });
+  });
+  it("toggles linking without moving visible surfaces or changing pinning", () => {
+    send(main, Channels.SATELLITE_SET_PINNED, true);
+    const initial = main.getBounds();
+    send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
+    expect(main.getBounds()).toEqual(initial);
+    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
+    main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
+    send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, true);
+    expect(main.getBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+    expect(pill.getBounds()).toEqual({ x: 100, y: 100, width: 320, height: 70 });
+    expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
+      mode: "workspace",
+      pinned: true,
+      positionsLinked: true,
+    });
+    collapse();
+    expect(pill.getBounds()).toEqual({ x: 1600, y: 100, width: 320, height: 70 });
+  });
+  it("restores independent positions and maximize state after restarting", () => {
+    send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
+    collapse();
+    pill.setPosition(800, 0);
+    expand();
+    main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
+    main.maximize();
+    Electron.app.emit("before-quit");
+    const preference = saved();
+    expect(preference).toEqual({
+      x: 800,
+      y: 0,
+      positionsLinked: false,
+      workspace: { bounds: { x: 960, y: 0, width: 960, height: 1040 }, maximized: true },
+    });
+    main.destroy();
+    vi.mocked(NodeFS.readFileSync).mockReturnValue(JSON.stringify(preference));
+    createShell();
+    send(main, Channels.SATELLITE_WORKSPACE_READY);
+    send(pill, Channels.SATELLITE_PILL_READY);
+    expect(main.isMaximized()).toBe(true);
+    expect(main.getNormalBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+    collapse();
+    expect(pill.getBounds()).toEqual({ x: 800, y: 0, width: 320, height: 70 });
+    expand();
+    expect(main.isMaximized()).toBe(true);
+    main.unmaximize();
+    expect(main.getBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+  });
+  it("retains maximization through ordinary collapse and intercepted minimize", () => {
+    main.maximize();
+    vi.mocked(main.unmaximize).mockClear();
+    collapse();
+    expand();
+    expect(main.isMaximized()).toBe(true);
+    expect(main.unmaximize).not.toHaveBeenCalled();
+    main.minimize();
+    expect(pill.isVisible()).toBe(true);
+    expand();
+    expect(main.isMaximized()).toBe(true);
+    expect(main.getNormalBounds()).toEqual({ x: 51, y: 27, width: 1100, height: 780 });
+  });
+  it("relinks from the pill menu without moving the retained workspace on reveal", () => {
+    send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
+    main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
+    collapse();
+    pill.setPosition(800, 0);
+    send(pill, Channels.SATELLITE_PILL_MENU);
+    const link = vi
+      .mocked(Electron.Menu.buildFromTemplate)
+      .mock.lastCall![0].find((item) => item.label === "Link pill and window positions")!;
+    link.click?.({ checked: true } as Electron.MenuItem, main, {} as Electron.KeyboardEvent);
+    expect(pill.getBounds()).toEqual({ x: 800, y: 0, width: 320, height: 70 });
+    expand();
+    expect(main.getBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+    collapse();
+    expect(pill.getBounds()).toEqual({ x: 1600, y: 0, width: 320, height: 70 });
+  });
+  it("does not reveal a restored maximized workspace before first paint", () => {
+    main.destroy();
+    vi.mocked(NodeFS.readFileSync).mockReturnValue(
+      JSON.stringify({
+        x: 800,
+        y: 0,
+        positionsLinked: false,
+        workspace: { bounds: { x: 960, y: 0, width: 960, height: 1040 }, maximized: true },
+      }),
+    );
+    createShell();
+    expect(main.isVisible()).toBe(false);
+    main.emit("ready-to-show");
+    expect(main.isVisible()).toBe(true);
+    expect(main.isMaximized()).toBe(true);
+    expect(main.getNormalBounds()).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+  });
+  it("repairs maximized restore bounds while keeping a collapsed workspace hidden", () => {
+    send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
+    main.setBounds({ x: -1280, y: 0, width: 640, height: 900 });
+    main.maximize();
+    collapse();
+    vi.mocked(main.maximize).mockClear();
+    Electron.screen.emit("display-removed");
+    expect(main.isVisible()).toBe(false);
+    expect(main.maximize).not.toHaveBeenCalled();
+    expect(saved().workspace).toEqual({
+      bounds: { x: 0, y: 0, width: 640, height: 900 },
+      maximized: true,
+    });
+    expand();
+    expect(main.isMaximized()).toBe(true);
+    expect(main.getNormalBounds()).toEqual({ x: 0, y: 0, width: 640, height: 900 });
+  });
+  it("migrates old size-only preferences to linked placement", () => {
+    main.destroy();
+    vi.mocked(NodeFS.readFileSync).mockReturnValue(
+      JSON.stringify({
+        x: 800,
+        y: 0,
+        workspaceWidth: 700,
+        workspaceHeight: 500,
+      }),
+    );
+    createShell();
+    send(main, Channels.SATELLITE_WORKSPACE_READY);
+    expect(main.getBounds()).toEqual({ x: 610, y: 0, width: 700, height: 500 });
+    expect(main.webContents.send).toHaveBeenLastCalledWith(Channels.SATELLITE_SHELL_STATE, {
+      mode: "workspace",
+      pinned: false,
+      positionsLinked: true,
+    });
+    collapse();
+    expect(saved().workspace).toEqual({
+      bounds: { x: 610, y: 0, width: 700, height: 500 },
+      maximized: false,
+    });
+  });
+  it("does not collapse during a native move or persist every intermediate resize", () => {
+    message(main, 0x0231);
+    main.blur();
+    vi.mocked(NodeFS.writeFileSync).mockClear();
+    main.setBounds({ x: 800, y: 0, width: 800, height: 900 });
+    main.setBounds({ x: 960, y: 0, width: 960, height: 1040 });
+    vi.advanceTimersByTime(500);
+    expect(main.isVisible()).toBe(true);
+    expect(NodeFS.writeFileSync).not.toHaveBeenCalled();
+    message(main, 0x0232);
+    expect(saved().workspace.bounds).toEqual({ x: 960, y: 0, width: 960, height: 1040 });
+    expect(main.isVisible()).toBe(true);
+  });
+  it("recovers the hidden workspace independently when its monitor disappears", () => {
+    send(main, Channels.SATELLITE_SET_POSITIONS_LINKED, false);
+    main.setBounds({ x: -1280, y: 0, width: 640, height: 900 });
+    collapse();
+    pill.setPosition(800, 0);
+    Electron.screen.emit("display-removed");
+    expect(main.isVisible()).toBe(false);
+    expect(main.getBounds()).toEqual({ x: 0, y: 0, width: 640, height: 900 });
+    expect(pill.getBounds()).toEqual({ x: 800, y: 0, width: 320, height: 70 });
+    expand();
+    expect(main.getBounds()).toEqual({ x: 0, y: 0, width: 640, height: 900 });
+    vi.mocked(main.setBounds).mockClear();
+    Electron.screen.emit("display-added");
+    expect(main.setBounds).not.toHaveBeenCalled();
+    expect(saved().workspace.bounds).toEqual({ x: 0, y: 0, width: 640, height: 900 });
   });
   it("marks stale and crashed workspace status unavailable", () => {
     const theme = {
@@ -336,14 +568,14 @@ describe("independent native Satellite surfaces", () => {
       expect.objectContaining({ state: "unknown", theme }),
     );
   });
-  it("clamps keyboard movement and topology recovery but ignores scale-only notifications", () => {
+  it("clamps keyboard movement and recovers after scale-only notifications", () => {
     collapse();
     pill.setPosition(-50, -50);
     send(pill, Channels.SATELLITE_PILL_MOVE, "ArrowLeft");
     expect(pill.getBounds()).toMatchObject({ x: 0, y: 0 });
     pill.setPosition(-50, -50);
     Electron.screen.emit("display-metrics-changed", {}, {}, ["scaleFactor"]);
-    expect(pill.getBounds().x).toBe(-50);
+    expect(pill.getBounds().x).toBe(0);
     Electron.screen.emit("display-removed");
     expect(pill.getBounds()).toMatchObject({ x: 0, y: 0 });
   });
@@ -361,7 +593,7 @@ describe("independent native Satellite surfaces", () => {
     message(pill, 0x0232);
     expect(pill.getBounds()).toEqual({ x: 0, y: 0, width: 320, height: 70 });
   });
-  it("caps native minimums to a small work area without changing preferred workspace size", () => {
+  it("recovers a hidden workspace on a small work area with usable native minimums", () => {
     collapse();
     const primary = {
       id: 1,
@@ -369,11 +601,13 @@ describe("independent native Satellite surfaces", () => {
     } as Electron.Display;
     const primarySpy = vi.spyOn(Electron.screen, "getPrimaryDisplay").mockReturnValue(primary);
     const displaysSpy = vi.spyOn(Electron.screen, "getAllDisplays").mockReturnValue([primary]);
+    Electron.screen.emit("display-removed");
+    expect(main.isVisible()).toBe(false);
     expand();
     expect(main.getBounds()).toMatchObject({ width: 700, height: 500 });
-    expect(main.setMinimumSize).toHaveBeenLastCalledWith(700, 500);
+    expect(main.setMinimumSize).toHaveBeenLastCalledWith(480, 360);
     collapse();
-    expect(saved()).toMatchObject({ workspaceWidth: 1100, workspaceHeight: 780 });
+    expect(saved().workspace.bounds).toEqual({ x: 0, y: 0, width: 700, height: 500 });
     primarySpy.mockRestore();
     displaysSpy.mockRestore();
   });

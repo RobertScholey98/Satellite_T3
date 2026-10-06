@@ -1,5 +1,5 @@
 html[data-satellite-mode] {
-  --satellite-window-controls-inset: 76px;
+  --satellite-window-controls-inset: 105px;
   --desktop-window-right-resize-inset: 6px;
   --workspace-controls-right: calc(0.75rem + var(--satellite-window-controls-inset));
   --workspace-native-controls-inset: calc(
@@ -87,8 +87,8 @@ html[data-satellite-mode="pill"] body > :not(#root) * {
 
 /* Keep the native controls inside the workspace's 40px tab row. */
 html[data-satellite-mode] [data-workspace-tabbar] {
-  /* 52px control group, 12px edge inset, and an 8px gap to the panel toggle. */
-  --workspace-native-controls-inset: 72px;
+  /* 76px control group, 12px edge inset, and an 8px gap to the panel toggle. */
+  --workspace-native-controls-inset: 96px;
 }
 
 [data-satellite="workspace"]:has([data-workspace-tabbar]) > [data-satellite="window-controls"] {

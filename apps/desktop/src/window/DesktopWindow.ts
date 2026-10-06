@@ -432,7 +432,7 @@ export const make = Effect.gen(function* () {
             resizable: true,
             skipTaskbar: true,
             alwaysOnTop: true,
-            maximizable: false,
+            maximizable: true,
             fullscreenable: false,
           }
         : getWindowTitleBarOptions(shouldUseDarkColors, environment.platform)),

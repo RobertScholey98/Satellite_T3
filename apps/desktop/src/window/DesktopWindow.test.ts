@@ -923,7 +923,7 @@ describe("DesktopWindow", () => {
           assert.equal(options.skipTaskbar ?? false, enabled);
           assert.equal(options.alwaysOnTop ?? false, enabled);
           assert.equal(options.frame ?? true, !enabled);
-          assert.equal(options.maximizable ?? true, !enabled);
+          assert.equal(options.maximizable ?? true, true);
           assert.equal(
             options.webPreferences?.additionalArguments?.includes("--satellite-pill") ?? false,
             enabled,
