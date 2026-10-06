@@ -10317,6 +10317,13 @@ export default function ChatView(props: ChatViewProps) {
                           draftId={draftId}
                           activeProjectRef={activeProjectRef}
                           activeProjectTitle={activeProject?.title ?? null}
+                          canCreateWorktree={
+                            isGitRepo &&
+                            !envLocked &&
+                            !isIdea &&
+                            issueDraftIntent === undefined &&
+                            multipleModelSelections === null
+                          }
                         />
                       </div>
                     </div>
