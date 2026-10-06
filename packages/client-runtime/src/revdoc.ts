@@ -1,5 +1,5 @@
 import { WS_METHODS, type RevdocReview, type RevdocTest } from "@t3tools/contracts";
-import type { Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import type { EnvironmentRegistry } from "./connection/registry.ts";
 import {
   createEnvironmentRpcCommand,
@@ -66,7 +66,15 @@ export function createRevdocEnvironmentAtoms<R, E>(
       tag: WS_METHODS.revdocGet,
       staleTimeMs: 0,
       idleTtlMs: 0,
-      refreshTrigger: (target) => changes(target),
+      // Generation only saves once. Batch progress must not refetch the entire review.
+      refreshTrigger: (target) =>
+        Atom.map(changes(target), (result) =>
+          AsyncResult.isSuccess(result)
+            ? result.value.running && result.value.phase === "generating"
+              ? "generating"
+              : result.value.version
+            : result,
+        ),
     }),
     start: createEnvironmentRpcCommand(runtime, {
       label: "revdoc:start",

@@ -48,11 +48,16 @@ or use `read_revdoc` to pick up your feedback without an export.
 
 Choose the provider, model, and effort under **Settings → General → Text
 generation → Revdoc**. Automatic uses the current thread's provider and model.
+Large reviews automatically run in batches and combine into one checklist. Choose
+a separate provider, model, and effort under **Large Revdoc model**; Automatic uses
+the Revdoc model, then the thread's model. The sidebar reports progress. Cancelling
+or a failed batch preserves the saved review; running again starts a new pass.
 A pass gathers the thread's recent conversation and the worktree's changes,
 including commits since its default branch. The generation pass creates a checklist. Reruns preserve notes and outcomes, while
 changed test instructions return to Not tested. If another device or agent edits
 the review during a pass, the saved review is preserved and the pass reports a
-conflict. Refresh the review to load edits made outside Satellite.
+conflict. If the worktree changes during generation, run a new pass for the current
+changes. Refresh the review to load edits made outside Satellite.
 
 Use **Test with AI** in the review to run remaining checks in the background.
 Progress, agent activity, questions, and approvals stay in the review sidebar. Choose its provider, model, and effort under **Revdoc testing model** in

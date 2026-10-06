@@ -1260,6 +1260,9 @@ export const ServerSettings = Schema.Struct({
   revdocModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  revdocLargeModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   ideaUpdatesModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
@@ -1563,6 +1566,7 @@ export const ServerSettingsPatch = Schema.Struct({
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   ideaUpdatesModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
   revdocModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
+  revdocLargeModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
   revdocTestingModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelectionPatch)),
   revdocDefaultAction: Schema.optionalKey(Schema.Literals(["generate", "generate-and-test"])),
   sourceControlWritingStyle: Schema.optionalKey(

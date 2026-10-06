@@ -302,6 +302,24 @@ export function applyServerSettingsPatch(
       revdocModelSelection = createModelSelection(instanceId, model, options);
     }
   }
+  const revdocLargeSelectionPatch = patch.revdocLargeModelSelection;
+  let revdocLargeModelSelection = current.revdocLargeModelSelection;
+  if (revdocLargeSelectionPatch === null) {
+    revdocLargeModelSelection = null;
+  } else if (revdocLargeSelectionPatch !== undefined) {
+    const instanceId =
+      revdocLargeSelectionPatch.instanceId ?? revdocLargeModelSelection?.instanceId;
+    const model = revdocLargeSelectionPatch.model ?? revdocLargeModelSelection?.model;
+    if (instanceId !== undefined && model !== undefined) {
+      const options = shouldReplaceModelSelection(revdocLargeSelectionPatch)
+        ? revdocLargeSelectionPatch.options
+        : mergeModelSelectionOptionsById({
+            current: revdocLargeModelSelection?.options,
+            patch: revdocLargeSelectionPatch.options,
+          });
+      revdocLargeModelSelection = createModelSelection(instanceId, model, options);
+    }
+  }
   const revdocTestingSelectionPatch = patch.revdocTestingModelSelection;
   let revdocTestingModelSelection = current.revdocTestingModelSelection;
   if (revdocTestingSelectionPatch === null) {
@@ -378,6 +396,7 @@ export function applyServerSettingsPatch(
     ...next,
     ideaUpdatesModelSelection,
     revdocModelSelection,
+    revdocLargeModelSelection,
     revdocTestingModelSelection,
     ...(worktreeCleanupPatch === undefined
       ? {}

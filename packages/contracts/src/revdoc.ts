@@ -171,6 +171,7 @@ export const RevdocRunState = Schema.Struct({
   result: Schema.NullOr(Schema.Literals(["completed", "cancelled"])),
   version: Schema.Number,
   phase: Schema.optionalKey(Schema.Literals(["generating", "testing"])),
+  generationStage: Schema.optionalKey(Schema.Literals(["reviewing", "combining"])),
   testingThreadId: Schema.optionalKey(ThreadId),
   completed: Schema.optionalKey(Schema.Number),
   total: Schema.optionalKey(Schema.Number),

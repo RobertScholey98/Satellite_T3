@@ -46,6 +46,7 @@ export function revdocPrompt(context: {
   thread: unknown;
   changes: string;
   existing: RevdocReview | null;
+  batch?: { number: number; total: number; overview: string };
 }) {
   return [
     "Run a to-rev-doc pass: produce the current worktree's manual review checklist.",
@@ -59,6 +60,12 @@ export function revdocPrompt(context: {
     "Include relevant permission/backend flags and endpoint details only when grounded in the supplied code. Use empty arrays where none apply and 'not found in code' for unknown endpoint details.",
     "If no formal PRD exists, use the user's requests. PRD references must be actual worktree-relative paths provided in the context.",
     "Return the complete grouped document. Keep it concise enough to review. This pass does not change source code.",
+    ...(context.batch
+      ? [
+          "This is one batch of a larger review. Generate only checks grounded in this batch's evidence. The overview and existing review give context, not evidence of additional changes. Other batches cover the remaining evidence.",
+          "Use the same area and feature names as the existing review when applicable. Preserve matching IDs, but do not repeat unrelated existing checks. A continued patch hunk or context excerpt is incomplete; do not treat its boundaries as actual source changes.",
+        ]
+      : []),
     JSON.stringify(context),
   ].join("\n\n");
 }
@@ -66,7 +73,7 @@ export function revdocPrompt(context: {
 /** Human findings and evidence survive reruns, including tests omitted by the model. */
 export function reconcileRevdoc(
   previous: RevdocReview | null,
-  generated: RevdocGenerationResult,
+  generated: RevdocReview,
 ): RevdocReview {
   const tests = new Map(
     previous?.sections.flatMap((s) =>
@@ -100,7 +107,8 @@ export function reconcileRevdoc(
               ...item.tests.map((test) => {
                 const old = tests.get(test.id);
                 const changed =
-                  old && (old.title !== test.title || (old.expected ?? "") !== test.expected);
+                  old &&
+                  (old.title !== test.title || (old.expected ?? "") !== (test.expected ?? ""));
                 return {
                   ...old,
                   ...test,

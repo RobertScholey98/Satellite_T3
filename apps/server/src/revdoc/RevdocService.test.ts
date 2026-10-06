@@ -81,6 +81,7 @@ const platform = GitVcsDriver.layer.pipe(
 const setup = (
   options: {
     model?: ModelSelection | null;
+    largeModel?: ModelSelection | null;
     testingModel?: ModelSelection | null;
     defaultAction?: "generate" | "generate-and-test";
     generate?: (
@@ -232,6 +233,7 @@ const setup = (
             getSettings: Effect.succeed({
               ...DEFAULT_SERVER_SETTINGS,
               revdocModelSelection: options.model ?? null,
+              revdocLargeModelSelection: options.largeModel ?? null,
               revdocTestingModelSelection: options.testingModel ?? null,
               revdocDefaultAction: options.defaultAction ?? "generate",
             }),
@@ -658,12 +660,219 @@ describe("worktree Revdoc service", () => {
       expect((yield* env.service.get({ threadId })).revision).toBe(initial.revision);
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );
-  it.effect("rejects an unavailable configured provider before starting a job", () =>
+  it.effect("reports an unavailable configured provider without generating a review", () =>
     Effect.gen(function* () {
       const env = yield* setup({ unavailable: true });
-      const result = yield* env.service.start({ threadId }).pipe(Effect.result);
-      expect(result._tag).toBe("Failure");
+      yield* env.service.start({ threadId });
+      expect((yield* env.finished()).error).toContain("Choose an available provider");
       expect(env.calls).toHaveLength(0);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+});
+
+describe("large Revdoc generation", () => {
+  it.effect(
+    "automatically batches full patches and large untracked text, selects the large model, and retains omitted checks",
+    () =>
+      Effect.gen(function* () {
+        const selected = {
+          instanceId: ProviderInstanceId.make("claude"),
+          model: "large-review-model",
+        };
+        let batch = 0;
+        const env = yield* setup({
+          largeModel: selected,
+          generate: (input) =>
+            Effect.sync(() => {
+              if (input.prompt.startsWith("Organise")) return { ...generated, sections: [] };
+              batch++;
+              return {
+                ...generated,
+                sections: generated.sections.map((s) => ({
+                  ...s,
+                  items: s.items.map((i) => ({
+                    ...i,
+                    tests: [
+                      {
+                        id: "locally-reused-id",
+                        title: `Check batch ${batch}`,
+                        expected: `Result ${batch}`,
+                      },
+                    ],
+                  })),
+                })),
+              };
+            }),
+        });
+        yield* env.fs.writeFileString(
+          env.path.join(env.worktree, "app.txt"),
+          "changed line\n".repeat(30_000) + "TRACKED_END\n",
+        );
+        yield* env.fs.writeFileString(
+          env.path.join(env.worktree, "large-new.txt"),
+          "new line\n".repeat(25_000) + "UNTRACKED_END\n",
+        );
+        yield* env.service.start({ threadId });
+        expect((yield* env.finished()).error).toBeNull();
+        expect(batch).toBeGreaterThan(1);
+        expect(env.calls.every((call) => call.modelSelection === selected)).toBe(true);
+        expect(env.calls.every((call) => Buffer.byteLength(call.prompt) <= 450_000)).toBe(true);
+        const allPrompts = env.calls.map((call) => call.prompt).join("\n");
+        expect(allPrompts).toContain("TRACKED_END");
+        expect(allPrompts).toContain("UNTRACKED_END");
+        expect(allPrompts).not.toContain("[truncated]");
+        expect(allPrompts.match(/\+changed line/g)).toHaveLength(30_000);
+        expect(allPrompts.match(/new line/g)).toHaveLength(25_000);
+        const detail = yield* env.service.get({ threadId });
+        const tests = detail.review!.sections.flatMap((s) => s.items.flatMap((i) => i.tests));
+        expect(tests).toHaveLength(batch);
+        expect(new Set(tests.map((test) => test.id)).size).toBe(batch);
+        expect(tests.every((test) => test.outcome === "untested")).toBe(true);
+        const checked = tests[0]!;
+        yield* env.service.save({
+          threadId,
+          expectedRevision: detail.revision!,
+          change: {
+            kind: "test",
+            id: checked.id,
+            outcome: "broken",
+            feedback: "Keep the finding on rerun",
+          },
+        });
+        batch = 0;
+        yield* env.service.start({ threadId });
+        expect((yield* env.finished()).error).toBeNull();
+        const rerun = yield* env.service.get({ threadId });
+        expect(
+          rerun
+            .review!.sections.flatMap((s) => s.items.flatMap((i) => i.tests))
+            .find((test) => test.id === checked.id),
+        ).toMatchObject({
+          outcome: "broken",
+          feedback: "Keep the finding on rerun",
+        });
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect("keeps small reviews on the normal model even when a large model is configured", () =>
+    Effect.gen(function* () {
+      const env = yield* setup({
+        largeModel: { instanceId: ProviderInstanceId.make("claude"), model: "large" },
+      });
+      yield* env.service.start({ threadId });
+      expect((yield* env.finished()).error).toBeNull();
+      expect(env.calls).toHaveLength(1);
+      expect(env.calls[0]!.modelSelection).toEqual(defaultModel);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect(
+    "limits parallel workers, exposes batch progress, and cancels every active worker without replacing the saved review",
+    () =>
+      Effect.gen(function* () {
+        const entered = yield* Queue.unbounded<void>();
+        let batching = false;
+        let active = 0;
+        const env = yield* setup({
+          generate: () =>
+            !batching
+              ? Effect.succeed(generated)
+              : Effect.gen(function* () {
+                  active++;
+                  yield* Queue.offer(entered, undefined);
+                  return yield* Effect.never;
+                }).pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      active--;
+                    }),
+                  ),
+                ),
+        });
+        yield* env.service.start({ threadId });
+        yield* env.finished();
+        const initial = yield* env.service.get({ threadId });
+        batching = true;
+        yield* env.fs.writeFileString(
+          env.path.join(env.worktree, "app.txt"),
+          "changed line\n".repeat(50_000),
+        );
+        yield* env.service.start({ threadId });
+        yield* Queue.take(entered);
+        yield* Queue.take(entered);
+        expect(active).toBe(2);
+        const state = yield* env.service
+          .changes({ threadId })
+          .pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+        expect(state).toMatchObject({
+          running: true,
+          phase: "generating",
+          generationStage: "reviewing",
+          completed: 0,
+        });
+        expect(state.total).toBeGreaterThan(2);
+        yield* env.service.cancel({ threadId });
+        expect((yield* env.finished()).result).toBe("cancelled");
+        expect(active).toBe(0);
+        expect((yield* env.service.get({ threadId })).revision).toBe(initial.revision);
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect.each(["reviewing", "combining"] as const)("preserves feedback when %s fails", (stage) =>
+    Effect.gen(function* () {
+      let batching = false;
+      const env = yield* setup({
+        generate: (input) =>
+          batching && (stage === "reviewing" || input.prompt.startsWith("Organise"))
+            ? Effect.fail(
+                new TextGenerationError({ operation: "generateRevdoc", detail: "Batch failed" }),
+              )
+            : Effect.succeed(generated),
+      });
+      yield* env.service.start({ threadId });
+      yield* env.finished();
+      const original = yield* env.service.get({ threadId });
+      const saved = yield* env.service.save({
+        threadId,
+        expectedRevision: original.revision!,
+        change: {
+          kind: "test",
+          id: "check",
+          outcome: "broken",
+          feedback: "Keep this finding",
+        },
+      });
+      batching = true;
+      yield* env.fs.writeFileString(
+        env.path.join(env.worktree, "app.txt"),
+        "changed line\n".repeat(30_000),
+      );
+      yield* env.service.start({ threadId });
+      expect((yield* env.finished()).error).toContain("Batch failed");
+      expect((yield* env.service.get({ threadId })).revision).toBe(saved.revision);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect("does not publish a review if the worktree changes during generation", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const gate = yield* Deferred.make<void>();
+      const env = yield* setup({
+        generate: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(gate)),
+            Effect.as(generated),
+          ),
+      });
+      yield* env.service.start({ threadId });
+      yield* Deferred.await(entered);
+      yield* env.fs.writeFileString(
+        env.path.join(env.worktree, "app.txt"),
+        "Changed during the pass\n",
+      );
+      yield* Deferred.succeed(gate, undefined);
+      expect((yield* env.finished()).error).toContain("worktree changed during generation");
+      expect((yield* env.service.get({ threadId })).review).toBeNull();
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );
 });
