@@ -39,6 +39,7 @@ import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
+import { useRevdocWorktree } from "~/revdocWorktreeStore";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { observeResponsiveBreakpointFade, usePanelAnimationSettings } from "../../panelAnimations";
@@ -214,6 +215,7 @@ export const ChatHeader = memo(function ChatHeader({
     () => scopeThreadRef(activeThreadEnvironmentId, activeThreadId),
     [activeThreadEnvironmentId, activeThreadId],
   );
+  const revdocWorktreePath = useRevdocWorktree(activeThreadRef);
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -403,9 +405,9 @@ export const ChatHeader = memo(function ChatHeader({
           />
           {isServerThread && (
             <RevdocControl
-              key={`${activeThreadEnvironmentId}:${activeThreadId}:${gitCwd}`}
+              key={`${activeThreadEnvironmentId}:${activeThreadId}:${revdocWorktreePath ?? gitCwd}`}
               threadRef={activeThreadRef}
-              worktreePath={gitCwd}
+              worktreePath={revdocWorktreePath ?? gitCwd}
               presentation={actionsCollapsed ? "menu" : "toolbar"}
               onOpen={() => setActionsOpen(false)}
             />

@@ -24,7 +24,6 @@ import {
   ChevronsDownUpIcon,
   ChevronsUpDownIcon,
   FileTextIcon,
-  GitBranchIcon,
   MessageSquareIcon,
   RefreshCwIcon,
 } from "lucide-react";
@@ -40,7 +39,6 @@ import { useAssetUrlRefresh, useAssetUrlState } from "~/assets/assetUrls";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -48,6 +46,7 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { RevdocControl } from "./RevdocControl";
 import { RevdocRunActivity } from "./RevdocRunActivity";
+import { RevdocWorktreePicker } from "./RevdocWorktreePicker";
 
 const TestingContext = createContext<{
   busy: boolean;
@@ -792,17 +791,7 @@ export default function RevdocPanel({
               <p className="text-sm leading-relaxed text-muted-foreground">{review.summary}</p>
             )}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted-foreground">
-              {detail?.cwd && (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={<span className="flex min-w-0 items-center gap-1.5" tabIndex={0} />}
-                  >
-                    <GitBranchIcon className="size-3.5 shrink-0" />
-                    <span className="truncate">{detail.cwd.split(/[\\/]/).at(-1)}</span>
-                  </TooltipTrigger>
-                  <TooltipPopup>{detail.cwd}</TooltipPopup>
-                </Tooltip>
-              )}
+              <RevdocWorktreePicker threadRef={threadRef} current={detail?.cwd ?? worktreePath} />
               {review && (
                 <Badge
                   variant={

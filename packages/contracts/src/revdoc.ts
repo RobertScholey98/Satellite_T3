@@ -109,11 +109,28 @@ export const RevdocReview = Schema.Struct({
   sections: Schema.Array(RevdocSection),
 });
 export type RevdocReview = typeof RevdocReview.Type;
+/**
+ * `worktreePath` picks which worktree of the thread's repository the review
+ * targets. Omitted, Revdoc uses the thread's own worktree (or project root).
+ */
 export const RevdocInput = Schema.Struct({
   threadId: ThreadId,
   worktreePath: Schema.optionalKey(Schema.String),
 });
 export type RevdocInput = typeof RevdocInput.Type;
+export const RevdocWorktreesInput = Schema.Struct({ threadId: ThreadId });
+export type RevdocWorktreesInput = typeof RevdocWorktreesInput.Type;
+export const RevdocWorktree = Schema.Struct({
+  path: Schema.String,
+  branch: Schema.NullOr(Schema.String),
+});
+export type RevdocWorktree = typeof RevdocWorktree.Type;
+export const RevdocWorktrees = Schema.Struct({
+  /** The thread's own worktree, or the project root when the thread has none. */
+  defaultPath: Schema.String,
+  worktrees: Schema.Array(RevdocWorktree),
+});
+export type RevdocWorktrees = typeof RevdocWorktrees.Type;
 export const RevdocStartInput = Schema.Struct({
   ...RevdocInput.fields,
   action: Schema.optionalKey(Schema.Literals(["generate", "generate-and-test"])),
