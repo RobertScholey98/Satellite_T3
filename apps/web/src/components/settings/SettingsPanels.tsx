@@ -2277,8 +2277,8 @@ export function GeneralSettingsPanel() {
             {...searchableSetting("pill-mode")}
             description={
               pillEnabled !== pillActive
-                ? "Restart the app to apply. When off, the app uses a normal window with a taskbar entry."
-                : "Collapse to a floating pill. When off, use a normal window with a taskbar entry. Changes apply after restarting the app."
+                ? "Restart the app to apply. Satellite stays available from the taskbar with or without the widget."
+                : "Add a floating companion widget. The workspace collapses when it loses focus unless pinned. Satellite stays available from the taskbar. Changes apply after restarting the app."
             }
             control={
               <Switch
@@ -2290,7 +2290,7 @@ export function GeneralSettingsPanel() {
                     setSavingPillMode(false),
                   );
                 }}
-                aria-label="Pill mode"
+                aria-label="Satellite widget"
               />
             }
           />

@@ -80,6 +80,7 @@ describe("standalone Satellite pill gestures", () => {
   let bridge: SatellitePillBridge;
   let listener: (state: SatellitePillState) => void;
   let layoutListener: (layout: SatellitePillLayout) => void;
+  let opacityListener: ((opacity: number) => void) | undefined;
   const capture = new WeakMap<Element, number>();
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -119,6 +120,12 @@ describe("standalone Satellite pill gestures", () => {
     document.body.append(host);
     root = createRoot(host);
     bridge = {
+      onOpacityChange: (next) => {
+        opacityListener = next;
+        return () => {
+          opacityListener = undefined;
+        };
+      },
       openMain: vi.fn(),
       movePill: vi.fn(),
       beginPillDrag: vi.fn(),
@@ -140,6 +147,19 @@ describe("standalone Satellite pill gestures", () => {
     host.remove();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+  it("fades the existing controls and releases the opacity subscription on unmount", () => {
+    const face = host.querySelector<HTMLElement>('[data-satellite="widget"]')!;
+    const button = host.querySelector('[data-satellite="pill-content"]');
+    act(() => opacityListener?.(0.35));
+    expect(face.style.opacity).toBe("0.35");
+    act(() => opacityListener?.(0.8));
+    expect(face.style.opacity).toBe("0.8");
+    expect(host.querySelector('[data-satellite="pill-content"]')).toBe(button);
+    act(() => opacityListener?.(1));
+    expect(face.style.opacity).toBe("1");
+    act(() => root.render(null));
+    expect(opacityListener).toBeUndefined();
   });
   const latestRequest = () => {
     const request = vi.mocked(bridge.setLayout).mock.lastCall![0];

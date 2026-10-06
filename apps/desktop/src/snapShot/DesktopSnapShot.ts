@@ -78,7 +78,7 @@ import {
 } from "./SnapShotAccessibilityProcess.ts";
 import * as MacPermissions from "../permissions/MacPermissions.ts";
 import { MAC_PERMISSION_SETTINGS_URLS } from "../permissions/MacPermission.ts";
-import { showWindowsCaptureOverlay } from "./WindowsCaptureFeedback.ts";
+import { showInactiveWithoutAnimation } from "../electron/WindowsWindowVisibility.ts";
 
 import {
   boundedSnapShotString,
@@ -776,7 +776,7 @@ export const make = Effect.gen(function* () {
   let lastShortcutAt: bigint | undefined;
   let stopShiftShortcut: (() => void) | undefined;
   const showCaptureWindow =
-    environment.platform === "win32" ? showWindowsCaptureOverlay : undefined;
+    environment.platform === "win32" ? showInactiveWithoutAnimation : undefined;
   const flash = new SnapShotFlash(showCaptureWindow);
   const transition = new SnapShotTransition({
     showWindow: showCaptureWindow,

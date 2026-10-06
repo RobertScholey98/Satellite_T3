@@ -28,6 +28,8 @@ if (process.argv.includes("--satellite-pill"))
         ipcRenderer.removeListener(SatelliteChannels.SATELLITE_ATTENTION_INTENT, wrapped);
     },
     setPinned: (pinned) => ipcRenderer.send(SatelliteChannels.SATELLITE_SET_PINNED, pinned),
+    setPositionsLinked: (linked) =>
+      ipcRenderer.send(SatelliteChannels.SATELLITE_SET_POSITIONS_LINKED, linked),
     onShellState: (listener) => {
       const wrapped = (_event: Electron.IpcRendererEvent, state: SatelliteShellState) =>
         listener(state);

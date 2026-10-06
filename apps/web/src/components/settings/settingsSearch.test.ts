@@ -45,6 +45,16 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
 ];
 
 describe("searchSettings", () => {
+  it.each(["Satellite widget", "pill mode"])("finds the widget preference by %s", (query) => {
+    const widget = SETTINGS_SEARCH_ITEMS.find((item) => item.id === "pill-mode")!;
+    expect(searchSettings(query, [{ ...widget, desktopOnly: false, windowsOnly: false }])).toEqual([
+      expect.objectContaining({
+        id: "pill-mode",
+        title: "Satellite widget",
+        to: "/settings/general",
+      }),
+    ]);
+  });
   it.each(["send shortcut", "multiline", "new line"])("finds Send shortcut for %s", (query) => {
     expect(searchSettings(query).map((item) => item.id)).toContain("send-shortcut");
   });

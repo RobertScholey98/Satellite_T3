@@ -31,7 +31,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-describe("Pill mode restart prompt", () => {
+describe("Satellite widget restart prompt", () => {
   it("waits for persistence and only restarts when the toast action is chosen", async () => {
     let finishSaving!: () => void;
     const saved = new Promise<void>((resolve) => {
@@ -59,7 +59,7 @@ describe("Pill mode restart prompt", () => {
     expect(mocks.restartApp).not.toHaveBeenCalled();
     const toast = mocks.add.mock.calls[0]![0];
     expect(toast).toMatchObject({
-      title: "Restart to apply Pill mode",
+      title: "Restart to apply Satellite widget preference",
       actionProps: { children: "Restart now" },
     });
     await toast.actionProps!.onClick();
@@ -84,7 +84,7 @@ describe("Pill mode restart prompt", () => {
     await setPillModeEnabled(true, false);
     expect(getClientSettings().satellitePillEnabled).toBe(false);
     expect(mocks.add).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Couldn't save Pill mode" }),
+      expect.objectContaining({ title: "Couldn't save Satellite widget preference" }),
     );
     expect(mocks.add.mock.calls[0]![0].actionProps).toBeUndefined();
     expect(mocks.restartApp).not.toHaveBeenCalled();

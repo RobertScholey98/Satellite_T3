@@ -132,6 +132,7 @@ describe("retained Satellite request coordinator", () => {
       },
       hideMain: vi.fn(),
       setPinned: vi.fn(),
+      setPositionsLinked: vi.fn(),
       openMain: vi.fn(),
       onShellState: () => () => {},
       onAttentionIntent: (listener) => {

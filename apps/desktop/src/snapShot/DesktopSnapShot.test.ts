@@ -185,8 +185,8 @@ vi.mock("./RegionSnapShot.ts", async (original) => ({
     capture: regionCaptureMock,
   }),
 }));
-vi.mock("./WindowsCaptureFeedback.ts", () => ({
-  showWindowsCaptureOverlay: (window: Electron.BaseWindow) => window.showInactive(),
+vi.mock("../electron/WindowsWindowVisibility.ts", () => ({
+  showInactiveWithoutAnimation: (window: Electron.BaseWindow) => window.showInactive(),
 }));
 vi.mock("./MacSnapShot.ts", () => ({ captureMacWindowSnapshot: macCaptureMock }));
 vi.mock("./LinuxSnapShot.ts", () => ({

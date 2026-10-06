@@ -131,9 +131,9 @@ const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right
 export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "pill-mode",
-    title: "Pill mode",
+    title: "Satellite widget",
     to: "/settings/general",
-    searchTerms: ["satellite", "floating", "window", "taskbar", "desktop"],
+    searchTerms: ["pill mode", "floating", "companion", "window", "taskbar", "desktop"],
     desktopOnly: true,
     windowsOnly: true,
   },

@@ -21,6 +21,7 @@ const INITIAL_PILL: SatellitePillState = {
 
 /** Transfer one thresholded gesture to native capture. A later click belongs to the drag until a new press. */
 export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
+  const face = useRef<HTMLDivElement>(null);
   const [pill, setPill] = useState(INITIAL_PILL);
   const [keyboardFocus, setKeyboardFocus] = useState(false);
   const [layout, setLayout] = useState<SatellitePillLayout>({
@@ -111,9 +112,16 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
     target: Element;
   } | null>(null);
   const suppressClick = useRef(false);
+  useEffect(
+    () =>
+      bridge.onOpacityChange((opacity) => {
+        if (face.current) face.current.style.opacity = String(opacity);
+      }),
+    [bridge],
+  );
   useEffect(() => bridge.onPillState(setPill), [bridge]);
   return (
-    <>
+    <div ref={face} data-satellite="widget" style={{ width: "100%", height: "100%" }}>
       <div
         data-satellite="pill"
         style={{
@@ -265,6 +273,6 @@ export function SatellitePillFace({ bridge }: { bridge: SatellitePillBridge }) {
               : "No requests need your attention."
           : pill.detail}
       </span>
-    </>
+    </div>
   );
 }

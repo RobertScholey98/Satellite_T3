@@ -110,7 +110,7 @@ body,
 }
 
 [data-satellite="pill"]:hover {
-  background: var(--accent, var(--background, #181a1e));
+  background-image: linear-gradient(var(--accent, transparent), var(--accent, transparent));
 }
 
 [data-satellite="pill"][data-wing-side="right"] {

@@ -1,6 +1,7 @@
 export const SATELLITE_PUBLISH = "satellite:publish";
 export const SATELLITE_HIDE_MAIN = "satellite:hide-main";
 export const SATELLITE_PILL_STATE = "satellite:pill-state";
+export const SATELLITE_PILL_OPACITY = "satellite:pill-opacity";
 export const SATELLITE_PILL_READY = "satellite:pill-ready";
 export const SATELLITE_PILL_OPEN = "satellite:pill-open";
 export const SATELLITE_PILL_MOVE = "satellite:pill-move";
@@ -12,3 +13,4 @@ export const SATELLITE_OPEN_MAIN = "satellite:open-main";
 export const SATELLITE_SHELL_STATE = "satellite:shell-state";
 export const SATELLITE_WORKSPACE_READY = "satellite:workspace-ready";
 export const SATELLITE_SET_PINNED = "satellite:set-pinned";
+export const SATELLITE_SET_POSITIONS_LINKED = "satellite:set-positions-linked";

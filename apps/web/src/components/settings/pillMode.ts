@@ -12,7 +12,7 @@ export async function setPillModeEnabled(enabled: boolean, active: boolean): Pro
   } catch (error) {
     toastManager.add({
       type: "error",
-      title: "Couldn't save Pill mode",
+      title: "Couldn't save Satellite widget preference",
       description: error instanceof Error ? error.message : "Try again.",
     });
     return;
@@ -27,10 +27,10 @@ export async function setPillModeEnabled(enabled: boolean, active: boolean): Pro
   toastManager.add({
     id: RESTART_TOAST_ID,
     type: "info",
-    title: "Restart to apply Pill mode",
+    title: "Restart to apply Satellite widget preference",
     description: enabled
-      ? "The app will restart with the floating pill enabled."
-      : "The app will restart with a normal window and taskbar entry.",
+      ? "The app will restart with the floating widget enabled. Satellite remains available from the taskbar."
+      : "The app will restart without the floating widget. Satellite remains available from the taskbar.",
     timeout: 0,
     ...(restart
       ? {
