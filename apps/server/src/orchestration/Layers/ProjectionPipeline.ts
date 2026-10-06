@@ -849,6 +849,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.linkedPullRequest !== undefined
               ? { linkedPullRequest: event.payload.linkedPullRequest }
               : {}),
+            ...(event.payload.commitRecommendation !== undefined
+              ? { commitRecommendation: event.payload.commitRecommendation }
+              : {}),
             ...(event.payload.branchPullRequest !== undefined
               ? { branchPullRequest: event.payload.branchPullRequest }
               : {}),

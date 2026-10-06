@@ -128,6 +128,7 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
+import { decideOrchestrationCommand } from "./orchestration/decider.ts";
 import {
   OrchestrationCommandInvariantError,
   OrchestrationThreadSettleBlockedError,
@@ -5709,6 +5710,99 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
+
+  for (const entryPoint of ["thread.create", "thread.turn.start"] as const) {
+    it.effect(`creates a No project idea without a worktree through ${entryPoint}`, () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const scratchProjectId = ProjectId.make("project-scratch-idea");
+        let scratchRoot = "";
+        const created: Array<Extract<OrchestrationCommand, { type: "thread.create" }>> = [];
+        const scratchProject = () => ({
+          ...makeDefaultOrchestrationReadModel().projects[0]!,
+          id: scratchProjectId,
+          workspaceRoot: scratchRoot,
+        });
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.gen(function* () {
+                  if (command.type === "thread.create") {
+                    yield* decideOrchestrationCommand({
+                      command,
+                      readModel: {
+                        ...makeDefaultOrchestrationReadModel(),
+                        projects: [scratchProject()],
+                        threads: [],
+                      },
+                    }).pipe(
+                      Effect.catchTag("PlatformError", Effect.die),
+                      Effect.provide(NodeServices.layer),
+                    );
+                    created.push(command);
+                  }
+                  return { sequence: created.length };
+                }),
+            },
+            projectionSnapshotQuery: {
+              getProjectShellById: (projectId) =>
+                Effect.succeed(
+                  projectId === scratchProjectId ? Option.some(scratchProject()) : Option.none(),
+                ),
+            },
+          },
+        });
+        yield* Effect.scoped(
+          withWsRpcClient(yield* getWsServerUrl("/ws"), (client) =>
+            Effect.gen(function* () {
+              scratchRoot =
+                (yield* client[WS_METHODS.serverGetConfig]({})).scratchWorkspaceRoot ?? "";
+              assert.isNotEmpty(scratchRoot);
+              const threadId = ThreadId.make(`scratch-idea-${entryPoint}`);
+              const commandId = CommandId.make(`create-${threadId}`);
+              const createdAt = "2026-09-25T10:00:00.000Z";
+              const createThread = {
+                projectId: scratchProjectId,
+                purpose: "idea" as const,
+                title: "Explore an idea",
+                modelSelection: defaultModelSelection,
+                runtimeMode: "full-access" as const,
+                interactionMode: "default" as const,
+                branch: null,
+                worktreePath: null,
+                createdAt,
+              };
+              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](
+                entryPoint === "thread.create"
+                  ? { type: entryPoint, commandId, threadId, ...createThread }
+                  : {
+                      type: entryPoint,
+                      commandId,
+                      threadId,
+                      message: {
+                        messageId: MessageId.make(`message-${threadId}`),
+                        role: "user",
+                        text: "Explore an idea",
+                        attachments: [],
+                      },
+                      runtimeMode: "full-access",
+                      interactionMode: "default",
+                      bootstrap: { createThread },
+                      createdAt,
+                    },
+              );
+            }),
+          ),
+        );
+        assert.equal(created.length, 1);
+        assert.equal(created[0]?.purpose, "idea");
+        assert.isNull(created[0]?.worktreePath);
+        assert.isNull(created[0]?.branch);
+        assert.isFalse(yield* fileSystem.exists(scratchRoot));
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
 
   it.effect("withholds Scratch when the data dir sits inside a work tree", () =>
     Effect.gen(function* () {

@@ -2,6 +2,7 @@ import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
 import {
   WS_METHODS,
+  ORCHESTRATION_WS_METHODS,
   type EnvironmentId,
   type OrchestrationShellSnapshot,
 } from "@t3tools/contracts";
@@ -260,6 +261,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     uploadFeedback: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:thread:upload-feedback",
       tag: WS_METHODS.providerUploadFeedback,
+      scheduler,
+      concurrency,
+    }),
+    getRequestLifecycle: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:queries:thread:request-lifecycle",
+      tag: ORCHESTRATION_WS_METHODS.getRequestLifecycle,
       scheduler,
       concurrency,
     }),

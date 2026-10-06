@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as AzureDevOpsReadApi from "./AzureDevOpsReadApi.ts";
 import {
   decodeAzureDevOpsPullRequestJson,
   decodeAzureDevOpsPullRequestListJson,
@@ -353,8 +354,9 @@ function decodeAzureDevOpsJson<S extends Schema.Top>(
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const process = yield* VcsProcess.VcsProcess;
+  const reads = yield* AzureDevOpsReadApi.AzureDevOpsReadApi;
 
-  const execute: AzureDevOpsCli["Service"]["execute"] = (input) =>
+  const executeCli: AzureDevOpsCli["Service"]["execute"] = (input) =>
     process
       .run({
         operation: "AzureDevOpsCli.execute",
@@ -377,6 +379,30 @@ export const make = Effect.gen(function* () {
           ),
         ),
       );
+
+  const execute: AzureDevOpsCli["Service"]["execute"] = (input) =>
+    reads.read(input).pipe(
+      Effect.mapError((cause) => {
+        const fields = {
+          operation: "execute" as const,
+          command: "az" as const,
+          cwd: input.cwd,
+          argumentCount: input.args.length,
+          cause,
+        };
+        switch (cause.reason) {
+          case "authentication":
+            return new AzureDevOpsCliAuthenticationError(fields);
+          case "rate-limited":
+            return new AzureDevOpsCliRateLimitError(fields);
+          case "not-found":
+            return new AzureDevOpsPullRequestNotFoundError(fields);
+          default:
+            return new AzureDevOpsCommandFailedError(fields);
+        }
+      }),
+      Effect.flatMap((output) => (output === null ? executeCli(input) : Effect.succeed(output))),
+    );
 
   const executeJson = (input: Parameters<AzureDevOpsCli["Service"]["execute"]>[0]) =>
     execute({
@@ -551,4 +577,6 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(AzureDevOpsCli, make);
+export const layer = Layer.effect(AzureDevOpsCli, make).pipe(
+  Layer.provide(AzureDevOpsReadApi.layer),
+);

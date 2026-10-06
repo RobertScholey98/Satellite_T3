@@ -233,12 +233,14 @@ describe("ProviderSessionReaper", () => {
       Layer.provideMerge(Layer.succeed(ProviderService, providerService)),
       Layer.provideMerge(
         Layer.succeed(ProjectionSnapshotQuery, {
+          getRequestLifecycle: () => Effect.die("unused"),
           getUserInputActivity: () => Effect.die("unused"),
           listActivitiesByKind: () => Effect.die("unused"),
           getCommandReadModel: () => Effect.die("unused"),
           getSnapshot: () => Effect.die("unused"),
           getShellSnapshot: () => Effect.die("unused"),
           getDeletedWorktreeThreads: () => Effect.die("unused"),
+          listThreadsWithCommitRecommendations: () => Effect.die("unused"),
           listThreadsWithPullRequests: () => Effect.die("unused"),
           getArchivedShellSnapshot: () => Effect.die("unused"),
           getSnapshotSequence: () =>

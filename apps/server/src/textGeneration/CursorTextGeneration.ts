@@ -1,3 +1,4 @@
+import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
 import {
   IdeaUpdateGenerationResult,
   normalizeIdeaUpdateResult,
@@ -69,6 +70,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
+      | "generateRevdoc"
       | "generateIdeaUpdate";
     cwd: string;
     prompt: string;
@@ -78,7 +80,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
       const workingDirectory =
-        operation === "generateIdeaUpdate"
+        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
           ? yield* prepareCursorIdeaWorkspace(cwd, "updates").pipe(
               Effect.provideService(FileSystem.FileSystem, fs),
               Effect.provideService(Path.Path, path),
@@ -87,7 +89,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       const runtime = yield* makeCursorAcpRuntime({
         cursorSettings,
         environment:
-          operation === "generateIdeaUpdate"
+          operation === "generateIdeaUpdate" || operation === "generateRevdoc"
             ? yield* prepareCursorIdeaEnvironment(workingDirectory, resolvedEnvironment).pipe(
                 Effect.provideService(FileSystem.FileSystem, fs),
                 Effect.provideService(Path.Path, path),
@@ -99,7 +101,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       }).pipe(Effect.provideService(Crypto.Crypto, crypto));
 
       const guard =
-        operation === "generateIdeaUpdate"
+        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
           ? yield* installTextGenerationToolGuard(runtime, operation)
           : undefined;
 
@@ -302,6 +304,15 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
+  const generateRevdoc = (input: RevdocGenerationInput) =>
+    runCursorJson({
+      operation: "generateRevdoc",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: RevdocGenerationResult,
+      modelSelection: input.modelSelection,
+    });
+
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>
     runCursorJson({
       operation: "generateIdeaUpdate",
@@ -312,6 +323,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     }).pipe(Effect.map(normalizeIdeaUpdateResult));
 
   return {
+    generateRevdoc,
     generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,

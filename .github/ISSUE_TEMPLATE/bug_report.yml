@@ -3,13 +3,12 @@ description: Report broken behavior, regressions, crashes, or reliability issues
 title: "[Bug]: "
 labels:
   - bug
-  - needs-triage
 body:
   - type: markdown
     attributes:
       value: |
         Use this form for broken behavior, regressions, crashes, or reliability problems.
-        Feature requests belong in [Discussions](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
+        Report Satellite problems here in the fork. Use a blank issue for feature proposals.
         Search existing issues first and keep the report focused on one problem.
 
   - type: checkboxes
@@ -93,7 +92,7 @@ body:
     attributes:
       label: Environment
       description: OS, browser or desktop app version, Node/Bun version, provider/model if relevant.
-      placeholder: macOS 15.3, Chrome 135, Bun 1.3.9, Codex app-server ...
+      placeholder: Windows 11, SatelliteT3 version or commit, Node 24, provider/model ...
 
   - type: textarea
     id: logs

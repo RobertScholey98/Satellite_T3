@@ -361,6 +361,90 @@ describe("serverSettings helpers", () => {
     ).toBeNull();
   });
 
+  it.each(["revdocModelSelection", "revdocTestingModelSelection"] as const)(
+    "replaces Revdoc models without retaining old effort options · %s",
+    (settingKey) => {
+      const current = {
+        ...DEFAULT_SERVER_SETTINGS,
+        [settingKey]: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
+          { id: "reasoningEffort", value: "high" },
+        ]),
+      };
+      expect(
+        applyServerSettingsPatch(current, {
+          [settingKey]: {
+            instanceId: ProviderInstanceId.make("claude"),
+            model: "claude-sonnet-4-6",
+          },
+        })[settingKey],
+      ).toEqual({ instanceId: "claude", model: "claude-sonnet-4-6" });
+    },
+  );
+
+  it.each(["revdocModelSelection", "revdocTestingModelSelection"] as const)(
+    "merges Revdoc options by id and supports clearing them · %s",
+    (settingKey) => {
+      const current = {
+        ...DEFAULT_SERVER_SETTINGS,
+        [settingKey]: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
+          { id: "reasoningEffort", value: "high" },
+          { id: "fastMode", value: true },
+        ]),
+      };
+      const updated = applyServerSettingsPatch(current, {
+        [settingKey]: { options: [{ id: "reasoningEffort", value: "low" }] },
+      });
+      expect(updated[settingKey]).toEqual({
+        instanceId: "codex",
+        model: "gpt-5.4-mini",
+        options: [
+          { id: "reasoningEffort", value: "low" },
+          { id: "fastMode", value: true },
+        ],
+      });
+      expect(
+        applyServerSettingsPatch(updated, {
+          [settingKey]: { options: [] },
+        })[settingKey],
+      ).toEqual({ instanceId: "codex", model: "gpt-5.4-mini" });
+    },
+  );
+
+  it.each(["revdocModelSelection", "revdocTestingModelSelection"] as const)(
+    "resets Revdocs to Automatic and accepts a complete selection afterwards · %s",
+    (settingKey) => {
+      const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
+        { id: "reasoningEffort", value: "high" },
+      ]);
+      const configured = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+        [settingKey]: selection,
+      });
+      expect(configured[settingKey]).toEqual(selection);
+      const automatic = applyServerSettingsPatch(configured, { [settingKey]: null });
+      expect(automatic[settingKey]).toBeNull();
+      expect(applyServerSettingsPatch(automatic, { [settingKey]: selection })[settingKey]).toEqual(
+        selection,
+      );
+      expect(
+        applyServerSettingsPatch(automatic, {
+          [settingKey]: { options: [{ id: "reasoningEffort", value: "high" }] },
+        })[settingKey],
+      ).toBeNull();
+    },
+  );
+
+  it("keeps generate-only as the default and persists the generate-and-test preference", () => {
+    expect(DEFAULT_SERVER_SETTINGS.revdocDefaultAction).toBe("generate");
+    expect(DEFAULT_SERVER_SETTINGS.revdocTestingModelSelection).toBeNull();
+    const updated = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      revdocDefaultAction: "generate-and-test",
+    });
+    expect(updated.revdocDefaultAction).toBe("generate-and-test");
+    expect(
+      applyServerSettingsPatch(updated, { revdocDefaultAction: "generate" }).revdocDefaultAction,
+    ).toBe("generate");
+  });
+
   it("still deep merges text generation selection when only options are provided", () => {
     const current = {
       ...DEFAULT_SERVER_SETTINGS,

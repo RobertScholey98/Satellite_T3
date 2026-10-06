@@ -1,3 +1,4 @@
+import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
 import {
   IdeaUpdateGenerationResult,
   normalizeIdeaUpdateResult,
@@ -117,6 +118,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
+      | "generateRevdoc"
       | "generateIdeaUpdate",
     value: unknown,
   ): Effect.Effect<string, TextGenerationError> =>
@@ -137,6 +139,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
+      | "generateRevdoc"
       | "generateIdeaUpdate",
     attachments: TextGeneration.BranchNameGenerationInput["attachments"],
   ): Effect.fn.Return<MaterializedImageAttachments, TextGenerationError> {
@@ -180,6 +183,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
+      | "generateRevdoc"
       | "generateIdeaUpdate";
     cwd: string;
     prompt: string;
@@ -192,7 +196,23 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       operation,
       toJsonSchemaObject(outputSchemaJson),
     );
-    const tempDirectory = operation === "generateIdeaUpdate" ? cwd : undefined;
+    const executionCwd =
+      operation === "generateRevdoc"
+        ? yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-revdoc-" }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new TextGenerationError({
+                  operation,
+                  detail: "Could not create a temporary Revdoc workspace.",
+                  cause,
+                }),
+            ),
+          )
+        : cwd;
+    const tempDirectory =
+      operation === "generateIdeaUpdate" || operation === "generateRevdoc"
+        ? executionCwd
+        : undefined;
     const schemaPath = yield* writeTempFile(operation, "codex-schema", schemaJson, tempDirectory);
     const outputPath = yield* writeTempFile(operation, "codex-output", "", tempDirectory);
 
@@ -208,9 +228,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       const effectiveEnvironment = resolved?.environment ?? resolvedEnvironment;
       const launchArgs = resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment);
       const ideaPolicy =
-        operation === "generateIdeaUpdate"
+        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
           ? yield* prepareCodexIdeaPolicy({
-              cwd,
+              cwd: executionCwd,
               homePath: effectiveConfig.homePath,
               launchArgs,
               environment: effectiveEnvironment,
@@ -270,7 +290,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             ? { CODEX_HOME: expandHomePath(effectiveConfig.homePath) }
             : {}),
         },
-        cwd,
+        cwd: executionCwd,
         shell: spawnCommand.shell,
         stdin: {
           stream: Stream.encodeText(Stream.make(prompt)),
@@ -467,6 +487,15 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
+  const generateRevdoc = (input: RevdocGenerationInput) =>
+    runCodexJson({
+      operation: "generateRevdoc",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: RevdocGenerationResult,
+      modelSelection: input.modelSelection,
+    });
+
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>
     runCodexJson({
       operation: "generateIdeaUpdate",
@@ -477,6 +506,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     }).pipe(Effect.map(normalizeIdeaUpdateResult));
 
   return {
+    generateRevdoc,
     generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,

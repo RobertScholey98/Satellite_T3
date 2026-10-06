@@ -1,14 +1,20 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  ApprovalRequestId,
   CommandId,
   EnvironmentId,
+  EventId,
   ORCHESTRATION_WS_METHODS,
+  OrchestrationGetRequestLifecycleError,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   type ClientOrchestrationCommand,
+  type OrchestrationGetRequestLifecycleInput,
+  type OrchestrationGetRequestLifecycleResult,
   type OrchestrationShellSnapshot,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -61,11 +67,30 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* () {
     command: ClientOrchestrationCommand;
     reply: Deferred.Deferred<{ sequence: number }, Error>;
   }>();
+  const lifecycleRequests = yield* Queue.unbounded<{
+    input: OrchestrationGetRequestLifecycleInput;
+    reply: Deferred.Deferred<
+      OrchestrationGetRequestLifecycleResult,
+      OrchestrationGetRequestLifecycleError
+    >;
+  }>();
+  const environments: EnvironmentId[] = [];
   const supervisor = EnvironmentSupervisor.of({
     target: { environmentId: ENVIRONMENT_ID },
     session: yield* SubscriptionRef.make(
       Option.some({
         client: {
+          [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: (
+            input: OrchestrationGetRequestLifecycleInput,
+          ) =>
+            Effect.gen(function* () {
+              const reply = yield* Deferred.make<
+                OrchestrationGetRequestLifecycleResult,
+                OrchestrationGetRequestLifecycleError
+              >();
+              yield* Queue.offer(lifecycleRequests, { input, reply });
+              return yield* Deferred.await(reply);
+            }),
           [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command: ClientOrchestrationCommand) =>
             Effect.gen(function* () {
               const reply = yield* Deferred.make<{ sequence: number }, Error>();
@@ -79,8 +104,10 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* () {
   const runtime = Atom.runtime(
     Layer.mergeAll(
       Layer.succeed(EnvironmentRegistry, {
-        run: (_environmentId, effect) =>
-          Effect.provideService(effect, EnvironmentSupervisor, supervisor),
+        run: (environmentId, effect) => {
+          environments.push(environmentId);
+          return Effect.provideService(effect, EnvironmentSupervisor, supervisor);
+        },
       } as EnvironmentRegistry["Service"]),
       Layer.succeed(
         Crypto.Crypto,
@@ -97,8 +124,60 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* () {
   yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
   const visibleAtom = commands.snapshotAtom(ENVIRONMENT_ID);
   registry.mount(visibleAtom);
-  return { registry, commands, snapshotAtom, visibleAtom, requests };
+  return {
+    registry,
+    commands,
+    snapshotAtom,
+    visibleAtom,
+    requests,
+    lifecycleRequests,
+    environments,
+  };
 });
+
+it.effect("checks exact request evidence remotely and preserves unavailable-query failures", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness();
+    const input = {
+      threadId: THREAD_ID,
+      audience: "idea",
+      kind: "question",
+      requestId: ApprovalRequestId.make("request"),
+      submittedAt: NOW,
+    } as const;
+    const run = () =>
+      h.commands.getRequestLifecycle.run(h.registry, { environmentId: ENVIRONMENT_ID, input });
+    const result = run();
+    const request = yield* Queue.take(h.lifecycleRequests);
+    expect(h.environments).toEqual([ENVIRONMENT_ID]);
+    expect(request.input).toEqual(input);
+    expect(h.registry.get(h.visibleAtom)).toBe(SNAPSHOT);
+    const evidence = [
+      {
+        id: EventId.make("resolved"),
+        kind: "user-input.resolved",
+        tone: "info" as const,
+        summary: "Answered",
+        payload: { requestId: input.requestId },
+        turnId: null,
+        createdAt: NOW,
+      },
+    ];
+    yield* Deferred.succeed(request.reply, evidence);
+    const response = yield* Effect.promise(() => result);
+    expect(response._tag).toBe("Success");
+    if (response._tag === "Success") expect(response.value).toEqual(evidence);
+
+    const failed = run();
+    const failureRequest = yield* Queue.take(h.lifecycleRequests);
+    const unavailable = new OrchestrationGetRequestLifecycleError({ reason: "thread-unavailable" });
+    yield* Deferred.fail(failureRequest.reply, unavailable);
+    const failure = yield* Effect.promise(() => failed);
+    expect(failure._tag).toBe("Failure");
+    if (failure._tag === "Failure") expect(Cause.squash(failure.cause)).toBe(unavailable);
+    expect(h.registry.get(h.visibleAtom)).toBe(SNAPSHOT);
+  }),
+);
 
 describe("remote thread lifecycle commands", () => {
   const actions = [

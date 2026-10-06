@@ -12,7 +12,7 @@ export const installTextGenerationToolGuard = Effect.fn("installTextGenerationTo
         failed,
         new TextGenerationError({
           operation,
-          detail: "Idea updates cannot use tools or request user input.",
+          detail: "Background text generation cannot use tools or request user input.",
         }),
       ).pipe(Effect.asVoid);
     const rejectRequest = () =>
@@ -21,7 +21,7 @@ export const installTextGenerationToolGuard = Effect.fn("installTextGenerationTo
           Effect.fail(
             new AcpRequestError({
               code: -32601,
-              errorMessage: "Tools are disabled for idea updates.",
+              errorMessage: "Tools are disabled for background text generation.",
             }),
           ),
         ),

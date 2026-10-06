@@ -11,6 +11,17 @@ import {
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { usageLimitsBannerItem } from "./chat/ComposerUsageLimits";
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
+import { PendingRequestDelivery } from "./chat/PendingRequestDelivery";
+import {
+  EMPTY_REQUEST_DRAFT,
+  createPendingSubmission,
+  isPendingDelivery,
+  pendingRequestKey,
+  pendingThreadKey,
+  prioritizePendingRequests,
+  recordPendingCommandResult,
+  usePendingRequestStore,
+} from "../pendingRequestStore";
 import {
   questionAttachmentDraftId,
   questionAttachmentDraftPrefix,
@@ -196,6 +207,7 @@ import {
   type RightPanelSurface,
   useRightPanelStore,
 } from "../rightPanelStore";
+import { useRevdocWorktree } from "../revdocWorktreeStore";
 import {
   isPreviewSupportedInRuntime,
   setActivePreviewTab,
@@ -541,6 +553,8 @@ import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   recallableComposerPrompt,
 } from "./chat/composerPromptHistory";
+
+const RevdocPanel = lazy(() => import("./revdoc/RevdocPanel"));
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
@@ -1780,11 +1794,6 @@ export default function ChatView(props: ChatViewProps) {
     window.addEventListener("dragend", clearWorkspaceFileDrag);
     return () => window.removeEventListener("dragend", clearWorkspaceFileDrag);
   }, [isWorkspaceFileDragActive]);
-  const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
-    Record<string, Record<string, PendingUserInputDraftAnswer>>
-  >({});
-  const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
-    useState<Record<string, number>>({});
   const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const isMobileViewport = useMediaQuery("max-sm");
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
@@ -2026,6 +2035,7 @@ export default function ChatView(props: ChatViewProps) {
     [activeThreadEnvironmentId, activeThreadId],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
+  const revdocWorktreePath = useRevdocWorktree(activeThreadRef);
   const activeThreadShell = useThreadShell(isServerThread ? activeThreadRef : null);
   const [timelineAnchor, setTimelineAnchor] = useState<{
     readonly threadKey: string | null;
@@ -2938,16 +2948,75 @@ export default function ChatView(props: ChatViewProps) {
       }),
     [agentSessionLive, threadActivities],
   );
-  const { approvals: pendingApprovals, userInputs: pendingUserInputs } = useMemo(
-    () => derivePendingRequests(threadActivities),
-    [threadActivities],
+  const requests = useMemo(() => derivePendingRequests(threadActivities), [threadActivities]);
+  const selectedRequest = usePendingRequestStore((state) =>
+    activeThreadId
+      ? state.threadSelections[pendingThreadKey({ environmentId, threadId: activeThreadId })]
+      : undefined,
+  );
+  const {
+    approvals: pendingApprovals,
+    userInputs: pendingUserInputs,
+    activeApproval: activePendingApproval,
+  } = useMemo(
+    () => prioritizePendingRequests(requests, selectedRequest),
+    [requests, selectedRequest],
   );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
-  const activePendingRequestKey = JSON.stringify([
-    environmentId,
-    activeThreadId,
-    activePendingUserInput?.requestId,
-  ]);
+  const activePendingRequestKey =
+    activePendingUserInput && activeThreadId
+      ? pendingRequestKey({
+          environmentId,
+          threadId: activeThreadId,
+          kind: "question",
+          requestId: activePendingUserInput.requestId,
+        })
+      : "";
+  const activeRequestDraft = usePendingRequestStore(
+    (state) => state.drafts[activePendingRequestKey] ?? EMPTY_REQUEST_DRAFT,
+  );
+  const pendingDeliveryKeys = usePendingRequestStore(
+    useShallow((state) =>
+      Object.entries(state.drafts)
+        .filter(
+          ([, draft]) =>
+            isPendingDelivery(draft.delivery) &&
+            draft.delivery.submission.summary.ref.environmentId === environmentId &&
+            draft.delivery.submission.summary.ref.threadId === activeThreadId,
+        )
+        .map(([key]) => key),
+    ),
+  );
+  const pendingApprovalDelivery = usePendingRequestStore(
+    useShallow((state) =>
+      activeThreadId
+        ? pendingApprovals
+            .filter((approval) =>
+              isPendingDelivery(
+                state.drafts[
+                  pendingRequestKey({
+                    environmentId,
+                    threadId: activeThreadId,
+                    kind: "approval",
+                    requestId: approval.requestId,
+                  })
+                ]?.delivery ?? EMPTY_REQUEST_DRAFT.delivery,
+              ),
+            )
+            .map((approval) => approval.requestId)
+        : [],
+    ),
+  );
+  useEffect(() => {
+    if (!activeThreadId) return;
+    const store = usePendingRequestStore.getState();
+    for (const draft of Object.values(store.drafts)) {
+      if (!isPendingDelivery(draft.delivery)) continue;
+      const ref = draft.delivery.submission.summary.ref;
+      if (ref.environmentId === environmentId && ref.threadId === activeThreadId)
+        store.reconcile(ref, threadActivities);
+    }
+  }, [activeThreadId, environmentId, threadActivities]);
   const pendingQuestionDraftKeys = useMemo(
     () =>
       activeThreadId
@@ -3034,7 +3103,7 @@ export default function ChatView(props: ChatViewProps) {
         return [
           question.id,
           {
-            ...pendingUserInputAnswersByRequestId[activePendingRequestKey]?.[question.id],
+            ...activeRequestDraft.answers[question.id],
             attachmentCount: attachments.length,
             attachmentsBlocked:
               (attachments.length > 0 && !supportsQuestionAttachments) ||
@@ -3052,12 +3121,36 @@ export default function ChatView(props: ChatViewProps) {
     questionUploadsBlocked,
     supportsQuestionAttachments,
     questionPreparations,
-    pendingUserInputAnswersByRequestId,
-    activePendingRequestKey,
+    activeRequestDraft.answers,
   ]);
-  const activePendingQuestionIndex = activePendingUserInput
-    ? (pendingUserInputQuestionIndexByRequestId[activePendingRequestKey] ?? 0)
-    : 0;
+  const activePendingQuestionIndex = activePendingUserInput ? activeRequestDraft.questionIndex : 0;
+  useEffect(() => {
+    if (!activePendingUserInput) return;
+    usePendingRequestStore.getState().updateDraft(activePendingRequestKey, (draft) => {
+      if (
+        Object.keys(activePendingDraftAnswers).every(
+          (id) =>
+            draft.answers[id]?.attachmentCount === activePendingDraftAnswers[id]?.attachmentCount &&
+            draft.answers[id]?.attachmentsBlocked ===
+              activePendingDraftAnswers[id]?.attachmentsBlocked,
+        )
+      )
+        return draft;
+      return {
+        ...draft,
+        answers: Object.fromEntries(
+          Object.entries(activePendingDraftAnswers).map(([id, answer]) => [
+            id,
+            {
+              ...draft.answers[id],
+              attachmentCount: answer.attachmentCount ?? 0,
+              attachmentsBlocked: answer.attachmentsBlocked ?? false,
+            },
+          ]),
+        ),
+      };
+    });
+  }, [activePendingUserInput, activePendingRequestKey, activePendingDraftAnswers]);
   const activePendingProgress = useMemo(
     () =>
       activePendingUserInput
@@ -3077,7 +3170,8 @@ export default function ChatView(props: ChatViewProps) {
     [activePendingDraftAnswers, activePendingUserInput],
   );
   const activePendingIsResponding = activePendingUserInput
-    ? respondingUserInputRequestIds.includes(activePendingUserInput.requestId)
+    ? respondingUserInputRequestIds.includes(activePendingUserInput.requestId) ||
+      isPendingDelivery(activeRequestDraft.delivery)
     : false;
   const activeProposedPlan = useMemo(() => {
     if (!latestTurnSettled) {
@@ -3099,7 +3193,6 @@ export default function ChatView(props: ChatViewProps) {
     hasActionableProposedPlan: hasActionableProposedPlan(activeProposedPlan),
     hasComposerAttachments: composerHasAttachments,
   });
-  const activePendingApproval = pendingApprovals[0] ?? null;
   // The open /usage-limits panel for this thread, model and turn. Only the open
   // moment is stored: the rows read live provider data, so a redeemed reset
   // credit or refreshed probe shows through. Anything that spends quota closes
@@ -8744,6 +8837,28 @@ export default function ChatView(props: ChatViewProps) {
   const onRespondToApproval = useCallback(
     async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
       if (!activeThreadId) return;
+      const ref = { environmentId, threadId: activeThreadId, kind: "approval" as const, requestId };
+      const approval = pendingApprovals.find((request) => request.requestId === requestId);
+      if (!approval) return;
+      const submission = createPendingSubmission(
+        {
+          summary: {
+            ref,
+            title: activeThread?.title ?? "Conversation",
+            environmentName: activeEnvironment?.label ?? "Environment",
+            label: "Approval required",
+            preview: "Approval required",
+            createdAt: approval.createdAt,
+            available: !activeEnvironmentUnavailable,
+            muted: false,
+          },
+          approval,
+          audience: isIdea ? "idea" : "work",
+          response: { kind: "approval", decision },
+        },
+        threadActivities,
+      );
+      if (!usePendingRequestStore.getState().beginSubmission(ref, submission)) return;
 
       setRespondingRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
@@ -8754,8 +8869,11 @@ export default function ChatView(props: ChatViewProps) {
           threadId: activeThreadId,
           requestId,
           decision,
+          commandId: submission.commandId,
+          createdAt: submission.createdAt,
         },
       });
+      recordPendingCommandResult(pendingRequestKey(ref), submission, result);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         setThreadError(
@@ -8766,7 +8884,18 @@ export default function ChatView(props: ChatViewProps) {
       setRespondingRequestIds((existing) => existing.filter((id) => id !== requestId));
       return result;
     },
-    [activeThreadId, environmentId, respondToThreadApproval, setThreadError],
+    [
+      activeThreadId,
+      environmentId,
+      respondToThreadApproval,
+      setThreadError,
+      activeThread?.title,
+      activeEnvironment?.label,
+      activeEnvironmentUnavailable,
+      pendingApprovals,
+      isIdea,
+      threadActivities,
+    ],
   );
 
   const onRespondToUserInput = useCallback(
@@ -8803,6 +8932,35 @@ export default function ChatView(props: ChatViewProps) {
         );
       }
       userInputResponsesInFlight.current.add(responseKey);
+      const ref = { environmentId, threadId: activeThreadId, kind: "question" as const, requestId };
+      const submission = createPendingSubmission(
+        {
+          summary: {
+            ref,
+            title: activeThread?.title ?? "Conversation",
+            environmentName: activeEnvironment?.label ?? "Environment",
+            label: activePendingUserInput.questions[0]?.header ?? "Question",
+            preview: activePendingUserInput.questions[0]?.question ?? "Question",
+            createdAt: activePendingUserInput.createdAt,
+            available: !activeEnvironmentUnavailable,
+            muted: false,
+          },
+          question: activePendingUserInput,
+          audience: isIdea ? "idea" : "work",
+          response: {
+            kind: "question",
+            answers,
+            ...(attachmentsByQuestionId.size > 0
+              ? { attachmentsByQuestionId: Object.fromEntries(attachmentsByQuestionId) }
+              : {}),
+          },
+        },
+        threadActivities,
+      );
+      if (!usePendingRequestStore.getState().beginSubmission(ref, submission)) {
+        userInputResponsesInFlight.current.delete(responseKey);
+        return;
+      }
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
@@ -8812,11 +8970,14 @@ export default function ChatView(props: ChatViewProps) {
           threadId: activeThreadId,
           requestId,
           answers,
+          commandId: submission.commandId,
+          createdAt: submission.createdAt,
           ...(attachmentsByQuestionId.size > 0
             ? { attachmentsByQuestionId: Object.fromEntries(attachmentsByQuestionId) }
             : {}),
         },
       });
+      recordPendingCommandResult(pendingRequestKey(ref), submission, result);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         setThreadError(
@@ -8832,9 +8993,14 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadId,
       activePendingUserInput,
       activePendingIsResponding,
+      isIdea,
       environmentId,
       respondToThreadUserInput,
       setThreadError,
+      activeThread?.title,
+      activeEnvironment?.label,
+      activeEnvironmentUnavailable,
+      threadActivities,
     ],
   );
 
@@ -8843,14 +9009,42 @@ export default function ChatView(props: ChatViewProps) {
   const onDismissUserInput = useCallback(
     async (requestId: ApprovalRequestId) => {
       if (!activeThreadId) return;
+      const question = pendingUserInputs.find((request) => request.requestId === requestId);
+      if (!question) return;
+      const ref = { environmentId, threadId: activeThreadId, kind: "question" as const, requestId };
+      const submission = createPendingSubmission(
+        {
+          summary: {
+            ref,
+            title: activeThread?.title ?? "Conversation",
+            environmentName: activeEnvironment?.label ?? "Environment",
+            label: question.questions[0]?.header ?? "Question",
+            preview: question.questions[0]?.question ?? "Question",
+            createdAt: question.createdAt,
+            available: !activeEnvironmentUnavailable,
+            muted: false,
+          },
+          question,
+          response: { kind: "dismiss" },
+          audience: isIdea ? "idea" : "work",
+        },
+        threadActivities,
+      );
+      if (!usePendingRequestStore.getState().beginSubmission(ref, submission)) return;
 
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
       const result = await dismissThreadUserInput({
         environmentId,
-        input: { threadId: activeThreadId, requestId },
+        input: {
+          threadId: activeThreadId,
+          requestId,
+          commandId: submission.commandId,
+          createdAt: submission.createdAt,
+        },
       });
+      recordPendingCommandResult(pendingRequestKey(ref), submission, result);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         setThreadError(
@@ -8861,7 +9055,18 @@ export default function ChatView(props: ChatViewProps) {
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
       return result;
     },
-    [activeThreadId, dismissThreadUserInput, environmentId, setThreadError],
+    [
+      activeThreadId,
+      dismissThreadUserInput,
+      environmentId,
+      setThreadError,
+      pendingUserInputs,
+      activeThread?.title,
+      isIdea,
+      activeEnvironment?.label,
+      activeEnvironmentUnavailable,
+      threadActivities,
+    ],
   );
 
   const setActivePendingUserInputQuestionIndex = useCallback(
@@ -8869,9 +9074,9 @@ export default function ChatView(props: ChatViewProps) {
       if (!activePendingUserInput) {
         return;
       }
-      setPendingUserInputQuestionIndexByRequestId((existing) => ({
+      usePendingRequestStore.getState().updateDraft(activePendingRequestKey, (existing) => ({
         ...existing,
-        [activePendingRequestKey]: nextQuestionIndex,
+        questionIndex: nextQuestionIndex,
       }));
     },
     [activePendingUserInput, activePendingRequestKey],
@@ -8884,15 +9089,14 @@ export default function ChatView(props: ChatViewProps) {
       }
       // The option replaces the custom answer. Anything typed there is the
       // user's text, so it goes back to the thread draft instead of vanishing.
-      const displacedAnswer =
-        pendingUserInputAnswersByRequestId[activePendingRequestKey]?.[questionId]?.customAnswer;
+      const displacedAnswer = activeRequestDraft.answers[questionId]?.customAnswer;
       const currentPrompt =
         useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
       const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displacedAnswer);
       if (nextPrompt !== currentPrompt) {
         setComposerDraftPrompt(composerDraftTarget, nextPrompt);
       }
-      setPendingUserInputAnswersByRequestId((existing) => {
+      usePendingRequestStore.getState().updateDraft(activePendingRequestKey, (existing) => {
         const question =
           (activePendingProgress?.activeQuestion?.id === questionId
             ? activePendingProgress.activeQuestion
@@ -8904,11 +9108,11 @@ export default function ChatView(props: ChatViewProps) {
 
         return {
           ...existing,
-          [activePendingRequestKey]: {
-            ...existing[activePendingRequestKey],
+          answers: {
+            ...existing.answers,
             [questionId]: togglePendingUserInputOptionSelection(
               question,
-              existing[activePendingRequestKey]?.[questionId],
+              existing.answers[questionId],
               optionValue,
             ),
           },
@@ -8923,7 +9127,7 @@ export default function ChatView(props: ChatViewProps) {
       activePendingRequestKey,
       composerDraftTarget,
       composerRef,
-      pendingUserInputAnswersByRequestId,
+      activeRequestDraft.answers,
       setComposerDraftPrompt,
     ],
   );
@@ -8944,14 +9148,11 @@ export default function ChatView(props: ChatViewProps) {
         return;
       }
       promptRef.current = value;
-      setPendingUserInputAnswersByRequestId((existing) => ({
+      usePendingRequestStore.getState().updateDraft(activePendingRequestKey, (existing) => ({
         ...existing,
-        [activePendingRequestKey]: {
-          ...existing[activePendingRequestKey],
-          [questionId]: setPendingUserInputCustomAnswer(
-            existing[activePendingRequestKey]?.[questionId],
-            value,
-          ),
+        answers: {
+          ...existing.answers,
+          [questionId]: setPendingUserInputCustomAnswer(existing.answers[questionId], value),
         },
       }));
       const snapshot = composerRef.current?.readSnapshot();
@@ -9756,6 +9957,14 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
+    ) : renderedRightPanelSurface?.kind === "revdoc" && activeThreadRef && gitCwd ? (
+      <Suspense fallback={null}>
+        <RevdocPanel
+          key={`${activeThreadRef.environmentId}:${activeThreadRef.threadId}:${revdocWorktreePath ?? gitCwd}`}
+          threadRef={activeThreadRef}
+          worktreePath={revdocWorktreePath ?? gitCwd}
+        />
+      </Suspense>
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         model={agentPanelModel}
@@ -10108,6 +10317,13 @@ export default function ChatView(props: ChatViewProps) {
                           draftId={draftId}
                           activeProjectRef={activeProjectRef}
                           activeProjectTitle={activeProject?.title ?? null}
+                          canCreateWorktree={
+                            isGitRepo &&
+                            !envLocked &&
+                            !isIdea &&
+                            issueDraftIntent === undefined &&
+                            multipleModelSelections === null
+                          }
                         />
                       </div>
                     </div>
@@ -10124,6 +10340,13 @@ export default function ChatView(props: ChatViewProps) {
                       <ComposerSurface.Host>
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           {draftId && !isIdea ? <IssueDraftFields draftId={draftId} /> : null}
+                          {pendingDeliveryKeys.map((key) => (
+                            <PendingRequestDelivery
+                              key={key}
+                              requestKey={key}
+                              unavailable={activeEnvironmentUnavailable}
+                            />
+                          ))}
                           <ChatComposer
                             ideaMode={isIdea}
                             multipleModelSelections={isIdea ? null : multipleModelSelections}
@@ -10188,7 +10411,10 @@ export default function ChatView(props: ChatViewProps) {
                             activePendingIsResponding={activePendingIsResponding}
                             activePendingDraftAnswers={activePendingDraftAnswers}
                             activePendingQuestionIndex={activePendingQuestionIndex}
-                            respondingRequestIds={respondingRequestIds}
+                            respondingRequestIds={[
+                              ...respondingRequestIds,
+                              ...pendingApprovalDelivery,
+                            ]}
                             showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                             activeProposedPlan={activeProposedPlan}
                             activeTasksProgress={activeComposerTasksProgress}

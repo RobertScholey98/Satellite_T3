@@ -28,12 +28,14 @@ const makeProject = (scripts: OrchestrationProject["scripts"]): OrchestrationPro
 
 const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+    getRequestLifecycle: () => Effect.die("unused"),
     getUserInputActivity: () => Effect.die("unused"),
     listActivitiesByKind: () => Effect.die("unused"),
     getCommandReadModel: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
     getShellSnapshot: () => Effect.die("unused"),
     getDeletedWorktreeThreads: () => Effect.die("unused"),
+    listThreadsWithCommitRecommendations: () => Effect.die("unused"),
     listThreadsWithPullRequests: () => Effect.die("unused"),
     getArchivedShellSnapshot: () => Effect.die("unused"),
     getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),

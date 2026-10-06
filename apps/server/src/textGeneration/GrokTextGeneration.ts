@@ -1,3 +1,4 @@
+import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
 import {
   IdeaUpdateGenerationResult,
   normalizeIdeaUpdateResult,
@@ -66,6 +67,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       | "generatePrContent"
       | "generateBranchName"
       | "generateThreadTitle"
+      | "generateRevdoc"
       | "generateIdeaUpdate";
     cwd: string;
     prompt: string;
@@ -76,7 +78,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       const resolvedModel = resolveGrokAcpBaseModelId(modelSelection.model);
       const outputRef = yield* Ref.make("");
       const runtimeEnvironment =
-        operation === "generateIdeaUpdate"
+        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
           ? yield* prepareGrokIdeaEnvironment(cwd, environment, "updates").pipe(
               Effect.provideService(FileSystem.FileSystem, fs),
               Effect.provideService(Path.Path, path),
@@ -87,12 +89,14 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         environment: runtimeEnvironment,
         childProcessSpawner: commandSpawner,
         cwd,
-        ...(operation === "generateIdeaUpdate" ? { ideaPurpose: "updates" as const } : {}),
+        ...(operation === "generateIdeaUpdate" || operation === "generateRevdoc"
+          ? { ideaPurpose: "updates" as const }
+          : {}),
         clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
       }).pipe(Effect.provideService(Crypto.Crypto, crypto));
 
       const guard =
-        operation === "generateIdeaUpdate"
+        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
           ? yield* installTextGenerationToolGuard(runtime, operation)
           : undefined;
 
@@ -295,6 +299,15 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       } satisfies TextGeneration.ThreadTitleGenerationResult;
     });
 
+  const generateRevdoc = (input: RevdocGenerationInput) =>
+    runGrokJson({
+      operation: "generateRevdoc",
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: RevdocGenerationResult,
+      modelSelection: input.modelSelection,
+    });
+
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>
     runGrokJson({
       operation: "generateIdeaUpdate",
@@ -305,6 +318,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     }).pipe(Effect.map(normalizeIdeaUpdateResult));
 
   return {
+    generateRevdoc,
     generateIdeaUpdate,
     generateCommitMessage,
     generatePrContent,

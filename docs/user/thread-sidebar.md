@@ -10,6 +10,12 @@ and mode selections, unless the destination project has its own model default.
 Its branch and workspace mode come from your configured defaults. To continue in
 an existing worktree, use **New thread in this worktree** from the branch toolbar.
 
+To choose where a new worktree lives, use **New worktree** beside the new-thread
+heading on web or desktop. Enter a folder name and new branch, then choose a local
+or remote source branch. The folder is created directly inside the selected
+project's root on its environment, and the new worktree is selected for your
+draft. You can change the selection before sending your prompt.
+
 When you change a new thread's project, T3 Code stays in the current environment
 if that project exists there. Otherwise it selects an environment that has it.
 
@@ -56,7 +62,7 @@ the project menu in that heading or from **New thread in...** in the command
 palette, or press `mod+alt+n`. On mobile, pick **No project** from the project
 list. To move a draft into a project, pick the project in the heading.
 
-Each thread without a project works in its own folder under `~/.t3/scratch` (the
+Each work thread without a project works in its own folder under `~/.t3/scratch` (the
 `scratch` folder of your T3 data directory), named after its date, the first words
 of its first message, and a short id, like
 `2026-09-25-convert-these-pngs-to-webp-a1b2c3d4`. Deleting a thread keeps its

@@ -1,5 +1,6 @@
 import {
   type AgentSessionImportSource,
+  ApprovalRequestId,
   ChatAttachment,
   ComposerContextId,
   CheckpointRef,
@@ -12,6 +13,7 @@ import {
   TurnId,
   ProviderInstanceId,
   OrchestrationMessageContext,
+  OrchestrationThreadShell,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -47,6 +49,8 @@ const encodeThreadLinkedPullRequest = Schema.encodeSync(
 const encodeMessageContext = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationMessageContext),
 );
+const encodeThreadShell = Schema.encodeEffect(OrchestrationThreadShell);
+const encodeActivityPayload = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 it.effect("reads project shells without loading threads or resolving excluded projects", () => {
   const resolved: string[] = [];
@@ -100,14 +104,382 @@ it.effect("reads project shells without loading threads or resolving excluded pr
   }).pipe(Effect.provide(layer));
 });
 
-const projectionSnapshotLayer = it.layer(
-  OrchestrationProjectionSnapshotQueryLive.pipe(
-    Layer.provide(ThreadBackgroundLiveness.layer),
-    Layer.provide(ThreadPlanProgress.layer),
-    Layer.provideMerge(RepositoryIdentityResolver.layer),
-    Layer.provideMerge(SqlitePersistenceMemory),
-    Layer.provideMerge(NodeServices.layer),
-  ),
+const projectionSnapshotTestLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+  Layer.provide(ThreadBackgroundLiveness.layer),
+  Layer.provide(ThreadPlanProgress.layer),
+  Layer.provideMerge(RepositoryIdentityResolver.layer),
+  Layer.provideMerge(SqlitePersistenceMemory),
+  Layer.provideMerge(NodeServices.layer),
+);
+const projectionSnapshotLayer = it.layer(projectionSnapshotTestLayer);
+
+it.effect(
+  "enumerates compact pending requests across quiet, active, and archived shells in a batch",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* sql`INSERT INTO projection_projects
+      (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+      VALUES ('requests', 'Requests', '/requests', '[]', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`;
+      for (const [threadId, purpose, archivedAt, deletedAt, settledAt] of [
+        ["active", "work", null, null, null],
+        ["quiet", "work", null, null, null],
+        ["other", "work", null, null, null],
+        ["archived", "work", "2026-10-02T00:00:00Z", null, null],
+        ["deleted", "work", null, "2026-10-02T00:00:00Z", null],
+        ["idea", "idea", null, null, null],
+        ["settled", "work", null, null, "2026-10-02T00:00:00Z"],
+      ] as const) {
+        yield* sql`INSERT INTO projection_threads
+        (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          purpose, archived_at, deleted_at, settled_at, created_at, updated_at)
+        VALUES (${threadId}, 'requests', 'Thread', '{"instanceId":"codex","model":"test"}',
+          'full-access', 'default', ${purpose}, ${archivedAt}, ${deletedAt}, ${settledAt},
+          '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`;
+      }
+
+      const questionPayload = encodeActivityPayload({
+        requestId: ApprovalRequestId.make("shared-id"),
+        questions: [
+          {
+            id: "destination",
+            header: "Destination",
+            question: "Which environment should run the build?",
+            options: [
+              { label: "Local", description: "Question option detail stays in the thread." },
+            ],
+          },
+        ],
+      });
+      for (const threadId of ["active", "other", "archived", "deleted", "idea", "settled"]) {
+        yield* sql`UPDATE projection_threads SET pending_user_input_count = 1 WHERE thread_id = ${threadId}`;
+        yield* sql`INSERT INTO projection_thread_activities
+        (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at)
+        VALUES (${`question-${threadId}`}, ${threadId}, NULL, 'approval', 'user-input.requested',
+          'Agent needs input', ${questionPayload}, '2026-10-01T00:01:00Z')`;
+      }
+      yield* sql`INSERT INTO projection_thread_activities
+      (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at)
+      VALUES
+        ('question-second', 'active', NULL, 'approval', 'user-input.requested', 'Agent needs input',
+          '{"requestId":"second-input","questions":[{"id":"scope","header":"Scope","question":"Which files?","options":[]}]}',
+          '2026-10-01T00:02:00Z'),
+        ('approval-active', 'active', NULL, 'approval', 'approval.requested', 'Approve command',
+          '{"requestId":"shared-id","requestKind":"command","detail":"Full approval command stays in the thread."}',
+          '2026-10-01T00:03:00Z'),
+        ('ordinary-activity', 'quiet', NULL, 'info', 'runtime.note', 'Ordinary history',
+          'not-json', '2026-10-01T00:04:00Z')`;
+      yield* sql`UPDATE projection_threads SET pending_approval_count = 1, pending_user_input_count = 2
+      WHERE thread_id = 'active'`;
+
+      const counter = makeSqlStatementCounter();
+      const snapshot = yield* query.getShellSnapshot().pipe(Effect.withTracer(counter.tracer));
+      assert.deepStrictEqual(
+        snapshot.threads.map((thread) => thread.id),
+        ["active", "other", "quiet", "settled"],
+      );
+      const question = {
+        kind: "question",
+        requestId: ApprovalRequestId.make("shared-id"),
+        createdAt: "2026-10-01T00:01:00Z",
+        label: "Destination",
+        preview: "Which environment should run the build?",
+      } as const;
+      const pending = [
+        question,
+        {
+          kind: "question",
+          requestId: ApprovalRequestId.make("second-input"),
+          createdAt: "2026-10-01T00:02:00Z",
+          label: "Scope",
+          preview: "Which files?",
+        },
+        {
+          kind: "approval",
+          requestId: ApprovalRequestId.make("shared-id"),
+          createdAt: "2026-10-01T00:03:00Z",
+          label: "Approve command",
+          preview: "Approve command",
+        },
+      ] as const;
+      assert.deepStrictEqual(
+        snapshot.threads.map((thread) => thread.pendingRequests),
+        [pending, [question], [], [question]],
+      );
+      const batchStatements = counter.count();
+      const individual = Option.getOrThrow(
+        yield* query.getThreadShellById(ThreadId.make("active")),
+      );
+      assert.deepStrictEqual(individual.pendingRequests, pending);
+      assert.strictEqual(individual.session, null);
+      assert.strictEqual(individual.hasPendingApprovals, true);
+      assert.strictEqual(individual.hasPendingUserInput, true);
+      const archived = yield* query.getArchivedShellSnapshot();
+      assert.deepStrictEqual(
+        archived.threads.map((thread) => [thread.id, thread.pendingRequests]),
+        [[ThreadId.make("archived"), [question]]],
+      );
+      const unsettled = yield* query.getShellSnapshot({ unsettledOnly: true });
+      assert.deepStrictEqual(
+        unsettled.threads.map((thread) => thread.id),
+        ["active", "other", "quiet"],
+      );
+
+      yield* sql`WITH RECURSIVE extra_threads(n) AS (
+      SELECT 1 UNION ALL SELECT n + 1 FROM extra_threads WHERE n < 40
+    ) INSERT INTO projection_threads
+      (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, created_at, updated_at)
+      SELECT 'extra-' || n, 'requests', 'Extra', '{"instanceId":"codex","model":"test"}',
+        'full-access', 'default', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z'
+      FROM extra_threads`;
+      const expanded = yield* query.getShellSnapshot().pipe(Effect.withTracer(counter.tracer));
+      assert.strictEqual(expanded.threads.length, 44);
+      assert.deepStrictEqual(
+        expanded.threads.find((thread) => thread.id === "active")?.pendingRequests,
+        pending,
+      );
+      assert.strictEqual(counter.count() - batchStatements, batchStatements);
+    }).pipe(Effect.provide(projectionSnapshotTestLayer)),
+);
+
+it.effect(
+  "keeps requests actionable through acceptance and retryable failures until terminal activity",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      const threadId = ThreadId.make("request-lifecycle");
+      yield* sql`INSERT INTO projection_projects
+      (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+      VALUES ('requests', 'Requests', '/requests', '[]', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`;
+      yield* sql`INSERT INTO projection_threads
+      (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, pending_approval_count,
+        pending_user_input_count, created_at, updated_at)
+      VALUES (${threadId}, 'requests', 'Thread', '{"instanceId":"codex","model":"test"}', 'full-access', 'default',
+        1, 1, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`;
+      yield* sql`INSERT INTO projection_thread_activities
+      (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at)
+      VALUES
+        ('approval-open', ${threadId}, NULL, 'approval', 'approval.requested', 'Approve command',
+          '{"requestId":"approval","requestKind":"command"}', '2026-10-01T00:01:00Z'),
+        ('question-open', ${threadId}, NULL, 'approval', 'user-input.requested', 'Answer question',
+          '{"requestId":"question","questions":[{"id":"scope","header":"Scope","question":"Which files?","options":[]}]}',
+          '2026-10-01T00:02:00Z')`;
+      const expected = [
+        {
+          kind: "approval",
+          requestId: ApprovalRequestId.make("approval"),
+          createdAt: "2026-10-01T00:01:00Z",
+          label: "Approve command",
+          preview: "Approve command",
+        },
+        {
+          kind: "question",
+          requestId: ApprovalRequestId.make("question"),
+          createdAt: "2026-10-01T00:02:00Z",
+          label: "Scope",
+          preview: "Which files?",
+        },
+      ] as const;
+      assert.deepStrictEqual(
+        Option.getOrThrow(yield* query.getThreadShellById(threadId)).pendingRequests,
+        expected,
+      );
+      yield* sql`INSERT INTO projection_pending_approvals
+      (request_id, thread_id, turn_id, status, decision, created_at, resolved_at)
+      VALUES ('approval', ${threadId}, NULL, 'resolved', 'accept', '2026-10-01T00:01:00Z', '2026-10-01T00:03:00Z')`;
+      yield* sql`UPDATE projection_threads SET pending_approval_count = 0 WHERE thread_id = ${threadId}`;
+      assert.deepStrictEqual(
+        (yield* query.getShellSnapshot()).threads[0]?.pendingRequests,
+        expected,
+      );
+
+      for (const [id, kind, requestId, detail] of [
+        [
+          "approval-retryable",
+          "provider.approval.respond.failed",
+          "approval",
+          "Provider is offline.",
+        ],
+        [
+          "question-retryable",
+          "provider.user-input.respond.failed",
+          "question",
+          "Provider is offline.",
+        ],
+      ]) {
+        yield* sql`INSERT INTO projection_thread_activities
+        (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at)
+        VALUES (${id}, ${threadId}, NULL, 'error', ${kind}, 'Reply failed',
+          ${encodeActivityPayload({ requestId, detail })}, '2026-10-01T00:04:00Z')`;
+      }
+      assert.deepStrictEqual(
+        Option.getOrThrow(yield* query.getThreadShellById(threadId)).pendingRequests,
+        expected,
+      );
+      yield* sql`INSERT INTO projection_thread_activities
+      (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at)
+      VALUES
+        ('approval-terminal', ${threadId}, NULL, 'error', 'provider.approval.respond.failed', 'Stale request',
+          '{"requestId":"approval","detail":"UNKNOWN PENDING CODEX APPROVAL REQUEST"}', '2026-10-01T00:00:00Z'),
+        ('question-terminal', ${threadId}, NULL, 'info', 'user-input.resolved', 'Answered',
+          '{"requestId":"question"}', '2026-10-01T00:02:00Z')`;
+      assert.deepStrictEqual(
+        Option.getOrThrow(yield* query.getThreadShellById(threadId)).pendingRequests,
+        [],
+      );
+      yield* sql`UPDATE projection_thread_activities
+      SET kind = 'approval.resolved', payload_json = '{"requestId":"approval"}'
+      WHERE activity_id = 'approval-terminal'`;
+      yield* sql`UPDATE projection_thread_activities
+      SET kind = 'provider.user-input.respond.failed',
+        payload_json = '{"requestId":"question","detail":"Unknown pending codex user input request"}'
+      WHERE activity_id = 'question-terminal'`;
+      assert.deepStrictEqual((yield* query.getShellSnapshot()).threads[0]?.pendingRequests, []);
+    }).pipe(Effect.provide(projectionSnapshotTestLayer)),
+);
+
+it.effect("omits unanswerable requests and bounds previews without copying request bodies", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const query = yield* ProjectionSnapshotQuery;
+    const threadId = ThreadId.make("request-shapes");
+    yield* sql`INSERT INTO projection_projects
+      (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+      VALUES ('requests', 'Requests', '/requests', '[]', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`;
+    yield* sql`INSERT INTO projection_threads
+      (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, created_at, updated_at)
+      VALUES (${threadId}, 'requests', 'Thread', '{"instanceId":"codex","model":"test"}', 'full-access', 'default',
+        '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`;
+    const question = { id: "scope", header: "Scope", question: "Which files?", options: [] };
+    const inputs = [
+      { requestId: "empty-questions", questions: [] },
+      { requestId: "missing-questions" },
+      { requestId: "not-an-array", questions: { 0: question } },
+      {
+        requestId: "missing-options",
+        questions: [{ id: "scope", header: "Scope", question: "Files?" }],
+      },
+      { requestId: "invalid-fields", questions: [null, "invalid", { ...question, id: 42 }] },
+      { requestId: "no-answer", questions: [{ ...question, allowCustomAnswer: false }] },
+      {
+        requestId: "invalid-options",
+        questions: [
+          {
+            ...question,
+            allowCustomAnswer: false,
+            options: [
+              null,
+              "invalid",
+              { label: 42 },
+              { label: "Yes", description: "", value: null },
+            ],
+          },
+        ],
+      },
+      {
+        requestId: "valid-option",
+        questions: [
+          {
+            ...question,
+            allowCustomAnswer: false,
+            options: [null, { label: "Yes", description: "", value: " native\t" }],
+          },
+        ],
+      },
+      {
+        requestId: "first-valid",
+        questions: [
+          null,
+          { ...question, allowCustomAnswer: false },
+          {
+            ...question,
+            header: "h".repeat(119) + "🛰".repeat(10),
+            question: "p".repeat(239) + "🛰".repeat(10),
+            allowCustomAnswer: true,
+          },
+        ],
+      },
+      { requestId: "first-valid", questions: [{ ...question, allowCustomAnswer: false }] },
+    ];
+    for (const [index, payload] of inputs.entries()) {
+      yield* sql`INSERT INTO projection_thread_activities
+        (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at)
+        VALUES (${`question-${index}`}, ${threadId}, NULL, 'approval', 'user-input.requested',
+          'Input requested', ${encodeActivityPayload(payload)}, '2026-10-01T00:01:00Z')`;
+    }
+    for (const requestType of [
+      "tool_user_input",
+      "auth_tokens_refresh",
+      "command_execution_approval",
+    ]) {
+      yield* sql`INSERT INTO projection_thread_activities
+        (activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at)
+        VALUES (${requestType}, ${threadId}, NULL, 'approval', 'approval.requested', 'Approve command',
+          ${encodeActivityPayload({ requestId: requestType, requestType, detail: "Private command detail." })},
+          '2026-10-01T00:02:00Z')`;
+    }
+    yield* sql`UPDATE projection_threads SET pending_approval_count = 3, pending_user_input_count = 10
+      WHERE thread_id = ${threadId}`;
+    const shell = Option.getOrThrow(yield* query.getThreadShellById(threadId));
+    assert.deepStrictEqual(shell.pendingRequests, [
+      {
+        kind: "question",
+        requestId: ApprovalRequestId.make("valid-option"),
+        createdAt: "2026-10-01T00:01:00Z",
+        label: "Scope",
+        preview: "Which files?",
+      },
+      {
+        kind: "question",
+        requestId: ApprovalRequestId.make("first-valid"),
+        createdAt: "2026-10-01T00:01:00Z",
+        label: "h".repeat(119),
+        preview: "p".repeat(239),
+      },
+      {
+        kind: "approval",
+        requestId: ApprovalRequestId.make("command_execution_approval"),
+        createdAt: "2026-10-01T00:02:00Z",
+        label: "Approve command",
+        preview: "Approve command",
+      },
+    ]);
+    const encoded = yield* encodeThreadShell(shell);
+    assert.deepStrictEqual(encoded.pendingRequests, shell.pendingRequests);
+  }).pipe(Effect.provide(projectionSnapshotTestLayer)),
+);
+
+it.effect(
+  "keeps Revdoc testing runs out of the conversation shell while retaining their detail",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+    VALUES ('review-project', 'Project', '/worktree', '[]', '2026-10-04T12:00:00Z', '2026-10-04T12:00:00Z')`;
+      for (const purpose of ["work", "revdoc"] as const) {
+        yield* sql`INSERT INTO projection_threads (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, purpose, created_at, updated_at)
+      VALUES (${purpose}, 'review-project', 'Run', '{"instanceId":"codex","model":"test"}', 'full-access', 'default', ${purpose}, '2026-10-04T12:00:00Z', '2026-10-04T12:00:00Z')`;
+      }
+      assert.deepEqual(
+        (yield* query.getShellSnapshot()).threads.map((thread) => thread.id),
+        ["work"],
+      );
+      const detail = yield* query.getThreadDetailSnapshot(ThreadId.make("revdoc"));
+      assert.strictEqual(Option.getOrThrow(detail).thread.purpose, "revdoc");
+    }).pipe(
+      Effect.provide(
+        OrchestrationProjectionSnapshotQueryLive.pipe(
+          Layer.provide(ThreadBackgroundLiveness.layer),
+          Layer.provide(ThreadPlanProgress.layer),
+          Layer.provide(RepositoryIdentityResolver.layer),
+          Layer.provideMerge(SqlitePersistenceMemory),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
@@ -464,6 +836,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           worktreePath: null,
           pullRequests: expectedPullRequests,
           branchPullRequest,
+          commitRecommendation: null,
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "completed",
@@ -592,6 +965,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           worktreePath: null,
           pullRequests: expectedPullRequests,
           branchPullRequest,
+          commitRecommendation: null,
           latestTurn: {
             turnId: asTurnId("turn-1"),
             state: "completed",
@@ -630,6 +1004,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
           hasPendingApprovals: true,
           hasPendingUserInput: false,
+          pendingRequests: [],
           hasActionableProposedPlan: false,
           backgroundLiveness: null,
           planProgress: null,

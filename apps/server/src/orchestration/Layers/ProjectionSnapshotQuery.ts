@@ -10,6 +10,10 @@ import {
   OrchestrationCheckpointFile,
   OrchestrationCheckpointStatus,
   OrchestrationProposedPlanId,
+  OrchestrationPendingRequestSummary,
+  OrchestrationGetRequestLifecycleInput,
+  OrchestrationGetRequestLifecycleError,
+  ORCHESTRATION_REQUEST_LIFECYCLE_MAX_ROW_BYTES,
   OrchestrationReadModel,
   OrchestrationThreadSearchSource,
   type OrchestrationShellSnapshot,
@@ -31,6 +35,7 @@ import {
   ProjectId,
   ThreadLinkedPullRequest,
   ThreadTitleState,
+  CommitRecommendation,
   ThreadId,
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
@@ -132,6 +137,7 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     titleState: Schema.NullOr(Schema.fromJsonString(ThreadTitleState)),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
     branchPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
+    commitRecommendation: Schema.NullOr(Schema.fromJsonString(CommitRecommendation)),
   }),
 );
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
@@ -140,8 +146,17 @@ const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
     sequence: Schema.NullOr(NonNegativeInt),
   }),
 );
+const decodeRequestLifecycleRow = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ProjectionThreadActivityDbRowSchema),
+);
 const ProjectionThreadActivityIdRowSchema = Schema.Struct({
   activityId: ProjectionThreadActivity.fields.activityId,
+});
+const ProjectionPendingRequestDbRowSchema = Schema.Struct({
+  threadId: ThreadId,
+  ...OrchestrationPendingRequestSummary.fields,
+  label: Schema.String,
+  preview: Schema.String,
 });
 const ProjectionThreadSessionDbRowSchema = ProjectionThreadSession;
 const ProjectionThreadRuntimeContextDbRowSchema = Schema.Struct({
@@ -186,6 +201,11 @@ const EventReplayStatsRowSchema = Schema.Struct({
   payloadBytes: Schema.Number,
 });
 const ActiveThreadRowsRequest = Schema.Struct({ unsettledOnly: Schema.Boolean });
+const PendingRequestRowsRequest = Schema.Union([
+  Schema.Struct({ scope: Schema.Literal("active"), unsettledOnly: Schema.Boolean }),
+  Schema.Struct({ scope: Schema.Literal("archived") }),
+  Schema.Struct({ scope: Schema.Literal("thread"), threadId: ThreadId }),
+]);
 const ProjectionThreadSearchRequest = Schema.Struct({
   pattern: Schema.String,
   limit: Schema.Int,
@@ -453,6 +473,22 @@ function groupPullRequestRowsByThread(
   return byThread;
 }
 
+function groupPendingRequestRowsByThread(
+  rows: ReadonlyArray<typeof ProjectionPendingRequestDbRowSchema.Type>,
+) {
+  const byThread = new Map<ThreadId, OrchestrationPendingRequestSummary[]>();
+  for (const { threadId, label, preview, ...request } of rows) {
+    const requests = byThread.get(threadId) ?? [];
+    requests.push({
+      ...request,
+      label: label.slice(0, 120).replace(/[\uD800-\uDBFF]$/u, ""),
+      preview: preview.slice(0, 240).replace(/[\uD800-\uDBFF]$/u, ""),
+    });
+    byThread.set(threadId, requests);
+  }
+  return byThread;
+}
+
 /**
  * The link array plus the legacy single-link field derived from it, so clients
  * from before `pullRequests` keep seeing the thread's current pull request.
@@ -577,6 +613,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           branch_pull_request_json AS "branchPullRequest",
+          commit_recommendation_json AS "commitRecommendation",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -626,6 +663,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           branch_pull_request_json AS "branchPullRequest",
+          commit_recommendation_json AS "commitRecommendation",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -703,6 +741,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           branch_pull_request_json AS "branchPullRequest",
+          commit_recommendation_json AS "commitRecommendation",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1310,6 +1349,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           worktree_path AS "worktreePath",
           linked_pull_request_json AS "linkedPullRequest",
           branch_pull_request_json AS "branchPullRequest",
+          commit_recommendation_json AS "commitRecommendation",
           latest_turn_id AS "latestTurnId",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -1869,6 +1909,283 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const firstActionableQuestion = sql`
+    SELECT json_object(
+      'header', substr(json_extract(question.value, '$.header'), 1, 120),
+      'question', substr(json_extract(question.value, '$.question'), 1, 240)
+    )
+    FROM json_each(activity.payload_json, '$.questions') AS question
+    WHERE question.type = 'object'
+      AND json_type(question.value, '$.id') = 'text'
+      AND json_type(question.value, '$.header') = 'text'
+      AND json_type(question.value, '$.question') = 'text'
+      AND json_type(question.value, '$.options') = 'array'
+      AND (
+        json_type(question.value, '$.allowCustomAnswer') IS NOT 'false'
+        OR EXISTS (
+          SELECT 1
+          FROM json_each(question.value, '$.options') AS option
+          WHERE option.type = 'object'
+            AND json_type(option.value, '$.label') = 'text'
+            AND json_type(option.value, '$.description') = 'text'
+            AND (
+              json_type(option.value, '$.value') IS NULL
+              OR json_type(option.value, '$.value') = 'text'
+            )
+        )
+      )
+    ORDER BY CAST(question.key AS INTEGER)
+    LIMIT 1
+  `;
+
+  // Counters keep quiet shell updates independent of activity history. Approval command
+  // acceptance may clear them before delivery, so clients retain in-flight responses.
+  const listPendingRequestRows = SqlSchema.findAll({
+    Request: PendingRequestRowsRequest,
+    Result: ProjectionPendingRequestDbRowSchema,
+    execute: (request) => {
+      const threadFilter =
+        request.scope === "thread"
+          ? sql`AND threads.thread_id = ${request.threadId} AND threads.archived_at IS NULL`
+          : request.scope === "archived"
+            ? sql`AND threads.purpose = 'work' AND threads.archived_at IS NOT NULL`
+            : sql`AND threads.purpose = 'work' AND threads.archived_at IS NULL
+                ${unsettledThreadsFilter(request.unsettledOnly)}`;
+      return sql`
+        WITH selected_threads AS (
+          SELECT thread_id
+          FROM projection_threads AS threads
+          WHERE threads.deleted_at IS NULL ${threadFilter}
+            AND (threads.pending_approval_count > 0 OR threads.pending_user_input_count > 0)
+        ),
+        request_lifecycle AS (
+          SELECT
+            activity.activity_id,
+            activity.thread_id,
+            activity.created_at,
+            activity.kind AS activity_kind,
+            CASE
+              WHEN activity.kind IN (
+                'approval.requested', 'approval.resolved', 'provider.approval.respond.failed'
+              ) THEN 'approval'
+              ELSE 'question'
+            END AS kind,
+            json_extract(activity.payload_json, '$.requestId') AS request_id
+          FROM selected_threads AS threads
+          CROSS JOIN projection_thread_activities AS activity
+          WHERE activity.thread_id = threads.thread_id
+            -- SQLite needs the partial index predicate even with the narrower lifecycle filter below.
+            AND activity.kind IN (
+              'approval.requested', 'approval.resolved', 'provider.approval.respond.failed',
+              'user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed'
+            )
+            AND (
+              activity.kind IN (
+                'approval.requested', 'approval.resolved',
+                'user-input.requested', 'user-input.resolved'
+              )
+              OR (
+                activity.kind = 'provider.approval.respond.failed'
+                AND json_type(activity.payload_json, '$.detail') = 'text'
+                AND (
+                  lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                    LIKE '%stale pending approval request%'
+                  OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending approval request%'
+                  OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending permission request%'
+                  OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending codex approval request%'
+                )
+              )
+              OR (
+                activity.kind = 'provider.user-input.respond.failed'
+                AND json_type(activity.payload_json, '$.detail') = 'text'
+                AND (
+                  lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                    LIKE '%stale pending user-input request%'
+                  OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending user-input request%'
+                  OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending user input request%'
+                  OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), ''))
+                    LIKE '%unknown pending codex user input request%'
+                )
+              )
+            )
+            AND json_type(activity.payload_json, '$.requestId') = 'text'
+            AND length(trim(json_extract(activity.payload_json, '$.requestId'))) > 0
+            AND (
+              activity.kind <> 'approval.requested'
+              OR COALESCE(json_extract(activity.payload_json, '$.requestType'), '')
+                NOT IN ('tool_user_input', 'auth_tokens_refresh')
+            )
+            AND (
+              activity.kind <> 'user-input.requested'
+              OR (
+                json_type(activity.payload_json, '$.questions') = 'array'
+                AND json_array_length(activity.payload_json, '$.questions') > 0
+              )
+            )
+        ),
+        request_state AS (
+          SELECT *,
+            MAX(CASE
+              WHEN activity_kind IN ('approval.requested', 'user-input.requested') THEN 0
+              ELSE 1
+            END) OVER (PARTITION BY thread_id, kind, request_id) AS is_terminal
+          FROM request_lifecycle
+        ),
+        request_summaries AS (
+          SELECT request.*,
+            CASE WHEN request.kind = 'question' THEN (${firstActionableQuestion}) END AS question_json,
+            substr(activity.summary, 1, 240) AS summary
+          FROM request_state AS request
+          INNER JOIN projection_thread_activities AS activity
+            ON activity.activity_id = request.activity_id
+          WHERE request.is_terminal = 0
+        ),
+        pending_requests AS (
+          SELECT *,
+            ROW_NUMBER() OVER (
+              PARTITION BY thread_id, kind, request_id
+              ORDER BY created_at DESC, activity_id DESC
+            ) AS request_order
+          FROM request_summaries
+          WHERE kind = 'approval' OR question_json IS NOT NULL
+        )
+        SELECT
+          thread_id AS "threadId",
+          kind,
+          request_id AS "requestId",
+          created_at AS "createdAt",
+          substr(CASE
+            WHEN kind = 'question' THEN COALESCE(
+              NULLIF(trim(json_extract(question_json, '$.header')), ''),
+              'Question'
+            )
+            ELSE COALESCE(NULLIF(trim(summary), ''), 'Approval required')
+          END, 1, 120) AS label,
+          substr(CASE
+            WHEN kind = 'question' THEN json_extract(question_json, '$.question')
+            ELSE summary
+          END, 1, 240) AS preview
+        FROM pending_requests
+        WHERE request_order = 1
+        ORDER BY created_at ASC, activity_id ASC
+      `;
+    },
+  });
+
+  const getRequestLifecycleThread = SqlSchema.findOneOption({
+    Request: OrchestrationGetRequestLifecycleInput,
+    Result: ThreadIdLookupInput,
+    execute: ({ threadId, audience }) => sql`
+      SELECT thread_id AS "threadId" FROM projection_threads
+      WHERE thread_id = ${threadId} AND purpose = ${audience}
+        AND deleted_at IS NULL AND archived_at IS NULL
+    `,
+  });
+
+  const listRequestLifecycleRows = SqlSchema.findAll({
+    Request: OrchestrationGetRequestLifecycleInput,
+    Result: Schema.Struct({ row: Schema.NullOr(Schema.String) }),
+    execute: ({ threadId, kind, requestId, submittedAt }) => {
+      const activityKind = kind === "question" ? "user-input" : "approval";
+      const staleFailure =
+        kind === "question"
+          ? sql`lower(COALESCE(json_extract(activity.payload_json, '$.detail'), '')) LIKE '%stale pending user-input request%'
+          OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), '')) LIKE '%unknown pending user-input request%'
+          OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), '')) LIKE '%unknown pending user input request%'
+          OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), '')) LIKE '%unknown pending codex user input request%'`
+          : sql`lower(COALESCE(json_extract(activity.payload_json, '$.detail'), '')) LIKE '%stale pending approval request%'
+          OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), '')) LIKE '%unknown pending approval request%'
+          OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), '')) LIKE '%unknown pending permission request%'
+          OR lower(COALESCE(json_extract(activity.payload_json, '$.detail'), '')) LIKE '%unknown pending codex approval request%'`;
+      const validRequest =
+        kind === "question"
+          ? sql`json_type(activity.payload_json, '$.questions') = 'array' AND EXISTS (${firstActionableQuestion})`
+          : sql`COALESCE(json_extract(activity.payload_json, '$.requestType'), '') NOT IN ('tool_user_input', 'auth_tokens_refresh')`;
+      return sql`
+        WITH evidence AS (
+          SELECT activity.activity_id, activity.sequence, activity.created_at,
+            CASE
+              WHEN activity.kind = ${`${activityKind}.resolved`} THEN 'resolved'
+              WHEN activity.kind = ${`provider.${activityKind}.respond.failed`}
+                AND json_type(activity.payload_json, '$.detail') = 'text'
+                AND (${staleFailure}) THEN 'terminal'
+              WHEN activity.kind = ${`${activityKind}.requested`} AND (${validRequest}) THEN 'requested'
+              WHEN activity.kind = ${`provider.${activityKind}.respond.failed`} AND activity.sequence IS NOT NULL THEN 'sequenced-failure'
+              WHEN activity.kind = ${`provider.${activityKind}.respond.failed`}
+                AND (${submittedAt ?? null} IS NULL OR activity.created_at = ${submittedAt ?? null}) THEN 'unsequenced-failure'
+            END AS evidence_kind
+          FROM projection_thread_activities AS activity
+          WHERE activity.thread_id = ${threadId}
+            AND activity.kind IN (
+              'approval.requested', 'approval.resolved', 'provider.approval.respond.failed',
+              'user-input.requested', 'user-input.resolved', 'provider.user-input.respond.failed'
+            )
+            AND activity.kind IN (${`${activityKind}.requested`}, ${`${activityKind}.resolved`}, ${`provider.${activityKind}.respond.failed`})
+            AND json_extract(activity.payload_json, '$.requestId') = ${requestId}
+        ),
+        ranked AS (
+          SELECT *, ROW_NUMBER() OVER (
+            PARTITION BY evidence_kind
+            ORDER BY sequence DESC, created_at DESC, activity_id DESC
+          ) AS evidence_order
+          FROM evidence WHERE evidence_kind IS NOT NULL
+        ),
+        serialized AS (
+          SELECT activity.sequence, activity.created_at, activity.activity_id,
+            json_object(
+              'activityId', activity.activity_id, 'threadId', activity.thread_id,
+              'turnId', activity.turn_id, 'tone', activity.tone, 'kind', activity.kind,
+              'summary', activity.summary, 'payload', activity.payload_json,
+              'sequence', activity.sequence, 'createdAt', activity.created_at
+            ) AS row
+          FROM ranked INNER JOIN projection_thread_activities AS activity
+            ON activity.activity_id = ranked.activity_id
+          WHERE ranked.evidence_order = 1
+            AND (
+              ranked.evidence_kind = 'resolved'
+              OR NOT EXISTS (SELECT 1 FROM evidence WHERE evidence_kind = 'resolved')
+            )
+        )
+        SELECT CASE WHEN length(CAST(row AS BLOB)) <= ${ORCHESTRATION_REQUEST_LIFECYCLE_MAX_ROW_BYTES}
+          THEN row ELSE NULL END AS row
+        FROM serialized
+        ORDER BY sequence ASC, created_at ASC, activity_id ASC
+      `;
+    },
+  });
+
+  const getRequestLifecycle: ProjectionSnapshotQueryShape["getRequestLifecycle"] = (input) =>
+    Effect.gen(function* () {
+      const thread = yield* getRequestLifecycleThread(input);
+      if (Option.isNone(thread)) {
+        return yield* new OrchestrationGetRequestLifecycleError({ reason: "thread-unavailable" });
+      }
+      const rows = yield* listRequestLifecycleRows(input);
+      const activities: OrchestrationThreadActivity[] = [];
+      for (const row of rows) {
+        if (row.row === null) {
+          return yield* new OrchestrationGetRequestLifecycleError({ reason: "payload-too-large" });
+        }
+        activities.push(mapThreadActivityRow(yield* decodeRequestLifecycleRow(row.row)));
+      }
+      return activities;
+    }).pipe(
+      sql.withTransaction,
+      Effect.mapError((cause) =>
+        cause._tag === "OrchestrationGetRequestLifecycleError"
+          ? cause
+          : toPersistenceSqlOrDecodeError(
+              "ProjectionSnapshotQuery.getRequestLifecycle:query",
+              "ProjectionSnapshotQuery.getRequestLifecycle:decodeRows",
+            )(cause),
+      ),
+    );
+
   const pinnedThreadActivityIdsCte = (threadId: string) => sql`
 pending_approval_requests AS (
           SELECT request_id, thread_id
@@ -2387,6 +2704,7 @@ pending_approval_requests AS (
                   repositoryIdentities.get(row.projectId),
                 ),
                 branchPullRequest: row.branchPullRequest,
+                commitRecommendation: row.commitRecommendation,
                 latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
@@ -2634,6 +2952,7 @@ pending_approval_requests AS (
                     repositoryIdentities.get(row.projectId),
                   ),
                   branchPullRequest: row.branchPullRequest,
+                  commitRecommendation: row.commitRecommendation,
                   latestTurn: latestTurnByThread.get(row.threadId) ?? null,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,
@@ -2719,6 +3038,14 @@ pending_approval_requests AS (
               ),
             ),
           ),
+          listPendingRequestRows({ scope: "active", unsettledOnly }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getShellSnapshot:listPendingRequests:query",
+                "ProjectionSnapshotQuery.getShellSnapshot:listPendingRequests:decodeRows",
+              ),
+            ),
+          ),
           listProjectionStateRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -2731,7 +3058,15 @@ pending_approval_requests AS (
       )
       .pipe(
         Effect.flatMap(
-          ([projectRows, threadRows, sessionRows, pullRequestRows, latestTurnRows, stateRows]) =>
+          ([
+            projectRows,
+            threadRows,
+            sessionRows,
+            pullRequestRows,
+            latestTurnRows,
+            pendingRequestRows,
+            stateRows,
+          ]) =>
             Effect.gen(function* () {
               let updatedAt: string | null = null;
               for (const row of projectRows) {
@@ -2765,6 +3100,7 @@ pending_approval_requests AS (
                 sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
               );
               const pullRequestsByThread = groupPullRequestRowsByThread(pullRequestRows);
+              const pendingRequestsByThread = groupPendingRequestRowsByThread(pendingRequestRows);
 
               // Built from schema-decoded rows, so no second decode here. The HTTP
               // and RPC layers encode it against OrchestrationShellSnapshot on the
@@ -2791,6 +3127,7 @@ pending_approval_requests AS (
                         branch: row.branch,
                         worktreePath: row.worktreePath,
                         branchPullRequest: row.branchPullRequest,
+                        commitRecommendation: row.commitRecommendation,
                         ...mapThreadPullRequests(
                           pullRequestsByThread.get(row.threadId) ?? [],
                           row.projectId,
@@ -2815,6 +3152,7 @@ pending_approval_requests AS (
                         latestUserMessageAt: row.latestUserMessageAt,
                         hasPendingApprovals: row.pendingApprovalCount > 0,
                         hasPendingUserInput: row.pendingUserInputCount > 0,
+                        pendingRequests: pendingRequestsByThread.get(row.threadId) ?? [],
                         hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                         backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
                           row.threadId,
@@ -2835,6 +3173,30 @@ pending_approval_requests AS (
         }),
       );
   };
+
+  const listCommitRecommendationRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      id: ThreadId,
+      commitRecommendation: Schema.fromJsonString(CommitRecommendation),
+    }),
+    execute: () => sql`
+      SELECT thread_id AS "id", commit_recommendation_json AS "commitRecommendation"
+      FROM projection_threads
+      WHERE deleted_at IS NULL
+        AND commit_recommendation_json IS NOT NULL
+        AND commit_recommendation_json != 'null'
+    `,
+  });
+  const listThreadsWithCommitRecommendations = () =>
+    listCommitRecommendationRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listThreadsWithCommitRecommendations:query",
+          "ProjectionSnapshotQuery.listThreadsWithCommitRecommendations:decodeRows",
+        ),
+      ),
+    );
 
   const listThreadsWithPullRequests: ProjectionSnapshotQueryShape["listThreadsWithPullRequests"] =
     () =>
@@ -2909,6 +3271,14 @@ pending_approval_requests AS (
               ),
             ),
           ),
+          listPendingRequestRows({ scope: "archived" }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getArchivedShellSnapshot:listPendingRequests:query",
+                "ProjectionSnapshotQuery.getArchivedShellSnapshot:listPendingRequests:decodeRows",
+              ),
+            ),
+          ),
           listProjectionStateRows(undefined).pipe(
             Effect.mapError(
               toPersistenceSqlOrDecodeError(
@@ -2921,7 +3291,15 @@ pending_approval_requests AS (
       )
       .pipe(
         Effect.flatMap(
-          ([projectRows, threadRows, sessionRows, pullRequestRows, latestTurnRows, stateRows]) =>
+          ([
+            projectRows,
+            threadRows,
+            sessionRows,
+            pullRequestRows,
+            latestTurnRows,
+            pendingRequestRows,
+            stateRows,
+          ]) =>
             Effect.gen(function* () {
               let updatedAt: string | null = null;
               for (const row of projectRows) {
@@ -2947,6 +3325,7 @@ pending_approval_requests AS (
               }
 
               const pullRequestsByThread = groupPullRequestRowsByThread(pullRequestRows);
+              const pendingRequestsByThread = groupPendingRequestRowsByThread(pendingRequestRows);
               const activeProjectIds = new Set(threadRows.map((row) => row.projectId));
               const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(
                 projectRows.filter((row) => activeProjectIds.has(row.projectId)),
@@ -2978,6 +3357,7 @@ pending_approval_requests AS (
                   branch: row.branch,
                   worktreePath: row.worktreePath,
                   branchPullRequest: row.branchPullRequest,
+                  commitRecommendation: row.commitRecommendation,
                   ...mapThreadPullRequests(
                     pullRequestsByThread.get(row.threadId) ?? [],
                     row.projectId,
@@ -3002,6 +3382,7 @@ pending_approval_requests AS (
                   latestUserMessageAt: row.latestUserMessageAt,
                   hasPendingApprovals: row.pendingApprovalCount > 0,
                   hasPendingUserInput: row.pendingUserInputCount > 0,
+                  pendingRequests: pendingRequestsByThread.get(row.threadId) ?? [],
                   hasActionableProposedPlan: row.hasActionableProposedPlan > 0,
                   backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
                     row.threadId,
@@ -3314,6 +3695,18 @@ pending_approval_requests AS (
         return Option.none<OrchestrationThreadShell>();
       }
 
+      const pendingRequestRows =
+        threadRow.value.pendingApprovalCount > 0 || threadRow.value.pendingUserInputCount > 0
+          ? yield* listPendingRequestRows({ scope: "thread", threadId }).pipe(
+              Effect.mapError(
+                toPersistenceSqlOrDecodeError(
+                  "ProjectionSnapshotQuery.getThreadShellById:listPendingRequests:query",
+                  "ProjectionSnapshotQuery.getThreadShellById:listPendingRequests:decodeRows",
+                ),
+              ),
+            )
+          : [];
+
       return Option.some({
         id: threadRow.value.threadId,
         projectId: threadRow.value.projectId,
@@ -3333,6 +3726,7 @@ pending_approval_requests AS (
                 ?.repositoryIdentity,
         ),
         branchPullRequest: threadRow.value.branchPullRequest,
+        commitRecommendation: threadRow.value.commitRecommendation,
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -3352,6 +3746,7 @@ pending_approval_requests AS (
         latestUserMessageAt: threadRow.value.latestUserMessageAt,
         hasPendingApprovals: threadRow.value.pendingApprovalCount > 0,
         hasPendingUserInput: threadRow.value.pendingUserInputCount > 0,
+        pendingRequests: groupPendingRequestRowsByThread(pendingRequestRows).get(threadId) ?? [],
         hasActionableProposedPlan: threadRow.value.hasActionableProposedPlan > 0,
         backgroundLiveness: threadBackgroundLiveness.getThreadBackgroundLiveness(
           threadRow.value.threadId,
@@ -3636,6 +4031,7 @@ pending_approval_requests AS (
                 ?.repositoryIdentity,
         ),
         branchPullRequest: threadRow.value.branchPullRequest,
+        commitRecommendation: threadRow.value.commitRecommendation,
         latestTurn: Option.isSome(latestTurnRow) ? mapLatestTurn(latestTurnRow.value) : null,
         createdAt: threadRow.value.createdAt,
         updatedAt: threadRow.value.updatedAt,
@@ -3852,10 +4248,12 @@ pending_approval_requests AS (
   return {
     getCommandReadModel,
     getUserInputActivity,
+    getRequestLifecycle,
     listActivitiesByKind,
     getSnapshot,
     getShellSnapshot,
     listThreadsWithPullRequests,
+    listThreadsWithCommitRecommendations,
     getArchivedShellSnapshot,
     getDeletedWorktreeThreads,
     searchThreads,

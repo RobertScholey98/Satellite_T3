@@ -1641,52 +1641,54 @@ describe("CheckpointReactor", () => {
     }),
   );
 
-  effectIt.effect("does not create repository checkpoints for an idea conversation", () =>
-    Effect.gen(function* () {
-      const harness = yield* Effect.promise(() =>
-        createHarness({ seedFilesystemCheckpoints: false }),
-      );
-      const threadId = ThreadId.make("idea-checkpoint");
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      yield* harness.engine.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make("create-idea-checkpoint"),
-        threadId,
-        projectId: asProjectId("project-1"),
-        purpose: "idea",
-        title: "Idea",
-        modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        branch: null,
-        worktreePath: null,
-        createdAt,
-      });
-      yield* harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("idea-turn-start"),
-        threadId,
-        message: {
-          messageId: MessageId.make("idea-question"),
-          role: "user",
-          text: "Explore a notebook",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt,
-      });
-      yield* harness.engine.dispatch({
-        type: "thread.message.assistant.delta",
-        commandId: CommandId.make("idea-answer-chunk"),
-        threadId,
-        messageId: MessageId.make("idea-answer"),
-        delta: "A notebook keeps ideas together.",
-        createdAt,
-      });
-      yield* Effect.promise(harness.drain);
-      expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0))).toBe(false);
-    }),
+  effectIt.effect.each(["idea", "revdoc"] as const)(
+    "does not create repository checkpoints for %s agents",
+    (purpose) =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() =>
+          createHarness({ seedFilesystemCheckpoints: false }),
+        );
+        const threadId = ThreadId.make("idea-checkpoint");
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("create-idea-checkpoint"),
+          threadId,
+          projectId: asProjectId("project-1"),
+          purpose,
+          title: "Idea",
+          modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("idea-turn-start"),
+          threadId,
+          message: {
+            messageId: MessageId.make("idea-question"),
+            role: "user",
+            text: "Explore a notebook",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt,
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make("idea-answer-chunk"),
+          threadId,
+          messageId: MessageId.make("idea-answer"),
+          delta: "A notebook keeps ideas together.",
+          createdAt,
+        });
+        yield* Effect.promise(harness.drain);
+        expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0))).toBe(false);
+      }),
   );
 
   it("captures pre-turn baseline from project workspace root when thread worktree is unset", async () => {

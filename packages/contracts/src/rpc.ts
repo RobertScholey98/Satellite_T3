@@ -16,6 +16,17 @@ import {
 } from "./providerSetup.ts";
 import * as Schema from "effect/Schema";
 import {
+  RevdocInput,
+  RevdocStartInput,
+  RevdocTestStartInput,
+  RevdocDetail,
+  RevdocSaveInput,
+  RevdocRunState,
+  RevdocError,
+  RevdocWorktreesInput,
+  RevdocWorktrees,
+} from "./revdoc.ts";
+import {
   IssuesListInput,
   IssuesListResult,
   IssuesGetInput,
@@ -157,6 +168,7 @@ import {
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetSnapshotError,
+  OrchestrationGetRequestLifecycleError,
   OrchestrationSearchThreadsError,
   OrchestrationSearchThreadsInput,
   OrchestrationGetTurnDiffError,
@@ -355,6 +367,13 @@ import {
 } from "./documents.ts";
 
 export const WS_METHODS = {
+  revdocGet: "revdoc.get",
+  revdocStart: "revdoc.start",
+  revdocTestStart: "revdoc.testStart",
+  revdocCancel: "revdoc.cancel",
+  revdocSave: "revdoc.save",
+  revdocChanges: "revdoc.changes",
+  revdocWorktrees: "revdoc.worktrees",
   documentsList: "documents.list",
   issuesList: "issues.list",
   issuesGet: "issues.get",
@@ -1097,6 +1116,44 @@ const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
 });
 
+const revdocRpcError = Schema.Union([RevdocError, EnvironmentAuthorizationError]);
+const WsRevdocGetRpc = Rpc.make(WS_METHODS.revdocGet, {
+  payload: RevdocInput,
+  success: RevdocDetail,
+  error: revdocRpcError,
+});
+const WsRevdocStartRpc = Rpc.make(WS_METHODS.revdocStart, {
+  payload: RevdocStartInput,
+  success: Schema.Void,
+  error: revdocRpcError,
+});
+const WsRevdocTestStartRpc = Rpc.make(WS_METHODS.revdocTestStart, {
+  payload: RevdocTestStartInput,
+  success: Schema.Void,
+  error: revdocRpcError,
+});
+const WsRevdocCancelRpc = Rpc.make(WS_METHODS.revdocCancel, {
+  payload: RevdocInput,
+  success: Schema.Void,
+  error: revdocRpcError,
+});
+const WsRevdocSaveRpc = Rpc.make(WS_METHODS.revdocSave, {
+  payload: RevdocSaveInput,
+  success: RevdocDetail,
+  error: revdocRpcError,
+});
+const WsRevdocChangesRpc = Rpc.make(WS_METHODS.revdocChanges, {
+  payload: RevdocInput,
+  success: RevdocRunState,
+  error: revdocRpcError,
+  stream: true,
+});
+const WsRevdocWorktreesRpc = Rpc.make(WS_METHODS.revdocWorktrees, {
+  payload: RevdocWorktreesInput,
+  success: RevdocWorktrees,
+  error: revdocRpcError,
+});
+
 const documentRpcError = Schema.Union([DocumentOperationError, EnvironmentAuthorizationError]);
 const WsDocumentsListRpc = Rpc.make(WS_METHODS.documentsList, {
   payload: DocumentsListInput,
@@ -1511,6 +1568,15 @@ const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subsc
   stream: true,
 });
 
+const WsOrchestrationGetRequestLifecycleRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getRequestLifecycle,
+  {
+    payload: OrchestrationRpcSchemas.getRequestLifecycle.input,
+    success: OrchestrationRpcSchemas.getRequestLifecycle.output,
+    error: Schema.Union([OrchestrationGetRequestLifecycleError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationSubscribeThreadRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeThread, {
   payload: OrchestrationRpcSchemas.subscribeThread.input,
   success: OrchestrationRpcSchemas.subscribeThread.output,
@@ -1721,6 +1787,13 @@ export const WsRpcGroup = RpcGroup.make(
     success: OpenWorkReadLinkedResult,
     error: Schema.Union([OpenWorkOperationError, EnvironmentAuthorizationError]),
   }),
+  WsRevdocGetRpc,
+  WsRevdocStartRpc,
+  WsRevdocTestStartRpc,
+  WsRevdocCancelRpc,
+  WsRevdocSaveRpc,
+  WsRevdocChangesRpc,
+  WsRevdocWorktreesRpc,
   WsDocumentsListRpc,
   WsDocumentsGetRpc,
   WsDocumentsPublishRpc,
@@ -1876,6 +1949,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationSearchThreadsRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
+  WsOrchestrationGetRequestLifecycleRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
 );

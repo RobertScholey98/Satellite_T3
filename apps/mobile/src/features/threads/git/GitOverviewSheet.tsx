@@ -43,6 +43,7 @@ import { useSelectedThreadWorktree } from "../../../state/use-selected-thread-wo
 import { vcsEnvironment } from "../../../state/vcs";
 import { resolveGitOverviewReviewNavigationAction } from "./git-overview-navigation";
 import { MetaCard, SheetListRow, menuItemIconName, statusSummary } from "./gitSheetComponents";
+import { CommitRecommendationNotice } from "./CommitRecommendationNotice";
 
 const HEADER_SCROLL_EDGE_EFFECTS = nativeHeaderScrollEdgeEffects(Platform.OS, Platform.Version);
 
@@ -247,6 +248,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
         <RefreshControl refreshing={isPullRefreshing} onRefresh={() => void handlePullRefresh()} />
       }
     >
+      <CommitRecommendationNotice status={gitStatus.data} />
       <View
         className={`overflow-hidden bg-card android:rounded-[20px] ios:border ios:border-border ${
           isInspector ? "ios:rounded-2xl ios:px-3 ios:py-1" : "ios:rounded-[22px] ios:px-4 ios:py-1"

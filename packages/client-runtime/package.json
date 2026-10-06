@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./commit-recommendation": {
+      "types": "./src/commitRecommendation.ts",
+      "default": "./src/commitRecommendation.ts"
+    },
     "./issues": {
       "types": "./src/issues.ts",
       "default": "./src/issues.ts"
@@ -318,6 +322,10 @@
     "./device/duo-control": {
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
+    },
+    "./revdoc": {
+      "types": "./src/revdoc.ts",
+      "default": "./src/revdoc.ts"
     }
   },
   "scripts": {

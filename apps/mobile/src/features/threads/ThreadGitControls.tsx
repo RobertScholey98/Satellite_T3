@@ -1,4 +1,7 @@
 import { createNativeHeaderMenu } from "../../components/nativeHeaderMenu.ios";
+import { commitRecommendationLabel } from "@t3tools/client-runtime/commit-recommendation";
+import type { CommitRecommendation } from "@t3tools/contracts";
+import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import type { ScreenHeaderMenu } from "../../components/ScreenHeader.types";
 import {
   EnvironmentId,
@@ -85,6 +88,7 @@ export type ThreadGitMenuProps = {
   readonly threadId: ThreadId | string;
   readonly currentBranch: string | null;
   readonly gitStatus: VcsStatusResult | null;
+  readonly commitRecommendation?: CommitRecommendation | null;
   readonly gitOperationLabel: string | null;
   readonly onOpenFilesInspector?: () => void;
   readonly onOpenGitInspector?: () => void;
@@ -110,6 +114,16 @@ type ThreadGitControlsProps = ThreadGitMenuProps & {
 
 function useThreadGitControlModel(props: ThreadGitMenuProps) {
   const navigation = useNavigation();
+  const theme = useUniwindTheme();
+  const recommendation = props.commitRecommendation;
+  const recommendationLabel = recommendation ? commitRecommendationLabel(recommendation) : null;
+  const recommendationColor = recommendation
+    ? theme[
+        recommendation.level === "overdue"
+          ? "--color-danger-foreground"
+          : "--color-warning-foreground"
+      ]
+    : undefined;
   const environmentId = props.environmentId;
   const threadId = props.threadId;
   const { gitStatus, gitOperationLabel, onPull, onRunAction } = props;
@@ -236,6 +250,8 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
   }, [environmentId, props.onOpenGitInspector, navigation, threadId]);
 
   return {
+    recommendationLabel,
+    recommendationColor,
     currentBranchLabel,
     isRepo,
     openFiles,
@@ -321,7 +337,8 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
         variant: "plain",
       },
       git: {
-        accessibilityLabel: "Git actions",
+        accessibilityLabel: model.recommendationLabel ?? "Git actions",
+        tintColor: model.recommendationColor,
         icon: { name: "point.topleft.down.curvedto.point.bottomright.up", type: "sfSymbol" },
         identifier: "thread-right-git",
         label: "Git",
@@ -339,7 +356,9 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
               type: "action",
             },
             {
-              description: model.quickActionHint ?? undefined,
+              description: props.commitRecommendation
+                ? `${model.recommendationLabel}: ${props.commitRecommendation.reason}`
+                : (model.quickActionHint ?? undefined),
               disabled: model.quickAction.disabled,
               icon: { name: model.quickActionIcon, type: "sfSymbol" },
               label: model.quickAction.label,
@@ -370,6 +389,9 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       },
     }),
     [
+      model.recommendationLabel,
+      model.recommendationColor,
+      props.commitRecommendation,
       model.currentBranchLabel,
       model.isRepo,
       model.openFiles,
@@ -517,7 +539,8 @@ function threadGitMenuDefinition(
   model: ReturnType<typeof useThreadGitControlModel>,
 ): ScreenHeaderMenu {
   return {
-    title: "Git controls",
+    title: model.recommendationLabel ?? "Git controls",
+    tintColor: model.recommendationColor,
     icon: "point.topleft.down.curvedto.point.bottomright.up",
     separateBackground: false,
     items: [
@@ -534,7 +557,9 @@ function threadGitMenuDefinition(
         title: model.quickAction.label,
         icon: model.quickActionIcon,
         disabled: model.quickAction.disabled,
-        subtitle: model.quickActionHint ?? undefined,
+        subtitle: props.commitRecommendation
+          ? `${model.recommendationLabel}: ${props.commitRecommendation.reason}`
+          : (model.quickActionHint ?? undefined),
         onPress: () => {
           void model.runQuickAction();
         },

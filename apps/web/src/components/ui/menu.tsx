@@ -26,6 +26,7 @@ function MenuPopup({
   side = "bottom",
   anchor,
   keepMounted = false,
+  collisionBoundary,
   ...props
 }: MenuPrimitive.Popup.Props & {
   align?: MenuPrimitive.Positioner.Props["align"];
@@ -34,6 +35,7 @@ function MenuPopup({
   side?: MenuPrimitive.Positioner.Props["side"];
   anchor?: MenuPrimitive.Positioner.Props["anchor"];
   keepMounted?: boolean;
+  collisionBoundary?: MenuPrimitive.Positioner.Props["collisionBoundary"];
 }) {
   return (
     <MenuPrimitive.Portal keepMounted={keepMounted}>
@@ -45,6 +47,7 @@ function MenuPopup({
         data-slot="menu-positioner"
         side={side}
         sideOffset={sideOffset}
+        collisionBoundary={collisionBoundary}
       >
         <MenuPrimitive.Popup
           className={cn(

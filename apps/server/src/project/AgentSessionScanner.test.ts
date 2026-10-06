@@ -37,6 +37,7 @@ const makeProjectShell = (workspaceRoot: string): OrchestrationProjectShell => (
 const makeProjectionSnapshotQueryLayer = (importedWorkspaceRoots: ReadonlyArray<string>) =>
   Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
     getCommandReadModel: () => Effect.die("unused"),
+    getRequestLifecycle: () => Effect.die("unused"),
     getUserInputActivity: () => Effect.die("unused"),
     listActivitiesByKind: () => Effect.die("unused"),
     getSnapshot: () => Effect.die("unused"),
@@ -48,6 +49,7 @@ const makeProjectionSnapshotQueryLayer = (importedWorkspaceRoots: ReadonlyArray<
         updatedAt: "2026-01-01T00:00:00.000Z",
       }),
     getDeletedWorktreeThreads: () => Effect.die("unused"),
+    listThreadsWithCommitRecommendations: () => Effect.die("unused"),
     listThreadsWithPullRequests: () => Effect.die("unused"),
     getArchivedShellSnapshot: () => Effect.die("unused"),
     getSnapshotSequence: () => Effect.die("unused"),
