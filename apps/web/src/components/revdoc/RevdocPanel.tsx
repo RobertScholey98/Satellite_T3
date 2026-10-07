@@ -789,7 +789,9 @@ export default function RevdocPanel({
               </Button>
             </div>
             {review?.summary && (
-              <p className="text-sm leading-relaxed text-muted-foreground">{review.summary}</p>
+              <p className="line-clamp-2 text-sm leading-relaxed text-muted-foreground">
+                {review.summary}
+              </p>
             )}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted-foreground">
               <RevdocWorktreePicker threadRef={threadRef} current={detail?.cwd ?? worktreePath} />
@@ -982,6 +984,9 @@ export default function RevdocPanel({
           </div>
         ) : tab === "context" ? (
           <div className="min-h-0 flex-1 space-y-4 overflow-auto p-4">
+            {review.summary && (
+              <p className="whitespace-pre-wrap text-sm leading-relaxed">{review.summary}</p>
+            )}
             {review.context && (
               <p className="whitespace-pre-wrap text-sm leading-relaxed">{review.context}</p>
             )}
