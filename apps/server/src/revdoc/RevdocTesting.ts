@@ -1,9 +1,10 @@
 import * as NodeCrypto from "node:crypto";
-import type {
-  RevdocAttempt,
-  RevdocReview,
-  RevdocTest,
-  RevdocTestStartInput,
+import {
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  type RevdocAttempt,
+  type RevdocReview,
+  type RevdocTest,
+  type RevdocTestStartInput,
 } from "@t3tools/contracts";
 
 export const reviewTests = (review: RevdocReview) =>
@@ -87,14 +88,48 @@ export function withTestAttempt(test: RevdocTest, attempt: RevdocAttempt): Revdo
   };
 }
 
-export function testingPrompt(input: {
+type TestingPromptInput = {
   runId: string;
   cwd: string;
   title: string;
+  section: string;
   tests: readonly RevdocTest[];
-}) {
+};
+
+/**
+ * Each batch goes to a fresh testing agent. Batches follow review sections and split a
+ * section only when its prompt would exceed the input limit of one provider turn.
+ */
+export function testingBatches(
+  review: RevdocReview,
+  tests: readonly RevdocTest[],
+  run: Omit<TestingPromptInput, "section" | "tests">,
+) {
+  const selected = new Set(tests.map((test) => test.id));
+  return review.sections.flatMap((section) => {
+    const batches: RevdocTest[][] = [];
+    for (const test of section.items.flatMap((item) => item.tests)) {
+      if (!selected.has(test.id)) continue;
+      const last = batches.at(-1);
+      const fits =
+        last &&
+        testingPrompt({ ...run, section: section.area, tests: [...last, test] }).length <=
+          PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
+      if (fits) last.push(test);
+      else batches.push([test]);
+    }
+    return batches.map((tests) => ({
+      section: section.area,
+      tests,
+      prompt: testingPrompt({ ...run, section: section.area, tests }),
+    }));
+  });
+}
+
+export function testingPrompt(input: TestingPromptInput) {
   return [
     "Run this worktree's Revdoc testing pass. Test the existing implementation; preserve source code and human review decisions.",
+    "The pass is split by review section, one agent per section, one section at a time. Test only the supplied checks; other agents handle the rest. A dev server started for an earlier section may still be running.",
     "This request authorizes browser interaction and test commands for these checks. Read the repository's setup and testing guidance first. Reuse the worktree's dev server or launch its documented command with isolated test data. Keep processes you start identifiable; never stop unrelated processes. Do not use live production data or perform destructive account actions.",
     "For browser checks use Satellite's preview_status, then preview_open with reuseExistingTab=false and open=false to create your own test tab. Keep its tabId and use it for all interactions and captures. Use semantic snapshot locators. Do not take over another tab. If no supported Browser host is available, record the browser checks as blocked; do not install an alternative automation system.",
     "Work through the supplied tests one at a time. Call begin_revdoc_test before each check, using the supplied runId and testId. Actually exercise each behavior and compare it with the expected result. Reading code alone does not establish a pass.",

@@ -1067,9 +1067,13 @@ describe("large Revdoc generation", () => {
               : {
                   ...generated,
                   sections: Array.from({ length: 250 }, (_, i) => ({
-                    ...generated.sections[0]!,
                     id: `area-${i}`,
                     area: `Vehicle screen area ${i} `.padEnd(100, "x"),
+                    items: generated.sections[0]!.items.map((item) => ({
+                      ...item,
+                      id: `feature-${i}`,
+                      tests: [{ id: `check-${i}`, title: "Open the area", expected: "It opens" }],
+                    })),
                   })),
                 },
           ),
@@ -1334,6 +1338,70 @@ describe("Revdoc AI testing", () => {
       const final = (yield* env.service.get({ threadId })).review!;
       expect(final.sections[0]!.items[0]!.tests[0]!.attempts).toHaveLength(1);
       expect(final.sections[0]!.items[0]!.tests[1]!.attempts).toHaveLength(2);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect("tests each review section with its own agent, one section at a time", () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      yield* env.service.start({ threadId });
+      yield* env.finished();
+      const review = (yield* env.service.get({ threadId })).review!;
+      const section = review.sections[0]!;
+      yield* env.saveReview({
+        ...review,
+        sections: [
+          section,
+          {
+            id: "second-area",
+            area: "Second area",
+            items: [
+              {
+                ...section.items[0]!,
+                id: "second-feature",
+                tests: [{ id: "second", title: "Second check" }],
+              },
+            ],
+          },
+        ],
+      });
+      yield* env.service.startTesting({ threadId, selection: "all" });
+      const first = yield* env.tester;
+      // The first agent finishes without reporting its check.
+      yield* env.settle(first.invocation.threadId);
+      const second = yield* env.tester;
+      expect(second.invocation.threadId).not.toBe(first.invocation.threadId);
+      const handedOver = (yield* env.service.get({ threadId })).review!;
+      expect(handedOver.testing?.threadId).toBe(second.invocation.threadId);
+      expect(handedOver.sections[0]!.items[0]!.tests[0]!.attempts?.at(-1)).toMatchObject({
+        state: "blocked",
+        observed: expect.stringContaining("without recording"),
+      });
+      expect(
+        (yield* env.service.beginTest(first.invocation, first.target).pipe(Effect.flip)).message,
+      ).toContain("Only the active");
+      const target = { ...second.target, testId: "second" };
+      yield* env.service.beginTest(second.invocation, target);
+      yield* env.service.recordTest(second.invocation, {
+        ...target,
+        result: "passed",
+        method: "command",
+        steps: "test app",
+        observed: "exit 0",
+      });
+      yield* env.settle(second.invocation.threadId);
+      expect((yield* env.finished()).error).toBeNull();
+      const final = (yield* env.service.get({ threadId })).review!;
+      expect(final.testing?.status).toBe("completed");
+      expect(final.sections[1]!.items[0]!.tests[0]!.attempts?.at(-1)?.state).toBe("passed");
+      const prompts = env.dispatched.flatMap((command) =>
+        command.type === "thread.turn.start" ? [command.message.text] : [],
+      );
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toContain("Open the feature");
+      expect(prompts[0]).not.toContain("Second check");
+      expect(prompts[1]).toContain("Second check");
+      expect(prompts[1]).not.toContain("Open the feature");
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );
 
