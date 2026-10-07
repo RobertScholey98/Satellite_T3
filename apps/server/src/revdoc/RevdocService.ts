@@ -8,6 +8,7 @@ import {
   RevdocReview,
   type RevdocDetail,
   type RevdocAttempt,
+  type RevdocBatchActivity,
   type RevdocCaptureInput,
   type RevdocRecordTestInput,
   type RevdocStartInput,
@@ -22,6 +23,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Fiber from "effect/Fiber";
@@ -49,7 +51,11 @@ import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSn
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import { reconcileRevdoc, type RevdocGenerationResult } from "./RevdocGeneration.ts";
+import {
+  reconcileRevdoc,
+  type RevdocGenerationActivity,
+  type RevdocGenerationResult,
+} from "./RevdocGeneration.ts";
 import {
   MAX_REVDOC_PROMPT_BYTES,
   mergeRevdocBatch,
@@ -62,6 +68,9 @@ import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 const MAX_REVIEW_BYTES = 2 * 1024 * 1024;
 const MAX_CONTEXT_BYTES = 180_000;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
+// Streamed model progress is published at most this often; the batch's finish publishes the rest.
+const ACTIVITY_PUBLISH_INTERVAL_MS = 1_000;
+const ACTIVITY_THINKING_CHARS = 600;
 const idle: RevdocRunState = { running: false, error: null, result: null, version: 0 };
 const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
 const fail = (message: string) => new RevdocError({ message });
@@ -999,13 +1008,76 @@ const make = Effect.gen(function* () {
               );
             }
             const generate = instance.textGeneration.generateRevdoc;
-            const generatePart = Effect.fnUntraced(function* (prompt: string) {
+            let completed = 0;
+            let stage: "reviewing" | "combining" = "reviewing";
+            let total = prompts.length;
+            // In-flight model calls, keyed by batch number within the current stage.
+            const active = new Map<
+              number,
+              Omit<RevdocBatchActivity, "elapsedMs"> & { startedAt: number }
+            >();
+            let activityPublishedAt = -Infinity;
+            const generationProgress = Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              yield* notify(cwd, {
+                running: true,
+                phase: "generating",
+                generationStage: stage,
+                completed,
+                total,
+                activity: [...active.values()]
+                  .sort((a, b) => a.batch - b.batch)
+                  .map(({ startedAt, ...entry }) => ({ ...entry, elapsedMs: now - startedAt })),
+                error: null,
+                result: null,
+              });
+            });
+            const generatePart = Effect.fnUntraced(function* (prompt: string, batch: number) {
               if (Buffer.byteLength(prompt) > MAX_REVDOC_PROMPT_BYTES)
                 return yield* fail(
                   "A review batch exceeds the prompt limit. The saved review was preserved.",
                 );
-              const part = yield* generate({ cwd, modelSelection, prompt }).pipe(
+              active.set(batch, {
+                batch,
+                startedAt: yield* Clock.currentTimeMillis,
+                outputBytes: 0,
+              });
+              yield* generationProgress;
+              const onActivity = (event: RevdocGenerationActivity) =>
+                Effect.gen(function* () {
+                  const current = active.get(batch);
+                  if (!current) return;
+                  active.set(
+                    batch,
+                    event.kind === "output"
+                      ? {
+                          ...current,
+                          outputBytes: current.outputBytes + Buffer.byteLength(event.text),
+                        }
+                      : {
+                          ...current,
+                          ...(event.text
+                            ? {
+                                thinking: `${current.thinking ?? ""}${event.text}`.slice(
+                                  -ACTIVITY_THINKING_CHARS,
+                                ),
+                              }
+                            : {}),
+                          ...(event.tokens !== undefined ? { thinkingTokens: event.tokens } : {}),
+                        },
+                  );
+                  const now = yield* Clock.currentTimeMillis;
+                  if (now - activityPublishedAt < ACTIVITY_PUBLISH_INTERVAL_MS) return;
+                  activityPublishedAt = now;
+                  yield* generationProgress;
+                });
+              const part = yield* generate({ cwd, modelSelection, prompt, onActivity }).pipe(
                 Effect.mapError((error) => fail(error.message)),
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    active.delete(batch);
+                  }),
+                ),
               );
               if (!isReview(part))
                 return yield* fail(
@@ -1014,25 +1086,14 @@ const make = Effect.gen(function* () {
               yield* validate(part);
               return part;
             }, Effect.scoped);
-            let completed = 0;
-            const generationProgress = (stage: "reviewing" | "combining", total: number) =>
-              notify(cwd, {
-                running: true,
-                phase: "generating",
-                generationStage: stage,
-                completed,
-                total,
-                error: null,
-                result: null,
-              });
-            yield* generationProgress("reviewing", prompts.length);
+            yield* generationProgress;
             const fragments = yield* Effect.forEach(
               prompts,
-              (prompt) =>
+              (prompt, index) =>
                 Effect.gen(function* () {
-                  const part = yield* generatePart(prompt);
+                  const part = yield* generatePart(prompt, index + 1);
                   completed++;
-                  yield* generationProgress("reviewing", prompts.length);
+                  yield* generationProgress;
                   return part;
                 }),
               { concurrency: 2 },
@@ -1050,16 +1111,19 @@ const make = Effect.gen(function* () {
               yield* validate(generated);
               const groups = revdocConsolidationGroups(generated);
               completed = 0;
-              yield* generationProgress("combining", groups.length);
+              stage = "combining";
+              total = groups.length;
+              yield* generationProgress;
               const organized = yield* Effect.forEach(
                 groups,
-                (group) =>
+                (group, index) =>
                   Effect.gen(function* () {
                     const part = yield* generatePart(
                       revdocConsolidationPrompt(group, source.overview),
+                      index + 1,
                     );
                     completed++;
-                    yield* generationProgress("combining", groups.length);
+                    yield* generationProgress;
                     return part;
                   }),
                 { concurrency: 2 },

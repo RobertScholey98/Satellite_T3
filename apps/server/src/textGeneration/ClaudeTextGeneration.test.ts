@@ -22,7 +22,10 @@ import * as TextGeneration from "./TextGeneration.ts";
 import { sanitizeThreadTitle } from "./TextGenerationUtils.ts";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
+import type { RevdocGenerationActivity } from "../revdoc/RevdocGeneration.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
+const REVDOC_OUTPUT =
+  '{"title":"Review","summary":"Changes","context":"Verify manually","sections":[]}';
 
 const ClaudeTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-claude-text-generation-test-",
@@ -307,17 +310,25 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
       ),
   );
 
-  it.effect("generates Revdoc outside the worktree without tools or persistent sessions", () =>
+  it.effect("streams Revdoc progress from outside the worktree without tools", () =>
     withFakeClaudeEnv(
       {
-        output:
-          '{"structured_output":{"title":"Review","summary":"Changes","context":"Verify manually","sections":[]}}',
-        argsMustContain: "--no-session-persistence --setting-sources",
+        output: [
+          '{"type":"system","subtype":"init","session_id":"s"}',
+          '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Reading the diff.","estimated_tokens":null}}}',
+          '{"type":"system","subtype":"thinking_tokens","estimated_tokens":42}',
+          '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\\"title\\":"}}}',
+          "not a JSON line",
+          `{"type":"result","subtype":"success","structured_output":${REVDOC_OUTPUT}}`,
+          "",
+        ].join("\n"),
+        argsMustContain: "--output-format stream-json --verbose --include-partial-messages",
         argsMustNotContain: "--bare",
         cwdMustNotBe: process.cwd(),
       },
       (generation) =>
         Effect.gen(function* () {
+          const activity: RevdocGenerationActivity[] = [];
           const result = yield* generation.generateRevdoc!({
             cwd: process.cwd(),
             prompt: "Create the worktree review.",
@@ -325,8 +336,17 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
               ProviderInstanceId.make("claudeAgent"),
               SYNTHETIC_CLAUDE_THINKING_MODEL,
             ),
+            onActivity: (event) =>
+              Effect.sync(() => {
+                activity.push(event);
+              }),
           });
           expect(result.title).toBe("Review");
+          expect(activity).toEqual([
+            { kind: "thinking", text: "Reading the diff.", tokens: undefined },
+            { kind: "thinking", text: "", tokens: 42 },
+            { kind: "output", text: '{"title":' },
+          ]);
         }),
     ),
   );

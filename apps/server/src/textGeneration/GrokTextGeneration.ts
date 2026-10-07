@@ -32,6 +32,7 @@ import {
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
+  textGenerationTimeoutMs,
 } from "./TextGenerationUtils.ts";
 import {
   applyGrokAcpModelSelection,
@@ -41,8 +42,6 @@ import {
   resolveGrokAcpBaseModelId,
 } from "../provider/acp/GrokAcpSupport.ts";
 import { prepareGrokIdeaEnvironment } from "../provider/acp/IdeaAcpPolicy.ts";
-
-const GROK_TIMEOUT_MS = 180_000;
 
 const isTextGenerationError = Schema.is(TextGenerationError);
 
@@ -61,6 +60,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     prompt,
     outputSchemaJson,
     modelSelection,
+    onActivity,
   }: {
     operation:
       | "generateCommitMessage"
@@ -73,6 +73,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     prompt: string;
     outputSchemaJson: S;
     modelSelection: ModelSelection;
+    onActivity?: RevdocGenerationInput["onActivity"];
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const resolvedModel = resolveGrokAcpBaseModelId(modelSelection.model);
@@ -108,6 +109,11 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         ) {
           return guard.reject();
         }
+        if (update.sessionUpdate === "agent_thought_chunk") {
+          return onActivity && update.content.type === "text"
+            ? onActivity({ kind: "thinking", text: update.content.text })
+            : Effect.void;
+        }
         if (update.sessionUpdate !== "agent_message_chunk") {
           return Effect.void;
         }
@@ -115,7 +121,9 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         if (content.type !== "text") {
           return Effect.void;
         }
-        return Ref.update(outputRef, (current) => current + content.text);
+        return Ref.update(outputRef, (current) => current + content.text).pipe(
+          Effect.andThen(onActivity?.({ kind: "output", text: content.text }) ?? Effect.void),
+        );
       });
 
       const promptResult = yield* Effect.gen(function* () {
@@ -145,7 +153,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         });
       }).pipe(
         Effect.raceFirst(guard?.failure ?? Effect.never),
-        Effect.timeoutOption(GROK_TIMEOUT_MS),
+        Effect.timeoutOption(textGenerationTimeoutMs(operation)),
         Effect.flatMap(
           Option.match({
             onNone: () =>
@@ -306,6 +314,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
       prompt: input.prompt,
       outputSchemaJson: RevdocGenerationResult,
       modelSelection: input.modelSelection,
+      onActivity: input.onActivity,
     });
 
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>

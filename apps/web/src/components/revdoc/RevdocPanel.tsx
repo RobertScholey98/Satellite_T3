@@ -45,6 +45,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { RevdocControl } from "./RevdocControl";
+import { RevdocGenerationProgress } from "./RevdocGenerationProgress";
 import { RevdocRunActivity } from "./RevdocRunActivity";
 import { RevdocWorktreePicker } from "./RevdocWorktreePicker";
 
@@ -845,6 +846,9 @@ export default function RevdocPanel({
             </div>
           </nav>
         </header>
+        {run.data?.running && run.data.phase === "generating" && (
+          <RevdocGenerationProgress state={run.data} />
+        )}
         {review && (
           <div className="max-h-[50%] shrink-0 space-y-2 overflow-y-auto border-b border-border/60 px-4 py-3">
             <div

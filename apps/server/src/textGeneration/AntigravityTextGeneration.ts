@@ -37,9 +37,9 @@ import {
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
+  textGenerationTimeoutMs,
 } from "./TextGenerationUtils.ts";
 
-const ANTIGRAVITY_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_CHARS = 128_000;
 const isTextGenerationError = Schema.is(TextGenerationError);
 const isNativeSessionId = Schema.is(Schema.String.check(Schema.isUUID(4)));
@@ -133,8 +133,9 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       readonly outputSchema: S;
       readonly modelSelection: ModelSelection;
       readonly ideaWorkspace?: string;
+      readonly onActivity?: RevdocGenerationInput["onActivity"];
     }) {
-      const { operation } = input;
+      const { operation, onActivity } = input;
       const scope = yield* Scope.make();
       yield* Effect.addFinalizer((exit) => Scope.close(scope, exit));
       const helper = Effect.gen(function* () {
@@ -222,8 +223,14 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
               ) {
                 return yield* reject("Antigravity attempted tool work during text generation.");
               }
+              if (notification.sessionId !== sessionId) return;
+              if (update.sessionUpdate === "agent_thought_chunk") {
+                if (onActivity && update.content.type === "text") {
+                  yield* onActivity({ kind: "thinking", text: update.content.text });
+                }
+                return;
+              }
               if (
-                notification.sessionId !== sessionId ||
                 update.sessionUpdate !== "agent_message_chunk" ||
                 update.content.type !== "text"
               ) {
@@ -238,6 +245,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
               if (exceeded) {
                 return yield* reject("Antigravity text generation exceeded the output limit.");
               }
+              if (onActivity) yield* onActivity({ kind: "output", text });
             }),
           );
 
@@ -319,7 +327,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
         );
       }).pipe(
         Effect.scoped,
-        Effect.timeoutOption(ANTIGRAVITY_TIMEOUT_MS),
+        Effect.timeoutOption(textGenerationTimeoutMs(operation)),
         Effect.flatMap(
           Option.match({
             onNone: () =>
@@ -427,6 +435,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       prompt: input.prompt,
       outputSchema: RevdocGenerationResult,
       modelSelection: input.modelSelection,
+      onActivity: input.onActivity,
     });
 
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>

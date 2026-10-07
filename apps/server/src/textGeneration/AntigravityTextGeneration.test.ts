@@ -22,6 +22,7 @@ import { expect } from "vite-plus/test";
 
 import type { AcpSessionRuntimeEvent } from "../provider/acp/AcpSessionRuntime.ts";
 import { removeAntigravitySessionFiles } from "../provider/acp/AntigravitySessionFiles.ts";
+import type { RevdocGenerationActivity } from "../revdoc/RevdocGeneration.ts";
 
 import {
   type AntigravityTextGenerationOptions,
@@ -642,6 +643,52 @@ it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
       const error = yield* Fiber.join(child).pipe(Effect.flip);
       expect(error.detail).toContain("timed out");
       expect(fixture.state.cancellations).toBe(1);
+      yield* fixture.assertCleaned;
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("gives a Revdoc pass far longer than a metadata prompt before timing out", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture({ prompt: () => Effect.never });
+      const child = yield* fixture.textGeneration
+        .generateRevdoc({
+          cwd: fixture.projectDirectory,
+          prompt: "Review the worktree.",
+          modelSelection,
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(fixture.enteredPrompt);
+      yield* TestClock.adjust(180_000);
+      expect(fixture.state.cancellations).toBe(0);
+      yield* TestClock.adjust(30 * 60_000 - 180_000);
+      const error = yield* Fiber.join(child).pipe(Effect.flip);
+      expect(error.detail).toContain("timed out");
+      expect(fixture.state.cancellations).toBe(1);
+      yield* fixture.assertCleaned;
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reports Revdoc thinking and output as the helper streams them", () =>
+    Effect.gen(function* () {
+      const output =
+        '{"title":"Review","summary":"Changes","context":"Verify manually","sections":[]}';
+      const fixture = yield* makeFixture({ outputs: [output] });
+      const activity: RevdocGenerationActivity[] = [];
+      const result = yield* fixture.textGeneration.generateRevdoc({
+        cwd: fixture.projectDirectory,
+        prompt: "Review the worktree.",
+        modelSelection,
+        onActivity: (event) =>
+          Effect.sync(() => {
+            activity.push(event);
+          }),
+      });
+      expect(result.title).toBe("Review");
+      expect(activity).toEqual([
+        { kind: "thinking", text: "Choose concise text." },
+        { kind: "output", text: output.slice(0, 9) },
+        { kind: "output", text: output.slice(9) },
+      ]);
       yield* fixture.assertCleaned;
     }).pipe(Effect.scoped),
   );

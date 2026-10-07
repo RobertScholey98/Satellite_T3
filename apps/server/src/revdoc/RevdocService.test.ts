@@ -12,12 +12,14 @@ import * as Schema from "effect/Schema";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import {
   CodexSettings,
   EnvironmentId,
   OrchestrationEvent,
   type OrchestrationCommand,
   type RevdocReview,
+  type RevdocRunState,
   DEFAULT_SERVER_SETTINGS,
   OrchestrationProjectShell,
   OrchestrationThreadShell,
@@ -636,6 +638,53 @@ describe("worktree Revdoc service", () => {
       yield* env.service.cancel({ threadId: siblingId });
       expect((yield* env.finished()).result).toBe("cancelled");
       expect((yield* env.service.get({ threadId })).review).toBeNull();
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+  it.effect("publishes what the model is doing while a batch runs", () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const gate = yield* Deferred.make<void>();
+      const env = yield* setup({
+        generate: (input) =>
+          Effect.gen(function* () {
+            yield* input.onActivity!({ kind: "thinking", text: "Reading the diff.", tokens: 12 });
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(gate);
+            yield* input.onActivity!({ kind: "output", text: '{"title":' });
+            return yield* Effect.never;
+          }),
+      });
+      const stateWhere = (predicate: (state: RevdocRunState) => boolean) =>
+        env.service
+          .changes({ threadId })
+          .pipe(Stream.filter(predicate), Stream.runHead, Effect.map(Option.getOrThrow));
+      yield* env.service.start({ threadId });
+      yield* Deferred.await(entered);
+      expect((yield* stateWhere(() => true)).activity).toEqual([
+        {
+          batch: 1,
+          elapsedMs: 0,
+          thinking: "Reading the diff.",
+          thinkingTokens: 12,
+          outputBytes: 0,
+        },
+      ]);
+      yield* TestClock.adjust(1_000);
+      yield* Deferred.succeed(gate, undefined);
+      const writing = yield* stateWhere((state) => (state.activity?.[0]?.outputBytes ?? 0) > 0);
+      expect(writing.activity).toEqual([
+        {
+          batch: 1,
+          elapsedMs: 1_000,
+          thinking: "Reading the diff.",
+          thinkingTokens: 12,
+          outputBytes: 9,
+        },
+      ]);
+      yield* env.service.cancel({ threadId });
+      const final = yield* env.finished();
+      expect(final.result).toBe("cancelled");
+      expect(final.activity).toBeUndefined();
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );
   it.effect("reports a provider failure and leaves the previous review intact", () =>
