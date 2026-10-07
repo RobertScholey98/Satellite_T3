@@ -17,7 +17,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { ProcessRunner } from "../processRunner.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime, IdeaRuntimeError } from "./IdeaRuntime.ts";
 import { readIdeaExecution, withIdeaLock } from "./IdeaExecution.ts";

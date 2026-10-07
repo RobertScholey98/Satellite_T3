@@ -1,4 +1,6 @@
-import * as NodeCrypto from "node:crypto";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
+import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -10,7 +12,7 @@ import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import {
   IssueOperationError,
   IssueAttemptLink,
@@ -59,7 +61,7 @@ import {
   type IssueHostScope,
   type RemoteIssueBoard,
 } from "./IssueHost.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import {
   sourceControlRepositorySelector,
   detectSourceControlProviderFromRemoteUrl,
@@ -150,8 +152,7 @@ const decodeMoveValue = Schema.decodeUnknownEffect(IssueMoveReceipt);
 const decodeLifecycleValue = Schema.decodeEffect(IssueLifecycleReceipt);
 const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const uuid = () => NodeCrypto.randomUUID();
-const digest = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
+const digest = (text: string) => Hex.encode(sha256(new TextEncoder().encode(text)));
 const hash = (value: unknown) => digest(json(value));
 const RemoteBoard = Schema.Struct({
   title: Schema.String,
@@ -390,10 +391,7 @@ export const makeIssueService = (options: {
       }>`SELECT revision,content_hash FROM issue_board_snapshots WHERE board_id=${boardId}`;
       return { board, contentHash: digest(board), at: yield* now, stored: rows[0] };
     });
-    const upsertSnapshot = Effect.fnUntraced(function* (
-      boardId: string,
-      remote: RemoteIssueBoard,
-    ) {
+    const upsertSnapshot = Effect.fnUntraced(function* (boardId: string, remote: RemoteIssueBoard) {
       const { board, contentHash, at, stored } = yield* prepareSnapshot(boardId, remote);
       if (stored?.content_hash === contentHash) {
         yield* sql`UPDATE issue_board_snapshots SET synced_at=${at},failed_at=NULL,failure=NULL
@@ -491,7 +489,7 @@ export const makeIssueService = (options: {
       if (existing[0]) return existing[0].id;
       const key = canonicalIssueKey(issue);
       yield* sql`UPDATE issue_moves SET status='superseded', error=NULL WHERE board_id=${boardId} AND issue_key=${key} AND status IN ('pending','failed')`;
-      const id = uuid();
+      const id = yield* randomUuidV4;
       yield* sql`INSERT INTO issue_moves(id,request_key,board_id,issue_key,issue_json,column_id,attempt_id,status,error,created_at)
       VALUES(${id},${requestKey},${boardId},${key},${json(issue)},${columnId},${attemptId},'pending',NULL,${yield* now})`;
       yield* bumpRevision(boardId);
@@ -680,7 +678,8 @@ export const makeIssueService = (options: {
         VALUES(${id},${input.projectId},${id},${remote.title},${json(remote.locator)},${json(mapping)})
         ON CONFLICT(id) DO UPDATE SET title=excluded.title,locator_json=excluded.locator_json,mapping_json=excluded.mapping_json`;
               yield* upsertSnapshot(id, remote);
-              if (previous[0] && previous[0].mapping_json !== json(mapping)) yield* bumpRevision(id);
+              if (previous[0] && previous[0].mapping_json !== json(mapping))
+                yield* bumpRevision(id);
               yield* remember(input.requestId, input, id);
             }),
           );
@@ -719,8 +718,8 @@ export const makeIssueService = (options: {
             generation: number;
           }>`SELECT generation FROM issue_generations WHERE issue_key=${canonicalIssueKey(item.issue.ref)}`;
           const link: IssueAttemptLink = {
-            attemptId: uuid(),
-            reservationId: uuid(),
+            attemptId: yield* randomUuidV4,
+            reservationId: yield* randomUuidV4,
             sourceEnvironmentId: input.sourceEnvironmentId,
             sourceProjectId: board.projectId,
             destinationEnvironmentId: input.destinationEnvironmentId,
@@ -1102,7 +1101,7 @@ export const makeIssueService = (options: {
   });
 export const make = Effect.gen(function* () {
   const host = yield* IssueHost;
-  const projection = yield* ProjectionSnapshotQuery;
+  const projects = yield* ProjectStore.ProjectStoreV2;
   const environment = yield* ServerEnvironmentIdentity;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver;
   return yield* makeIssueService({
@@ -1110,9 +1109,7 @@ export const make = Effect.gen(function* () {
     resolveRepositoryIdentity: repositoryIdentityResolver.resolve,
     environmentId: yield* environment.getEnvironmentId,
     getProject: (id) =>
-      projection
-        .getProjectShellById(id)
-        .pipe(Effect.map(Option.getOrNull), Effect.mapError(storageError)),
+      projects.getShell(id).pipe(Effect.map(Option.getOrNull), Effect.mapError(storageError)),
   });
 });
 export const layer = Layer.effect(IssueService, make);

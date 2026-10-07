@@ -9,10 +9,12 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import type { Tool } from "effect/unstable/ai";
+import type { Tool } from "effect/ai";
 
 import { DocumentService } from "../../../documents/DocumentService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
 import { DocumentsToolkitHandlersLive } from "./handlers.ts";
 import { DocumentsToolkit } from "./tools.ts";
 
@@ -44,9 +46,13 @@ const detail: DocumentDetail = {
 };
 const invocation = (capabilities: readonly McpInvocationContext.McpCapability[]) => ({
   environmentId: EnvironmentId.make("environment-documents-test"),
-  threadId,
-  providerSessionId: "session-1",
-  providerInstanceId: ProviderInstanceId.make("codex"),
+  requestNamespace: "session-1",
+  thread: {
+    threadId,
+    providerSessionId: "session-1",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+  client: undefined,
   capabilities: new Set(capabilities),
   issuedAt: 1,
 });
@@ -68,8 +74,13 @@ const makeHarness = Effect.gen(function* () {
         return detail;
       }),
   });
+  const dependencies = Layer.mergeAll(service, McpToolAccessTestkit.liveThreadsLayer);
   const toolkit = yield* DocumentsToolkit.pipe(
-    Effect.provide(DocumentsToolkitHandlersLive.pipe(Layer.provide(service))),
+    Effect.provide(
+      McpToolAccess.HandlersLayer.layer(DocumentsToolkitHandlersLive).pipe(
+        Layer.provide(dependencies),
+      ),
+    ),
   );
   const call = <Name extends keyof typeof DocumentsToolkit.tools>(
     name: Name,
@@ -83,7 +94,7 @@ const makeHarness = Effect.gen(function* () {
         (chunk) => chunk.at(-1)!.result as Tool.Success<(typeof DocumentsToolkit.tools)[Name]>,
       ),
       Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities)),
-      Effect.provide(service),
+      Effect.provide(dependencies),
     );
   return { call, publications, reads };
 });

@@ -1,4 +1,6 @@
-import * as NodeCrypto from "node:crypto";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
+import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
 import {
   CommandId,
   MessageId,
@@ -29,20 +31,20 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { ServerConfig } from "../config.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
-} from "../orchestration/Services/OrchestrationEngine.ts";
+} from "../orchestration-v2/SatelliteOrchestration.ts";
 import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotQueryShape,
-} from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+} from "../orchestration-v2/SatelliteOrchestration.ts";
 import {
-  isOrchestrationCommandRejection,
-  OrchestrationCommandPreviouslyRejectedError,
-} from "../orchestration/Errors.ts";
+  OrchestratorCommandRejectedError,
+  OrchestratorCommandPreviouslyRejectedError,
+} from "../orchestration-v2/Orchestrator.ts";
 import {
   makePublicationRecorder,
   type PublicationInput,
@@ -53,8 +55,7 @@ const MAX_ANSWER_BYTES = 64 * 1024;
 const error = (reason: DocumentOperationError["reason"], message: string) =>
   new DocumentOperationError({ reason, message });
 const storageError = () => error("storage", "Could not read or save the managed document.");
-const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
-const uuid = () => NodeCrypto.randomUUID();
+const hash = (text: string) => Hex.encode(sha256(new TextEncoder().encode(text)));
 const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
@@ -64,7 +65,8 @@ const decodeRevisionValue = Schema.decodeUnknownEffect(DocumentRevision);
 const decodeSubmissionValue = Schema.decodeUnknownEffect(DocumentSubmission);
 const decodeHistoryValue = Schema.decodeUnknownEffect(DocumentHistoryEvent);
 const isDocumentOperationError = Schema.is(DocumentOperationError);
-const isPreviouslyRejected = Schema.is(OrchestrationCommandPreviouslyRejectedError);
+const isPreviouslyRejected = Schema.is(OrchestratorCommandPreviouslyRejectedError);
+const isOrchestrationCommandRejection = Schema.is(OrchestratorCommandRejectedError);
 
 interface DocumentRow {
   id: string;
@@ -313,7 +315,7 @@ export const makeDocumentService = (options: {
     }) {
       const createdAt = yield* now;
       yield* sql`INSERT INTO document_history (id,document_id,revision_id,event,actor,created_at,detail,answer_version,answers_json)
-      VALUES (${uuid()},${input.documentId},${input.revisionId},${input.event},${input.actor},${createdAt},${input.detail},${input.answerVersion ?? null},${input.answers ? json(input.answers) : null})`;
+      VALUES (${yield* randomUuidV4},${input.documentId},${input.revisionId},${input.event},${input.actor},${createdAt},${input.detail},${input.answerVersion ?? null},${input.answers ? json(input.answers) : null})`;
     });
     const findRequest = Effect.fnUntraced(function* (
       actor: string,
@@ -422,8 +424,8 @@ export const makeDocumentService = (options: {
             new Set(definition.items.map((item) => item.id)).size !== definition.items.length
           )
             return yield* error("invalid", "Checklist item IDs must be unique.");
-          const documentId = existing?.id ?? uuid();
-          const revisionId = uuid();
+          const documentId = existing?.id ?? (yield* randomUuidV4);
+          const revisionId = yield* randomUuidV4;
           const number = (existing?.revision_number ?? 0) + 1;
           const createdAt = yield* now;
           const snapshotFilename = `${revisionId}.${format === "markdown" ? "md" : format === "html" ? "html" : "txt"}`;
@@ -549,9 +551,20 @@ export const makeDocumentService = (options: {
       const delivery = result._tag === "Success" ? "delivered" : "failed";
       // Only a definitive rejection proves this command cannot have started a turn.
       // All ambiguous failures retain the same ID so an accepted receipt is replayed safely.
+      const rejectedReceipt =
+        result._tag === "Failure"
+          ? yield* sql<{
+              readonly status: string;
+            }>`SELECT status FROM orchestration_command_receipts WHERE command_id = ${`document-submit-${row.id}-${row.delivery_attempt}`} LIMIT 1`.pipe(
+              Effect.map((receipts) => receipts[0]?.status === "rejected"),
+              Effect.orElseSucceed(() => false),
+            )
+          : false;
       const nextAttempt =
         result._tag === "Failure" &&
-        (isOrchestrationCommandRejection(result.failure) || isPreviouslyRejected(result.failure))
+        (rejectedReceipt ||
+          isOrchestrationCommandRejection(result.failure) ||
+          isPreviouslyRejected(result.failure))
           ? row.delivery_attempt + 1
           : row.delivery_attempt;
       const deliveryError =
@@ -606,7 +619,7 @@ export const makeDocumentService = (options: {
               ];
             }),
           ].join("\n");
-          const id = uuid();
+          const id = yield* randomUuidV4;
           const createdAt = yield* now;
           yield* sql`INSERT INTO document_submissions (id,document_id,revision_id,answer_version,answers_json,markdown,created_at,actor,delivery,delivery_error,delivery_attempt) VALUES (${id},${input.documentId},${input.revisionId},${updated.answerVersion},${json(updated.answers)},${markdown},${createdAt},${actor},'pending',NULL,0)`;
           yield* sql`UPDATE managed_documents SET status='submitted',updated_at=${createdAt} WHERE id=${input.documentId}`;

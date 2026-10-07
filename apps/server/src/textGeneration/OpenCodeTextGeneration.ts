@@ -1,39 +1,14 @@
-import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
-import {
-  IdeaUpdateGenerationResult,
-  normalizeIdeaUpdateResult,
-  type IdeaUpdateInput,
-} from "../ideas/IdeaUpdateGeneration.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import {
-  NonNegativeInt,
-  TextGenerationError,
-  type ChatAttachment,
-  type ModelSelection,
-  type OpenCodeSettings,
-} from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { NonNegativeInt, TextGenerationError, type OpenCodeSettings } from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
-import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import * as ServerConfig from "../config.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
-import {
-  buildBranchNamePrompt,
-  buildCommitMessagePrompt,
-  buildPrContentPrompt,
-  buildThreadTitlePrompt,
-} from "./TextGenerationPrompts.ts";
-import * as TextGeneration from "./TextGeneration.ts";
-import {
-  sanitizeCommitSubject,
-  sanitizePrTitle,
-  sanitizeThreadTitle,
-} from "./TextGenerationUtils.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 import * as OpenCodeServerOwner from "../provider/OpenCodeServerOwner.ts";
 import { prepareOpenCodeIdeaEnvironment } from "../ideas/OpenCodeIdeaEnvironment.ts";
@@ -46,8 +21,6 @@ const OpenCodeTextGenerationOperation = Schema.Literals([
   "generateBranchName",
   "generateThreadTitle",
 ]);
-
-type OpenCodeTextGenerationOperation = typeof OpenCodeTextGenerationOperation.Type;
 
 const openCodeTextGenerationErrorContext = {
   operation: OpenCodeTextGenerationOperation,
@@ -191,14 +164,9 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  const runOpenCodeJson = Effect.fn("runOpenCodeJson")(function* <S extends Schema.Top>(input: {
-    readonly operation: OpenCodeTextGenerationOperation;
-    readonly cwd: string;
-    readonly prompt: string;
-    readonly outputSchemaJson: S;
-    readonly modelSelection: ModelSelection;
-    readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
-  }) {
+  const runOpenCodeJson = Effect.fn("runOpenCodeJson")(function* <S extends Schema.Top>(
+    input: TextGenerationOperations.Request<S>,
+  ) {
     const parsedModel = OpenCodeRuntime.parseOpenCodeModelSlug(input.modelSelection.model);
     if (!parsedModel) {
       return yield* new TextGenerationError({
@@ -408,139 +376,8 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       }),
     );
 
-    const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(input.outputSchemaJson));
-    return yield* decodeOutput(extractJsonObject(rawOutput)).pipe(
-      Effect.catchTags({
-        SchemaError: (cause) =>
-          Effect.fail(
-            new TextGenerationError({
-              operation: input.operation,
-              detail: "OpenCode returned invalid structured output.",
-              cause,
-            }),
-          ),
-      }),
-    );
+    return yield* TextGenerationOperations.decodeJsonReply(input, "OpenCode", rawOutput);
   });
 
-  const generateCommitMessage: TextGeneration.TextGeneration["Service"]["generateCommitMessage"] =
-    Effect.fn("OpenCodeTextGeneration.generateCommitMessage")(function* (input) {
-      const { prompt, outputSchema } = buildCommitMessagePrompt({
-        branch: input.branch,
-        stagedSummary: input.stagedSummary,
-        stagedPatch: input.stagedPatch,
-        includeBranch: input.includeBranch === true,
-        policy: input.policy,
-      });
-      const generated = yield* runOpenCodeJson({
-        operation: "generateCommitMessage",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-      });
-
-      return {
-        subject: sanitizeCommitSubject(generated.subject),
-        body: generated.body.trim(),
-        ...("branch" in generated && typeof generated.branch === "string"
-          ? { branch: sanitizeFeatureBranchName(generated.branch) }
-          : {}),
-      };
-    });
-
-  const generatePrContent: TextGeneration.TextGeneration["Service"]["generatePrContent"] =
-    Effect.fn("OpenCodeTextGeneration.generatePrContent")(function* (input) {
-      const { prompt, outputSchema } = buildPrContentPrompt({
-        baseBranch: input.baseBranch,
-        headBranch: input.headBranch,
-        commitSummary: input.commitSummary,
-        diffSummary: input.diffSummary,
-        diffPatch: input.diffPatch,
-        policy: input.policy,
-        changeRequestTemplate: input.changeRequestTemplate,
-      });
-      const generated = yield* runOpenCodeJson({
-        operation: "generatePrContent",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-      });
-
-      return {
-        title: sanitizePrTitle(generated.title),
-        body: generated.body.trim(),
-      };
-    });
-
-  const generateBranchName: TextGeneration.TextGeneration["Service"]["generateBranchName"] =
-    Effect.fn("OpenCodeTextGeneration.generateBranchName")(function* (input) {
-      const { prompt, outputSchema } = buildBranchNamePrompt({
-        message: input.message,
-        attachments: input.attachments,
-      });
-      const generated = yield* runOpenCodeJson({
-        operation: "generateBranchName",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-        attachments: input.attachments,
-      });
-
-      return {
-        branch: sanitizeBranchFragment(generated.branch),
-      };
-    });
-
-  const generateThreadTitle: TextGeneration.TextGeneration["Service"]["generateThreadTitle"] =
-    Effect.fn("OpenCodeTextGeneration.generateThreadTitle")(function* (input) {
-      const { prompt, outputSchema } = buildThreadTitlePrompt({
-        message: input.message,
-        previousTitle: input.previousTitle,
-        linkedContext: input.linkedContext,
-        attachments: input.attachments,
-      });
-      const generated = yield* runOpenCodeJson({
-        operation: "generateThreadTitle",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-        attachments: input.attachments,
-      });
-
-      return {
-        title: sanitizeThreadTitle(generated.title),
-        ...(generated.needsRefinement ? { needsRefinement: true } : {}),
-      };
-    });
-
-  const generateRevdoc = (input: RevdocGenerationInput) =>
-    runOpenCodeJson({
-      operation: "generateRevdoc",
-      cwd: input.cwd,
-      prompt: input.prompt,
-      outputSchemaJson: RevdocGenerationResult,
-      modelSelection: input.modelSelection,
-    });
-
-  const generateIdeaUpdate = (input: IdeaUpdateInput) =>
-    runOpenCodeJson({
-      operation: "generateIdeaUpdate",
-      cwd: input.cwd,
-      prompt: input.prompt,
-      outputSchemaJson: IdeaUpdateGenerationResult,
-      modelSelection: input.modelSelection,
-    }).pipe(Effect.map(normalizeIdeaUpdateResult));
-
-  return {
-    generateRevdoc,
-    generateIdeaUpdate,
-    generateCommitMessage,
-    generatePrContent,
-    generateBranchName,
-    generateThreadTitle,
-  } satisfies TextGeneration.TextGeneration["Service"];
+  return TextGenerationOperations.fromRunner("OpenCodeTextGeneration", runOpenCodeJson);
 });

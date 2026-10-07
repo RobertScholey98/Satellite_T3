@@ -11,8 +11,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
-import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as OrchestrationEngine from "../orchestration-v2/SatelliteOrchestration.ts";
+import * as ProjectionSnapshotQuery from "../orchestration-v2/SatelliteOrchestration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as CommitRecommendationService from "./CommitRecommendationService.ts";
 
@@ -180,6 +180,23 @@ it.effect("does not write advice for a missing thread", () =>
     expect(commands).toEqual([]);
     expect(reads).toEqual([]);
   }),
+);
+
+it.effect(
+  "expires clean-checkout advice using an already-read status without another Git probe",
+  () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      yield* harness.service.set(threadId, { level: "recommended", reason: "Ready to commit." });
+      harness.setDirty(false);
+      const status = yield* harness.service.readLocalStatus("/unrelated/checkout");
+      const readsBefore = [...harness.reads];
+      expect(harness.recommendation()).not.toBeNull();
+      yield* harness.service.expireForStatus("/repo/worktree", status);
+      expect(harness.recommendation()).toBeNull();
+      expect(harness.reads).toEqual(readsBefore);
+      expect(harness.commands.at(-1)).toMatchObject({ threadId, commitRecommendation: null });
+    }),
 );
 
 it.effect(

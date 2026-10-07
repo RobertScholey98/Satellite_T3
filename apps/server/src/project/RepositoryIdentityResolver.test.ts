@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { TestClock } from "effect/testing";
 
 import * as ProcessRunner from "../processRunner.ts";
@@ -26,7 +26,7 @@ const git = (cwd: string, args: ReadonlyArray<string>) =>
     });
   }).pipe(Effect.provide(ProcessRunner.layer));
 
-const makeRepositoryIdentityResolverTestLayer = (options: {
+const layerRepositoryIdentityResolverTest = (options: {
   readonly positiveCacheTtl?: Duration.Input;
   readonly negativeCacheTtl?: Duration.Input;
 }) =>
@@ -45,7 +45,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     let remoteUrl = "git@github.com:T3Tools/t3code.git";
     let refinements = 0;
     let refinementFails = false;
-    const processRunner = Layer.succeed(ProcessRunner.ProcessRunner, {
+    const layerProcessRunner = Layer.succeed(ProcessRunner.ProcessRunner, {
       run: (input) =>
         Effect.sync(() => {
           calls.push(input.args);
@@ -63,7 +63,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
           };
         }),
     });
-    const resolverLayer = Layer.effect(
+    const layerResolver = Layer.effect(
       RepositoryIdentityResolver.RepositoryIdentityResolver,
       RepositoryIdentityResolver.make({
         refine: (identity) => {
@@ -88,7 +88,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
           );
         },
       }),
-    ).pipe(Layer.provide(processRunner));
+    ).pipe(Layer.provide(layerProcessRunner));
 
     return Effect.gen(function* () {
       const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -125,13 +125,13 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       const unavailable = yield* resolver.resolve(rootPath, { refresh: true });
       expect(unavailable?.webUrl).toBeUndefined();
       expect(unavailable?.canonicalKey).toBe("ssh.forge.test/team/repo");
-    }).pipe(Effect.provide(Layer.merge(TestClock.layer(), resolverLayer)));
+    }).pipe(Effect.provide(Layer.merge(TestClock.layer(), layerResolver)));
   });
 
   it.effect("retries Git root discovery after the negative TTL", () => {
     const calls: Array<ReadonlyArray<string>> = [];
     let rootAttempts = 0;
-    const processRunner = Layer.succeed(ProcessRunner.ProcessRunner, {
+    const layerProcessRunner = Layer.succeed(ProcessRunner.ProcessRunner, {
       run: (input) =>
         Effect.sync(() => {
           calls.push(input.args);
@@ -155,10 +155,10 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
           };
         }),
     });
-    const resolverLayer = Layer.effect(
+    const layerResolver = Layer.effect(
       RepositoryIdentityResolver.RepositoryIdentityResolver,
       RepositoryIdentityResolver.make(),
-    ).pipe(Layer.provide(processRunner));
+    ).pipe(Layer.provide(layerProcessRunner));
 
     return Effect.gen(function* () {
       const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
@@ -174,7 +174,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         ["-C", "/repo/packages/web", "rev-parse", "--show-toplevel"],
         ["-C", "/repo", "remote", "-v"],
       ]);
-    }).pipe(Effect.provide(Layer.merge(TestClock.layer(), resolverLayer)));
+    }).pipe(Effect.provide(Layer.merge(TestClock.layer(), layerResolver)));
   });
 
   it.effect("normalizes equivalent GitHub remotes into a stable repository identity", () =>
@@ -295,7 +295,8 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         }
 
         const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
-        expect((yield* resolver.resolve(cwd))?.canonicalKey).toBe("github.com/julius/t3code");
+        const defaultIdentity = yield* resolver.resolve(cwd);
+        expect(defaultIdentity?.canonicalKey).toBe("github.com/julius/t3code");
         const initialIdentity = yield* resolver.resolve(cwd, { remoteName: "upstream" });
         expect(initialIdentity?.canonicalKey).toBe(
           change === "add" ? undefined : "github.com/t3tools/previous",
@@ -315,7 +316,42 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
         expect(identity?.displayName).toBe("t3tools/t3code");
         expect(yield* resolver.resolve(cwd, { remoteName: "upstream" })).toEqual(identity);
+        expect(yield* resolver.resolve(cwd)).toEqual(defaultIdentity);
+        expect(yield* resolver.resolve(cwd, { refresh: true })).toEqual(defaultIdentity);
       }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+  );
+
+  it.effect("prefers the fork's origin while resolving upstream independently", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-fork-test-",
+      });
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:julius/t3code-fork.git"]);
+      yield* git(cwd, ["remote", "add", "upstream", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const identity = yield* resolver.resolve(cwd);
+
+      expect(identity?.canonicalKey).toBe("github.com/julius/t3code-fork");
+      expect(identity?.displayName).toBe("julius/t3code-fork");
+      expect(identity?.locator.remoteName).toBe("origin");
+      expect(identity?.origin).toBeUndefined();
+
+      const upstream = yield* resolver.resolve(cwd, { remoteName: "upstream" });
+      expect(upstream?.canonicalKey).toBe("github.com/t3tools/t3code");
+      expect(upstream?.displayName).toBe("t3tools/t3code");
+      expect(upstream?.locator.remoteName).toBe("upstream");
+      expect(upstream?.origin).toEqual({
+        canonicalKey: "github.com/julius/t3code-fork",
+        displayName: "julius/t3code-fork",
+      });
+      const origin = yield* resolver.resolve(cwd, { remoteName: "origin" });
+      expect(origin).toEqual(identity);
+      expect(yield* resolver.resolve(cwd)).toEqual(identity);
+    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 
   it.effect("uses the last remote path segment as the repository name for nested groups", () =>
@@ -371,7 +407,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         Effect.provide(
           Layer.merge(
             TestClock.layer(),
-            makeRepositoryIdentityResolverTestLayer({
+            layerRepositoryIdentityResolverTest({
               negativeCacheTtl: Duration.millis(50),
               positiveCacheTtl: Duration.seconds(1),
             }),
@@ -412,7 +448,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       Effect.provide(
         Layer.merge(
           TestClock.layer(),
-          makeRepositoryIdentityResolverTestLayer({
+          layerRepositoryIdentityResolverTest({
             negativeCacheTtl: Duration.millis(50),
             positiveCacheTtl: Duration.millis(100),
           }),

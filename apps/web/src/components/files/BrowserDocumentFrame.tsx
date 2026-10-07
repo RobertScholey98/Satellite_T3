@@ -1,4 +1,14 @@
-import type { Ref } from "react";
+import {
+  htmlRenderThemeFragment,
+  htmlRenderThemeMessage,
+  htmlRenderResult,
+  readHtmlRenderContentHeight,
+  readHtmlRenderLinkRequest,
+} from "@t3tools/shared/htmlRender";
+import { useEffect, useLayoutEffect, useRef, useState, type Ref } from "react";
+
+import { useHtmlRenderTheme } from "~/hooks/useHtmlRenderTheme";
+import { cn } from "~/lib/utils";
 
 /**
  * Chromium's viewer opens with its own toolbar, a thumbnail rail and a small
@@ -15,6 +25,7 @@ export const isPdfPreviewFile = (path: string): boolean =>
  * Renders an HTML or PDF document from its URL. HTML runs in a sandboxed frame
  * with an opaque origin, so a page cannot reach the app's session or storage.
  * The built-in PDF viewer needs an unsandboxed frame; a PDF runs no scripts.
+ * An agent's HTML render also wears the app theme.
  */
 export function BrowserDocumentFrame({
   src,
@@ -24,6 +35,7 @@ export function BrowserDocumentFrame({
   frameRef,
   onLoad,
   restricted = false,
+  htmlRender = false,
 }: {
   readonly src: string;
   readonly title: string;
@@ -32,11 +44,14 @@ export function BrowserDocumentFrame({
   readonly frameRef?: Ref<HTMLIFrameElement>;
   readonly onLoad?: () => void;
   readonly restricted?: boolean;
+  readonly htmlRender?: boolean;
 }) {
   const className = "min-h-0 flex-1 border-0 bg-white";
   return pdf ? (
-    // oxlint-disable-next-line react/iframe-missing-sandbox
+    // oxlint-disable-next-line react/iframe-missing-sandbox -- the built-in PDF viewer needs an unsandboxed frame.
     <iframe key={src} src={`${src}${PDF_VIEWER_FRAGMENT}`} title={title} className={className} />
+  ) : htmlRender ? (
+    <HtmlRenderDocument key={src} src={src} title={title} className="min-h-0 flex-1" />
   ) : (
     <iframe
       key={src}
@@ -51,6 +66,87 @@ export function BrowserDocumentFrame({
           ? "allow-scripts allow-modals allow-downloads"
           : "allow-scripts allow-forms allow-popups allow-modals"
       }
+    />
+  );
+}
+
+/**
+ * A sandboxed agent HTML render in the app theme. The page reads the theme from
+ * its URL fragment before first paint, then follows changes posted to its
+ * bootstrap. The first URL is kept for the frame's lifetime: signed asset URLs
+ * re-mint while it stays mounted, and a new src would reload the page.
+ */
+export function HtmlRenderDocument(props: {
+  readonly src: string;
+  readonly title: string;
+  readonly className?: string;
+  /** Receives the page's content height whenever it changes, so an inline frame can fit it. */
+  readonly onContentHeight?: (height: number) => void;
+}) {
+  const theme = useHtmlRenderTheme();
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const [src] = useState(() => `${props.src.split("#", 1)[0]}${htmlRenderThemeFragment(theme)}`);
+  const [loaded, setLoaded] = useState(false);
+  const postTheme = () => {
+    frameRef.current?.contentWindow?.postMessage(htmlRenderThemeMessage(theme), "*");
+  };
+  useEffect(postTheme, [theme]);
+  // The page cannot open windows itself (an inline page runs unopened, and
+  // desktop sends any window to the browser). It asks the client, which opens
+  // the link only while this frame has focus and the reader has just used the
+  // app. A page can take focus by script, so this stops opens on load, not a
+  // page that waits for the reader's next click or key.
+  useEffect(() => {
+    const openLink = (event: MessageEvent) => {
+      const frame = frameRef.current;
+      const request = readHtmlRenderLinkRequest(event.data);
+      if (
+        request === undefined ||
+        frame === null ||
+        event.source !== frame.contentWindow ||
+        document.activeElement !== frame ||
+        navigator.userActivation?.isActive === false
+      ) {
+        return;
+      }
+      window.open(request.url, "_blank", "noopener,noreferrer");
+      frame.contentWindow?.postMessage(htmlRenderResult(request.id), "*");
+    };
+    window.addEventListener("message", openLink);
+    return () => window.removeEventListener("message", openLink);
+  }, []);
+  const { onContentHeight } = props;
+  // A page posts its height once per change, so listen from the commit that
+  // inserts the frame; a passive effect could run after a fast page's first post.
+  useLayoutEffect(() => {
+    if (onContentHeight === undefined) return;
+    const resize = (event: MessageEvent) => {
+      const height = readHtmlRenderContentHeight(event.data);
+      if (height !== undefined && event.source === frameRef.current?.contentWindow) {
+        onContentHeight(height);
+      }
+    };
+    window.addEventListener("message", resize);
+    return () => window.removeEventListener("message", resize);
+  }, [onContentHeight]);
+  return (
+    <iframe
+      ref={frameRef}
+      src={src}
+      title={props.title}
+      // Never allow-same-origin: the opaque origin keeps the page out of the app's session.
+      sandbox="allow-scripts allow-forms"
+      loading="lazy"
+      onLoad={() => {
+        setLoaded(true);
+        // Covers a theme change that landed while the page was loading.
+        postTheme();
+      }}
+      // A frame whose color scheme differs from its document's paints an opaque
+      // canvas, so the blank document a frame starts with would flash white in
+      // dark mode. Once the page is in, its prefers-color-scheme follows the app.
+      className={cn("border-0 scheme-light", props.className)}
+      style={loaded ? { colorScheme: theme.appearance } : undefined}
     />
   );
 }

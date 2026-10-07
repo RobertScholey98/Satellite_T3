@@ -1,6 +1,5 @@
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useComposerDraftStore } from "../../composerDraftStore";
-import { useQueuedMessageStore } from "../../queuedMessageStore";
 import { useIdeaWorkspaceStore } from "./ideaWorkspaceStore";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { clearDeletedIdea } from "./ideaDeletion";
@@ -19,13 +18,9 @@ function EnvironmentCleanup({ environmentId }: { environmentId: EnvironmentId })
   const workspaces = useIdeaWorkspaceStore((state) => state.workspaces);
   const drafts = useComposerDraftStore((state) => state.draftsByThreadKey);
   const creating = useComposerDraftStore((state) => state.draftThreadsByThreadKey);
-  const queues = useQueuedMessageStore((state) => state.queuesByThreadKey);
   const keys = new Set([
     ...Object.keys(workspaces),
     ...Object.keys(drafts).filter((key) => drafts[key]?.purpose === "idea"),
-    ...Object.keys(queues).filter((key) =>
-      queues[key]?.some((message) => message.purpose === "idea"),
-    ),
   ]);
   return list.data
     ? [...keys].flatMap((key) => {

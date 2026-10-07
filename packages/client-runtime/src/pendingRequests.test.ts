@@ -38,6 +38,7 @@ describe("pending approvals", () => {
       expect(derivePendingRequests([requested]).approvals).toEqual([
         {
           requestId: "per-legacy",
+          responseCapability: "live",
           requestKind: "command",
           createdAt: requested.createdAt,
           detail: "*",
@@ -68,6 +69,7 @@ describe("pending approvals", () => {
         tone: "approval",
         payload: {
           requestId: "req-1",
+          responseCapability: "live",
           requestKind: "command",
           detail: "bun run lint",
         },
@@ -93,6 +95,7 @@ describe("pending approvals", () => {
     expect(derivePendingRequests(activities).approvals).toEqual([
       {
         requestId: "req-1",
+        responseCapability: "live",
         requestKind: "command",
         createdAt: "2026-02-23T00:00:01.000Z",
         detail: "bun run lint",
@@ -110,6 +113,7 @@ describe("pending approvals", () => {
         tone: "approval",
         payload: {
           requestId: "req-request-type",
+          responseCapability: "live",
           requestType: "command_execution_approval",
           detail: "pwd",
         },
@@ -119,6 +123,7 @@ describe("pending approvals", () => {
     expect(derivePendingRequests(activities).approvals).toEqual([
       {
         requestId: "req-request-type",
+        responseCapability: "live",
         requestKind: "command",
         createdAt: "2026-02-23T00:00:01.000Z",
         detail: "pwd",
@@ -139,6 +144,7 @@ describe("pending approvals", () => {
         tone: "approval",
         payload: {
           requestId: "req-safari",
+          responseCapability: "live",
           requestType: "mcp_elicitation_approval",
           detail: "Allow ChatGPT to use Safari?",
           appName: "Safari",
@@ -150,6 +156,7 @@ describe("pending approvals", () => {
     expect(derivePendingRequests(activities).approvals).toEqual([
       {
         requestId: "req-safari",
+        responseCapability: "live",
         requestKind: "mcp-elicitation",
         createdAt: "2026-02-23T00:00:00.000Z",
         detail: "Allow ChatGPT to use Safari?",
@@ -169,6 +176,7 @@ describe("pending approvals", () => {
         tone: "approval",
         payload: {
           requestId: "req-dynamic-tool",
+          responseCapability: "live",
           requestType: "dynamic_tool_call",
           detail: "Search the web",
         },
@@ -178,6 +186,7 @@ describe("pending approvals", () => {
     expect(derivePendingRequests(activities).approvals).toEqual([
       {
         requestId: "req-dynamic-tool",
+        responseCapability: "live",
         requestKind: "command",
         createdAt: "2026-02-23T00:00:01.000Z",
         detail: "Search the web",
@@ -337,6 +346,7 @@ describe("pending questions", () => {
         tone: "info",
         payload: {
           requestId: "req-user-input-1",
+          responseCapability: "live",
           questions: [
             {
               id: "sandbox_mode",
@@ -395,6 +405,7 @@ describe("pending questions", () => {
     expect(derivePendingRequests(activities).userInputs).toEqual([
       {
         requestId: "req-user-input-1",
+        responseCapability: "live",
         createdAt: "2026-02-23T00:00:01.000Z",
         dismissible: false,
         questions: [
@@ -471,28 +482,29 @@ describe.each(["approval", "user-input"])("%s request completion", (requestKind)
     },
   });
 
-  it.each([`${requestKind}.resolved`, `provider.${requestKind}.respond.failed`])(
-    "keeps %s final across reordered and repeated activities",
-    (kind) => {
-      const closed = makeActivity({
-        id: `${requestKind}-closed`,
-        kind,
-        createdAt: "2026-02-23T00:00:01.000Z",
-        payload: {
-          requestId: "request-1",
-          detail: `Unknown pending ${requestKind} request: request-1`,
-        },
-      });
-      const replayedRequest = { ...requested, id: EventId.make("replayed-request"), sequence: 43 };
+  it.each([
+    `${requestKind}.resolved`,
+    `${requestKind}.cancelled`,
+    `provider.${requestKind}.respond.failed`,
+  ])("keeps %s final across reordered and repeated activities", (kind) => {
+    const closed = makeActivity({
+      id: `${requestKind}-closed`,
+      kind,
+      createdAt: "2026-02-23T00:00:01.000Z",
+      payload: {
+        requestId: "request-1",
+        detail: `Unknown pending ${requestKind} request: request-1`,
+      },
+    });
+    const replayedRequest = { ...requested, id: EventId.make("replayed-request"), sequence: 43 };
 
-      for (const activities of [
-        [requested, closed, replayedRequest],
-        [closed, requested, replayedRequest],
-      ]) {
-        expect(derivePendingRequests(activities)).toEqual({ approvals: [], userInputs: [] });
-      }
-    },
-  );
+    for (const activities of [
+      [requested, closed, replayedRequest],
+      [closed, requested, replayedRequest],
+    ]) {
+      expect(derivePendingRequests(activities)).toEqual({ approvals: [], userInputs: [] });
+    }
+  });
 
   it("keeps a failed reply retryable unless the text names a stale request", () => {
     const failed = makeActivity({

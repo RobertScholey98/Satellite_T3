@@ -16,7 +16,9 @@ import * as TestClock from "effect/testing/TestClock";
 import {
   CodexSettings,
   EnvironmentId,
-  OrchestrationEvent,
+  EventId,
+  type OrchestrationEvent,
+  type OrchestrationSession,
   type OrchestrationCommand,
   type RevdocReview,
   type RevdocRunState,
@@ -29,13 +31,13 @@ import {
   TextGenerationError,
   type ModelSelection,
 } from "@t3tools/contracts";
-import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
+import * as OrchestrationEngine from "../orchestration-v2/SatelliteOrchestration.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
-import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
+import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import * as ProjectionSnapshotQuery from "../orchestration-v2/SatelliteOrchestration.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RevdocService from "./RevdocService.ts";
@@ -45,7 +47,6 @@ import { writeFakeCli } from "../testUtils/fakeCli.ts";
 
 const threadId = ThreadId.make("review-thread");
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const decodeEvent = Schema.decodeUnknownSync(OrchestrationEvent);
 const decodeThreadShell = Schema.decodeSync(OrchestrationThreadShell);
 const decodeProjectShell = Schema.decodeEffect(OrchestrationProjectShell);
 const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
@@ -252,47 +253,46 @@ const setup = (
         Stream.runHead,
         Effect.map(Option.getOrThrow),
       );
-    const settle = (id: ThreadId, settled = true, status = "ready") =>
-      PubSub.publish(
-        events,
-        decodeEvent({
-          type: "thread.session-set",
-          sequence: 1,
-          eventId: "test-event",
-          aggregateKind: "thread",
-          aggregateId: id,
-          occurredAt: timestamp,
-          commandId: null,
-          causationEventId: null,
-          correlationId: null,
-          metadata: {},
-          payload: {
+    const settle = (
+      id: ThreadId,
+      settled = true,
+      status: OrchestrationSession["status"] = "ready",
+    ) =>
+      PubSub.publish(events, {
+        type: "thread.session-set",
+        sequence: 1,
+        eventId: EventId.make("test-event"),
+        aggregateKind: "thread",
+        aggregateId: id,
+        occurredAt: timestamp,
+        payload: {
+          threadId: id,
+          ...(settled ? { turnSettled: true } : {}),
+          session: {
             threadId: id,
-            ...(settled ? { turnSettled: true } : {}),
-            session: {
-              threadId: id,
-              status,
-              providerName: "codex",
-              runtimeMode: "full-access",
-              activeTurnId: null,
-              lastError: null,
-              updatedAt: timestamp,
-            },
+            status,
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: timestamp,
           },
-        }),
-      );
+        },
+      });
     const tester = Effect.gen(function* () {
       const id = yield* Queue.take(starts);
       const detail = yield* service.get({ threadId });
       return {
         invocation: {
           environmentId: EnvironmentId.make("test"),
-          threadId: id,
-          providerSessionId: "session",
-          providerInstanceId: defaultModel.instanceId,
+          thread: {
+            threadId: id,
+            providerSessionId: "session",
+            providerInstanceId: defaultModel.instanceId,
+          },
+          client: undefined,
+          requestNamespace: "test",
           capabilities: new Set(["documents", "preview"] as const),
           issuedAt: 0,
-        } satisfies McpInvocationScope,
+        } satisfies McpThreadInvocationScope,
         target: { runId: detail.review!.testing!.id, testId: "check" },
       };
     });
@@ -501,12 +501,16 @@ describe("worktree Revdoc service", () => {
       const detail = yield* env.service.get(input);
       const invocation = {
         environmentId: EnvironmentId.make("test"),
-        threadId: testingThreadId,
-        providerSessionId: "session",
-        providerInstanceId: defaultModel.instanceId,
+        thread: {
+          threadId: testingThreadId,
+          providerSessionId: "session",
+          providerInstanceId: defaultModel.instanceId,
+        },
+        client: undefined,
+        requestNamespace: "test",
         capabilities: new Set(["documents", "preview"] as const),
         issuedAt: 0,
-      } satisfies McpInvocationScope;
+      } satisfies McpThreadInvocationScope;
       yield* env.service.beginTest(invocation, {
         runId: detail.review!.testing!.id,
         testId: "check",
@@ -1209,15 +1213,15 @@ describe("Revdoc AI testing", () => {
         const { invocation, target } = yield* env.tester;
         expect(env.dispatched.find((c) => c.type === "thread.turn.start")).toMatchObject({
           modelSelection: selected,
-          threadId: invocation.threadId,
+          threadId: invocation.thread.threadId,
         });
-        expect(invocation.threadId).not.toBe(threadId);
+        expect(invocation.thread.threadId).not.toBe(threadId);
         expect(env.dispatched.find((command) => command.type === "thread.create")).toMatchObject({
           purpose: "revdoc",
         });
         expect((yield* env.service.get({ threadId })).review?.testing?.audience).toBe("revdoc");
         // A ready session during startup is not a completed turn.
-        yield* env.settle(invocation.threadId, false);
+        yield* env.settle(invocation.thread.threadId, false);
         yield* env.service.beginTest(invocation, target);
         const result = {
           ...target,
@@ -1231,7 +1235,7 @@ describe("Revdoc AI testing", () => {
         ).toContain("Capture Browser evidence");
         yield* env.service.captureEvidence(invocation, { ...target, caption: "Feature opened" });
         yield* env.service.recordTest(invocation, result);
-        yield* env.settle(invocation.threadId);
+        yield* env.settle(invocation.thread.threadId);
         expect((yield* env.finished()).error).toBeNull();
         const detail = yield* env.service.get({ threadId });
         const test = detail.review!.sections[0]!.items[0]!.tests[0]!;
@@ -1292,7 +1296,7 @@ describe("Revdoc AI testing", () => {
       ]);
       expect(env.dispatched.at(-1)).toMatchObject({
         type: "thread.turn.interrupt",
-        threadId: first.invocation.threadId,
+        threadId: first.invocation.thread.threadId,
       });
       yield* env.service.startTesting({ threadId, selection: "remaining" });
       const second = yield* env.tester;
@@ -1300,7 +1304,7 @@ describe("Revdoc AI testing", () => {
       expect(
         (yield* env.service.beginTest(first.invocation, first.target).pipe(Effect.flip)).message,
       ).toContain("Only the active");
-      yield* env.settle(second.invocation.threadId);
+      yield* env.settle(second.invocation.thread.threadId);
       yield* env.finished();
       const final = (yield* env.service.get({ threadId })).review!;
       expect(final.sections[0]!.items[0]!.tests[0]!.attempts).toHaveLength(1);
@@ -1320,8 +1324,9 @@ describe("Revdoc AI testing", () => {
         yield* env.service.startTesting({ threadId, selection: "all" });
         const { invocation, target } = yield* env.tester;
         expect(
-          (yield* env.service.beginTest({ ...invocation, threadId }, target).pipe(Effect.flip))
-            .message,
+          (yield* env.service
+            .beginTest({ ...invocation, thread: { ...invocation.thread, threadId } }, target)
+            .pipe(Effect.flip)).message,
         ).toContain("Only the active");
         yield* env.service.beginTest(invocation, target);
         yield* env.fs.writeFile(binary, new Uint8Array(60_000).fill(1));
@@ -1348,7 +1353,7 @@ describe("Revdoc AI testing", () => {
         yield* env.service.start({ threadId });
         const { invocation } = yield* env.tester;
         expect((yield* env.service.get({ threadId })).review?.title).toBe(generated.title);
-        yield* env.settle(invocation.threadId, true, "error");
+        yield* env.settle(invocation.thread.threadId, true, "error");
         expect((yield* env.finished()).error).toContain("interrupted");
         const review = (yield* env.service.get({ threadId })).review!;
         expect(review.testing?.status).toBe("failed");

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import {
-  ApprovalRequestId,
+  RuntimeRequestId,
   EnvironmentId,
   ThreadId,
   type SatelliteAttentionView,
@@ -56,7 +56,7 @@ function attentionState(requestIds: string[]): SatellitePillState {
           kind: "question",
           environmentId: EnvironmentId.make("remote"),
           threadId: ThreadId.make("thread"),
-          requestId: ApprovalRequestId.make(requestId),
+          requestId: RuntimeRequestId.make(requestId),
         },
         title: "Build clients",
         environmentName: "Remote",
@@ -422,7 +422,7 @@ describe("standalone Satellite pill gestures", () => {
       environmentId: EnvironmentId.make("remote"),
       threadId: ThreadId.make("thread"),
       kind: "question" as const,
-      requestId: ApprovalRequestId.make("request"),
+      requestId: RuntimeRequestId.make("request"),
     };
     const view: SatelliteAttentionView = {
       items: [

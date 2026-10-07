@@ -1,16 +1,4 @@
-import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
-import {
-  IdeaUpdateGenerationResult,
-  normalizeIdeaUpdateResult,
-  type IdeaUpdateInput,
-} from "../ideas/IdeaUpdateGeneration.ts";
-import {
-  type ModelSelection,
-  type ProviderSetupError,
-  TextGenerationError,
-} from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import { extractJsonObject } from "@t3tools/shared/schemaJson";
+import { type ProviderSetupError, TextGenerationError } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -26,19 +14,8 @@ import { type AcpError, AcpRequestError } from "effect-acp/errors";
 import { applyAntigravityAcpModelSelection } from "../provider/acp/AntigravityAcpSupport.ts";
 import { removeAntigravitySessionFiles } from "../provider/acp/AntigravitySessionFiles.ts";
 import type { AcpSessionRuntime } from "../provider/acp/AcpSessionRuntime.ts";
-import type * as TextGeneration from "./TextGeneration.ts";
-import {
-  buildBranchNamePrompt,
-  buildCommitMessagePrompt,
-  buildPrContentPrompt,
-  buildThreadTitlePrompt,
-} from "./TextGenerationPrompts.ts";
-import {
-  sanitizeCommitSubject,
-  sanitizePrTitle,
-  sanitizeThreadTitle,
-  textGenerationTimeoutMs,
-} from "./TextGenerationUtils.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+import { textGenerationTimeoutMs } from "./TextGenerationUtils.ts";
 
 const MAX_OUTPUT_CHARS = 128_000;
 const isTextGenerationError = Schema.is(TextGenerationError);
@@ -126,15 +103,9 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
     Effect.provideService(Path.Path, path),
   );
 
+  // Ignores `cwd`: the helper runs in an empty temp directory, away from the project.
   const runAntigravityJson = Effect.fn("AntigravityTextGeneration.runJson")(
-    function* <S extends Schema.Top>(input: {
-      readonly operation: keyof TextGeneration.TextGeneration["Service"];
-      readonly prompt: string;
-      readonly outputSchema: S;
-      readonly modelSelection: ModelSelection;
-      readonly ideaWorkspace?: string;
-      readonly onActivity?: RevdocGenerationInput["onActivity"];
-    }) {
+    function* <S extends Schema.Top>(input: TextGenerationOperations.Request<S>) {
       const { operation, onActivity } = input;
       const scope = yield* Scope.make();
       yield* Effect.addFinalizer((exit) => Scope.close(scope, exit));
@@ -203,7 +174,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
           );
           yield* runtime.handleElicitation(() =>
             reject("Antigravity text generation requested user input.").pipe(
-              Effect.as({ action: { action: "decline" as const } }),
+              Effect.as({ action: "decline" as const }),
             ),
           );
           yield* runtime.handleReadTextFile(rejectToolRequest);
@@ -314,17 +285,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
             detail: "Antigravity returned empty text generation output.",
           });
         }
-        const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(input.outputSchema));
-        return yield* decodeOutput(extractJsonObject(rawResult)).pipe(
-          Effect.mapError(
-            (cause) =>
-              new TextGenerationError({
-                operation,
-                detail: "Antigravity returned invalid structured output.",
-                cause,
-              }),
-          ),
-        );
+        return yield* TextGenerationOperations.decodeJsonReply(input, "Antigravity", rawResult);
       }).pipe(
         Effect.scoped,
         Effect.timeoutOption(textGenerationTimeoutMs(operation)),
@@ -361,98 +322,5 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       ),
   );
 
-  const generateCommitMessage: TextGeneration.TextGeneration["Service"]["generateCommitMessage"] =
-    Effect.fn("AntigravityTextGeneration.generateCommitMessage")(function* (input) {
-      const generated = yield* runAntigravityJson({
-        operation: "generateCommitMessage",
-        ...buildCommitMessagePrompt({
-          branch: input.branch,
-          stagedSummary: input.stagedSummary,
-          stagedPatch: input.stagedPatch,
-          includeBranch: input.includeBranch === true,
-          policy: input.policy,
-        }),
-        modelSelection: input.modelSelection,
-      });
-      return {
-        subject: sanitizeCommitSubject(generated.subject),
-        body: generated.body.trim(),
-        ...("branch" in generated && typeof generated.branch === "string"
-          ? { branch: sanitizeFeatureBranchName(generated.branch) }
-          : {}),
-      };
-    });
-
-  const generatePrContent: TextGeneration.TextGeneration["Service"]["generatePrContent"] =
-    Effect.fn("AntigravityTextGeneration.generatePrContent")(function* (input) {
-      const generated = yield* runAntigravityJson({
-        operation: "generatePrContent",
-        ...buildPrContentPrompt({
-          baseBranch: input.baseBranch,
-          headBranch: input.headBranch,
-          commitSummary: input.commitSummary,
-          diffSummary: input.diffSummary,
-          diffPatch: input.diffPatch,
-          policy: input.policy,
-          changeRequestTemplate: input.changeRequestTemplate,
-        }),
-        modelSelection: input.modelSelection,
-      });
-      return { title: sanitizePrTitle(generated.title), body: generated.body.trim() };
-    });
-
-  const generateBranchName: TextGeneration.TextGeneration["Service"]["generateBranchName"] =
-    Effect.fn("AntigravityTextGeneration.generateBranchName")(function* (input) {
-      const generated = yield* runAntigravityJson({
-        operation: "generateBranchName",
-        ...buildBranchNamePrompt({ message: input.message, attachments: input.attachments }),
-        modelSelection: input.modelSelection,
-      });
-      return { branch: sanitizeBranchFragment(generated.branch) };
-    });
-
-  const generateThreadTitle: TextGeneration.TextGeneration["Service"]["generateThreadTitle"] =
-    Effect.fn("AntigravityTextGeneration.generateThreadTitle")(function* (input) {
-      const generated = yield* runAntigravityJson({
-        operation: "generateThreadTitle",
-        ...buildThreadTitlePrompt({
-          message: input.message,
-          previousTitle: input.previousTitle,
-          linkedContext: input.linkedContext,
-          attachments: input.attachments,
-        }),
-        modelSelection: input.modelSelection,
-      });
-      return {
-        title: sanitizeThreadTitle(generated.title),
-        ...(generated.needsRefinement ? { needsRefinement: true } : {}),
-      };
-    });
-
-  const generateRevdoc = (input: RevdocGenerationInput) =>
-    runAntigravityJson({
-      operation: "generateRevdoc",
-      prompt: input.prompt,
-      outputSchema: RevdocGenerationResult,
-      modelSelection: input.modelSelection,
-      onActivity: input.onActivity,
-    });
-
-  const generateIdeaUpdate = (input: IdeaUpdateInput) =>
-    runAntigravityJson({
-      operation: "generateIdeaUpdate",
-      ideaWorkspace: input.cwd,
-      prompt: input.prompt,
-      outputSchema: IdeaUpdateGenerationResult,
-      modelSelection: input.modelSelection,
-    }).pipe(Effect.map(normalizeIdeaUpdateResult));
-
-  return {
-    generateRevdoc,
-    generateIdeaUpdate,
-    generateCommitMessage,
-    generatePrContent,
-    generateBranchName,
-    generateThreadTitle,
-  } satisfies TextGeneration.TextGeneration["Service"];
+  return TextGenerationOperations.fromRunner("AntigravityTextGeneration", runAntigravityJson);
 });

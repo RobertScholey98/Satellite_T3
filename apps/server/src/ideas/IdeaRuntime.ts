@@ -19,8 +19,8 @@ import * as Schema from "effect/Schema";
 import { CommandId, IdeaArtifactId, type IdeaArtifact, type ThreadId } from "@t3tools/contracts";
 import { ServerConfig } from "../config.ts";
 import { ProcessRunner } from "../processRunner.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { ideaThreadDiscussion } from "./IdeaDiscussion.ts";
 import {

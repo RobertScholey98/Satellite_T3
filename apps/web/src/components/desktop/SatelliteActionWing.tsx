@@ -40,7 +40,13 @@ function RequestEditor({
     editor.delivery === "awaiting-resolution" ||
     editor.delivery === "uncertain";
   const attachments = hasPendingQuestionAttachments(editor.answers);
-  const disabled = busy || editor.status !== "ready" || !item.available || attachments;
+  const disabled =
+    busy ||
+    editor.status !== "ready" ||
+    !item.available ||
+    attachments ||
+    editor.question?.responseCapability === "not_resumable" ||
+    editor.approval?.responseCapability === "not_resumable";
   const answers = editor.answers;
   const question = editor.question;
   const progress = question
@@ -72,7 +78,16 @@ function RequestEditor({
       {question && editor.ref.kind === "question" ? (
         <>
           <ComposerPendingUserInputPanel
-            pendingUserInputs={[question]}
+            pendingUserInputs={[
+              {
+                ...question,
+                responseCapability: question.responseCapability ?? "live",
+                questions: question.questions.map((field) => ({
+                  ...field,
+                  multiSelect: field.multiSelect ?? false,
+                })),
+              },
+            ]}
             respondingRequestIds={disabled ? [question.requestId] : []}
             answers={answers}
             questionIndex={editor.questionIndex}
@@ -162,10 +177,17 @@ function RequestEditor({
       ) : null}
       {editor.approval && editor.ref.kind === "approval" ? (
         <>
-          <ComposerPendingApprovalPanel approval={editor.approval} pendingCount={1} />
+          <ComposerPendingApprovalPanel
+            approval={{
+              ...editor.approval,
+              responseCapability: editor.approval.responseCapability ?? "live",
+            }}
+            pendingCount={1}
+          />
           <div data-satellite="response-actions">
             <ComposerPendingApprovalActions
               requestId={editor.approval.requestId}
+              canRespond={editor.approval.responseCapability !== "not_resumable"}
               isResponding={disabled}
               options={editor.approval.options}
               collisionBoundary={panel ?? undefined}

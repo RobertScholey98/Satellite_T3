@@ -1,4 +1,5 @@
-import * as NodeCrypto from "node:crypto";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
 import type { RevdocReview } from "@t3tools/contracts";
 import { reconcileRevdoc, revdocPrompt, type RevdocGenerationResult } from "./RevdocGeneration.ts";
 
@@ -7,7 +8,7 @@ const MAX_CHANGES_BYTES = 180_000;
 const encodedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 const key = (text: string) => text.trim().toLocaleLowerCase("en-US");
 const id = (kind: string, value: unknown) =>
-  `${kind}-${NodeCrypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24)}`;
+  `${kind}-${Hex.encode(sha256(new TextEncoder().encode(JSON.stringify(value)))).slice(0, 24)}`;
 
 /** Split even a single oversized line without dropping text or splitting a Unicode character. */
 export function splitRevdocText(text: string, maxBytes: number): string[] {

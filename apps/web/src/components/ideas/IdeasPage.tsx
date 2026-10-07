@@ -455,7 +455,7 @@ function IdeaWorkspace({ threadRef }: { threadRef: ScopedThreadRef }) {
                   const result = await dispatch({
                     environmentId: threadRef.environmentId,
                     input: {
-                      type: "thread.meta.update",
+                      type: "thread.metadata.update",
                       commandId: CommandId.make(randomUUID()),
                       threadId: threadRef.threadId,
                       title: titleDraft.trim(),

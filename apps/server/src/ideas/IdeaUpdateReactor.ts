@@ -20,10 +20,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
-import { ProviderInstanceRegistry } from "../provider/Services/ProviderInstanceRegistry.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { EventStoreV2 } from "../orchestration-v2/EventStore.ts";
+import { satelliteEvents } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
@@ -58,7 +59,7 @@ export class IdeaUpdateReactor extends Context.Service<
       const runtime = yield* IdeaRuntime;
       const engine = yield* OrchestrationEngineService;
       const snapshots = yield* ProjectionSnapshotQuery;
-      const events = yield* OrchestrationEventStore;
+      const events = yield* EventStoreV2;
       const settings = yield* ServerSettingsService;
       const providers = yield* ProviderInstanceRegistry;
       const crypto = yield* Crypto.Crypto;
@@ -126,13 +127,13 @@ export class IdeaUpdateReactor extends Context.Service<
             });
           const cwd = yield* runtime.workingDirectory(threadId);
           const sourceEvents = yield* events
-            .readAggregateRange({
-              aggregateKind: "thread",
-              aggregateId: threadId,
-              fromSequenceExclusive: 0,
-              toSequenceInclusive: notebook.update.requestedSequence,
+            .read({
+              threadId,
+              afterSequence: 0,
+              throughSequence: notebook.update.requestedSequence,
             })
             .pipe(
+              Stream.flatMap((stored) => Stream.fromIterable(satelliteEvents(stored))),
               Stream.filter(
                 (event) =>
                   event.type === "thread.message-sent" ||
@@ -248,7 +249,7 @@ export class IdeaUpdateReactor extends Context.Service<
           if (
             result.title?.trim() &&
             Option.isSome(initialTitle) &&
-            initialTitle.value.titleState?.source !== "manual"
+            initialTitle.value.titleRegeneration == null
           ) {
             yield* engine
               .dispatch({
@@ -257,7 +258,6 @@ export class IdeaUpdateReactor extends Context.Service<
                 threadId,
                 title: result.title.trim(),
                 expectedTitle: initialTitle.value.title,
-                expectedVersion: initialTitle.value.titleState?.version ?? null,
                 needsRefinement: false,
               })
               .pipe(

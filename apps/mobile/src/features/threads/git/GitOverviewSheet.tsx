@@ -56,6 +56,18 @@ type GitOverviewSheetProps = StaticScreenProps<{
 };
 
 export function GitOverviewSheet(props: GitOverviewSheetProps) {
+  const navigation = useNavigation();
+  const { environmentId, threadId } = props.route.params;
+  // A hand-typed deep link can carry a blank ID, which the branded IDs reject.
+  const isBlankLink = environmentId.trim().length === 0 || threadId.trim().length === 0;
+  useEffect(() => {
+    if (isBlankLink) navigation.goBack();
+  }, [isBlankLink, navigation]);
+  if (isBlankLink) return null;
+  return <GitOverviewSheetContent {...props} />;
+}
+
+function GitOverviewSheetContent(props: GitOverviewSheetProps) {
   const { layout } = useAdaptiveWorkspaceLayout();
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -76,6 +88,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
   );
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
+  const { canWriteSourceControl, canChangeThreadBranch } = gitActions;
   const theme = useUniwindTheme();
   const foregroundColor = theme["--color-foreground"];
   const sheetColor = theme["--color-sheet"];
@@ -106,15 +119,21 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
   const sheetMenuItems = useMemo(
     () =>
       menuItems.map((item) => ({
-        item,
-        disabledReason: getGitActionDisabledReason({
-          item,
-          gitStatus: gitStatus.data,
-          isBusy: busy,
-          hasOriginRemote: hasPrimaryRemote,
-        }),
+        item: {
+          ...item,
+          disabled: item.disabled || (!canWriteSourceControl && item.kind !== "open_pr"),
+        },
+        disabledReason:
+          !canWriteSourceControl && item.kind !== "open_pr"
+            ? "This connection cannot change source control."
+            : getGitActionDisabledReason({
+                item,
+                gitStatus: gitStatus.data,
+                isBusy: busy,
+                hasOriginRemote: hasPrimaryRemote,
+              }),
       })),
-    [busy, gitStatus.data, hasPrimaryRemote, menuItems],
+    [busy, canWriteSourceControl, gitStatus.data, hasPrimaryRemote, menuItems],
   );
 
   useEffect(() => {
@@ -134,6 +153,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
 
   const runActionWithPrompt = useCallback(
     async (input: GitActionRequestInput) => {
+      if (!canWriteSourceControl) return;
       const confirmableAction =
         input.action === "push" ||
         input.action === "create_pr" ||
@@ -165,7 +185,16 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
       }
       await gitActions.onRunSelectedThreadGitAction(input);
     },
-    [environmentId, gitActions, gitStatus.data, isDefaultRef, isInspector, navigation, threadId],
+    [
+      canWriteSourceControl,
+      environmentId,
+      gitActions,
+      gitStatus.data,
+      isDefaultRef,
+      isInspector,
+      navigation,
+      threadId,
+    ],
   );
 
   const onPressMenuItem = useCallback(
@@ -175,6 +204,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
         await openExistingPr();
         return;
       }
+      if (!canWriteSourceControl) return;
       if (item.dialogAction === "commit") {
         navigation.navigate("GitCommit", {
           environmentId: String(environmentId),
@@ -190,7 +220,14 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
         await runActionWithPrompt({ action: "create_pr" });
       }
     },
-    [environmentId, openExistingPr, navigation, runActionWithPrompt, threadId],
+    [
+      canWriteSourceControl,
+      environmentId,
+      openExistingPr,
+      navigation,
+      runActionWithPrompt,
+      threadId,
+    ],
   );
 
   // Status facts live on the relevant rows instead of crowding the header
@@ -274,8 +311,12 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
             <SheetListRow
               icon="arrow.down.circle"
               title="Pull latest"
-              subtitle={`${behindCount} commit${behindCount === 1 ? "" : "s"} behind upstream`}
-              disabled={busy || !isRepo}
+              subtitle={
+                canWriteSourceControl
+                  ? `${behindCount} commit${behindCount === 1 ? "" : "s"} behind upstream`
+                  : "This connection cannot change source control."
+              }
+              disabled={!canWriteSourceControl || busy || !isRepo}
               onPress={() => void gitActions.onPullSelectedThreadBranch()}
             />
           </>
@@ -284,7 +325,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
         <SheetListRow
           icon="text.bubble"
           title="Review changes"
-          subtitle="Inspect turn diffs, worktree changes, and base branch diff"
+          subtitle="Inspect changes, uncommitted edits, and turn diffs"
           disabled={busy || !isRepo}
           onPress={() => {
             const params = { environmentId, threadId };
@@ -299,7 +340,11 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
         <SheetListRow
           icon="point.topleft.down.curvedto.point.bottomright.up"
           title="Branches & worktrees"
-          subtitle="Switch branch, create branch, or move to a worktree"
+          subtitle={
+            canChangeThreadBranch
+              ? "Switch branch, create branch, or move to a worktree"
+              : "View branches and worktrees"
+          }
           disabled={busy || !isRepo}
           onPress={() =>
             navigation.navigate("GitBranches", {
@@ -341,7 +386,7 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
                   <SheetListRow
                     icon="arrow.triangle.pull"
                     title={`#${link.number} ${link.snapshot?.title ?? "Pull request"}`}
-                    subtitle={`${link.repository} · ${link.snapshot === null ? "Status pending" : link.snapshot.isDraft && link.snapshot.state === "open" ? "Draft" : link.snapshot.state}`}
+                    subtitle={`${link.repository} · ${link.snapshot === null ? "Status pending" : link.snapshot.isDraft && link.snapshot.state === "open" ? "Draft" : link.snapshot.state}${link.watch === undefined ? "" : " · Watching"}`}
                     onPress={() => {
                       void tryOpenExternalUrl(link.url, "pull-request").then((opened) => {
                         if (!opened)

@@ -1,25 +1,25 @@
 import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { EnvironmentShellStatus } from "@t3tools/client-runtime/state/shell";
 import type {
-  OrchestrationThreadActivity,
-  OrchestrationThreadShell,
+  OrchestrationV2ThreadProjection,
   SatellitePillState,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 
-type PillThread = Pick<
-  OrchestrationThreadShell,
+export type PillThread = Pick<
+  EnvironmentThreadShell,
   | "title"
-  | "session"
-  | "latestTurn"
+  | "runtime"
+  | "latestRun"
   | "settledAt"
   | "settledOverride"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "hasActionableProposedPlan"
   | "interactionMode"
-  | "backgroundLiveness"
-  | "planProgress"
+  | "pendingBackgroundTasks"
 >;
 
 function concise(text: string): string {
@@ -33,7 +33,7 @@ export function projectSatellitePill(input: {
   thread: PillThread | null;
   connectionPhase: EnvironmentConnectionPhase | null;
   shellStatus: EnvironmentShellStatus | null;
-  activities?: ReadonlyArray<OrchestrationThreadActivity> | undefined;
+  projection?: OrchestrationV2ThreadProjection | undefined;
 }): SatellitePillState {
   const { ref, thread } = input;
   const base = {
@@ -67,40 +67,46 @@ export function projectSatellitePill(input: {
   if (thread.hasPendingUserInput) return state("awaiting-input", "Input needed", true);
 
   const sessionRunning =
-    thread.session?.status === "running" || thread.session?.status === "starting";
+    thread.runtime?.status === "running" ||
+    thread.runtime?.status === "starting" ||
+    thread.runtime?.status === "preparing";
   if (
-    thread.session?.status === "error" ||
-    (!sessionRunning && thread.latestTurn?.state === "error")
+    thread.runtime?.status === "failed" ||
+    (!sessionRunning && thread.latestRun?.status === "failed")
   ) {
-    return state("error", thread.session?.lastError ?? "Turn failed", true);
+    return state("error", thread.runtime?.lastError ?? "Turn failed", true);
   }
 
-  const latestActivity = input.activities?.findLast(
-    (activity) => activity.turnId === (thread.latestTurn?.turnId ?? null),
-  );
   const turnRunning =
-    thread.latestTurn?.state === "running" &&
-    thread.session?.status !== "interrupted" &&
-    thread.session?.status !== "stopped";
+    thread.latestRun?.status === "running" &&
+    thread.runtime?.status !== "interrupted" &&
+    thread.runtime?.status !== "cancelled";
+  const backgroundRunning = backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks);
   if (
     !sessionRunning &&
     !turnRunning &&
     thread.interactionMode === "plan" &&
     thread.hasActionableProposedPlan &&
-    thread.latestTurn?.state === "completed"
+    thread.latestRun?.status === "completed"
   ) {
     return state("awaiting-input", "Plan ready for review", true);
   }
-  if (sessionRunning || turnRunning || thread.backgroundLiveness) {
+  if (sessionRunning || turnRunning || backgroundRunning || thread.runtime?.status === "queued") {
+    const activePlan = input.projection?.plans.findLast(
+      (artifact) => artifact.kind === "todo_list" && artifact.status === "active",
+    );
+    const runningStep =
+      activePlan?.kind === "todo_list"
+        ? activePlan.steps.find((step) => step.status === "running")?.text
+        : undefined;
     return state(
       "working",
-      thread.planProgress?.step ??
-        (sessionRunning || turnRunning ? latestActivity?.summary : null) ??
-        (thread.backgroundLiveness === "monitoring"
+      runningStep ??
+        (thread.pendingBackgroundTasks.some((task) => task.kind === "monitor")
           ? "Monitoring"
-          : thread.backgroundLiveness === "working"
+          : backgroundRunning
             ? "Background work running"
-            : thread.session?.status === "starting"
+            : thread.runtime?.status === "starting" || thread.runtime?.status === "preparing"
               ? "Starting agent"
               : "Working"),
     );
@@ -108,14 +114,14 @@ export function projectSatellitePill(input: {
   if (thread.settledOverride === "settled" || thread.settledAt !== null) {
     return state("completed", "Conversation settled");
   }
-  if (thread.latestTurn?.state === "completed" && thread.latestTurn.completedAt !== null) {
+  if (thread.latestRun?.status === "completed" && thread.latestRun.completedAt !== null) {
     return state("completed", "Turn completed");
   }
   return state(
     "idle",
-    thread.session?.status === "interrupted" || thread.latestTurn?.state === "interrupted"
+    thread.runtime?.status === "interrupted" || thread.latestRun?.status === "interrupted"
       ? "Turn interrupted"
-      : thread.session?.status === "stopped"
+      : thread.runtime?.status === "cancelled"
         ? "Agent stopped"
         : "Ready for a message",
   );

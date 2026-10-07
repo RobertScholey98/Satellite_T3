@@ -1,18 +1,16 @@
 import { beforeEach, describe, expect, it } from "vite-plus/test";
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
-  ApprovalRequestId,
+  RuntimeRequestId,
   CommandId,
   EnvironmentId,
   EventId,
-  ProjectId,
   ProviderInstanceId,
   ThreadId,
-  TurnId,
+  RunId,
   type OrchestrationThreadActivity,
   type SatelliteAttentionSummary,
 } from "@t3tools/contracts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
 import {
   EMPTY_REQUEST_DRAFT,
@@ -23,7 +21,11 @@ import {
   recordPendingCommandResult,
   usePendingRequestStore,
 } from "./pendingRequestStore";
-import { deriveSatelliteAttention, selectAttentionItem } from "./satelliteAttention";
+import {
+  deriveSatelliteAttention,
+  selectAttentionItem,
+  type AttentionThread,
+} from "./satelliteAttention";
 
 const timestamp = "2026-10-05T10:00:00.000Z";
 const environmentId = EnvironmentId.make("local");
@@ -32,7 +34,7 @@ const ref = {
   environmentId,
   threadId,
   kind: "question" as const,
-  requestId: ApprovalRequestId.make("request-1"),
+  requestId: RuntimeRequestId.make("request-1"),
 };
 const key = pendingRequestKey(ref);
 const summary: SatelliteAttentionSummary = {
@@ -46,6 +48,7 @@ const summary: SatelliteAttentionSummary = {
   muted: false,
 };
 const question = {
+  responseCapability: "message" as const,
   requestId: ref.requestId,
   createdAt: timestamp,
   dismissible: true,
@@ -61,29 +64,22 @@ const question = {
 };
 const environments = [{ environmentId, label: "Local", available: true }];
 
-function thread(overrides: Partial<EnvironmentThreadShell> = {}): EnvironmentThreadShell {
+function thread(overrides: Partial<AttentionThread> = {}): AttentionThread {
   return {
     environmentId,
     id: threadId,
-    projectId: ProjectId.make("project-1"),
     title: "Choose a database",
-    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-    runtimeMode: "full-access",
     interactionMode: "default",
-    branch: null,
-    worktreePath: null,
-    latestTurn: null,
-    createdAt: timestamp,
+    latestRun: null,
+    pendingBackgroundTasks: [],
     updatedAt: timestamp,
     archivedAt: null,
     settledOverride: null,
     settledAt: null,
-    pullRequests: [],
-    latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: true,
     hasActionableProposedPlan: false,
-    session: null,
+    runtime: null,
     pendingRequests: [
       {
         kind: "question",
@@ -170,7 +166,7 @@ describe("Satellite request ownership", () => {
   });
 
   it("keeps saved answers and the selected second request through a thread handoff", () => {
-    const second = { ...ref, requestId: ApprovalRequestId.make("request-2") };
+    const second = { ...ref, requestId: RuntimeRequestId.make("request-2") };
     const secondKey = pendingRequestKey(second);
     const store = usePendingRequestStore.getState();
     store.updateDraft(secondKey, (draft) => ({
@@ -191,16 +187,17 @@ describe("Satellite request ownership", () => {
     const items = [summary, { ...summary, ref: second }];
     expect(
       selectAttentionItem(
-        [...items, { ...summary, ref: { ...ref, requestId: ApprovalRequestId.make("arrival") } }],
+        [...items, { ...summary, ref: { ...ref, requestId: RuntimeRequestId.make("arrival") } }],
         secondKey,
       )?.ref.requestId,
     ).toBe("request-2");
   });
 
   it("opens the selected question even when its thread also has an approval", () => {
-    const second = { ...question, requestId: ApprovalRequestId.make("second-question") };
+    const second = { ...question, requestId: RuntimeRequestId.make("second-question") };
     const approval = {
-      requestId: ApprovalRequestId.make("approval"),
+      responseCapability: "live" as const,
+      requestId: RuntimeRequestId.make("approval"),
       createdAt: timestamp,
       requestKind: "command" as const,
     };
@@ -222,27 +219,30 @@ describe("Satellite request ownership", () => {
     ).toEqual(approval);
   });
 
-  it("retains accepted responses after the shell clears and prevents a second submission from either editor", () => {
-    const store = usePendingRequestStore.getState();
-    const sent = submission();
-    expect(store.beginSubmission(ref, sent)).toBe(true);
-    expect(store.beginSubmission(ref, submission([], "second-command"))).toBe(false);
-    store.commandResult(key, sent.commandId, true);
-    expect(usePendingRequestStore.getState().drafts[key]?.delivery.phase).toBe(
-      "awaiting-resolution",
-    );
-    const view = deriveSatelliteAttention(
-      [thread({ pendingRequests: [], hasPendingUserInput: false })],
-      environments,
-      usePendingRequestStore.getState().drafts,
-    );
-    expect(view.items.map((item) => item.ref.requestId)).toEqual(["request-1"]);
-    store.reconcile(ref, [requested, activity("user-input.resolved", 2)]);
-    expect(
-      deriveSatelliteAttention([thread()], environments, usePendingRequestStore.getState().drafts)
-        .items,
-    ).toEqual([]);
-  });
+  it.each(["resolved", "cancelled"])(
+    "retains accepted responses after the shell clears and releases %s requests",
+    (status) => {
+      const store = usePendingRequestStore.getState();
+      const sent = submission();
+      expect(store.beginSubmission(ref, sent)).toBe(true);
+      expect(store.beginSubmission(ref, submission([], "second-command"))).toBe(false);
+      store.commandResult(key, sent.commandId, true);
+      expect(usePendingRequestStore.getState().drafts[key]?.delivery.phase).toBe(
+        "awaiting-resolution",
+      );
+      const view = deriveSatelliteAttention(
+        [thread({ pendingRequests: [], hasPendingUserInput: false })],
+        environments,
+        usePendingRequestStore.getState().drafts,
+      );
+      expect(view.items.map((item) => item.ref.requestId)).toEqual(["request-1"]);
+      store.reconcile(ref, [requested, activity(`user-input.${status}`, 2)]);
+      expect(
+        deriveSatelliteAttention([thread()], environments, usePendingRequestStore.getState().drafts)
+          .items,
+      ).toEqual([]);
+    },
+  );
 
   it("restores editing after a newer provider failure without losing a draft or changing selection", () => {
     const store = usePendingRequestStore.getState();
@@ -251,7 +251,7 @@ describe("Satellite request ownership", () => {
       answers: { db: { selectedOptionValues: ["pg"] } },
     }));
     store.beginSubmission(ref, submission());
-    const other = { ...ref, requestId: ApprovalRequestId.make("other") };
+    const other = { ...ref, requestId: RuntimeRequestId.make("other") };
     store.select(other);
     const failed = activity("provider.user-input.respond.failed", 2, {
       detail: "Provider not ready",
@@ -286,7 +286,13 @@ describe("Satellite request ownership", () => {
       submission: { commandId: "command-1", response: { kind: "question", answers: { db: "pg" } } },
     });
     expect(store.beginSubmission(ref, submission([], "duplicate"))).toBe(false);
-    store.commandResult(key, sent.commandId, false, "Invalid answer");
+    recordPendingCommandResult(
+      key,
+      sent,
+      AsyncResult.failure(
+        Cause.fail({ _tag: "OrchestrationV2DispatchCommandError", message: "Invalid answer" }),
+      ),
+    );
     expect(usePendingRequestStore.getState().drafts[key]?.delivery).toEqual({
       phase: "failed",
       message: "Invalid answer",
@@ -384,23 +390,22 @@ describe("Satellite activity and coverage", () => {
 
   it("counts active work without historical completions or stale turn states", () => {
     const turn = {
-      turnId: TurnId.make("turn-1"),
-      state: "completed" as const,
+      runId: RunId.make("run-1"),
+      status: "completed" as const,
       requestedAt: timestamp,
       startedAt: timestamp,
       completedAt: timestamp,
       assistantMessageId: null,
     };
-    const session = {
-      threadId,
+    const runtime = {
       status: "running" as const,
       providerName: "codex",
-      runtimeMode: "full-access" as const,
-      activeTurnId: turn.turnId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      activeRunId: turn.runId,
       lastError: null,
       updatedAt: timestamp,
     };
-    const make = (id: string, overrides: Partial<EnvironmentThreadShell>) =>
+    const make = (id: string, overrides: Partial<AttentionThread>) =>
       thread({
         id: ThreadId.make(id),
         pendingRequests: [],
@@ -409,18 +414,18 @@ describe("Satellite activity and coverage", () => {
       });
     const view = deriveSatelliteAttention(
       [
-        make("settled", { latestTurn: turn, settledAt: timestamp }),
-        make("finished", { latestTurn: turn }),
-        make("restarted", { latestTurn: { ...turn, state: "error" }, session }),
+        make("settled", { latestRun: turn, settledAt: timestamp }),
+        make("finished", { latestRun: turn }),
+        make("restarted", { latestRun: { ...turn, status: "failed" }, runtime }),
         make("stopped", {
-          latestTurn: { ...turn, state: "running" },
-          session: { ...session, status: "stopped" },
+          latestRun: { ...turn, status: "running" },
+          runtime: { ...runtime, status: "cancelled" },
         }),
-        make("monitor", { backgroundLiveness: "monitoring" }),
-        make("old-plan", { hasActionableProposedPlan: true, latestTurn: turn }),
+        make("monitor", { pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }] }),
+        make("old-plan", { hasActionableProposedPlan: true, latestRun: turn }),
         make("review", {
           hasActionableProposedPlan: true,
-          latestTurn: turn,
+          latestRun: turn,
           interactionMode: "plan",
         }),
       ],

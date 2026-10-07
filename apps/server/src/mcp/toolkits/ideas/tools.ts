@@ -1,19 +1,25 @@
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
   IdeaArtifact,
   IdeaArtifactId,
   IdeaIssueDraft,
   IdeaPromotion,
   McpCapabilityUnavailableError,
+  OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import * as Tool from "effect/unstable/ai/Tool";
-import * as Toolkit from "effect/unstable/ai/Toolkit";
+import * as Tool from "effect/ai/Tool";
+import * as Toolkit from "effect/ai/Toolkit";
 import { IdeaRuntime, IdeaRuntimeError } from "../../../ideas/IdeaRuntime.ts";
 import { IdeaPromotion as PromotionService } from "../../../ideas/IdeaPromotion.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 
-const dependencies = [McpInvocationContext, IdeaRuntime, PromotionService];
-const failure = Schema.Union([IdeaRuntimeError, McpCapabilityUnavailableError]);
+const dependencies = [ThreadManagementService, McpInvocationContext, IdeaRuntime, PromotionService];
+const failure = Schema.Union([
+  IdeaRuntimeError,
+  McpCapabilityUnavailableError,
+  OrchestratorMcpFailure,
+]);
 export const IdeaImageTool = Tool.make("idea_read_image", {
   description:
     "View an image attached to this idea. Pass its artifact ID from the notebook. Returns PNG, JPEG, GIF or WebP pixels to inspect.",
@@ -28,7 +34,7 @@ export const IdeaImageTool = Tool.make("idea_read_image", {
     }),
   }),
   failure,
-  dependencies: [McpInvocationContext, IdeaRuntime],
+  dependencies: [ThreadManagementService, McpInvocationContext, IdeaRuntime],
 }).annotate(Tool.Readonly, true);
 export const IdeasImageToolkit = Toolkit.make(IdeaImageTool);
 export const IdeasToolkit = Toolkit.make(

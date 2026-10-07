@@ -1,6 +1,9 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
+import {
+  derivePendingRequests,
+  threadRequestActivities,
+} from "@t3tools/client-runtime/pending-requests";
 import type { EnvironmentThread } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import {
@@ -9,7 +12,7 @@ import {
   type SatellitePillState,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -104,7 +107,7 @@ function CurrentThread({
     thread,
     connectionPhase: environment?.connection.phase ?? null,
     shellStatus: shell.status,
-    activities: detailStatus === "live" ? detail?.activities : undefined,
+    projection: detailStatus === "live" ? detail?.projection : undefined,
   });
   const encoded = JSON.stringify(projection);
   useEffect(() => onProjection(JSON.parse(encoded)), [encoded, onProjection]);
@@ -204,7 +207,9 @@ export function SatellitePillCoordinator() {
     for (const item of attention.items) {
       const detail = details[pendingThreadKey(item.ref)];
       if (detail?.status === "live" && detail.thread)
-        usePendingRequestStore.getState().reconcile(item.ref, detail.thread.activities);
+        usePendingRequestStore
+          .getState()
+          .reconcile(item.ref, threadRequestActivities(detail.thread.projection));
     }
   }, [attention.items, details]);
 
@@ -212,7 +217,9 @@ export function SatellitePillCoordinator() {
   if (selected) {
     const draft = drafts[pendingRequestKey(selected.ref)] ?? EMPTY_REQUEST_DRAFT;
     const detail = details[pendingThreadKey(selected.ref)];
-    const pending = derivePendingRequests(detail?.thread?.activities ?? []);
+    const pending = derivePendingRequests(
+      detail?.thread ? threadRequestActivities(detail.thread.projection) : [],
+    );
     const submission = isPendingDelivery(draft.delivery) ? draft.delivery.submission : undefined;
     const question =
       pending.userInputs.find((request) => request.requestId === selected.ref.requestId) ??
@@ -287,7 +294,7 @@ export function SatellitePillCoordinator() {
     if (isPendingDelivery(draft.delivery) || draft.delivery.phase === "resolved") return;
     const detail = details[pendingThreadKey(intent.ref)];
     if (detail?.status !== "live" || !detail.thread) return;
-    const pending = derivePendingRequests(detail.thread.activities);
+    const pending = derivePendingRequests(threadRequestActivities(detail.thread.projection));
     const question = pending.userInputs.find(
       (request) => request.requestId === intent.ref.requestId,
     );
@@ -364,17 +371,23 @@ export function SatellitePillCoordinator() {
     const response =
       intent.type === "approve" &&
       approval &&
+      approval.responseCapability === "live" &&
       (approval.options?.some((option) => option.decision === intent.decision) ?? true)
         ? { kind: "approval" as const, decision: intent.decision }
-        : (intent.type === "submit" || intent.type === "advance") && question && answers
+        : (intent.type === "submit" || intent.type === "advance") &&
+            question &&
+            answers &&
+            question.responseCapability !== "not_resumable"
           ? { kind: "question" as const, answers }
-          : intent.type === "dismiss" && question?.dismissible
+          : intent.type === "dismiss" &&
+              question?.dismissible &&
+              question.responseCapability !== "not_resumable"
             ? { kind: "dismiss" as const }
             : null;
     if (!response) return;
     const submission = createPendingSubmission(
       { response, summary, ...(question ? { question } : {}), ...(approval ? { approval } : {}) },
-      detail.thread.activities,
+      threadRequestActivities(detail.thread.projection),
     );
     if (store.beginSubmission(intent.ref, submission)) await sendSubmission(submission);
   };

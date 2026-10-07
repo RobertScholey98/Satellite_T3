@@ -9,7 +9,9 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createModelSelection } from "@t3tools/shared/model";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { expect } from "vite-plus/test";
 import { GrokSettings, ProviderInstanceId } from "@t3tools/contracts";
 
@@ -20,22 +22,36 @@ import { execScriptSource, writeFakeCli } from "../testUtils/fakeCli.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
-const mockAgentPath = NodePath.join(__dirname, "../../scripts/acp-mock-agent.ts");
+const mockAgentPath = NodePath.join(__dirname, "../provider/testFixtures/grok-text-mock-agent.mjs");
 
-const GrokTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
+const layerGrokTextGenerationTest = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-grok-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
-function makeAcpGrokWrapper(dir: string, env: Record<string, string>): string {
-  return writeFakeCli({
-    directory: NodePath.join(dir, "bin"),
-    name: "grok",
-    env,
-    source: execScriptSource({
-      scriptPath: mockAgentPath,
-      argvLogPath: NodePath.join(dir, "argv.txt"),
-    }),
+function makeAcpGrokFixture(dir: string, env: Record<string, string>, platform: NodeJS.Platform) {
+  const source = execScriptSource({
+    scriptPath: mockAgentPath,
+    argvLogPath: NodePath.join(dir, "argv.txt"),
   });
+  if (platform === "win32") {
+    // Detached cmd.exe launchers do not pass their piped stdin to the mock agent.
+    const scriptPath = NodePath.join(dir, "grok-mock.mjs");
+    NodeFS.writeFileSync(
+      scriptPath,
+      `Object.assign(process.env, ${JSON.stringify(env)});\n${source}`,
+      "utf8",
+    );
+    return { binaryPath: process.execPath, scriptPath };
+  }
+  return {
+    binaryPath: writeFakeCli({
+      directory: NodePath.join(dir, "bin"),
+      name: "grok",
+      env,
+      source,
+    }),
+    scriptPath: undefined,
+  };
 }
 
 function withFakeAcpGrok<A, E, R>(
@@ -52,12 +68,33 @@ function withFakeAcpGrok<A, E, R>(
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }),
     );
-    const binaryPath = makeAcpGrokWrapper(tempDir, {
-      T3_ACP_REQUEST_LOG_PATH: NodePath.join(tempDir, "requests.ndjson"),
-      ...env,
-    });
-    const config = decodeGrokSettings({ binaryPath });
-    const textGeneration = yield* makeGrokTextGeneration(config);
+    const platform = yield* HostProcessPlatform;
+    const fixture = makeAcpGrokFixture(
+      tempDir,
+      {
+        T3_ACP_REQUEST_LOG_PATH: NodePath.join(tempDir, "requests.ndjson"),
+        ...env,
+      },
+      platform,
+    );
+    const config = decodeGrokSettings({ binaryPath: fixture.binaryPath });
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const fixtureSpawner = ChildProcessSpawner.make((command) =>
+      spawner.spawn(
+        fixture.scriptPath !== undefined &&
+          command._tag === "StandardCommand" &&
+          command.command === fixture.binaryPath
+          ? ChildProcess.make(
+              command.command,
+              [fixture.scriptPath, ...command.args],
+              command.options,
+            )
+          : command,
+      ),
+    );
+    const textGeneration = yield* makeGrokTextGeneration(config).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fixtureSpawner),
+    );
     return yield* effectFn(textGeneration, tempDir);
   }).pipe(Effect.scoped);
 }
@@ -72,7 +109,7 @@ function readJsonRpcRequests(
     .map((line) => JSON.parse(line) as { method?: string; params?: Record<string, unknown> });
 }
 
-it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
+it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
   it.effect("rejects invalid notebook edits", () =>
     withFakeAcpGrok(
       { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":"invalid","summary":"Bad update"}' },
@@ -105,7 +142,7 @@ it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
           expect(readJsonRpcRequests(NodePath.join(cwd, "requests.ndjson"))).toContainEqual(
             expect.objectContaining({
               method: "session/set_model",
-              params: { sessionId: "mock-session-1", modelId: "grok-mock-alt" },
+              params: { sessionId: "grok-text-session", modelId: "grok-mock-alt" },
             }),
           );
         }),

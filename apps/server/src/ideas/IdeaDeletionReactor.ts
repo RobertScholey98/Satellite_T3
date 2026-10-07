@@ -1,6 +1,7 @@
 import { IdeaPromotion } from "./IdeaPromotion.ts";
-import { ProviderService } from "../provider/Services/ProviderService.ts";
-import { ProviderEventLoggers } from "../provider/Layers/ProviderEventLoggers.ts";
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import { ProviderSessionManagerV2 } from "../orchestration-v2/ProviderSessionManager.ts";
+import { ProviderEventLoggers } from "../provider/ProviderEventLoggers.ts";
 import { CommandId, type ThreadId } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
@@ -13,17 +14,17 @@ import * as Path from "effect/Path";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import {
-  parseAttachmentIdFromRelativePath,
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { forkParked } from "../serverActivation.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime } from "./IdeaRuntime.ts";
 import { IdeaUpdateReactor } from "./IdeaUpdateReactor.ts";
 import { closeIdea } from "./IdeaLifecycle.ts";
+import { McpSessionRegistry } from "../mcp/McpSessionRegistry.ts";
 
 export class IdeaDeletionReactor extends Context.Service<
   IdeaDeletionReactor,
@@ -44,13 +45,17 @@ export class IdeaDeletionReactor extends Context.Service<
       const path = yield* Path.Path;
       const config = yield* ServerConfig;
       const crypto = yield* Crypto.Crypto;
-      const provider = yield* ProviderService;
+      const provider = yield* ProviderSessionManagerV2;
+      const projections = yield* ProjectionStoreV2;
       const logs = yield* ProviderEventLoggers;
+      const mcp = yield* McpSessionRegistry;
       const close = (threadId: ThreadId) =>
         closeIdea(threadId).pipe(
-          Effect.provideService(ProviderService, provider),
+          Effect.provideService(ProviderSessionManagerV2, provider),
+          Effect.provideService(ProjectionStoreV2, projections),
           Effect.provideService(ProviderEventLoggers, logs),
           Effect.provideService(IdeaPromotion, promotion),
+          Effect.provideService(McpSessionRegistry, mcp),
         );
       const removeAttachments = Effect.fn("IdeaDeletionReactor.removeAttachments")(function* (
         threadId: ThreadId,
@@ -59,7 +64,7 @@ export class IdeaDeletionReactor extends Context.Service<
         if (!(yield* fs.exists(config.attachmentsDir))) return;
         const entries = yield* fs.readDirectory(config.attachmentsDir);
         for (const entry of entries) {
-          const attachmentId = parseAttachmentIdFromRelativePath(entry);
+          const attachmentId = entry.slice(0, entry.lastIndexOf("."));
           if (attachmentId && parseThreadSegmentFromAttachmentId(attachmentId) === segment) {
             yield* fs.remove(path.join(config.attachmentsDir, entry), { force: true });
           }

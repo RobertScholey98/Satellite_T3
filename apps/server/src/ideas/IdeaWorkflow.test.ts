@@ -19,27 +19,32 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { ServerConfig } from "../config.ts";
-import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  layer as SatelliteTestLayer,
+  recordProject,
+  makeProviderAdapter,
+  recordMessage,
+  recordCompletedRun,
+} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
-import { ProviderInstanceRegistry } from "../provider/Services/ProviderInstanceRegistry.ts";
-import { ProviderService } from "../provider/Services/ProviderService.ts";
+import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import {
   NoOpProviderEventLoggers,
   ProviderEventLoggers,
-} from "../provider/Layers/ProviderEventLoggers.ts";
+} from "../provider/ProviderEventLoggers.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime } from "./IdeaRuntime.ts";
 import { IdeaPromotion } from "./IdeaPromotion.ts";
 import { IdeaUpdateReactor } from "./IdeaUpdateReactor.ts";
 import { IdeaDeletionReactor } from "./IdeaDeletionReactor.ts";
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import { ProjectService } from "../project/ProjectService.ts";
 
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodePostedIssue = Schema.decodeEffect(
@@ -97,22 +102,7 @@ it.effect.each([
           streamChanges: Stream.empty,
           applyUsageLimits: unused,
         },
-        adapter: {
-          provider: driverKind,
-          capabilities: { sessionModelSwitch: "unsupported" },
-          startSession: unused,
-          sendTurn: unused,
-          interruptTurn: unused,
-          respondToRequest: unused,
-          respondToUserInput: unused,
-          stopSession: unused,
-          listSessions: () => Effect.succeed([]),
-          hasSession: () => Effect.succeed(false),
-          readThread: unused,
-          rollbackThread: unused,
-          stopAll: unused,
-          streamEvents: Stream.empty,
-        },
+        orchestrationAdapter: makeProviderAdapter(instanceId, driverKind),
         textGeneration: {
           generateBranchName: unused,
           generateCommitMessage: unused,
@@ -197,9 +187,7 @@ it.effect.each([
         Layer.provideMerge(IdeaUpdateReactor.layer),
         Layer.provideMerge(IdeaPromotion.layer),
         Layer.provideMerge(IdeaRuntime.layer),
-        Layer.provideMerge(OrchestrationLayerLive),
-        Layer.provideMerge(IdeaNotebookStore.layer),
-        Layer.provideMerge(SqlitePersistenceMemory),
+        Layer.provideMerge(SatelliteTestLayer),
         Layer.provide(
           Layer.succeed(RepositoryIdentityResolver, {
             resolve: () =>
@@ -239,7 +227,6 @@ it.effect.each([
             getInstance: () => Effect.succeed(provider),
           }),
         ),
-        Layer.provide(Layer.mock(ProviderService)({ listSessions: () => Effect.succeed([]) })),
         Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
         Layer.provide(runner),
         Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "idea-workflow-" })),
@@ -248,7 +235,8 @@ it.effect.each([
       yield* Effect.gen(function* () {
         const engine = yield* OrchestrationEngineService;
         const store = yield* IdeaNotebookStore;
-        const snapshots = yield* ProjectionSnapshotQuery;
+        const projections = yield* ProjectionStoreV2;
+        const projects = yield* ProjectService;
         const updates = yield* IdeaUpdateReactor;
         const promotion = yield* IdeaPromotion;
         const deletion = yield* IdeaDeletionReactor;
@@ -268,13 +256,10 @@ it.effect.each([
         yield* updates.start();
         yield* promotion.start();
         yield* deletion.start();
-        yield* engine.dispatch({
-          type: "project.create",
-          commandId: CommandId.make("project"),
+        yield* recordProject({
           projectId,
           title: "Project",
           workspaceRoot: config.stateDir,
-          createdAt: now,
         });
         yield* engine.dispatch({
           type: "thread.create",
@@ -294,30 +279,25 @@ it.effect.each([
           worktreePath: null,
           createdAt: now,
         });
-        yield* engine.dispatch({
-          type: "thread.message.user.append",
-          commandId: CommandId.make("discuss"),
+        yield* recordMessage({
           threadId,
-          message: { messageId, text: "Create ideas through the home composer.", attachments: [] },
-          createdAt: now,
+          messageId,
+          text: "Create ideas through the home composer.",
+          role: "user",
         });
         assert.equal((yield* store.get(threadId))?.update.status, "waiting");
-        for (const [index, delta] of ["Assistant decision ", "from two chunks."].entries()) {
-          yield* engine.dispatch({
-            type: "thread.message.assistant.delta",
-            commandId: CommandId.make(`assistant-${index}`),
-            threadId,
-            messageId: MessageId.make("assistant"),
-            delta,
-            createdAt: now,
-          });
-        }
-        yield* engine.dispatch({
-          type: "thread.message.assistant.complete",
-          commandId: CommandId.make("assistant-complete"),
+        yield* recordMessage({
           threadId,
           messageId: MessageId.make("assistant"),
-          createdAt: now,
+          role: "assistant",
+          text: "Assistant decision ",
+          streaming: true,
+        });
+        yield* recordMessage({
+          threadId,
+          messageId: MessageId.make("assistant"),
+          role: "assistant",
+          text: "Assistant decision from two chunks.",
         });
 
         const updated = yield* waitFor(
@@ -326,27 +306,12 @@ it.effect.each([
             (event.payload.mutation.kind === "update.apply" ||
               event.payload.mutation.kind === "update.fail"),
         );
-        yield* engine.dispatch({
-          type: "thread.session.set",
-          commandId: CommandId.make("complete"),
-          threadId,
-          turnSettled: true,
-          session: {
-            threadId,
-            status: "ready",
-            providerName: "claudeAgent",
-            runtimeMode: "approval-required",
-            activeTurnId: null,
-            lastError: null,
-            updatedAt: now,
-          },
-          createdAt: now,
-        });
+        yield* recordCompletedRun(threadId);
         yield* Fiber.join(updated);
         yield* updates.drain;
         assert.equal((yield* store.get(threadId))?.entries.length, 1);
         assert.include((yield* store.get(threadId))?.pitch.markdown ?? "", "idea-entry:creation");
-        assert.equal((yield* snapshots.getShellSnapshot()).threads.length, 0);
+        assert.equal((yield* projections.getShellSnapshot()).threads.length, 0);
         const plan = yield* promotion.propose({
           threadId,
           drafts: [
@@ -376,16 +341,11 @@ it.effect.each([
         yield* promotion.drain;
         assert.equal(posted, 1);
         assert.equal((yield* store.get(threadId))?.status, "settled");
-        yield* engine.dispatch({
-          type: "thread.message.user.append",
-          commandId: CommandId.make("reopen"),
+        yield* recordMessage({
           threadId,
-          message: {
-            messageId: MessageId.make("followup"),
-            text: "Explore a later improvement.",
-            attachments: [],
-          },
-          createdAt: now,
+          messageId: MessageId.make("followup"),
+          role: "user",
+          text: "Explore a later improvement.",
         });
         assert.equal((yield* store.get(threadId))?.status, "active");
         yield* runtime.writeArtifact({
@@ -394,23 +354,38 @@ it.effect.each([
           mediaType: "text/markdown",
           contentBase64: Buffer.from("Owned document").toString("base64"),
         });
+        const revdocThreadId = ThreadId.make(`${threadId}:review`);
+        if (deletionMode === "project") {
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("review-thread"),
+            threadId: revdocThreadId,
+            projectId,
+            purpose: "revdoc",
+            title: "Document review",
+            createdBy: "system",
+            creationSource: "server",
+            modelSelection: { instanceId, model: "review-model" },
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+          });
+          assert.equal((yield* projections.getShellSnapshot()).threads.length, 0);
+        }
         const purged = yield* waitFor((event) => event.type === "idea.purged");
-        yield* engine.dispatch(
-          deletionMode === "project"
-            ? {
-                type: "project.delete",
-                commandId: CommandId.make("delete"),
-                projectId,
-                force: true,
-              }
-            : {
-                type: "idea.delete",
-                commandId: CommandId.make("delete"),
-                threadId,
-              },
-        );
+        if (deletionMode === "project")
+          yield* projects.delete({ commandId: CommandId.make("delete"), projectId, force: true });
+        else
+          yield* engine.dispatch({
+            type: "idea.delete",
+            commandId: CommandId.make("delete"),
+            threadId,
+          });
         yield* Fiber.join(purged);
         yield* deletion.drain;
+        if (deletionMode === "project")
+          assert.equal(yield* projections.getThreadShell(revdocThreadId), null);
         assert.equal(yield* store.get(threadId), null);
         assert.equal(yield* store.isDeleted(threadId), true);
         assert.isFalse(

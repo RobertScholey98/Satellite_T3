@@ -1,47 +1,54 @@
-import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
-import {
-  IdeaUpdateGenerationResult,
-  normalizeIdeaUpdateResult,
-  type IdeaUpdateInput,
-} from "../ideas/IdeaUpdateGeneration.ts";
-import { installTextGenerationToolGuard } from "./AcpTextGenerationGuard.ts";
-import {
-  prepareCursorIdeaEnvironment,
-  prepareCursorIdeaWorkspace,
-} from "../provider/acp/IdeaAcpPolicy.ts";
+import * as NodeOS from "node:os";
 import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
-import * as Crypto from "effect/Crypto";
+
+import type { AgentOptions, RunResult } from "@cursor/sdk";
+import { Agent } from "../provider/cursorSdk.ts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { type CursorSettings, type ModelSelection } from "@t3tools/contracts";
-import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
-import { extractJsonObject } from "@t3tools/shared/schemaJson";
+import {
+  type CursorSettings,
+  type ProviderSetupError,
+  TextGenerationError,
+} from "@t3tools/contracts";
 
-import { TextGenerationError } from "@t3tools/contracts";
-import * as TextGeneration from "./TextGeneration.ts";
-import {
-  buildBranchNamePrompt,
-  buildCommitMessagePrompt,
-  buildPrContentPrompt,
-  buildThreadTitlePrompt,
-} from "./TextGenerationPrompts.ts";
-import {
-  sanitizeCommitSubject,
-  sanitizePrTitle,
-  sanitizeThreadTitle,
-  textGenerationTimeoutMs,
-} from "./TextGenerationUtils.ts";
-import {
-  applyCursorAcpModelSelection,
-  makeCursorAcpRuntime,
-} from "../provider/acp/CursorAcpSupport.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+import { cursorSdkModelSelection } from "../provider/cursorSdkModel.ts";
+import type { CursorAuth } from "../provider/CursorAuth.ts";
+
+const CURSOR_TIMEOUT_MS = 180_000;
 
 const isTextGenerationError = Schema.is(TextGenerationError);
+
+function cursorSdkResultDetail(result: RunResult): string {
+  switch (result.status) {
+    case "cancelled":
+      return "Cursor SDK request was cancelled.";
+    case "error":
+      return "Cursor SDK request finished with an error.";
+    case "finished":
+      return "Cursor SDK returned empty output.";
+  }
+}
+
+/**
+ * The SDK throws this when `sandboxOptions.enabled` is set and local sandboxing
+ * is unavailable. That happens on hosts that cannot launch `cursorsandbox`, and
+ * also after an unsandboxed run caches "unsupported" for the process.
+ */
+function cursorSandboxUnsupported(cause: unknown): boolean {
+  const seen = new Set<object>();
+  let current = cause;
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    if (current instanceof Error && current.message.includes("sandboxing is not supported")) {
+      return true;
+    }
+    current = Reflect.get(current, "cause");
+  }
+  return false;
+}
 
 /**
  * Build a Cursor text-generation closure bound to a specific `CursorSettings`
@@ -50,293 +57,148 @@ const isTextGenerationError = Schema.is(TextGenerationError);
 export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(function* (
   cursorSettings: CursorSettings,
   environment?: NodeJS.ProcessEnv,
+  resolveApiKey?: Effect.Effect<string, ProviderSetupError>,
+  withAccess?: CursorAuth["withAccess"],
 ) {
-  const crypto = yield* Crypto.Crypto;
-  const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const resolvedEnvironment = environment ?? process.env;
 
-  const runCursorJson = <S extends Schema.Top>({
-    operation,
-    cwd,
-    prompt,
-    outputSchemaJson,
-    modelSelection,
-    onActivity,
-  }: {
-    operation:
-      | "generateCommitMessage"
-      | "generatePrContent"
-      | "generateBranchName"
-      | "generateThreadTitle"
-      | "generateRevdoc"
-      | "generateIdeaUpdate";
-    cwd: string;
-    prompt: string;
-    outputSchemaJson: S;
-    modelSelection: ModelSelection;
-    onActivity?: RevdocGenerationInput["onActivity"];
-  }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
+  const resolveCursorApiKey = (operation: TextGenerationOperations.Operation) =>
     Effect.gen(function* () {
-      const outputRef = yield* Ref.make("");
-      const workingDirectory =
-        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
-          ? yield* prepareCursorIdeaWorkspace(cwd, "updates").pipe(
-              Effect.provideService(FileSystem.FileSystem, fs),
-              Effect.provideService(Path.Path, path),
-            )
-          : cwd;
-      const runtime = yield* makeCursorAcpRuntime({
-        cursorSettings,
-        environment:
-          operation === "generateIdeaUpdate" || operation === "generateRevdoc"
-            ? yield* prepareCursorIdeaEnvironment(workingDirectory, resolvedEnvironment).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-                Effect.provideService(Path.Path, path),
-              )
-            : resolvedEnvironment,
-        childProcessSpawner: commandSpawner,
-        cwd: workingDirectory,
-        clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
-      }).pipe(Effect.provideService(Crypto.Crypto, crypto));
+      if (!cursorSettings.enabled) {
+        return yield* new TextGenerationError({
+          operation,
+          detail: "Cursor is disabled in T3 Code settings.",
+        });
+      }
 
-      const guard =
-        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
-          ? yield* installTextGenerationToolGuard(runtime, operation)
-          : undefined;
+      const apiKey = resolveApiKey
+        ? yield* resolveApiKey
+        : resolvedEnvironment.CURSOR_API_KEY?.trim();
+      if (!apiKey) {
+        return yield* new TextGenerationError({
+          operation,
+          detail: "Sign in with Cursor or add CURSOR_API_KEY in provider settings.",
+        });
+      }
 
-      yield* runtime.handleSessionUpdate((notification) => {
-        const update = notification.update;
-        if (
-          guard &&
-          (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")
-        ) {
-          return guard.reject();
-        }
-        if (update.sessionUpdate === "agent_thought_chunk") {
-          return onActivity && update.content.type === "text"
-            ? onActivity({ kind: "thinking", text: update.content.text })
-            : Effect.void;
-        }
-        if (update.sessionUpdate !== "agent_message_chunk") {
-          return Effect.void;
-        }
-        const content = update.content;
-        if (content.type !== "text") {
-          return Effect.void;
-        }
-        return Ref.update(outputRef, (current) => current + content.text).pipe(
-          Effect.andThen(onActivity?.({ kind: "output", text: content.text }) ?? Effect.void),
+      return apiKey;
+    });
+
+  // Ignores `cwd`: the agent runs in an empty temp directory, away from the project.
+  const runCursorJson: TextGenerationOperations.Runner = (input) => {
+    const { operation, prompt, modelSelection } = input;
+    return Effect.gen(function* () {
+      const apiKey = yield* resolveCursorApiKey(operation);
+      // The SDK loads sandbox.json independently of settingSources and lets it
+      // expand the writable paths. Its public API cannot override that policy.
+      if (yield* fs.exists(`${NodeOS.homedir()}/.cursor/sandbox.json`)) {
+        return yield* new TextGenerationError({
+          operation,
+          detail:
+            "Cursor text generation cannot enforce workspace isolation with a custom ~/.cursor/sandbox.json. Use another text-generation provider.",
+        });
+      }
+      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cursor-text-" });
+      const agentOptions = {
+        apiKey,
+        mode: "plan",
+        model: cursorSdkModelSelection(modelSelection),
+        local: {
+          cwd,
+          autoReview: false,
+          sandboxOptions: { enabled: true },
+          settingSources: [],
+          enableAgentRetries: true,
+        },
+      } satisfies AgentOptions;
+      const createCursorAgent = (sandboxEnabled: boolean) =>
+        Effect.tryPromise((signal) =>
+          Agent.create(
+            sandboxEnabled
+              ? agentOptions
+              : {
+                  ...agentOptions,
+                  local: {
+                    ...agentOptions.local,
+                    sandboxOptions: { enabled: false },
+                  },
+                },
+          ).then((agent) => {
+            if (signal.aborted) agent.close();
+            return agent;
+          }),
         );
-      });
 
-      const promptResult = yield* Effect.gen(function* () {
-        yield* runtime.start();
-        if (guard) yield* runtime.setMode("ask");
-        else yield* Effect.ignore(runtime.setMode("ask"));
-        yield* applyCursorAcpModelSelection({
-          runtime,
-          model: modelSelection.model,
-          selections: modelSelection.options,
-          mapError: ({ cause, configId, step }) =>
-            new TextGenerationError({
-              operation,
-              detail:
-                step === "set-config-option"
-                  ? `Failed to set Cursor ACP config option "${configId}" for text generation.`
-                  : "Failed to set Cursor ACP base model for text generation.",
-              cause,
-            }),
-        });
-
-        return yield* runtime.prompt({
-          prompt: [{ type: "text", text: prompt }],
-        });
-      }).pipe(
-        Effect.raceFirst(guard?.failure ?? Effect.never),
-        Effect.timeoutOption(textGenerationTimeoutMs(operation)),
+      const request = Effect.gen(function* () {
+        // Prefer the sandbox. When the SDK refuses it, the empty temp directory
+        // and empty setting sources still keep this run off the user's project.
+        const agent = yield* Effect.acquireRelease(
+          createCursorAgent(true).pipe(
+            Effect.catchIf(cursorSandboxUnsupported, () => createCursorAgent(false)),
+          ),
+          (agent) =>
+            Effect.tryPromise(() => agent[Symbol.asyncDispose]()).pipe(
+              Effect.timeout("5 seconds"),
+              Effect.ignore({ log: true }),
+            ),
+          { interruptible: true },
+        );
+        const run = yield* Effect.tryPromise((signal) =>
+          agent.send(prompt).then((run) => {
+            if (signal.aborted) void run.cancel().catch(() => undefined);
+            return run;
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          run.status === "running"
+            ? Effect.tryPromise(() => run.cancel()).pipe(
+                Effect.timeout("5 seconds"),
+                Effect.ignore({ log: true }),
+              )
+            : Effect.void,
+        );
+        return yield* Effect.tryPromise(() => run.wait());
+      }).pipe(Effect.scoped);
+      const promptResult = yield* request.pipe(
+        Effect.timeoutOption(CURSOR_TIMEOUT_MS),
         Effect.flatMap(
           Option.match({
             onNone: () =>
               Effect.fail(
                 new TextGenerationError({
                   operation,
-                  detail: "Cursor Agent request timed out.",
+                  detail: "Cursor SDK request timed out.",
                 }),
               ),
             onSome: (value) => Effect.succeed(value),
           }),
         ),
-        Effect.mapError((cause) =>
-          isTextGenerationError(cause)
-            ? cause
-            : new TextGenerationError({
-                operation,
-                detail: "Cursor ACP request failed.",
-                cause,
-              }),
-        ),
       );
 
-      const rawResult = (yield* Ref.get(outputRef)).trim();
-      if (!rawResult) {
+      const rawResult = promptResult.result?.trim() ?? "";
+      if (promptResult.status !== "finished" || !rawResult) {
         return yield* new TextGenerationError({
           operation,
-          detail:
-            promptResult.stopReason === "cancelled"
-              ? "Cursor ACP request was cancelled."
-              : "Cursor Agent returned empty output.",
+          detail: cursorSdkResultDetail(promptResult),
         });
       }
 
-      const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
-      return yield* decodeOutput(extractJsonObject(rawResult)).pipe(
-        Effect.catchTags({
-          SchemaError: (cause) =>
-            Effect.fail(
-              new TextGenerationError({
-                operation,
-                detail: "Cursor Agent returned invalid structured output.",
-                cause,
-              }),
-            ),
-        }),
-      );
+      return yield* TextGenerationOperations.decodeJsonReply(input, "Cursor SDK", rawResult);
     }).pipe(
+      (effect) => (withAccess ? withAccess(effect) : effect),
+      Effect.scoped,
       Effect.mapError((cause) =>
         isTextGenerationError(cause)
           ? cause
           : new TextGenerationError({
               operation,
-              detail: "Cursor ACP text generation failed.",
+              detail: "Cursor SDK text generation failed.",
               cause,
             }),
       ),
-      Effect.scoped,
     );
+  };
 
-  const generateCommitMessage: TextGeneration.TextGeneration["Service"]["generateCommitMessage"] =
-    Effect.fn("CursorTextGeneration.generateCommitMessage")(function* (input) {
-      const { prompt, outputSchema } = buildCommitMessagePrompt({
-        branch: input.branch,
-        stagedSummary: input.stagedSummary,
-        stagedPatch: input.stagedPatch,
-        includeBranch: input.includeBranch === true,
-        policy: input.policy,
-      });
-
-      const generated = yield* runCursorJson({
-        operation: "generateCommitMessage",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-      });
-
-      return {
-        subject: sanitizeCommitSubject(generated.subject),
-        body: generated.body.trim(),
-        ...("branch" in generated && typeof generated.branch === "string"
-          ? { branch: sanitizeFeatureBranchName(generated.branch) }
-          : {}),
-      };
-    });
-
-  const generatePrContent: TextGeneration.TextGeneration["Service"]["generatePrContent"] =
-    Effect.fn("CursorTextGeneration.generatePrContent")(function* (input) {
-      const { prompt, outputSchema } = buildPrContentPrompt({
-        baseBranch: input.baseBranch,
-        headBranch: input.headBranch,
-        commitSummary: input.commitSummary,
-        diffSummary: input.diffSummary,
-        diffPatch: input.diffPatch,
-        policy: input.policy,
-        changeRequestTemplate: input.changeRequestTemplate,
-      });
-
-      const generated = yield* runCursorJson({
-        operation: "generatePrContent",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-      });
-
-      return {
-        title: sanitizePrTitle(generated.title),
-        body: generated.body.trim(),
-      };
-    });
-
-  const generateBranchName: TextGeneration.TextGeneration["Service"]["generateBranchName"] =
-    Effect.fn("CursorTextGeneration.generateBranchName")(function* (input) {
-      const { prompt, outputSchema } = buildBranchNamePrompt({
-        message: input.message,
-        attachments: input.attachments,
-      });
-
-      const generated = yield* runCursorJson({
-        operation: "generateBranchName",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-      });
-
-      return {
-        branch: sanitizeBranchFragment(generated.branch),
-      };
-    });
-
-  const generateThreadTitle: TextGeneration.TextGeneration["Service"]["generateThreadTitle"] =
-    Effect.fn("CursorTextGeneration.generateThreadTitle")(function* (input) {
-      const { prompt, outputSchema } = buildThreadTitlePrompt({
-        message: input.message,
-        previousTitle: input.previousTitle,
-        linkedContext: input.linkedContext,
-        attachments: input.attachments,
-      });
-
-      const generated = yield* runCursorJson({
-        operation: "generateThreadTitle",
-        cwd: input.cwd,
-        prompt,
-        outputSchemaJson: outputSchema,
-        modelSelection: input.modelSelection,
-      });
-
-      return {
-        title: sanitizeThreadTitle(generated.title),
-        ...(generated.needsRefinement ? { needsRefinement: true } : {}),
-      } satisfies TextGeneration.ThreadTitleGenerationResult;
-    });
-
-  const generateRevdoc = (input: RevdocGenerationInput) =>
-    runCursorJson({
-      operation: "generateRevdoc",
-      cwd: input.cwd,
-      prompt: input.prompt,
-      outputSchemaJson: RevdocGenerationResult,
-      modelSelection: input.modelSelection,
-      onActivity: input.onActivity,
-    });
-
-  const generateIdeaUpdate = (input: IdeaUpdateInput) =>
-    runCursorJson({
-      operation: "generateIdeaUpdate",
-      cwd: input.cwd,
-      prompt: input.prompt,
-      outputSchemaJson: IdeaUpdateGenerationResult,
-      modelSelection: input.modelSelection,
-    }).pipe(Effect.map(normalizeIdeaUpdateResult));
-
-  return {
-    generateRevdoc,
-    generateIdeaUpdate,
-    generateCommitMessage,
-    generatePrContent,
-    generateBranchName,
-    generateThreadTitle,
-  } satisfies TextGeneration.TextGeneration["Service"];
+  return TextGenerationOperations.fromRunner("CursorTextGeneration", runCursorJson);
 });

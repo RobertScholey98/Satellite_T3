@@ -1,17 +1,18 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
-  ApprovalRequestId,
+  RuntimeRequestId,
   ProviderApprovalDecision,
   RevdocTestingRun,
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import {
   derivePendingRequests,
+  threadRequestActivities,
   type PendingUserInput,
 } from "@t3tools/client-runtime/pending-requests";
 import { extractCommandOutputText } from "@t3tools/client-runtime/work-log/presentation";
 import * as Option from "effect/Option";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useMemo, useState } from "react";
 import { legacyRevdocTestingThreads, revdocTestingThreads } from "~/state/revdoc";
 import { threadEnvironment } from "~/state/threads";
@@ -27,6 +28,7 @@ import { ComposerPendingApprovalActions } from "../chat/ComposerPendingApprovalA
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
+import { deriveTimelineEntriesFromVisibleTurnItems } from "~/session-logic";
 
 function TestingQuestion({
   prompt,
@@ -149,9 +151,9 @@ export function RevdocRunActivity({
   );
   const data = Option.getOrNull(AsyncResult.value(state));
   const thread = data ? Option.getOrNull(data.data) : null;
-  const pending = derivePendingRequests(thread?.activities ?? []);
+  const pending = derivePendingRequests(thread ? threadRequestActivities(thread) : []);
   const respond = useAtomCommand(threadEnvironment.respondToApproval, { reportFailure: true });
-  const [responding, setResponding] = useState<ApprovalRequestId | null>(null);
+  const [responding, setResponding] = useState<RuntimeRequestId | null>(null);
   const [expanded, setExpanded] = useState(false);
   const testRef = useMemo(
     () => ({ ...threadRef, threadId: run.threadId }),
@@ -160,7 +162,7 @@ export function RevdocRunActivity({
   const canRespond = run.status === "running" && data?.status === "live";
   const approval = pending.approvals[0];
   const respondToApproval = async (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
   ) => {
     if (responding || !canRespond) return;
@@ -171,9 +173,24 @@ export function RevdocRunActivity({
     });
     setResponding(null);
   };
-  const activities = (thread?.activities ?? []).slice(-30).toReversed();
+  const activities = useMemo(
+    () =>
+      thread
+        ? deriveTimelineEntriesFromVisibleTurnItems({
+            visibleTurnItems: thread.visibleTurnItems,
+            optimisticMessages: [],
+            attempts: thread.attempts,
+            nodes: thread.nodes,
+            plans: thread.plans,
+          })
+            .flatMap((entry) => (entry.kind === "work" ? [entry.entry] : []))
+            .slice(-30)
+            .toReversed()
+        : [],
+    [thread],
+  );
   const assistant = thread?.messages.filter((message) => message.role === "assistant").slice(-3);
-  const latest = activities[0]?.summary;
+  const latest = activities[0]?.label;
   return (
     <div className="space-y-3">
       {approval && run.status === "running" && (
@@ -186,6 +203,7 @@ export function RevdocRunActivity({
           <div className="flex flex-wrap gap-2">
             <ComposerPendingApprovalActions
               requestId={approval.requestId}
+              canRespond={canRespond && approval.responseCapability === "live"}
               options={approval.options}
               isResponding={responding !== null || !canRespond}
               onRespondToApproval={respondToApproval}
@@ -236,10 +254,10 @@ export function RevdocRunActivity({
             </p>
           ))}
           {activities.map((activity) => {
-            const output = extractCommandOutputText(activity.payload);
+            const output = extractCommandOutputText(activity.toolData);
             return (
               <div key={activity.id} className="space-y-1 border-t border-border/40 pt-2">
-                <p className="break-words">{activity.summary}</p>
+                <p className="break-words">{activity.label}</p>
                 <time className="text-muted-foreground" dateTime={activity.createdAt}>
                   {new Date(activity.createdAt).toLocaleTimeString()}
                 </time>

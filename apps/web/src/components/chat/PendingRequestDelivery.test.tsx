@@ -2,8 +2,8 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { ApprovalRequestId, EnvironmentId, EventId, ThreadId } from "@t3tools/contracts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { RuntimeRequestId, EnvironmentId, EventId, ThreadId } from "@t3tools/contracts";
+import { AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
 import {
   createPendingSubmission,
@@ -48,7 +48,7 @@ it.each(["work", "idea"] as const)(
       environmentId: EnvironmentId.make("remote"),
       threadId: ThreadId.make("thread"),
       kind: "question" as const,
-      requestId: ApprovalRequestId.make("request"),
+      requestId: RuntimeRequestId.make("request"),
     };
     const key = pendingRequestKey(ref);
     const submission = createPendingSubmission(
@@ -140,7 +140,7 @@ it("uses request lifecycle evidence when the resumed detail window has lost the 
     environmentId: EnvironmentId.make("remote"),
     threadId: ThreadId.make("long-thread"),
     kind: "approval" as const,
-    requestId: ApprovalRequestId.make("old-approval"),
+    requestId: RuntimeRequestId.make("old-approval"),
   };
   const key = pendingRequestKey(ref);
   const submission = createPendingSubmission(

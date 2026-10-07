@@ -1,3 +1,4 @@
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
   DocumentAnswers,
   DocumentOperationError,
@@ -6,18 +7,23 @@ import {
   DocumentSummary,
   DocumentsPublishInput,
   McpCapabilityUnavailableError,
+  OrchestratorMcpFailure,
   NonNegativeInt,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import * as Tool from "effect/unstable/ai/Tool";
-import * as Toolkit from "effect/unstable/ai/Toolkit";
+import * as Tool from "effect/ai/Tool";
+import * as Toolkit from "effect/ai/Toolkit";
 
 import { DocumentService } from "../../../documents/DocumentService.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 
-const dependencies = [McpInvocationContext, DocumentService];
-const failure = Schema.Union([DocumentOperationError, McpCapabilityUnavailableError]);
+const dependencies = [ThreadManagementService, McpInvocationContext, DocumentService];
+const failure = Schema.Union([
+  DocumentOperationError,
+  McpCapabilityUnavailableError,
+  OrchestratorMcpFailure,
+]);
 const { threadId: _threadId, ...publishFields } = DocumentsPublishInput.fields;
 export const PublishDocumentInput = Schema.Struct(publishFields);
 

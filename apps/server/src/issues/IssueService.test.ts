@@ -6,7 +6,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import {
   EnvironmentId,
   ProjectId,
@@ -181,7 +181,10 @@ describe("IssueService", () => {
         const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
         assert.deepStrictEqual(view.sync, fresh);
         assert.strictEqual(view.board.title, "Board");
-        assert.deepStrictEqual(view.items.map((item) => item.columnId), ["ready"]);
+        assert.deepStrictEqual(
+          view.items.map((item) => item.columnId),
+          ["ready"],
+        );
         assert.deepStrictEqual((yield* test.service.openBoard({ projectId, locator })).sync, fresh);
         const restarted = yield* makeIssueService(test.options);
         assert.deepStrictEqual(
@@ -205,7 +208,10 @@ describe("IssueService", () => {
           syncing: false,
           failure: null,
         });
-        assert.deepStrictEqual(view.items.map((item) => item.columnId), ["ready"]);
+        assert.deepStrictEqual(
+          view.items.map((item) => item.columnId),
+          ["ready"],
+        );
         yield* test.service.openBoard({ projectId, boardId: test.boardId });
         assert.strictEqual(test.reads(), 2);
       }),
@@ -228,7 +234,10 @@ describe("IssueService", () => {
             syncing: true,
             failure: null,
           });
-          assert.deepStrictEqual(view.items.map((item) => item.columnId), ["ready"]);
+          assert.deepStrictEqual(
+            view.items.map((item) => item.columnId),
+            ["ready"],
+          );
         }
         yield* Deferred.succeed(held.release, undefined);
         yield* test.service.drainRefreshes;
@@ -239,7 +248,10 @@ describe("IssueService", () => {
           syncing: false,
           failure: null,
         });
-        assert.deepStrictEqual(refreshed.items.map((item) => item.columnId), ["ready-next"]);
+        assert.deepStrictEqual(
+          refreshed.items.map((item) => item.columnId),
+          ["ready-next"],
+        );
         assert.strictEqual(test.reads(), 2);
       }),
     ),
@@ -277,7 +289,10 @@ describe("IssueService", () => {
         yield* Deferred.succeed(held.release, undefined);
         yield* test.service.drainRefreshes;
         const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
-        assert.deepStrictEqual(view.items.map((item) => item.columnId), ["progress"]);
+        assert.deepStrictEqual(
+          view.items.map((item) => item.columnId),
+          ["progress"],
+        );
         assert.strictEqual(view.moves[0]?.status, "applied");
         assert.strictEqual(view.sync?.revision, 3);
         assert.strictEqual(test.reads(), 5);
@@ -300,7 +315,10 @@ describe("IssueService", () => {
           syncing: false,
           failure: { at: "1970-01-01T00:00:31.000Z", message: "Board unavailable" },
         });
-        assert.deepStrictEqual(failed.items.map((item) => item.columnId), ["ready"]);
+        assert.deepStrictEqual(
+          failed.items.map((item) => item.columnId),
+          ["ready"],
+        );
         assert.strictEqual(test.reads(), 2);
         test.failReads(false);
         test.setColumn("progress");
@@ -313,7 +331,10 @@ describe("IssueService", () => {
           syncing: false,
           failure: null,
         });
-        assert.deepStrictEqual(recovered.items.map((item) => item.columnId), ["progress"]);
+        assert.deepStrictEqual(
+          recovered.items.map((item) => item.columnId),
+          ["progress"],
+        );
         assert.strictEqual(test.reads(), 3);
       }),
     ),
@@ -365,12 +386,10 @@ describe("IssueService", () => {
     run(
       Effect.gen(function* () {
         const test = yield* setup;
-        const subscribe = test.service
-          .subscribeBoard({ projectId, boardId: test.boardId })
-          .pipe(
-            Stream.takeUntil((event) => event.sync === null),
-            Stream.runCollect,
-          );
+        const subscribe = test.service.subscribeBoard({ projectId, boardId: test.boardId }).pipe(
+          Stream.takeUntil((event) => event.sync === null),
+          Stream.runCollect,
+        );
         yield* TestClock.adjust("31 seconds");
         const held = yield* test.hold;
         yield* test.service.openBoard({ projectId, boardId: test.boardId });
@@ -468,7 +487,10 @@ describe("IssueService", () => {
         assert.strictEqual(test.reads(), 5);
         const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
         assert.strictEqual(test.reads(), 5);
-        assert.deepStrictEqual(view.items.map((item) => item.columnId), ["progress"]);
+        assert.deepStrictEqual(
+          view.items.map((item) => item.columnId),
+          ["progress"],
+        );
         assert.strictEqual(view.sync?.revision, 3);
       }),
     ),

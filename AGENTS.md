@@ -128,7 +128,7 @@ Most code changes do not need an internal documentation change. Agents can read 
 
 ## How it works
 
-Clients send typed WebSocket requests. The server turns them into _commands_, a pure _decider_ turns commands into persisted _events_, and a _projector_ derives the read model the UI renders. Provider CLIs run as subprocesses; per-provider _adapters_ translate their native protocols into orchestration events. Side effects run in queue-backed _reactors_ that emit _receipts_ when milestones land. Each turn ends with a _checkpoint_, a hidden git ref, so the app can diff and restore.
+Clients send typed WebSocket requests to V2 orchestration services. Commands persist events and update projections transactionally; clients render those projections. Runs, provider sessions, and pending requests have durable state. A persisted effect outbox drives queue workers and restart recovery. Provider adapters translate native protocols into orchestration events. Each turn ends with a checkpoint, a hidden git ref, so the app can diff and restore.
 
 Full glossary with file links: `docs/internals/glossary.md`
 

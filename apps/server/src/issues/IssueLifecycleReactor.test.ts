@@ -4,8 +4,8 @@ import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import {
   EnvironmentId,
   EventId,
@@ -17,20 +17,16 @@ import {
   type OrchestrationEvent,
   type OrchestrationThreadShell,
 } from "@t3tools/contracts";
-import projectionMigration from "../persistence/Migrations/005_Projections.ts";
-import issueMigration from "../persistence/Migrations/056_IssueBoards.ts";
 import { IssueService, makeIssueService } from "./IssueService.ts";
 import { make, recoverStartedIssueAttempts } from "./IssueLifecycleReactor.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 
 describe("issue launch recovery", () => {
   it.effect(
     "records work acceptance without issuing lifecycle receipts for background agents",
     () =>
       Effect.gen(function* () {
-        yield* projectionMigration;
-        yield* issueMigration;
         const sourceEnvironmentId = EnvironmentId.make("source");
         const destinationEnvironmentId = EnvironmentId.make("destination");
         const projectId = ProjectId.make("destination-project");
@@ -108,17 +104,12 @@ describe("issue launch recovery", () => {
             aggregateKind: "thread",
             aggregateId: threadId,
             occurredAt: now,
-            commandId: null,
-            causationEventId: null,
-            correlationId: null,
-            metadata: {},
             payload: {
               threadId,
+              providerAccepted: true,
               session: {
                 threadId,
                 status: "running",
-                providerName: "claude",
-                runtimeMode: "approval-required",
                 activeTurnId: TurnId.make(purpose),
                 lastError: null,
                 updatedAt: now,
@@ -159,15 +150,13 @@ describe("issue launch recovery", () => {
         const attempts = yield* service.listAttempts({});
         assert.equal(attempts.find((attempt) => attempt.threadId === "idea")?.status, "attached");
         assert.equal(attempts.find((attempt) => attempt.threadId === "work")?.status, "started");
-      }).pipe(Effect.scoped, Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+      }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
   );
 
   it.effect(
     "recovers a lost post-send hook from durable provider acceptance, excludes queued work, and emits once across restart",
     () =>
       Effect.gen(function* () {
-        yield* projectionMigration;
-        yield* issueMigration;
         const sql = yield* SqlClient.SqlClient;
         const sourceEnvironmentId = EnvironmentId.make("source");
         const destinationEnvironmentId = EnvironmentId.make("destination");
@@ -213,8 +202,11 @@ describe("issue launch recovery", () => {
             projectId,
             worktreePath: `/work/${id}`,
           });
-          yield* sql`INSERT INTO projection_turns(thread_id,turn_id,state,requested_at,started_at,checkpoint_files_json)
-          VALUES(${id},${id === "queued" || id === "start-without-id" ? null : `provider-${id}`},${id === "queued" ? "pending" : "running"},'2026-09-30T12:00:00Z',${id === "queued" || id === "id-without-start" ? null : "2026-09-30T12:00:01Z"},'[]')`;
+          yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,payload_json,created_at,updated_at)
+            VALUES(${id},${projectId},${id},'claude','approval-required','default','{"purpose":"work"}','2026-09-30T12:00:00Z','2026-09-30T12:00:00Z')`;
+          if (id !== "start-without-id")
+            yield* sql`INSERT INTO orchestration_v2_projection_provider_turns(provider_turn_id,thread_id,provider_thread_id,node_id,ordinal,status,started_at,payload_json)
+            VALUES(${`provider-${id}`},${id},${`native-${id}`},${`node-${id}`},1,${id === "queued" ? "pending" : "running"},${id === "queued" || id === "id-without-start" ? null : "2026-09-30T12:00:01Z"},'{}')`;
         }
         const restarted = yield* makeIssueService(options);
         yield* recoverStartedIssueAttempts(restarted.firstPromptSent);
@@ -231,6 +223,6 @@ describe("issue launch recovery", () => {
           "started",
         );
         assert.equal(attempts.find((attempt) => attempt.threadId === "queued")?.status, "attached");
-      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
   );
 });
