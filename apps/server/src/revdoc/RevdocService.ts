@@ -270,7 +270,6 @@ const make = Effect.gen(function* () {
         return yield* fail("Review sections, items, and tests must have unique stable IDs.");
       }
     }
-    if (tests.length > 1000) return yield* fail("The review exceeds the 1,000-test limit.");
   });
   const prepare = Effect.fn("RevdocService.prepare")(function* (cwd: string) {
     const file = yield* checkedPath(cwd);
