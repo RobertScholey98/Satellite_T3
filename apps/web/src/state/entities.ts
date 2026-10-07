@@ -14,7 +14,8 @@ import {
 import type { ScopedProjectRef, ScopedThreadRef, ServerConfig } from "@t3tools/contracts";
 import type { EnvironmentId, OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
-import { useContext, useMemo } from "react";
+import { useContext } from "react";
+import type { DraftThreadState } from "../composerDraftStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom } from "./server";
@@ -149,10 +150,18 @@ export function resolveThreadDetailRef(
   ref: ScopedThreadRef | null,
   options: {
     shellExists: boolean;
-    waitForShell: boolean;
+    draftThread: Pick<DraftThreadState, "purpose" | "promotedTo"> | null;
   },
 ): ScopedThreadRef | null {
-  return ref !== null && (!options.waitForShell || options.shellExists) ? ref : null;
+  if (ref === null || options.shellExists || options.draftThread === null) return ref;
+  // Ideas do not enter the work shell. Their accepted launch receipt admits
+  // the reserved ID; loading it before creation would retain a terminal 404.
+  const promotedTo = options.draftThread.promotedTo;
+  return options.draftThread.purpose === "idea" &&
+    promotedTo?.environmentId === ref.environmentId &&
+    promotedTo.threadId === ref.threadId
+    ? ref
+    : null;
 }
 
 export function useThreadVisibleTurnItems(

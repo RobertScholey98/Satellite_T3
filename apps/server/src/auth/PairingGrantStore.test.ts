@@ -76,21 +76,27 @@ it.layer(NodeServices.layer)("PairingGrantStore.layer", (it) => {
     }).pipe(Effect.provide(layerPairingGrantStore())),
   );
 
-  it.effect("issues one-time bootstrap tokens that can only be consumed once", () =>
-    Effect.gen(function* () {
-      const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
-      const issued = yield* bootstrapCredentials.issueOneTimeToken({ label: "Julius iPhone" });
-      const first = yield* bootstrapCredentials.consume(issued.credential);
-      const second = yield* Effect.flip(bootstrapCredentials.consume(issued.credential));
+  it.effect.each([
+    { label: "without requested scopes", requestedScopes: undefined },
+    { label: "with requested scopes", requestedScopes: ["orchestration:read"] as const },
+  ])(
+    "issues one-time bootstrap tokens that can only be consumed once $label",
+    ({ requestedScopes }) =>
+      Effect.gen(function* () {
+        const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
+        const issued = yield* bootstrapCredentials.issueOneTimeToken({ label: "Julius iPhone" });
+        const input = requestedScopes === undefined ? undefined : { requestedScopes };
+        const first = yield* bootstrapCredentials.consume(issued.credential, input);
+        const second = yield* Effect.flip(bootstrapCredentials.consume(issued.credential, input));
 
-      expect(first.method).toBe("one-time-token");
-      expect(first.scopes).toEqual(AuthStandardClientScopes);
-      expect(first.subject).toBe("one-time-token");
-      expect(first.label).toBe("Julius iPhone");
-      expect(issued.label).toBe("Julius iPhone");
-      expect(second._tag).toBe("UnknownBootstrapCredentialError");
-      expect(second.message).toContain("Unknown bootstrap credential");
-    }).pipe(Effect.provide(layerPairingGrantStore())),
+        expect(first.method).toBe("one-time-token");
+        expect(first.scopes).toEqual(AuthStandardClientScopes);
+        expect(first.subject).toBe("one-time-token");
+        expect(first.label).toBe("Julius iPhone");
+        expect(issued.label).toBe("Julius iPhone");
+        expect(second._tag).toBe("UnknownBootstrapCredentialError");
+        expect(second.message).toContain("Unknown bootstrap credential");
+      }).pipe(Effect.provide(layerPairingGrantStore())),
   );
 
   it.effect("atomically consumes a one-time token when multiple requests race", () =>

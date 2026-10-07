@@ -1742,7 +1742,7 @@ export default function ChatView(props: ChatViewProps) {
   const routeServerThreadShell = useThreadShell(routeThreadRef);
   const routeThreadDetailRef = resolveThreadDetailRef(routeThreadRef, {
     shellExists: routeServerThreadShell !== null,
-    waitForShell: !isIdea && draftThread !== null,
+    draftThread,
   });
   const serverThreadProjection = useThreadProjection(routeThreadDetailRef);
   const serverProjection = serverThreadProjection?.projection ?? null;

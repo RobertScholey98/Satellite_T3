@@ -1,5 +1,5 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { useProjects } from "../../state/entities";
@@ -23,9 +23,23 @@ import {
 export function IdeasSidebar() {
   const { environments } = useEnvironments();
   const projects = useProjects();
-  const { environment, idea } = useSearch({ from: "/_chat/ideas" });
+  // The root shell mounts this sidebar before the Ideas route has an active match.
+  const { environment, idea } = useLocation({
+    select: ({ search }) => ({
+      environment: typeof search.environment === "string" ? search.environment : undefined,
+      idea: typeof search.idea === "string" ? search.idea : undefined,
+    }),
+    structuralSharing: true,
+  });
   const [filter, setFilter] = useState("");
   const [projectFilter, setProjectFilter] = useState("");
+  const projectOptions = [
+    { value: "", label: "All projects" },
+    ...projects.map((project) => ({
+      value: `${project.environmentId}:${project.id}`,
+      label: `${project.title} · ${environments.find((item) => item.environmentId === project.environmentId)?.label ?? ""}`,
+    })),
+  ];
 
   return (
     <>
@@ -36,19 +50,18 @@ export function IdeasSidebar() {
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
         />
-        <Select value={projectFilter} onValueChange={(value) => setProjectFilter(value ?? "")}>
+        <Select
+          items={projectOptions}
+          value={projectFilter}
+          onValueChange={(value) => setProjectFilter(value ?? "")}
+        >
           <SelectTrigger size="sm" aria-label="Filter ideas by project">
             <SelectValue placeholder="All projects" />
           </SelectTrigger>
           <SelectPopup>
-            <SelectItem value="">All projects</SelectItem>
-            {projects.map((project) => (
-              <SelectItem
-                key={`${project.environmentId}:${project.id}`}
-                value={`${project.environmentId}:${project.id}`}
-              >
-                {project.title} ·{" "}
-                {environments.find((item) => item.environmentId === project.environmentId)?.label}
+            {projectOptions.map(({ value, label }) => (
+              <SelectItem key={value} value={value}>
+                {label}
               </SelectItem>
             ))}
           </SelectPopup>
