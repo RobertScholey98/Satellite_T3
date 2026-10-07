@@ -279,3 +279,34 @@ export function revdocConsolidationPrompt(review: RevdocReview, overview: string
     JSON.stringify({ overview, review }),
   ].join("\n\n");
 }
+
+/** Consolidation can reorganise checks, but cannot rewrite their original instructions or evidence. */
+export function mergeRevdocConsolidation(
+  accumulated: RevdocReview,
+  generated: RevdocGenerationResult,
+  definitions: RevdocReview,
+) {
+  const checks = new Map(
+    definitions.sections.flatMap((section) =>
+      section.items.flatMap((item) => item.tests.map((test) => [test.id, test] as const)),
+    ),
+  );
+  return mergeRevdocBatch(
+    accumulated,
+    {
+      ...generated,
+      sections: generated.sections.map((section) => ({
+        ...section,
+        items: section.items.map((item) => ({
+          ...item,
+          tests: item.tests.map((test) => ({
+            ...test,
+            ...checks.get(test.id),
+            expected: checks.get(test.id)?.expected ?? test.expected,
+          })),
+        })),
+      })),
+    },
+    definitions,
+  );
+}

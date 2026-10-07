@@ -51,8 +51,13 @@ generation → Revdoc**. Automatic uses the current thread's provider and model.
 Large reviews automatically run in batches and combine into one checklist. Choose
 a separate provider, model, and effort under **Large Revdoc model**; Automatic uses
 the Revdoc model, then the thread's model. The sidebar reports progress, and the
-worktree review panel shows what the model is doing in each batch. Cancelling
-or a failed batch preserves the saved review; running again starts a new pass.
+worktree review panel shows what the model is doing in each batch. The checklist
+saves and becomes available as each batch finishes, including while sections are
+being combined. If a session limit, cancellation, or server restart interrupts the
+pass, run **Revdoc** again to continue from the saved batches. You can change the
+Revdoc model before continuing. Changes to the source or conversation start a new
+pass while preserving your saved review and feedback. Partial reviews remain
+labelled until generation finishes.
 A pass gathers the thread's recent conversation and the worktree's changes,
 including commits since its default branch. The generation pass creates a checklist. Reruns preserve notes and outcomes, while
 changed test instructions return to Not tested. If another device or agent edits

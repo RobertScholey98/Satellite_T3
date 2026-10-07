@@ -105,6 +105,14 @@ export const RevdocReview = Schema.Struct({
   notes: Schema.optionalKey(Text),
   generatedAt: Schema.optionalKey(Text),
   sourceRevision: Schema.optionalKey(Text),
+  /** Present while a saved checklist is still being assembled. */
+  generation: Schema.optionalKey(
+    Schema.Struct({
+      stage: Schema.Literals(["reviewing", "combining"]),
+      completed: Schema.Number,
+      total: Schema.Number,
+    }),
+  ),
   testing: Schema.optionalKey(RevdocTestingRun),
   sections: Schema.Array(RevdocSection),
 });
@@ -179,6 +187,8 @@ export const RevdocRunState = Schema.Struct({
   error: Schema.NullOr(Schema.String),
   result: Schema.NullOr(Schema.Literals(["completed", "cancelled"])),
   version: Schema.Number,
+  /** Changes only when the saved review changes, independently of streamed activity. */
+  reviewRevision: Schema.optionalKey(Schema.NullOr(Schema.String)),
   phase: Schema.optionalKey(Schema.Literals(["generating", "testing"])),
   generationStage: Schema.optionalKey(Schema.Literals(["reviewing", "combining"])),
   activity: Schema.optionalKey(Schema.Array(RevdocBatchActivity)),

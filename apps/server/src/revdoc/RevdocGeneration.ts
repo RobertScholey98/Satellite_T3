@@ -1,4 +1,4 @@
-import type { ModelSelection, RevdocReview } from "@t3tools/contracts";
+import { RevdocReview, type ModelSelection } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -37,6 +37,17 @@ export const RevdocGenerationResult = Schema.Struct({
   ),
 });
 export type RevdocGenerationResult = typeof RevdocGenerationResult.Type;
+
+/** Kept beside the review, off the wire. The original review fixes batch inputs across retries. */
+export const RevdocGenerationCheckpoint = Schema.Struct({
+  format: Schema.Literal(1),
+  sourceRevision: Schema.String,
+  contextRevision: Schema.String,
+  previous: Schema.NullOr(RevdocReview),
+  batches: Schema.Array(Schema.NullOr(RevdocGenerationResult)),
+  organized: Schema.Array(Schema.NullOr(RevdocGenerationResult)),
+});
+export type RevdocGenerationCheckpoint = typeof RevdocGenerationCheckpoint.Type;
 /** A streamed slice of model progress. Thinking text stays empty when a provider only reports token counts. */
 export type RevdocGenerationActivity =
   | { readonly kind: "thinking"; readonly text: string; readonly tokens?: number | undefined }

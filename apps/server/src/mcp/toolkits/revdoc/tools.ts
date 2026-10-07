@@ -28,7 +28,7 @@ const ReadRevdoc = Tool.make("read_revdoc", {
   .annotate(Tool.OpenWorld, false);
 const RunRevdoc = Tool.make("run_revdoc", {
   description:
-    "Start a background to-rev-doc pass for this thread's worktree using the configured Revdoc model. Creates or updates .revdoc/review.json while preserving review feedback. Returns immediately; read_revdoc retrieves the saved review. Does not run tests or approve work.",
+    "Start or resume a background to-rev-doc pass for this thread's worktree using the configured Revdoc model. Saves .revdoc/review.json as batches finish, preserving feedback. Interrupted passes reuse completed batches when the source and conversation are unchanged. Returns immediately; read_revdoc retrieves the partial or finished review. Does not run tests or approve work.",
   success: Schema.Void,
   failure,
   dependencies,

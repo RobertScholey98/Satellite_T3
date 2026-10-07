@@ -91,6 +91,7 @@ const setup = (
     ) => Effect.Effect<RevdocGenerationResult, TextGenerationError>;
     unavailable?: boolean;
     assumeDifferentOwner?: boolean;
+    title?: () => string;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -129,7 +130,7 @@ const setup = (
       return decodeThreadShell({
         id,
         projectId,
-        title: "Review work",
+        title: options.title?.() ?? "Review work",
         modelSelection: defaultModel,
         runtimeMode: "full-access",
         ...(created?.type === "thread.create"
@@ -170,7 +171,7 @@ const setup = (
     const captured: string[] = [];
     const png =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=";
-    const services = yield* Layer.build(
+    const buildService = Layer.build(
       RevdocService.layer.pipe(
         Layer.provide(
           Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
@@ -243,6 +244,7 @@ const setup = (
         ),
       ),
     );
+    const services = yield* buildService;
     const service = Context.get(services, RevdocService.RevdocService);
     const finished = () =>
       service.changes({ threadId }).pipe(
@@ -303,6 +305,9 @@ const setup = (
       project,
       command,
       service,
+      restart: buildService.pipe(
+        Effect.map((context) => Context.get(context, RevdocService.RevdocService)),
+      ),
       calls,
       finished,
       settle,
@@ -720,6 +725,234 @@ describe("worktree Revdoc service", () => {
 });
 
 describe("large Revdoc generation", () => {
+  it.effect("resumes unfinished batches after a session limit and service restart", () =>
+    Effect.gen(function* () {
+      const entered =
+        yield* Queue.unbounded<Deferred.Deferred<RevdocGenerationResult, TextGenerationError>>();
+      let recovering = false;
+      const env = yield* setup({
+        generate: () =>
+          recovering
+            ? Effect.succeed(generated)
+            : Effect.gen(function* () {
+                const result = yield* Deferred.make<RevdocGenerationResult, TextGenerationError>();
+                yield* Queue.offer(entered, result);
+                return yield* Deferred.await(result);
+              }),
+      });
+      yield* env.fs.writeFileString(
+        env.path.join(env.worktree, "app.txt"),
+        "changed line\n".repeat(30_000),
+      );
+      yield* env.service.start({ threadId });
+      const first = yield* Queue.take(entered);
+      const second = yield* Queue.take(entered);
+      yield* Deferred.succeed(first, generated);
+      yield* env.service.changes({ threadId }).pipe(
+        Stream.filter((state) => state.completed === 1),
+        Stream.runHead,
+      );
+      const completedPrompt = env.calls[0]!.prompt;
+      yield* Deferred.fail(
+        second,
+        new TextGenerationError({
+          operation: "generateRevdoc",
+          detail: "Agent session limit reached",
+        }),
+      );
+      expect((yield* env.finished()).error).toContain("session limit");
+      const partial = yield* env.service.get({ threadId });
+      expect(partial.review?.generation).toMatchObject({ stage: "reviewing", completed: 1 });
+      yield* env.service.save({
+        threadId,
+        expectedRevision: partial.revision!,
+        change: { kind: "document", note: "Keep my recovery feedback" },
+      });
+      const callsBeforeResume = env.calls.length;
+      recovering = true;
+      const restarted = yield* env.restart;
+      yield* restarted.start({ threadId });
+      const finished = yield* restarted.changes({ threadId }).pipe(
+        Stream.filter((state) => !state.running && state.version > 0),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(finished.error).toBeNull();
+      expect(env.calls.slice(callsBeforeResume).map((call) => call.prompt)).not.toContain(
+        completedPrompt,
+      );
+      const completed = yield* restarted.get({ threadId });
+      expect(completed.review?.sections).not.toHaveLength(0);
+      expect(completed.review?.notes).toBe("Keep my recovery feedback");
+      expect(completed.review?.generation).toBeUndefined();
+      expect(yield* env.fs.exists(env.path.join(env.worktree, ".revdoc", "generation.json"))).toBe(
+        false,
+      );
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect("saves finished batches while the rest of the review is still running", () =>
+    Effect.gen(function* () {
+      const entered = yield* Queue.unbounded<Deferred.Deferred<RevdocGenerationResult>>();
+      const env = yield* setup({
+        generate: () =>
+          Effect.gen(function* () {
+            const result = yield* Deferred.make<RevdocGenerationResult>();
+            yield* Queue.offer(entered, result);
+            return yield* Deferred.await(result);
+          }),
+      });
+      yield* env.fs.writeFileString(
+        env.path.join(env.worktree, "app.txt"),
+        "changed line\n".repeat(30_000),
+      );
+      yield* env.service.start({ threadId });
+      const first = yield* Queue.take(entered);
+      yield* Queue.take(entered);
+      yield* Deferred.succeed(first, generated);
+      yield* env.service.changes({ threadId }).pipe(
+        Stream.filter((state) => state.completed === 1),
+        Stream.runHead,
+      );
+      const partial = yield* env.service.get({ threadId: siblingId });
+      expect(partial.review?.sections[0]?.items[0]?.tests[0]?.title).toBe("Open the feature");
+      yield* env.service.cancel({ threadId });
+      expect((yield* env.service.get({ threadId })).revision).toBe(partial.revision);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect.each(["unchanged", "source", "conversation", "damaged checkpoint"] as const)(
+    "reuses cancelled generation only while its inputs match: %s",
+    (change) =>
+      Effect.gen(function* () {
+        const entered = yield* Queue.unbounded<Deferred.Deferred<RevdocGenerationResult>>();
+        let recovering = false;
+        let title = "Review work";
+        const env = yield* setup({
+          title: () => title,
+          generate: () =>
+            recovering
+              ? Effect.succeed(generated)
+              : Effect.gen(function* () {
+                  const result = yield* Deferred.make<RevdocGenerationResult>();
+                  yield* Queue.offer(entered, result);
+                  return yield* Deferred.await(result);
+                }),
+        });
+        const source = env.path.join(env.worktree, "app.txt");
+        yield* env.fs.writeFileString(source, "changed line\n".repeat(30_000));
+        yield* env.service.start({ threadId });
+        yield* Queue.take(entered);
+        const second = yield* Queue.take(entered);
+        // Finish out of order: recovery must identify batches, not skip the first N.
+        yield* Deferred.succeed(second, generated);
+        const progress = yield* env.service.changes({ threadId }).pipe(
+          Stream.filter((state) => state.completed === 1),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        yield* env.service.cancel({ threadId });
+        yield* env.finished();
+        if (change === "source")
+          yield* env.fs.writeFileString(source, "another line\n".repeat(30_000));
+        if (change === "conversation") title = "Changed requirements";
+        if (change === "damaged checkpoint")
+          yield* env.fs.writeFileString(
+            env.path.join(env.worktree, ".revdoc", "generation.json"),
+            "invalid JSON",
+          );
+        const callsBeforeResume = env.calls.length;
+        recovering = true;
+        yield* env.service.start({ threadId });
+        expect((yield* env.finished()).error).toBeNull();
+        const retried = env.calls
+          .slice(callsBeforeResume)
+          .filter((call) => !call.prompt.startsWith("Organise"));
+        if (change === "unchanged") {
+          expect(retried).toHaveLength(progress.total! - 1);
+          expect(retried.map((call) => call.prompt)).not.toContain(env.calls[1]!.prompt);
+        } else {
+          expect(retried).toHaveLength(progress.total!);
+        }
+        expect((yield* env.service.get({ threadId })).review?.generation).toBeUndefined();
+      }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
+  it.effect("resumes combining without repeating saved review batches or section groups", () =>
+    Effect.gen(function* () {
+      const entered =
+        yield* Queue.unbounded<Deferred.Deferred<RevdocGenerationResult, TextGenerationError>>();
+      let recovering = false;
+      const largeResult = {
+        ...generated,
+        sections: generated.sections.map((section) => ({
+          ...section,
+          items: section.items.map((item) => ({
+            ...item,
+            tests: Array.from({ length: 12 }, (_, i) => ({
+              id: `test-${i}`,
+              title: `Check ${i}`,
+              expected: "Details ".repeat(1_000),
+            })),
+          })),
+        })),
+      };
+      const env = yield* setup({
+        generate: (input) =>
+          !input.prompt.startsWith("Organise")
+            ? Effect.succeed(largeResult)
+            : recovering
+              ? Effect.succeed({ ...generated, sections: [] })
+              : Effect.gen(function* () {
+                  const result = yield* Deferred.make<
+                    RevdocGenerationResult,
+                    TextGenerationError
+                  >();
+                  yield* Queue.offer(entered, result);
+                  return yield* Deferred.await(result);
+                }),
+      });
+      yield* env.fs.writeFileString(
+        env.path.join(env.worktree, "app.txt"),
+        "changed line\n".repeat(30_000),
+      );
+      yield* env.service.start({ threadId });
+      const first = yield* Queue.take(entered);
+      const second = yield* Queue.take(entered);
+      yield* Deferred.succeed(first, { ...generated, sections: [] });
+      yield* env.service.changes({ threadId }).pipe(
+        Stream.filter((state) => state.generationStage === "combining" && state.completed === 1),
+        Stream.runHead,
+      );
+      const savedPrompt = env.calls.find((call) => call.prompt.startsWith("Organise"))!.prompt;
+      yield* Deferred.fail(
+        second,
+        new TextGenerationError({ operation: "generateRevdoc", detail: "Session expired" }),
+      );
+      expect((yield* env.finished()).error).toContain("Session expired");
+      const partial = yield* env.service.get({ threadId });
+      expect(partial.review?.generation).toMatchObject({ stage: "combining", completed: 1 });
+      expect(partial.review?.sections[0]?.items[0]?.tests).toHaveLength(12);
+      const callsBeforeResume = env.calls.length;
+      recovering = true;
+      const restarted = yield* env.restart;
+      yield* restarted.start({ threadId });
+      const done = yield* restarted.changes({ threadId }).pipe(
+        Stream.filter((state) => !state.running && state.version > 0),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
+      expect(done.error).toBeNull();
+      const retried = env.calls.slice(callsBeforeResume);
+      expect(retried).toHaveLength(1);
+      expect(retried[0]!.prompt).toMatch(/^Organise/);
+      expect(retried[0]!.prompt).not.toBe(savedPrompt);
+      const completed = yield* restarted.get({ threadId });
+      expect(completed.review?.sections[0]?.items[0]?.tests).toHaveLength(12);
+      expect(completed.review?.generation).toBeUndefined();
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
   it.effect(
     "automatically batches full patches and large untracked text, selects the large model, and retains omitted checks",
     () =>
@@ -898,7 +1131,13 @@ describe("large Revdoc generation", () => {
       );
       yield* env.service.start({ threadId });
       expect((yield* env.finished()).error).toContain("Batch failed");
-      expect((yield* env.service.get({ threadId })).revision).toBe(saved.revision);
+      const retained = yield* env.service.get({ threadId });
+      expect(retained.review?.sections[0]?.items[0]?.tests[0]).toMatchObject({
+        outcome: "broken",
+        feedback: "Keep this finding",
+      });
+      if (stage === "reviewing") expect(retained.revision).toBe(saved.revision);
+      else expect(retained.review?.generation).toMatchObject({ stage: "combining", completed: 0 });
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );
 
