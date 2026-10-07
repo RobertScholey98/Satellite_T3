@@ -43,7 +43,7 @@ import {
   selectTests,
   staleTestIds,
   testDefinitionRevision,
-  testingPrompt,
+  testingBatches,
   withTestAttempt,
 } from "./RevdocTesting.ts";
 import { writeFileStringAtomically } from "../atomicWrite.ts";
@@ -84,6 +84,7 @@ const decodeCheckpoint = Schema.decodeUnknownEffect(
 );
 const isReview = Schema.is(RevdocReview);
 const isRevdocError = Schema.is(RevdocError);
+const UNRECORDED = "The testing agent finished without recording this check.";
 
 export class RevdocService extends Context.Service<
   RevdocService,
@@ -558,6 +559,25 @@ const make = Effect.gen(function* () {
       items: section.items.map((item) => ({ ...item, tests: item.tests.map(update) })),
     })),
   });
+  /** Checks this run's agents never reported on are blocked with the reason they stopped. */
+  const blockUnfinished = (
+    review: RevdocReview,
+    runId: string,
+    finishedAt: string,
+    observed: string,
+    only?: ReadonlySet<string>,
+  ) =>
+    mapTests(review, (test) => {
+      const attempt = test.attempts?.at(-1);
+      if (
+        !attempt ||
+        attempt.runId !== runId ||
+        !["queued", "running"].includes(attempt.state) ||
+        (only && !only.has(test.id))
+      )
+        return test;
+      return withTestAttempt(test, { ...attempt, state: "blocked", finishedAt, observed });
+    });
   const progress = (review: RevdocReview) => {
     const run = review.testing!;
     const attempts = reviewTests(review).flatMap((test) => {
@@ -586,7 +606,7 @@ const make = Effect.gen(function* () {
     const detail = yield* read(cwd);
     if (!detail.review?.testing || detail.review.testing.id !== runId) return;
     const finishedAt = DateTime.formatIso(yield* DateTime.now);
-    const review = mapTests(
+    const review = blockUnfinished(
       {
         ...detail.review,
         testing: {
@@ -596,20 +616,32 @@ const make = Effect.gen(function* () {
           ...(message ? { error: message } : {}),
         },
       },
-      (test) => {
-        const attempt = test.attempts?.at(-1);
-        if (!attempt || attempt.runId !== runId || !["queued", "running"].includes(attempt.state))
-          return test;
-        return withTestAttempt(test, {
-          ...attempt,
-          state: "blocked",
-          finishedAt,
-          observed: message ?? "The testing agent finished without recording this check.",
-        });
-      },
+      runId,
+      finishedAt,
+      message ?? UNRECORDED,
     );
     yield* write(cwd, review, detail.revision);
     yield* notify(cwd, { ...progress(review), running: jobs.has(cwd) });
+  });
+  /** Blocks the checks the previous section's agent skipped and lets the next agent report. */
+  const handOver = Effect.fn("RevdocService.handOver")(function* (
+    cwd: string,
+    runId: string,
+    skipped: ReadonlySet<string>,
+    threadId: ThreadId,
+  ) {
+    const detail = yield* read(cwd);
+    const testing = detail.review?.testing;
+    if (!testing || testing.id !== runId) return yield* fail("This testing pass was replaced.");
+    const review = blockUnfinished(
+      { ...detail.review!, testing: { ...testing, threadId } },
+      runId,
+      DateTime.formatIso(yield* DateTime.now),
+      UNRECORDED,
+      skipped,
+    );
+    yield* write(cwd, review, detail.revision);
+    yield* notify(cwd, progress(review));
   });
   const get = Effect.fn("RevdocService.get")(function* (input: RevdocInput) {
     const { cwd } = yield* resolve(input);
@@ -652,7 +684,6 @@ const make = Effect.gen(function* () {
       );
     const revision = yield* sourceRevision(cwd);
     const runId = NodeCrypto.randomUUID();
-    const testingThreadId = ThreadId.make(NodeCrypto.randomUUID());
     const startedAt = DateTime.formatIso(yield* DateTime.now);
     yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
@@ -664,10 +695,15 @@ const make = Effect.gen(function* () {
             if (input.testIds?.some((id) => !tests.some((test) => test.id === id)))
               return yield* fail("A selected check no longer exists. Refresh the review.");
             if (!tests.length) return null;
+            const batches = testingBatches(detail.review, tests, {
+              runId,
+              cwd,
+              title: detail.review.title,
+            }).map((batch) => ({ ...batch, threadId: ThreadId.make(NodeCrypto.randomUUID()) }));
             const selected = new Set(tests.map((test) => test.id));
             const testing: RevdocTestingRun = {
               id: runId,
-              threadId: testingThreadId,
+              threadId: batches[0]!.threadId,
               audience: "revdoc",
               sourceRevision: revision,
               status: "running",
@@ -690,65 +726,86 @@ const make = Effect.gen(function* () {
 
             yield* write(cwd, review, detail.revision);
             yield* notify(cwd, progress(review));
-            return { tests, title: review.title };
+            return { batches, title: review.title };
           }),
         );
         if (!prepared) return;
-        let created = false;
+        // The latest agent whose turn may still be running.
+        let created: ThreadId | null = null;
         yield* restore(
-          Effect.gen(function* () {
-            const events = yield* engine.subscribeDomainEvents;
-            yield* engine.dispatch({
-              type: "thread.create",
-              purpose: "revdoc",
-              commandId: CommandId.make(NodeCrypto.randomUUID()),
-              threadId: testingThreadId,
-              projectId: thread.projectId,
-              title: `Revdoc: ${prepared.title}`.slice(0, 200),
-              modelSelection,
-              runtimeMode: thread.runtimeMode,
-              interactionMode: "default",
-              // The testing thread works in the reviewed worktree, which is
-              // also how its MCP calls find this review again.
-              ...checkout,
-              createdAt: startedAt,
-            });
-            created = true;
-            yield* engine.dispatch({
-              type: "thread.turn.start",
-              commandId: CommandId.make(NodeCrypto.randomUUID()),
-              threadId: testingThreadId,
-              modelSelection,
-              runtimeMode: thread.runtimeMode,
-              interactionMode: "default",
-              createdAt: startedAt,
-              message: {
-                messageId: MessageId.make(NodeCrypto.randomUUID()),
-                role: "user",
-                text: testingPrompt({ runId, cwd, title: prepared.title, tests: prepared.tests }),
-                attachments: [],
-              },
-            });
-            const terminal = yield* events.pipe(
-              Stream.filter(
-                (event) =>
-                  (event.type === "thread.deleted" && event.payload.threadId === testingThreadId) ||
-                  (event.type === "thread.session-set" &&
-                    event.payload.threadId === testingThreadId &&
-                    (event.payload.turnSettled === true ||
-                      ["error", "stopped", "interrupted"].includes(event.payload.session.status))),
-              ),
-              Stream.runHead,
-            );
-            if (Option.isNone(terminal) || terminal.value.type !== "thread.session-set")
-              return yield* fail("The testing agent stopped before finishing.");
-            const session = terminal.value.payload.session;
-            if (["error", "stopped", "interrupted"].includes(session.status))
-              return yield* fail(
-                session.lastError ??
-                  "The testing agent was interrupted. Saved results are preserved.",
-              );
-          }),
+          Effect.forEach(
+            prepared.batches,
+            (batch, index) =>
+              Effect.gen(function* () {
+                const previous = prepared.batches[index - 1];
+                if (previous)
+                  yield* writes.withPermit(
+                    handOver(
+                      cwd,
+                      runId,
+                      new Set(previous.tests.map((test) => test.id)),
+                      batch.threadId,
+                    ),
+                  );
+                const createdAt = DateTime.formatIso(yield* DateTime.now);
+                // Scoped to this agent, so finished agents stop queueing events.
+                const events = yield* engine.subscribeDomainEvents;
+                yield* engine.dispatch({
+                  type: "thread.create",
+                  purpose: "revdoc",
+                  commandId: CommandId.make(NodeCrypto.randomUUID()),
+                  threadId: batch.threadId,
+                  projectId: thread.projectId,
+                  title: `Revdoc: ${prepared.title} · ${batch.section}`.slice(0, 200),
+                  modelSelection,
+                  runtimeMode: thread.runtimeMode,
+                  interactionMode: "default",
+                  // The testing thread works in the reviewed worktree, which is
+                  // also how its MCP calls find this review again.
+                  ...checkout,
+                  createdAt,
+                });
+                created = batch.threadId;
+                yield* engine.dispatch({
+                  type: "thread.turn.start",
+                  commandId: CommandId.make(NodeCrypto.randomUUID()),
+                  threadId: batch.threadId,
+                  modelSelection,
+                  runtimeMode: thread.runtimeMode,
+                  interactionMode: "default",
+                  createdAt,
+                  message: {
+                    messageId: MessageId.make(NodeCrypto.randomUUID()),
+                    role: "user",
+                    text: batch.prompt,
+                    attachments: [],
+                  },
+                });
+                const terminal = yield* events.pipe(
+                  Stream.filter(
+                    (event) =>
+                      (event.type === "thread.deleted" &&
+                        event.payload.threadId === batch.threadId) ||
+                      (event.type === "thread.session-set" &&
+                        event.payload.threadId === batch.threadId &&
+                        (event.payload.turnSettled === true ||
+                          ["error", "stopped", "interrupted"].includes(
+                            event.payload.session.status,
+                          ))),
+                  ),
+                  Stream.runHead,
+                );
+                if (Option.isNone(terminal) || terminal.value.type !== "thread.session-set")
+                  return yield* fail("The testing agent stopped before finishing.");
+                const session = terminal.value.payload.session;
+                if (["error", "stopped", "interrupted"].includes(session.status))
+                  return yield* fail(
+                    session.lastError ??
+                      "The testing agent was interrupted. Saved results are preserved.",
+                  );
+              }).pipe(Effect.scoped),
+            { discard: true },
+          ),
         ).pipe(
           Effect.mapError((error) =>
             isRevdocError(error) ? error : fail("Could not run the testing agent."),
@@ -769,7 +826,7 @@ const make = Effect.gen(function* () {
                   .dispatch({
                     type: "thread.turn.interrupt",
                     commandId: CommandId.make(NodeCrypto.randomUUID()),
-                    threadId: testingThreadId,
+                    threadId: created,
                     createdAt: DateTime.formatIso(yield* DateTime.now),
                   })
                   .pipe(
