@@ -57,7 +57,7 @@ const CancelRevdoc = Tool.make("cancel_revdoc", {
 
 const TestRevdoc = Tool.make("test_revdoc", {
   description:
-    "Start a separate background testing thread for this worktree's review. Runs real checks and records AI results and Browser screenshots without changing human outcomes. Use remaining for untested, blocked, failed, or stale checks; failed to retry failures; all for every check. Optional testIds selects specific checks. Requires user authorization to run test commands and browser interactions.",
+    "Start background testing for this worktree's review: one separate testing thread per review section, run one after another. Runs real checks and records AI results and Browser screenshots without changing human outcomes. Use remaining for untested, blocked, failed, or stale checks; failed to retry failures; all for every check. Optional testIds selects specific checks. Requires user authorization to run test commands and browser interactions.",
   parameters: Schema.Struct({
     selection: RevdocTestStartInput.fields.selection,
     testIds: RevdocTestStartInput.fields.testIds,

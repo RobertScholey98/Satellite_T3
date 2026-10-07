@@ -29,6 +29,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -129,10 +130,21 @@ interface PreviewAutomationRequestErrorContext {
   readonly selectorLength?: number;
 }
 
+/** An evicted host re-registers by itself; calls without a host wait for it until `until`. */
+interface HostReconnect {
+  readonly arrived: Deferred.Deferred<void>;
+  readonly until: number;
+}
+
+/** Long enough for an evicted desktop to reopen its request stream, which takes about a second. */
+const EVICTED_HOST_RECONNECT_MS = 5_000;
+
 interface BrokerState {
   readonly clients: ReadonlyMap<string, ClientConnection>;
   readonly assignments: ReadonlyMap<string, HostAssignment>;
   readonly pending: ReadonlyMap<string, PendingRequest>;
+  /** Keyed by environment. */
+  readonly reconnecting: ReadonlyMap<string, HostReconnect>;
   readonly requestSequence: number;
   readonly focusSequence: number;
 }
@@ -352,6 +364,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     clients: new Map(),
     assignments: new Map(),
     pending: new Map(),
+    reconnecting: new Map(),
     requestSequence: 0,
     focusSequence: 0,
   });
@@ -388,10 +401,19 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       if (current.clients.get(clientId)?.queue !== queue) {
         return Effect.succeed([undefined, current] as const);
       }
+      const environmentId = current.clients.get(clientId)!.environmentId;
       const removed = removeConnectionFromState(current, clientId, queue);
-      return closeConnection(queue, removed.disconnected, completeStream).pipe(
-        Effect.as([undefined, removed.state] as const),
-      );
+      return Effect.gen(function* () {
+        yield* closeConnection(queue, removed.disconnected, completeStream);
+        // Completing the stream evicts the host, which then registers again.
+        if (!completeStream) return [undefined, removed.state] as const;
+        const reconnecting = new Map(removed.state.reconnecting);
+        reconnecting.set(environmentId, {
+          arrived: reconnecting.get(environmentId)?.arrived ?? (yield* Deferred.make<void>()),
+          until: (yield* Clock.currentTimeMillis) + EVICTED_HOST_RECONNECT_MS,
+        });
+        return [undefined, { ...removed.state, reconnecting }] as const;
+      });
     });
   });
 
@@ -423,18 +445,22 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const focusSequence = removed.state.focusSequence + 1;
       const registeredConnection = { ...connection, focusOrder: focusSequence };
       clients.set(clientId, registeredConnection);
+      const reconnecting = new Map(removed.state.reconnecting);
+      reconnecting.delete(host.environmentId);
       return [
         {
           previousConnection,
           disconnected: removed.disconnected,
           registeredConnection,
+          reconnect: removed.state.reconnecting.get(host.environmentId),
         },
-        { ...removed.state, clients, focusSequence },
+        { ...removed.state, clients, focusSequence, reconnecting },
       ] as const;
     });
     if (registration.previousConnection) {
       yield* closeConnection(registration.previousConnection.queue, registration.disconnected);
     }
+    if (registration.reconnect) yield* Deferred.succeed(registration.reconnect.arrived, undefined);
     return registration.registeredConnection;
   });
 
@@ -507,6 +533,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
   ): Effect.fn.Return<A, PreviewAutomationError> {
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
+    let reconnect: HostReconnect | undefined;
     const route = yield* SynchronizedRef.modify(state, (current) => {
       const assignments = new Map(
         Array.from(current.assignments).filter(([, assignment]) => {
@@ -556,7 +583,10 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
                     right.focusOrder - left.focusOrder,
                 )[0];
       if (!connection) {
-        if (!hasLiveAssignment) assignments.delete(assignmentKey);
+        if (!hasLiveAssignment) {
+          assignments.delete(assignmentKey);
+          reconnect = current.reconnecting.get(input.scope.environmentId);
+        }
         return [undefined, { ...current, assignments }] as const;
       }
       // The environment host may install Chromium on its first open (up to
@@ -602,6 +632,13 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       ] as const;
     });
     if (!route) {
+      const now = yield* Clock.currentTimeMillis;
+      if (reconnect && reconnect.until > now) {
+        const arrived = yield* Deferred.await(reconnect.arrived).pipe(
+          Effect.timeoutOption(reconnect.until - now),
+        );
+        if (Option.isSome(arrived)) return yield* invoke<A>(input);
+      }
       return yield* new PreviewAutomationNoAvailableHostError({
         operation: input.operation,
         environmentId: input.scope.environmentId,

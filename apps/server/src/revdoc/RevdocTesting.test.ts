@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ThreadId, type RevdocReview, type RevdocTest } from "@t3tools/contracts";
+import {
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  ThreadId,
+  type RevdocReview,
+  type RevdocTest,
+} from "@t3tools/contracts";
 import {
   selectTests,
   staleTestIds,
   testDefinitionRevision,
+  testingBatches,
   withTestAttempt,
 } from "./RevdocTesting.ts";
 
@@ -106,4 +112,36 @@ it("keeps standalone verification current while retaining previous evidence and 
     sourceRevision: "previous",
     evidence: [{ id: "old" }],
   });
+});
+
+it("gives each review section its own testing batch, splitting only sections too large for one turn", () => {
+  const check = (id: string): RevdocTest => ({
+    id,
+    title: `Check ${id}`,
+    expected: "x".repeat(15_000),
+  });
+  const large = Array.from({ length: 12 }, (_, index) => check(`large-${index}`));
+  const sections: RevdocReview = {
+    title: "Review",
+    sections: [
+      {
+        id: "small",
+        area: "Small",
+        items: [{ id: "one", name: "One", tests: [check("a"), check("b")] }],
+      },
+      { id: "large", area: "Large", items: [{ id: "two", name: "Two", tests: large }] },
+    ],
+  };
+  const batches = testingBatches(sections, [check("a"), ...large], {
+    runId: "run",
+    cwd: "/worktree",
+    title: "Review",
+  });
+  expect(batches.map((batch) => batch.section)).toEqual(["Small", "Large", "Large"]);
+  expect(batches[0]!.tests.map((test) => test.id)).toEqual(["a"]);
+  expect(batches.slice(1).flatMap((batch) => batch.tests)).toEqual(large);
+  for (const batch of batches) {
+    expect(batch.prompt.length).toBeLessThanOrEqual(PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
+    expect(batch.prompt).toContain(batch.tests.at(-1)!.id);
+  }
 });

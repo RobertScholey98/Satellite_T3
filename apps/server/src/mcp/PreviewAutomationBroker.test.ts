@@ -1494,3 +1494,60 @@ it.effect("keeps the host connected when a background status read times out", ()
     }),
   ),
 );
+
+const evictUnresponsiveHost = Effect.fn("evictUnresponsiveHost")(function* (
+  broker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
+) {
+  const received = yield* Deferred.make<void>();
+  yield* Stream.runForEach(requestsFrom(yield* broker.connect(makeHost())), () =>
+    Deferred.succeed(received, undefined),
+  ).pipe(Effect.forkScoped);
+  const timedOut = yield* broker
+    .invoke<void>({ scope, operation: "open", input: {}, timeoutMs: 1_000 })
+    .pipe(Effect.flip, Effect.forkScoped);
+  yield* Deferred.await(received);
+  yield* TestClock.adjust(1_000);
+  expect(yield* Fiber.join(timedOut)).toMatchObject({ _tag: "PreviewAutomationTimeoutError" });
+});
+
+it.effect("holds calls for an evicted host until it registers again", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      yield* evictUnresponsiveHost(broker);
+      const waiting = yield* broker
+        .invoke({ scope, operation: "status", input: {} })
+        .pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* Stream.runForEach(requestsFrom(yield* broker.connect(makeHost())), (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "reconnected",
+        }),
+      ).pipe(Effect.forkScoped);
+      expect(yield* Fiber.join(waiting)).toBe("reconnected");
+    }),
+  ),
+);
+
+it.effect("reports no host once an evicted host stays away", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      yield* evictUnresponsiveHost(broker);
+      const waiting = yield* broker
+        .invoke<void>({ scope, operation: "status", input: {} })
+        .pipe(Effect.flip, Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(5_000);
+      expect(yield* Fiber.join(waiting)).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+      // The wait is spent; later calls report the missing host immediately.
+      expect(
+        yield* broker.invoke<void>({ scope, operation: "status", input: {} }).pipe(Effect.flip),
+      ).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+    }),
+  ),
+);
