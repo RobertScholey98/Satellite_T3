@@ -66,6 +66,8 @@ conflict. If the worktree changes during generation, run a new pass for the curr
 changes. Refresh the review to load edits made outside Satellite.
 
 Use **Test with AI** in the review to run remaining checks in the background.
+Each review section gets its own testing agent, one section at a time, and each
+agent opens its own Browser tab.
 Progress, agent activity, questions, and approvals stay in the review sidebar. Choose its provider, model, and effort under **Revdoc testing model** in
 Settings. Automatic uses the review model, falling back to the original thread's
 model. **Generate & test** runs both steps; **Test after generating Revdoc** makes
