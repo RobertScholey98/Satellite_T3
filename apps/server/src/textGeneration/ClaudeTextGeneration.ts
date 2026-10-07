@@ -1,4 +1,8 @@
-import { RevdocGenerationResult, type RevdocGenerationInput } from "../revdoc/RevdocGeneration.ts";
+import {
+  RevdocGenerationResult,
+  type RevdocGenerationActivity,
+  type RevdocGenerationInput,
+} from "../revdoc/RevdocGeneration.ts";
 import {
   IdeaUpdateGenerationResult,
   normalizeIdeaUpdateResult,
@@ -37,6 +41,7 @@ import {
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
+  textGenerationTimeoutMs,
   toJsonSchemaObject,
 } from "./TextGenerationUtils.ts";
 import {
@@ -56,8 +61,6 @@ import {
 } from "../provider/ClaudeModelCatalog.ts";
 import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
 
-const CLAUDE_TIMEOUT_MS = 180_000;
-
 /**
  * Schema for the wrapper JSON returned by `claude -p --output-format json`.
  * Verbose mode wraps the result in an array of conversation messages.
@@ -71,10 +74,40 @@ const ClaudeOutputMessage = Schema.Struct({
 });
 const isClaudeOutputEnvelope = Schema.is(ClaudeOutputEnvelope);
 
+/**
+ * The `stream-json` lines a long document pass reports progress from. Thinking text
+ * arrives only when the account streams it; otherwise the CLI reports token estimates.
+ */
+const ClaudeStreamLine = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("stream_event"),
+    event: Schema.Struct({
+      type: Schema.String,
+      delta: Schema.optionalKey(
+        Schema.Struct({
+          type: Schema.String,
+          thinking: Schema.optionalKey(Schema.String),
+          text: Schema.optionalKey(Schema.String),
+          partial_json: Schema.optionalKey(Schema.String),
+          estimated_tokens: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+        }),
+      ),
+    }),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("system"),
+    subtype: Schema.String,
+    estimated_tokens: Schema.optionalKey(Schema.Number),
+  }),
+  Schema.Struct({ type: Schema.Literal("result") }),
+]);
+const STREAM_ERROR_TAIL_CHARS = 4_000;
+
 const encodeJsonString = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeClaudeOutput = Schema.decodeEffect(
   Schema.fromJsonString(Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)])),
 );
+const decodeClaudeStreamLine = Schema.decodeOption(Schema.fromJsonString(ClaudeStreamLine));
 
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
@@ -102,6 +135,62 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         normalizeCliError("claude", operation, cause, "Failed to collect process output"),
       ),
     );
+
+  /**
+   * Reduce a `stream-json` run to its final result line, reporting model progress on
+   * the way. Without a result line the trailing output stands in for error detail.
+   */
+  const readClaudeStream = <E>(
+    operation: string,
+    stream: Stream.Stream<Uint8Array, E>,
+    onActivity: ((activity: RevdocGenerationActivity) => Effect.Effect<void>) | undefined,
+  ): Effect.Effect<string, TextGenerationError> =>
+    Effect.gen(function* () {
+      let result: string | undefined;
+      let tail = "";
+      yield* stream.pipe(
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.runForEach((line) =>
+          Effect.gen(function* () {
+            const parsed = decodeClaudeStreamLine(line);
+            if (Option.isNone(parsed)) {
+              tail = `${tail}${line}\n`.slice(-STREAM_ERROR_TAIL_CHARS);
+              return;
+            }
+            const message = parsed.value;
+            if (message.type === "result") {
+              result = line;
+              return;
+            }
+            if (!onActivity) return;
+            if (message.type === "system") {
+              if (message.subtype === "thinking_tokens" && message.estimated_tokens !== undefined) {
+                yield* onActivity({ kind: "thinking", text: "", tokens: message.estimated_tokens });
+              }
+              return;
+            }
+            const delta = message.event.delta;
+            if (message.event.type !== "content_block_delta" || !delta) return;
+            if (delta.type === "thinking_delta") {
+              yield* onActivity({
+                kind: "thinking",
+                text: delta.thinking ?? "",
+                tokens: delta.estimated_tokens ?? undefined,
+              });
+            } else if (delta.type === "text_delta") {
+              yield* onActivity({ kind: "thinking", text: delta.text ?? "" });
+            } else if (delta.type === "input_json_delta") {
+              yield* onActivity({ kind: "output", text: delta.partial_json ?? "" });
+            }
+          }),
+        ),
+        Effect.mapError((cause) =>
+          normalizeCliError("claude", operation, cause, "Failed to collect process output"),
+        ),
+      );
+      return result ?? tail;
+    });
 
   const encodeJsonForOperation = (
     operation:
@@ -135,6 +224,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     prompt,
     outputSchemaJson,
     modelSelection,
+    onActivity,
   }: {
     operation:
       | "generateCommitMessage"
@@ -147,7 +237,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     prompt: string;
     outputSchemaJson: S;
     modelSelection: ModelSelection;
+    onActivity?: RevdocGenerationInput["onActivity"];
   }): Effect.fn.Return<S["Type"], TextGenerationError, S["DecodingServices"]> {
+    // Review passes run for minutes, so their progress streams instead of arriving at the end.
+    const streaming = operation === "generateRevdoc";
     const catalog = yield* scopedModelCatalog;
     const resolvedModelSelection = {
       ...modelSelection,
@@ -217,7 +310,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
             ? ["--no-session-persistence", "--setting-sources", ""]
             : []),
           "--output-format",
-          "json",
+          streaming ? "stream-json" : "json",
+          ...(streaming ? ["--verbose", "--include-partial-messages"] : []),
           "--json-schema",
           jsonSchemaStr,
           "--model",
@@ -254,7 +348,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
 
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
-          readStreamAsString(operation, child.stdout),
+          streaming
+            ? readClaudeStream(operation, child.stdout, onActivity)
+            : readStreamAsString(operation, child.stdout),
           readStreamAsString(operation, child.stderr),
           child.exitCode.pipe(
             Effect.mapError((cause) =>
@@ -283,7 +379,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
 
     const rawStdout = yield* runClaudeCommand().pipe(
       Effect.scoped,
-      Effect.timeoutOption(CLAUDE_TIMEOUT_MS),
+      Effect.timeoutOption(textGenerationTimeoutMs(operation)),
       Effect.flatMap(
         Option.match({
           onNone: () =>
@@ -433,6 +529,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       prompt: input.prompt,
       outputSchemaJson: RevdocGenerationResult,
       modelSelection: input.modelSelection,
+      onActivity: input.onActivity,
     });
 
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>

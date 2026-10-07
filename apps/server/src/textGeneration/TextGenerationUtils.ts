@@ -7,6 +7,18 @@ const decodeJsonThreadTitle = Schema.decodeOption(
   Schema.fromJsonString(Schema.Struct({ title: Schema.String })),
 );
 
+// Metadata prompts finish in seconds. Document passes read large diffs and write
+// long structured output, so they get room to work; cancelling still ends them.
+const METADATA_TIMEOUT_MS = 180_000;
+const DOCUMENT_TIMEOUT_MS = 30 * 60_000;
+
+/** How long a provider may take on one text generation call before it is abandoned. */
+export function textGenerationTimeoutMs(operation: string): number {
+  return operation === "generateRevdoc" || operation === "generateIdeaUpdate"
+    ? DOCUMENT_TIMEOUT_MS
+    : METADATA_TIMEOUT_MS;
+}
+
 /** Convert an Effect Schema to a flat JSON Schema object, inlining `$defs` when present. */
 export function toJsonSchemaObject(schema: Schema.Top): unknown {
   // The type side, so decoding defaults do not turn required fields into

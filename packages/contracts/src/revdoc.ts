@@ -165,6 +165,15 @@ export const RevdocDetail = Schema.Struct({
   staleTestIds: Schema.optionalKey(Schema.Array(Id)),
 });
 export type RevdocDetail = typeof RevdocDetail.Type;
+/** One in-flight model call of a generation pass. Elapsed time is server-measured so remote clocks cannot skew it. */
+export const RevdocBatchActivity = Schema.Struct({
+  batch: Schema.Number,
+  elapsedMs: Schema.Number,
+  thinking: Schema.optionalKey(Text),
+  thinkingTokens: Schema.optionalKey(Schema.Number),
+  outputBytes: Schema.Number,
+});
+export type RevdocBatchActivity = typeof RevdocBatchActivity.Type;
 export const RevdocRunState = Schema.Struct({
   running: Schema.Boolean,
   error: Schema.NullOr(Schema.String),
@@ -172,6 +181,7 @@ export const RevdocRunState = Schema.Struct({
   version: Schema.Number,
   phase: Schema.optionalKey(Schema.Literals(["generating", "testing"])),
   generationStage: Schema.optionalKey(Schema.Literals(["reviewing", "combining"])),
+  activity: Schema.optionalKey(Schema.Array(RevdocBatchActivity)),
   testingThreadId: Schema.optionalKey(ThreadId),
   completed: Schema.optionalKey(Schema.Number),
   total: Schema.optionalKey(Schema.Number),

@@ -50,7 +50,8 @@ Choose the provider, model, and effort under **Settings → General → Text
 generation → Revdoc**. Automatic uses the current thread's provider and model.
 Large reviews automatically run in batches and combine into one checklist. Choose
 a separate provider, model, and effort under **Large Revdoc model**; Automatic uses
-the Revdoc model, then the thread's model. The sidebar reports progress. Cancelling
+the Revdoc model, then the thread's model. The sidebar reports progress, and the
+worktree review panel shows what the model is doing in each batch. Cancelling
 or a failed batch preserves the saved review; running again starts a new pass.
 A pass gathers the thread's recent conversation and the worktree's changes,
 including commits since its default branch. The generation pass creates a checklist. Reruns preserve notes and outcomes, while

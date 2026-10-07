@@ -1,4 +1,5 @@
 import type { ModelSelection, RevdocReview } from "@t3tools/contracts";
+import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 const Test = Schema.Struct({ id: Schema.String, title: Schema.String, expected: Schema.String });
@@ -36,10 +37,16 @@ export const RevdocGenerationResult = Schema.Struct({
   ),
 });
 export type RevdocGenerationResult = typeof RevdocGenerationResult.Type;
+/** A streamed slice of model progress. Thinking text stays empty when a provider only reports token counts. */
+export type RevdocGenerationActivity =
+  | { readonly kind: "thinking"; readonly text: string; readonly tokens?: number | undefined }
+  | { readonly kind: "output"; readonly text: string };
 export interface RevdocGenerationInput {
   readonly cwd: string;
   readonly modelSelection: ModelSelection;
   readonly prompt: string;
+  /** Called as the model works. Adapters that cannot observe progress never call it. */
+  readonly onActivity?: ((activity: RevdocGenerationActivity) => Effect.Effect<void>) | undefined;
 }
 
 export function revdocPrompt(context: {

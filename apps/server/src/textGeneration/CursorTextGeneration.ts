@@ -34,13 +34,12 @@ import {
   sanitizeCommitSubject,
   sanitizePrTitle,
   sanitizeThreadTitle,
+  textGenerationTimeoutMs,
 } from "./TextGenerationUtils.ts";
 import {
   applyCursorAcpModelSelection,
   makeCursorAcpRuntime,
 } from "../provider/acp/CursorAcpSupport.ts";
-
-const CURSOR_TIMEOUT_MS = 180_000;
 
 const isTextGenerationError = Schema.is(TextGenerationError);
 
@@ -64,6 +63,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     prompt,
     outputSchemaJson,
     modelSelection,
+    onActivity,
   }: {
     operation:
       | "generateCommitMessage"
@@ -76,6 +76,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     prompt: string;
     outputSchemaJson: S;
     modelSelection: ModelSelection;
+    onActivity?: RevdocGenerationInput["onActivity"];
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
@@ -113,6 +114,11 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
         ) {
           return guard.reject();
         }
+        if (update.sessionUpdate === "agent_thought_chunk") {
+          return onActivity && update.content.type === "text"
+            ? onActivity({ kind: "thinking", text: update.content.text })
+            : Effect.void;
+        }
         if (update.sessionUpdate !== "agent_message_chunk") {
           return Effect.void;
         }
@@ -120,7 +126,9 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
         if (content.type !== "text") {
           return Effect.void;
         }
-        return Ref.update(outputRef, (current) => current + content.text);
+        return Ref.update(outputRef, (current) => current + content.text).pipe(
+          Effect.andThen(onActivity?.({ kind: "output", text: content.text }) ?? Effect.void),
+        );
       });
 
       const promptResult = yield* Effect.gen(function* () {
@@ -147,7 +155,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
         });
       }).pipe(
         Effect.raceFirst(guard?.failure ?? Effect.never),
-        Effect.timeoutOption(CURSOR_TIMEOUT_MS),
+        Effect.timeoutOption(textGenerationTimeoutMs(operation)),
         Effect.flatMap(
           Option.match({
             onNone: () =>
@@ -311,6 +319,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       prompt: input.prompt,
       outputSchemaJson: RevdocGenerationResult,
       modelSelection: input.modelSelection,
+      onActivity: input.onActivity,
     });
 
   const generateIdeaUpdate = (input: IdeaUpdateInput) =>
