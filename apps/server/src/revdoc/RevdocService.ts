@@ -1165,7 +1165,7 @@ const make = Effect.gen(function* () {
                 ? {
                     ...combined,
                     title: checkpoint.previous?.title ?? `${thread.title} review`,
-                    summary: `Review changes to ${combined.sections.map((section) => section.area).join(", ")}.`,
+                    summary: `Review changes across ${combined.sections.length} area${combined.sections.length === 1 ? "" : "s"}.`,
                     context: source.overview,
                   }
                 : combined;
