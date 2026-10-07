@@ -67,7 +67,7 @@ import {
 } from "./RevdocBatching.ts";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 
-const MAX_REVIEW_BYTES = 2 * 1024 * 1024;
+const MAX_REVIEW_BYTES = 16 * 1024 * 1024;
 const MAX_CONTEXT_BYTES = 180_000;
 const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 // Streamed model progress is published at most this often; the batch's finish publishes the rest.
@@ -245,7 +245,7 @@ const make = Effect.gen(function* () {
       .stat(file)
       .pipe(Effect.mapError(() => fail("Could not read the review.")));
     if (size.size > BigInt(MAX_REVIEW_BYTES))
-      return yield* fail("The review exceeds the 2 MB limit.");
+      return yield* fail("The review exceeds the 16 MB limit.");
     const content = yield* fs
       .readFileString(file)
       .pipe(Effect.mapError(() => fail("Could not read the review.")));
@@ -303,7 +303,7 @@ const make = Effect.gen(function* () {
     const file = yield* checkedPath(cwd);
     const content = encodeJson(review) + "\n";
     if (Buffer.byteLength(content) > MAX_REVIEW_BYTES)
-      return yield* fail("The review exceeds the 2 MB limit.");
+      return yield* fail("The review exceeds the 16 MB limit.");
     yield* prepare(cwd);
     yield* writeFileStringAtomically({ filePath: file, contents: content }).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
