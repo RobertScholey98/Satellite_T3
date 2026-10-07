@@ -31,6 +31,7 @@ import {
 } from "@t3tools/contracts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import * as PreviewManager from "../preview/Manager.ts";
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as ServerConfig from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -169,6 +170,7 @@ const setup = (
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     const starts = yield* Queue.unbounded<ThreadId>();
     const captured: string[] = [];
+    const closedTabs: ThreadId[] = [];
     const png =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=";
     const buildService = Layer.build(
@@ -205,6 +207,11 @@ const setup = (
                   screenshot: { mimeType: "image/png", data: png, width: 1, height: 1 },
                 } as A;
               }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(PreviewManager.PreviewManager)({
+            close: (input) => Effect.sync(() => void closedTabs.push(input.threadId)),
           }),
         ),
         Layer.provide(
@@ -315,6 +322,7 @@ const setup = (
       starts: Queue.take(starts),
       dispatched,
       captured,
+      closedTabs,
       png,
       saveReview,
     };
@@ -1327,6 +1335,7 @@ describe("Revdoc AI testing", () => {
         type: "thread.turn.interrupt",
         threadId: first.invocation.threadId,
       });
+      expect(env.closedTabs).toEqual([first.invocation.threadId]);
       yield* env.service.startTesting({ threadId, selection: "remaining" });
       const second = yield* env.tester;
       expect((yield* env.service.get({ threadId })).review?.testing?.testIds).toEqual(["second"]);
@@ -1341,7 +1350,7 @@ describe("Revdoc AI testing", () => {
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );
 
-  it.effect("tests each review section with its own agent, one section at a time", () =>
+  it.effect("tests each review section with its own agent and closes its tabs", () =>
     Effect.gen(function* () {
       const env = yield* setup();
       yield* env.service.start({ threadId });
@@ -1373,6 +1382,7 @@ describe("Revdoc AI testing", () => {
       expect(second.invocation.threadId).not.toBe(first.invocation.threadId);
       const handedOver = (yield* env.service.get({ threadId })).review!;
       expect(handedOver.testing?.threadId).toBe(second.invocation.threadId);
+      expect(env.closedTabs).toEqual([first.invocation.threadId]);
       expect(handedOver.sections[0]!.items[0]!.tests[0]!.attempts?.at(-1)).toMatchObject({
         state: "blocked",
         observed: expect.stringContaining("without recording"),
@@ -1393,6 +1403,7 @@ describe("Revdoc AI testing", () => {
       expect((yield* env.finished()).error).toBeNull();
       const final = (yield* env.service.get({ threadId })).review!;
       expect(final.testing?.status).toBe("completed");
+      expect(env.closedTabs).toEqual([first.invocation.threadId, second.invocation.threadId]);
       expect(final.sections[1]!.items[0]!.tests[0]!.attempts?.at(-1)?.state).toBe("passed");
       const prompts = env.dispatched.flatMap((command) =>
         command.type === "thread.turn.start" ? [command.message.text] : [],
