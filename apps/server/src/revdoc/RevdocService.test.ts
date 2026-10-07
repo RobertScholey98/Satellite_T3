@@ -1061,6 +1061,43 @@ describe("large Revdoc generation", () => {
       }).pipe(Effect.scoped, Effect.provide(platform)),
   );
 
+  it.effect("keeps a large review's summary short however many areas it covers", () =>
+    Effect.gen(function* () {
+      const env = yield* setup({
+        generate: (input) =>
+          Effect.succeed(
+            input.prompt.startsWith("Organise")
+              ? { ...generated, sections: [] }
+              : {
+                  ...generated,
+                  sections: Array.from({ length: 250 }, (_, i) => ({
+                    ...generated.sections[0]!,
+                    id: `area-${i}`,
+                    area: `Vehicle screen area ${i} `.padEnd(100, "x"),
+                    items: generated.sections[0]!.items.map((item) => ({
+                      ...item,
+                      id: `${item.id}-${i}`,
+                      tests: item.tests.map((test) => ({
+                        ...test,
+                        id: `${test.id}-${i}`,
+                      })),
+                    })),
+                  })),
+                },
+          ),
+      });
+      yield* env.fs.writeFileString(
+        env.path.join(env.worktree, "app.txt"),
+        "changed line\n".repeat(30_000),
+      );
+      yield* env.service.start({ threadId });
+      expect((yield* env.finished()).error).toBeNull();
+      const review = (yield* env.service.get({ threadId })).review!;
+      expect(review.sections).toHaveLength(250);
+      expect(review.summary!.length).toBeLessThan(100);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
+
   it.effect("keeps small reviews on the normal model even when a large model is configured", () =>
     Effect.gen(function* () {
       const env = yield* setup({
