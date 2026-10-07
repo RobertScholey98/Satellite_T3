@@ -1067,9 +1067,13 @@ describe("large Revdoc generation", () => {
               : {
                   ...generated,
                   sections: Array.from({ length: 250 }, (_, i) => ({
-                    ...generated.sections[0]!,
                     id: `area-${i}`,
                     area: `Vehicle screen area ${i} `.padEnd(100, "x"),
+                    items: generated.sections[0]!.items.map((item) => ({
+                      ...item,
+                      id: `feature-${i}`,
+                      tests: [{ id: `check-${i}`, title: "Open the area", expected: "It opens" }],
+                    })),
                   })),
                 },
           ),
