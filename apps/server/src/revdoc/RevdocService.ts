@@ -37,6 +37,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import * as PreviewManager from "../preview/Manager.ts";
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import {
   reviewTests,
@@ -122,6 +123,7 @@ const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const browser = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  const previews = yield* PreviewManager.PreviewManager;
   const scope = yield* Effect.scope;
   const changes = yield* SubscriptionRef.make<ReadonlyMap<string, RevdocRunState>>(new Map());
   const writes = yield* Semaphore.make(1);
@@ -623,6 +625,15 @@ const make = Effect.gen(function* () {
     yield* write(cwd, review, detail.revision);
     yield* notify(cwd, { ...progress(review), running: jobs.has(cwd) });
   });
+  /** A testing agent's Browser tabs close once it stops; its screenshots stay in the review. */
+  const closeTabs = (threadId: ThreadId) =>
+    previews
+      .close({ threadId })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not close Revdoc testing tabs", cause),
+        ),
+      );
   /** Blocks the checks the previous section's agent skipped and lets the next agent report. */
   const handOver = Effect.fn("RevdocService.handOver")(function* (
     cwd: string,
@@ -795,6 +806,7 @@ const make = Effect.gen(function* () {
                   ),
                   Stream.runHead,
                 );
+                yield* closeTabs(batch.threadId);
                 if (Option.isNone(terminal) || terminal.value.type !== "thread.session-set")
                   return yield* fail("The testing agent stopped before finishing.");
                 const session = terminal.value.payload.session;
@@ -834,6 +846,7 @@ const make = Effect.gen(function* () {
                       Effect.logWarning("Could not interrupt Revdoc testing thread", cause),
                     ),
                   );
+                yield* closeTabs(created);
               }
               yield* writes
                 .withPermit(
