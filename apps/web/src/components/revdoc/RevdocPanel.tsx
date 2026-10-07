@@ -818,7 +818,9 @@ export default function RevdocPanel({
                           ? `Generating review · ${run.data.completed ?? 0}/${run.data.total} batches complete…`
                           : "Generating review…"
                     : review
-                      ? "Saved in this worktree"
+                      ? review.generation
+                        ? "Partial review saved · Run Revdoc to continue"
+                        : "Saved in this worktree"
                       : ""}
               </span>
             </div>

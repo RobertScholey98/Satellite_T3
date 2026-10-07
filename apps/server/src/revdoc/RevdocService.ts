@@ -53,12 +53,14 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
   reconcileRevdoc,
+  RevdocGenerationCheckpoint,
   type RevdocGenerationActivity,
   type RevdocGenerationResult,
 } from "./RevdocGeneration.ts";
 import {
   MAX_REVDOC_PROMPT_BYTES,
   mergeRevdocBatch,
+  mergeRevdocConsolidation,
   planRevdocBatches,
   revdocConsolidationGroups,
   revdocConsolidationPrompt,
@@ -77,6 +79,9 @@ const fail = (message: string) => new RevdocError({ message });
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeSync(fromJsonStringPretty(Schema.Unknown));
 const decodeSnapshot = Schema.decodeUnknownEffect(PreviewAutomationSnapshot);
+const decodeCheckpoint = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(RevdocGenerationCheckpoint),
+);
 const isReview = Schema.is(RevdocReview);
 const isRevdocError = Schema.is(RevdocError);
 
@@ -210,13 +215,13 @@ const make = Effect.gen(function* () {
   });
 
   const checkedPath = Effect.fn("RevdocService.checkedPath")(
-    function* (cwd: string) {
+    function* (cwd: string, filename = "review.json") {
       const currentRoot = yield* fs.realPath(cwd);
       if (path.relative(cwd, currentRoot) !== "") {
         return yield* fail("The worktree moved while this pass was running. Reopen its review.");
       }
       const directory = path.join(cwd, ".revdoc");
-      const file = path.join(directory, "review.json");
+      const file = path.join(directory, filename);
       for (const candidate of [directory, file]) {
         if (!(yield* fs.exists(candidate))) continue;
         const resolved = yield* fs.realPath(candidate);
@@ -307,6 +312,30 @@ const make = Effect.gen(function* () {
       Effect.mapError(() => fail("Could not save the review.")),
     );
     return { cwd, review, revision: hash(content) } satisfies RevdocDetail;
+  });
+  const readCheckpoint = Effect.fn("RevdocService.readCheckpoint")(function* (cwd: string) {
+    const file = yield* checkedPath(cwd, "generation.json");
+    if (!(yield* fs.exists(file))) return null;
+    if ((yield* fs.stat(file)).size > BigInt(MAX_SOURCE_BYTES)) return null;
+    const content = yield* fs.readFileString(file);
+    // An incompatible or damaged checkpoint only loses reuse, never the saved review.
+    return yield* decodeCheckpoint(content).pipe(Effect.orElseSucceed(() => null));
+  });
+  const writeCheckpoint = Effect.fn("RevdocService.writeCheckpoint")(function* (
+    cwd: string,
+    checkpoint: RevdocGenerationCheckpoint,
+  ) {
+    const contents = encodeJson(checkpoint) + "\n";
+    if (Buffer.byteLength(contents) > MAX_SOURCE_BYTES)
+      return yield* fail(
+        "Saved generation progress exceeds 64 MB. The partial review was preserved.",
+      );
+    const filePath = yield* checkedPath(cwd, "generation.json");
+    yield* writeFileStringAtomically({ filePath, contents }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.mapError(() => fail("Could not save Revdoc generation progress.")),
+    );
   });
   const execute = (cwd: string, args: readonly string[], allowNonZeroExit = false) =>
     git
@@ -972,7 +1001,13 @@ const make = Effect.gen(function* () {
           cancellations.delete(cwd);
           const config = yield* settings.getSettings;
           const initial = yield* read(cwd);
-          yield* notify(cwd, { running: true, phase: "generating", error: null, result: null });
+          yield* notify(cwd, {
+            running: true,
+            phase: "generating",
+            reviewRevision: initial.revision,
+            error: null,
+            result: null,
+          });
           const job = yield* Effect.gen(function* () {
             const source = yield* context(cwd).pipe(Effect.scoped);
             yield* writes.withPermit(prepare(cwd));
@@ -990,12 +1025,33 @@ const make = Effect.gen(function* () {
                   earlierTurnsOmitted: detail.value.page?.hasMore ?? false,
                 }
               : { title: thread.title };
-            const prompts = planRevdocBatches({
-              thread: conversation,
-              changes: source.changes,
-              existing: initial.review,
-              overview: source.overview,
-            });
+            const contextRevision = hash(encodeJson(conversation));
+            const saved = yield* readCheckpoint(cwd);
+            let recovered =
+              saved?.sourceRevision === source.sourceRevision &&
+              saved.contextRevision === contextRevision
+                ? saved
+                : null;
+            const plan = (existing: RevdocReview | null) =>
+              planRevdocBatches({
+                thread: conversation,
+                changes: source.changes,
+                existing,
+                overview: source.overview,
+              });
+            let prompts = plan(recovered ? recovered.previous : initial.review);
+            if (recovered && recovered.batches.length !== prompts.length) {
+              recovered = null;
+              prompts = plan(initial.review);
+            }
+            let checkpoint: RevdocGenerationCheckpoint = recovered ?? {
+              format: 1,
+              sourceRevision: source.sourceRevision,
+              contextRevision,
+              previous: initial.review,
+              batches: prompts.map(() => null),
+              organized: [],
+            };
             const large = prompts.length > 1;
             const modelSelection =
               (large ? config.revdocLargeModelSelection : null) ??
@@ -1008,7 +1064,8 @@ const make = Effect.gen(function* () {
               );
             }
             const generate = instance.textGeneration.generateRevdoc;
-            let completed = 0;
+            let completed = checkpoint.batches.filter((part) => part !== null).length;
+            let reviewRevision = initial.revision;
             let stage: "reviewing" | "combining" = "reviewing";
             let total = prompts.length;
             // In-flight model calls, keyed by batch number within the current stage.
@@ -1023,6 +1080,7 @@ const make = Effect.gen(function* () {
                 running: true,
                 phase: "generating",
                 generationStage: stage,
+                reviewRevision,
                 completed,
                 total,
                 activity: [...active.values()]
@@ -1086,85 +1144,118 @@ const make = Effect.gen(function* () {
               yield* validate(part);
               return part;
             }, Effect.scoped);
+            const assembleBatches = () =>
+              checkpoint.batches.reduce<RevdocReview | null>(
+                (current, part) =>
+                  part
+                    ? large
+                      ? mergeRevdocBatch(current, part, checkpoint.previous)
+                      : part
+                    : current,
+                null,
+              );
+            const assemble = () => {
+              const definitions = assembleBatches();
+              if (!definitions) return null;
+              const combined = checkpoint.organized.reduce(
+                (current, part) =>
+                  part ? mergeRevdocConsolidation(current, part, definitions) : current,
+                definitions,
+              );
+              return large
+                ? {
+                    ...combined,
+                    title: checkpoint.previous?.title ?? `${thread.title} review`,
+                    summary: `Review changes to ${combined.sections.map((section) => section.area).join(", ")}.`,
+                    context: source.overview,
+                  }
+                : combined;
+            };
+            const publishPartial = Effect.gen(function* () {
+              const generated = assemble();
+              if (!generated) return;
+              const review = {
+                ...reconcileRevdoc(initial.review, generated),
+                sourceRevision: source.sourceRevision,
+                generation: { stage, completed, total },
+              };
+              if (!isReview(review))
+                return yield* fail(
+                  "The combined review exceeds the document format limits. The saved review was preserved.",
+                );
+              const result = yield* write(cwd, review, reviewRevision);
+              reviewRevision = result.revision;
+            });
+            const savePart = (part: RevdocGenerationResult, index: number) =>
+              writes.withPermit(
+                Effect.gen(function* () {
+                  const field = stage === "reviewing" ? "batches" : "organized";
+                  checkpoint = {
+                    ...checkpoint,
+                    [field]: checkpoint[field].map((saved, i) => (i === index ? part : saved)),
+                  };
+                  // Save model output first. If publishing is interrupted or conflicts, retry can reuse it.
+                  yield* writeCheckpoint(cwd, checkpoint);
+                  completed++;
+                  if (large) yield* publishPartial;
+                  yield* generationProgress;
+                }).pipe(Effect.uninterruptible),
+              );
             yield* generationProgress;
-            const fragments = yield* Effect.forEach(
+            yield* Effect.forEach(
               prompts,
               (prompt, index) =>
-                Effect.gen(function* () {
-                  const part = yield* generatePart(prompt, index + 1);
-                  completed++;
-                  yield* generationProgress;
-                  return part;
-                }),
+                Effect.uninterruptibleMask((restore) =>
+                  Effect.gen(function* () {
+                    if (checkpoint.batches[index]) return;
+                    const part = yield* restore(generatePart(prompt, index + 1));
+                    yield* savePart(part, index);
+                  }),
+                ),
               { concurrency: 2 },
             );
-            let generated: RevdocReview = fragments[0]!;
             if (large) {
-              generated = fragments.reduce<RevdocReview | null>(
-                (current, part) => mergeRevdocBatch(current, part, initial.review),
-                null,
-              )!;
+              const generated = assembleBatches()!;
               if (!isReview(generated))
                 return yield* fail(
                   "The combined review exceeds the document format limits. The saved review was preserved.",
                 );
               yield* validate(generated);
               const groups = revdocConsolidationGroups(generated);
-              completed = 0;
+              if (checkpoint.organized.length !== groups.length) {
+                checkpoint = { ...checkpoint, organized: groups.map(() => null) };
+              }
+              completed = checkpoint.organized.filter((part) => part !== null).length;
               stage = "combining";
               total = groups.length;
+              yield* writes.withPermit(publishPartial);
               yield* generationProgress;
-              const organized = yield* Effect.forEach(
+              yield* Effect.forEach(
                 groups,
                 (group, index) =>
-                  Effect.gen(function* () {
-                    const part = yield* generatePart(
-                      revdocConsolidationPrompt(group, source.overview),
-                      index + 1,
-                    );
-                    completed++;
-                    yield* generationProgress;
-                    return part;
-                  }),
+                  Effect.uninterruptibleMask((restore) =>
+                    Effect.gen(function* () {
+                      if (checkpoint.organized[index]) return;
+                      const part = yield* restore(
+                        generatePart(revdocConsolidationPrompt(group, source.overview), index + 1),
+                      );
+                      yield* savePart(part, index);
+                    }),
+                  ),
                 { concurrency: 2 },
               );
-              // Consolidation may reorganise checks, but cannot delete or rewrite their evidence.
-              const checks = new Map(
-                generated.sections.flatMap((s) =>
-                  s.items.flatMap((i) => i.tests.map((t) => [t.id, t] as const)),
-                ),
-              );
-              for (const part of organized) {
-                const retained: RevdocGenerationResult = {
-                  ...part,
-                  sections: part.sections.map((s) => ({
-                    ...s,
-                    items: s.items.map((i) => ({
-                      ...i,
-                      tests: i.tests.map((t) => ({
-                        ...t,
-                        ...checks.get(t.id),
-                        expected: checks.get(t.id)?.expected ?? t.expected,
-                      })),
-                    })),
-                  })),
-                };
-                generated = mergeRevdocBatch(generated, retained, generated);
-              }
-              generated = {
-                ...generated,
-                title: initial.review?.title ?? `${thread.title} review`,
-                summary: `Review changes to ${generated.sections.map((section) => section.area).join(", ")}.`,
-                context: source.overview,
-              };
             }
             const currentSource = yield* context(cwd).pipe(Effect.scoped);
             if (currentSource.sourceRevision !== source.sourceRevision)
               return yield* fail(
                 "The worktree changed during generation. Run Revdoc again for the current changes; the saved review was preserved.",
               );
+            const { generation: _generation, ...reconciled } = reconcileRevdoc(
+              initial.review,
+              assemble()!,
+            );
             const review = {
-              ...reconcileRevdoc(initial.review, generated),
+              ...reconciled,
               sourceRevision: source.sourceRevision,
               generatedAt: DateTime.formatIso(yield* DateTime.now),
             };
@@ -1172,7 +1263,13 @@ const make = Effect.gen(function* () {
               return yield* fail(
                 "The model returned an invalid review. Your existing review was preserved.",
               );
-            yield* writes.withPermit(write(cwd, review, initial.revision));
+            yield* writes.withPermit(
+              Effect.gen(function* () {
+                yield* write(cwd, review, reviewRevision);
+                const file = yield* checkedPath(cwd, "generation.json");
+                yield* fs.remove(file, { force: true });
+              }).pipe(Effect.uninterruptible),
+            );
             if ((input.action ?? config.revdocDefaultAction) === "generate-and-test") {
               yield* testWorktree({ ...input, selection: "remaining" });
             }
@@ -1258,7 +1355,7 @@ const make = Effect.gen(function* () {
         if (!found) return yield* fail("That review item no longer exists. Refresh the review.");
         const result = yield* write(cwd, review, input.expectedRevision);
         const state = (yield* SubscriptionRef.get(changes)).get(cwd) ?? idle;
-        yield* notify(cwd, state);
+        yield* notify(cwd, { ...state, reviewRevision: result.revision });
         return result;
       }),
     );

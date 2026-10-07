@@ -66,12 +66,12 @@ export function createRevdocEnvironmentAtoms<R, E>(
       tag: WS_METHODS.revdocGet,
       staleTimeMs: 0,
       idleTtlMs: 0,
-      // Generation only saves once. Batch progress must not refetch the entire review.
+      // Refetch saved batches, but not the entire review on each thinking/output update.
       refreshTrigger: (target) =>
         Atom.map(changes(target), (result) =>
           AsyncResult.isSuccess(result)
             ? result.value.running && result.value.phase === "generating"
-              ? "generating"
+              ? (result.value.reviewRevision ?? "generating")
               : result.value.version
             : result,
         ),
