@@ -519,6 +519,27 @@ describe("worktree Revdoc service", () => {
       expect(env.calls).toHaveLength(0);
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );
+  it.effect("accepts and republishes a review with more than 1,000 tests", () =>
+    Effect.gen(function* () {
+      const item = generated.sections[0]!.items[0]!;
+      const tests = Array.from({ length: 1_001 }, (_, index) => ({
+        id: `check-${index}`,
+        title: `Check ${index}`,
+        expected: "It passes",
+      }));
+      const env = yield* setup({
+        generate: () =>
+          Effect.succeed({
+            ...generated,
+            sections: [{ ...generated.sections[0]!, items: [{ ...item, tests }] }],
+          }),
+      });
+      yield* env.service.start({ threadId });
+      expect((yield* env.finished()).error).toBeNull();
+      const result = yield* env.service.get({ threadId });
+      expect(result.review?.sections[0]?.items[0]?.tests).toHaveLength(1_001);
+    }).pipe(Effect.scoped, Effect.provide(platform)),
+  );
   it.effect("rejects invalid review files without replacing them", () =>
     Effect.gen(function* () {
       const env = yield* setup();
