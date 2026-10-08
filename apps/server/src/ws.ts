@@ -14,7 +14,6 @@ import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
-import * as Base64 from "effect/encoding/Base64";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -30,7 +29,6 @@ import { subscribeChatGptHandoff } from "./provider/CodexChatGptHandoff.ts";
 import { subscribeCodexAuthCallback } from "./provider/CodexAuthCallback.ts";
 import {
   DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL,
-  AcpRegistryOperationError,
   CommandId,
   authScopeResponse,
   AuthAccessStreamError,
@@ -51,13 +49,6 @@ import {
   type OrchestrationV2Command,
   type GitActionProgressEvent,
   type GitManagerServiceError,
-  type MessageId,
-  type AcpRegistryImportSessionInput,
-  type AcpRegistryDeleteSessionInput,
-  type AcpRegistryDisableProviderInput,
-  type AcpRegistryListProvidersInput,
-  type AcpRegistryListSessionsInput,
-  type AcpRegistrySetProviderInput,
   OrchestrationGetFullThreadDiffError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
@@ -93,13 +84,8 @@ import {
   FilesystemBrowseError,
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
-  ChatAttachmentId,
-  PersistChatAttachmentsError,
   RpcClientId,
   EnvironmentAuthorizationError,
-  type ProjectId,
-  type ProviderDriverKind,
-  type ProviderInstanceId,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -118,6 +104,7 @@ import {
 } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 
+import * as ChatAttachments from "./assets/ChatAttachments.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
@@ -127,7 +114,6 @@ import * as ThreadManagementService from "./orchestration-v2/ThreadManagementSer
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
-import * as IdAllocator from "./orchestration-v2/IdAllocator.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import {
@@ -172,6 +158,7 @@ import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
 import * as AcpRegistrySupport from "./provider/acp/AcpRegistrySupport.ts";
 import * as AcpRegistryRuntimeCoordinator from "./provider/acp/AcpRegistryRuntimeCoordinator.ts";
+import * as AcpRegistryManagement from "./provider/acp/AcpRegistryManagement.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as ProviderMaintenance from "./provider/providerMaintenance.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
@@ -189,8 +176,6 @@ import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
-import { attachmentRelativePath, createDeterministicAttachmentId } from "./attachmentStore.ts";
-import { parseBase64DataUrl } from "./imageMime.ts";
 import { deletePendingAttachment, issueAttachmentUploadUrl } from "./assets/AttachmentUpload.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
@@ -365,73 +350,6 @@ export const withLateEditorConfig = <E, R>(
 function unexpectedCompatibilityError(error: never): never {
   throw new Error(`Unhandled compatibility error: ${String(error)}`);
 }
-
-const persistChatAttachments = Effect.fn("ws.assets.persistChatAttachments")(function* (input: {
-  readonly threadId: ThreadId;
-  readonly messageId: MessageId;
-  readonly attachments: ReadonlyArray<{
-    readonly type: "image";
-    readonly name: string;
-    readonly mimeType: string;
-    readonly sizeBytes: number;
-    readonly dataUrl: string;
-  }>;
-}) {
-  const config = yield* ServerConfig.ServerConfig;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  return yield* Effect.forEach(
-    input.attachments.map((attachment, index) => ({ attachment, index })),
-    Effect.fn("ws.assets.persistChatAttachment")(function* ({ attachment, index }) {
-      const parsed = parseBase64DataUrl(attachment.dataUrl);
-      if (parsed === null || parsed.mimeType !== attachment.mimeType.toLowerCase()) {
-        return yield* new PersistChatAttachmentsError({
-          message: `Attachment ${attachment.name} has an invalid image payload.`,
-        });
-      }
-      const bytes = yield* Effect.fromResult(Base64.decode(parsed.base64)).pipe(
-        Effect.mapError(
-          (cause) =>
-            new PersistChatAttachmentsError({
-              message: `Attachment ${attachment.name} is not valid base64.`,
-              cause,
-            }),
-        ),
-      );
-      if (bytes.byteLength !== attachment.sizeBytes) {
-        return yield* new PersistChatAttachmentsError({
-          message: `Attachment ${attachment.name} size does not match its payload.`,
-        });
-      }
-      const rawId = createDeterministicAttachmentId(input.threadId, `${input.messageId}:${index}`);
-      if (rawId === null) {
-        return yield* new PersistChatAttachmentsError({
-          message: "Could not allocate an attachment identifier.",
-        });
-      }
-      const persisted = {
-        type: "image" as const,
-        id: ChatAttachmentId.make(rawId),
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        sizeBytes: attachment.sizeBytes,
-      };
-      yield* fileSystem
-        .writeFile(path.join(config.attachmentsDir, attachmentRelativePath(persisted)!), bytes)
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new PersistChatAttachmentsError({
-                message: `Could not persist attachment ${attachment.name}.`,
-                cause,
-              }),
-          ),
-        );
-      return persisted;
-    }),
-    { concurrency: 2 },
-  );
-});
 
 function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesError): {
   readonly failure: ProjectEntriesFailure;
@@ -1196,6 +1114,7 @@ const layerWsRpc = (
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const ideaStore = yield* IdeaNotebookStore;
+      const chatAttachments = yield* ChatAttachments.ChatAttachments;
       const documents = yield* DocumentService;
       const revdoc = yield* RevdocService;
       const issues = yield* IssueService;
@@ -1232,7 +1151,6 @@ const layerWsRpc = (
         }
       };
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
-      const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const pullRequests = yield* PullRequestService.PullRequestService;
@@ -1283,6 +1201,7 @@ const layerWsRpc = (
       const providerVersionCache = yield* ProviderMaintenance.ProviderVersionCache;
       const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
       const acpRegistryCatalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
+      const acpRegistryManagement = yield* AcpRegistryManagement.AcpRegistryManagement;
       const acpRegistryRuntimeCoordinator =
         yield* AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator;
       const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
@@ -1352,327 +1271,6 @@ const layerWsRpc = (
           ? effect
           : Effect.fail(rpcAuthorizationError(requiredScope));
 
-      const acpRegistryProject = Effect.fn("ws.acpRegistry.project")(function* (
-        projectId: ProjectId,
-      ) {
-        const project = yield* projectService.getById(projectId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new AcpRegistryOperationError({
-                reason: "project_not_found",
-                message: `Project ${projectId} is unavailable.`,
-                cause,
-              }),
-          ),
-        );
-        return yield* Option.match(project, {
-          onNone: () =>
-            Effect.fail(
-              new AcpRegistryOperationError({
-                reason: "project_not_found",
-                message: `Project ${projectId} was not found.`,
-              }),
-            ),
-          onSome: Effect.succeed,
-        });
-      });
-
-      const acpSessionManager = Effect.fn("ws.acpRegistry.sessionManager")(function* (
-        instanceId: ProviderInstanceId,
-      ) {
-        const instance = yield* providerInstances.getInstance(instanceId);
-        if (instance === undefined) {
-          return yield* new AcpRegistryOperationError({
-            reason: "instance_not_found",
-            message: `Provider instance ${instanceId} was not found.`,
-          });
-        }
-        if (instance.acpSessionManagement === undefined) {
-          return yield* new AcpRegistryOperationError({
-            reason: "session_list_unsupported",
-            message: `Provider instance ${instanceId} does not expose ACP session management.`,
-          });
-        }
-        return { instance, manager: instance.acpSessionManagement };
-      });
-
-      const importedAcpThreadId = (input: {
-        readonly driver: ProviderDriverKind;
-        readonly instanceId: ProviderInstanceId;
-        readonly sessionId: string;
-      }) =>
-        IdAllocator.deriveThreadFromProviderThread({
-          driver: input.driver,
-          providerInstanceId: input.instanceId,
-          nativeThreadId: input.sessionId,
-        });
-
-      const listAcpRegistrySessions = Effect.fn("ws.acpRegistry.listSessions")(function* (
-        input: AcpRegistryListSessionsInput,
-      ) {
-        const project = yield* acpRegistryProject(input.projectId);
-        const { instance, manager } = yield* acpSessionManager(input.instanceId);
-        const listed = yield* manager.listSessions({
-          cwd: project.workspaceRoot,
-          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
-        });
-        const sessions = yield* Effect.forEach(
-          listed.sessions,
-          (session) => {
-            const threadId = importedAcpThreadId({
-              driver: instance.driverKind,
-              instanceId: input.instanceId,
-              sessionId: session.sessionId,
-            });
-            return threadManagement.getThreadShell(threadId).pipe(
-              Effect.map((thread) => ({
-                ...session,
-                importedThreadId: thread === null ? null : threadId,
-              })),
-              Effect.mapError(
-                (cause) =>
-                  new AcpRegistryOperationError({
-                    reason: "session_import_failed",
-                    message: "Could not inspect existing imported ACP sessions.",
-                    cause,
-                  }),
-              ),
-            );
-          },
-          { concurrency: 16 },
-        );
-        return { ...listed, sessions };
-      });
-
-      const importAcpRegistrySession = Effect.fn("ws.acpRegistry.importSession")(function* (
-        input: AcpRegistryImportSessionInput,
-      ) {
-        return yield* acpRegistryRuntimeCoordinator.withSessionMutation(
-          Effect.gen(function* () {
-            yield* acpRegistryProject(input.projectId);
-            const { instance } = yield* acpSessionManager(input.instanceId);
-            const providerSnapshot = yield* instance.snapshot.getSnapshot;
-            if (
-              providerSnapshot.nativeSessions?.canLoad !== true &&
-              providerSnapshot.nativeSessions?.canResume !== true
-            ) {
-              return yield* new AcpRegistryOperationError({
-                reason: "session_resume_unsupported",
-                message: "The ACP agent cannot load or resume native sessions.",
-              });
-            }
-            const threadId = importedAcpThreadId({
-              driver: instance.driverKind,
-              instanceId: input.instanceId,
-              sessionId: input.sessionId,
-            });
-            const existing = yield* threadManagement.getThreadShell(threadId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new AcpRegistryOperationError({
-                    reason: "session_import_failed",
-                    message: "Could not inspect the imported ACP session mapping.",
-                    cause,
-                  }),
-              ),
-            );
-            if (existing !== null) return { threadId, imported: false } as const;
-
-            const provider = (yield* providerRegistry.getProviders).find(
-              (candidate) => candidate.instanceId === input.instanceId,
-            );
-            const model =
-              provider?.models.find((candidate) => candidate.isDefault)?.slug ??
-              provider?.models[0]?.slug ??
-              "default";
-            const commandId = CommandId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie));
-            const launched = yield* Effect.result(
-              startup.enqueueCommand(
-                threadLaunch.launch({
-                  commandId,
-                  threadId,
-                  projectId: input.projectId,
-                  title: input.title ?? "Imported ACP session",
-                  modelSelection: { instanceId: input.instanceId, model },
-                  runtimeMode: "approval-required",
-                  interactionMode: "default",
-                  workspaceStrategy: { type: "root" },
-                  importedNativeThread: {
-                    ref: {
-                      driver: instance.driverKind,
-                      nativeId: input.sessionId,
-                      strength: "strong",
-                    },
-                    metadata: {
-                      itemIdentityVersion: 2,
-                      ...(input.title === undefined ? {} : { title: input.title }),
-                      ...(input.updatedAt === undefined ? {} : { updatedAt: input.updatedAt }),
-                    },
-                  },
-                  createdBy: "user",
-                  creationSource: "web",
-                }),
-              ),
-            );
-            if (Result.isFailure(launched)) {
-              const racedImport = yield* threadManagement.getThreadShell(threadId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new AcpRegistryOperationError({
-                      reason: "session_import_failed",
-                      message: "Could not inspect the imported ACP session after launch failed.",
-                      cause,
-                    }),
-                ),
-              );
-              if (racedImport !== null) return { threadId, imported: false } as const;
-              return yield* new AcpRegistryOperationError({
-                reason: "session_import_failed",
-                message: "Could not create a T3 thread for the ACP session.",
-                cause: launched.failure,
-              });
-            }
-            return { threadId, imported: true } as const;
-          }),
-        );
-      });
-
-      const deleteAcpRegistrySession = Effect.fn("ws.acpRegistry.deleteSession")(function* (
-        input: AcpRegistryDeleteSessionInput,
-      ) {
-        return yield* acpRegistryRuntimeCoordinator.withSessionMutation(
-          Effect.gen(function* () {
-            const project = yield* acpRegistryProject(input.projectId);
-            const { instance, manager } = yield* acpSessionManager(input.instanceId);
-            const snapshot = yield* instance.snapshot.getSnapshot;
-            if (snapshot.nativeSessions?.canDelete !== true) {
-              return yield* new AcpRegistryOperationError({
-                reason: "session_delete_unsupported",
-                message: "The ACP agent does not advertise session deletion.",
-              });
-            }
-            const threadId = importedAcpThreadId({
-              driver: instance.driverKind,
-              instanceId: input.instanceId,
-              sessionId: input.sessionId,
-            });
-            const importedThread = yield* threadManagement.getThreadShell(threadId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new AcpRegistryOperationError({
-                    reason: "session_delete_failed",
-                    message: "Could not inspect the imported ACP session mapping.",
-                    cause,
-                  }),
-              ),
-            );
-            if (importedThread !== null) {
-              return yield* new AcpRegistryOperationError({
-                reason: "session_delete_failed",
-                message: "Delete the imported T3 thread before deleting its native ACP session.",
-              });
-            }
-            yield* manager.deleteSession({
-              cwd: project.workspaceRoot,
-              sessionId: input.sessionId,
-            });
-            return { deleted: true } as const;
-          }),
-        );
-      });
-
-      const listAcpRegistryProviders = Effect.fn("ws.acpRegistry.listProviders")(function* (
-        input: AcpRegistryListProvidersInput,
-      ) {
-        const project = yield* acpRegistryProject(input.projectId);
-        const { instance, manager } = yield* acpSessionManager(input.instanceId);
-        const snapshot = yield* instance.snapshot.getSnapshot;
-        if (snapshot.configurableProviders !== true) {
-          return yield* new AcpRegistryOperationError({
-            reason: "providers_unsupported",
-            message: "The ACP agent does not advertise provider configuration.",
-          });
-        }
-        return yield* manager.listProviders(project.workspaceRoot);
-      });
-
-      const setAcpRegistryProvider = Effect.fn("ws.acpRegistry.setProvider")(function* (
-        input: AcpRegistrySetProviderInput,
-      ) {
-        const project = yield* acpRegistryProject(input.projectId);
-        const { manager } = yield* acpSessionManager(input.instanceId);
-        if (input.headers !== undefined && Object.keys(input.headers).length > 32) {
-          return yield* new AcpRegistryOperationError({
-            reason: "provider_configuration_failed",
-            message: "ACP provider configuration accepts at most 32 headers.",
-          });
-        }
-        const listed = yield* manager.listProviders(project.workspaceRoot);
-        const provider = listed.providers.find(
-          (candidate) => candidate.providerId === input.providerId,
-        );
-        if (provider === undefined || !provider.supported.includes(input.apiType)) {
-          return yield* new AcpRegistryOperationError({
-            reason: "provider_configuration_failed",
-            message: `Provider ${input.providerId} does not support ${input.apiType}.`,
-          });
-        }
-        yield* providerSessionManager.closeInstance(input.instanceId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new AcpRegistryOperationError({
-                reason: "provider_configuration_failed",
-                message: "Could not stop live sessions before updating the ACP provider.",
-                cause,
-              }),
-          ),
-        );
-        yield* manager.setProvider({
-          cwd: project.workspaceRoot,
-          providerId: input.providerId,
-          apiType: input.apiType,
-          baseUrl: input.baseUrl,
-          ...(input.headers === undefined ? {} : { headers: input.headers }),
-        });
-        yield* providerRegistry.refreshInstance(input.instanceId);
-        return { configured: true } as const;
-      });
-
-      const disableAcpRegistryProvider = Effect.fn("ws.acpRegistry.disableProvider")(function* (
-        input: AcpRegistryDisableProviderInput,
-      ) {
-        const project = yield* acpRegistryProject(input.projectId);
-        const { manager } = yield* acpSessionManager(input.instanceId);
-        const listed = yield* manager.listProviders(project.workspaceRoot);
-        const provider = listed.providers.find(
-          (candidate) => candidate.providerId === input.providerId,
-        );
-        if (provider === undefined || provider.required) {
-          return yield* new AcpRegistryOperationError({
-            reason: "provider_configuration_failed",
-            message:
-              provider === undefined
-                ? `Provider ${input.providerId} was not advertised by the ACP agent.`
-                : `Provider ${input.providerId} is required and cannot be disabled.`,
-          });
-        }
-        yield* providerSessionManager.closeInstance(input.instanceId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new AcpRegistryOperationError({
-                reason: "provider_configuration_failed",
-                message: "Could not stop live sessions before disabling the ACP provider.",
-                cause,
-              }),
-          ),
-        );
-        yield* manager.disableProvider({
-          cwd: project.workspaceRoot,
-          providerId: input.providerId,
-        });
-        yield* providerRegistry.refreshInstance(input.instanceId);
-        return { disabled: true } as const;
-      });
       const loadAuthAccessSnapshot = () =>
         Effect.all({
           pairingLinks: serverAuth.listPairingLinks(),
@@ -2109,72 +1707,35 @@ const layerWsRpc = (
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(listAcpRegistrySessions(input))),
+          }).pipe(Effect.andThen(acpRegistryManagement.listSessions(input))),
         [WS_METHODS.serverImportAcpRegistrySession]: (input) =>
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(importAcpRegistrySession(input))),
+          }).pipe(Effect.andThen(acpRegistryManagement.importSession(input))),
         [WS_METHODS.serverDeleteAcpRegistrySession]: (input) =>
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(deleteAcpRegistrySession(input))),
+          }).pipe(Effect.andThen(acpRegistryManagement.deleteSession(input))),
         [WS_METHODS.serverListAcpRegistryProviders]: (input) =>
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(listAcpRegistryProviders(input))),
+          }).pipe(Effect.andThen(acpRegistryManagement.listProviders(input))),
         [WS_METHODS.serverSetAcpRegistryProvider]: (input) =>
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(setAcpRegistryProvider(input))),
+          }).pipe(Effect.andThen(acpRegistryManagement.setProvider(input))),
         [WS_METHODS.serverDisableAcpRegistryProvider]: (input) =>
           Effect.annotateCurrentSpan({
             "provider.instance_id": input.instanceId,
             "project.id": input.projectId,
-          }).pipe(Effect.andThen(disableAcpRegistryProvider(input))),
+          }).pipe(Effect.andThen(acpRegistryManagement.disableProvider(input))),
         [WS_METHODS.serverLogoutAcpRegistry]: (input) =>
           Effect.annotateCurrentSpan({ "provider.instance_id": input.instanceId }).pipe(
-            Effect.andThen(
-              Effect.gen(function* () {
-                const { instance, manager } = yield* acpSessionManager(input.instanceId);
-                const snapshot = yield* instance.snapshot.getSnapshot;
-                if (snapshot.auth.canLogout !== true) {
-                  return yield* new AcpRegistryOperationError({
-                    reason: "logout_unsupported",
-                    message: "The ACP agent does not advertise logout.",
-                  });
-                }
-                if (instance.auth) {
-                  yield* providerAuth.logout(input).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new AcpRegistryOperationError({
-                          reason: "logout_failed",
-                          message: "Could not sign out of the ACP agent.",
-                          cause,
-                        }),
-                    ),
-                  );
-                } else {
-                  yield* providerSessionManager.closeInstance(input.instanceId).pipe(
-                    Effect.mapError(
-                      (cause) =>
-                        new AcpRegistryOperationError({
-                          reason: "logout_failed",
-                          message: "Could not stop live sessions before ACP logout.",
-                          cause,
-                        }),
-                    ),
-                  );
-                  yield* manager.logout(config.cwd);
-                }
-                yield* providerRegistry.refreshInstance(input.instanceId);
-                return { loggedOut: true } as const;
-              }),
-            ),
+            Effect.andThen(acpRegistryManagement.logout(input)),
           ),
         [WS_METHODS.serverRefreshProviders]: (input) =>
           Effect.gen(function* () {
@@ -2863,8 +2424,7 @@ const layerWsRpc = (
               workspaceRoot: thread.thread.worktreePath ?? project.value.workspaceRoot,
             });
           }),
-        [WS_METHODS.assetsPersistChatAttachments]: (input) =>
-          persistChatAttachments(input).pipe(Effect.map((attachments) => ({ attachments }))),
+        [WS_METHODS.assetsPersistChatAttachments]: (input) => chatAttachments.persist(input),
         [WS_METHODS.subscribeVcsStatus]: (input) =>
           vcsStatusBroadcaster.streamStatus(input, {
             automaticRemoteRefreshInterval: automaticGitFetchInterval,
@@ -3222,6 +2782,8 @@ export const layer = Layer.unwrap(
     const ideaStore = yield* IdeaNotebookStore;
     const satelliteEngine = yield* OrchestrationEngineService;
     const satelliteQuery = yield* ProjectionSnapshotQuery;
+    const chatAttachments = yield* ChatAttachments.ChatAttachments;
+    const acpRegistryManagement = yield* AcpRegistryManagement.AcpRegistryManagement;
 
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
@@ -3298,6 +2860,8 @@ export const layer = Layer.unwrap(
                   Layer.succeed(IdeaNotebookStore, ideaStore),
                   Layer.succeed(OrchestrationEngineService, satelliteEngine),
                   Layer.succeed(ProjectionSnapshotQuery, satelliteQuery),
+                  Layer.succeed(ChatAttachments.ChatAttachments, chatAttachments),
+                  Layer.succeed(AcpRegistryManagement.AcpRegistryManagement, acpRegistryManagement),
                 ),
               ),
               Layer.provide(

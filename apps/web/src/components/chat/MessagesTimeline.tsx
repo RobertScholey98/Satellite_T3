@@ -74,6 +74,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -387,6 +388,20 @@ function TimelineListFooter({
     </div>
   );
 }
+
+function TimelineRowFrame({ children, className, ...props }: ComponentProps<"div">) {
+  return (
+    <div className="px-0">
+      <div
+        {...props}
+        className={cn("mx-auto w-full min-w-0 max-w-(--chat-content-max-width)", className)}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
 const TIMELINE_MAINTAIN_SCROLL_AT_END = {
   animated: false,
@@ -1335,17 +1350,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           TIMELINE_LIST_HEADER
         )
       ) : (
-        <div className="messages-timeline-row-frame">
-          <div className="chat-content-lane pt-1 sm:pt-2">
-            <TimelineSystemDivider
-              label="Subagent of"
-              detail={parentThreadLink.title}
-              icon={BotIcon}
-              actionLabel="Open parent thread"
-              onAction={() => onOpenThread(parentThreadLink.threadId)}
-            />
-          </div>
-        </div>
+        <TimelineRowFrame className="pt-1 sm:pt-2">
+          <TimelineSystemDivider
+            label="Subagent of"
+            detail={parentThreadLink.title}
+            icon={BotIcon}
+            actionLabel="Open parent thread"
+            onAction={() => onOpenThread(parentThreadLink.threadId)}
+          />
+        </TimelineRowFrame>
       );
     return (
       <>
@@ -1370,11 +1383,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // from TimelineRowCtx, which propagates through LegendList's memo.
   const renderItem = useCallback(
     ({ item }: { item: MessagesTimelineRow }) => (
-      <div className="messages-timeline-row-frame">
-        <div className="chat-content-lane overflow-x-clip" data-timeline-root="true">
-          <TimelineRowContent row={item} />
-        </div>
-      </div>
+      <TimelineRowFrame className="overflow-x-clip" data-timeline-root="true">
+        <TimelineRowContent row={item} />
+      </TimelineRowFrame>
     ),
     [],
   );
@@ -1484,26 +1495,24 @@ function TimelineHistoryControl(props: MessagesTimelineHistoryControls) {
     return null;
   }
   return (
-    <div className="messages-timeline-row-frame">
-      <div className="chat-content-lane flex flex-col gap-1.5 pb-2">
-        {props.hasMoreHistory ? (
-          <button
-            type="button"
-            disabled={props.loading}
-            aria-label="Load earlier turns"
-            onClick={props.onLoadEarlier}
-            className="w-full py-1.5 text-xs text-muted-foreground/60 hover:text-foreground disabled:cursor-default"
-          >
-            {props.loading ? "Loading earlier turns…" : "Load earlier turns"}
-          </button>
-        ) : null}
-        {props.error !== null ? (
-          <p role="status" className="text-center text-muted-foreground text-xs">
-            {props.error}
-          </p>
-        ) : null}
-      </div>
-    </div>
+    <TimelineRowFrame className="flex flex-col gap-1.5 pb-2">
+      {props.hasMoreHistory ? (
+        <button
+          type="button"
+          disabled={props.loading}
+          aria-label="Load earlier turns"
+          onClick={props.onLoadEarlier}
+          className="w-full py-1.5 text-xs text-muted-foreground/60 hover:text-foreground disabled:cursor-default"
+        >
+          {props.loading ? "Loading earlier turns…" : "Load earlier turns"}
+        </button>
+      ) : null}
+      {props.error !== null ? (
+        <p role="status" className="text-center text-muted-foreground text-xs">
+          {props.error}
+        </p>
+      ) : null}
+    </TimelineRowFrame>
   );
 }
 

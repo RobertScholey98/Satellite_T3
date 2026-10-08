@@ -63,6 +63,8 @@ import * as ProviderEventLoggers from "./provider/ProviderEventLoggers.ts";
 import * as OpenCodeRuntime from "./provider/opencodeRuntime.ts";
 import * as OpenCodeServerLedger from "./provider/OpenCodeServerLedger.ts";
 import * as AcpRegistryCatalog from "./provider/AcpRegistryCatalog.ts";
+import * as AcpRegistryManagement from "./provider/acp/AcpRegistryManagement.ts";
+import * as ChatAttachments from "./assets/ChatAttachments.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
 import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
@@ -744,6 +746,8 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
   ),
 ).pipe(
+  Layer.provide(ChatAttachments.layer),
+  Layer.provide(AcpRegistryManagement.layer),
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(layerPullRequestService),

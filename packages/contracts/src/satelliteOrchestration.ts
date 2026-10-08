@@ -143,6 +143,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   titleRegeneration: Schema.optional(
     Schema.NullOr(Schema.Struct({ requestId: CommandId, startedAt: IsoDateTime })),
   ),
+  titleState: OrchestrationV2ThreadShellJson.fields.titleState,
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 export const OrchestrationThread = Schema.Struct({

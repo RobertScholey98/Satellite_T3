@@ -2938,6 +2938,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         case "thread.mark-unread":
           return { ...thread, lastVisitedAt: markUnreadVisitedAt };
         case "thread.metadata.update": {
+          const applyTitle =
+            command.title !== undefined &&
+            (command.titleGeneration === undefined ||
+              (thread.titleState?.source !== "manual" &&
+                thread.titleRegeneration == null &&
+                thread.title === command.titleGeneration.expectedTitle &&
+                (thread.titleState?.version ?? null) === command.titleGeneration.expectedVersion));
           const previousRecovery =
             thread.limitRecovery?.runId === command.limitRecovery?.runId &&
             thread.limitRecovery?.resetAt === command.limitRecovery?.resetAt
@@ -2961,7 +2968,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ? {}
               : { commitRecommendation: command.commitRecommendation }),
             ...(command.issueAttempt === undefined ? {} : { issueAttempt: command.issueAttempt }),
-            ...(command.title === undefined ? {} : { title: command.title }),
+            ...(applyTitle && command.title !== undefined
+              ? {
+                  title: command.title,
+                  titleState: {
+                    source:
+                      command.titleGeneration === undefined
+                        ? ("manual" as const)
+                        : ("generated" as const),
+                    version: command.commandId,
+                    needsRefinement: command.titleGeneration?.needsRefinement ?? false,
+                  },
+                }
+              : {}),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -3012,7 +3031,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             // or an explicit false (generation failed/abandoned) clears it.
             ...(command.regenerateTitle === true
               ? { titleRegeneration: { requestId: command.commandId, startedAt: now } }
-              : command.regenerateTitle === false || command.title !== undefined
+              : command.regenerateTitle === false || applyTitle
                 ? { titleRegeneration: null }
                 : {}),
             updatedAt: now,
@@ -3204,7 +3223,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return thread.titleRegeneration?.requestId === command.requestId
             ? {
                 ...thread,
-                ...(command.title === undefined ? {} : { title: command.title }),
+                ...(command.title === undefined
+                  ? {}
+                  : {
+                      title: command.title,
+                      titleState: {
+                        source: "generated",
+                        version: command.commandId,
+                        needsRefinement: false,
+                      },
+                    }),
                 titleRegeneration: null,
                 updatedAt: now,
               }

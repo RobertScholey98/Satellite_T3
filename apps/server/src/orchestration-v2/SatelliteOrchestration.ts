@@ -19,6 +19,7 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2StoredEvent,
+  type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   OrchestrationV2TurnItemJson,
   OrchestrationV2ThreadShellJson,
@@ -39,10 +40,17 @@ import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
+import { buildBoundedThreadProjection, THREAD_HISTORY_PAGE_POLICY } from "./threadHistoryPaging.ts";
 
 const encodeShell = Schema.encodeSync(OrchestrationV2ThreadShellJson);
 const encodeActivity = Schema.encodeSync(Schema.fromJsonString(ActivitySchema));
 const isLifecycleError = Schema.is(OrchestrationGetRequestLifecycleError);
+const isProjectionReadError = Schema.is(
+  Schema.Union([
+    ProjectionStore.ProjectionStoreReadError,
+    ProjectionStore.ProjectionStoreThreadNotFoundError,
+  ]),
+);
 const decodeTurnItem = Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2TurnItemJson));
 
 function sessionForRun(threadId: ThreadId, run: OrchestrationV2Run): OrchestrationSession {
@@ -107,7 +115,6 @@ function requestActivities(
 
 /** Satellite's notebooks and review services consume these views, never a V1 engine. */
 export function satelliteEvents(stored: OrchestrationV2StoredEvent): readonly OrchestrationEvent[] {
-  if (stored.event.id.startsWith("migration:v1:")) return [];
   const event = stored.event;
   const base = {
     sequence: stored.sequence,
@@ -356,6 +363,7 @@ const queryLayer = Layer.effect(
         settledOverride: shell.settledOverride,
         latestUserMessageAt: value.latestUserMessageAt,
         hasActionableProposedPlan: shell.hasActionableProposedPlan,
+        titleState: shell.titleState ?? null,
         ...(shell.titleRegeneration == null
           ? {}
           : {
@@ -413,6 +421,48 @@ const queryLayer = Layer.effect(
         .pipe(
           Effect.map((shell) => (shell === null ? Option.none() : Option.some(toShell(shell)))),
         );
+    const toThreadDetail = (
+      shell: OrchestrationThreadShell,
+      projection: OrchestrationV2ThreadProjection,
+      options?: { readonly activityKinds?: readonly string[] },
+    ): OrchestrationThread => {
+      const messages = projection.messages.map((message): OrchestrationMessage => ({
+        id: message.id,
+        role: message.role,
+        text: message.text,
+        attachments: message.attachments,
+        turnId: message.runId === null ? null : TurnId.make(message.runId),
+        streaming: false,
+        createdAt: DateTime.formatIso(message.createdAt),
+        updatedAt: DateTime.formatIso(message.updatedAt),
+      }));
+      const activities = projection.runtimeRequests
+        .flatMap((request) =>
+          requestActivities(
+            request,
+            projection.turnItems.find(
+              (
+                item,
+              ): item is Extract<
+                OrchestrationV2TurnItem,
+                { readonly type: "user_input_request" }
+              > => item.type === "user_input_request" && item.requestId === request.id,
+            ),
+          ),
+        )
+        .filter(
+          (activity) =>
+            options?.activityKinds === undefined || options.activityKinds.includes(activity.kind),
+        );
+      return {
+        ...shell,
+        messages,
+        activities,
+        proposedPlans: projection.plans.flatMap((plan) =>
+          plan.kind === "proposed_plan" ? [{ planMarkdown: plan.markdown }] : [],
+        ),
+      };
+    };
     const getThreadDetailById = (
       threadId: ThreadId,
       options?: { readonly activityKinds?: readonly string[] },
@@ -421,48 +471,47 @@ const queryLayer = Layer.effect(
         const shell = yield* getThreadShellById(threadId);
         if (Option.isNone(shell)) return Option.none();
         const projection = yield* projections.getThreadProjection(threadId);
-        const messages = projection.messages.map((message): OrchestrationMessage => ({
-          id: message.id,
-          role: message.role,
-          text: message.text,
-          attachments: message.attachments,
-          turnId: message.runId === null ? null : TurnId.make(message.runId),
-          streaming: false,
-          createdAt: DateTime.formatIso(message.createdAt),
-          updatedAt: DateTime.formatIso(message.updatedAt),
-        }));
-        const activities = projection.runtimeRequests
-          .flatMap((request) =>
-            requestActivities(
-              request,
-              projection.turnItems.find(
-                (
-                  item,
-                ): item is Extract<
-                  OrchestrationV2TurnItem,
-                  { readonly type: "user_input_request" }
-                > => item.type === "user_input_request" && item.requestId === request.id,
-              ),
-            ),
-          )
-          .filter(
-            (activity) =>
-              options?.activityKinds === undefined || options.activityKinds.includes(activity.kind),
-          );
-        return Option.some({
-          ...shell.value,
-          messages,
-          activities,
-          proposedPlans: projection.plans.flatMap((plan) =>
-            plan.kind === "proposed_plan" ? [{ planMarkdown: plan.markdown }] : [],
-          ),
-        });
+        return Option.some(toThreadDetail(shell.value, projection, options));
       });
     return ProjectionSnapshotQuery.of({
       getThreadShellById,
       getThreadDetailById,
-      getThreadDetailSnapshot: (threadId) =>
-        getThreadDetailById(threadId).pipe(Effect.map(Option.map((thread) => ({ thread })))),
+      getThreadDetailSnapshot: (threadId, options) =>
+        options?.turnLimit === undefined
+          ? getThreadDetailById(threadId).pipe(Effect.map(Option.map((thread) => ({ thread }))))
+          : sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  const shell = yield* getThreadShellById(threadId);
+                  if (Option.isNone(shell)) return Option.none();
+                  const snapshot = yield* projections.getThreadSnapshotWindow(threadId, {
+                    rowLimit: THREAD_HISTORY_PAGE_POLICY.maxItems + 2,
+                    userTurnLimit: options.turnLimit,
+                  });
+                  const bounded = buildBoundedThreadProjection({
+                    ...snapshot,
+                    policy: { ...THREAD_HISTORY_PAGE_POLICY, maxUserTurns: options.turnLimit },
+                  });
+                  const retainedPlanIds = new Set(bounded.projection.plans.map((plan) => plan.id));
+                  return Option.some({
+                    thread: toThreadDetail(shell.value, {
+                      ...bounded.projection,
+                      // Revdoc consumes plan artifacts; client paging moves historical text into items.
+                      plans: snapshot.projection.plans.filter((plan) =>
+                        retainedPlanIds.has(plan.id),
+                      ),
+                    }),
+                    page: { hasMore: bounded.hasMoreHistory },
+                  });
+                }),
+              )
+              .pipe(
+                Effect.mapError((cause) =>
+                  isProjectionReadError(cause)
+                    ? cause
+                    : new ProjectionStore.ProjectionStoreReadError({ threadId, cause }),
+                ),
+              ),
       getProjectShellById: projects.getShell,
       getProjectShells: () => projects.listShells(),
       listThreadsWithPullRequests: () => projections.getThreadsWithPullRequests(),
@@ -554,6 +603,7 @@ const commandLayer = Layer.effect(
       stream: Stream.Stream<OrchestrationV2StoredEvent, EventSink.EventSinkV2Error>,
     ) =>
       stream.pipe(
+        Stream.filter((stored) => !stored.event.id.startsWith("migration:v1:")),
         Stream.flatMap((stored) => Stream.fromIterable(satelliteEvents(stored))),
         Stream.catch(() => Stream.empty),
       );
@@ -595,14 +645,16 @@ const commandLayer = Layer.effect(
             result = yield* orchestrator.dispatch({ ...command, type: "thread.metadata.update" });
             break;
           case "thread.title.generate.complete": {
-            const shell = yield* orchestrator.getThreadShell(command.threadId);
-            if (shell?.title !== command.expectedTitle)
-              return { sequence: yield* eventSink.latestSequence().pipe(Effect.orDie) };
             result = yield* orchestrator.dispatch({
               type: "thread.metadata.update",
               commandId: command.commandId,
               threadId: command.threadId,
               title: command.title,
+              titleGeneration: {
+                expectedTitle: command.expectedTitle,
+                expectedVersion: command.expectedVersion ?? null,
+                needsRefinement: command.needsRefinement ?? false,
+              },
             });
             break;
           }

@@ -1,5 +1,12 @@
 import { assert, it } from "@effect/vitest";
-import { EventId, IdeaNotebook, ProjectId, ThreadId, type ThreadPurpose } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  IdeaNotebook,
+  ProjectId,
+  ThreadId,
+  type ThreadPurpose,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -86,6 +93,50 @@ const layerTest = Layer.mergeAll(
 );
 
 it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
+  it.effect(
+    "repairs missing title provenance without replacing a rename after an earlier import",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+        const threadId = ThreadId.make("thread:legacy-title-backfill");
+        yield* recordSatelliteThread(threadId, "idea");
+        yield* sql`UPDATE projection_threads SET title_state_json = '{"source":"manual","version":"legacy-rename","needsRefinement":false}' WHERE thread_id = ${threadId}`;
+        yield* importer.reconcileShells;
+        yield* importer.ensureTranscript(threadId);
+        const original = yield* projections.getThreadProjection(threadId);
+        assert.equal(original.thread.titleState?.version, "legacy-rename");
+        const { titleState: _titleState, ...oldThread } = original.thread;
+        yield* sink.write({
+          commandId: CommandId.make("v2-manual-rename"),
+          events: [
+            {
+              id: EventId.make("v2-manual-rename-event"),
+              type: "thread.metadata-updated",
+              threadId,
+              occurredAt: DateTime.makeUnsafe("2026-01-04T00:00:00.000Z"),
+              payload: { ...oldThread, title: "My V2 manual title" },
+            },
+          ],
+        });
+        yield* importer.reconcileShells;
+        const repaired = yield* projections.getThreadProjection(threadId);
+        assert.equal(repaired.thread.title, "My V2 manual title");
+        assert.deepStrictEqual(repaired.thread.titleState, {
+          source: "manual",
+          version: "v2-manual-rename",
+          needsRefinement: false,
+        });
+        yield* maintenance.rebuild;
+        assert.deepStrictEqual(
+          (yield* projections.getThreadProjection(threadId)).thread.titleState,
+          repaired.thread.titleState,
+        );
+      }),
+  );
   it.effect("uses the created-thread index for startup migration checks", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -178,7 +229,12 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
           notebookBefore,
         );
         const importedEvents = yield* events.read({ threadId }).pipe(Stream.runCollect);
-        assert.deepStrictEqual(importedEvents.flatMap(satelliteEvents), []);
+        assert.lengthOf(
+          importedEvents
+            .flatMap(satelliteEvents)
+            .filter((event) => event.type === "thread.message-sent"),
+          3,
+        );
         assert.equal(
           (yield* projections.getShellSnapshot()).threads.some((thread) => thread.id === threadId),
           purpose === "work",

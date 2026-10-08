@@ -4,6 +4,7 @@ import {
 } from "@t3tools/shared/threadPullRequests";
 import {
   ChatAttachment,
+  CommandId,
   CommitRecommendation,
   OrchestrationMessageContext,
   DEFAULT_MODEL,
@@ -19,6 +20,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   ThreadPurpose,
+  ThreadTitleState,
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
   TurnItemId,
@@ -42,6 +44,7 @@ interface LegacyThreadRow {
   readonly thread_id: string;
   readonly project_id: string;
   readonly title: string;
+  readonly title_state_json: string | null;
   readonly purpose: string;
   readonly commit_recommendation_json: string | null;
   readonly model_selection_json: string | null;
@@ -126,6 +129,7 @@ export class LegacyV1ThreadImporter extends Context.Service<
 const decodeModelSelection = Schema.decodeUnknownOption(ModelSelection);
 const decodeMessageContext = Schema.decodeUnknownSync(OrchestrationMessageContext);
 const decodePurpose = Schema.decodeUnknownOption(ThreadPurpose);
+const decodeTitleState = Schema.decodeUnknownOption(Schema.fromJsonString(ThreadTitleState));
 const decodeCommitRecommendation = Schema.decodeUnknownOption(CommitRecommendation);
 const decodeAttachments = Schema.decodeUnknownOption(Schema.Array(ChatAttachment));
 const decodePullRequests = Schema.decodeUnknownOption(Schema.Array(ThreadPullRequestLink));
@@ -215,6 +219,10 @@ function importedThread(row: LegacyThreadRow): OrchestrationV2AppThread {
     id: threadId,
     projectId: ProjectId.make(row.project_id),
     title: row.title.trim() === "" ? "Untitled thread" : row.title,
+    titleState:
+      row.title_state_json === null
+        ? null
+        : Option.getOrNull(decodeTitleState(row.title_state_json)),
     purpose: Option.getOrElse(decodePurpose(row.purpose), () => "work"),
     commitRecommendation:
       row.commit_recommendation_json === null
@@ -453,6 +461,7 @@ const make = Effect.gen(function* () {
         thread.thread_id,
         thread.project_id,
         thread.title,
+        thread.title_state_json,
         thread.purpose,
         thread.commit_recommendation_json,
         thread.model_selection_json,
@@ -487,6 +496,7 @@ const make = Effect.gen(function* () {
         WHERE marker.thread_id = thread.thread_id
       ) AND (
          json_type(projection.payload_json, '$.purpose') IS NULL
+         OR json_type(projection.payload_json, '$.titleState') IS NULL
          OR json_type(projection.payload_json, '$.commitRecommendation') IS NULL
          OR json_type(projection.payload_json, '$.pinnedAt') IS NULL
          OR json_type(projection.payload_json, '$.pinOrderKey') IS NULL
@@ -506,10 +516,33 @@ const make = Effect.gen(function* () {
       if (Option.isNone(decoded)) continue;
       const current = decoded.value;
       const legacy = importedThread(row);
+      let titleState = current.titleState;
+      if (titleState === undefined) {
+        const titleChanges = yield* sql<{ command_id: string | null; event_id: string }>`
+          SELECT command_id, event_id FROM (
+            SELECT command_id, event_id, sequence, json_extract(payload_json, '$.title') AS title,
+              LAG(json_extract(payload_json, '$.title')) OVER (ORDER BY sequence) AS previous_title
+            FROM orchestration_events
+            WHERE application_event_version = 2 AND aggregate_kind = 'thread'
+              AND stream_id = ${current.id} AND event_type IN ('thread.created', 'thread.metadata-updated')
+          ) WHERE event_id NOT LIKE 'migration:v1:%' AND title <> previous_title
+          ORDER BY sequence DESC LIMIT 1
+        `;
+        // Older V2 events cannot distinguish a rename from an automatic title.
+        // Conservatively preserve any title that changed after the import.
+        titleState = titleChanges[0]
+          ? {
+              source: "manual",
+              version: CommandId.make(titleChanges[0].command_id ?? titleChanges[0].event_id),
+              needsRefinement: false,
+            }
+          : legacy.titleState;
+      }
       const legacyPullRequests = legacy.pullRequests ?? [];
       const repaired: OrchestrationV2AppThread = {
         ...current,
         purpose: current.purpose === undefined ? legacy.purpose : current.purpose,
+        titleState: titleState ?? null,
         commitRecommendation:
           current.commitRecommendation === undefined
             ? legacy.commitRecommendation
@@ -571,6 +604,7 @@ const make = Effect.gen(function* () {
         thread.thread_id,
         thread.project_id,
         thread.title,
+        thread.title_state_json,
         thread.purpose,
         thread.commit_recommendation_json,
         thread.model_selection_json,

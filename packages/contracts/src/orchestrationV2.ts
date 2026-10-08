@@ -364,6 +364,13 @@ export const OrchestrationV2LimitRecoveryUpdate = Schema.Struct({
 );
 export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitRecoveryUpdate.Type;
 
+export const ThreadTitleState = Schema.Struct({
+  source: Schema.Literals(["manual", "generated"]),
+  version: CommandId,
+  needsRefinement: Schema.Boolean,
+});
+export type ThreadTitleState = typeof ThreadTitleState.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   purpose: Schema.optional(ThreadPurpose),
@@ -372,6 +379,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
+  titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -1862,6 +1870,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
+  titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   providerInstanceId: ProviderInstanceId,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -2795,6 +2804,14 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     title: Schema.optional(TrimmedNonEmptyString),
+    /** Only apply an automatic title while its captured title version is current. */
+    titleGeneration: Schema.optional(
+      Schema.Struct({
+        expectedTitle: TrimmedNonEmptyString,
+        expectedVersion: Schema.NullOr(CommandId),
+        needsRefinement: Schema.Boolean,
+      }),
+    ),
     /** Kick off (true) or abandon (false) an async title regeneration. */
     regenerateTitle: Schema.optional(Schema.Boolean),
     branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
