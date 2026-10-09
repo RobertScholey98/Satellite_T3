@@ -1,4 +1,6 @@
-import * as NodeCrypto from "node:crypto";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
+import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -8,7 +10,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import {
   OpenWorkOperationError,
   OpenWorkDocument,
@@ -27,7 +29,7 @@ import {
   type OpenWorkReadLinkedResult,
   type OpenWorkFavoritesResult,
 } from "@t3tools/contracts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { makeGitReader } from "./GitReader.ts";
 import { reconcileDocumentLinks, type OpenWorkDocumentRow } from "./PublicationRepository.ts";
 
@@ -230,7 +232,7 @@ export const makeOpenWorkService = <E>(options: {
                 ? (commits.find((commit) => Date.parse(commit.committedAt) >= Date.parse(date))
                     ?.sha ?? null)
                 : null;
-              const id = `file:${NodeCrypto.createHash("sha256").update(`${folder.worktree_id}\0${canonical}`).digest("hex")}`;
+              const id = `file:${Hex.encode(sha256(new TextEncoder().encode(`${folder.worktree_id}\0${canonical}`)))}`;
               const now = DateTime.formatIso(yield* DateTime.now);
               yield* sql`INSERT INTO open_work_documents (id,worktree_id,title,source,folder_id,path,commit_sha,anchor_head,observed_at,unresolved,association_mode)
           VALUES (${id},${folder.worktree_id},${path.basename(canonical)},'linked',${folder.id},${canonical},${sha},${head},${date ?? now},${folder.time_link !== "none" && !date ? "creation-time-unavailable" : null},${folder.time_link === "none" ? "unassigned" : "pending"})`;
@@ -332,7 +334,7 @@ export const makeOpenWorkService = <E>(options: {
           const existing =
             yield* sql<FolderRow>`SELECT * FROM open_work_folders WHERE worktree_id=${input.worktreeId} AND path=${folderPath}`;
           if (existing[0]) return decodeFolder(existing[0]);
-          const id = NodeCrypto.randomUUID();
+          const id = yield* randomUuidV4;
           yield* sql`INSERT INTO open_work_folders(id,worktree_id,path,time_link) VALUES (${id},${input.worktreeId},${folderPath},${input.timeLink})`;
           return { id, worktreeId: input.worktreeId, path: folderPath, timeLink: input.timeLink };
         }),

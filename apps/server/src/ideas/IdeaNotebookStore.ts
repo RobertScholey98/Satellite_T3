@@ -2,14 +2,16 @@ import {
   IdeaNotebook,
   IdeaSummary,
   type OrchestrationEvent,
+  type OrchestrationV2StoredEvent,
   type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { applyIdeaMutation, createIdeaNotebook } from "./IdeaNotebook.ts";
 
 const decodeNotebook = Schema.decodeEffect(Schema.fromJsonString(IdeaNotebook));
@@ -29,6 +31,7 @@ export class IdeaNotebookStore extends Context.Service<
     pending: () => Effect.Effect<readonly IdeaNotebook[], IdeaStoreError>;
     isDeleted: (threadId: ThreadId) => Effect.Effect<boolean, IdeaStoreError>;
     project: (event: OrchestrationEvent) => Effect.Effect<void, IdeaStoreError>;
+    projectV2: (stored: OrchestrationV2StoredEvent) => Effect.Effect<void, IdeaStoreError>;
   }
 >()("t3/ideas/IdeaNotebookStore") {
   static readonly layer = Layer.effect(
@@ -64,7 +67,7 @@ export class IdeaNotebookStore extends Context.Service<
         const rows = yield* sql`
         SELECT n.thread_id AS "threadId", t.project_id AS "projectId", t.title, n.status,
           n.updated_at AS "updatedAt", n.revision, n.excerpt, n.update_status AS "updateStatus", n.deletion_error AS "deletionError"
-        FROM projection_idea_notebooks n JOIN projection_threads t ON t.thread_id = n.thread_id
+        FROM projection_idea_notebooks n JOIN orchestration_v2_projection_threads t ON t.thread_id = n.thread_id
         WHERE ${projectId === undefined ? sql`1 = 1` : sql`t.project_id = ${projectId}`}
         ORDER BY n.updated_at DESC`;
         return yield* decodeSummaries(rows);
@@ -81,15 +84,16 @@ export class IdeaNotebookStore extends Context.Service<
         VALUES (${notebook.threadId}, ${notebook.revision}, ${notebook.status}, ${notebook.updatedAt}, ${notebook.pitch.markdown.slice(0, 240)}, ${notebook.update.status}, ${notebook.deletionError}, ${encoded})
         ON CONFLICT(thread_id) DO UPDATE SET revision = excluded.revision, status = excluded.status, updated_at = excluded.updated_at,
           excerpt = excluded.excerpt, update_status = excluded.update_status, deletion_error = excluded.deletion_error, notebook_json = excluded.notebook_json`;
-        yield* sql`UPDATE projection_threads SET settled_at = CASE WHEN ${notebook.status} = 'settled' THEN COALESCE(settled_at, ${notebook.updatedAt}) ELSE NULL END,
-        settled_override = ${notebook.status === "settled" ? "settled" : null}, updated_at = ${notebook.updatedAt}
+        yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = json_set(payload_json,
+        '$.settledAt', CASE WHEN ${notebook.status} = 'settled' THEN COALESCE(json_extract(payload_json, '$.settledAt'), ${notebook.updatedAt}) ELSE NULL END,
+        '$.settledOverride', ${notebook.status === "settled" ? "settled" : null}, '$.updatedAt', ${notebook.updatedAt}), updated_at = ${notebook.updatedAt}
         WHERE thread_id = ${notebook.threadId}`;
       });
       const project = Effect.fn("IdeaNotebookStore.project")(function* (event: OrchestrationEvent) {
         if (event.type === "thread.created" && event.payload.purpose === "idea") {
           const purged =
             yield* sql`SELECT thread_id FROM idea_deletion_markers WHERE thread_id = ${event.payload.threadId} AND completed_at IS NOT NULL`;
-          if (!purged.length)
+          if (!purged.length && !(yield* get(event.payload.threadId)))
             yield* save(createIdeaNotebook(event.payload.threadId, event.occurredAt));
           return;
         }
@@ -157,7 +161,90 @@ export class IdeaNotebookStore extends Context.Service<
           });
         }
       }, Effect.mapError(failure));
-      return IdeaNotebookStore.of({ get, requireActive, list, pending, isDeleted, project });
+      const projectV2 = Effect.fn("IdeaNotebookStore.projectV2")(function* (
+        stored: OrchestrationV2StoredEvent,
+      ) {
+        const event = stored.event;
+        // Imported transcript records preserve the notebook captured by the v1 projection.
+        if (event.id.startsWith("migration:v1:")) return;
+        const occurredAt = DateTime.formatIso(event.occurredAt);
+        const base = {
+          sequence: stored.sequence,
+          eventId: event.id,
+          aggregateKind: "thread" as const,
+          aggregateId: event.threadId,
+          occurredAt,
+        };
+        switch (event.type) {
+          case "thread.created":
+            yield* project({
+              ...base,
+              type: "thread.created",
+              payload: { threadId: event.threadId, purpose: event.payload.purpose },
+            });
+            break;
+          case "idea.changed":
+            yield* project({ ...base, type: "idea.changed", payload: event.payload });
+            break;
+          case "idea.purged":
+            yield* project({ ...base, type: "idea.purged", payload: event.payload });
+            break;
+          case "message.updated":
+            if (event.payload.role === "user")
+              yield* project({
+                ...base,
+                type: "thread.message-sent",
+                payload: {
+                  threadId: event.threadId,
+                  messageId: event.payload.id,
+                  role: event.payload.role,
+                  text: event.payload.text,
+                  streaming: false,
+                },
+              });
+            break;
+          case "run.updated":
+            if (["completed", "failed", "cancelled", "interrupted"].includes(event.payload.status))
+              yield* project({
+                ...base,
+                type: "thread.session-set",
+                payload: {
+                  threadId: event.threadId,
+                  turnSettled: true,
+                  session: {
+                    threadId: event.threadId,
+                    status: "ready",
+                    activeTurnId: null,
+                    lastError: null,
+                    updatedAt: occurredAt,
+                  },
+                },
+              });
+            break;
+          case "runtime-request.updated":
+            if (
+              event.payload.kind === "user_input" &&
+              event.payload.status === "resolved" &&
+              event.payload.answers !== undefined
+            ) {
+              yield* project({
+                ...base,
+                type: "thread.user-input-response-requested",
+                payload: { threadId: event.threadId },
+              });
+            }
+            break;
+        }
+      });
+      return IdeaNotebookStore.of({
+        get,
+        requireActive,
+        list,
+        pending,
+        isDeleted,
+        project,
+        projectV2,
+      });
     }),
   );
 }

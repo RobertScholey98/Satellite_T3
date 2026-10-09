@@ -1,25 +1,28 @@
+import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readImageDimensions } from "@t3tools/shared/imageDimensions";
 import * as Effect from "effect/Effect";
 import { IdeaRuntime, IdeaRuntimeError } from "../../../ideas/IdeaRuntime.ts";
 import { IdeaPromotion } from "../../../ideas/IdeaPromotion.ts";
-import { requireMcpCapability } from "../../McpInvocationContext.ts";
+import { requireThreadMcpCapability } from "../../McpInvocationContext.ts";
 import { IdeasToolkit, IdeasImageToolkit } from "./tools.ts";
 
 const make = Effect.gen(function* () {
   const runtime = yield* IdeaRuntime;
   const promotion = yield* IdeaPromotion;
-  return IdeasToolkit.of({
-    idea_read: (input) =>
-      requireMcpCapability("ideas").pipe(
-        Effect.flatMap(({ threadId }) => runtime.readContext({ ...input, threadId })),
+  return {
+    idea_read: McpToolAccess.readsAsCaller((input) =>
+      requireThreadMcpCapability("ideas").pipe(
+        Effect.flatMap(({ thread: { threadId } }) => runtime.readContext({ ...input, threadId })),
       ),
-    idea_read_main: (input) =>
-      requireMcpCapability("ideas").pipe(
-        Effect.flatMap(({ threadId }) => runtime.readMain({ ...input, threadId })),
+    ),
+    idea_read_main: McpToolAccess.readsAsCaller((input) =>
+      requireThreadMcpCapability("ideas").pipe(
+        Effect.flatMap(({ thread: { threadId } }) => runtime.readMain({ ...input, threadId })),
       ),
-    idea_write_document: (input) =>
-      requireMcpCapability("ideas").pipe(
-        Effect.flatMap(({ threadId }) =>
+    ),
+    idea_write_document: McpToolAccess.actsAsCaller((input) =>
+      requireThreadMcpCapability("ideas").pipe(
+        Effect.flatMap(({ thread: { threadId } }) =>
           runtime.writeArtifact({
             threadId,
             name: input.name,
@@ -29,26 +32,32 @@ const make = Effect.gen(function* () {
           }),
         ),
       ),
-    idea_propose_issues: (input) =>
-      requireMcpCapability("ideas").pipe(
-        Effect.flatMap(({ threadId }) => promotion.propose({ ...input, threadId })),
+    ),
+    idea_propose_issues: McpToolAccess.actsAsCaller((input) =>
+      requireThreadMcpCapability("ideas").pipe(
+        Effect.flatMap(({ thread: { threadId } }) => promotion.propose({ ...input, threadId })),
       ),
-    idea_publish_issues: () =>
-      requireMcpCapability("ideas").pipe(
-        Effect.flatMap(({ threadId }) => promotion.publish(threadId)),
+    ),
+    idea_publish_issues: McpToolAccess.actsAsCaller(() =>
+      requireThreadMcpCapability("ideas").pipe(
+        Effect.flatMap(({ thread: { threadId } }) => promotion.publish(threadId)),
       ),
-  });
+    ),
+  } satisfies McpToolAccess.Handlers<typeof IdeasToolkit.tools>;
 });
 
-export const IdeasToolkitHandlersLive = IdeasToolkit.toLayer(make);
+export const IdeasToolkitHandlersLive = McpToolAccess.toLayer(IdeasToolkit, make);
 
-export const IdeasImageToolkitHandlersLive = IdeasImageToolkit.toLayer(
+export const IdeasImageToolkitHandlersLive = McpToolAccess.toLayer(
+  IdeasImageToolkit,
   Effect.gen(function* () {
     const runtime = yield* IdeaRuntime;
-    return IdeasImageToolkit.of({
-      idea_read_image: (input) =>
+    return {
+      idea_read_image: McpToolAccess.readsAsCaller((input) =>
         Effect.gen(function* () {
-          const { threadId } = yield* requireMcpCapability("ideas");
+          const {
+            thread: { threadId },
+          } = yield* requireThreadMcpCapability("ideas");
           const result = yield* runtime.readArtifact({ threadId, artifactId: input.artifactId });
           if (
             !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(
@@ -72,6 +81,7 @@ export const IdeasImageToolkitHandlersLive = IdeasImageToolkit.toLayer(
             },
           };
         }),
-    });
+      ),
+    } satisfies McpToolAccess.Handlers<typeof IdeasImageToolkit.tools>;
   }),
 );

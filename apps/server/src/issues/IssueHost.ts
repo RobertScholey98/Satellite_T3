@@ -20,12 +20,21 @@ import {
   type IssueBoardItem,
   type IssuesListResult,
 } from "@t3tools/contracts";
-import { GitHubCli } from "../sourceControl/GitHubCli.ts";
+import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import { GitLabCli } from "../sourceControl/GitLabCli.ts";
 import { AzureDevOpsCli } from "../sourceControl/AzureDevOpsCli.ts";
 import { ForgejoCli } from "../sourceControl/ForgejoCli.ts";
 import { BitbucketApi } from "../sourceControl/BitbucketApi.ts";
 import { CredentialScope } from "../sourceControl/SourceControlRateLimit.ts";
+
+const decodeGitHubGraphqlRequest = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      query: Schema.String,
+      variables: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+    }),
+  ),
+);
 
 class AzureBoardsKey extends Data.Class<{
   readonly cwd: string;
@@ -258,7 +267,17 @@ export const issueFromHost = (scope: IssueHostScope, raw: Record<string, unknown
 };
 
 export const makeIssueHost = (options: {
-  readonly github: Pick<GitHubCli["Service"], "execute">;
+  readonly github: {
+    readonly execute: (input: {
+      readonly cwd: string;
+      readonly args: readonly string[];
+      readonly stdin?: string;
+      readonly maxOutputBytes?: number;
+    }) => Effect.Effect<
+      { readonly stdout: string },
+      GitHubApi.GitHubApiError | IssueOperationError
+    >;
+  };
   readonly gitlab: Pick<GitLabCli["Service"], "execute">;
   readonly azure: Pick<AzureDevOpsCli["Service"], "execute">;
   readonly forgejo: Pick<ForgejoCli["Service"], "api">;
@@ -1099,8 +1118,46 @@ export const makeIssueHost = (options: {
     return { list, get, listBoards, board, move } satisfies IssueHostShape;
   });
 export const make = Effect.gen(function* () {
+  const github = yield* GitHubApi.GitHubApi;
   return yield* makeIssueHost({
-    github: yield* GitHubCli,
+    github: {
+      execute: Effect.fn("IssueHost.githubRequest")(function* (input) {
+        const host = input.args[input.args.indexOf("--hostname") + 1];
+        const endpoint = input.args[3];
+        if (!host || !endpoint)
+          return yield* new IssueOperationError({
+            reason: "invalid",
+            message: "The GitHub request has no host or endpoint.",
+          });
+        if (endpoint === "graphql") {
+          const request = yield* decodeGitHubGraphqlRequest(input.stdin ?? "").pipe(
+            Effect.mapError(remoteError),
+          );
+          const stdout = yield* github.graphql({
+            host,
+            operation: "IssueHost.graphql",
+            query: request.query,
+            ...(request.variables === undefined ? {} : { variables: request.variables }),
+            ...(input.maxOutputBytes === undefined
+              ? {}
+              : { maxResponseBytes: input.maxOutputBytes }),
+          });
+          return { stdout };
+        }
+        const response = yield* github.rest({
+          host,
+          operation: "IssueHost.read",
+          path: endpoint,
+          ...(input.maxOutputBytes === undefined ? {} : { maxResponseBytes: input.maxOutputBytes }),
+        });
+        if (response.truncated)
+          return yield* new IssueOperationError({
+            reason: "remote",
+            message: "The GitHub response exceeded the issue response limit.",
+          });
+        return { stdout: response.body };
+      }),
+    },
     gitlab: yield* GitLabCli,
     azure: yield* AzureDevOpsCli,
     forgejo: yield* ForgejoCli,

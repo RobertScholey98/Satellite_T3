@@ -10,11 +10,11 @@ import { IdeaArtifactHttp } from "./ideaArtifactHttp.ts";
 export { IdeaArtifactHttp, ideaArtifactHttpLayer } from "./ideaArtifactHttp.ts";
 import {
   IDEA_WS_METHODS,
-  ORCHESTRATION_WS_METHODS,
+  ORCHESTRATION_V2_WS_METHODS,
   IdeaArtifactReadInput,
   IdeaArtifactWriteInput,
 } from "@t3tools/contracts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -75,7 +75,7 @@ export function createIdeaEnvironmentAtoms<R, E>(
     }),
     dispatch: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:ideas:edit",
-      tag: ORCHESTRATION_WS_METHODS.dispatchCommand,
+      tag: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
     }),
   };
 }

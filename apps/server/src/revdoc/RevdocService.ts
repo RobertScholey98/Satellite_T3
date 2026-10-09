@@ -1,4 +1,6 @@
-import * as NodeCrypto from "node:crypto";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
+import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
 import {
   CommandId,
   MessageId,
@@ -35,10 +37,10 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
+import * as OrchestrationEngine from "../orchestration-v2/SatelliteOrchestration.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "../preview/Manager.ts";
-import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
+import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import {
   reviewTests,
   selectTests,
@@ -48,8 +50,8 @@ import {
   withTestAttempt,
 } from "./RevdocTesting.ts";
 import { writeFileStringAtomically } from "../atomicWrite.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
+import * as ProjectionSnapshotQuery from "../orchestration-v2/SatelliteOrchestration.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
@@ -75,7 +77,7 @@ const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const ACTIVITY_PUBLISH_INTERVAL_MS = 1_000;
 const ACTIVITY_THINKING_CHARS = 600;
 const idle: RevdocRunState = { running: false, error: null, result: null, version: 0 };
-const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
+const hash = (text: string) => Hex.encode(sha256(new TextEncoder().encode(text)));
 const fail = (message: string) => new RevdocError({ message });
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeSync(fromJsonStringPretty(Schema.Unknown));
@@ -94,15 +96,15 @@ export class RevdocService extends Context.Service<
     readonly start: (input: RevdocStartInput) => Effect.Effect<void, RevdocError>;
     readonly startTesting: (input: RevdocTestStartInput) => Effect.Effect<void, RevdocError>;
     readonly beginTest: (
-      scope: McpInvocationScope,
+      scope: McpThreadInvocationScope,
       input: { runId: string; testId: string },
     ) => Effect.Effect<void, RevdocError>;
     readonly captureEvidence: (
-      scope: McpInvocationScope,
+      scope: McpThreadInvocationScope,
       input: RevdocCaptureInput,
     ) => Effect.Effect<void, RevdocError>;
     readonly recordTest: (
-      scope: McpInvocationScope,
+      scope: McpThreadInvocationScope,
       input: RevdocRecordTestInput,
     ) => Effect.Effect<void, RevdocError>;
     readonly cancel: (input: RevdocInput) => Effect.Effect<void, RevdocError>;
@@ -433,7 +435,11 @@ const make = Effect.gen(function* () {
     if (untracked.stdoutTruncated)
       return yield* fail("Too many untracked files for a single Revdoc pass.");
     const parts = [diff];
-    const digest = NodeCrypto.createHash("sha256").update(base).update("\0").update(diff);
+    const digest = sha256
+      .create()
+      .update(new TextEncoder().encode(base))
+      .update(new TextEncoder().encode("\0"))
+      .update(new TextEncoder().encode(diff));
     let contextBytes = Buffer.byteLength(diff);
     const files = [...(diff.match(/^diff --git .+$/gm) ?? [])];
     for (const relative of untracked.stdout.split("\0").filter(Boolean)) {
@@ -446,16 +452,18 @@ const make = Effect.gen(function* () {
       const stat = yield* fs
         .stat(file)
         .pipe(Effect.mapError(() => fail("Could not read an untracked file.")));
-      digest.update(relative).update("\0");
+      digest.update(new TextEncoder().encode(relative)).update(new TextEncoder().encode("\0"));
       files.push(`Untracked file: ${relative}`);
       if (stat.type !== "File" || stat.size > BigInt(MAX_SOURCE_BYTES)) {
         parts.push(`Untracked file: ${relative} (content omitted: binary or large file)`);
-        digest.update(String(stat.size)).update(String(stat.mtime));
+        digest
+          .update(new TextEncoder().encode(String(stat.size)))
+          .update(new TextEncoder().encode(String(stat.mtime)));
       } else {
         const content = yield* fs
           .readFileString(file)
           .pipe(Effect.mapError(() => fail("Could not read an untracked file.")));
-        digest.update(content);
+        digest.update(new TextEncoder().encode(content));
         parts.push(
           content.includes("\0")
             ? `Binary file: ${relative}`
@@ -471,7 +479,7 @@ const make = Effect.gen(function* () {
     }
     return {
       changes: parts.join("\n"),
-      sourceRevision: `${head}:${digest.digest("hex")}`,
+      sourceRevision: `${head}:${Hex.encode(digest.digest())}`,
       overview: `Comparison base: ${base}\nHEAD: ${head}\n${files.length} changed files\n${files.slice(0, 200).join("\n").slice(0, 16_000)}\n${files.length > 200 ? "Additional filenames omitted from this overview; their patches are included in the batches." : ""}`,
     };
   });
@@ -510,7 +518,10 @@ const make = Effect.gen(function* () {
       if ([raw, changed, untracked].some((result) => result.stdoutTruncated)) {
         return yield* fail("Too many changes to identify the code being tested.");
       }
-      const digest = NodeCrypto.createHash("sha256").update(head).update(raw.stdout);
+      const digest = sha256
+        .create()
+        .update(new TextEncoder().encode(head))
+        .update(new TextEncoder().encode(raw.stdout));
       const files = [
         ...new Set(
           [...changed.stdout.split("\0"), ...untracked.stdout.split("\0")].filter(Boolean),
@@ -518,9 +529,9 @@ const make = Effect.gen(function* () {
       ].sort();
       for (const relative of files) {
         const file = path.join(cwd, relative);
-        digest.update(relative).update("\0");
+        digest.update(new TextEncoder().encode(relative)).update(new TextEncoder().encode("\0"));
         if (!(yield* fs.exists(file))) {
-          digest.update("deleted\0");
+          digest.update(new TextEncoder().encode("deleted\0"));
           continue;
         }
         const resolved = yield* fs.realPath(file);
@@ -542,9 +553,9 @@ const make = Effect.gen(function* () {
             }),
           ),
         );
-        digest.update("\0");
+        digest.update(new TextEncoder().encode("\0"));
       }
-      return `${head}:${digest.digest("hex")}`;
+      return `${head}:${Hex.encode(digest.digest())}`;
     },
     Effect.mapError((error) =>
       isRevdocError(error) ? error : fail("Could not identify the code being tested."),
@@ -694,7 +705,7 @@ const make = Effect.gen(function* () {
         "Choose an available testing model in Settings → Text generation → Revdoc.",
       );
     const revision = yield* sourceRevision(cwd);
-    const runId = NodeCrypto.randomUUID();
+    const runId = yield* randomUuidV4;
     const startedAt = DateTime.formatIso(yield* DateTime.now);
     yield* Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
@@ -706,11 +717,15 @@ const make = Effect.gen(function* () {
             if (input.testIds?.some((id) => !tests.some((test) => test.id === id)))
               return yield* fail("A selected check no longer exists. Refresh the review.");
             if (!tests.length) return null;
-            const batches = testingBatches(detail.review, tests, {
-              runId,
-              cwd,
-              title: detail.review.title,
-            }).map((batch) => ({ ...batch, threadId: ThreadId.make(NodeCrypto.randomUUID()) }));
+            const batches = yield* Effect.forEach(
+              testingBatches(detail.review, tests, {
+                runId,
+                cwd,
+                title: detail.review.title,
+              }),
+              (batch) =>
+                randomUuidV4.pipe(Effect.map((id) => ({ ...batch, threadId: ThreadId.make(id) }))),
+            );
             const selected = new Set(tests.map((test) => test.id));
             const testing: RevdocTestingRun = {
               id: runId,
@@ -764,7 +779,7 @@ const make = Effect.gen(function* () {
                 yield* engine.dispatch({
                   type: "thread.create",
                   purpose: "revdoc",
-                  commandId: CommandId.make(NodeCrypto.randomUUID()),
+                  commandId: CommandId.make(yield* randomUuidV4),
                   threadId: batch.threadId,
                   projectId: thread.projectId,
                   title: `Revdoc: ${prepared.title} · ${batch.section}`.slice(0, 200),
@@ -779,14 +794,14 @@ const make = Effect.gen(function* () {
                 created = batch.threadId;
                 yield* engine.dispatch({
                   type: "thread.turn.start",
-                  commandId: CommandId.make(NodeCrypto.randomUUID()),
+                  commandId: CommandId.make(yield* randomUuidV4),
                   threadId: batch.threadId,
                   modelSelection,
                   runtimeMode: thread.runtimeMode,
                   interactionMode: "default",
                   createdAt,
                   message: {
-                    messageId: MessageId.make(NodeCrypto.randomUUID()),
+                    messageId: MessageId.make(yield* randomUuidV4),
                     role: "user",
                     text: batch.prompt,
                     attachments: [],
@@ -837,7 +852,7 @@ const make = Effect.gen(function* () {
                 yield* engine
                   .dispatch({
                     type: "thread.turn.interrupt",
-                    commandId: CommandId.make(NodeCrypto.randomUUID()),
+                    commandId: CommandId.make(yield* randomUuidV4),
                     threadId: created,
                     createdAt: DateTime.formatIso(yield* DateTime.now),
                   })
@@ -914,10 +929,12 @@ const make = Effect.gen(function* () {
   });
 
   const activeTest = Effect.fn("RevdocService.activeTest")(function* (
-    invocation: McpInvocationScope,
+    invocation: McpThreadInvocationScope,
     input: { runId: string; testId: string },
   ) {
-    const { cwd } = yield* resolve({ threadId: invocation.threadId });
+    if (invocation.thread === undefined)
+      return yield* fail("Only the active testing thread can report this run's results.");
+    const { cwd } = yield* resolve({ threadId: invocation.thread.threadId });
     const detail = yield* read(cwd);
     const run = detail.review?.testing;
     if (
@@ -926,7 +943,7 @@ const make = Effect.gen(function* () {
       run.status !== "running" ||
       !jobs.has(cwd) ||
       run.id !== input.runId ||
-      run.threadId !== invocation.threadId
+      run.threadId !== invocation.thread.threadId
     )
       return yield* fail("Only the active testing thread can report this run's results.");
     const test = reviewTests(detail.review!).find((test) => test.id === input.testId);
@@ -955,7 +972,7 @@ const make = Effect.gen(function* () {
     yield* notify(current.cwd, progress(review));
   });
   const beginTest = Effect.fn("RevdocService.beginTest")(function* (
-    invocation: McpInvocationScope,
+    invocation: McpThreadInvocationScope,
     input: { runId: string; testId: string },
   ) {
     yield* writes.withPermit(
@@ -970,7 +987,7 @@ const make = Effect.gen(function* () {
     );
   });
   const captureEvidence = Effect.fn("RevdocService.captureEvidence")(function* (
-    invocation: McpInvocationScope,
+    invocation: McpThreadInvocationScope,
     input: RevdocCaptureInput,
   ) {
     if (!invocation.capabilities.has("preview"))
@@ -1011,7 +1028,7 @@ const make = Effect.gen(function* () {
           const directory = path.join(current.cwd, ".revdoc", "evidence");
           if (path.relative(directory, yield* fs.realPath(directory)) !== "")
             return yield* fail("Evidence must stay inside this worktree's .revdoc directory.");
-          const id = NodeCrypto.randomUUID();
+          const id = yield* randomUuidV4;
           const filename = `${id}.png`;
           yield* fs.writeFile(path.join(directory, filename), data, { flag: "wx" });
           const evidence = {
@@ -1034,7 +1051,7 @@ const make = Effect.gen(function* () {
       );
   });
   const recordTest = Effect.fn("RevdocService.recordTest")(function* (
-    invocation: McpInvocationScope,
+    invocation: McpThreadInvocationScope,
     input: RevdocRecordTestInput,
   ) {
     yield* writes.withPermit(

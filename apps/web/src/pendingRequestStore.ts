@@ -71,6 +71,7 @@ export function recordPendingCommandResult(
       error !== null &&
       "_tag" in error &&
       (error._tag === "OrchestrationDispatchCommandError" ||
+        error._tag === "OrchestrationV2DispatchCommandError" ||
         error._tag === "EnvironmentAuthorizationError")
     ) {
       rejection =
@@ -195,7 +196,11 @@ export function reconcilePendingDelivery(
       payload.requestId === ref.requestId
     );
   });
-  if (related.some((activity) => activity.kind === `${kind}.resolved`))
+  if (
+    related.some(
+      (activity) => activity.kind === `${kind}.resolved` || activity.kind === `${kind}.cancelled`,
+    )
+  )
     return delivery.phase === "resolved" ? delivery : { phase: "resolved" };
   const pending = derivePendingRequests(related);
   const stillPending = (ref.kind === "question" ? pending.userInputs : pending.approvals).some(

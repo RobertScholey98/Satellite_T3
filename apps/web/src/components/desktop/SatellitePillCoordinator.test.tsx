@@ -2,10 +2,11 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import {
-  ApprovalRequestId,
+  RuntimeRequestId,
   EnvironmentId,
   EventId,
   ThreadId,
@@ -64,7 +65,7 @@ const ref = {
   environmentId: EnvironmentId.make("local"),
   threadId: ThreadId.make("shared-thread"),
   kind: "question" as const,
-  requestId: ApprovalRequestId.make("shared-request"),
+  requestId: RuntimeRequestId.make("shared-request"),
 };
 const remoteRef = { ...ref, environmentId: EnvironmentId.make("remote") };
 const questions = [
@@ -81,18 +82,26 @@ const questions = [
   },
 ];
 const detail = {
-  activities: [
-    {
-      id: EventId.make("requested"),
-      kind: "user-input.requested",
-      sequence: 1,
-      summary: "Question",
-      tone: "info",
-      turnId: null,
-      createdAt: now,
-      payload: { requestId: ref.requestId, questions, responseMode: "message" },
-    },
-  ],
+  projection: {
+    runtimeRequests: [
+      {
+        id: ref.requestId,
+        kind: "user_input",
+        status: "pending",
+        responseCapability: { type: "message" },
+        createdAt: DateTime.makeUnsafe(now),
+        resolvedAt: null,
+      },
+    ],
+    turnItems: [
+      {
+        type: "user_input_request",
+        requestId: ref.requestId,
+        questions,
+        responseMode: "message",
+      },
+    ],
+  },
 };
 const shells = [ref, remoteRef].map((entry) => ({
   id: entry.threadId,

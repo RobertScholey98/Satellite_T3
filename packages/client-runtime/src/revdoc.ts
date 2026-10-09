@@ -1,5 +1,5 @@
 import { WS_METHODS, type RevdocReview, type RevdocTest } from "@t3tools/contracts";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "./connection/registry.ts";
 import {
   createEnvironmentRpcCommand,

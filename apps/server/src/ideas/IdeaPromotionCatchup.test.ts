@@ -11,6 +11,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RuntimeRequestId,
   TextGenerationError,
   ThreadId,
 } from "@t3tools/contracts";
@@ -22,14 +23,19 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
 import { ServerConfig } from "../config.ts";
-import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  layer as SatelliteTestLayer,
+  recordProject,
+  makeProviderAdapter,
+  recordMessage,
+  recordQuestion,
+} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
-import { ProviderInstanceRegistry } from "../provider/Services/ProviderInstanceRegistry.ts";
+import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime } from "./IdeaRuntime.ts";
@@ -39,7 +45,8 @@ const threadId = ThreadId.make("promotion-catchup");
 const projectId = ProjectId.make("catchup-project");
 const instanceId = ProviderInstanceId.make("claude");
 const driverKind = ProviderDriverKind.make("claudeAgent");
-const answerId = EventId.make("answer-activity");
+const requestId = RuntimeRequestId.make("ownership");
+const answerId = EventId.make(`${requestId}:resolved`);
 const now = "2026-09-30T12:00:00.000Z";
 const unused = () => Effect.die("Unexpected provider operation in catch-up test");
 const decodeContextDocuments = Schema.decodeEffect(
@@ -79,22 +86,7 @@ const runCatchup = Effect.fn(function* (
       streamChanges: Stream.empty,
       applyUsageLimits: unused,
     },
-    adapter: {
-      provider: driverKind,
-      capabilities: { sessionModelSwitch: "unsupported" },
-      startSession: unused,
-      sendTurn: unused,
-      interruptTurn: unused,
-      respondToRequest: unused,
-      respondToUserInput: unused,
-      stopSession: unused,
-      listSessions: () => Effect.succeed([]),
-      hasSession: () => Effect.succeed(false),
-      readThread: unused,
-      rollbackThread: unused,
-      stopAll: unused,
-      streamEvents: Stream.empty,
-    },
+    orchestrationAdapter: makeProviderAdapter(instanceId, driverKind),
     textGeneration: {
       generateBranchName: unused,
       generateCommitMessage: unused,
@@ -152,9 +144,7 @@ const runCatchup = Effect.fn(function* (
   });
   const layer = IdeaUpdateReactor.layer.pipe(
     Layer.provideMerge(IdeaRuntime.layer),
-    Layer.provideMerge(OrchestrationLayerLive),
-    Layer.provideMerge(IdeaNotebookStore.layer),
-    Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provideMerge(SatelliteTestLayer),
     Layer.provide(
       Layer.mock(ServerSettingsService)({
         getSettings: Effect.succeed({
@@ -183,13 +173,10 @@ const runCatchup = Effect.fn(function* (
     const runtime = yield* IdeaRuntime;
     const snapshots = yield* ProjectionSnapshotQuery;
     const config = yield* ServerConfig;
-    yield* engine.dispatch({
-      type: "project.create",
-      commandId: CommandId.make("project"),
+    yield* recordProject({
       projectId,
       title: "Project",
       workspaceRoot: config.stateDir,
-      createdAt: now,
     });
     yield* engine.dispatch({
       type: "thread.create",
@@ -205,55 +192,26 @@ const runCatchup = Effect.fn(function* (
       worktreePath: null,
       createdAt: now,
     });
-    yield* updates.start();
-    yield* engine.dispatch({
-      type: "thread.message.user.append",
-      commandId: CommandId.make("promote-message"),
+    yield* recordMessage({
       threadId,
-      message: {
-        messageId: MessageId.make("promote"),
-        text:
-          outcome === "too-large"
-            ? "x".repeat(200_001)
-            : hasStudy
-              ? "Discuss the design, then /promote. ".repeat(600)
-              : "/promote",
-        attachments: [],
-      },
-      createdAt: now,
+      role: "user",
+      messageId: MessageId.make("promote"),
+      text:
+        outcome === "too-large"
+          ? "x".repeat(200_001)
+          : hasStudy
+            ? "Discuss the design, then /promote. ".repeat(600)
+            : "/promote",
     });
-    yield* engine.dispatch({
-      type: "thread.activity.append",
-      commandId: CommandId.make("question"),
+    const questions = [
+      { id: "q", header: "Ownership", question: "How many threads per idea?", options: [] },
+    ];
+    yield* recordQuestion({ threadId, requestId, questions });
+    yield* recordQuestion({
       threadId,
-      createdAt: now,
-      activity: {
-        id: EventId.make("question-activity"),
-        kind: "user-input.requested",
-        summary: "Choose ownership",
-        tone: "info",
-        turnId: null,
-        createdAt: now,
-        payload: {
-          requestId: "ownership",
-          questions: [{ id: "q", question: "How many threads per idea?" }],
-        },
-      },
-    });
-    yield* engine.dispatch({
-      type: "thread.activity.append",
-      commandId: CommandId.make("answer"),
-      threadId,
-      createdAt: now,
-      activity: {
-        id: answerId,
-        kind: "user-input.resolved",
-        summary: "Ownership answered",
-        tone: "info",
-        turnId: null,
-        createdAt: now,
-        payload: { requestId: "ownership", answers: { q: "One thread per idea" } },
-      },
+      requestId,
+      questions,
+      answers: { q: "One thread per idea" },
     });
     if (hasStudy) {
       yield* engine.dispatch({
@@ -278,6 +236,7 @@ const runCatchup = Effect.fn(function* (
       });
       studyArtifactId = artifact.id;
     }
+    yield* updates.start();
     const requested = yield* engine.latestSequence;
     const result = yield* runtime
       .readContext({ threadId, resource: "promote" })
@@ -287,7 +246,7 @@ const runCatchup = Effect.fn(function* (
       assert.equal((yield* store.requireActive(threadId)).update.status, "running");
       assert.include(prompt, "How many threads per idea?");
       assert.include(prompt, "One thread per idea");
-      assert.include(prompt, '"activityId":"answer-activity"');
+      assert.include(prompt, `"activityId":"${answerId}"`);
       if (hasStudy) {
         const context = yield* decodeContextDocuments(
           prompt.split("\n\nNotebook context:\n\n")[1] ?? "",

@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import type * as AcpSchema from "effect-acp/schema";
+import type * as AcpSchema from "effect-acp/compat";
 import { IDEA_TOOL_NAMES } from "../../ideas/IdeaExecution.ts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 

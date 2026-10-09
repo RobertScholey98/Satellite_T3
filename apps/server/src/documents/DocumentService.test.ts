@@ -12,19 +12,15 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { ServerConfig } from "../config.ts";
-import { OrchestrationEngineLive } from "../orchestration/Layers/OrchestrationEngine.ts";
-import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
-import { OrchestrationProjectionSnapshotQueryLive } from "../orchestration/Layers/ProjectionSnapshotQuery.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import * as ThreadBackgroundLiveness from "../orchestration/ThreadBackgroundLiveness.ts";
-import * as ThreadPlanProgress from "../orchestration/ThreadPlanProgress.ts";
-import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
-import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import {
+  layer as SatelliteTestLayer,
+  recordProject,
+} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import migration from "../persistence/Migrations/055_ManagedDocuments.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
@@ -33,20 +29,10 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { makePublicationRecorder } from "../openWork/PublicationRepository.ts";
 import { makeOpenWorkService } from "../openWork/OpenWorkService.ts";
+import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 
-const integrationLayer = Layer.mergeAll(
-  OrchestrationEngineLive.pipe(
-    Layer.provide(OrchestrationProjectionSnapshotQueryLive),
-    Layer.provide(OrchestrationProjectionPipelineLive),
-  ),
-  OrchestrationProjectionSnapshotQueryLive,
-).pipe(
-  Layer.provideMerge(ThreadBackgroundLiveness.layer),
-  Layer.provide(ThreadPlanProgress.layer),
-  Layer.provide(OrchestrationEventStoreLive),
-  Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
+const integrationLayer = SatelliteTestLayer.pipe(
   Layer.provide(RepositoryIdentityResolver.layer),
-  Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-documents-test-" })),
   Layer.provideMerge(VcsProcess.layer.pipe(Layer.provide(ProcessRunner.layer))),
   Layer.provideMerge(NodeServices.layer),
@@ -66,13 +52,10 @@ const setup = Effect.gen(function* () {
     "<!doctype html><h1>Original</h1><script>window.demo=true</script>",
   );
   const projectId = ProjectId.make("documents-project");
-  yield* engine.dispatch({
-    type: "project.create",
-    commandId: CommandId.make("create-project"),
+  yield* recordProject({
     projectId,
     title: "Documents",
     workspaceRoot: stateDir,
-    createdAt,
   });
   yield* engine.dispatch({
     type: "thread.create",
@@ -490,13 +473,17 @@ describe("managed document persistence", () => {
         const service = yield* makeDocumentService({
           ...f.options,
           dispatch: (command) =>
-            f.engine
-              .dispatch(command)
-              .pipe(
-                Effect.andThen(
-                  Effect.fail(new PersistenceSqlError({ operation: "lost acknowledgement" })),
+            f.engine.dispatch(command).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause: new PersistenceSqlError({ operation: "lost acknowledgement" }),
+                  }),
                 ),
               ),
+            ),
         });
         const submission = yield* service.submit(
           { ...f.draft, requestId: "submit-lost-ack" },

@@ -1,22 +1,22 @@
 import * as Schema from "effect/Schema";
-import { ApprovalRequestId, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { RuntimeRequestId, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ScopedThreadRef } from "./environment.ts";
 import {
   ProviderApprovalDecision,
   ProviderApprovalOption,
   ProviderRequestKind,
-} from "./orchestration.ts";
+} from "./providerPolicy.ts";
 import { UserInputQuestion } from "./providerRuntime.ts";
 
 export const SatelliteQuestionRef = Schema.Struct({
   ...ScopedThreadRef.fields,
   kind: Schema.Literal("question"),
-  requestId: ApprovalRequestId,
+  requestId: RuntimeRequestId,
 });
 export const SatelliteApprovalRef = Schema.Struct({
   ...ScopedThreadRef.fields,
   kind: Schema.Literal("approval"),
-  requestId: ApprovalRequestId,
+  requestId: RuntimeRequestId,
 });
 export const SatelliteAttentionRef = Schema.Union([
   SatelliteQuestionRef,
@@ -56,7 +56,7 @@ export const SatelliteAttentionEditor = Schema.Struct({
   questionIndex: NonNegativeInt,
   question: Schema.optionalKey(
     Schema.Struct({
-      requestId: ApprovalRequestId,
+      requestId: RuntimeRequestId,
       createdAt: Schema.String,
       questions: Schema.Array(
         Schema.Struct({
@@ -73,12 +73,15 @@ export const SatelliteAttentionEditor = Schema.Struct({
         }),
       ),
       dismissible: Schema.Boolean,
+      responseCapability: Schema.optionalKey(Schema.Literals(["live", "message", "not_resumable"])),
+      responseMode: Schema.optionalKey(Schema.Literal("message")),
     }),
   ),
   approval: Schema.optionalKey(
     Schema.Struct({
-      requestId: ApprovalRequestId,
+      requestId: RuntimeRequestId,
       requestKind: ProviderRequestKind,
+      responseCapability: Schema.optionalKey(Schema.Literals(["live", "not_resumable"])),
       createdAt: Schema.String,
       detail: Schema.optionalKey(Schema.String),
       appName: Schema.optionalKey(Schema.String),

@@ -2,8 +2,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import { HttpServer } from "effect/unstable/http";
-import * as NetAddress from "effect/unstable/net/NetAddress";
+import { HttpServer } from "effect/http";
+import * as NetAddress from "effect/net/NetAddress";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
@@ -47,7 +47,14 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
     expect(token.length).toBeGreaterThan(20);
 
     const resolved = yield* registry.resolve(token);
-    expect(resolved?.threadId).toBe(threadId);
+    expect(resolved?.thread.threadId).toBe(threadId);
+    expect(resolved?.thread.providerSessionId).toBe(issued.config.providerSessionId);
+    expect(resolved?.thread.providerInstanceId).toBe(issued.config.providerInstanceId);
+    expect(resolved?.requestNamespace).toBe(issued.config.providerSessionId);
+    expect(resolved?.client).toBeUndefined();
+    expect(resolved?.capabilities).toEqual(
+      new Set(["preview", "orchestration", "worktree", "pull-requests", "documents", "commits"]),
+    );
 
     yield* registry.revokeThread(threadId);
     expect(yield* registry.resolve(token)).toBeUndefined();
@@ -89,19 +96,25 @@ it.effect(
       expect(yield* capabilitiesOf(withPreview)).toEqual([
         "commits",
         "documents",
+        "orchestration",
         "preview",
         "pull-requests",
+        "worktree",
       ]);
       expect(yield* capabilitiesOf(withoutPreview)).toEqual([
         "commits",
         "documents",
+        "orchestration",
         "pull-requests",
+        "worktree",
       ]);
       expect(yield* capabilitiesOf(withDevice)).toEqual([
         "commits",
         "device",
         "documents",
+        "orchestration",
         "pull-requests",
+        "worktree",
       ]);
       expect(yield* capabilitiesOf(idea)).toEqual(["ideas"]);
     }),
@@ -163,7 +176,7 @@ it.effect("keeps a credential alive across turns that never touch an MCP tool", 
       yield* registry.touch(threadId);
     }
 
-    expect((yield* registry.resolve(token))?.threadId).toBe(threadId);
+    expect((yield* registry.resolve(token))?.thread.threadId).toBe(threadId);
   }),
 );
 

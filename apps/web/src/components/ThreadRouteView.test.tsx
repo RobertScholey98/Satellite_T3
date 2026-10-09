@@ -12,7 +12,7 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   DraftId,
@@ -20,16 +20,14 @@ import {
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { resolveThreadRouteTarget } from "../threadRoutes";
+import { makeThreadFixture } from "../test-fixtures";
+import type { Thread } from "../types";
 import { ThreadRouteView } from "./ThreadRouteView";
 import { MainAppLocationTracker, useNavigateToMainApp } from "./sidebar/mainAppLocation";
 
 const control = vi.hoisted(() => ({
   transition: Promise.resolve(),
-  serverThread: null as {
-    latestTurn: null;
-    session: null;
-    messages: Array<{ role: "user" }>;
-  } | null,
+  serverThread: null as Thread | null,
 }));
 
 vi.mock("./ChatView", () => ({ default: () => <div>Thread composer</div> }));
@@ -42,9 +40,7 @@ vi.mock("./chat/draftHeroTransition", () => ({
 vi.mock("../state/entities", () => ({
   useThreadRefs: () => [],
   useEnvironmentThreadRefs: () => [],
-  useThread: () => control.serverThread,
-  useThreadDetail: () => control.serverThread,
-  useThreadShell: () => null,
+  useThreadShell: (ref: ScopedThreadRef | null) => (ref === null ? null : control.serverThread),
   useThreadStatus: () => "empty",
 }));
 vi.mock("../state/query", () => ({
@@ -179,7 +175,12 @@ describe("accepted draft navigation", () => {
 
   it("keeps ordinary draft promotion on the thread route", async () => {
     useComposerDraftStore.getState().setDraftThreadContext(draftId, { purpose: "work" });
-    control.serverThread = { latestTurn: null, session: null, messages: [{ role: "user" }] };
+    control.serverThread = makeThreadFixture({
+      environmentId,
+      id: threadId,
+      itemCount: 1,
+      latestUserMessageAt: "2026-10-07T19:22:40.685Z",
+    });
     markPromotedDraftThreadByRef(threadRef);
     const router = makeRouter();
     await act(async () => {

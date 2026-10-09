@@ -1,3 +1,4 @@
+import * as McpToolAccess from "../../McpToolAccess.ts";
 import { DocumentOperationError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
@@ -8,25 +9,27 @@ import { DocumentsToolkit } from "./tools.ts";
 const make = Effect.gen(function* () {
   const documents = yield* DocumentService;
 
-  return DocumentsToolkit.of({
-    publish_document: (input) =>
+  return {
+    publish_document: McpToolAccess.actsAsCaller((input) =>
       Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.requireMcpCapability("documents");
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
         const result = yield* documents.publish(
-          { ...input, threadId: scope.threadId },
-          `agent:${scope.providerInstanceId}:${scope.providerSessionId}`,
+          { ...input, threadId: scope.thread.threadId },
+          `agent:${scope.thread.providerInstanceId}:${scope.thread.providerSessionId}`,
         );
         return result.document;
       }),
-    list_documents: () =>
+    ),
+    list_documents: McpToolAccess.readsAsCaller(() =>
       Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.requireMcpCapability("documents");
-        return { documents: yield* documents.list({ threadId: scope.threadId }) };
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
+        return { documents: yield* documents.list({ threadId: scope.thread.threadId }) };
       }),
-    read_document: (input) =>
+    ),
+    read_document: McpToolAccess.readsAsCaller((input) =>
       Effect.gen(function* () {
-        const scope = yield* McpInvocationContext.requireMcpCapability("documents");
-        const visible = yield* documents.list({ threadId: scope.threadId });
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
+        const visible = yield* documents.list({ threadId: scope.thread.threadId });
         if (!visible.some((document) => document.id === input.documentId)) {
           return yield* new DocumentOperationError({
             reason: "not-found",
@@ -40,7 +43,8 @@ const make = Effect.gen(function* () {
           contentTruncated: detail.content.length > 20_000,
         };
       }),
-  });
+    ),
+  } satisfies McpToolAccess.Handlers<typeof DocumentsToolkit.tools>;
 });
 
-export const DocumentsToolkitHandlersLive = DocumentsToolkit.toLayer(make);
+export const DocumentsToolkitHandlersLive = McpToolAccess.toLayer(DocumentsToolkit, make);

@@ -5,13 +5,13 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as Scope from "effect/Scope";
 import * as Schedule from "effect/Schedule";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { ThreadId, type OrchestrationEvent } from "@t3tools/contracts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { forkParked } from "../serverActivation.ts";
 import { IssueService, type IssueServiceShape } from "./IssueService.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 
 export class IssueLifecycleReactor extends Context.Service<
   IssueLifecycleReactor,
@@ -43,8 +43,10 @@ export const recoverStartedIssueAttempts = (
       thread_id: string;
     }>`SELECT DISTINCT attempts.thread_id FROM issue_attempts attempts
     WHERE attempts.status='attached' AND attempts.started_at IS NULL AND attempts.worktree_path IS NOT NULL
-      AND EXISTS (SELECT 1 FROM projection_turns turns WHERE turns.thread_id=attempts.thread_id
-        AND turns.turn_id IS NOT NULL AND turns.started_at IS NOT NULL)`;
+      AND EXISTS (SELECT 1 FROM orchestration_v2_projection_provider_turns turns WHERE turns.thread_id=attempts.thread_id
+        AND turns.provider_turn_id IS NOT NULL AND turns.started_at IS NOT NULL)
+      AND EXISTS (SELECT 1 FROM orchestration_v2_projection_threads threads WHERE threads.thread_id=attempts.thread_id
+        AND COALESCE(json_extract(threads.payload_json, '$.purpose'), 'work')='work')`;
     for (const row of rows)
       yield* firstPromptSent({
         threadId: ThreadId.make(row.thread_id),
@@ -81,6 +83,7 @@ export const make = Effect.gen(function* () {
         });
       } else if (
         event?.type === "thread.session-set" &&
+        event.payload.providerAccepted === true &&
         event.payload.session.status === "running" &&
         event.payload.session.activeTurnId !== null
       ) {
@@ -93,7 +96,7 @@ export const make = Effect.gen(function* () {
         yield* recoverStartedIssueAttempts(issues.firstPromptSent);
         const threads = yield* projection.listThreadsWithPullRequests();
         for (const thread of threads)
-          for (const link of thread.pullRequests) {
+          for (const link of thread.pullRequests ?? []) {
             if (
               link.snapshot === null ||
               link.source === "stack-dismissed" ||

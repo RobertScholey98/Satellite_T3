@@ -20,10 +20,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
-import { ProviderInstanceRegistry } from "../provider/Services/ProviderInstanceRegistry.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { hasUnversionedTitleUpdate, readIdeaUpdateSources } from "./IdeaUpdateSources.ts";
+import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
@@ -58,7 +58,6 @@ export class IdeaUpdateReactor extends Context.Service<
       const runtime = yield* IdeaRuntime;
       const engine = yield* OrchestrationEngineService;
       const snapshots = yield* ProjectionSnapshotQuery;
-      const events = yield* OrchestrationEventStore;
       const settings = yield* ServerSettingsService;
       const providers = yield* ProviderInstanceRegistry;
       const crypto = yield* Crypto.Crypto;
@@ -91,7 +90,15 @@ export class IdeaUpdateReactor extends Context.Service<
         yield* Effect.gen(function* () {
           const notebook = yield* store.requireActive(threadId);
           const thread = yield* snapshots.getThreadShellById(threadId);
-          const initialTitle = notebook.update.processedSequence === 0 ? thread : Option.none();
+          const preserveUnversionedTitle =
+            notebook.update.processedSequence === 0 &&
+            Option.isSome(thread) &&
+            thread.value.titleState == null &&
+            (yield* hasUnversionedTitleUpdate(threadId));
+          const initialTitle =
+            notebook.update.processedSequence === 0 && !preserveUnversionedTitle
+              ? thread
+              : Option.none();
           const selected = (yield* settings.getSettings).ideaUpdatesModelSelection;
           const candidates = selected
             ? []
@@ -125,24 +132,15 @@ export class IdeaUpdateReactor extends Context.Service<
                 "The selected provider is unavailable for idea updates. Choose an enabled model in Settings → Idea updates.",
             });
           const cwd = yield* runtime.workingDirectory(threadId);
-          const sourceEvents = yield* events
-            .readAggregateRange({
-              aggregateKind: "thread",
-              aggregateId: threadId,
-              fromSequenceExclusive: 0,
-              toSequenceInclusive: notebook.update.requestedSequence,
-            })
-            .pipe(
-              Stream.filter(
-                (event) =>
-                  event.type === "thread.message-sent" ||
-                  event.type === "thread.activity-appended" ||
-                  (event.type === "idea.changed" &&
-                    event.payload.mutation.kind === "artifact.register"),
-              ),
-              Stream.runCollect,
-            );
+          const sourceEvents = yield* readIdeaUpdateSources(
+            threadId,
+            notebook.update.requestedSequence,
+          );
           const sourceSequences = new Map<string, number>();
+          // Retained artifacts remain valid when their old registration event was compacted;
+          // zero keeps them from counting as evidence newer than a note deletion.
+          for (const artifact of notebook.artifacts)
+            sourceSequences.set("artifact:" + artifact.id, 0);
           const discussion = new Map<
             string,
             {
@@ -248,7 +246,8 @@ export class IdeaUpdateReactor extends Context.Service<
           if (
             result.title?.trim() &&
             Option.isSome(initialTitle) &&
-            initialTitle.value.titleState?.source !== "manual"
+            initialTitle.value.titleState?.source !== "manual" &&
+            initialTitle.value.titleRegeneration == null
           ) {
             yield* engine
               .dispatch({

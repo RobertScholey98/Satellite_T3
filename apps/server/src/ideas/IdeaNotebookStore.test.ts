@@ -1,5 +1,5 @@
 import {
-  ApprovalRequestId,
+  RuntimeRequestId,
   CommandId,
   MessageId,
   ProjectId,
@@ -12,40 +12,41 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 import { ServerConfig } from "../config.ts";
-import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import { OrchestrationEventStore } from "../persistence/Services/OrchestrationEventStore.ts";
+import { EventStoreV2 } from "../orchestration-v2/EventStore.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
-import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { OrchestrationProjectionPipeline } from "../orchestration/Services/ProjectionPipeline.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  layer as SatelliteTestLayer,
+  recordProject,
+  recordCompletedRun,
+  recordMessage,
+  recordQuestion,
+} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import { ThreadSearch } from "../orchestration-v2/ThreadSearch.ts";
 
 const now = "2026-09-30T12:00:00.000Z";
 const threadId = ThreadId.make("idea-one");
 const projectId = ProjectId.make("project-one");
-const layer = OrchestrationLayerLive.pipe(
-  Layer.provideMerge(IdeaNotebookStore.layer),
+const layer = SatelliteTestLayer.pipe(
   Layer.provide(
     Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
       resolve: () => Effect.succeed(null),
     }),
   ),
-  Layer.provideMerge(SqlitePersistenceMemory),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-idea-store-" })),
   Layer.provideMerge(NodeServices.layer),
 );
 const create = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
-  yield* engine.dispatch({
-    type: "project.create",
-    commandId: CommandId.make("create-project"),
+  yield* recordProject({
     projectId,
     title: "Project",
     workspaceRoot: "/tmp/ideas-test",
-    createdAt: now,
   });
   yield* engine.dispatch({
     type: "thread.create",
@@ -70,8 +71,10 @@ it.effect("creates the thread and notebook together while keeping normal navigat
     const snapshots = yield* ProjectionSnapshotQuery;
     assert.equal((yield* store.get(threadId))?.pitch.markdown, "");
     assert.equal((yield* store.list())[0]?.threadId, threadId);
-    assert.equal((yield* snapshots.getShellSnapshot()).threads.length, 0);
-    assert.equal((yield* snapshots.searchThreads({ query: "Idea" })).matches.length, 0);
+    const projections = yield* ProjectionStoreV2;
+    const search = yield* ThreadSearch;
+    assert.equal((yield* projections.getShellSnapshot()).threads.length, 0);
+    assert.equal((yield* search.search({ query: "Idea" })).matches.length, 0);
     const detail = yield* snapshots.getThreadDetailById(threadId);
     assert.equal(Option.getOrThrow(detail).purpose, "idea");
   }).pipe(Effect.provide(layer)),
@@ -101,11 +104,10 @@ it.effect("rebuilds a pending deletion without losing its durable cleanup job", 
     const engine = yield* OrchestrationEngineService;
     const store = yield* IdeaNotebookStore;
     const sql = yield* SqlClient.SqlClient;
-    const pipeline = yield* OrchestrationProjectionPipeline;
+    const events = yield* EventStoreV2;
     yield* engine.dispatch({ type: "idea.delete", threadId, commandId: CommandId.make("delete") });
     yield* sql`DELETE FROM projection_idea_notebooks`;
-    yield* sql`DELETE FROM projection_state WHERE projector = 'projection.ideas'`;
-    yield* pipeline.bootstrap;
+    yield* Stream.runForEach(events.read(), store.projectV2);
     assert.equal((yield* store.pending())[0]?.status, "deleting");
     assert.equal(yield* store.isDeleted(threadId), true);
   }).pipe(Effect.provide(layer)),
@@ -116,9 +118,8 @@ it.effect("purges content and keeps a permanent fence across projection replay",
     yield* create;
     const engine = yield* OrchestrationEngineService;
     const store = yield* IdeaNotebookStore;
-    const events = yield* OrchestrationEventStore;
+    const events = yield* EventStoreV2;
     const sql = yield* SqlClient.SqlClient;
-    const pipeline = yield* OrchestrationProjectionPipeline;
     yield* engine.dispatch({
       type: "idea.edit",
       threadId,
@@ -134,7 +135,7 @@ it.effect("purges content and keeps a permanent fence across projection replay",
         edit: { kind: "pitch.save", baseRevision: 1, markdown: "Late data" },
       })
       .pipe(Effect.flip);
-    assert.include(late.message, "deleted");
+    assert.equal(late._tag, "OrchestratorCommandRejectedError");
     yield* engine.dispatch({
       type: "idea.purge",
       threadId,
@@ -142,17 +143,19 @@ it.effect("purges content and keeps a permanent fence across projection replay",
       deletionEpoch: 1,
     });
     assert.equal(yield* store.get(threadId), null);
-    const retained = yield* Stream.runCollect(events.readAll());
+    const retained = yield* Stream.runCollect(events.read());
     assert.deepEqual(
-      retained.filter((event) => event.aggregateKind === "thread").map((event) => event.type),
+      retained
+        .filter((stored) => stored.event.threadId === threadId)
+        .map((stored) => stored.event.type),
       ["idea.purged"],
     );
     assert.equal(
-      (yield* sql`SELECT * FROM projection_threads WHERE thread_id = ${threadId}`).length,
+      (yield* sql`SELECT * FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId}`)
+        .length,
       0,
     );
-    yield* sql`DELETE FROM projection_state`;
-    yield* pipeline.bootstrap;
+    yield* Stream.runForEach(events.read(), store.projectV2);
     assert.equal(yield* store.get(threadId), null);
     assert.equal(yield* store.isDeleted(threadId), true);
     const recreated = yield* engine
@@ -170,7 +173,7 @@ it.effect("purges content and keeps a permanent fence across projection replay",
         createdAt: now,
       })
       .pipe(Effect.flip);
-    assert.include(recreated.message, "deleted");
+    assert.equal(recreated._tag, "OrchestratorCommandRejectedError");
   }).pipe(Effect.provide(layer)),
 );
 
@@ -205,56 +208,39 @@ it.effect.each(["message", "native answer"] as const)(
         edit: { kind: "promotion.approve", id: "plan", sourceRevision: 0 },
       });
       if (input === "message")
-        yield* engine.dispatch({
-          type: "thread.message.user.append",
+        yield* recordMessage({
           threadId,
-          commandId: CommandId.make("new-input"),
-          message: {
-            messageId: MessageId.make("next-message"),
-            text: "Change the creation flow",
-            attachments: [],
-          },
-          createdAt: now,
+          messageId: MessageId.make("next-message"),
+          role: "user",
+          text: "Change the creation flow",
         });
       else
-        yield* engine.dispatch({
-          type: "thread.user-input.respond",
+        yield* recordQuestion({
           threadId,
-          commandId: CommandId.make("new-input"),
-          requestId: ApprovalRequestId.make("creation-choice"),
+          requestId: RuntimeRequestId.make("creation-choice"),
+          questions: [
+            {
+              id: "creation",
+              header: "Creation",
+              question: "Where should ideas live?",
+              options: [],
+            },
+          ],
           answers: { creation: "Use a dedicated conversation" },
-          createdAt: now,
         });
       const waiting = yield* store.get(threadId);
       assert.equal(waiting?.update.status, "waiting");
       assert.equal(waiting?.contentRevision, 1);
       assert.notEqual(waiting?.promotion?.sourceRevision, waiting?.contentRevision);
       assert.equal((yield* store.pending())[0]?.update.status, "waiting");
-      const session = {
+      yield* recordMessage({
         threadId,
-        status: "ready" as const,
-        providerName: "claudeAgent",
-        runtimeMode: "approval-required" as const,
-        activeTurnId: null,
-        lastError: null,
-        updatedAt: now,
-      };
-      yield* engine.dispatch({
-        type: "thread.session.set",
-        threadId,
-        commandId: CommandId.make("ready"),
-        session,
-        createdAt: now,
+        messageId: MessageId.make("assistant-finishing"),
+        role: "assistant",
+        text: "The provider has responded; checkpointing is still pending.",
       });
       assert.equal((yield* store.get(threadId))?.update.status, "waiting");
-      const settled = yield* engine.dispatch({
-        type: "thread.session.set",
-        threadId,
-        commandId: CommandId.make("settled"),
-        session,
-        turnSettled: true,
-        createdAt: now,
-      });
-      assert.equal((yield* store.pending())[0]?.update.requestedSequence, settled.sequence);
+      const settled = yield* recordCompletedRun(threadId);
+      assert.equal((yield* store.pending())[0]?.update.requestedSequence, settled.at(-1)?.sequence);
     }).pipe(Effect.provide(layer)),
 );

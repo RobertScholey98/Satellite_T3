@@ -41,7 +41,6 @@ import { useProjects } from "../../state/entities";
 import { ideaEnvironment } from "../../state/ideas";
 import { useEnvironmentQuery } from "../../state/query";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { ThreadAudienceContext } from "../../state/threadAudience";
 import { getComposerDraftSnapshot, setComposerDraftText } from "../../state/use-composer-drafts";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { uuidv4 } from "../../lib/uuid";
@@ -340,12 +339,7 @@ function IdeaWorkspace(props: IdeaRouteProps) {
     }
     open({ kind: "entry", id: resolved });
   };
-  if (!notebook && pendingCreation)
-    return (
-      <ThreadAudienceContext value="idea">
-        <ThreadRouteScreen {...props} ideaWorkspace />
-      </ThreadAudienceContext>
-    );
+  if (!notebook && pendingCreation) return <ThreadRouteScreen {...props} ideaWorkspace />;
   if (!notebook)
     return (
       <View className="flex-1 bg-screen p-5">
@@ -423,14 +417,12 @@ function IdeaWorkspace(props: IdeaRouteProps) {
         </Text>
       ) : null}
       <View style={{ flex: 1, display: selected === "thread" ? "flex" : "none" }}>
-        <ThreadAudienceContext value="idea">
-          <ThreadRouteScreen
-            {...props}
-            ideaWorkspace
-            revealMessage={messageRequest}
-            readingPosition={threadReadingPosition}
-          />
-        </ThreadAudienceContext>
+        <ThreadRouteScreen
+          {...props}
+          ideaWorkspace
+          revealMessage={messageRequest}
+          readingPosition={threadReadingPosition}
+        />
       </View>
       <ScrollView
         contentOffset={{ x: 0, y: readIdeaPosition(workspaceKey, "notebook") }}
@@ -461,7 +453,7 @@ function IdeaWorkspace(props: IdeaRouteProps) {
                   const result = await dispatch({
                     environmentId: threadRef.environmentId,
                     input: {
-                      type: "thread.meta.update",
+                      type: "thread.metadata.update",
                       commandId: CommandId.make(uuidv4()),
                       threadId: threadRef.threadId,
                       title: titleDraft.trim(),

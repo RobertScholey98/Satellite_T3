@@ -1,4 +1,5 @@
-import * as NodeCrypto from "node:crypto";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
 import {
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type RevdocAttempt,
@@ -11,9 +12,7 @@ export const reviewTests = (review: RevdocReview) =>
   review.sections.flatMap((section) => section.items.flatMap((item) => item.tests));
 
 export const testDefinitionRevision = (test: RevdocTest) =>
-  NodeCrypto.createHash("sha256")
-    .update(JSON.stringify([test.title, test.expected ?? ""]))
-    .digest("hex");
+  Hex.encode(sha256(new TextEncoder().encode(JSON.stringify([test.title, test.expected ?? ""]))));
 
 export function staleTestIds(review: RevdocReview, sourceRevision: string | null) {
   return reviewTests(review)

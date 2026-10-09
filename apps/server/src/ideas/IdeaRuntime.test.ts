@@ -17,8 +17,8 @@ import {
 } from "@t3tools/contracts";
 import { appendIdeaUserInputAttachments } from "../provider/userInputAttachments.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { withIdeaLock, setIdeaExecution, clearIdeaExecution } from "./IdeaExecution.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime, decodeIdeaArtifactContent } from "./IdeaRuntime.ts";

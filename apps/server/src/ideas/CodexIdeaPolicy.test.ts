@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as Toml from "effect/unstable/encoding/Toml";
+import * as Toml from "effect/encoding/Toml";
 import { expect } from "vite-plus/test";
 
 import { prepareCodexIdeaPolicy } from "./CodexIdeaPolicy.ts";

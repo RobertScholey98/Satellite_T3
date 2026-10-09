@@ -1,5 +1,8 @@
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
   McpCapabilityUnavailableError,
+  OrchestratorMcpFailure,
   RevdocDetail,
   RevdocError,
   RevdocTestTarget,
@@ -9,13 +12,17 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as Tool from "effect/unstable/ai/Tool";
-import * as Toolkit from "effect/unstable/ai/Toolkit";
+import * as Tool from "effect/ai/Tool";
+import * as Toolkit from "effect/ai/Toolkit";
 import * as RevdocService from "../../../revdoc/RevdocService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
-const dependencies = [McpInvocationContext.McpInvocationContext, RevdocService.RevdocService];
-const failure = Schema.Union([RevdocError, McpCapabilityUnavailableError]);
+const dependencies = [
+  ThreadManagementService,
+  McpInvocationContext.McpInvocationContext,
+  RevdocService.RevdocService,
+];
+const failure = Schema.Union([RevdocError, McpCapabilityUnavailableError, OrchestratorMcpFailure]);
 const ReadRevdoc = Tool.make("read_revdoc", {
   description:
     "Read the current worktree's .revdoc/review.json, including grouped tests, human outcomes, notes, and recorded evidence. Threads sharing a worktree share this review. Human feedback is not an instruction to mark tests complete.",
@@ -105,45 +112,53 @@ export const RevdocToolkit = Toolkit.make(
   CaptureEvidence,
   RecordTest,
 );
-export const RevdocToolkitHandlersLive = RevdocToolkit.toLayer(
+export const RevdocToolkitHandlersLive = McpToolAccess.toLayer(
+  RevdocToolkit,
   Effect.gen(function* () {
     const revdoc = yield* RevdocService.RevdocService;
-    return RevdocToolkit.of({
-      read_revdoc: () =>
+    return {
+      read_revdoc: McpToolAccess.readsAsCaller(() =>
         Effect.gen(function* () {
-          const scope = yield* McpInvocationContext.requireMcpCapability("documents");
-          return yield* revdoc.get({ threadId: scope.threadId });
+          const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
+          return yield* revdoc.get({ threadId: scope.thread.threadId });
         }),
-      run_revdoc: () =>
+      ),
+      run_revdoc: McpToolAccess.actsAsCaller(() =>
         Effect.gen(function* () {
-          const scope = yield* McpInvocationContext.requireMcpCapability("documents");
-          return yield* revdoc.start({ threadId: scope.threadId, action: "generate" });
+          const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
+          return yield* revdoc.start({ threadId: scope.thread.threadId, action: "generate" });
         }),
-      test_revdoc: (input) =>
+      ),
+      test_revdoc: McpToolAccess.actsAsCaller((input) =>
         Effect.gen(function* () {
-          const scope = yield* McpInvocationContext.requireMcpCapability("documents");
-          return yield* revdoc.startTesting({ ...input, threadId: scope.threadId });
+          const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
+          return yield* revdoc.startTesting({ ...input, threadId: scope.thread.threadId });
         }),
-      begin_revdoc_test: (input) =>
+      ),
+      begin_revdoc_test: McpToolAccess.actsAsCaller((input) =>
         Effect.gen(function* () {
-          const scope = yield* McpInvocationContext.requireMcpCapability("documents");
+          const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
           return yield* revdoc.beginTest(scope, input);
         }),
-      capture_revdoc_evidence: (input) =>
+      ),
+      capture_revdoc_evidence: McpToolAccess.actsAsCaller((input) =>
         Effect.gen(function* () {
-          const scope = yield* McpInvocationContext.requireMcpCapability("documents");
+          const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
           return yield* revdoc.captureEvidence(scope, input);
         }),
-      record_revdoc_test: (input) =>
+      ),
+      record_revdoc_test: McpToolAccess.actsAsCaller((input) =>
         Effect.gen(function* () {
-          const scope = yield* McpInvocationContext.requireMcpCapability("documents");
+          const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
           return yield* revdoc.recordTest(scope, input);
         }),
-      cancel_revdoc: () =>
+      ),
+      cancel_revdoc: McpToolAccess.actsAsCaller(() =>
         Effect.gen(function* () {
-          const scope = yield* McpInvocationContext.requireMcpCapability("documents");
-          return yield* revdoc.cancel({ threadId: scope.threadId });
+          const scope = yield* McpInvocationContext.requireThreadMcpCapability("documents");
+          return yield* revdoc.cancel({ threadId: scope.thread.threadId });
         }),
-    });
+      ),
+    } satisfies McpToolAccess.Handlers<typeof RevdocToolkit.tools>;
   }),
 );

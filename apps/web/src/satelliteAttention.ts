@@ -6,7 +6,13 @@ import {
   pendingRequestKey,
   type PendingRequestDraft,
 } from "./pendingRequestStore";
-import { projectSatellitePill } from "./satellitePill";
+import { projectSatellitePill, type PillThread } from "./satellitePill";
+
+export type AttentionThread = PillThread &
+  Pick<
+    EnvironmentThreadShell,
+    "environmentId" | "id" | "archivedAt" | "updatedAt" | "pendingRequests"
+  >;
 
 export interface AttentionEnvironment {
   environmentId: EnvironmentId;
@@ -15,7 +21,7 @@ export interface AttentionEnvironment {
 }
 
 export function deriveSatelliteAttention(
-  threads: ReadonlyArray<EnvironmentThreadShell>,
+  threads: ReadonlyArray<AttentionThread>,
   environments: ReadonlyArray<AttentionEnvironment>,
   drafts: Record<string, PendingRequestDraft>,
 ) {
@@ -46,7 +52,14 @@ export function deriveSatelliteAttention(
         kind: request.kind,
         requestId: request.requestId,
       };
-      items.set(pendingRequestKey(ref), { ...base, ...request, ref });
+      items.set(pendingRequestKey(ref), {
+        ...base,
+        ...request,
+        ref,
+        label: request.label ?? (request.kind === "approval" ? "Approval required" : "Question"),
+        preview:
+          request.preview ?? (request.kind === "approval" ? "Approval required" : "Question"),
+      });
     }
     const relevant =
       thread.settledOverride !== "settled" &&
@@ -71,7 +84,7 @@ export function deriveSatelliteAttention(
         environmentId: thread.environmentId,
         threadId: thread.id,
         kind,
-        requestId: thread.latestTurn?.turnId ?? thread.session?.updatedAt ?? thread.updatedAt,
+        requestId: thread.latestRun?.runId ?? thread.runtime?.updatedAt ?? thread.updatedAt,
       };
       items.set(pendingRequestKey(ref), {
         ...base,
@@ -81,7 +94,7 @@ export function deriveSatelliteAttention(
           kind === "error"
             ? "Open the thread to inspect the failure and continue."
             : "Review the proposed plan in its thread.",
-        createdAt: thread.latestTurn?.completedAt ?? thread.updatedAt,
+        createdAt: thread.latestRun?.completedAt ?? thread.updatedAt,
       });
     }
   }

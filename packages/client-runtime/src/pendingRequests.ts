@@ -1,5 +1,7 @@
 import {
-  ApprovalRequestId,
+  RuntimeRequestId,
+  EventId,
+  type OrchestrationV2ThreadProjection,
   type OrchestrationThreadActivity,
   ProviderApprovalOption,
   ProviderRequestKind,
@@ -8,25 +10,13 @@ import {
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
+import type { ThreadPendingApproval, ThreadPendingUserInput } from "./state/threadRequests.ts";
 
-export interface PendingApproval {
-  readonly requestId: ApprovalRequestId;
-  readonly requestKind: ProviderRequestKind;
-  readonly createdAt: string;
-  readonly detail?: string;
-  readonly appName?: string;
-  readonly options?: ReadonlyArray<ProviderApprovalOption>;
-}
+export type PendingApproval = ThreadPendingApproval;
+export type PendingUserInput = ThreadPendingUserInput;
 
-export interface PendingUserInput {
-  readonly requestId: ApprovalRequestId;
-  readonly createdAt: string;
-  readonly questions: ReadonlyArray<UserInputQuestion>;
-  /** Async questions can be dismissed without a reply; native callbacks cannot. */
-  readonly dismissible: boolean;
-}
-
-const isRequestId = Schema.is(ApprovalRequestId);
+const isRequestId = Schema.is(RuntimeRequestId);
 const isProviderRequestKind = Schema.is(ProviderRequestKind);
 const isProviderApprovalOption = Schema.is(ProviderApprovalOption);
 const QuestionOption = Schema.Struct({
@@ -42,6 +32,7 @@ const decodeQuestion = Schema.decodeUnknownOption(
     header: Schema.String,
     question: Schema.String,
     options: Schema.Array(QuestionOption),
+    required: Schema.optional(Schema.Boolean),
   }),
 );
 
@@ -66,7 +57,7 @@ export function requestKindFromRequestType(requestType: unknown): ProviderReques
   }
 }
 
-function parseQuestions(value: unknown): UserInputQuestion[] {
+function parseQuestions(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.flatMap((question) => {
     if (!Predicate.isObject(question) || !Array.isArray(question.options)) return [];
@@ -78,6 +69,7 @@ function parseQuestions(value: unknown): UserInputQuestion[] {
       question: question.question,
       options,
       multiSelect: question.multiSelect === true,
+      ...(typeof question.required === "boolean" ? { required: question.required } : {}),
       ...(typeof question.allowCustomAnswer === "boolean"
         ? { allowCustomAnswer: question.allowCustomAnswer }
         : {}),
@@ -89,9 +81,11 @@ function parseQuestions(value: unknown): UserInputQuestion[] {
 const requestActivityKinds = new Set([
   "approval.requested",
   "approval.resolved",
+  "approval.cancelled",
   "provider.approval.respond.failed",
   "user-input.requested",
   "user-input.resolved",
+  "user-input.cancelled",
   "provider.user-input.respond.failed",
 ]);
 
@@ -122,10 +116,10 @@ function isStaleRequestFailure(
 
 /** Reduces request state once for web, desktop, and mobile. Layout stays with each client. */
 export function derivePendingRequests(activities: ReadonlyArray<OrchestrationThreadActivity>) {
-  const approvals = new Map<ApprovalRequestId, PendingApproval>();
-  const userInputs = new Map<ApprovalRequestId, PendingUserInput>();
-  const closedApprovals = new Set<ApprovalRequestId>();
-  const closedUserInputs = new Set<ApprovalRequestId>();
+  const approvals = new Map<RuntimeRequestId, PendingApproval>();
+  const userInputs = new Map<RuntimeRequestId, PendingUserInput>();
+  const closedApprovals = new Set<RuntimeRequestId>();
+  const closedUserInputs = new Set<RuntimeRequestId>();
 
   // Request IDs are unique. A terminal event stays final even when provider
   // sequences and server-generated activities arrive in a different order.
@@ -154,6 +148,8 @@ export function derivePendingRequests(activities: ReadonlyArray<OrchestrationThr
         // Older OpenCode approvals do not always include a recognized kind.
         requestKind: requestKind ?? "command",
         createdAt: activity.createdAt,
+        responseCapability:
+          payload.responseCapability === "not_resumable" ? "not_resumable" : "live",
         ...(typeof payload.detail === "string" && payload.detail ? { detail: payload.detail } : {}),
         ...(typeof payload.appName === "string" && payload.appName
           ? { appName: payload.appName }
@@ -167,11 +163,22 @@ export function derivePendingRequests(activities: ReadonlyArray<OrchestrationThr
       userInputs.set(requestId, {
         requestId,
         createdAt: activity.createdAt,
-        questions,
+        questions: questions.map((question) => ({
+          ...question,
+          multiSelect: question.multiSelect ?? false,
+        })),
+        responseCapability:
+          payload.responseCapability === "not_resumable"
+            ? "not_resumable"
+            : payload.responseMode === "message"
+              ? "message"
+              : "live",
+        ...(payload.responseMode === "message" ? { responseMode: "message" as const } : {}),
         dismissible: payload.responseMode === "message",
       });
     } else if (
       activity.kind === "approval.resolved" ||
+      activity.kind === "approval.cancelled" ||
       (activity.kind === "provider.approval.respond.failed" &&
         isStaleRequestFailure(activity.kind, payload))
     ) {
@@ -179,6 +186,7 @@ export function derivePendingRequests(activities: ReadonlyArray<OrchestrationThr
       approvals.delete(requestId);
     } else if (
       activity.kind === "user-input.resolved" ||
+      activity.kind === "user-input.cancelled" ||
       (activity.kind === "provider.user-input.respond.failed" &&
         isStaleRequestFailure(activity.kind, payload))
     ) {
@@ -195,4 +203,59 @@ export function derivePendingRequests(activities: ReadonlyArray<OrchestrationThr
     approvals: [...approvals.values()].sort(byCreatedAt),
     userInputs: [...userInputs.values()].sort(byCreatedAt),
   };
+}
+
+/** Projects request evidence for Satellite's delivery reconciliation and pill editor. */
+export function threadRequestActivities(
+  projection: Pick<OrchestrationV2ThreadProjection, "runtimeRequests" | "turnItems">,
+): OrchestrationThreadActivity[] {
+  return projection.runtimeRequests.flatMap((request) => {
+    if (request.kind === "auth_refresh" || request.kind === "dynamic_tool_call") return [];
+    const isQuestion = request.kind === "user_input";
+    const item = projection.turnItems.findLast(
+      (item) =>
+        (item.type === "user_input_request" || item.type === "approval_request") &&
+        item.requestId === request.id,
+    );
+    const kind = isQuestion ? "user-input" : "approval";
+    const created: OrchestrationThreadActivity = {
+      id: EventId.make(`${request.id}:requested`),
+      kind: `${kind}.requested`,
+      tone: "approval",
+      summary: isQuestion ? "Question" : "Approval required",
+      turnId: null,
+      createdAt: DateTime.formatIso(request.createdAt),
+      payload: {
+        requestId: request.id,
+        requestKind: request.kind,
+        responseCapability: request.responseCapability.type,
+        ...(item?.type === "user_input_request"
+          ? {
+              questions: item.questions,
+              ...(item.responseMode === "message" || request.responseCapability.type === "message"
+                ? { responseMode: "message" }
+                : {}),
+            }
+          : {}),
+        ...(item?.type === "approval_request"
+          ? {
+              detail: item.prompt,
+              appName: item.appName,
+              options: item.options,
+            }
+          : {}),
+      },
+    };
+    return request.status === "pending"
+      ? [created]
+      : [
+          created,
+          {
+            ...created,
+            id: EventId.make(`${request.id}:${request.status}`),
+            kind: `${kind}.resolved`,
+            createdAt: DateTime.formatIso(request.resolvedAt ?? request.createdAt),
+          },
+        ];
+  });
 }

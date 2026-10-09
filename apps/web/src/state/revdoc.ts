@@ -4,8 +4,5 @@ import { connectionAtomRuntime } from "../connection/runtime";
 
 export const revdocEnvironment = createRevdocEnvironmentAtoms(connectionAtomRuntime);
 
-export const revdocTestingThreads = createEnvironmentThreadStateAtoms(
-  connectionAtomRuntime,
-  "revdoc",
-);
-export const legacyRevdocTestingThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime);
+export const revdocTestingThreads = createEnvironmentThreadStateAtoms(connectionAtomRuntime);
+export const legacyRevdocTestingThreads = revdocTestingThreads;

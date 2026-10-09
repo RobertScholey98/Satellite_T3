@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { createIssuesEnvironmentAtoms } from "@t3tools/client-runtime/issues";
 import { EnvironmentId, ProjectId, type IssueBoardSync } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { connectionAtomRuntime } from "../connection/runtime";
 
 export const issuesEnvironment = createIssuesEnvironmentAtoms(connectionAtomRuntime);
@@ -35,8 +35,6 @@ export function useIssueBoardSync(ref: IssueBoardRef | null): IssueBoardSync | n
   return useAtomValue(
     ref === null
       ? UNSUBSCRIBED_BOARD_SYNC
-      : boardSyncAtom(
-          [ref.environmentId, ref.projectId, ref.boardId].join(BOARD_KEY_SEPARATOR),
-        ),
+      : boardSyncAtom([ref.environmentId, ref.projectId, ref.boardId].join(BOARD_KEY_SEPARATOR)),
   );
 }

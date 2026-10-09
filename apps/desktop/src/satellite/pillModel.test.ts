@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { ApprovalRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { RuntimeRequestId, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   clampPillBounds,
   clampWorkspaceBounds,
@@ -320,7 +320,7 @@ describe("Satellite lifecycle", () => {
       environmentId: EnvironmentId.make("remote-1"),
       threadId: ThreadId.make("thread-1"),
       kind: "question" as const,
-      requestId: ApprovalRequestId.make("question-1"),
+      requestId: RuntimeRequestId.make("question-1"),
     };
     const result = unavailablePillState({
       threadId: "thread-1",

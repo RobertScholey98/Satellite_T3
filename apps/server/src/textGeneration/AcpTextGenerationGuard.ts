@@ -30,7 +30,7 @@ export const installTextGenerationToolGuard = Effect.fn("installTextGenerationTo
       reject().pipe(Effect.as({ outcome: { outcome: "cancelled" as const } })),
     );
     yield* runtime.handleElicitation(() =>
-      reject().pipe(Effect.as({ action: { action: "decline" as const } })),
+      reject().pipe(Effect.as({ action: "decline" as const })),
     );
     yield* runtime.handleReadTextFile(rejectRequest);
     yield* runtime.handleWriteTextFile(rejectRequest);

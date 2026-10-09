@@ -5,7 +5,7 @@ import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { type IssueBoardLocator, type IssueRef } from "@t3tools/contracts";
 import { makeIssueHost, type IssueHostScope } from "./IssueHost.ts";
 import { CredentialScope } from "../sourceControl/SourceControlRateLimit.ts";

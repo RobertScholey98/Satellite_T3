@@ -15,8 +15,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as OrchestrationEngine from "../orchestration-v2/SatelliteOrchestration.ts";
+import * as ProjectionSnapshotQuery from "../orchestration-v2/SatelliteOrchestration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 
 export class CommitRecommendationError extends Schema.TaggedError<CommitRecommendationError>()(
@@ -51,6 +51,10 @@ export class CommitRecommendationService extends Context.Service<
     readonly readLocalStatus: (
       cwd: string,
     ) => Effect.Effect<GitVcsDriver.GitStatusDetails, GitCommandError | CommitRecommendationError>;
+    readonly expireForStatus: (
+      cwd: string,
+      status: GitVcsDriver.GitStatusDetails,
+    ) => Effect.Effect<void, CommitRecommendationError>;
     readonly set: (
       threadId: ThreadId,
       input: SetCommitRecommendationInput,
@@ -94,26 +98,33 @@ const make = Effect.gen(function* () {
     Effect.mapError((cause) => new CommitRecommendationError({ reason: "save-failed", cause })),
   );
 
+  const expireUnlocked = Effect.fnUntraced(function* (
+    cwd: string,
+    status: GitVcsDriver.GitStatusDetails,
+  ) {
+    if (!status.isRepo || status.hasWorkingTreeChanges) return;
+    const threads = yield* snapshots
+      .listThreadsWithCommitRecommendations()
+      .pipe(
+        Effect.mapError((cause) => new CommitRecommendationError({ reason: "save-failed", cause })),
+      );
+    const checkout = yield* canonicalize(cwd);
+    for (const thread of threads)
+      if ((yield* canonicalize(thread.commitRecommendation.cwd)) === checkout)
+        yield* save(thread.id, null);
+  });
+  const expireForStatus = Effect.fn("CommitRecommendationService.expireForStatus")(
+    (cwd: string, status: GitVcsDriver.GitStatusDetails) =>
+      withCheckoutLock(cwd, expireUnlocked(cwd, status)),
+  );
+
   // Keep the fresh observation and its durable expiry ordered with new assessments.
   const readLocalStatus = Effect.fn("CommitRecommendationService.readLocalStatus")((cwd: string) =>
     withCheckoutLock(
       cwd,
       Effect.gen(function* () {
         const status = yield* git.statusDetailsLocal(cwd);
-        if (!status.isRepo || status.hasWorkingTreeChanges) return status;
-        const threads = yield* snapshots
-          .listThreadsWithCommitRecommendations()
-          .pipe(
-            Effect.mapError(
-              (cause) => new CommitRecommendationError({ reason: "save-failed", cause }),
-            ),
-          );
-        const checkout = yield* canonicalize(cwd);
-        for (const thread of threads) {
-          if ((yield* canonicalize(thread.commitRecommendation.cwd)) === checkout) {
-            yield* save(thread.id, null);
-          }
-        }
+        yield* expireUnlocked(cwd, status);
         return status;
       }),
     ),
@@ -180,7 +191,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return CommitRecommendationService.of({ set, readLocalStatus });
+  return CommitRecommendationService.of({ set, readLocalStatus, expireForStatus });
 });
 
 export const layer = Layer.effect(CommitRecommendationService, make);
