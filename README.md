@@ -35,17 +35,17 @@ services, app-store listings, and release channels are operated by upstream.
 
 ## Install Satellite
 
-Download the Windows x64 `.exe` or macOS `.dmg` (`arm64` for Apple Silicon,
-`x64` for Intel) from
+Download the Windows x64 `.exe`, macOS `.dmg` (`arm64` for Apple Silicon,
+`x64` for Intel), or Linux x64 `.AppImage` or `.deb` from
 [this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
 Windows installers are currently unsigned. Installed builds use
-`~/.satellite-t3/userdata`. Windows receives desktop updates from this fork;
+`~/.satellite-t3/userdata`. Windows and Linux receive desktop updates from this fork;
 macOS builds are ad-hoc signed, not notarized, and updated manually. Drag the app
 from the DMG into Applications. See [installation guidance](docs/user/install.md)
 if macOS blocks its first launch.
 
 For source builds, follow the setup below. The Satellite release workflow ships
-Windows x64 and macOS arm64/x64. Linux, web, and mobile source remain in the
+Windows x64, macOS arm64/x64, and Linux x64. Web and mobile source remain in the
 repository. It does not bundle a WSL runtime or publish a standalone CLI.
 
 ### Set up a provider

@@ -280,9 +280,115 @@ jobs:
             release/SatelliteT3-*.dmg
             release/SatelliteT3-*.zip
 
+  linux:
+    name: Build Linux x64
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      T3CODE_DESKTOP_DEV: "0"
+      T3CODE_DESKTOP_VERSION: ${{ needs.prepare.outputs.version }}
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Resolve package cache path
+        id: package_cache_path
+        run: echo "path=$(vp pm cache dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.package_cache_path.outputs.path }}
+          key: satellite-linux-x64-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install native build and runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libsecret-1-dev pkg-config imagemagick libgtk-3-0 libnss3 libasound2 libgbm1 libxss1 libxtst6 libnotify4 libatspi2.0-0
+          rustup target add x86_64-unknown-linux-gnu
+
+      - name: Setup Python for native dependencies
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: vp install --frozen-lockfile
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Typecheck desktop and web
+        run: |
+          vp run --filter @t3tools/desktop typecheck
+          vp run --filter @t3tools/web typecheck
+
+      - name: Test Linux desktop behavior and startup
+        working-directory: apps/desktop
+        run: vp test run src/window/DesktopWindow.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopEarlyElectronStartup.test.ts src/app/DesktopLifecycle.test.ts src/updates/DesktopUpdates.test.ts scripts/main-process-bundle.test.mjs scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
+
+      - name: Test packaging
+        run: vp test run scripts/build-desktop-artifact.test.ts
+
+      - name: Build AppImage, Debian package, and updater files
+        run: vp run dist:desktop:linux
+
+      - name: Verify preload bundle output
+        run: node apps/desktop/scripts/verify-preload-bundle.mjs
+
+      - name: Collect release assets
+        run: |
+          for extension in AppImage deb; do
+            asset="release/SatelliteT3-$T3CODE_DESKTOP_VERSION-x64.$extension"
+            test -s "$asset" || { echo "Missing release asset: $asset" >&2; exit 1; }
+          done
+          test -s release/latest-linux.yml
+
+      - name: Verify packaged Linux app
+        run: |
+          smoke_dir="$RUNNER_TEMP/satellite-release"
+          mkdir -p "$smoke_dir"
+          cd "$smoke_dir"
+          appimage="$GITHUB_WORKSPACE/release/SatelliteT3-$T3CODE_DESKTOP_VERSION-x64.AppImage"
+          chmod +x "$appimage"
+          "$appimage" --appimage-extract > /dev/null
+          test -s squashfs-root/resources/app-update.yml
+          T3CODE_HOME="$smoke_dir/home" ELECTRON_RUN_AS_NODE=1 ./squashfs-root/t3code ./squashfs-root/resources/app.asar/apps/server/dist/bin.mjs --help
+          deb="$GITHUB_WORKSPACE/release/SatelliteT3-$T3CODE_DESKTOP_VERSION-x64.deb"
+          test "$(dpkg-deb --field "$deb" Architecture)" = amd64
+          dpkg-deb --info "$deb"
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64-release
+          if-no-files-found: error
+          path: |
+            release/SatelliteT3-*-x64.AppImage
+            release/SatelliteT3-*-x64.deb
+            release/latest-linux.yml
+
   publish:
     name: Publish GitHub Release
-    needs: [prepare, windows, macos]
+    needs: [prepare, windows, macos, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -306,6 +412,9 @@ jobs:
           for arch in arm64 x64; do
             test -s "SatelliteT3-$RELEASE_VERSION-$arch.dmg"
             test -s "SatelliteT3-$RELEASE_VERSION-$arch.zip"
+          done
+          for asset in "SatelliteT3-$RELEASE_VERSION-x64.AppImage" "SatelliteT3-$RELEASE_VERSION-x64.deb" latest-linux.yml; do
+            test -s "$asset"
           done
           sha256sum * > SHA256SUMS
 
