@@ -5,6 +5,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type FactorySnapshot,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -49,11 +50,14 @@ const shell = (id: ThreadId, parent: ThreadId | null): OrchestrationV2ThreadShel
     relationshipToParent: parent === null ? null : "subagent",
   },
 });
-const layer = (shells: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>) =>
+const layer = (
+  shells: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell>,
+  snapshot: FactorySnapshot = state,
+) =>
   Access.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(FactoryStore)({ snapshot: Effect.succeed(state) }),
+        Layer.mock(FactoryStore)({ snapshot: Effect.succeed(snapshot) }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
         }),
@@ -121,3 +125,125 @@ it("uses actual human provenance and treats scheduled or unowned messages as aut
     managerId,
   );
 });
+
+it.effect("retains replaced lead membership while denying that lead and all descendants", () => {
+  const replacementId = ThreadId.make("replacement");
+  const replaced = {
+    ...state,
+    assignments: state.assignments.map((entry) => ({
+      ...entry,
+      threadId: replacementId,
+      previousLeadThreadIds: [leadId],
+    })),
+  };
+  return Effect.gen(function* () {
+    const access = yield* Access.FactoryControlAccess;
+    for (const threadId of [leadId, workerId, childId]) {
+      assert.equal((yield* access.membership(threadId))?.assignmentId, assignmentId);
+      assert.equal(
+        (yield* access.assertExecution(threadId).pipe(Effect.flip)).code,
+        "permission-denied",
+      );
+      assert.equal(
+        (yield* access.assertDirection({ threadId, senderThreadId: undefined }).pipe(Effect.flip))
+          .code,
+        "permission-denied",
+      );
+    }
+    yield* access.assertExecution(replacementId);
+  }).pipe(
+    Effect.provide(
+      layer(
+        new Map([
+          [workerId, shell(workerId, leadId)],
+          [childId, shell(childId, workerId)],
+        ]),
+        replaced,
+      ),
+    ),
+  );
+});
+
+it.effect.each(["pending", "running"] as const)(
+  "admits only the current %s diagnosis and rejects stale identities, descendants, and direction",
+  (status) => {
+    const diagnosisId = ThreadId.make("diagnosis");
+    const incident = {
+      id: "incident",
+      phase: "diagnosing" as const,
+      diagnosisThreadId: diagnosisId,
+      reason: "Investigate the stopped team",
+      evidence: [],
+    };
+    const snapshot: FactorySnapshot = {
+      ...state,
+      assignments: state.assignments.map((entry) => ({
+        ...entry,
+        oversight: { recovery: { cyclesUsed: 1, history: [], incident } },
+      })),
+      auxiliaryThreads: [
+        {
+          threadId: diagnosisId,
+          assignmentId,
+          managerId,
+          projectId,
+          kind: "diagnosis",
+          incidentId: "incident",
+          cycle: 1,
+          status,
+          modelSelection: state.managers[0]!.modelSelection,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+    return Effect.gen(function* () {
+      const access = yield* Access.FactoryControlAccess;
+      yield* access.assertExecution(diagnosisId);
+      assert.equal((yield* access.membership(diagnosisId))?.auxiliaryThreadId, diagnosisId);
+      assert.equal(
+        (yield* access.assertExecution(childId).pipe(Effect.flip)).code,
+        "permission-denied",
+      );
+      assert.equal(
+        (yield* access
+          .assertDirection({ threadId: leadId, senderThreadId: diagnosisId })
+          .pipe(Effect.flip)).code,
+        "permission-denied",
+      );
+      yield* access.assertDirection({ threadId: diagnosisId, senderThreadId: managerId });
+      for (const stale of [
+        { ...incident, phase: "continuing" as const },
+        { ...incident, id: "different-incident" },
+        { ...incident, diagnosisThreadId: ThreadId.make("different-diagnosis") },
+      ])
+        yield* Effect.gen(function* () {
+          const current = yield* Access.FactoryControlAccess;
+          assert.equal((yield* current.membership(diagnosisId))?.assignmentId, assignmentId);
+          assert.equal(
+            (yield* current.assertExecution(diagnosisId).pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+          for (const senderThreadId of [managerId, undefined])
+            assert.equal(
+              (yield* current
+                .assertDirection({ threadId: diagnosisId, senderThreadId })
+                .pipe(Effect.flip)).code,
+              "permission-denied",
+            );
+        }).pipe(
+          Effect.provide(
+            Layer.fresh(
+              layer(new Map(), {
+                ...snapshot,
+                assignments: snapshot.assignments.map((entry) => ({
+                  ...entry,
+                  oversight: { recovery: { cyclesUsed: 1, history: [], incident: stale } },
+                })),
+              }),
+            ),
+          ),
+        );
+    }).pipe(Effect.provide(layer(new Map([[childId, shell(childId, diagnosisId)]]), snapshot)));
+  },
+);

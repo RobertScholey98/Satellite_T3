@@ -4,6 +4,9 @@ import {
   EventId,
   FactoryAssignmentId,
   FactoryBoundaryId,
+  FactoryControlId,
+  FactoryDependencyId,
+  FactoryEffectIntent,
   FactoryError,
   FactorySnapshot,
   FactorySourceId,
@@ -12,6 +15,9 @@ import {
   ProviderInstanceId,
   ThreadId,
   type FactoryAssignment,
+  type FactoryAuxiliaryThread,
+  type FactoryControl,
+  type FactoryDependency,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -47,6 +53,7 @@ const model = { instanceId: ProviderInstanceId.make("codex"), model: "approved-m
 const workflow = { repositoryRoot: "/owned-workflow", revision: "approved-workflow" };
 const human = { kind: "human" } as const;
 const encodeSnapshot = Schema.encodeSync(Schema.fromJsonString(FactorySnapshot));
+const encodeIntent = Schema.encodeSync(Schema.fromJsonString(FactoryEffectIntent));
 const assignment: FactoryAssignment = {
   id: assignmentId,
   managerId,
@@ -144,6 +151,10 @@ const scenario = <A, E, R>(
   body: Effect.Effect<A, E, R>,
   options: {
     assignments?: readonly FactoryAssignment[];
+    auxiliaryThreads?: readonly FactoryAuxiliaryThread[];
+    dependencies?: readonly FactoryDependency[];
+    controls?: readonly FactoryControl[];
+    effects?: readonly FactoryEffectIntent[];
     stopTeam?: FactoryHandover["Service"]["stopTeam"];
     suspend?: FactoryBoundaryExecution["Service"]["suspend"];
     resume?: FactoryBoundaryExecution["Service"]["resume"];
@@ -154,9 +165,14 @@ const scenario = <A, E, R>(
 ) =>
   Effect.gen(function* () {
     const assignments = options.assignments ?? [assignment];
+    const auxiliaryThreads = options.auxiliaryThreads ?? [];
     yield* recordProject({ projectId, title: "Controls", workspaceRoot: "/project" });
     const threads = yield* ThreadManagement.ThreadManagementService;
-    for (const threadId of [managerId, ...assignments.map((entry) => entry.threadId)]) {
+    for (const threadId of [
+      managerId,
+      ...assignments.map((entry) => entry.threadId),
+      ...auxiliaryThreads.map((entry) => entry.threadId),
+    ]) {
       yield* threads.dispatch({
         type: "thread.create",
         commandId: CommandId.make(`create:${threadId}`),
@@ -173,7 +189,19 @@ const scenario = <A, E, R>(
       });
     }
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`INSERT INTO factory_state (id,revision,payload_json) VALUES(1,0,${encodeSnapshot(initial(assignments))})`;
+    yield* sql`INSERT INTO factory_state (id,revision,payload_json) VALUES(1,0,${encodeSnapshot({
+      ...initial(assignments),
+      auxiliaryThreads,
+      dependencies: options.dependencies ?? [],
+      controls: options.controls ?? [],
+    })})`;
+    if (options.effects !== undefined) {
+      yield* sql`INSERT INTO factory_commands (command_id,request_json,result_json)
+        VALUES('persisted-delivery','{}','{"revision":0}')`;
+      for (const [index, intent] of options.effects.entries())
+        yield* sql`INSERT INTO factory_outbox (effect_id,command_id,payload_json,status,created_at)
+          VALUES(${`persisted-delivery:${index}`},'persisted-delivery',${encodeIntent(intent)},'pending',${now})`;
+    }
     return yield* body.pipe(
       Effect.provide(FactoryService.layer),
       Effect.provide(
@@ -864,4 +892,404 @@ it.effect(
         );
       }),
     ),
+);
+
+const diagnosisId = ThreadId.make("independent-diagnosis");
+const otherDiagnosisId = ThreadId.make("other-diagnosis");
+const otherAssignment: FactoryAssignment = {
+  ...assignment,
+  id: FactoryAssignmentId.make("other-assignment"),
+  threadId: ThreadId.make("other-lead"),
+};
+const auxiliary: FactoryAuxiliaryThread = {
+  threadId: diagnosisId,
+  assignmentId,
+  managerId,
+  projectId,
+  kind: "diagnosis",
+  incidentId: "current-incident",
+  cycle: 1,
+  status: "running",
+  modelSelection: model,
+  qualification,
+  createdAt: now,
+  updatedAt: now,
+};
+
+it.effect.each(["assignment.cancel", "project.pause"] as const)(
+  "%s stops independently rooted diagnosis threads within its remit",
+  (kind) =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        yield* send(diagnosisId);
+        yield* send(otherDiagnosisId);
+        assert.equal(
+          (yield* projections.getThreadProjection(diagnosisId)).thread.lineage.parentThreadId,
+          null,
+        );
+        yield* factory.dispatch(
+          human,
+          kind === "assignment.cancel"
+            ? { type: kind, commandId: CommandId.make(kind), assignmentId }
+            : { type: kind, commandId: CommandId.make(kind), projectId },
+        );
+        yield* factory.drain;
+        assert.equal(
+          (yield* projections.getThreadProjection(diagnosisId)).runs[0]?.status,
+          "interrupted",
+        );
+        assert.equal(
+          (yield* projections.getThreadProjection(otherDiagnosisId)).runs[0]?.status,
+          kind === "project.pause" ? "interrupted" : "starting",
+        );
+        const control = (yield* factory.snapshot({})).controls[0];
+        assert.equal(control?.kind === "takeover" ? null : control?.stop.status, "confirmed");
+      }),
+      {
+        assignments: [assignment, otherAssignment],
+        auxiliaryThreads: [
+          auxiliary,
+          { ...auxiliary, threadId: otherDiagnosisId, assignmentId: otherAssignment.id },
+        ],
+      },
+    ),
+);
+
+const dependencyId = FactoryDependencyId.make("current-dependency");
+const dependency: FactoryDependency = {
+  id: dependencyId,
+  assignmentId,
+  description: "A separately delivered capability",
+  unblockCondition: {
+    kind: "pull-request-merged",
+    projectId,
+    ref: { projectId, repository: "owner/repository", number: 12 },
+  },
+  requestedBy: leadId,
+  evidence: [],
+  state: "checking",
+  delivery: {
+    kind: "pull-request-merged",
+    id: "current-delivery",
+    projectId,
+    ref: { projectId, repository: "owner/repository", number: 12 },
+    headSha: "confirmed-head",
+    mergedAt: now,
+    observedAt: now,
+  },
+  createdAt: now,
+  updatedAt: now,
+};
+const dependencyWait: FactoryAssignment["wait"] = {
+  kind: "dependency",
+  dependencyIds: [dependencyId],
+  reason: "Check the supporting delivery before resuming implementation",
+};
+const usabilityIntent: FactoryEffectIntent = {
+  type: "thread.deliver",
+  threadId: leadId,
+  messageId: MessageId.make("check-current-delivery"),
+  kind: "continuation",
+  sourceThreadId: managerId,
+  purpose: { kind: "dependency-usability", dependencyId, deliveryId: "current-delivery" },
+  text: "Check whether the host-confirmed supporting delivery is usable.",
+};
+const recoveringAssignment: FactoryAssignment = {
+  ...assignment,
+  oversight: {
+    recovery: {
+      cyclesUsed: 1,
+      history: [],
+      incident: {
+        id: "current-incident",
+        phase: "continuing",
+        reason: "Continue with the independently diagnosed plan",
+        evidence: [],
+      },
+    },
+  },
+};
+const recoveryIntent: FactoryEffectIntent = {
+  ...usabilityIntent,
+  messageId: MessageId.make("continue-current-recovery"),
+  purpose: { kind: "recovery", incidentId: "current-incident" },
+  text: "Continue within the retained grant and recovery allowance.",
+};
+
+it.effect.each(["active", "queued", "completed"] as const)(
+  "project resume restores only the captured current diagnosis: %s",
+  (mode) =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        yield* send(diagnosisId, "Investigate the recorded failure");
+        const original = (yield* projections.getThreadProjection(diagnosisId)).runs[0]!;
+        if (mode === "queued")
+          yield* projections.apply({
+            id: EventId.make("queued-diagnosis"),
+            type: "run.updated",
+            threadId: diagnosisId,
+            runId: original.id,
+            occurredAt: yield* DateTime.now,
+            payload: { ...original, status: "queued", queueHeld: false, queuePosition: 1 },
+          });
+        yield* factory.dispatch(human, {
+          type: "project.pause",
+          commandId: CommandId.make("pause-diagnosis"),
+          projectId,
+        });
+        yield* factory.drain;
+        const paused = (yield* factory.snapshot({})).controls[0]!;
+        assert.equal(paused.kind, "project-pause");
+        if (paused.kind !== "project-pause") return;
+        assert.deepEqual(paused.resumeThreadIds, mode === "queued" ? [] : [diagnosisId]);
+        if (mode === "queued")
+          assert.deepEqual(paused.resumeQueues, [{ threadId: diagnosisId, runIds: [original.id] }]);
+        yield* factory.dispatch(human, {
+          type: "project.resume",
+          commandId: CommandId.make("resume-diagnosis"),
+          projectId,
+        });
+        yield* factory.drain;
+        const current = yield* projections.getThreadProjection(diagnosisId);
+        assert.equal(
+          current.runs.at(-1)?.status,
+          mode === "completed" ? "interrupted" : "starting",
+        );
+        assert.equal(current.messages.length, mode === "active" ? 2 : 1);
+        if (mode === "queued") {
+          assert.equal(current.runs[0]?.id, original.id);
+          assert.isFalse(current.runs[0]?.queueHeld);
+        }
+        assert.equal((yield* factory.snapshot({})).assignments[0]?.wait?.kind, "recovery");
+      }),
+      {
+        assignments: [
+          {
+            ...recoveringAssignment,
+            wait: { kind: "recovery", reason: "Wait for independent diagnosis" },
+            oversight: {
+              recovery: {
+                ...recoveringAssignment.oversight!.recovery,
+                incident: {
+                  ...recoveringAssignment.oversight!.recovery.incident!,
+                  phase: mode === "completed" ? "replanning" : "diagnosing",
+                  diagnosisThreadId: diagnosisId,
+                },
+              },
+            },
+          },
+        ],
+        auxiliaryThreads: [{ ...auxiliary, status: mode === "completed" ? "complete" : "running" }],
+      },
+    ),
+);
+
+const deliveryCases: readonly {
+  name: string;
+  assignment: FactoryAssignment;
+  intent: FactoryEffectIntent;
+  dependency?: FactoryDependency;
+  expected: "completed" | "pending" | "superseded";
+}[] = [
+  {
+    name: "checks the current dependency delivery through its matching wait",
+    assignment: { ...assignment, wait: dependencyWait },
+    intent: usabilityIntent,
+    dependency,
+    expected: "completed",
+  },
+  {
+    name: "does not let an ordinary continuation bypass a dependency wait",
+    assignment: { ...assignment, wait: dependencyWait },
+    intent: {
+      type: "thread.deliver",
+      threadId: leadId,
+      messageId: MessageId.make("ordinary-continuation"),
+      kind: "continuation",
+      sourceThreadId: managerId,
+      text: "Continue the original work.",
+    },
+    dependency,
+    expected: "pending",
+  },
+  {
+    name: "holds a dependency check behind another dependency wait",
+    assignment: {
+      ...assignment,
+      wait: {
+        ...dependencyWait,
+        dependencyIds: [FactoryDependencyId.make("unrelated-dependency")],
+      },
+    },
+    intent: usabilityIntent,
+    dependency,
+    expected: "pending",
+  },
+  {
+    name: "holds a dependency check behind an authority decision",
+    assignment: { ...assignment, wait: { kind: "authority", reason: "Grant revoked" } },
+    intent: usabilityIntent,
+    dependency,
+    expected: "pending",
+  },
+  {
+    name: "retires a superseded dependency delivery even when no wait remains",
+    assignment,
+    intent: usabilityIntent,
+    dependency: { ...dependency, delivery: { ...dependency.delivery!, id: "new-delivery" } },
+    expected: "superseded",
+  },
+  {
+    name: "retires a check already resolved as usable",
+    assignment,
+    intent: usabilityIntent,
+    dependency: { ...dependency, state: "usable" },
+    expected: "superseded",
+  },
+  {
+    name: "rejects another assignment's delivery as a wait bypass",
+    assignment: { ...assignment, wait: dependencyWait },
+    intent: usabilityIntent,
+    dependency: { ...dependency, assignmentId: otherAssignment.id },
+    expected: "superseded",
+  },
+  {
+    name: "continues the current recovery through its recovery wait",
+    assignment: {
+      ...recoveringAssignment,
+      wait: { kind: "recovery", reason: "Resume the approved recovery plan" },
+    },
+    intent: recoveryIntent,
+    expected: "completed",
+  },
+  {
+    name: "does not let recovery dismiss a human decision",
+    assignment: {
+      ...recoveringAssignment,
+      wait: { kind: "human-decision", reason: "A new product decision is required" },
+    },
+    intent: recoveryIntent,
+    expected: "pending",
+  },
+  {
+    name: "does not let recovery bypass a dependency wait",
+    assignment: { ...recoveringAssignment, wait: dependencyWait },
+    intent: recoveryIntent,
+    dependency,
+    expected: "pending",
+  },
+  {
+    name: "retires an earlier recovery continuation after the incident changes",
+    assignment: recoveringAssignment,
+    intent: { ...recoveryIntent, purpose: { kind: "recovery", incidentId: "old-incident" } },
+    expected: "superseded",
+  },
+  {
+    name: "retires a recovery continuation once the incident escalates",
+    assignment: {
+      ...recoveringAssignment,
+      oversight: {
+        recovery: {
+          ...recoveringAssignment.oversight!.recovery,
+          incident: { ...recoveringAssignment.oversight!.recovery.incident!, phase: "escalated" },
+        },
+      },
+    },
+    intent: recoveryIntent,
+    expected: "superseded",
+  },
+];
+
+it.effect.each(deliveryCases)("$name", (test) =>
+  scenario(
+    Effect.gen(function* () {
+      const factory = yield* FactoryService.FactoryService;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      yield* factory.drain;
+      assert.equal(
+        (yield* projections.getThreadProjection(leadId)).messages.length,
+        test.expected === "completed" ? 1 : 0,
+      );
+      const rows = yield* sql<{ readonly status: string }>`
+          SELECT status FROM factory_outbox WHERE effect_id = 'persisted-delivery:0'`;
+      assert.equal(rows[0]?.status, test.expected);
+      const current = (yield* factory.snapshot({})).assignments[0]!;
+      assert.deepEqual(current.wait, test.assignment.wait);
+      assert.deepEqual(current.grant, test.assignment.grant);
+    }),
+    {
+      assignments: [test.assignment],
+      dependencies: test.dependency === undefined ? [] : [test.dependency],
+      effects: [test.intent],
+    },
+  ),
+);
+
+const controlCases: readonly FactoryControl[] = [
+  {
+    id: FactoryControlId.make("held-manager"),
+    kind: "manager-pause",
+    managerId,
+    generation: 1,
+    status: "active",
+    stop: { status: "confirmed", stoppedAt: now },
+    priorStatus: "active",
+    requestedAt: now,
+    updatedAt: now,
+  },
+  {
+    id: FactoryControlId.make("held-project"),
+    kind: "project-pause",
+    projectId,
+    generation: 1,
+    status: "active",
+    stop: { status: "confirmed", stoppedAt: now },
+    requestedAt: now,
+    updatedAt: now,
+  },
+  {
+    id: FactoryControlId.make("human-takeover"),
+    kind: "takeover",
+    threadId: leadId,
+    assignmentId,
+    managerId,
+    parentThreadId: managerId,
+    generation: 1,
+    status: "active",
+    requestedAt: now,
+    updatedAt: now,
+  },
+  {
+    id: FactoryControlId.make("cancelled-work"),
+    kind: "cancellation",
+    assignmentId,
+    managerId,
+    generation: 1,
+    stop: { status: "confirmed", stoppedAt: now },
+    requestedAt: now,
+    updatedAt: now,
+  },
+];
+it.effect.each(controlCases)("purpose-specific delivery respects $kind", (control) =>
+  scenario(
+    Effect.gen(function* () {
+      const factory = yield* FactoryService.FactoryService;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const store = yield* FactoryStore.FactoryStore;
+      yield* factory.drain;
+      assert.equal((yield* projections.getThreadProjection(leadId)).messages.length, 0);
+      assert.equal((yield* store.pending).length, 2);
+    }),
+    {
+      assignments: [recoveringAssignment],
+      dependencies: [dependency],
+      controls: [control],
+      effects: [usabilityIntent, recoveryIntent],
+    },
+  ),
 );

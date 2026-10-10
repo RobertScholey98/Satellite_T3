@@ -11,6 +11,7 @@ import {
   type FactorySnapshot,
   type OrchestrationV2StoredEvent,
   type FactoryHostCommand,
+  type ProjectId,
 } from "@t3tools/contracts";
 import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Context from "effect/Context";
@@ -34,6 +35,16 @@ import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
 import { decide, type FactoryActor } from "./FactoryState.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryControlEffects from "./FactoryControlEffects.ts";
+import * as FactoryRecoveryEffects from "./FactoryRecoveryEffects.ts";
+import * as FactoryReconciliation from "./FactoryReconciliation.ts";
+import * as FactoryRecoveryReconciliation from "./FactoryRecoveryReconciliation.ts";
+import {
+  constrainFactoryModelPolicy,
+  resolveFactoryModelPolicy,
+  selectFactoryModel,
+} from "./FactoryModelPolicy.ts";
+import { type FactoryOversightContext } from "./FactoryOversight.ts";
+import { ServerActivation, forkParked } from "../serverActivation.ts";
 import { type FactoryControlContext } from "./FactoryControls.ts";
 
 export class FactoryService extends Context.Service<
@@ -46,6 +57,11 @@ export class FactoryService extends Context.Service<
       command: FactoryCommand,
     ) => Effect.Effect<FactoryCommandResult, FactoryError>;
     readonly drain: Effect.Effect<void>;
+    readonly recover: Effect.Effect<void, FactoryError>;
+    readonly reconcileProject: (
+      projectId: ProjectId,
+      triggerId: string,
+    ) => Effect.Effect<void, FactoryError>;
     readonly observe: (event: OrchestrationV2StoredEvent) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryService") {}
@@ -82,6 +98,16 @@ const scopedSnapshot =
                 assignment.id === guidance.assignmentId && assignment.projectId === query.projectId,
             ),
           ),
+          dependencies: snapshot.dependencies.filter((dependency) =>
+            snapshot.assignments.some(
+              (assignment) =>
+                assignment.id === dependency.assignmentId &&
+                assignment.projectId === query.projectId,
+            ),
+          ),
+          auxiliaryThreads: snapshot.auxiliaryThreads.filter(
+            (thread) => thread.projectId === query.projectId,
+          ),
         };
 
 const onboardingInstructions = (intent: FactoryThreadLaunchIntent) =>
@@ -108,6 +134,10 @@ export const layer = Layer.effect(
     const projects = yield* ProjectService;
     const controls = yield* FactoryControlAccess.FactoryControlAccess;
     const controlEffects = yield* FactoryControlEffects.FactoryControlEffects;
+    const recoveryEffects = yield* FactoryRecoveryEffects.FactoryRecoveryEffects;
+    const reconciliation = yield* FactoryReconciliation.FactoryReconciliation;
+    const recoveryReconciliation =
+      yield* FactoryRecoveryReconciliation.FactoryRecoveryReconciliation;
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -227,6 +257,8 @@ export const layer = Layer.effect(
                     `Approved execution grant: ${renderJson(assignment.grant)}. Existing granted files can be edited normally. For creating, renaming, or deleting files use factory_dispatch assignment.file.mutate with the current grant epoch. Use assignment.verify to run the adopted immutable checks and retain its evidence.`,
                     `Approved exact models: ${renderJson(assignment.modelPolicy)}. Your selected model: ${renderJson(assignment.modelChoice)}. Choose approved models according to task complexity. Native subagent tools are disabled; use delegate_task for your internal team. Every descendant remains inside this assignment's boundary.`,
                     "Raise an out-of-scope dependency or structural problem when discovered. Do not change protected controls without a separately authorized rule-change assignment. The manager coordinates priorities; it does not review your PR.",
+                    "Record meaningful progress using assignment.progress with summary, remainingWork, and evidence references. Before ending a turn with no independent work left, record assignment.wait: dependency with your requested dependency IDs, review with an existing linked open PR, or human-decision with the decision needed. A completed provider turn does not complete the assignment. Use dependency.request for out-of-scope supporting work; approval and commissioning never mean it is delivered. After a host-confirmed delivery wake, report dependency.check-usability against that exact delivery ID and evidence.",
+                    "When delivery actually occurs, use assignment.delivery.request: a linked pull-request ref for merged work, or the actual report message ID at the agreed recipient for a non-PR assignment. For a report, first record progress with empty remainingWork and evidence, then send the findings and recommendation to the agreed recipient. The host verifies receipt; do not claim completion from a green check or an opened PR.",
                     "Human review is required unless the delivery grant and project rules explicitly permit autonomous delivery. Major UI changes require human PR approval and useful screenshots. After merge, conduct your internal retro and then a retro with your manager. Creating a follow-up ticket does not authorize its implementation.",
                   ].join("\n\n")
                 : [
@@ -235,6 +267,7 @@ export const layer = Layer.effect(
                     "You coordinate scoped implementation teams and project priorities. Implementation leads own code, internal reviews, verification, and the complete PR process. You do not implement or review their PRs. You and the system manager are peers with different remits.",
                     "Currently onboarding is in progress. Acknowledge the assignment briefly, then wait for an actionable event or the human. Do not poll, start implementation, or attempt to broaden execution permissions. Unresolved permissions and project decisions must remain visible.",
                     "When factory_snapshot shows an active manager with an approved boundary and the human requests work, use assignment.commission to create a scoped implementation lead. Choose exact source paths and creation directories within that boundary, a completion condition, and task complexity. Omit modelSelection for the configured lead preference. authorizationMessageId may reference the direct human request, or omit it to use the latest direct human message. Discuss gaps with the human before commissioning unclear work.",
+                    "On a dependency request, decide whether separate work is authorized within your remit. Use dependency.approve with the exact supporting work, then assignment.commission with that dependencyId and the same approved scope. Wait for actual host-confirmed delivery and the original lead's usability check. For a recovery incident, read the recorded evidence, use assignment.recovery.begin within the remaining allowance, then use its independent diagnosis to replan. Use replaceLead only when warranted; work and limits are preserved. If recovery cannot proceed, assignment.recovery.escalate must state the failure, attempts, options, and recommendation for the human.",
                   ].join("\n\n"),
           attachments: [],
           modelSelection: intent.modelSelection,
@@ -411,7 +444,12 @@ export const layer = Layer.effect(
           const pending = (yield* store.pending).filter(
             (entry) =>
               !visited.has(entry.id) &&
-              (entry.intent.type === "thread.launch" || entry.intent.type === "assignment.prepare"),
+              [
+                "thread.launch",
+                "assignment.prepare",
+                "auxiliary.launch",
+                "assignment.replace-lead",
+              ].includes(entry.intent.type),
           );
           if (pending.length === 0) return;
           for (const entry of pending) {
@@ -420,10 +458,12 @@ export const layer = Layer.effect(
             if (entry.intent.type === "assignment.prepare") yield* prepare(entry);
             else if (entry.intent.type === "thread.launch")
               yield* commands.withPermits(1)(launch(entry));
+            else yield* recoveryEffects.handle(entry);
             if ((yield* store.snapshot).revision !== revision) {
               workerProgress += 1;
               visited.clear();
               yield* controlWorker.enqueue(undefined);
+              yield* oversightWorker.enqueue(undefined);
             }
           }
         }
@@ -436,8 +476,9 @@ export const layer = Layer.effect(
           const pending = (yield* store.pending).filter(
             (entry) =>
               !visited.has(entry.id) &&
-              entry.intent.type !== "thread.launch" &&
-              entry.intent.type !== "assignment.prepare",
+              ["control.stop", "control.resume", "thread.deliver", "thread.queue.resume"].includes(
+                entry.intent.type,
+              ),
           );
           if (pending.length === 0) return;
           for (const entry of pending) {
@@ -455,21 +496,66 @@ export const layer = Layer.effect(
               workerProgress += 1;
               visited.clear();
               yield* worker.enqueue(undefined);
+              yield* oversightWorker.enqueue(undefined);
             }
           }
         }
       }),
     );
-    yield* worker.enqueue(undefined);
-    yield* controlWorker.enqueue(undefined);
-    const wake = Effect.all([worker.enqueue(undefined), controlWorker.enqueue(undefined)], {
-      discard: true,
-    });
+    const oversightWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) =>
+              !visited.has(entry.id) &&
+              (entry.intent.type === "assignment.reconcile" ||
+                entry.intent.type === "auxiliary.reconcile"),
+          );
+          if (pending.length === 0) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            yield* (
+              entry.intent.type === "auxiliary.reconcile"
+                ? recoveryReconciliation.handle(entry)
+                : reconciliation.handle(entry)
+            ).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory reconciliation remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* worker.enqueue(undefined);
+              yield* controlWorker.enqueue(undefined);
+            }
+          }
+        }
+      }),
+    );
+    const wake = Effect.all(
+      [
+        worker.enqueue(undefined),
+        controlWorker.enqueue(undefined),
+        oversightWorker.enqueue(undefined),
+      ],
+      {
+        discard: true,
+      },
+    );
+    if ((yield* ServerActivation) === undefined) yield* wake;
+    else yield* forkParked(wake);
     const drain = Effect.gen(function* () {
       for (;;) {
         const progress = workerProgress;
         yield* worker.drain;
         yield* controlWorker.drain;
+        yield* oversightWorker.drain;
         if (progress === workerProgress) return;
       }
     });
@@ -500,9 +586,127 @@ export const layer = Layer.effect(
       snapshot: (query) => store.snapshot.pipe(Effect.map(scopedSnapshot(query))),
       changes: (query) => store.changes.pipe(Stream.map(scopedSnapshot(query))),
       drain,
+      reconcileProject: Effect.fn("FactoryService.reconcileProject")(
+        function* (projectId, triggerId) {
+          yield* store.commit({
+            actor: { kind: "system" },
+            now: yield* nowIso,
+            command: {
+              type: "project.reconcile.requested",
+              commandId: CommandId.make(`factory:remote:${projectId}:${triggerId}`),
+              projectId,
+              triggerId,
+            },
+          });
+          yield* wake;
+        },
+      ),
+      recover: Effect.gen(function* () {
+        const startupId = yield* randomUuidV4;
+        for (const assignment of (yield* store.snapshot).assignments) {
+          if (
+            assignment.kind === "onboarding" ||
+            assignment.outcome ||
+            assignment.status === "complete"
+          )
+            continue;
+          const observed = assignment.oversight?.lastObservedRun;
+          yield* store.commit({
+            actor: { kind: "system" },
+            now: yield* nowIso,
+            command: {
+              type: "assignment.reconcile.requested",
+              commandId: CommandId.make(`factory:startup:${startupId}:${assignment.id}`),
+              assignmentId: assignment.id,
+              triggerId:
+                observed === undefined
+                  ? `startup:${assignment.id}`
+                  : `run:${observed.runId}:${observed.attemptId ?? "none"}`,
+            },
+          });
+        }
+        for (const auxiliary of (yield* store.snapshot).auxiliaryThreads) {
+          if (auxiliary.status !== "running" && auxiliary.status !== "pending") continue;
+          yield* store.commit({
+            actor: { kind: "system" },
+            now: yield* nowIso,
+            command: {
+              type: "auxiliary.reconcile.requested",
+              commandId: CommandId.make(`factory:startup:${startupId}:${auxiliary.threadId}`),
+              threadId: auxiliary.threadId,
+              triggerId: `startup:${startupId}`,
+            },
+          });
+        }
+        yield* wake;
+      }),
       observe: Effect.fn("FactoryService.observe")(function* (stored) {
         let command: FactoryHostCommand | undefined;
         const event = stored.event;
+        if (event.type === "thread.pull-request-synced")
+          command = {
+            type: "project.reconcile.requested",
+            commandId: CommandId.make(`factory:observed:${stored.sequence}`),
+            projectId: event.payload.projectId,
+            triggerId: `pr-sync:${stored.sequence}`,
+          };
+        if (
+          [
+            "run.updated",
+            "run.created",
+            "runtime-request.updated",
+            "subagent.updated",
+            "checkpoint.captured",
+          ].includes(event.type)
+        ) {
+          const resolved = yield* controls.membership(event.threadId).pipe(Effect.result);
+          if (Result.isFailure(resolved) && resolved.failure.code !== "execution-unavailable")
+            return yield* resolved.failure;
+          const membership = Result.isSuccess(resolved) ? resolved.success : undefined;
+          if (membership?.auxiliaryThreadId !== undefined) {
+            command = {
+              type: "auxiliary.reconcile.requested",
+              commandId: CommandId.make(`factory:observed:${stored.sequence}`),
+              threadId: membership.auxiliaryThreadId,
+              triggerId: `event:${stored.sequence}`,
+            };
+          }
+          if (
+            membership?.assignmentId !== undefined &&
+            membership.auxiliaryThreadId === undefined
+          ) {
+            const assignment = (yield* store.snapshot).assignments.find(
+              (entry) => entry.id === membership.assignmentId,
+            );
+            if (
+              assignment !== undefined &&
+              !assignment.previousLeadThreadIds?.some(
+                (id) => id === event.threadId || membership.ancestorThreadIds.includes(id),
+              )
+            ) {
+              command =
+                event.type === "run.updated" || event.type === "run.created"
+                  ? {
+                      type: "assignment.run.observed",
+                      commandId: CommandId.make(`factory:observed:${stored.sequence}`),
+                      assignmentId: assignment.id,
+                      threadId: event.threadId,
+                      runId: event.payload.id,
+                      attemptId: event.payload.activeAttemptId,
+                      status: event.payload.status,
+                    }
+                  : {
+                      type: "assignment.reconcile.requested",
+                      commandId: CommandId.make(`factory:observed:${stored.sequence}`),
+                      assignmentId: assignment.id,
+                      triggerId:
+                        assignment.oversight?.lastObservedRun === undefined
+                          ? `event:${stored.sequence}`
+                          : `run:${assignment.oversight.lastObservedRun.runId}:${assignment.oversight.lastObservedRun.attemptId ?? "none"}`,
+                    };
+            }
+          }
+        }
         if (
           event.type === "message.updated" &&
           event.payload.role === "user" &&
@@ -526,7 +730,8 @@ export const layer = Layer.effect(
           ...(command === undefined ? {} : { command }),
           now: yield* nowIso,
         });
-        if (command !== undefined) yield* controlWorker.enqueue(undefined);
+        if (command !== undefined) yield* wake;
+        else yield* oversightWorker.enqueue(undefined);
       }),
       dispatch: Effect.fn("FactoryService.dispatch")(function* (actor, command) {
         const receipt = yield* store.findReceipt({ actor, command });
@@ -548,6 +753,50 @@ export const layer = Layer.effect(
               }
             : undefined;
         const snapshot = yield* store.snapshot;
+        let oversightContext: FactoryOversightContext = {};
+        if (command.type === "assignment.wait" && command.wait.kind === "review") {
+          const assignment = snapshot.assignments.find(
+            (entry) => entry.id === command.assignmentId,
+          );
+          oversightContext = {
+            reviewVerified:
+              assignment !== undefined &&
+              (yield* reconciliation.reviewExists(assignment, command.wait.ref)),
+          };
+        }
+        if (
+          command.type === "assignment.recovery.begin" ||
+          (command.type === "assignment.recovery.replan" && command.replaceLead)
+        ) {
+          const assignment = snapshot.assignments.find(
+            (entry) => entry.id === command.assignmentId,
+          );
+          const manager = snapshot.managers.find((entry) => entry.id === assignment?.managerId);
+          if (!assignment || !manager || !assignment.modelPolicy)
+            return yield* new FactoryError({ code: "invalid-state" });
+          const policy = constrainFactoryModelPolicy(
+            assignment.modelPolicy,
+            resolveFactoryModelPolicy(
+              snapshot.modelDefaults,
+              manager.modelOverrides,
+              manager.modelSelection,
+            ),
+          );
+          const choice = selectFactoryModel({
+            policy,
+            role: command.type === "assignment.recovery.begin" ? "reviewer" : "lead",
+            complexity: assignment.complexity ?? "standard",
+          });
+          if (Result.isFailure(choice)) return yield* choice.failure;
+          const selected = {
+            threadId: ThreadId.make(yield* randomUuidV4),
+            modelSelection: choice.success.selection,
+          };
+          oversightContext =
+            command.type === "assignment.recovery.begin"
+              ? { auxiliaryAllocation: selected }
+              : { replacementAllocation: selected };
+        }
         let humanMessageVerified = false;
         let humanMessageId: MessageId | undefined;
         if (command.type === "assignment.commission" && actor.kind === "thread") {
@@ -594,6 +843,7 @@ export const layer = Layer.effect(
           humanMessageVerified,
           ...(humanMessageId === undefined ? {} : { humanMessageId }),
           handoverVerified,
+          ...oversightContext,
           ...(allocation === undefined ? {} : { allocation }),
         });
         if (Result.isFailure(preflight)) return yield* preflight.failure;
@@ -670,6 +920,7 @@ export const layer = Layer.effect(
           humanMessageVerified,
           ...(humanMessageId === undefined ? {} : { humanMessageId }),
           handoverVerified,
+          ...oversightContext,
           ...(allocation === undefined ? {} : { allocation }),
           ...(qualification === undefined ? {} : { qualification }),
           ...(boundary === undefined ? {} : { boundary }),
@@ -740,4 +991,10 @@ export const layer = Layer.effect(
       },
     });
   }),
-).pipe(Layer.provide(FactoryControlEffects.layer), Layer.provide(FactoryControlAccess.layer));
+).pipe(
+  Layer.provide(FactoryControlEffects.layer),
+  Layer.provide(FactoryRecoveryEffects.layer),
+  Layer.provide(FactoryReconciliation.layer),
+  Layer.provide(FactoryRecoveryReconciliation.layer),
+  Layer.provide(FactoryControlAccess.layer),
+);

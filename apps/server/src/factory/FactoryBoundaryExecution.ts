@@ -67,6 +67,25 @@ export class FactoryBoundaryExecution extends Context.Service<
       readonly grant: FactoryAssignmentGrant;
       readonly startingSourceId?: FactorySourceId;
     }) => Effect.Effect<FactoryDiscoveryQualification, FactoryError>;
+    readonly inspect: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly threadId: ThreadId;
+      readonly expectedEpoch: number;
+    }) => Effect.Effect<
+      {
+        readonly qualification: Extract<FactoryDiscoveryQualification, { status: "qualified" }>;
+        readonly sourceDigest: string;
+      },
+      FactoryError
+    >;
+    readonly rebind: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly threadId: ThreadId;
+      readonly expectedEpoch: number;
+    }) => Effect.Effect<
+      Extract<FactoryDiscoveryQualification, { status: "qualified" }>,
+      FactoryError
+    >;
     readonly mutate: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly expectedEpoch: number;
@@ -183,7 +202,8 @@ const make = Effect.gen(function* () {
     profile: FactoryExecutionProfile,
     input: unknown,
   ) {
-    if (profile.assignmentWorkspace === undefined) return yield* denied();
+    if (profile.assignmentWorkspace === undefined || profile.inspection !== undefined)
+      return yield* denied();
     yield* assertActive(profile);
     if (
       (stoppedEpochs.get(profile.assignmentWorkspace.assignmentId) ?? -1) >=
@@ -503,6 +523,7 @@ const make = Effect.gen(function* () {
     if (value.assignment.qualification.status !== "qualified") return yield* denied();
     const profile = yield* readProfile(value.assignment.qualification.profileId);
     if (
+      profile.inspection !== undefined ||
       profile.assignmentWorkspace?.assignmentId !== assignmentId ||
       profile.assignmentWorkspace.grantEpoch !== value.grant.epoch ||
       profile.assignmentWorkspace.boundaryId !== value.boundary.id
@@ -526,6 +547,149 @@ const make = Effect.gen(function* () {
     };
     return { ...value, profile, pathConfiguration };
   });
+
+  const recoverySource = Effect.fn("FactoryBoundaryExecution.recoverySource")(function* (
+    assignmentId: FactoryAssignmentId,
+    expectedEpoch: number,
+  ) {
+    const value = yield* prepared(assignmentId, expectedEpoch);
+    const { assignment, profile } = value;
+    if (
+      assignment.startingSource !== undefined &&
+      (profile.startingSourceId !== assignment.startingSource.id ||
+        profile.startingSourceDigest !== assignment.startingSource.sourceDigest)
+    )
+      return yield* denied();
+    yield* docker(profile, ["volume", "inspect", profile.assignmentWorkspace!.volumeName]);
+    return value;
+  });
+  const publishProfile = Effect.fn("FactoryBoundaryExecution.publishProfile")(function* (
+    directory: string,
+    profile: FactoryExecutionProfile,
+  ) {
+    const temporary = path.join(directory, `profile.${yield* crypto.randomUUIDv4}.json`);
+    yield* fs.writeFileString(temporary, json(profile), { flag: "wx" });
+    yield* fs
+      .rename(temporary, path.join(directory, "profile.json"))
+      .pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
+  });
+  const inspect = Effect.fn("FactoryBoundaryExecution.inspect")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["inspect"]>[0]) {
+      const {
+        assignment,
+        grant,
+        profile: original,
+      } = yield* recoverySource(input.assignmentId, input.expectedEpoch);
+      const profileId = yield* identity({
+        kind: "inspection",
+        assignmentId: assignment.id,
+        threadId: input.threadId,
+        grant,
+      });
+      const directory = path.join(root, "execution", profileId);
+      let profile: FactoryExecutionProfile;
+      if (yield* fs.exists(path.join(directory, "profile.json"))) {
+        profile = yield* readProfile(profileId);
+        if (
+          profile.inspection === undefined ||
+          stableStringify(profile.assignmentWorkspace) !==
+            stableStringify(original.assignmentWorkspace)
+        )
+          return yield* denied();
+        yield* assertActive(profile);
+      } else {
+        const source = yield* helper(original, { kind: "capture" }).pipe(
+          Effect.flatMap(decodeCapture),
+        );
+        const projectSnapshotPath = path.join(directory, "project");
+        const evidencePath = path.join(directory, "evidence");
+        for (const target of [projectSnapshotPath, evidencePath])
+          yield* fs.remove(target, { recursive: true, force: true });
+        yield* fs.makeDirectory(evidencePath, { recursive: true });
+        yield* writeFiles(projectSnapshotPath, source.files);
+        yield* fs.writeFileString(
+          path.join(evidencePath, "assignment.json"),
+          json({
+            assignmentId: assignment.id,
+            leadThreadId: assignment.threadId,
+            scope: assignment.scope,
+            grant,
+            workflow: assignment.workflow,
+            modelPolicy: assignment.modelPolicy,
+            modelSelection: assignment.modelSelection,
+            startingSource: assignment.startingSource,
+            sourceDigest: source.digest,
+            verification: assignment.verification,
+            oversight: assignment.oversight,
+          }),
+        );
+        profile = FactoryExecutionProfile.make({
+          ...original,
+          boundaryId: profileId,
+          projectSnapshotPath,
+          runtimePath: path.join(directory, "sessions"),
+          inspection: { sourceDigest: source.digest, evidencePath },
+        });
+        yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
+        yield* current(input.assignmentId, input.expectedEpoch);
+        yield* assertActive(original);
+        yield* publishProfile(directory, profile);
+      }
+      return {
+        qualification: {
+          status: "qualified" as const,
+          profileId,
+          checkedAt: DateTime.formatIso(yield* DateTime.now),
+        },
+        sourceDigest: profile.inspection!.sourceDigest,
+      };
+    },
+    mutex.withPermit,
+    Effect.mapError(preserve),
+  );
+  const rebind = Effect.fn("FactoryBoundaryExecution.rebind")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["rebind"]>[0]) {
+      const {
+        assignment,
+        grant,
+        profile: original,
+      } = yield* recoverySource(input.assignmentId, input.expectedEpoch);
+      const profileId = yield* identity({
+        kind: "replacement",
+        assignmentId: assignment.id,
+        threadId: input.threadId,
+        grant,
+      });
+      const directory = path.join(root, "execution", profileId);
+      if (yield* fs.exists(path.join(directory, "profile.json"))) {
+        const profile = yield* readProfile(profileId);
+        if (
+          profile.inspection !== undefined ||
+          profile.boundaryId !== original.boundaryId ||
+          stableStringify(profile.assignmentWorkspace) !==
+            stableStringify(original.assignmentWorkspace)
+        )
+          return yield* denied();
+        yield* assertActive(profile);
+      } else {
+        const profile = FactoryExecutionProfile.make({
+          ...original,
+          runtimePath: path.join(directory, "sessions"),
+        });
+        yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
+        yield* current(input.assignmentId, input.expectedEpoch);
+        yield* assertActive(original);
+        yield* publishProfile(directory, profile);
+      }
+      return {
+        status: "qualified" as const,
+        profileId,
+        checkedAt: DateTime.formatIso(yield* DateTime.now),
+      };
+    },
+    mutex.withPermit,
+    Effect.mapError(preserve),
+  );
 
   const prepare = Effect.fn("FactoryBoundaryExecution.prepare")(
     function* (input: Parameters<FactoryBoundaryExecution["Service"]["prepare"]>[0]) {
@@ -1066,6 +1230,8 @@ const make = Effect.gen(function* () {
   return FactoryBoundaryExecution.of({
     approve,
     prepare,
+    inspect,
+    rebind,
     mutate,
     verify,
     exportArtifact,

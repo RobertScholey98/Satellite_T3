@@ -25,6 +25,12 @@ import {
 } from "./FactoryControls.ts";
 import { constrainAssignmentPolicy, resolveManagerPolicy } from "./FactoryPolicy.ts";
 import {
+  decideFactoryOversight,
+  factorySupportingWorkMatches,
+  initialFactoryOversight,
+  type FactoryOversightContext,
+} from "./FactoryOversight.ts";
+import {
   constrainFactoryModelPolicy,
   resolveFactoryModelPolicy,
   selectFactoryModel,
@@ -71,6 +77,8 @@ export const initialFactorySnapshot = (): FactorySnapshot => ({
   boundaries: [],
   controls: [],
   guidance: [],
+  dependencies: [],
+  auxiliaryThreads: [],
 });
 
 export const effectivePolicy = (
@@ -214,22 +222,25 @@ const reduceModelGrants = (
   });
 
 export function decide(
-  input: FactoryControlContext & {
-    readonly state: FactorySnapshot;
-    readonly actor: FactoryActor;
-    readonly command: FactoryDecisionCommand;
-    readonly now: string;
-    readonly allocation?: FactoryAllocation;
-    readonly qualification?: FactoryDiscoveryQualification;
-    readonly boundary?: FactoryBoundary;
-    readonly verification?: FactoryVerification;
-    readonly humanMessageVerified?: boolean;
-    readonly humanMessageId?: MessageId;
-    readonly handoverVerified?: boolean;
-  },
+  input: FactoryControlContext &
+    FactoryOversightContext & {
+      readonly state: FactorySnapshot;
+      readonly actor: FactoryActor;
+      readonly command: FactoryDecisionCommand;
+      readonly now: string;
+      readonly allocation?: FactoryAllocation;
+      readonly qualification?: FactoryDiscoveryQualification;
+      readonly boundary?: FactoryBoundary;
+      readonly verification?: FactoryVerification;
+      readonly humanMessageVerified?: boolean;
+      readonly humanMessageId?: MessageId;
+      readonly handoverVerified?: boolean;
+    },
 ): Result.Result<FactoryDecision, FactoryError> {
   const controlDecision = decideFactoryControls(input);
   if (controlDecision !== undefined) return controlDecision;
+  const oversightDecision = decideFactoryOversight(input);
+  if (oversightDecision !== undefined) return oversightDecision;
   const { state, actor, command, now } = input;
   const fail = (code: FactoryError["code"]) => Result.fail(new FactoryError({ code }));
   const accepted = (
@@ -335,13 +346,33 @@ export function decide(
       if (!manager || manager.role !== "project") return fail("manager-not-found");
       const boundary = state.boundaries.find((entry) => entry.id === manager.boundaryId);
       if (manager.status !== "active" || !boundary) return fail("invalid-state");
+      const dependency =
+        command.type === "assignment.commission" && command.dependencyId !== undefined
+          ? state.dependencies.find((entry) => entry.id === command.dependencyId)
+          : undefined;
+      const dependencyAssignment = state.assignments.find(
+        (entry) => entry.id === dependency?.assignmentId,
+      );
+      const dependencyAuthorized =
+        dependency?.state === "approved" &&
+        dependency.authorization?.managerId === manager.id &&
+        dependencyAssignment?.managerId === manager.id &&
+        dependencyAssignment.outcome === undefined &&
+        dependencyAssignment.status !== "complete" &&
+        factorySupportingWorkMatches(dependency.authorization.work, command);
+      if (
+        command.type === "assignment.commission" &&
+        command.dependencyId !== undefined &&
+        !dependencyAuthorized
+      )
+        return fail("permission-denied");
       if (
         actor.kind !== "human" &&
         (actor.kind !== "thread" ||
           actor.threadId !== manager.threadId ||
           command.type !== "assignment.commission" ||
-          !input.humanMessageVerified ||
-          input.humanMessageId === undefined)
+          ((!input.humanMessageVerified || input.humanMessageId === undefined) &&
+            !dependencyAuthorized))
       )
         return fail("permission-denied");
       if (
@@ -422,6 +453,7 @@ export function decide(
         kind: command.kind,
         title: command.title,
         scope: command.scope,
+        oversight: initialFactoryOversight(),
         complexity: command.complexity,
         modelSelection: selected.success.selection,
         modelChoice: selected.success,
@@ -459,12 +491,30 @@ export function decide(
         createdAt: now,
         updatedAt: now,
       };
-      return accepted(
+      const decision = accepted(
         state.managers,
         [...state.assignments, assignment],
         { managerId: manager.id, assignmentId: assignment.id },
         [preparationIntent(assignment)],
       );
+      return dependency === undefined
+        ? decision
+        : Result.map(decision, (value) => ({
+            ...value,
+            state: {
+              ...value.state,
+              dependencies: value.state.dependencies.map((entry) =>
+                entry.id === dependency.id
+                  ? {
+                      ...entry,
+                      state: "commissioned" as const,
+                      supportingAssignmentId: assignment.id,
+                      updatedAt: now,
+                    }
+                  : entry,
+              ),
+            },
+          }));
     }
     case "assignment.retry": {
       const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);

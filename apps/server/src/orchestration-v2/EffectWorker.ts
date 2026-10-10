@@ -28,6 +28,7 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
+import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -104,13 +105,21 @@ export const layerExecutor: Layer.Layer<
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
+    const factory = yield* Effect.serviceOption(FactoryControlAccess);
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
-            return continueRestartedRun({ threadId: effect.threadId, sourceRunId }).pipe(
+            return Effect.gen(function* () {
+              if (
+                Option.isSome(factory) &&
+                (yield* factory.value.membership(effect.threadId)) !== undefined
+              )
+                return;
+              yield* continueRestartedRun({ threadId: effect.threadId, sourceRunId });
+            }).pipe(
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
               Effect.provideService(ServerSettings.ServerSettingsService, settings),
               // A continuation that will never run still owes a delegated parent a result.

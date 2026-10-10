@@ -184,6 +184,7 @@ import { unwrapWorkResult } from "./work/commands";
 import { validWorktreeName } from "./work/work.logic";
 import { ThreadIssueLinks } from "./work/ThreadIssueLinks";
 import { FactoryThreadControls } from "./factory/FactoryControls";
+import { FactoryThreadOversight } from "./factory/FactoryOversight";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
 import { isMacPlatform } from "../lib/utils";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -11566,7 +11567,10 @@ export default function ChatView(props: ChatViewProps) {
           </header>
         ) : null}
         {!ideaWorkspace && !embeddedDraft && isServerThread ? (
-          <ThreadIssueLinks threadRef={routeThreadRef} />
+          <>
+            <ThreadIssueLinks threadRef={routeThreadRef} />
+            <FactoryThreadOversight threadRef={routeThreadRef} />
+          </>
         ) : null}
         {!ideaWorkspace && !embeddedDraft && isServerThread ? (
           <FactoryThreadControls threadRef={routeThreadRef} />

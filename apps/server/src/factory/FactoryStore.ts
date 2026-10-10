@@ -53,6 +53,8 @@ export class FactoryStore extends Context.Service<
             | "thread.launch.started"
             | "assignment.preparation.recorded"
             | "control.stop.targets.recorded"
+            | "auxiliary.prepared"
+            | "assignment.replacement.prepared"
             | "guidance.observed";
         }
       >;
@@ -225,6 +227,35 @@ const make = Effect.gen(function* () {
               const failed = command.type.endsWith(".failed");
               const matches = (() => {
                 switch (intent.type) {
+                  case "assignment.reconcile":
+                    return (
+                      ((command.type === "assignment.reconciled" &&
+                        command.triggerId === intent.triggerId) ||
+                        command.type === "assignment.delivery.recorded") &&
+                      command.assignmentId === intent.assignmentId
+                    );
+                  case "auxiliary.reconcile":
+                    return (
+                      command.type === "auxiliary.reconciled" &&
+                      command.threadId === intent.threadId &&
+                      command.triggerId === intent.triggerId
+                    );
+                  case "auxiliary.launch":
+                    return (
+                      (command.type === "auxiliary.started" ||
+                        command.type === "auxiliary.failed") &&
+                      command.threadId === intent.threadId
+                    );
+                  case "assignment.replace-lead":
+                    return (
+                      (command.type === "assignment.replacement.recorded" ||
+                        command.type === "assignment.replacement.failed") &&
+                      command.assignmentId === intent.assignmentId &&
+                      command.threadId === intent.threadId &&
+                      command.incidentId === intent.incidentId &&
+                      (command.type !== "assignment.replacement.recorded" ||
+                        command.previousThreadId === intent.previousThreadId)
+                    );
                   case "thread.launch":
                     return (
                       (command.type === "thread.launch.recorded" ||

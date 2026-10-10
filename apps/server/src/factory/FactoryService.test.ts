@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  EventId,
   FactoryError,
   MessageId,
   ProjectId,
@@ -9,6 +10,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -60,6 +62,99 @@ const runtime = Layer.mergeAll(
   handoverUnused,
 ).pipe(Layer.provideMerge(SatelliteTestLayer));
 const layer = FactoryService.layer.pipe(Layer.provideMerge(runtime));
+
+it.effect("checkpoints deleted ordinary history and still observes later managed guidance", () =>
+  Effect.gen(function* () {
+    yield* recordProject({ projectId, title: "Project", workspaceRoot: "/project" });
+    const factory = yield* FactoryService.FactoryService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const store = yield* FactoryStore.FactoryStore;
+    const deletedId = ThreadId.make("deleted-ordinary");
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("ordinary-create"),
+      threadId: deletedId,
+      projectId,
+      title: "Ordinary",
+      modelSelection: create.modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* threads.sendToThread({
+      projectId,
+      threadId: deletedId,
+      commandId: CommandId.make("ordinary-send"),
+      messageId: MessageId.make("ordinary-message"),
+      text: "Read project",
+      attachments: [],
+      mode: "auto",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const run = (yield* threads.getThreadProjection(deletedId)).runs[0]!;
+    yield* threads.dispatch({
+      type: "thread.delete",
+      commandId: CommandId.make("ordinary-delete"),
+      threadId: deletedId,
+    });
+    yield* factory.observe({
+      sequence: 100,
+      commandId: null,
+      event: {
+        id: EventId.make("historical-terminal"),
+        type: "run.updated",
+        threadId: deletedId,
+        occurredAt: DateTime.makeUnsafe(qualification.checkedAt),
+        payload: { ...run, status: "completed" },
+      },
+    });
+    assert.equal(yield* store.observationCursor, 100);
+    yield* factory.dispatch(human, create);
+    yield* factory.drain;
+    const assignment = (yield* store.snapshot).assignments[0]!;
+    yield* threads.sendToThread({
+      projectId,
+      threadId: assignment.threadId,
+      commandId: CommandId.make("human-guidance"),
+      messageId: MessageId.make("human-guidance"),
+      text: "Consider the existing pattern",
+      attachments: [],
+      mode: "auto",
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const message = (yield* threads.getThreadProjection(assignment.threadId)).messages.find(
+      (entry) => entry.id === "human-guidance",
+    )!;
+    yield* factory.observe({
+      sequence: 101,
+      commandId: null,
+      event: {
+        id: EventId.make("guidance-event"),
+        type: "message.updated",
+        threadId: assignment.threadId,
+        occurredAt: DateTime.makeUnsafe(qualification.checkedAt),
+        payload: message,
+      },
+    });
+    assert.equal(yield* store.observationCursor, 101);
+    assert.equal((yield* store.snapshot).guidance[0]!.messageId, message.id);
+  }).pipe(
+    Effect.provide(layer),
+    Effect.provide(
+      Layer.mock(FactoryExecution)({
+        qualify: () => Effect.succeed(qualification),
+        assertSelectionFor: () => Effect.void,
+        assertDelegationFor: () => Effect.void,
+        runtimePolicyFor: () => Effect.succeed(profile),
+      }),
+    ),
+  ),
+);
 
 it.effect("creates ordinary durable threads once and records the owning lead's report", () =>
   Effect.gen(function* () {

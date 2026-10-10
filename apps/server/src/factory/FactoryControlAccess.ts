@@ -65,7 +65,13 @@ const make = Effect.gen(function* () {
         return yield* new FactoryError({ code: "execution-unavailable" });
       visited.add(threadId);
       const manager = state.managers.find((entry) => entry.threadId === threadId);
-      const assignment = state.assignments.find((entry) => entry.threadId === threadId);
+      const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === threadId);
+      const assignment = state.assignments.find(
+        (entry) =>
+          entry.threadId === threadId ||
+          entry.previousLeadThreadIds?.includes(threadId) ||
+          entry.id === auxiliary?.assignmentId,
+      );
       if (manager !== undefined || assignment !== undefined) {
         const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
         if (
@@ -80,6 +86,7 @@ const make = Effect.gen(function* () {
           managerId: owner.id,
           projectId: owner.projectId,
           ...(assignment === undefined ? {} : { assignmentId: assignment.id }),
+          ...(auxiliary === undefined ? {} : { auxiliaryThreadId: auxiliary.threadId }),
           ancestorThreadIds: ancestors.toReversed(),
         } satisfies FactoryControlMembership;
       }
@@ -117,6 +124,46 @@ const make = Effect.gen(function* () {
     const member = yield* membership(threadId, pendingParentThreadId);
     if (member === undefined) return;
     const state = yield* store.snapshot;
+    const lineage = new Set([...member.ancestorThreadIds, member.threadId]);
+    if (
+      state.assignments.some((entry) => entry.previousLeadThreadIds?.some((id) => lineage.has(id)))
+    )
+      return yield* new FactoryError({
+        code: "permission-denied",
+        detail:
+          "This lead was replaced. Its evidence is preserved, but execution belongs to the current lead.",
+      });
+    if (member.auxiliaryThreadId !== undefined) {
+      const auxiliary = state.auxiliaryThreads.find(
+        (entry) => entry.threadId === member.auxiliaryThreadId,
+      );
+      const incident = state.assignments.find((entry) => entry.id === member.assignmentId)
+        ?.oversight?.recovery.incident;
+      if (
+        member.threadId !== member.auxiliaryThreadId ||
+        auxiliary === undefined ||
+        auxiliary.status === "complete" ||
+        auxiliary.status === "failed" ||
+        incident?.phase !== "diagnosing" ||
+        incident.id !== auxiliary.incidentId ||
+        incident.diagnosisThreadId !== auxiliary.threadId
+      )
+        return yield* new FactoryError({
+          code: "permission-denied",
+          detail:
+            "Only the current independent diagnosis can run. A completed or superseded diagnosis cannot resume or create a team.",
+        });
+    }
+    if (
+      direction &&
+      senderThreadId != null &&
+      senderThreadId !== threadId &&
+      state.auxiliaryThreads.some((entry) => entry.threadId === senderThreadId)
+    )
+      return yield* new FactoryError({
+        code: "permission-denied",
+        detail: "Independent diagnosis can report findings but cannot direct implementation work.",
+      });
     const reason = direction
       ? factoryDirectionBlocked(state, member, senderThreadId)
       : factoryExecutionBlocked(state, member);

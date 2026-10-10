@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  ProjectId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -30,6 +31,7 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
@@ -40,6 +42,47 @@ const providerThreadId = ProviderThreadId.make("provider-thread:effect-worker-re
 const providerTurnId = ProviderTurnId.make("provider-turn:effect-worker-restart");
 const attemptId = RunAttemptId.make("run-attempt:effect-worker-restart");
 const runId = RunId.make("run:effect-worker-restart");
+
+it.effect(
+  "retires a persisted ordinary restart continuation when the factory owns its thread",
+  () =>
+    Effect.gen(function* () {
+      const timestamp = DateTime.formatIso(yield* DateTime.now);
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const layer = layerExecutorFor({ events, continueAfterRestart: true }).pipe(
+        Layer.provide(
+          Layer.mock(FactoryControlAccess)({
+            membership: (id) =>
+              Effect.succeed({
+                threadId: id,
+                managerId: ThreadId.make("factory-manager"),
+                projectId: ProjectId.make("factory-project"),
+                ancestorThreadIds: [],
+              }),
+          }),
+        ),
+      );
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
+        Effect.provide(layer),
+      );
+      yield* executor.execute({
+        id: "effect:stale-managed-restart",
+        commandId: CommandId.make("stale-managed-restart"),
+        threadId,
+        request: { type: "provider-runtime.continue", sourceRunId: runId },
+        status: "running",
+        attemptCount: 1,
+        availableAt: timestamp,
+        leaseOwner: "test",
+        leaseExpiresAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: null,
+        lastError: null,
+      });
+      assert.deepStrictEqual(yield* Ref.get(events), []);
+    }),
+);
 
 function restartEffect(
   now: DateTime.Utc,

@@ -280,13 +280,17 @@ const make = Effect.gen(function* () {
       let current: ThreadId | null = threadId;
       const visited = new Set<ThreadId>();
       let assignment: (typeof state.assignments)[number] | undefined;
+      let auxiliary: (typeof state.auxiliaryThreads)[number] | undefined;
       while (current !== null) {
         if (visited.has(current)) return yield* new FactoryError({ code: "execution-unavailable" });
         visited.add(current);
         const manager = state.managers.find((entry) => entry.threadId === current);
+        auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === current);
         assignment = state.assignments.find(
           (entry) =>
             entry.threadId === current ||
+            entry.previousLeadThreadIds?.includes(current!) ||
+            entry.id === auxiliary?.assignmentId ||
             (entry.managerId === manager?.id && entry.kind === "onboarding"),
         );
         if (assignment !== undefined || manager !== undefined) break;
@@ -308,14 +312,33 @@ const make = Effect.gen(function* () {
         current = thread.lineage?.parentThreadId ?? null;
       }
       if (current === null) return undefined;
-      if (assignment?.qualification.status !== "qualified")
+      const qualification = auxiliary?.qualification ?? assignment?.qualification;
+      const incident = assignment?.oversight?.recovery.incident;
+      if (
+        qualification?.status !== "qualified" ||
+        assignment === undefined ||
+        (auxiliary !== undefined &&
+          (auxiliary.qualification === undefined ||
+            incident?.phase !== "diagnosing" ||
+            incident.id !== auxiliary.incidentId ||
+            incident.diagnosisThreadId !== auxiliary.threadId))
+      )
         return yield* new FactoryError({ code: "execution-unavailable" });
-      const profileId = assignment.qualification.profileId;
+      const profileId = qualification.profileId;
       if (!/^[a-f0-9-]{36}$/.test(profileId))
         return yield* new FactoryError({ code: "execution-unavailable" });
       const profile = yield* fs
         .readFileString(path.join(root, profileId, "profile.json"))
         .pipe(Effect.flatMap(decodeProfile));
+      if (
+        auxiliary !== undefined &&
+        (auxiliary.threadId !== threadId ||
+          profile.inspection === undefined ||
+          profile.inspection.sourceDigest !== auxiliary.sourceDigest)
+      )
+        return yield* new FactoryError({ code: "execution-unavailable" });
+      if (auxiliary === undefined && profile.inspection !== undefined)
+        return yield* new FactoryError({ code: "execution-unavailable" });
       yield* assertFactoryProfileActive(profile).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path),

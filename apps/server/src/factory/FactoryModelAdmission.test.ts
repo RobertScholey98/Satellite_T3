@@ -267,6 +267,94 @@ const createLead = (threadId = leadId, selection = leadModel) =>
 
 describe("factory model admission", () => {
   it.effect(
+    "restricts independent diagnosis to its pinned model and prohibits delegated children",
+    () => {
+      const diagnosisId = ThreadId.make("diagnosis");
+      const state: FactorySnapshot = {
+        ...snapshot,
+        auxiliaryThreads: [
+          {
+            threadId: diagnosisId,
+            assignmentId: assignment.id,
+            managerId,
+            projectId,
+            kind: "diagnosis",
+            incidentId: "incident",
+            cycle: 1,
+            status: "running",
+            modelSelection: workerModel,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      };
+      return scenario(
+        state,
+        Effect.gen(function* () {
+          const admission = yield* FactoryModelAdmission.FactoryModelAdmission;
+          yield* admission.assertSelectionFor(diagnosisId, workerModel);
+          assert.equal(
+            (yield* admission.assertSelectionFor(diagnosisId, leadModel).pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+          assert.equal(
+            (yield* admission.assertDelegationFor(diagnosisId, workerModel).pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+          assert.equal(
+            (yield* admission
+              .assertSelectionFor(childId, workerModel, diagnosisId)
+              .pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+          yield* createThread(childId, {
+            rootThreadId: diagnosisId,
+            parentThreadId: diagnosisId,
+            relationshipToParent: "subagent",
+          });
+          assert.equal(
+            (yield* admission.assertSelectionFor(childId, workerModel).pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+        }),
+      );
+    },
+  );
+
+  it.effect("keeps old leads and descendants managed after replacement", () => {
+    const replacementId = ThreadId.make("replacement");
+    const state: FactorySnapshot = {
+      ...snapshot,
+      assignments: snapshot.assignments.map((entry) =>
+        entry.id === assignment.id
+          ? { ...entry, threadId: replacementId, previousLeadThreadIds: [leadId] }
+          : entry,
+      ),
+    };
+    return scenario(
+      state,
+      Effect.gen(function* () {
+        const admission = yield* FactoryModelAdmission.FactoryModelAdmission;
+        yield* createThread(childId, {
+          rootThreadId: leadId,
+          parentThreadId: leadId,
+          relationshipToParent: "subagent",
+        });
+        for (const id of [leadId, childId]) {
+          assert.equal(
+            (yield* admission.assertSelectionFor(id, leadModel).pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+          assert.equal(
+            (yield* admission.assertDelegationFor(id, workerModel).pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+        }
+        yield* admission.assertSelectionFor(replacementId, leadModel);
+      }),
+    );
+  });
+  it.effect(
     "admits an unpersisted child through its parent without overriding persisted lineage",
     () =>
       scenario(

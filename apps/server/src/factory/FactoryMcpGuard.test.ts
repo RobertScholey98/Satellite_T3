@@ -3,17 +3,21 @@ import {
   CommandId,
   EnvironmentId,
   FactoryAssignmentId,
+  FactoryDependencyId,
   FactoryError,
+  FactorySnapshot,
   OrchestratorMcpFailure,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type FactoryWait,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 
 import * as DeviceService from "../device/DeviceService.ts";
@@ -23,6 +27,7 @@ import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
@@ -42,6 +47,7 @@ const forkId = ThreadId.make("fork-web");
 const unmanagedId = ThreadId.make("independent-thread");
 const assignmentId = FactoryAssignmentId.make("assignment-web");
 const otherAssignmentId = FactoryAssignmentId.make("assignment-api");
+const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(FactorySnapshot));
 const decodeMembership = Schema.decodeUnknownSync(
   Schema.Struct({
     managers: Schema.Array(Schema.Struct({ id: Schema.String })),
@@ -101,7 +107,7 @@ interface Scenario {
   readonly shells: Map<ThreadId, OrchestrationV2ThreadShell>;
 }
 
-const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
+const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>, heldWait?: FactoryWait) =>
   Effect.gen(function* () {
     yield* migration;
     const store = yield* FactoryStore.FactoryStore.pipe(Effect.provide(FactoryStore.layer));
@@ -141,6 +147,19 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
           now,
         }),
     );
+    if (heldWait !== undefined) {
+      const state = yield* store.snapshot;
+      const payload = yield* encodeSnapshot({
+        ...state,
+        assignments: state.assignments.map((entry) =>
+          entry.id === assignmentId
+            ? { ...entry, kind: "implementation", status: "waiting", wait: heldWait }
+            : entry,
+        ),
+      });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+    }
     const flags = { hostCalls: 0, missingProfile: false, unavailableStore: false };
     const shells = new Map<ThreadId, OrchestrationV2ThreadShell>([
       [managerId, liveThreadShell(managerId)],
@@ -181,6 +200,7 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
       shells.set(id, { ...shell, projectId: ProjectId.make("web") });
     const external = Layer.mergeAll(
       boundaryUnavailable,
+      Layer.mock(EventSink.EventSinkV2)({}),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({
         getThreadShell: (id) => Effect.sync(() => shells.get(id) ?? null),
       }),
@@ -221,6 +241,20 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
         failure: OrchestratorMcpFailure,
         failureMode: "return",
       }),
+      Tool.make("t3_thread_read", {
+        description: "Probe reading team evidence during a wait.",
+        parameters: Schema.Struct({ threadId: ThreadId }),
+        success: Schema.Struct({ ran: Schema.Boolean }),
+        failure: OrchestratorMcpFailure,
+        failureMode: "return",
+      }),
+      Tool.make("t3_thread_wait", {
+        description: "Probe awaiting a team response.",
+        parameters: Schema.Struct({ threadId: ThreadId }),
+        success: Schema.Struct({ ran: Schema.Boolean }),
+        failure: OrchestratorMcpFailure,
+        failureMode: "return",
+      }),
       Tool.make("host_effect", {
         description: "A host operation that managed agents cannot run.",
         parameters: Tool.EmptyParams,
@@ -234,6 +268,18 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
         ProbeToolkit,
         McpToolAccess.toLayer(ProbeToolkit, {
           t3_thread_send: McpToolAccess.reads(() =>
+            Effect.sync(() => {
+              flags.hostCalls += 1;
+              return { ran: true };
+            }),
+          ),
+          t3_thread_read: McpToolAccess.reads(() =>
+            Effect.sync(() => {
+              flags.hostCalls += 1;
+              return { ran: true };
+            }),
+          ),
+          t3_thread_wait: McpToolAccess.reads(() =>
             Effect.sync(() => {
               flags.hostCalls += 1;
               return { ran: true };
@@ -279,6 +325,46 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })), Effect.scoped);
 
 describe("FactoryMcpGuard", () => {
+  it.effect.each<FactoryWait>([
+    {
+      kind: "dependency",
+      dependencyIds: [FactoryDependencyId.make("awaited-dependency")],
+      reason: "Actual supporting delivery is pending",
+    },
+    {
+      kind: "review",
+      ref: { projectId: ProjectId.make("web"), repository: "owner/repository", number: 12 },
+      reason: "The human is reviewing the implementation",
+    },
+    { kind: "recovery", reason: "Independent diagnosis is pending" },
+    { kind: "authority", reason: "The execution grant was revoked" },
+    { kind: "human-decision", reason: "A product decision is pending" },
+  ])("registered parent sends cannot bypass an assignment's $kind wait", (heldWait) =>
+    scenario(
+      ({ call, flags }) =>
+        Effect.gen(function* () {
+          for (const [caller, target] of [
+            [managerId, leadId],
+            [managerId, grandchildId],
+            [leadId, childId],
+            [childId, grandchildId],
+          ] as const)
+            assert.isTrue((yield* call("t3_thread_send", { threadId: target }, caller)).isError);
+          assert.equal(flags.hostCalls, 0);
+          for (const name of ["t3_thread_read", "t3_thread_wait"])
+            assert.isFalse((yield* call(name, { threadId: leadId }, managerId)).isError ?? false);
+          assert.isFalse(
+            (yield* call("t3_thread_send", { threadId: managerId }, leadId)).isError ?? false,
+          );
+          assert.isFalse(
+            (yield* call("t3_thread_send", { threadId: leadId }, childId)).isError ?? false,
+          );
+          assert.equal(flags.hostCalls, 4);
+        }),
+      heldWait,
+    ),
+  );
+
   it.effect("checks the actual thread target before permitting team communication", () =>
     scenario(({ call, flags }) =>
       Effect.gen(function* () {

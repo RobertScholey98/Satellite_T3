@@ -34,7 +34,9 @@ const layerObserver = (
   drain: Effect.Effect<void> = Effect.void,
 ) =>
   FactoryObserver.layer.pipe(
-    Layer.provide(Layer.mock(FactoryService.FactoryService)({ observe, drain })),
+    Layer.provide(
+      Layer.mock(FactoryService.FactoryService)({ observe, drain, recover: Effect.void }),
+    ),
   );
 
 const writeThread = Effect.fn("FactoryObserver.test.writeThread")(function* (name: string) {

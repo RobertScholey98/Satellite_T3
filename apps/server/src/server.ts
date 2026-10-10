@@ -537,6 +537,7 @@ const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
 const layerSatelliteFeatures = Layer.mergeAll(
   Layer.merge(FactoryMcpGuard.layer, FactoryObserver.layer).pipe(
     Layer.provideMerge(FactoryService.layer.pipe(Layer.provide(FactoryHandover.layer))),
+    Layer.provide(layerPullRequestService),
   ),
   DocumentService.layer,
   RevdocService.layer,

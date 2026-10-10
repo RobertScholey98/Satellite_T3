@@ -13,6 +13,9 @@ export const FactoryExecutionProfile = Schema.Struct({
   sourceRevision: Schema.optionalKey(Schema.String),
   startingSourceId: Schema.optionalKey(Schema.String),
   startingSourceDigest: Schema.optionalKey(Schema.String),
+  inspection: Schema.optionalKey(
+    Schema.Struct({ sourceDigest: Schema.String, evidencePath: Schema.String }),
+  ),
   assignmentWorkspace: Schema.optionalKey(
     Schema.Struct({
       assignmentId: Schema.String,
@@ -67,7 +70,7 @@ export function factoryDockerArguments(profile: FactoryExecutionProfile): Array<
     "--tmpfs",
     "/tmp:rw,nosuid,nodev,size=128m",
     "--mount",
-    profile.assignmentWorkspace === undefined
+    profile.assignmentWorkspace === undefined || profile.inspection !== undefined
       ? `type=bind,source=${profile.projectSnapshotPath},target=/workspace,readonly`
       : `type=volume,source=${profile.assignmentWorkspace.volumeName},target=/workspace,volume-nocopy`,
     "--mount",
@@ -76,6 +79,12 @@ export function factoryDockerArguments(profile: FactoryExecutionProfile): Array<
     `type=bind,source=${profile.runtimePath},target=/runtime`,
     "--mount",
     `type=bind,source=${profile.workflowSnapshotPath}/skills,target=/runtime/codex/skills,readonly`,
+    ...(profile.inspection === undefined
+      ? []
+      : [
+          "--mount",
+          `type=bind,source=${profile.inspection.evidencePath},target=/evidence,readonly`,
+        ]),
     ...(profile.assignmentWorkspace === undefined
       ? []
       : [

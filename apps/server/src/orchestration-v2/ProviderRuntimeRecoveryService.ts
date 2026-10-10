@@ -14,6 +14,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -22,6 +23,7 @@ import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { restartContinuationRun } from "./RestartContinuation.ts";
+import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
 import {
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
@@ -185,6 +187,17 @@ export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const factory = yield* Effect.serviceOption(FactoryControlAccess);
+  const isManaged = (threadId: ThreadId) =>
+    Option.isNone(factory)
+      ? Effect.succeed(false)
+      : factory.value.membership(threadId).pipe(
+          Effect.map((member) => member !== undefined),
+          Effect.mapError(
+            (cause) =>
+              new ProviderRuntimeRecoveryError({ operation: "reconcile", threadId, cause }),
+          ),
+        );
   const reconcileProjection = Effect.fn("ProviderRuntimeRecoveryService.reconcileProjection")(
     function* (
       projection: ProjectionStore.ProjectionRuntimeRecoveryState,
@@ -751,7 +764,11 @@ export const make = Effect.gen(function* () {
           continueAfterRestart !== null &&
           resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
             .continueThreadsAfterServerUpdate;
-        const result = yield* reconcileProjection(projection, trigger, enabled);
+        const result = yield* reconcileProjection(
+          projection,
+          trigger,
+          enabled && !(yield* isManaged(threadId)),
+        );
         terminalizedRuns += result.terminalizedRuns;
         stoppedSessions += result.stoppedSessions;
         closedRequests += result.closedRequests;
@@ -780,6 +797,7 @@ export const make = Effect.gen(function* () {
     const threadIds = yield* projections.getRecoveryThreadIds("runtime");
     for (const threadId of threadIds) {
       yield* Effect.gen(function* () {
+        if (yield* isManaged(threadId)) return;
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
         if (
           !resolveProjectSettings(enabled, projection.thread.projectId).settings

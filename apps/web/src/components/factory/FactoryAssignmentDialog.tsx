@@ -31,6 +31,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Textarea } from "../ui/textarea";
 import { factoryModelKey, factoryModelLabel } from "./FactoryModelPolicyDialog";
 import { FactoryAssignmentControls } from "./FactoryControls";
+import { FactoryOversight } from "./FactoryOversight";
 import { factoryAssignmentCancellation, factoryAssignmentStatus } from "./FactoryControlsReadModel";
 
 export function FactoryAssignmentDialog({
@@ -505,12 +506,14 @@ export function FactoryAssignmentDetailsDialog({
   assignment,
   canOpenThread,
   onOpenThread,
+  onOpenRelatedThread,
   onClose,
 }: {
   readonly environment: FactoryEnvironmentView;
   readonly assignment: FactoryAssignment;
   readonly canOpenThread: boolean;
   readonly onOpenThread: () => void;
+  readonly onOpenRelatedThread?: ((threadId: ThreadId) => void) | undefined;
   readonly onClose: () => void;
 }) {
   const dispatch = useAtomCommand(factoryEnvironment.dispatch, { reportFailure: false });
@@ -556,6 +559,11 @@ export function FactoryAssignmentDetailsDialog({
         <DialogPanel>
           <div className="space-y-5">
             <FactoryAssignmentControls environment={environment} assignment={assignment} />
+            <FactoryOversight
+              environment={environment}
+              assignment={assignment}
+              onOpenThread={onOpenRelatedThread}
+            />
             {!environment.data?.controls && assignment.wait ? (
               <p role="status" className="text-sm text-muted-foreground">
                 {assignment.wait.reason}

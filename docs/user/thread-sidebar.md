@@ -76,6 +76,23 @@ is confirmed, provide a reason for its retrospective. Dismissing that prompt lea
 fails, the assignment remains blocked and offers a retry. Control state and missing
 reasons survive restarting the environment.
 
+### Follow progress, dependencies, and recovery
+
+Open **Assignment details** to see the lead's latest progress and evidence, its
+current wait, and any supporting assignments. Dependency approval authorizes
+separate work. The original team resumes only after delivery is confirmed and
+its lead records that the result is usable. A merged PR needs host evidence;
+an investigation needs its actual report message at the agreed recipient.
+
+If a team stops with authorized work remaining, the manager receives a recorded
+recovery incident. An independent diagnosis thread inspects a read-only snapshot
+of the unfinished work. Its findings support an in-scope replan or replacement
+lead. Replacement preserves the edited workspace, assignment permissions, and
+recovery allowance; prior conversations remain linked. When the allowance is
+exhausted, the human decision includes the failure, attempts, options, and a
+recommendation. Expected review, dependency, and human-decision waits do not
+consume recovery cycles. Observation and recovery receipts survive restart.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

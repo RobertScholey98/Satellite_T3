@@ -1,6 +1,7 @@
 import {
   CommandId,
   FactoryError,
+  type FactoryAssignment,
   type FactoryControl,
   type FactorySnapshot,
   type ProjectId,
@@ -28,6 +29,22 @@ export class FactoryControlEffects extends Context.Service<
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const failure = (cause: unknown) => new FactoryError({ code: "execution-unavailable", cause });
+const diagnosisCanResume = (
+  state: FactorySnapshot,
+  assignment: FactoryAssignment | undefined,
+  threadId: ThreadId,
+) => {
+  const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === threadId);
+  const incident = assignment?.oversight?.recovery.incident;
+  return (
+    auxiliary?.status === "running" &&
+    auxiliary.assignmentId === assignment?.id &&
+    incident?.id === auxiliary.incidentId &&
+    incident.phase === "diagnosing" &&
+    incident.diagnosisThreadId === auxiliary.threadId &&
+    assignment?.wait?.kind === "recovery"
+  );
+};
 
 export const layer = Layer.effect(
   FactoryControlEffects,
@@ -53,9 +70,14 @@ export const layer = Layer.effect(
         }
         case "cancellation": {
           const assignment = state.assignments.find((entry) => entry.id === control.assignmentId);
-          return assignment === undefined
-            ? []
-            : [{ threadId: assignment.threadId, projectId: assignment.projectId }];
+          return [
+            ...(assignment === undefined
+              ? []
+              : [{ threadId: assignment.threadId, projectId: assignment.projectId }]),
+            ...state.auxiliaryThreads
+              .filter((entry) => entry.assignmentId === control.assignmentId)
+              .map((entry) => ({ threadId: entry.threadId, projectId: entry.projectId })),
+          ];
         }
         case "project-pause":
           return [
@@ -63,6 +85,9 @@ export const layer = Layer.effect(
               .filter((entry) => entry.projectId === control.projectId)
               .map((entry) => ({ threadId: entry.threadId, projectId: control.projectId })),
             ...state.assignments
+              .filter((entry) => entry.projectId === control.projectId)
+              .map((entry) => ({ threadId: entry.threadId, projectId: entry.projectId })),
+            ...state.auxiliaryThreads
               .filter((entry) => entry.projectId === control.projectId)
               .map((entry) => ({ threadId: entry.threadId, projectId: entry.projectId })),
           ];
@@ -277,7 +302,48 @@ export const layer = Layer.effect(
         yield* store.retireEffect(pending.id);
         return;
       }
-      if (assignment?.wait != null) return;
+      let permitsWait = false;
+      if (intent.purpose !== undefined) {
+        const purpose = intent.purpose;
+        const dependency =
+          purpose.kind === "dependency-usability"
+            ? state.dependencies.find((entry) => entry.id === purpose.dependencyId)
+            : undefined;
+        const incident = assignment?.oversight?.recovery.incident;
+        const current =
+          assignment !== undefined &&
+          assignment.threadId === intent.threadId &&
+          (purpose.kind === "dependency-usability"
+            ? dependency?.assignmentId === assignment.id &&
+              dependency.state === "checking" &&
+              dependency.delivery?.id === purpose.deliveryId
+            : incident?.id === purpose.incidentId && incident.phase === "continuing");
+        if (!current) {
+          yield* store.retireEffect(pending.id);
+          return;
+        }
+        permitsWait =
+          purpose.kind === "dependency-usability"
+            ? assignment?.wait?.kind === "dependency" &&
+              assignment.wait.dependencyIds.some((id) => id === purpose.dependencyId)
+            : assignment?.wait?.kind === "recovery";
+      }
+      if (
+        intent.kind === "continuation" &&
+        diagnosisCanResume(state, assignment, intent.threadId) &&
+        state.controls.some(
+          (control) =>
+            control.kind === "project-pause" &&
+            control.projectId === assignment?.projectId &&
+            control.status === "released" &&
+            control.stop.status === "confirmed" &&
+            control.resumeThreadIds?.includes(intent.threadId) &&
+            intent.messageId ===
+              `factory-resume:${control.id}:${control.generation}:${intent.threadId}`,
+        )
+      )
+        permitsWait = true;
+      if (assignment?.wait != null && !permitsWait) return;
       if (
         intent.kind === "continuation" &&
         member.threadId === manager?.threadId &&
@@ -356,7 +422,24 @@ export const layer = Layer.effect(
         yield* store.retireEffect(pending.id);
         return;
       }
-      if (assignment?.wait != null) return;
+      if (
+        assignment?.wait != null &&
+        !(
+          diagnosisCanResume(state, assignment, intent.threadId) &&
+          control.kind === "project-pause" &&
+          control.projectId === assignment.projectId &&
+          control.generation === intent.generation &&
+          control.stop.status === "confirmed" &&
+          intent.runIds !== undefined &&
+          intent.runIds.length > 0 &&
+          control.resumeQueues?.some(
+            (queue) =>
+              queue.threadId === intent.threadId &&
+              intent.runIds?.every((runId) => queue.runIds.includes(runId)),
+          )
+        )
+      )
+        return;
       yield* store.beginEffect(pending.id);
       const affected =
         intent.runIds === undefined ? yield* descendants(member) : [{ id: intent.threadId }];

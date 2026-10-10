@@ -51,7 +51,13 @@ const make = Effect.gen(function* () {
       }
       visited.add(threadId);
       const manager = state.managers.find((entry) => entry.threadId === threadId);
-      const assignment = state.assignments.find((entry) => entry.threadId === threadId);
+      const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === threadId);
+      const assignment = state.assignments.find(
+        (entry) =>
+          entry.threadId === threadId ||
+          entry.previousLeadThreadIds?.includes(threadId) ||
+          entry.id === auxiliary?.assignmentId,
+      );
       if (manager !== undefined || assignment !== undefined) {
         const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
         if (
@@ -61,6 +67,22 @@ const make = Effect.gen(function* () {
         ) {
           return yield* new FactoryError({ code: "execution-unavailable" });
         }
+        if (assignment?.previousLeadThreadIds?.includes(threadId))
+          return yield* new FactoryError({
+            code: "permission-denied",
+            detail: "The replaced lead cannot restart or delegate work.",
+          });
+        if (
+          auxiliary !== undefined &&
+          (delegating ||
+            threadId !== requestedThreadId ||
+            !modelSelectionsEqual(auxiliary.modelSelection, selection))
+        )
+          return yield* new FactoryError({
+            code: "permission-denied",
+            detail:
+              "Diagnosis uses its approved independent model and cannot delegate implementation.",
+          });
         if (manager !== undefined || assignment?.kind === "onboarding") {
           if (
             !delegating &&

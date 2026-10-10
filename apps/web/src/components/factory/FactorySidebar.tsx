@@ -35,6 +35,7 @@ import {
   factoryPauseStatus,
   factoryProjectPause,
 } from "./FactoryControlsReadModel";
+import { factoryOversightSummary } from "./FactoryOversightReadModel";
 import {
   SidebarGroup,
   SidebarMenu,
@@ -490,6 +491,11 @@ export function FactorySidebar({
                                 {assignment.wait.reason}
                               </p>
                             ) : null}
+                            {assignment.oversight?.recovery.incident ? (
+                              <p className="px-2 text-xs text-muted-foreground">
+                                {factoryOversightSummary(assignment)}
+                              </p>
+                            ) : null}
                           </SidebarMenuSubItem>
                         );
                       })}
@@ -676,6 +682,10 @@ export function FactorySidebar({
               onThreadActivate(
                 scopeThreadRef(detailsEnvironment.environmentId, detailsAssignment.threadId),
               );
+            }}
+            onOpenRelatedThread={(threadId) => {
+              setAssignmentDetails(null);
+              onThreadActivate(scopeThreadRef(detailsEnvironment.environmentId, threadId));
             }}
             onClose={() => setAssignmentDetails(null)}
           />

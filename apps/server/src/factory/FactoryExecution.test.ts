@@ -17,6 +17,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
 import {
   ProjectionStoreThreadNotFoundError,
@@ -80,6 +81,24 @@ it.effect(
       const initial = initialFactorySnapshot();
       let snapshot: FactorySnapshot = {
         ...initial,
+        managers: [
+          {
+            id: ThreadId.make("manager"),
+            threadId: ThreadId.make("manager"),
+            role: "project",
+            projectId,
+            name: "Manager",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+            workflow: { repositoryRoot: "/owned", revision: "pinned" },
+            overrides: {},
+            status: "active",
+            threadStatus: "created",
+            launchStatus: "delivered",
+            wait: null,
+            createdAt: DateTime.formatIso(now),
+            updatedAt: DateTime.formatIso(now),
+          },
+        ],
         assignments: [
           {
             id: FactoryAssignmentId.make("assignment"),
@@ -110,6 +129,12 @@ it.effect(
         Layer.mock(ProviderInstanceRegistry)({ getInstance: () => Effect.succeed(undefined) }),
         Layer.mock(ProcessRunner)({}),
         Layer.mock(ProjectionStoreV2)({
+          getThreadShell: (id) => {
+            const persisted = fixtures.get(id);
+            return Effect.succeed(
+              persisted === undefined ? null : { ...liveThreadShell(id), ...persisted },
+            );
+          },
           getThread: (id) =>
             fixtures.has(id)
               ? Effect.succeed(fixtures.get(id)!)
@@ -203,6 +228,136 @@ it.effect(
           (yield* execution.runtimePolicyFor(owner).pipe(Effect.flip)).code,
           "execution-unavailable",
         );
+        yield* fs.writeFileString(
+          path.join(directory, "profile.json"),
+          yield* encodeProfile(prepared),
+        );
+        const diagnosisId = ThreadId.make("diagnosis");
+        const inspectionId = "b3b85fdc-cdd0-416f-8cf2-8a4dfb204054";
+        const inspectionDirectory = path.join(
+          config.stateDir,
+          "factory",
+          "execution",
+          inspectionId,
+        );
+        const inspection = {
+          ...prepared,
+          boundaryId: inspectionId,
+          projectSnapshotPath: path.join(inspectionDirectory, "project"),
+          runtimePath: path.join(inspectionDirectory, "sessions"),
+          inspection: {
+            sourceDigest: "current-edited-bytes",
+            evidencePath: path.join(inspectionDirectory, "evidence"),
+          },
+        };
+        yield* fs.makeDirectory(inspectionDirectory, { recursive: true });
+        yield* fs.writeFileString(
+          path.join(inspectionDirectory, "profile.json"),
+          yield* encodeProfile(inspection),
+        );
+        snapshot = {
+          ...snapshot,
+          assignments: snapshot.assignments.map((entry) => ({
+            ...entry,
+            oversight: {
+              recovery: {
+                cyclesUsed: 1,
+                history: [],
+                incident: {
+                  id: "incident",
+                  phase: "diagnosing",
+                  diagnosisThreadId: diagnosisId,
+                  reason: "Investigate the stopped team",
+                  evidence: [],
+                },
+              },
+            },
+          })),
+          auxiliaryThreads: [
+            {
+              threadId: diagnosisId,
+              assignmentId: snapshot.assignments[0]!.id,
+              managerId: ThreadId.make("manager"),
+              projectId,
+              kind: "diagnosis",
+              incidentId: "incident",
+              cycle: 1,
+              status: "running",
+              modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+              qualification: {
+                status: "qualified",
+                profileId: inspectionId,
+                checkedAt: DateTime.formatIso(now),
+              },
+              sourceDigest: "current-edited-bytes",
+              createdAt: DateTime.formatIso(now),
+              updatedAt: DateTime.formatIso(now),
+            },
+          ],
+        };
+        const diagnosisPolicy = yield* execution.runtimePolicyFor(diagnosisId);
+        assert.equal(diagnosisPolicy?.projectSnapshotPath, inspection.projectSnapshotPath);
+        assert.notEqual(diagnosisPolicy?.runtimePath, parentPolicy?.runtimePath);
+        assert.equal(diagnosisPolicy?.inspection?.sourceDigest, "current-edited-bytes");
+        const diagnosing = snapshot;
+        const incident = diagnosing.assignments[0]!.oversight!.recovery.incident!;
+        for (const status of ["pending", "running"] as const) {
+          for (const stale of [
+            { ...incident, phase: "continuing" as const },
+            { ...incident, id: "different-incident" },
+            { ...incident, diagnosisThreadId: ThreadId.make("different-diagnosis") },
+          ]) {
+            snapshot = {
+              ...diagnosing,
+              assignments: diagnosing.assignments.map((entry) => ({
+                ...entry,
+                oversight: { recovery: { cyclesUsed: 1, history: [], incident: stale } },
+              })),
+              auxiliaryThreads: diagnosing.auxiliaryThreads.map((entry) => ({ ...entry, status })),
+            };
+            assert.equal(
+              (yield* execution.runtimePolicyFor(diagnosisId).pipe(Effect.flip)).code,
+              "execution-unavailable",
+            );
+          }
+        }
+        snapshot = diagnosing;
+        yield* fs.writeFileString(
+          path.join(inspectionDirectory, "profile.json"),
+          yield* encodeProfile(prepared),
+        );
+        assert.equal(
+          (yield* execution.runtimePolicyFor(diagnosisId).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        yield* fs.writeFileString(
+          path.join(inspectionDirectory, "profile.json"),
+          yield* encodeProfile({
+            ...inspection,
+            inspection: { ...inspection.inspection, sourceDigest: "foreign-bytes" },
+          }),
+        );
+        assert.equal(
+          (yield* execution.runtimePolicyFor(diagnosisId).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        const replacement = ThreadId.make("replacement");
+        fixtures.set(child, thread(child, owner, now));
+        snapshot = {
+          ...snapshot,
+          assignments: [
+            { ...snapshot.assignments[0]!, threadId: replacement, previousLeadThreadIds: [owner] },
+          ],
+        };
+        assert.equal(
+          (yield* execution.runtimePolicyFor(owner).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.equal(
+          (yield* execution.runtimePolicyFor(child).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.isUndefined(yield* execution.runtimePolicyFor(ordinary));
       }).pipe(
         Effect.provide(
           FactoryExecution.layer.pipe(

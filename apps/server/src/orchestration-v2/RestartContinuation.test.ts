@@ -24,6 +24,7 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
 
 const threadId = ThreadId.make("thread:restart");
 const runId = RunId.make("run:restart");
@@ -253,18 +254,30 @@ it.effect("does not continue a failed run that lost background work", () =>
 );
 
 it.effect.each([
-  [false, undefined],
-  [true, undefined],
-  [false, true],
-  [true, false],
+  [false, undefined, false],
+  [true, undefined, false],
+  [false, true, false],
+  [true, false, false],
+  [true, undefined, true],
 ] as const)(
-  "atomically records restart intent with cancellation when opt-in is %s and project override is %s",
-  ([enabled, projectOverride]) =>
+  "records restart intent for opt-in %s, project override %s, factory ownership %s",
+  ([enabled, projectOverride, managed]) =>
     Effect.gen(function* () {
       let committed: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | undefined;
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
         Effect.provide(
           Layer.mergeAll(
+            managed
+              ? Layer.mock(FactoryControlAccess)({
+                  membership: (id) =>
+                    Effect.succeed({
+                      threadId: id,
+                      managerId: ThreadId.make("manager"),
+                      projectId: ProjectId.make("restart-project"),
+                      ancestorThreadIds: [],
+                    }),
+                })
+              : Layer.empty,
             ServerSettings.layerTest({
               continueThreadsAfterServerUpdate: enabled,
               projectSettingsOverrides:
@@ -303,8 +316,8 @@ it.effect.each([
           (event) => event.type === "run.updated" && event.payload.status === "cancelled",
         ),
       );
-      assert.lengthOf(committed!.effects, (projectOverride ?? enabled) ? 1 : 0);
-      if (projectOverride ?? enabled)
+      assert.lengthOf(committed!.effects, !managed && (projectOverride ?? enabled) ? 1 : 0);
+      if (!managed && (projectOverride ?? enabled))
         assert.deepEqual(committed!.effects[0]?.request, {
           type: "provider-runtime.continue",
           sourceRunId: runId,

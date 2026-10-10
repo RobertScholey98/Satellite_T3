@@ -67,14 +67,20 @@ const make = Effect.gen(function* () {
         if (visited.has(threadId) || visited.size >= 64) return yield* unavailable();
         visited.add(threadId);
         const manager = state.managers.find((entry) => entry.threadId === threadId);
-        const assignment = state.assignments.find((entry) => entry.threadId === threadId);
+        const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === threadId);
+        const assignment = state.assignments.find(
+          (entry) =>
+            entry.threadId === threadId ||
+            entry.previousLeadThreadIds?.includes(threadId) ||
+            entry.id === auxiliary?.assignmentId,
+        );
         if (manager !== undefined) {
-          return { ownerThreadId: threadId, manager, assignment: undefined };
+          return { ownerThreadId: threadId, manager, assignment: undefined, auxiliary: undefined };
         }
         if (assignment !== undefined) {
           const owner = state.managers.find((entry) => entry.id === assignment.managerId);
           if (owner === undefined) return yield* unavailable();
-          return { ownerThreadId: threadId, manager: owner, assignment };
+          return { ownerThreadId: threadId, manager: owner, assignment, auxiliary };
         }
         const thread = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
         if (thread === null || thread.deletedAt !== null) return yield* unavailable();
@@ -103,6 +109,7 @@ const make = Effect.gen(function* () {
             .assertExecution(invocation.thread.threadId)
             .pipe(Effect.mapError(unavailable));
         const implementationTeamTool =
+          member.auxiliary === undefined &&
           member.assignment !== undefined &&
           member.assignment.kind !== "onboarding" &&
           ["orchestrator_capabilities", "delegate_task", "task_status", "task_cancel"].includes(
@@ -120,16 +127,32 @@ const make = Effect.gen(function* () {
             ...invocation,
             thread: { ...invocation.thread, threadId: payload.threadId },
           });
+          const targetControls = yield* controls
+            .membership(payload.threadId)
+            .pipe(Effect.mapError(unavailable));
           const sameManager = target?.manager.id === member.manager.id;
           const sameAssignment =
             member.assignment !== undefined && target?.assignment?.id === member.assignment.id;
           const ownManager =
             target?.assignment === undefined && target?.manager.id === member.manager.id;
           scopedCommunication =
+            (member.auxiliary === undefined || toolName === "t3_thread_read") &&
             sameManager &&
             (member.assignment === undefined ||
               sameAssignment ||
               (ownManager && toolName !== "t3_thread_interrupt"));
+          if (
+            scopedCommunication &&
+            toolName === "t3_thread_send" &&
+            target?.assignment?.wait != null &&
+            (member.assignment === undefined ||
+              targetControls?.ancestorThreadIds.includes(invocation.thread.threadId))
+          )
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message:
+                "Parent direction is held while this assignment waits. Resolve its recorded prerequisite through the scoped factory workflow before continuing work.",
+            });
           if (
             scopedCommunication &&
             (toolName === "t3_thread_send" || toolName === "t3_thread_interrupt")
@@ -172,12 +195,31 @@ const make = Effect.gen(function* () {
           assignments: snapshot.assignments.filter((entry) =>
             assignment === undefined ? entry.managerId === manager.id : entry.id === assignment.id,
           ),
+          dependencies: snapshot.dependencies.filter(
+            (entry) =>
+              assignment === undefined ||
+              entry.assignmentId === assignment.id ||
+              entry.supportingAssignmentId === assignment.id,
+          ),
+          auxiliaryThreads: snapshot.auxiliaryThreads.filter(
+            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
+          ),
         };
       }),
     dispatch: (invocation, command) =>
       Effect.gen(function* () {
         if (invocation.thread === undefined) return yield* denied();
+        yield* controls
+          .assertExecution(invocation.thread.threadId)
+          .pipe(Effect.mapError(unavailable));
         const member = yield* managedCaller(invocation);
+        if (
+          member.auxiliary !== undefined &&
+          (command.type !== "auxiliary.report" ||
+            command.threadId !== invocation.thread.threadId ||
+            member.auxiliary.threadId !== invocation.thread.threadId)
+        )
+          return yield* denied();
         const descendantOperation =
           member.assignment !== undefined &&
           member.assignment.kind !== "onboarding" &&

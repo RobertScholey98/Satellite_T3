@@ -76,6 +76,8 @@ const initial: FactorySnapshot = {
   boundaries: [],
   controls: [],
   guidance: [],
+  dependencies: [],
+  auxiliaryThreads: [],
 };
 const thread = (
   id: string,

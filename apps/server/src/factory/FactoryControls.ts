@@ -22,6 +22,7 @@ export interface FactoryControlMembership {
   readonly managerId: ThreadId;
   readonly projectId: ProjectId;
   readonly assignmentId?: FactoryAssignmentId;
+  readonly auxiliaryThreadId?: ThreadId;
   readonly ancestorThreadIds: ReadonlyArray<ThreadId>;
 }
 
