@@ -7,6 +7,7 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   WS_METHODS,
   IDEA_WS_METHODS,
+  FACTORY_WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -49,6 +50,7 @@ export type EnvironmentRpcTag = keyof WsRpcProtocolClient & string;
 type RpcMethod<TTag extends EnvironmentRpcTag> = WsRpcProtocolClient[TTag];
 
 export type EnvironmentSubscriptionRpcTag =
+  | typeof FACTORY_WS_METHODS.subscribe
   | typeof WS_METHODS.revdocChanges
   | typeof IDEA_WS_METHODS.subscribeChanges
   | typeof WS_METHODS.codexAuthCallbackSubscribe

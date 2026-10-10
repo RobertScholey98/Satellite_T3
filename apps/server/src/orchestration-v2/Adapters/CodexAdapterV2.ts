@@ -1,5 +1,10 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { prepareCodexIdeaPolicy } from "../../ideas/CodexIdeaPolicy.ts";
+import { prepareFactoryCodexLaunch } from "../../factory/FactoryCodexLaunch.ts";
+import {
+  FACTORY_CONTAINER_WORKSPACE,
+  factoryContainerEndpoint,
+} from "../../factory/FactoryExecutionProfile.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -712,13 +717,17 @@ export function buildCodexTurnStartParams(input: {
   return Effect.gen(function* () {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
     const approvalPolicy =
-      input.runtimePolicy.approvalPolicy === undefined
-        ? runtimeModeDefaults.approvalPolicy
-        : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
+      input.runtimePolicy.factoryExecution !== undefined
+        ? "never"
+        : input.runtimePolicy.approvalPolicy === undefined
+          ? runtimeModeDefaults.approvalPolicy
+          : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
     const sandboxPolicy =
-      input.runtimePolicy.sandboxPolicy === undefined
-        ? runtimeModeDefaults.sandboxPolicy
-        : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
+      input.runtimePolicy.factoryExecution !== undefined
+        ? { type: "externalSandbox" as const, networkAccess: "enabled" as const }
+        : input.runtimePolicy.sandboxPolicy === undefined
+          ? runtimeModeDefaults.sandboxPolicy
+          : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
     const selectedEffort = getModelSelectionStringOptionValue(
       input.modelSelection,
       "reasoningEffort",
@@ -761,7 +770,10 @@ export function buildCodexTurnStartParams(input: {
       threadId: input.nativeThreadId,
       input: input.codexInput,
       ...(additionalContext ? { additionalContext } : {}),
-      cwd: input.runtimePolicy.cwd,
+      cwd:
+        input.runtimePolicy.factoryExecution === undefined
+          ? input.runtimePolicy.cwd
+          : FACTORY_CONTAINER_WORKSPACE,
       model: input.modelSelection.model,
       // Model catalogues can default summaries to "none". Request them on every
       // turn, including resumed threads, for T3's reasoning timeline.
@@ -1290,7 +1302,14 @@ export function codexThreadRuntimeParams(input: {
   const mcpSession =
     input.threadId === null ? undefined : McpProviderSession.readMcpProviderSession(input.threadId);
   return {
-    ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
+    ...(input.runtimePolicy?.cwd == null
+      ? {}
+      : {
+          cwd:
+            input.runtimePolicy.factoryExecution === undefined
+              ? input.runtimePolicy.cwd
+              : FACTORY_CONTAINER_WORKSPACE,
+        }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
@@ -1299,7 +1318,10 @@ export function codexThreadRuntimeParams(input: {
         : {
             mcp_servers: {
               "t3-code": {
-                url: mcpSession.endpoint,
+                url:
+                  input.runtimePolicy?.factoryExecution === undefined
+                    ? mcpSession.endpoint
+                    : factoryContainerEndpoint(mcpSession.endpoint),
                 http_headers: {
                   Authorization: mcpSession.authorizationHeader,
                 },
@@ -1470,7 +1492,11 @@ function isSensitiveCodexProtocolKey(key: string): boolean {
 export const layerAppServerClientFactory: Layer.Layer<
   CodexAppServerClientFactory,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | ProviderEventLoggers | FileSystem.FileSystem | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | ProviderEventLoggers
+  | FileSystem.FileSystem
+  | Path.Path
+  | Crypto.Crypto
 > = Layer.effect(
   CodexAppServerClientFactory,
   Effect.gen(function* () {
@@ -1478,13 +1504,41 @@ export const layerAppServerClientFactory: Layer.Layer<
     const { native: nativeEventLogger } = yield* ProviderEventLoggers;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const crypto = yield* Crypto.Crypto;
 
     return CodexAppServerClientFactory.of({
       open: (input) =>
         Effect.gen(function* () {
           const scope = yield* Scope.Scope;
+          const factoryProfile = input.runtimePolicy.factoryExecution;
+          const factoryContainerName =
+            factoryProfile === undefined
+              ? undefined
+              : `satellite-factory-${yield* crypto.randomUUIDv4.pipe(Effect.mapError((cause) => new ProviderAdapterOpenSessionError({ driver: CODEX_PROVIDER, providerSessionId: input.providerSessionId, cause })))}`;
+          const factoryLaunch =
+            factoryProfile === undefined
+              ? undefined
+              : yield* prepareFactoryCodexLaunch({
+                  profile: factoryProfile,
+                  settings: input.settings,
+                  environment: input.environment,
+                  containerName: factoryContainerName!,
+                }).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  Effect.provideService(Path.Path, path),
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterOpenSessionError({
+                        driver: CODEX_PROVIDER,
+                        providerSessionId: input.providerSessionId,
+                        cause,
+                      }),
+                  ),
+                );
           const ideaPolicy =
-            input.runtimePolicy.purpose === "idea" && input.runtimePolicy.cwd !== null
+            factoryProfile === undefined &&
+            input.runtimePolicy.purpose === "idea" &&
+            input.runtimePolicy.cwd !== null
               ? yield* prepareCodexIdeaPolicy({
                   cwd: input.runtimePolicy.cwd,
                   homePath: input.settings.homePath,
@@ -1507,17 +1561,49 @@ export const layerAppServerClientFactory: Layer.Layer<
             ...(ideaPolicy?.environment ?? input.environment),
             ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
           };
-          const command = yield* makeCodexAppServerSpawnCommand({
-            command: input.settings.binaryPath || "codex",
-            args: [
-              ...codexAppServerArgs(
-                resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
-              ),
-              ...(ideaPolicy?.args ?? []),
-            ],
-            ...(input.runtimePolicy.cwd === null ? {} : { cwd: input.runtimePolicy.cwd }),
-            env: environment,
-          });
+          const command = yield* makeCodexAppServerSpawnCommand(
+            factoryLaunch === undefined
+              ? {
+                  command: input.settings.binaryPath || "codex",
+                  args: [
+                    ...codexAppServerArgs(
+                      resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+                    ),
+                    ...(ideaPolicy?.args ?? []),
+                  ],
+                  ...(input.runtimePolicy.cwd === null ? {} : { cwd: input.runtimePolicy.cwd }),
+                  env: environment,
+                }
+              : {
+                  command: factoryLaunch.command,
+                  args: factoryLaunch.args,
+                  env: factoryLaunch.environment,
+                  extendEnv: false,
+                },
+          );
+          if (
+            factoryProfile !== undefined &&
+            factoryLaunch !== undefined &&
+            factoryContainerName !== undefined
+          ) {
+            yield* Effect.addFinalizer(() =>
+              spawner
+                .exitCode(
+                  ChildProcess.make(
+                    "docker",
+                    [
+                      "--context",
+                      factoryProfile.dockerContext,
+                      "rm",
+                      "--force",
+                      factoryContainerName,
+                    ],
+                    { env: factoryLaunch.environment, extendEnv: false },
+                  ),
+                )
+                .pipe(Effect.timeout("10 seconds"), Effect.ignore),
+            );
+          }
           const handle = yield* spawner.spawn(command).pipe(
             Effect.provideService(Scope.Scope, scope),
             Effect.mapError(

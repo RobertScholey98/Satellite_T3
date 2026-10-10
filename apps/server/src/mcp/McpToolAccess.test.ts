@@ -1,3 +1,4 @@
+import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -162,6 +163,7 @@ export const refusedAtCompileTime = () => {
 const probeServer = (threads: Layer.Layer<ThreadManagement.ThreadManagementService>) =>
   McpHttpServer.toolkitRegistration(ProbeToolkit, layerProbeHandlers).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
     Layer.provideMerge(threads),
   );
 

@@ -200,6 +200,7 @@ export class ProviderSessionManagerV2 extends Context.Service<
 >()("t3/orchestration-v2/ProviderSessionManager/ProviderSessionManagerV2") {}
 
 interface LiveSessionEntry {
+  readonly factoryBoundaryId: string | undefined;
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /**
@@ -1841,6 +1842,18 @@ export const layerWithOptions = (
               const existing = (yield* Ref.get(sessions)).get(key);
               if (existing !== undefined) {
                 if (
+                  existing.factoryBoundaryId !== input.runtimePolicy.factoryExecution?.boundaryId ||
+                  (existing.factoryBoundaryId !== undefined &&
+                    !existing.attachedThreadIds.has(input.threadId))
+                ) {
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause:
+                      "A managed execution boundary cannot share or reuse another provider session.",
+                  });
+                }
+                if (
                   !existing.attachedThreadIds.has(input.threadId) &&
                   !existing.supportsMultipleProviderThreads
                 ) {
@@ -1950,6 +1963,7 @@ export const layerWithOptions = (
               const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
+                factoryBoundaryId: input.runtimePolicy.factoryExecution?.boundaryId,
                 attachedThreadIds: new Set([input.threadId]),
                 loadedProviderThreadKeyByThread: new Map(),
                 mcpCredentialIdByThread:

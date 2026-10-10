@@ -3,6 +3,24 @@
 Use a new thread for a separate task. Choose **New worktree** when its code changes
 need a separate branch and working directory.
 
+## Start project management
+
+On web and desktop, create an engineering manager from the thread sidebar. Choose
+the project on its owning environment, an authenticated Codex model, and the local
+path and exact commit of your owned skills repository. Each project has one manager.
+
+The manager delegates onboarding to a separate lead thread. Open either thread to
+discuss the investigation, and review its report for project instructions, quality
+checks, verification tools, and decisions that need your input. Onboarding uses a
+read-only copy of committed files; it omits untracked files, credential paths, and
+symlinks. It does not authorize implementation or merging.
+
+The owning environment needs a local Docker Linux engine and the discovery image.
+If preparation fails, the manager keeps its identity and explains what needs fixing.
+Before either thread starts, **Edit setup and retry** lets you correct the model or
+skills revision. After startup, retry preserves the existing conversation and access
+boundary. Reports remain available when their conversation is archived or deleted.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

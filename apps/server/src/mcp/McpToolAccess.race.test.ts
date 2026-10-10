@@ -1,3 +1,4 @@
+import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -147,6 +148,7 @@ const renameRacingTheUser = (threadId: ThreadId, userRaises: boolean) =>
       Effect.provide(
         McpHttpServer.toolkitRegistration(RenameToolkit, handlers).pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         ),
       ),
     );

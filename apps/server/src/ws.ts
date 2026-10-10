@@ -1,4 +1,10 @@
-import { IDEA_WS_METHODS, IdeaOperationError, ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
+import {
+  FACTORY_WS_METHODS,
+  IDEA_WS_METHODS,
+  IdeaOperationError,
+  ORCHESTRATION_WS_METHODS,
+} from "@t3tools/contracts";
+import { FactoryService } from "./factory/FactoryService.ts";
 import { IdeaNotebookStore } from "./ideas/IdeaNotebookStore.ts";
 import { DocumentService } from "./documents/DocumentService.ts";
 import { RevdocService } from "./revdoc/RevdocService.ts";
@@ -1116,6 +1122,7 @@ const layerWsRpc = (
       const ideaStore = yield* IdeaNotebookStore;
       const chatAttachments = yield* ChatAttachments.ChatAttachments;
       const documents = yield* DocumentService;
+      const factory = yield* FactoryService;
       const revdoc = yield* RevdocService;
       const issues = yield* IssueService;
       const openWork = yield* OpenWorkService;
@@ -2257,6 +2264,10 @@ const layerWsRpc = (
           }).pipe(Stream.unwrap),
         [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: (input) =>
           projectionSnapshotQuery.getRequestLifecycle(input),
+        [FACTORY_WS_METHODS.getSnapshot]: (input) => factory.snapshot(input),
+        [FACTORY_WS_METHODS.dispatchCommand]: (input) =>
+          factory.dispatch({ kind: "human" }, input.command),
+        [FACTORY_WS_METHODS.subscribe]: (input) => factory.changes(input),
         [WS_METHODS.revdocGet]: (input) => revdoc.get(input),
         [WS_METHODS.revdocTestStart]: (input) => revdoc.startTesting(input),
         [WS_METHODS.revdocStart]: (input) => revdoc.start(input),
@@ -2776,6 +2787,7 @@ export const layer = Layer.unwrap(
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const documents = yield* DocumentService;
+    const factory = yield* FactoryService;
     const revdoc = yield* RevdocService;
     const issues = yield* IssueService;
     const openWork = yield* OpenWorkService;
@@ -2854,6 +2866,7 @@ export const layer = Layer.unwrap(
               Layer.provide(
                 Layer.mergeAll(
                   Layer.succeed(DocumentService, documents),
+                  Layer.succeed(FactoryService, factory),
                   Layer.succeed(RevdocService, revdoc),
                   Layer.succeed(IssueService, issues),
                   Layer.succeed(OpenWorkService, openWork),

@@ -1,4 +1,5 @@
 import {
+  FACTORY_WS_METHODS,
   IDEA_WS_METHODS,
   ORCHESTRATION_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
@@ -21,6 +22,9 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * prefix. Adding an RPC to `WsRpcGroup` without a label is a type error.
  */
 const RPC_AGGREGATES = {
+  [FACTORY_WS_METHODS.getSnapshot]: "factory",
+  [FACTORY_WS_METHODS.dispatchCommand]: "factory",
+  [FACTORY_WS_METHODS.subscribe]: "factory",
   [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: "orchestration",
   [IDEA_WS_METHODS.list]: "ideas",
   [IDEA_WS_METHODS.get]: "ideas",

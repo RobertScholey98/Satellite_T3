@@ -1,0 +1,68 @@
+import * as Schema from "effect/Schema";
+
+export const FACTORY_CODEX_IMAGE = "satellite-factory-codex:0.161.0";
+export const FACTORY_CONTAINER_WORKSPACE = "/workspace";
+
+export const FactoryExecutionProfile = Schema.Struct({
+  boundaryId: Schema.String,
+  dockerContext: Schema.String,
+  imageId: Schema.String,
+  projectSnapshotPath: Schema.String,
+  workflowSnapshotPath: Schema.String,
+  runtimePath: Schema.String,
+});
+export type FactoryExecutionProfile = typeof FactoryExecutionProfile.Type;
+
+export function factoryContainerEndpoint(endpoint: string): string {
+  const url = new URL(endpoint);
+  if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+    url.hostname = "host.docker.internal";
+  }
+  return url.toString();
+}
+
+export function factoryDockerArguments(profile: FactoryExecutionProfile): Array<string> {
+  return [
+    "--context",
+    profile.dockerContext,
+    "run",
+    "--rm",
+    "--interactive",
+    "--pull",
+    "never",
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "256",
+    "--memory",
+    "2g",
+    "--cpus",
+    "2",
+    "--add-host",
+    "host.docker.internal:host-gateway",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,size=128m",
+    "--mount",
+    `type=bind,source=${profile.projectSnapshotPath},target=/workspace,readonly`,
+    "--mount",
+    `type=bind,source=${profile.workflowSnapshotPath},target=/workflow,readonly`,
+    "--mount",
+    `type=bind,source=${profile.runtimePath},target=/runtime`,
+    "--mount",
+    `type=bind,source=${profile.workflowSnapshotPath}/skills,target=/runtime/codex/skills,readonly`,
+  ];
+}
+
+export function admissibleFactorySourcePath(fileName: string): boolean {
+  const parts = fileName.replaceAll("\\", "/").split("/");
+  if (parts.some((part) => part === ".." || part === "." || part === "")) return false;
+  return !parts.some(
+    (part) =>
+      /^(?:\.git|\.env(?:\..*)?|\.npmrc|\.yarnrc(?:\.yml)?|\.netrc|\.ssh|\.aws|\.azure|\.kube|\.codex|\.claude|secrets?|credentials?|auth\.json|id_rsa|id_ed25519)$/i.test(
+        part,
+      ) || /\.(?:pem|p12|pfx|key|keystore)$/i.test(part),
+  );
+}

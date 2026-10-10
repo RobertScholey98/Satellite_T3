@@ -22,6 +22,7 @@ import * as Schema from "effect/Schema";
 
 import { parseTurnDiffFilesFromNumstat } from "../checkpointing/Diffs.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
+import * as FactoryExecution from "../factory/FactoryExecution.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -258,22 +259,32 @@ export const layer: Layer.Layer<
       checkpointRefForScopeOrdinal(input).pipe(Effect.provideService(Crypto.Crypto, crypto));
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
+    const factory = yield* Effect.serviceOption(FactoryExecution.FactoryExecution);
     const workspaceLocks = yield* KeyedLock.make<string>();
     const withWorkspaceLock = <A, E, R>(cwd: string, effect: Effect.Effect<A, E, R>) =>
       workspaceLocks.withLock(cwd, effect);
 
-    const isIdeaScope = (scope: OrchestrationV2CheckpointScope) =>
-      Option.isNone(projections)
+    const isExcludedScope = Effect.fnUntraced(function* (scope: OrchestrationV2CheckpointScope) {
+      if (
+        Option.isSome(factory) &&
+        (yield* factory.value.runtimePolicyFor(scope.threadId).pipe(
+          Effect.map((profile) => profile !== undefined),
+          Effect.orElseSucceed(() => true),
+        ))
+      )
+        return true;
+      return yield* Option.isNone(projections)
         ? Effect.succeed(false)
         : projections.value.getThread(scope.threadId).pipe(
             Effect.map((thread) => thread.purpose === "idea"),
             Effect.orElseSucceed(() => true),
           );
+    });
     const isGitCheckpointable = (scope: OrchestrationV2CheckpointScope) =>
       Effect.gen(function* () {
-        // An owned idea directory may sit under a checkout's gitignored development home.
+        // Owned idea directories and factory snapshots may sit under a checkout's development home.
         // Git discovery must never turn that directory into a snapshot of the containing project.
-        if (yield* isIdeaScope(scope)) return false;
+        if (yield* isExcludedScope(scope)) return false;
         return yield* checkpointStore.isGitRepository(scope.cwd);
       }).pipe(Effect.orElseSucceed(() => false));
 
@@ -512,7 +523,7 @@ export const layer: Layer.Layer<
       withWorkspaceLock(
         input.scope.cwd,
         Effect.gen(function* () {
-          if (input.checkpoint.status !== "ready" || (yield* isIdeaScope(input.scope))) {
+          if (input.checkpoint.status !== "ready" || (yield* isExcludedScope(input.scope))) {
             return yield* new CheckpointRestoreError({
               scopeId: input.scope.id,
               checkpointId: input.checkpoint.id,
@@ -549,7 +560,7 @@ export const layer: Layer.Layer<
       withWorkspaceLock(
         input.scope.cwd,
         Effect.gen(function* () {
-          if (yield* isIdeaScope(input.scope)) return;
+          if (yield* isExcludedScope(input.scope)) return;
           yield* checkpointStore.deleteCheckpointRefs({
             cwd: input.scope.cwd,
             checkpointRefs: input.checkpoints.map((checkpoint) => checkpoint.ref),

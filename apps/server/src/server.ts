@@ -13,6 +13,10 @@ import * as IssueService from "./issues/IssueService.ts";
 import * as IssueHost from "./issues/IssueHost.ts";
 import * as IssueLifecycleReactor from "./issues/IssueLifecycleReactor.ts";
 import * as CommitRecommendationService from "./git/CommitRecommendationService.ts";
+import * as FactoryStore from "./factory/FactoryStore.ts";
+import * as FactoryExecution from "./factory/FactoryExecution.ts";
+import * as FactoryService from "./factory/FactoryService.ts";
+import * as FactoryMcpGuard from "./factory/FactoryMcpGuard.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -494,7 +498,15 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
+const layerFactoryExecution = FactoryExecution.layer.pipe(
+  Layer.provideMerge(FactoryStore.layer),
+  Layer.provide(ProjectStore.layer),
+  Layer.provide(ProjectionStoreV2.layer),
+  Layer.provide(ProcessRunner.layer),
+);
+
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
+  Layer.provideMerge(layerFactoryExecution),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(ProviderEventIngestor.layerAnalytics),
   Layer.provide(layerCheckpointStore),
@@ -515,6 +527,7 @@ const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
 );
 
 const layerSatelliteFeatures = Layer.mergeAll(
+  FactoryMcpGuard.layer.pipe(Layer.provideMerge(FactoryService.layer)),
   DocumentService.layer,
   RevdocService.layer,
   OpenWorkService.layer,

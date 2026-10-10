@@ -18,6 +18,7 @@ import {
 } from "./ProviderAdapter.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as IdeaWorkspace from "../ideas/IdeaWorkspace.ts";
+import { FactoryExecution } from "../factory/FactoryExecution.ts";
 
 /**
  * ERRORS
@@ -94,9 +95,38 @@ export const layerFromProjectStore = Layer.effect(
     const projects = yield* ProjectStore.ProjectStoreV2;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     const ideaWorkspace = yield* Effect.serviceOption(IdeaWorkspace.IdeaWorkspace);
+    const factory = yield* FactoryExecution;
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
+        const factoryExecution = yield* factory.runtimePolicyFor(input.thread.id).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RuntimePolicyResolveError({
+                projectId: input.thread.projectId,
+                providerInstanceId: input.modelSelection.instanceId,
+                cause,
+              }),
+          ),
+        );
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
+        if (factoryExecution !== undefined) {
+          if (instance?.driverKind !== "codex") {
+            return yield* new RuntimePolicyResolveError({
+              projectId: input.thread.projectId,
+              providerInstanceId: input.modelSelection.instanceId,
+              cause: "Managed execution currently requires the qualified Codex container runtime.",
+            });
+          }
+          return ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: input.thread.runtimeMode,
+            interactionMode: input.thread.interactionMode,
+            purpose: input.thread.purpose,
+            cwd: factoryExecution.projectSnapshotPath,
+            factoryExecution,
+            sandboxPolicy: { type: "externalSandbox", networkAccess: "enabled" },
+            approvalPolicy: "never",
+          });
+        }
         const supportedRuntimeModes =
           instance === undefined
             ? undefined
@@ -169,19 +199,21 @@ export function layerWithOverride(
         resolve: (input) =>
           base.resolve(input).pipe(
             Effect.map((policy) =>
-              ProviderAdapterV2RuntimePolicy.make({
-                ...policy,
-                ...(override.cwd === undefined ? {} : { cwd: override.cwd }),
-                ...(override.approvalPolicy === undefined
-                  ? {}
-                  : { approvalPolicy: override.approvalPolicy }),
-                ...(override.sandboxPolicy === undefined
-                  ? {}
-                  : { sandboxPolicy: override.sandboxPolicy }),
-                ...(override.reasoningEffort === undefined
-                  ? {}
-                  : { reasoningEffort: override.reasoningEffort }),
-              }),
+              policy.factoryExecution !== undefined
+                ? policy
+                : ProviderAdapterV2RuntimePolicy.make({
+                    ...policy,
+                    ...(override.cwd === undefined ? {} : { cwd: override.cwd }),
+                    ...(override.approvalPolicy === undefined
+                      ? {}
+                      : { approvalPolicy: override.approvalPolicy }),
+                    ...(override.sandboxPolicy === undefined
+                      ? {}
+                      : { sandboxPolicy: override.sandboxPolicy }),
+                    ...(override.reasoningEffort === undefined
+                      ? {}
+                      : { reasoningEffort: override.reasoningEffort }),
+                  }),
             ),
           ),
       } satisfies RuntimePolicyV2Shape;

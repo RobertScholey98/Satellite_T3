@@ -1,5 +1,6 @@
 import {
   CLIENT_GUARDED_RPC_SCOPES,
+  FACTORY_WS_METHODS,
   type DeviceListInput,
   clientRpcRequiredScopes,
   authScopeRequiredResponse,
@@ -43,6 +44,8 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * runtime failure.
  */
 export const RPC_REQUIRED_SCOPES = {
+  [FACTORY_WS_METHODS.getSnapshot]: AuthOrchestrationReadScope,
+  [FACTORY_WS_METHODS.subscribe]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: AuthOrchestrationReadScope,
   [IDEA_WS_METHODS.list]: AuthOrchestrationReadScope,
   [IDEA_WS_METHODS.get]: AuthOrchestrationReadScope,

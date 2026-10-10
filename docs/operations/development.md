@@ -16,6 +16,24 @@ Install [Vite+](../../README.md#install-vp) to use the `vp` commands below direc
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
 
+## Managed discovery runtime
+
+Project onboarding requires an authenticated Codex provider and a local Docker
+Linux engine on the project's owning environment. Build its pinned runner from the
+checkout root before starting onboarding:
+
+```powershell
+docker build -t satellite-factory-codex:0.161.0 apps/server/src/factory/runner
+```
+
+Select a committed project and an exact commit from an owned workflow repository
+containing a `skills` directory. Qualification exports tracked files and runs a
+filesystem probe in the same image used for the agent. Failed qualification leaves
+an actionable wait; it never falls back to host execution. The container receives
+the selected model account's credentials, but no host Git credentials or Docker socket.
+Codex accounts stored only in a native keyring currently require file-backed Codex
+authentication before this runner can launch.
+
 ## Choosing a dev process
 
 Use `pnpm run dev:satellite` for the Satellite desktop configuration.

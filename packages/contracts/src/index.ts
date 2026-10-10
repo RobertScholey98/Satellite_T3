@@ -73,3 +73,4 @@ export * from "./secretRequest.ts";
 export * from "./clientRpcPermissions.ts";
 
 export * from "./satelliteOrchestration.ts";
+export * from "./factory.ts";

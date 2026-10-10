@@ -68,6 +68,9 @@ import {
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
+import * as FactoryMcpGuard from "../factory/FactoryMcpGuard.ts";
+import { FactoryToolkit } from "./toolkits/factory/tools.ts";
+import * as FactoryHandlers from "./toolkits/factory/handlers.ts";
 
 /** Where an MCP client discovers how to sign in (RFC 9728), at this request's own origin. */
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
@@ -767,6 +770,48 @@ const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(funct
   );
 });
 
+const layerGuardedRegistry = Layer.effect(
+  McpServer.McpServer,
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const guard = yield* FactoryMcpGuard.FactoryMcpGuard;
+    return McpServer.McpServer.of({
+      ...server,
+      addTool: (registration) =>
+        server.addTool({
+          ...registration,
+          handle: (payload) =>
+            Effect.withFiber((fiber) => {
+              const invocation = Context.getOption(
+                fiber.context,
+                McpInvocationContext.McpInvocationContext,
+              );
+              if (Option.isNone(invocation)) {
+                return Effect.succeed(
+                  new McpSchema.CallToolResult({
+                    isError: true,
+                    content: [{ type: "text", text: "An authenticated MCP caller is required." }],
+                  }),
+                );
+              }
+              return guard.authorize(invocation.value, registration.tool.name).pipe(
+                Effect.matchEffect({
+                  onFailure: (error) =>
+                    Effect.succeed(
+                      new McpSchema.CallToolResult({
+                        isError: true,
+                        content: [{ type: "text", text: error.message }],
+                      }),
+                    ),
+                  onSuccess: () => registration.handle(payload),
+                }),
+              );
+            }),
+        }),
+    });
+  }),
+);
+
 /**
  * `McpServer.toolkit` for handlers that declared their access (see
  * `McpToolAccess`). Every toolkit on `/mcp` registers through this.
@@ -774,13 +819,27 @@ const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(funct
 export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, RX>(
   toolkit: Toolkit.Toolkit<Tools>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
-) => McpServer.toolkit(toolkit).pipe(Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)));
+): Layer.Layer<
+  never,
+  EX,
+  McpServer.McpServer | FactoryMcpGuard.FactoryMcpGuard | RX | Tool.HandlerServices<Tools>
+> =>
+  Layer.effectDiscard(McpServer.registerToolkit<Tools>(toolkit)).pipe(
+    Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)),
+    Layer.provide(layerGuardedRegistry),
+  );
 
 /** A hand-registered tool, also only with handlers that declared their access. */
 const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, EX, RX>(
   register: Effect.Effect<A, E, R>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
-) => Layer.effectDiscard(register).pipe(Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)));
+) =>
+  Layer.effectDiscard(register).pipe(
+    Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)),
+    Layer.provide(layerGuardedRegistry),
+  );
+
+export const layerFactoryToolkit = toolkitRegistration(FactoryToolkit, FactoryHandlers.layer);
 
 export const layerHtmlToolkit = Layer.mergeAll(
   toolkitRegistration(HtmlRenderToolkit, HtmlHandlers.layerRender),
@@ -895,6 +954,7 @@ export const RevdocToolkitRegistrationLive = toolkitRegistration(
 );
 
 export const layer = Layer.mergeAll(
+  layerFactoryToolkit,
   IdeasToolkitRegistrationLive,
   DocumentsToolkitRegistrationLive,
   CommitsToolkitRegistrationLive,

@@ -111,6 +111,7 @@ import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
+import { FactoryExecution } from "../factory/FactoryExecution.ts";
 import {
   makeSubagentChildThread,
   subagentResultForRun,
@@ -835,6 +836,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerSessions = yield* ProviderSessionManagerV2;
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const runtimePolicy = yield* RuntimePolicyV2;
+  const factoryExecution = yield* Effect.serviceOption(FactoryExecution);
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
 
@@ -869,20 +871,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly providerInstanceId: ProviderInstanceId;
     readonly threadId: ThreadId;
   }) =>
-    input.adapter.getCapabilities().pipe(
-      Effect.flatMap((capabilities) =>
-        capabilities.sessions.supportsMultipleProviderThreadsPerSession
-          ? Effect.succeed(
-              idAllocator.derive.providerSession({
+    Effect.gen(function* () {
+      const boundary = Option.isSome(factoryExecution)
+        ? yield* factoryExecution.value.runtimePolicyFor(input.threadId)
+        : undefined;
+      if (boundary !== undefined) {
+        return yield* idAllocator.allocate.providerSession({
+          providerInstanceId: input.providerInstanceId,
+          threadId: input.threadId,
+        });
+      }
+      return yield* input.adapter.getCapabilities().pipe(
+        Effect.flatMap((capabilities) =>
+          capabilities.sessions.supportsMultipleProviderThreadsPerSession
+            ? Effect.succeed(
+                idAllocator.derive.providerSession({
+                  providerInstanceId: input.providerInstanceId,
+                }),
+              )
+            : idAllocator.allocate.providerSession({
                 providerInstanceId: input.providerInstanceId,
+                threadId: input.threadId,
               }),
-            )
-          : idAllocator.allocate.providerSession({
-              providerInstanceId: input.providerInstanceId,
-              threadId: input.threadId,
-            }),
-      ),
-    );
+        ),
+      );
+    });
 
   const enforceCommandPolicy =
     (command: OrchestrationV2Command) =>

@@ -63,6 +63,7 @@ const client = McpSchema.McpServerClient.of({
 });
 const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" })),
@@ -70,6 +71,7 @@ const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
 );
 const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provide(
     Layer.mergeAll(
@@ -82,6 +84,7 @@ const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
 );
 const DocumentsTestLayer = McpHttpServer.DocumentsToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provide(
     Layer.mock(DocumentService)({
@@ -96,6 +99,7 @@ const DocumentsTestLayer = McpHttpServer.DocumentsToolkitRegistrationLive.pipe(
 
 const RevdocTestLayer = McpHttpServer.RevdocToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provide(
     Layer.mock(RevdocService)({
@@ -618,6 +622,7 @@ it.effect("registers commit guidance with validated input and the caller's threa
     Effect.provide(
       McpHttpServer.CommitsToolkitRegistrationLive.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(
           Layer.mock(CommitRecommendationService.CommitRecommendationService)({
@@ -1210,6 +1215,7 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         }),
       ).pipe(
         Layer.provideMerge(McpHttpServer.layerMcpTransport),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (token) =>

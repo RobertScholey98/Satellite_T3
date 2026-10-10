@@ -1087,6 +1087,71 @@ it.effect("ProviderSessionManagerV2 opens a duplicate session only once", () =>
   }),
 );
 
+it.effect("ProviderSessionManagerV2 rejects reuse across managed execution boundaries", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("factory-boundary-owner");
+      const sibling = ThreadId.make("factory-boundary-sibling");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+          yield* makeThreadCreatedEvent({ idAllocator, threadId: sibling, now }),
+        ],
+      });
+      const factoryExecution = {
+        boundaryId: "assignment-one",
+        dockerContext: "local",
+        imageId: "sha256:verified",
+        projectSnapshotPath: "/project",
+        workflowSnapshotPath: "/workflow",
+        runtimePath: "/runtime",
+      };
+      const managed = { ...runtimePolicy, factoryExecution };
+      const first = yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy: managed,
+      });
+      assert.strictEqual(
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: managed,
+        }),
+        first,
+      );
+      for (const request of [
+        { threadId, runtimePolicy },
+        { threadId: sibling, runtimePolicy: managed },
+        {
+          threadId,
+          runtimePolicy: {
+            ...managed,
+            factoryExecution: { ...factoryExecution, boundaryId: "assignment-two" },
+          },
+        },
+      ]) {
+        const failure = yield* manager
+          .open({ ...request, providerSessionId, modelSelection })
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderSessionOpenError");
+      }
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+  }),
+);
+
 it.effect("ProviderSessionManagerV2 cleans up an open interrupted mid-handshake", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);

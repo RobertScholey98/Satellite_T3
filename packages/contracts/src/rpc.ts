@@ -22,6 +22,14 @@ import {
 } from "./providerSetup.ts";
 import * as Schema from "effect/Schema";
 import {
+  FACTORY_WS_METHODS,
+  FactoryCommandResult,
+  FactoryDispatchInput,
+  FactoryError,
+  FactoryQuery,
+  FactorySnapshot,
+} from "./factory.ts";
+import {
   RevdocInput,
   RevdocStartInput,
   RevdocTestStartInput,
@@ -1286,6 +1294,23 @@ const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
 });
 
 const revdocRpcError = Schema.Union([RevdocError, EnvironmentAuthorizationError]);
+const factoryRpcError = Schema.Union([FactoryError, EnvironmentAuthorizationError]);
+const WsFactoryGetSnapshotRpc = Rpc.make(FACTORY_WS_METHODS.getSnapshot, {
+  payload: FactoryQuery,
+  success: FactorySnapshot,
+  error: factoryRpcError,
+});
+const WsFactoryDispatchCommandRpc = Rpc.make(FACTORY_WS_METHODS.dispatchCommand, {
+  payload: FactoryDispatchInput,
+  success: FactoryCommandResult,
+  error: factoryRpcError,
+});
+const WsFactorySubscribeRpc = Rpc.make(FACTORY_WS_METHODS.subscribe, {
+  payload: FactoryQuery,
+  success: FactorySnapshot,
+  error: factoryRpcError,
+  stream: true,
+});
 const WsRevdocGetRpc = Rpc.make(WS_METHODS.revdocGet, {
   payload: RevdocInput,
   success: RevdocDetail,
@@ -1957,6 +1982,9 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
 ) {}
 
 export const WsRpcGroup = RpcGroup.make(
+  WsFactoryGetSnapshotRpc,
+  WsFactoryDispatchCommandRpc,
+  WsFactorySubscribeRpc,
   Rpc.make(ORCHESTRATION_WS_METHODS.getRequestLifecycle, {
     payload: OrchestrationGetRequestLifecycleInput,
     success: OrchestrationGetRequestLifecycleResult,

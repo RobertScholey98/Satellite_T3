@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
 import {
   CheckpointScopeId,
+  FactoryError,
   NodeId,
   CommandId,
   ProjectId,
@@ -19,6 +20,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
+import * as FactoryExecution from "../factory/FactoryExecution.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as SatelliteTestRuntime from "./testkit/SatelliteTestRuntime.ts";
@@ -196,3 +198,100 @@ it.effect("never checkpoints or restores the repository containing an owned idea
     assert.isEmpty(deleteCheckpointRefs.mock.calls);
   }).pipe(Effect.provide(SatelliteTestRuntime.layer.pipe(Layer.provideMerge(NodeServices.layer))));
 });
+
+it.effect.each(["managed", "unavailable", "ordinary"] as const)(
+  "protects factory snapshots from host checkpoints, boundary=%s",
+  (boundary) => {
+    const threadId = ThreadId.make("thread:factory-checkpoint");
+    const cwd = "/repo/.t3/userdata/factory/execution/profile/project";
+    const isGitRepository = vi.fn(() => Effect.succeed(true));
+    const captureCheckpoint = vi.fn(() => Effect.void);
+    const restoreCheckpoint = vi.fn(() => Effect.succeed(true));
+    const deleteCheckpointRefs = vi.fn(() => Effect.void);
+    const hasCheckpointRef = vi.fn(() => Effect.succeed(true));
+    const diffCheckpoints = vi.fn(() => Effect.succeed(""));
+    const layerTest = CheckpointService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          Layer.mock(FactoryExecution.FactoryExecution)({
+            runtimePolicyFor: (requestedThreadId) => {
+              assert.equal(requestedThreadId, threadId);
+              if (boundary === "unavailable")
+                return Effect.fail(new FactoryError({ code: "execution-unavailable" }));
+              return Effect.succeed(
+                boundary === "ordinary"
+                  ? undefined
+                  : {
+                      boundaryId: "profile:thread",
+                      dockerContext: "local",
+                      imageId: "sha256:verified",
+                      projectSnapshotPath: cwd,
+                      workflowSnapshotPath: "/repo/.t3/userdata/factory/execution/profile/workflow",
+                      runtimePath: "/repo/.t3/userdata/factory/execution/profile/runtime",
+                    },
+              );
+            },
+          }),
+          Layer.mock(CheckpointStore.CheckpointStore)({
+            isGitRepository,
+            captureCheckpoint,
+            restoreCheckpoint,
+            deleteCheckpointRefs,
+            hasCheckpointRef,
+            diffCheckpoints,
+          }),
+        ),
+      ),
+      Layer.provideMerge(NodeCrypto.layer),
+    );
+
+    return Effect.gen(function* () {
+      const checkpoints = yield* CheckpointService.CheckpointServiceV2;
+      const now = yield* DateTime.now;
+      const scope = yield* checkpoints.prepareRootRunScope({
+        threadId,
+        runId: RunId.make("run:factory-checkpoint"),
+        rootNodeId: NodeId.make("node:factory-checkpoint"),
+        providerThreadId: ProviderThreadId.make("provider-thread:factory-checkpoint"),
+        cwd,
+        createdAt: now,
+      });
+      yield* checkpoints.captureBaseline({ scope, ordinalWithinScope: 0 });
+      const baseline = yield* checkpoints.materializeBaselineCheckpoint({
+        scope,
+        ordinalWithinScope: 0,
+      });
+      const checkpoint = yield* checkpoints.capture({
+        scope,
+        runId: scope.runId,
+        nodeId: NodeId.make("node:factory-checkpoint"),
+        ordinalWithinScope: 1,
+        appRunOrdinal: 1,
+        capturedAt: now,
+      });
+      assert.equal(baseline.status, boundary === "ordinary" ? "ready" : "missing");
+      assert.equal(checkpoint.status, boundary === "ordinary" ? "ready" : "missing");
+      // A persisted ready checkpoint from an earlier version must not bypass the boundary.
+      const restore = checkpoints.restore({
+        scope,
+        checkpoint: { ...checkpoint, status: "ready" },
+      });
+      if (boundary === "ordinary") yield* restore;
+      else assert.equal((yield* restore.pipe(Effect.flip))._tag, "CheckpointRestoreError");
+      yield* checkpoints.deleteStaleRefs({ scope, checkpoints: [checkpoint] });
+
+      for (const operation of [
+        isGitRepository,
+        captureCheckpoint,
+        restoreCheckpoint,
+        deleteCheckpointRefs,
+        hasCheckpointRef,
+        diffCheckpoints,
+      ]) {
+        if (boundary === "ordinary") assert.isNotEmpty(operation.mock.calls);
+        else assert.isEmpty(operation.mock.calls);
+      }
+    }).pipe(Effect.provide(layerTest));
+  },
+);

@@ -3,6 +3,7 @@ import {
   type ModelSelection,
   type OrchestrationV2AppThread,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   type RuntimeMode,
   type ServerProvider,
@@ -19,6 +20,8 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as IdeaWorkspace from "../ideas/IdeaWorkspace.ts";
+import * as FactoryExecution from "../factory/FactoryExecution.ts";
+import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
 
 const projectId = ProjectId.make("project:runtime-policy");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -78,6 +81,7 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
   }) as ProviderInstance;
 
 const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
+  Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
   Layer.provide(
     Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
       getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
@@ -107,6 +111,95 @@ const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
           }),
         ),
     }),
+  ),
+);
+
+const discoveryProfile = {
+  boundaryId: "discovery:runtime-policy",
+  dockerContext: "default",
+  imageId: "sha256:discovery-image",
+  projectSnapshotPath: "/state/discovery/project",
+  workflowSnapshotPath: "/state/discovery/workflow",
+  runtimePath: "/state/discovery/runtime",
+} satisfies FactoryExecution.FactoryExecutionProfile;
+
+const managedLayer = (driverKind: "codex" | "grok") =>
+  RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(FactoryExecution.FactoryExecution)({
+          runtimePolicyFor: () => Effect.succeed(discoveryProfile),
+        }),
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: () => Effect.die("managed execution must not read the writable checkout"),
+        }),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: (instanceId) =>
+            Effect.succeed({
+              ...providerInstanceFor(instanceId),
+              driverKind: ProviderDriverKind.make(driverKind),
+            }),
+        }),
+      ),
+    ),
+  );
+
+it.effect("runs managed discovery from the qualified snapshot instead of its worktree", () =>
+  Effect.gen(function* () {
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const now = yield* DateTime.now;
+    const resolved = yield* policy.resolve({
+      thread: makeThread({ now, worktreePath: "/writable-worktree" }),
+      modelSelection,
+    });
+    assert.equal(resolved.cwd, discoveryProfile.projectSnapshotPath);
+    assert.deepStrictEqual(resolved.factoryExecution, discoveryProfile);
+    assert.deepStrictEqual(resolved.sandboxPolicy, {
+      type: "externalSandbox",
+      networkAccess: "enabled",
+    });
+    assert.equal(resolved.approvalPolicy, "never");
+  }).pipe(Effect.provide(managedLayer("codex"))),
+);
+
+it.effect("rejects a managed runtime when the selected driver cannot enforce discovery", () =>
+  Effect.gen(function* () {
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const now = yield* DateTime.now;
+    const failure = yield* policy
+      .resolve({
+        thread: makeThread({ now, worktreePath: "/writable-worktree" }),
+        modelSelection: { instanceId: grokInstanceId, model: "test-model" },
+      })
+      .pipe(Effect.flip);
+    assert.equal(failure._tag, "RuntimePolicyResolveError");
+    assert.equal(failure.providerInstanceId, grokInstanceId);
+  }).pipe(Effect.provide(managedLayer("grok"))),
+);
+
+it.effect("preserves the managed boundary when a runtime override requests wider access", () =>
+  Effect.gen(function* () {
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const now = yield* DateTime.now;
+    const resolved = yield* policy.resolve({
+      thread: makeThread({ now, worktreePath: "/writable-worktree" }),
+      modelSelection,
+    });
+    assert.equal(resolved.cwd, discoveryProfile.projectSnapshotPath);
+    assert.deepStrictEqual(resolved.factoryExecution, discoveryProfile);
+    assert.deepStrictEqual(resolved.sandboxPolicy, {
+      type: "externalSandbox",
+      networkAccess: "enabled",
+    });
+    assert.equal(resolved.approvalPolicy, "never");
+  }).pipe(
+    Effect.provide(
+      RuntimePolicy.layerWithOverride({
+        cwd: "/writable-checkout",
+        approvalPolicy: "on-request",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      }).pipe(Layer.provide(managedLayer("codex"))),
+    ),
   ),
 );
 
@@ -175,6 +268,7 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
 it.effect("uses the owned idea workspace and preserves its selected permissions", () => {
   const calls: ThreadId[] = [];
   const isolatedLayer = RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(IdeaWorkspace.IdeaWorkspace)({

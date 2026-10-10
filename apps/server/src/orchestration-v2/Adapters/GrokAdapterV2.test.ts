@@ -1,3 +1,4 @@
+import * as FactoryExecutionTestkit from "../../factory/FactoryExecution.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   GrokSettings,
@@ -424,6 +425,7 @@ describe("Grok launch permission mode", () => {
       }).pipe(
         Effect.provide(
           RuntimePolicy.layerFromProjectStore.pipe(
+            Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
             Layer.provide(
               Layer.mock(ProjectStore.ProjectStoreV2)({
                 get: () => Effect.die("the thread has a worktree"),

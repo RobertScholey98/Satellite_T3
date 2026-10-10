@@ -39,6 +39,7 @@ import * as Schema from "effect/Schema";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
+import { FactoryExecutionProfile } from "../factory/FactoryExecutionProfile.ts";
 
 import type {
   ProviderSelectionTransitionInput,
@@ -53,6 +54,7 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
   reasoningEffort: Schema.optional(Schema.String),
+  factoryExecution: Schema.optional(FactoryExecutionProfile),
 });
 export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePolicy.Type;
 
