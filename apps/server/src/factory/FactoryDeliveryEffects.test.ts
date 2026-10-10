@@ -21,6 +21,9 @@ import type { ProviderMergeEvidence } from "../pullRequest/pullRequestMergeEvide
 import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
 import type { FactoryCandidateArtifact } from "./FactoryCandidate.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import { ready as integrationReady } from "./FactoryIntegration.testkit.ts";
+import { factoryMergeGroupEvidence } from "./FactoryMerge.ts";
+import { factoryMergeGroupForAssignment } from "./FactoryMergeOwnership.ts";
 import * as FactoryDeliveryEffects from "./FactoryDeliveryEffects.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
 import { FactoryHandover } from "./FactoryHandover.ts";
@@ -938,4 +941,90 @@ it.effect(
         },
       );
     }),
+);
+
+it.effect(
+  "retires a queued individual merge after group enrollment without submitting a host mutation",
+  () => {
+    let mutations = 0;
+    return scenario(
+      Effect.gen(function* () {
+        const pending = yield* beginMerge;
+        const store = yield* FactoryStore.FactoryStore;
+        const state = yield* store.snapshot;
+        const grouped = {
+          ...state,
+          revision: state.revision + 1,
+          integrations: integrationReady().state.integrations,
+          mergeGroups: [],
+        };
+        const sql = yield* SqlClient.SqlClient;
+        const enrolled = {
+          ...grouped,
+          mergeGroups: [factoryMergeGroupForAssignment(grouped, deliveryIds.assignment)!],
+        };
+        const blocked = factoryMergeGroupEvidence(enrolled, enrolled.mergeGroups[0]!.id);
+        assert.isTrue(
+          !blocked.ready &&
+            blocked.reasons.some((reason) => /independent merge outcome/.test(reason)),
+        );
+        yield* sql`UPDATE factory_state SET revision=${enrolled.revision}, payload_json=${encodeSnapshot(enrolled)} WHERE id=1`;
+        yield* (yield* FactoryDeliveryEffects.FactoryDeliveryEffects).handle(pending);
+        assert.equal(mutations, 0);
+        assert.isFalse((yield* store.pending).some((entry) => entry.id === pending.id));
+        assert.equal((yield* revision).merge?.status, "failed");
+        assert.isUndefined((yield* revision).error);
+        const recovered = yield* store.snapshot;
+        const group = factoryMergeGroupForAssignment(recovered, deliveryIds.assignment)!;
+        const readiness = factoryMergeGroupEvidence(recovered, group.id);
+        assert.isFalse(
+          !readiness.ready &&
+            readiness.reasons.some((reason) => /independent merge outcome/.test(reason)),
+        );
+      }),
+      {
+        pr: () => ({
+          runAction: () =>
+            Effect.sync(() => {
+              mutations++;
+            }),
+        }),
+      },
+    );
+  },
+);
+
+it.effect("preserves an unknown individual submission after group enrollment", () =>
+  scenario(
+    Effect.gen(function* () {
+      const pending = yield* beginMerge;
+      yield* request(
+        {
+          ...deliveryRevisionCommand,
+          commandId: CommandId.make("group-unknown-submission"),
+          type: "delivery.merge.recorded",
+          operationId: "merge:command",
+          status: "unknown",
+          reason: "The host submission acknowledgement was lost.",
+        },
+        deliveryActors.host,
+      );
+      const store = yield* FactoryStore.FactoryStore;
+      const state = yield* store.snapshot;
+      const grouped = {
+        ...state,
+        revision: state.revision + 1,
+        integrations: integrationReady().state.integrations,
+        mergeGroups: [],
+      };
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE factory_state SET revision=${grouped.revision}, payload_json=${encodeSnapshot(grouped)} WHERE id=1`;
+      yield* (yield* FactoryDeliveryEffects.FactoryDeliveryEffects).handle(pending);
+      assert.equal((yield* revision).merge?.status, "unknown");
+      assert.isTrue((yield* store.pending).some((entry) => entry.id === pending.id));
+    }),
+    {
+      pr: () => ({ runAction: () => Effect.die("An uncertain merge must not be resubmitted.") }),
+    },
+  ),
 );

@@ -45,6 +45,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  */
 export const RPC_REQUIRED_SCOPES = {
   [FACTORY_WS_METHODS.getSnapshot]: AuthOrchestrationReadScope,
+  [FACTORY_WS_METHODS.getMergeGroup]: AuthOrchestrationReadScope,
   [FACTORY_WS_METHODS.subscribe]: AuthOrchestrationReadScope,
   [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: AuthOrchestrationReadScope,
   [IDEA_WS_METHODS.list]: AuthOrchestrationReadScope,

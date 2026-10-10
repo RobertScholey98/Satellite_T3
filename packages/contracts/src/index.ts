@@ -92,3 +92,5 @@ export * from "./factoryWorkflow.ts";
 export * from "./factoryCollaboration.ts";
 
 export * from "./factoryIntegration.ts";
+
+export * from "./factoryMerge.ts";

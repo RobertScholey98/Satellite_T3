@@ -33,6 +33,7 @@ import { factoryModelKey, factoryModelLabel } from "./FactoryModelPolicyDialog";
 import { FactoryAssignmentControls } from "./FactoryControls";
 import { FactoryOversight } from "./FactoryOversight";
 import { FactoryDelivery } from "./FactoryDelivery";
+import { FactoryMergeReview, FactoryMergeThreadLink } from "./FactoryMergeReview";
 import { FactoryRetros } from "./FactoryRetros";
 import { factoryAssignmentCancellation, factoryAssignmentStatus } from "./FactoryControlsReadModel";
 
@@ -589,6 +590,14 @@ export function FactoryAssignmentDetailsDialog({
   };
   const source = assignment.startingSource;
   const grant = assignment.grant;
+  const mergeGroup = environment.data?.mergeGroups.find(
+    (entry) =>
+      entry.integrationAssignmentId === assignment.id ||
+      entry.memberAssignmentIds.includes(assignment.id),
+  );
+  const integrationLead = environment.data?.assignments.find(
+    (entry) => entry.id === mergeGroup?.integrationAssignmentId,
+  );
   return (
     <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
       <DialogPopup showCloseButton={!pending}>
@@ -602,6 +611,27 @@ export function FactoryAssignmentDetailsDialog({
         <DialogPanel>
           <div className="space-y-5">
             <FactoryAssignmentControls environment={environment} assignment={assignment} />
+            {mergeGroup?.integrationAssignmentId === assignment.id ? (
+              <FactoryMergeReview
+                environment={environment}
+                groupId={mergeGroup.id}
+                onOpenThread={onOpenRelatedThread}
+              />
+            ) : mergeGroup && integrationLead ? (
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  This PR belongs to a shared delivery. Combined approval happens in the integration
+                  conversation.
+                </p>
+                <FactoryMergeThreadLink
+                  environment={environment}
+                  threadId={integrationLead.threadId}
+                  onOpenThread={onOpenRelatedThread}
+                >
+                  Open combined review conversation
+                </FactoryMergeThreadLink>
+              </div>
+            ) : null}
             <FactoryDelivery
               environment={environment}
               assignment={assignment}

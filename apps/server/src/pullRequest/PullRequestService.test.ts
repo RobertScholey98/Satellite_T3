@@ -45,6 +45,7 @@ import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import type { ProviderMergeEvidence } from "./pullRequestMergeEvidence.ts";
 import * as FactoryPullRequestGate from "../factory/FactoryPullRequestGate.ts";
 import { FactoryStore } from "../factory/FactoryStore.ts";
+import { ready as integrationReady } from "../factory/FactoryIntegration.testkit.ts";
 import {
   applyDelivery,
   deliveryActors,
@@ -478,101 +479,144 @@ const factoryPermit = {
   operationId: "merge:command",
 };
 
-it.effect.each(["pause", "cancel", "grant", "wait", "ordinary"] as const)(
-  "rechecks %s after provider staging and before an actual merge write",
-  (scenario) =>
-    Effect.gen(function* () {
-      let state = approvedFactoryMerge();
-      let staged = 0;
-      let mutations = 0;
-      let hadGuard = false;
-      const base = fakeProvider("github");
-      const service = yield* makeService({
-        factorySnapshot: () => state,
-        projects: [factoryProject()],
-        providers: [
-          {
-            ...base,
-            capabilities: { ...base.capabilities, conditionalMerge: true },
-            getChangeRequest: ({ number }) => Effect.succeed(managedDetail(number)),
-            runAction: () =>
-              Effect.gen(function* () {
-                staged++;
-                if (scenario === "pause" || scenario === "ordinary")
-                  state = {
-                    ...state,
-                    controls: [
-                      {
-                        id: FactoryControlId.make("queued-pause"),
-                        kind: "project-pause",
-                        projectId: deliveryIds.project,
-                        status: "active",
-                        generation: 1,
-                        requestedAt: "2026-10-10T21:00:00.000Z",
-                        updatedAt: "2026-10-10T21:00:00.000Z",
-                        stop: { status: "pending" },
-                      },
-                    ],
-                  };
-                else
-                  state = {
-                    ...state,
-                    assignments: state.assignments.map((assignment) => ({
-                      ...assignment,
-                      ...(scenario === "cancel"
-                        ? {
-                            outcome: {
-                              kind: "cancelled" as const,
-                              controlId: FactoryControlId.make("queued-cancel"),
-                            },
-                          }
-                        : {}),
-                      ...(scenario === "grant"
-                        ? { grant: { ...assignment.grant!, epoch: assignment.grant!.epoch + 1 } }
-                        : {}),
-                      ...(scenario === "wait"
-                        ? {
-                            wait: {
-                              kind: "human-decision" as const,
-                              reason: "Resolve the integration contract first",
-                            },
-                          }
-                        : {}),
-                    })),
-                  };
-                const guard = yield* BeforeGitHubMutation;
-                hadGuard = guard !== null;
-                if (guard) yield* guard;
-                mutations++;
-              }).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new PullRequestProviderError({
-                      provider: "github",
-                      operation: "merge",
-                      reason: "failed",
-                      detail: "Merge was not admitted",
-                      cause,
-                    }),
-                ),
+it.effect.each([
+  "pause",
+  "cancel",
+  "grant",
+  "wait",
+  "group",
+  "new-group",
+  "new-repository",
+  "ordinary",
+] as const)("rechecks %s after provider staging and before an actual merge write", (scenario) =>
+  Effect.gen(function* () {
+    let state = approvedFactoryMerge();
+    if (scenario === "new-repository") state = { ...state, assignments: [] };
+    let staged = 0;
+    let mutations = 0;
+    let hadGuard = false;
+    const base = fakeProvider("github");
+    const service = yield* makeService({
+      factorySnapshot: () => state,
+      projects: [factoryProject()],
+      providers: [
+        {
+          ...base,
+          capabilities: { ...base.capabilities, conditionalMerge: true },
+          getChangeRequest: ({ number }) => Effect.succeed(managedDetail(number)),
+          runAction: () =>
+            Effect.gen(function* () {
+              staged++;
+              if (scenario === "new-repository")
+                state = {
+                  ...approvedFactoryMerge(),
+                  integrations: integrationReady().state.integrations,
+                  mergeGroups: [],
+                };
+              else if (scenario === "new-group") {
+                const integration = integrationReady().state.integrations[0]!;
+                state = {
+                  ...state,
+                  mergeGroups: [
+                    {
+                      id: "late-group",
+                      integrationId: integration.id,
+                      integrationAssignmentId: integration.assignmentId,
+                      memberAssignmentIds: integration.participantAssignmentIds,
+                      knownPullRequests: [
+                        {
+                          assignmentId: deliveryIds.assignment,
+                          ref: { ...factoryRef, number: 21 },
+                        },
+                      ],
+                      currentReviewId: null,
+                      createdAt: integration.createdAt,
+                      updatedAt: integration.updatedAt,
+                    },
+                  ],
+                };
+              } else if (scenario === "group")
+                state = {
+                  ...state,
+                  integrations: integrationReady().state.integrations,
+                  mergeGroups: [],
+                };
+              else if (scenario === "pause" || scenario === "ordinary")
+                state = {
+                  ...state,
+                  controls: [
+                    {
+                      id: FactoryControlId.make("queued-pause"),
+                      kind: "project-pause",
+                      projectId: deliveryIds.project,
+                      status: "active",
+                      generation: 1,
+                      requestedAt: "2026-10-10T21:00:00.000Z",
+                      updatedAt: "2026-10-10T21:00:00.000Z",
+                      stop: { status: "pending" },
+                    },
+                  ],
+                };
+              else
+                state = {
+                  ...state,
+                  assignments: state.assignments.map((assignment) => ({
+                    ...assignment,
+                    ...(scenario === "cancel"
+                      ? {
+                          outcome: {
+                            kind: "cancelled" as const,
+                            controlId: FactoryControlId.make("queued-cancel"),
+                          },
+                        }
+                      : {}),
+                    ...(scenario === "grant"
+                      ? { grant: { ...assignment.grant!, epoch: assignment.grant!.epoch + 1 } }
+                      : {}),
+                    ...(scenario === "wait"
+                      ? {
+                          wait: {
+                            kind: "human-decision" as const,
+                            reason: "Resolve the integration contract first",
+                          },
+                        }
+                      : {}),
+                  })),
+                };
+              const guard = yield* BeforeGitHubMutation;
+              hadGuard = guard !== null;
+              if (guard) yield* guard;
+              mutations++;
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PullRequestProviderError({
+                    provider: "github",
+                    operation: "merge",
+                    reason: "failed",
+                    detail: "Merge was not admitted",
+                    cause,
+                  }),
               ),
-          },
-        ],
-      });
-      const action = service
-        .runAction({
-          ...factoryRef,
-          number: scenario === "ordinary" ? 21 : 20,
-          action: "merge",
-          expectedHeadSha: scenario === "ordinary" ? "other-head" : "head",
-        })
-        .pipe(Effect.provideService(FactoryPullRequestGate.FactoryDeliveryPermit, factoryPermit));
-      if (scenario === "ordinary") yield* action;
-      else yield* action.pipe(Effect.flip);
-      assert.equal(staged, 1);
-      assert.equal(hadGuard, scenario !== "ordinary");
-      assert.equal(mutations, scenario === "ordinary" ? 1 : 0);
-    }),
+            ),
+        },
+      ],
+    });
+    const action = service
+      .runAction({
+        ...factoryRef,
+        number: scenario === "ordinary" || scenario === "new-group" ? 21 : 20,
+        action: "merge",
+        expectedHeadSha:
+          scenario === "ordinary" || scenario === "new-group" ? "other-head" : "head",
+      })
+      .pipe(Effect.provideService(FactoryPullRequestGate.FactoryDeliveryPermit, factoryPermit));
+    if (scenario === "ordinary") yield* action;
+    else yield* action.pipe(Effect.flip);
+    assert.equal(staged, 1);
+    assert.isTrue(hadGuard);
+    assert.equal(mutations, scenario === "ordinary" ? 1 : 0);
+  }),
 );
 
 it.effect(

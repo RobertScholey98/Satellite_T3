@@ -1,3 +1,4 @@
+import { factoryMergeGroupForAssignment } from "./FactoryMergeOwnership.ts";
 import {
   FactoryError,
   MessageId,
@@ -1128,6 +1129,11 @@ export function decideFactoryDelivery(
       );
     }
     case "delivery.merge": {
+      if (factoryMergeGroupForAssignment(state, assignment.id))
+        return fail(
+          "This participant must merge through its integration team's shared action.",
+          "permission-denied",
+        );
       if (!lead || !active || !isCurrent)
         return fail("Only the active implementation lead can request merge.", "permission-denied");
       const readiness = factoryDeliveryReadiness(state, assignment, revision);
@@ -1174,6 +1180,11 @@ export function decideFactoryDelivery(
         },
       });
     case "delivery.retry": {
+      if (revision.merge && factoryMergeGroupForAssignment(state, assignment.id))
+        return fail(
+          "A grouped participant cannot retry an individual merge. Reconcile it through the shared action.",
+          "permission-denied",
+        );
       if (!lead || !active || !isCurrent)
         return fail("Only the active lead can retry this delivery operation.", "permission-denied");
       const { error: _error, ...next } = revision;

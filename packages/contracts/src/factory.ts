@@ -1,4 +1,11 @@
 import {
+  FactoryMergeGroup,
+  FactoryMergeGroupReview,
+  FactoryMergeCommand,
+  FactoryMergeHostCommand,
+  FactoryMergeEffectIntent,
+} from "./factoryMerge.ts";
+import {
   FactoryIntegrationCapability,
   FactoryIntegration,
   FactoryIntegrationGrant,
@@ -301,6 +308,10 @@ export const FactoryAssignment = Schema.Struct({
 export type FactoryAssignment = typeof FactoryAssignment.Type;
 
 export const FactorySnapshot = Schema.Struct({
+  mergeGroups: Schema.Array(FactoryMergeGroup).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  mergeGroupReviews: Schema.Array(FactoryMergeGroupReview).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   integrationCapabilities: Schema.Array(FactoryIntegrationCapability).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -437,6 +448,7 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  FactoryMergeCommand,
   FactoryIntegrationCommand,
   FactoryCollaborationCommand,
   FactoryWorkflowCommand,
@@ -551,6 +563,7 @@ export const FactoryCommand = Schema.Union([
 export type FactoryCommand = typeof FactoryCommand.Type;
 
 export const FACTORY_WS_METHODS = {
+  getMergeGroup: "factory.getMergeGroup",
   getSnapshot: "factory.getSnapshot",
   dispatchCommand: "factory.dispatchCommand",
   subscribe: "factory.subscribe",
@@ -560,6 +573,7 @@ export const FactoryDispatchInput = Schema.Struct({ command: FactoryCommand });
 export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
+  FactoryMergeHostCommand,
   FactoryIntegrationHostCommand,
   FactoryCollaborationHostCommand,
   FactoryWorkflowHostCommand,
@@ -641,6 +655,7 @@ export const FactoryThreadLaunchIntent = Schema.Struct({
 });
 export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
 export const FactoryEffectIntent = Schema.Union([
+  FactoryMergeEffectIntent,
   FactoryIntegrationEffectIntent,
   FactoryCollaborationEffectIntent,
   FactoryWorkflowEffectIntent,
@@ -662,6 +677,8 @@ export const FactoryEffectIntent = Schema.Union([
 export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 
 export const FactoryCommandResult = Schema.Struct({
+  mergeGroupId: Schema.optionalKey(TrimmedNonEmptyString),
+  mergeGroupReviewId: Schema.optionalKey(TrimmedNonEmptyString),
   integrationId: Schema.optionalKey(TrimmedNonEmptyString),
   integrationCapabilityId: Schema.optionalKey(TrimmedNonEmptyString),
   integrationGrantId: Schema.optionalKey(TrimmedNonEmptyString),

@@ -4,7 +4,6 @@ import {
   MessageId,
   type FactoryDeliveryEffectIntent,
   type FactoryHostCommand,
-  type FactoryRevisionHostEvidence,
   type ThreadId,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
@@ -18,11 +17,12 @@ import * as Schema from "effect/Schema";
 
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { PullRequestService } from "../pullRequest/PullRequestService.ts";
-import type { ProviderMergeEvidence } from "../pullRequest/pullRequestMergeEvidence.ts";
 import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
 import { FactoryControlAccess } from "./FactoryControlAccess.ts";
 import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
+import * as FactoryDeliveryInspection from "./FactoryDeliveryInspection.ts";
+import { factoryMergeGroupForAssignment } from "./FactoryMergeOwnership.ts";
 import { factoryDeliveryReadiness } from "./FactoryDelivery.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
 import { FactoryHandover } from "./FactoryHandover.ts";
@@ -60,61 +60,9 @@ const deliveryIntent = (pending: PendingFactoryEffect): DeliveryIntent | undefin
     ? (pending.intent as DeliveryIntent)
     : undefined;
 
-function hostEvidence(raw: ProviderMergeEvidence, observedAt: string): FactoryRevisionHostEvidence {
-  const required = raw.checks.filter((check) => check.required !== false);
-  const unknownChecks =
-    !raw.complete ||
-    required.some(
-      (check) =>
-        check.required === null || check.status === "unknown" || check.headSha !== raw.headSha,
-    );
-  const checks = unknownChecks
-    ? "unknown"
-    : required.some((check) => check.status === "failure")
-      ? "failed"
-      : required.some((check) => check.status === "pending")
-        ? "pending"
-        : "passed";
-  const reviews = !raw.complete
-    ? "unknown"
-    : raw.reviewDecision === "changes-requested"
-      ? "failed"
-      : raw.reviewDecision === "review-required"
-        ? "pending"
-        : "passed";
-  const mergeable =
-    raw.complete &&
-    raw.state === "open" &&
-    !raw.isDraft &&
-    raw.mergeability === "mergeable" &&
-    ["CLEAN", "HAS_HOOKS"].includes(raw.mergeState);
-  const conditionalMerge = !raw.autoMergeEnabled && !raw.mergeQueueEnabled;
-  const reasons = [
-    ...raw.issues,
-    ...(checks === "passed" ? [] : [`Required hosting checks are ${checks}.`]),
-    ...(reviews === "passed" ? [] : [`Required hosting reviews are ${reviews}.`]),
-    ...(mergeable
-      ? []
-      : [`The host does not permit direct merge (${raw.state}, ${raw.mergeState}).`]),
-    ...(conditionalMerge
-      ? []
-      : ["A merge queue or standing auto-merge instruction cannot preserve this approval."]),
-  ];
-  return {
-    headSha: raw.headSha,
-    baseSha: raw.baseSha,
-    complete: raw.complete,
-    checks,
-    reviews,
-    mergeable,
-    conditionalMerge,
-    reasons,
-    observedAt,
-  };
-}
-
 const make = Effect.gen(function* () {
   const store = yield* FactoryStore;
+  const inspection = yield* FactoryDeliveryInspection.FactoryDeliveryInspection;
   const boundaries = yield* FactoryBoundaryExecution;
   const publication = yield* FactoryPublicationHost;
   const pullRequests = yield* PullRequestService;
@@ -245,62 +193,21 @@ const make = Effect.gen(function* () {
     const finish = (command: Parameters<typeof store.finishEffect>[0]["command"]) =>
       Effect.flatMap(nowIso, (now) => store.finishEffect({ id: pending.id, command, now }));
 
-    const inspect = Effect.fn("FactoryDeliveryEffects.inspect")(function* () {
-      const current = yield* readRevision;
-      const ref = current.revision.publication?.ref;
-      if (!ref) return yield* new FactoryError({ code: "invalid-state" });
-      const raw = yield* pullRequests.inspectForMerge(ref).pipe(Effect.mapError(failure));
-      const fresh = yield* readRevision;
-      const evidence = hostEvidence(raw, yield* nowIso);
-      // Host observation time changes on every read; evidence identity must not.
-      const { observedAt: _observedAt, ...host } = evidence;
-      const revision = fresh.revision;
-      const bundleDigest = yield* hash({
-        assignmentId: fresh.assignment.id,
-        revisionId: revision.id,
-        source: fresh.assignment.startingSource,
-        grant: fresh.assignment.grant,
-        workflow: fresh.assignment.workflow,
-        candidateId: revision.candidateId,
-        candidateDigest: revision.candidateDigest,
-        publication: revision.publication,
-        verification: revision.verification,
-        reviews: revision.reviews,
-        impact: fresh.assignment.delivery?.impact,
-        flow: fresh.assignment.delivery?.flow,
-        ux: revision.uxEvidence,
-        publishedUx: revision.publishedUxEvidence,
-        host,
-        detailedHost: {
-          ...raw,
-          checks: [...raw.checks].sort((a, b) => a.id.localeCompare(b.id)),
-          reviews: [...raw.reviews].sort((a, b) => a.id.localeCompare(b.id)),
-        },
-      });
-      const sealed = yield* readRevision;
-      if (sealed.state.revision !== fresh.state.revision)
-        return yield* new FactoryError({ code: "stale-revision" });
-      return { evidence, bundleDigest, expectedStateRevision: sealed.state.revision };
-    });
-
-    const sealInspection = Effect.fn("FactoryDeliveryEffects.sealInspection")(function* (
-      completeEffect: boolean,
-    ) {
+    const sealInspection = Effect.fn("FactoryDeliveryEffects.sealInspection")(function* () {
       if (!("revisionId" in intent)) return yield* new FactoryError({ code: "invalid-state" });
       for (let sealAttempt = 0; sealAttempt < 3; sealAttempt++) {
         const sealed = yield* Effect.gen(function* () {
-          const inspected = yield* inspect();
-          const command = {
-            type: "delivery.inspected" as const,
-            commandId: completeEffect
-              ? receiptId
-              : CommandId.make(`${pending.id}:inspect:${attempt}`),
+          yield* readRevision;
+          const inspected = yield* inspection.inspect({
             assignmentId: intent.assignmentId,
             revisionId: intent.revisionId,
+          });
+          const command = {
+            type: "delivery.inspected" as const,
+            commandId: receiptId,
             ...inspected,
           };
-          if (completeEffect) yield* finish(command);
-          else yield* commit(command);
+          yield* finish(command);
         }).pipe(Effect.result);
         if (Result.isSuccess(sealed)) return;
         if (!isFactoryError(sealed.failure) || sealed.failure.code !== "stale-revision")
@@ -535,7 +442,7 @@ const make = Effect.gen(function* () {
           return;
         }
         case "delivery.inspect": {
-          yield* sealInspection(true);
+          yield* sealInspection();
           return;
         }
         case "delivery.merge": {
@@ -552,6 +459,23 @@ const make = Effect.gen(function* () {
               );
           let detail = yield* freshDetail();
           if (detail.state !== "merged") {
+            const supersedeGroupedRequest = Effect.gen(function* () {
+              const latest = yield* readMergeOperation;
+              if (!factoryMergeGroupForAssignment(latest.state, intent.assignmentId)) return false;
+              if (latest.revision.merge?.status !== "requested") return false;
+              yield* finish({
+                type: "delivery.merge.recorded",
+                commandId: receiptId,
+                assignmentId: intent.assignmentId,
+                revisionId: intent.revisionId,
+                operationId: intent.operationId,
+                status: "failed",
+                reason:
+                  "The unsubmitted individual merge was superseded by its shared merge group.",
+              });
+              return true;
+            });
+            if (yield* supersedeGroupedRequest) return;
             if (current.revision.merge?.status === "unknown")
               return yield* new FactoryError({
                 code: "execution-unavailable",
@@ -561,7 +485,12 @@ const make = Effect.gen(function* () {
             current = yield* readRevision;
             if (current.revision.merge?.status !== "requested")
               return yield* new DeliveryStopped({ disposition: "superseded" });
-            yield* sealInspection(false);
+            if (yield* supersedeGroupedRequest) return;
+            yield* inspection.refresh({
+              assignmentId: intent.assignmentId,
+              revisionId: intent.revisionId,
+              commandId: CommandId.make(`${pending.id}:inspect:${attempt}`),
+            });
             current = yield* readRevision;
             const readiness = factoryDeliveryReadiness(
               current.state,
@@ -759,4 +688,6 @@ const make = Effect.gen(function* () {
   return FactoryDeliveryEffects.of({ handle });
 });
 
-export const layer = Layer.effect(FactoryDeliveryEffects, make);
+export const layer = Layer.effect(FactoryDeliveryEffects, make).pipe(
+  Layer.provide(FactoryDeliveryInspection.layer),
+);

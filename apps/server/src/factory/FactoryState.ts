@@ -1,4 +1,9 @@
 import {
+  decideFactoryMerge,
+  factoryMergeEnrollmentConflict,
+  reconcileFactoryMergeGroups,
+} from "./FactoryMerge.ts";
+import {
   decideFactoryIntegration,
   reconcileFactoryIntegrations,
   type FactoryIntegrationContext,
@@ -90,6 +95,8 @@ export interface FactoryDecision {
 
 export const initialFactorySnapshot = (): FactorySnapshot => ({
   revision: 0,
+  mergeGroups: [],
+  mergeGroupReviews: [],
   integrationCapabilities: [],
   integrations: [],
   integrationGrants: [],
@@ -354,6 +361,8 @@ function decideCore(
       }),
     );
   }
+  const mergeDecision = decideFactoryMerge(input);
+  if (mergeDecision !== undefined) return mergeDecision;
   const integrationDecision = decideFactoryIntegration(input);
   if (integrationDecision !== undefined) return integrationDecision;
   const collaborationDecision = decideFactoryCollaboration(input);
@@ -1282,7 +1291,15 @@ function decideCore(
 export function decide(
   input: Parameters<typeof decideCore>[0],
 ): Result.Result<FactoryDecision, FactoryError> {
-  return Result.map(decideCore(input), (decision) =>
-    reconcileFactoryIntegrations(decision, input.now, input.state),
-  );
+  return Result.flatMap(decideCore(input), (decision) => {
+    const conflict = factoryMergeEnrollmentConflict(input.state, decision.state);
+    if (conflict)
+      return Result.fail(new FactoryError({ code: "command-conflict", detail: conflict }));
+    return Result.succeed(
+      reconcileFactoryMergeGroups(
+        reconcileFactoryIntegrations(decision, input.now, input.state),
+        input.now,
+      ),
+    );
+  });
 }

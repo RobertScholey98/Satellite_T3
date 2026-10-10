@@ -11,6 +11,22 @@ import { FactoryToolkit, FactoryPreviewSnapshotToolkit } from "./tools.ts";
 const decodePreviewSnapshot = Schema.decodeUnknownEffect(PreviewAutomationSnapshot);
 
 export const layer = McpToolAccess.toLayer(FactoryToolkit, {
+  factory_merge_group_get: McpToolAccess.readsAsCaller(({ groupId }) =>
+    Effect.gen(function* () {
+      return yield* (yield* FactoryMcpGuard.FactoryMcpGuard).mergeGroupRead(
+        yield* McpInvocationContext.McpInvocationContext,
+        groupId,
+      );
+    }),
+  ),
+  factory_merge_group_review: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      return yield* (yield* FactoryMcpGuard.FactoryMcpGuard).dispatch(
+        yield* McpInvocationContext.McpInvocationContext,
+        { type: "merge.group.review", ...input },
+      );
+    }),
+  ),
   factory_integration_get: McpToolAccess.readsAsCaller(({ integrationId }) =>
     Effect.gen(function* () {
       return yield* (yield* FactoryMcpGuard.FactoryMcpGuard).integrationRead(

@@ -1,11 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
   CommandId,
   FACTORY_WS_METHODS,
   FactoryAssignmentId,
   FactoryBoundaryId,
+  FactoryError,
   type FactoryCommand,
   ProjectId,
   ProviderInstanceId,
@@ -27,6 +29,21 @@ const group = WsRpcGroup.omit(
 );
 const managerId = ThreadId.make("manager-web");
 const settingsCommands: ReadonlyArray<FactoryCommand> = [
+  {
+    type: "merge.group.approve",
+    commandId: CommandId.make("merge-group-approve"),
+    groupId: "merge-group",
+    reviewId: "merge-review",
+    expectedDigest: "review-digest",
+  },
+  {
+    type: "merge.group.reject",
+    commandId: CommandId.make("merge-group-reject"),
+    groupId: "merge-group",
+    reviewId: "merge-review",
+    expectedDigest: "review-digest",
+    reason: "Correct the combined feature before delivery",
+  },
   {
     type: "integration.capability.configure",
     commandId: CommandId.make("integration-capability"),
@@ -286,6 +303,51 @@ const create: FactoryCommand = {
 };
 
 describe("factory RPC authority", () => {
+  it.effect(
+    "requires read authority for a consolidated merge review without requiring write authority",
+    () =>
+      Effect.gen(function* () {
+        const readMethod = FACTORY_WS_METHODS.getMergeGroup;
+        const readGroup = WsRpcGroup.omit(
+          ...[...WsRpcGroup.requests.keys()].filter(
+            (
+              tag,
+            ): tag is Exclude<
+              keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+              typeof readMethod
+            > => tag !== readMethod,
+          ),
+        );
+        let reads = 0;
+        const handler = readGroup.toLayerHandler(readMethod, () =>
+          Effect.gen(function* () {
+            reads += 1;
+            return yield* new FactoryError({
+              code: "invalid-state",
+              detail: "Unknown fixture group",
+            });
+          }),
+        );
+        const denied = yield* RpcTest.makeClient(readGroup).pipe(
+          Effect.provide(Layer.mergeAll(handler, RpcAuthorization.layer([]))),
+        );
+        assert.equal(
+          (yield* denied[readMethod]({ groupId: "missing" }).pipe(Effect.flip))._tag,
+          "EnvironmentAuthorizationError",
+        );
+        assert.equal(reads, 0);
+        const allowed = yield* RpcTest.makeClient(readGroup).pipe(
+          Effect.provide(
+            Layer.mergeAll(handler, RpcAuthorization.layer([AuthOrchestrationReadScope])),
+          ),
+        );
+        assert.equal(
+          (yield* allowed[readMethod]({ groupId: "missing" }).pipe(Effect.flip))._tag,
+          "FactoryError",
+        );
+        assert.equal(reads, 1);
+      }),
+  );
   it.effect("lets an operator create a manager while denying authority-setting commands", () =>
     Effect.gen(function* () {
       const handled: string[] = [];
@@ -335,6 +397,8 @@ describe("factory RPC authority", () => {
           assert.deepStrictEqual(yield* client[method]({ command }), { revision: index + 1 });
         }
         assert.deepStrictEqual(handled, [
+          "merge.group.approve",
+          "merge.group.reject",
           "integration.capability.configure",
           "integration.capability.retry",
           "collaboration.decision.decide",

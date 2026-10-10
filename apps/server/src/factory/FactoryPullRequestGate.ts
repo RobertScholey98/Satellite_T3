@@ -3,6 +3,10 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { FactoryStore } from "./FactoryStore.ts";
+import {
+  factoryMergeGroupForAssignment,
+  factoryMergeGroupsForPullRequest,
+} from "./FactoryMergeOwnership.ts";
 import { factoryDeliveryReadiness } from "./FactoryDelivery.ts";
 
 export const FactoryDeliveryPermit = Context.Reference<{
@@ -44,16 +48,24 @@ export const layer = Layer.effect(
     return FactoryPullRequestGate.of({
       appliesToRepository: (host, repository) =>
         store.snapshot.pipe(
-          Effect.map((state) =>
-            state.assignments.some((assignment) =>
-              assignment.delivery?.revisions.some(
-                (revision) =>
-                  revision.publication &&
-                  canonicalHost(revision.publication.host) === canonicalHost(host) &&
-                  canonicalRepository(revision.publication.repository) ===
-                    canonicalRepository(repository),
+          Effect.map(
+            (state) =>
+              state.mergeGroups.some((group) =>
+                group.knownPullRequests.some(
+                  ({ ref }) =>
+                    canonicalHost(ref.host ?? "github.com") === canonicalHost(host) &&
+                    canonicalRepository(ref.repository) === canonicalRepository(repository),
+                ),
+              ) ||
+              state.assignments.some((assignment) =>
+                assignment.delivery?.revisions.some(
+                  (revision) =>
+                    revision.publication &&
+                    canonicalHost(revision.publication.host) === canonicalHost(host) &&
+                    canonicalRepository(revision.publication.repository) ===
+                      canonicalRepository(repository),
+                ),
               ),
-            ),
           ),
         ),
       authorizeMutation: (input) =>
@@ -78,6 +90,18 @@ export const layer = Layer.effect(
                 return [{ assignment, revision }];
               }),
             );
+            const groups = [
+              ...factoryMergeGroupsForPullRequest(state, target.ref),
+              ...owners.flatMap(({ assignment }) => {
+                const group = factoryMergeGroupForAssignment(state, assignment.id);
+                return group ? [group] : [];
+              }),
+            ];
+            if (groups.length > 0)
+              return yield* new FactoryError({
+                code: "permission-denied",
+                detail: `This pull request belongs to merge group ${groups[0]!.id}. Review the combined feature in its integration thread; individual merge, auto-merge, and stack actions are held.`,
+              });
             if (owners.length === 0) continue;
             managed = true;
             const current = owners.find(

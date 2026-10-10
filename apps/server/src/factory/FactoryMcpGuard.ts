@@ -12,6 +12,7 @@ import {
   type FactoryCollaborationDirectoryEntry,
   type FactoryIntegrationRead,
   type FactoryIntegrationPatchPage,
+  type FactoryMergeGroupRead,
   type IssueDetail,
   ThreadId,
 } from "@t3tools/contracts";
@@ -37,6 +38,7 @@ import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 import { scopeFactoryCollaboration } from "./FactoryCollaborationReadModel.ts";
 import { scopeFactoryIntegration } from "./FactoryIntegrationReadModel.ts";
+import { scopeFactoryMerge } from "./FactoryMergeReadModel.ts";
 import { factoryIntegrationVerificationReadiness } from "./FactoryIntegration.ts";
 import { FactoryIntegrationExecution } from "./FactoryIntegrationExecution.ts";
 
@@ -67,6 +69,10 @@ export class FactoryMcpGuard extends Context.Service<
       invocation: McpInvocationScope,
       integrationId: string,
     ) => Effect.Effect<FactoryIntegrationRead, OrchestratorMcpFailure | FactoryError>;
+    readonly mergeGroupRead: (
+      invocation: McpInvocationScope,
+      groupId: string,
+    ) => Effect.Effect<FactoryMergeGroupRead, OrchestratorMcpFailure | FactoryError>;
     readonly integrationPatch: (
       invocation: McpInvocationScope,
       input: {
@@ -259,6 +265,10 @@ const make = Effect.gen(function* () {
           ["orchestrator_capabilities", "delegate_task", "task_status", "task_cancel"].includes(
             toolName,
           );
+        const integrationLead =
+          member.auxiliary === undefined &&
+          member.assignment?.integrationId !== undefined &&
+          member.assignment.threadId === invocation.thread?.threadId;
         let scopedCommunication = false;
         if (
           ["t3_thread_read", "t3_thread_send", "t3_thread_wait", "t3_thread_interrupt"].includes(
@@ -326,6 +336,10 @@ const make = Effect.gen(function* () {
           ) &&
           toolName !== "factory_ticket_read" &&
           toolName !== "factory_dispatch" &&
+          !(
+            integrationLead &&
+            ["factory_merge_group_get", "factory_merge_group_review"].includes(toolName)
+          ) &&
           ![
             "factory_integration_get",
             "factory_integration_command",
@@ -343,6 +357,7 @@ const make = Effect.gen(function* () {
           !scopedCommunication
         )
           return yield* denied();
+        if (toolName === "factory_merge_group_get" && integrationLead) return;
         if (
           ["factory_integration_get", "factory_integration_read_patch"].includes(toolName) &&
           member.auxiliary === undefined &&
@@ -388,6 +403,12 @@ const make = Effect.gen(function* () {
         ]);
         return {
           ...snapshot,
+          ...scopeFactoryMerge(
+            snapshot,
+            assignment === undefined
+              ? { kind: "manager", managerId: manager.id }
+              : { kind: "assignment", assignmentId: assignment.id },
+          ),
           ...scopeFactoryIntegration(
             snapshot,
             assignment === undefined
@@ -492,6 +513,29 @@ const make = Effect.gen(function* () {
               : entry.id === assignment.scheduling?.candidateId,
           ),
         };
+      }),
+    mergeGroupRead: (invocation, groupId) =>
+      Effect.gen(function* () {
+        const member = yield* managedCaller(invocation);
+        if (
+          !invocation.thread ||
+          member.auxiliary ||
+          !member.assignment?.integrationId ||
+          invocation.thread.threadId !== member.assignment.threadId
+        )
+          return yield* denied();
+        yield* controls
+          .assertExecution(invocation.thread.threadId)
+          .pipe(Effect.mapError(unavailable));
+        const state = yield* store.snapshot;
+        const group = state.mergeGroups.find((entry) => entry.id === groupId);
+        if (
+          !group ||
+          group.integrationAssignmentId !== member.assignment.id ||
+          group.integrationId !== member.assignment.integrationId
+        )
+          return yield* denied();
+        return yield* factory.mergeGroupGet({ groupId });
       }),
     integrationRead: (invocation, integrationId) =>
       Effect.gen(function* () {
@@ -778,7 +822,9 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         if (
           command.type === "integration.capability.configure" ||
-          command.type === "integration.capability.retry"
+          command.type === "integration.capability.retry" ||
+          command.type === "merge.group.approve" ||
+          command.type === "merge.group.reject"
         )
           return yield* denied();
         if (invocation.thread === undefined) return yield* denied();

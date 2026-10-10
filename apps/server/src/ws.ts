@@ -2265,6 +2265,7 @@ const layerWsRpc = (
         [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: (input) =>
           projectionSnapshotQuery.getRequestLifecycle(input),
         [FACTORY_WS_METHODS.getSnapshot]: (input) => factory.snapshot(input),
+        [FACTORY_WS_METHODS.getMergeGroup]: (input) => factory.mergeGroupGet(input),
         [FACTORY_WS_METHODS.dispatchCommand]: (input) =>
           factory.dispatch({ kind: "human" }, input.command),
         [FACTORY_WS_METHODS.subscribe]: (input) => factory.changes(input),

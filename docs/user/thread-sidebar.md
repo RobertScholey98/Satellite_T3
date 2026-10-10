@@ -143,6 +143,15 @@ to the exact PR head and evidence shown; changed work needs fresh verification a
 approval. Give corrections directly to the implementation lead. The manager keeps
 visibility while human review is pending, without directing that work.
 
+Cross-project participants belong to a merge group as soon as their integration
+team is commissioned. They wait for shared delivery even when a project's rules
+would otherwise permit an autonomous merge. Open the integration lead's combined
+review to see every member PR, its owning lead, screenshots, and outstanding
+checks alongside the current integration evidence. Refresh that review after
+corrections. Approving it applies to the exact displayed revisions; give further
+corrections directly to the owning implementation leads. Individual PR merge
+actions remain held by the group.
+
 Changed user flows pause implementation for a concrete flow proposal. Approve or
 reject that proposal in the assignment details before implementation continues.
 Substantial UI work also needs an independent reviewer to exercise the frozen

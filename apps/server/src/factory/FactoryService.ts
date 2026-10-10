@@ -9,6 +9,8 @@ import {
   type FactoryThreadLaunchIntent,
   type FactoryQuery,
   type FactorySnapshot,
+  type FactoryMergeGroupQuery,
+  type FactoryMergeGroupRead,
   type OrchestrationV2StoredEvent,
   type FactoryHostCommand,
   type ProjectId,
@@ -57,6 +59,9 @@ import * as FactoryWorkflowEffects from "./FactoryWorkflowEffects.ts";
 import * as FactoryCollaborationEffects from "./FactoryCollaborationEffects.ts";
 import { scopeFactoryCollaboration } from "./FactoryCollaborationReadModel.ts";
 import * as FactoryIntegrationEffects from "./FactoryIntegrationEffects.ts";
+import * as FactoryMergeEffects from "./FactoryMergeEffects.ts";
+import { factoryMergeGroupReadiness } from "./FactoryMerge.ts";
+import { scopeFactoryMerge } from "./FactoryMergeReadModel.ts";
 import { scopeFactoryIntegration } from "./FactoryIntegrationReadModel.ts";
 import type { FactoryWorkflowContext } from "./FactoryWorkflow.ts";
 import type { FactoryIntegrationContext } from "./FactoryIntegration.ts";
@@ -68,6 +73,9 @@ export class FactoryService extends Context.Service<
   FactoryService,
   {
     readonly snapshot: (query: FactoryQuery) => Effect.Effect<FactorySnapshot, FactoryError>;
+    readonly mergeGroupGet: (
+      query: FactoryMergeGroupQuery,
+    ) => Effect.Effect<FactoryMergeGroupRead, FactoryError>;
     readonly changes: (query: FactoryQuery) => Stream.Stream<FactorySnapshot>;
     readonly dispatch: (
       actor: Exclude<FactoryActor, { readonly kind: "system" }>,
@@ -96,6 +104,7 @@ const scopedSnapshot =
           ...snapshot,
           ...scopeFactoryCollaboration(snapshot, { kind: "project", projectId: query.projectId }),
           ...scopeFactoryIntegration(snapshot, { kind: "project", projectId: query.projectId }),
+          ...scopeFactoryMerge(snapshot, { kind: "project", projectId: query.projectId }),
           sharedRepositories: snapshot.sharedRepositories.filter(
             (entry) => entry.projectId === query.projectId,
           ),
@@ -253,6 +262,7 @@ export const layer = Layer.effect(
     const integrations = yield* Effect.serviceOption(
       FactoryIntegrationEffects.FactoryIntegrationEffects,
     );
+    const merges = yield* Effect.serviceOption(FactoryMergeEffects.FactoryMergeEffects);
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -392,6 +402,7 @@ export const layer = Layer.effect(
                     "Use integration.verify to run the protected combined checks. Verification stops writers, captures the exact permitted test bytes and then resumes eligible work. A passed old run does not verify changed candidate revisions or later test edits. Refresh explicitly when an owning lead supplies new candidate inputs; retained test edits are preserved or reported as conflicts.",
                     "Send production defects with integration.defect.report to the owning implementation lead. Use integration.message.send for direct coordination with current participant leads. Request missing scope from the owning managers. Do not patch production files or direct unrelated threads.",
                     "Return test patch artifacts to their owning leads through factory_integration_read_patch. They incorporate those changes into their PR candidates before final combined verification. A temporary passing test overlay does not prove that the published change includes those tests.",
+                    "Read your merge group from factory_snapshot and use factory_merge_group_get for the current combined review and blockers. Once the published candidates pass combined verification, refresh the review through factory_merge_group_review. The human reviews the exact combined evidence here and gives corrections directly to owning leads. You cannot approve your own review or bypass a member's required approval.",
                     "Your team owns combined QA and the consolidated review point. Individual project checks, reviews and human approvals still apply. Do not publish an independent integration PR, merge a member separately, or conclude through a generic report. Completion waits for the confirmed shared merge operation, followed by your internal retro and the requesting-manager retro.",
                     `Approved model policy: ${renderJson(assignment.modelPolicy)}. Use delegate_task for your internal team, selecting approved models for task complexity. Read current factory controls before continuing after an interruption.`,
                   ].join("\n\n")
@@ -1092,6 +1103,36 @@ export const layer = Layer.effect(
         }
       }),
     );
+    const mergeWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        if (Option.isNone(merges)) return;
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) => !visited.has(entry.id) && entry.intent.type.startsWith("merge.group."),
+          );
+          if (!pending.length) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            yield* merges.value.handle(entry).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory shared review remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* worker.enqueue(undefined);
+              yield* controlWorker.enqueue(undefined);
+            }
+          }
+        }
+      }),
+    );
     const wake = Effect.all(
       [
         worker.enqueue(undefined),
@@ -1105,6 +1146,7 @@ export const layer = Layer.effect(
         collaborationWorker.enqueue(undefined),
         integrationWorker.enqueue(undefined),
         integrationStopWorker.enqueue(undefined),
+        mergeWorker.enqueue(undefined),
       ],
       {
         discard: true,
@@ -1133,6 +1175,13 @@ export const layer = Layer.effect(
           ),
         ),
       );
+    if (Option.isSome(merges))
+      yield* forkParked(
+        store.changes.pipe(
+          Stream.changesWith((left, right) => left.revision === right.revision),
+          Stream.runForEach(() => mergeWorker.enqueue(undefined)),
+        ),
+      );
     const drain = Effect.gen(function* () {
       for (;;) {
         const progress = workerProgress;
@@ -1147,6 +1196,7 @@ export const layer = Layer.effect(
         yield* collaborationWorker.drain;
         yield* integrationWorker.drain;
         yield* integrationStopWorker.drain;
+        yield* mergeWorker.drain;
         if (progress === workerProgress) return;
       }
     });
@@ -1175,6 +1225,25 @@ export const layer = Layer.effect(
 
     const service = FactoryService.of({
       snapshot: (query) => store.snapshot.pipe(Effect.map(scopedSnapshot(query))),
+      mergeGroupGet: Effect.fn("FactoryService.mergeGroupGet")(function* (query) {
+        const state = yield* store.snapshot;
+        const group = state.mergeGroups.find((entry) => entry.id === query.groupId);
+        const assignment = state.assignments.find(
+          (entry) => entry.id === group?.integrationAssignmentId,
+        );
+        if (!group || !assignment)
+          return yield* new FactoryError({
+            code: "invalid-state",
+            detail: "This merge group is unavailable in the current environment.",
+          });
+        return {
+          group,
+          readiness: factoryMergeGroupReadiness(state, group.id),
+          currentReview:
+            state.mergeGroupReviews.find((entry) => entry.id === group.currentReviewId) ?? null,
+          integrationLeadThreadId: assignment.threadId,
+        };
+      }),
       changes: (query) => store.changes.pipe(Stream.map(scopedSnapshot(query))),
       drain,
       reconcileProject: Effect.fn("FactoryService.reconcileProject")(
@@ -1419,6 +1488,11 @@ export const layer = Layer.effect(
         let improvementContext: FactoryImprovementContext = {};
         let workflowContext: FactoryWorkflowContext = {};
         let integrationContext: FactoryIntegrationContext = {};
+        if (command.type.startsWith("merge.group.") && Option.isNone(merges))
+          return yield* new FactoryError({
+            code: "execution-unavailable",
+            detail: "This environment has no qualified shared review runtime.",
+          });
         if (command.type.startsWith("integration.") && Option.isNone(integrations))
           return yield* new FactoryError({
             code: "execution-unavailable",

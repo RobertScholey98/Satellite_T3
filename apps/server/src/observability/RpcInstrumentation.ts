@@ -23,6 +23,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  */
 const RPC_AGGREGATES = {
   [FACTORY_WS_METHODS.getSnapshot]: "factory",
+  [FACTORY_WS_METHODS.getMergeGroup]: "factory",
   [FACTORY_WS_METHODS.dispatchCommand]: "factory",
   [FACTORY_WS_METHODS.subscribe]: "factory",
   [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: "orchestration",

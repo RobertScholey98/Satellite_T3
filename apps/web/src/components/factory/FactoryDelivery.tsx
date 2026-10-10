@@ -44,7 +44,7 @@ const evidenceAccessAtom = Atom.family((environmentId: EnvironmentId) =>
     .pipe(Atom.setIdleTTL(60_000), Atom.withLabel(`factory-preview-evidence:${environmentId}`)),
 );
 
-function Screenshots({
+export function FactoryDeliveryScreenshots({
   environment,
   evidence,
 }: {
@@ -267,6 +267,13 @@ export function FactoryDelivery({
     revision?.merge?.status === "unknown" ||
     revision?.merge?.status === "merged";
   const ref = revision?.publication?.ref;
+  const grouped =
+    environment.data?.mergeGroups.some((entry) =>
+      entry.memberAssignmentIds.includes(assignment.id),
+    ) ||
+    environment.data?.integrations.some((entry) =>
+      entry.participantAssignmentIds.includes(assignment.id),
+    );
   const host = ref?.host ?? revision?.publication?.host ?? "github.com";
   const prUrl =
     ref && /^[a-z0-9.-]+$/i.test(host)
@@ -470,7 +477,7 @@ export function FactoryDelivery({
             </p>
           )}
           {revision.uxEvidence ? (
-            <Screenshots
+            <FactoryDeliveryScreenshots
               key={revision.uxEvidence.operationsDigest}
               environment={environment}
               evidence={revision.uxEvidence}
@@ -604,7 +611,11 @@ export function FactoryDelivery({
               size="xs"
               variant="outline"
               disabled={
-                command.disabled || mergeInFlight || !bundle || revision.status !== "published"
+                command.disabled ||
+                mergeInFlight ||
+                grouped ||
+                !bundle ||
+                revision.status !== "published"
               }
               onClick={() => void command.submit({ type: "delivery.merge", ...fields })}
             >
@@ -624,6 +635,12 @@ export function FactoryDelivery({
               </Button>
             ) : null}
           </div>
+          {grouped ? (
+            <p className="text-xs text-muted-foreground">
+              This member cannot merge independently. Use the shared action in its integration
+              review.
+            </p>
+          ) : null}
         </>
       ) : null}
       {delivery?.directionHeld ? (

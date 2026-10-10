@@ -28,7 +28,7 @@ import {
   pullRequestProviderRequirement,
   resolvePullRequestAuthorFilter,
   type OrchestrationProjectShell,
-  type FactoryError,
+  FactoryError,
   type ProjectId,
   type PullRequestAction,
   type PullRequestActionInput,
@@ -2019,7 +2019,26 @@ export const make = Effect.gen(function* () {
         return { requireConditionalMerge: false, beforeMutation: null };
       const gate = factoryGate.value;
       if (!(yield* gate.appliesToRepository(ref.host ?? "github.com", ref.repository)))
-        return { requireConditionalMerge: false, beforeMutation: null };
+        return {
+          requireConditionalMerge: false,
+          beforeMutation: Effect.gen(function* () {
+            if (yield* gate.appliesToRepository(ref.host ?? "github.com", ref.repository))
+              return yield* new FactoryError({
+                code: "permission-denied",
+                detail:
+                  "This repository acquired managed delivery work while the action was queued. Retry to inspect its current ownership before changing the pull request.",
+              });
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new GitHubApiRequestError({
+                  host: ref.host ?? "github.com",
+                  operation: "factory.merge.authorize",
+                  cause,
+                }),
+            ),
+          ),
+        };
       const inspectedStack =
         input.stackNumber === undefined
           ? null
@@ -2086,19 +2105,17 @@ export const make = Effect.gen(function* () {
       const authorization = yield* authorize;
       return {
         requireConditionalMerge: authorization.requireConditionalMerge,
-        beforeMutation: authorization.managed
-          ? authorize.pipe(
-              Effect.asVoid,
-              Effect.mapError(
-                (cause) =>
-                  new GitHubApiRequestError({
-                    host: ref.host ?? "github.com",
-                    operation: "factory.merge.authorize",
-                    cause,
-                  }),
-              ),
-            )
-          : null,
+        beforeMutation: authorize.pipe(
+          Effect.asVoid,
+          Effect.mapError(
+            (cause) =>
+              new GitHubApiRequestError({
+                host: ref.host ?? "github.com",
+                operation: "factory.merge.authorize",
+                cause,
+              }),
+          ),
+        ),
       };
     },
     Effect.mapError((error: FactoryError | PullRequestError) =>

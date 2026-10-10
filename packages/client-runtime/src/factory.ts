@@ -11,6 +11,10 @@ export function createFactoryEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
   return {
+    getMergeGroup: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:factory:merge-group",
+      tag: FACTORY_WS_METHODS.getMergeGroup,
+    }),
     snapshot: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:factory:snapshot",
       tag: FACTORY_WS_METHODS.getSnapshot,

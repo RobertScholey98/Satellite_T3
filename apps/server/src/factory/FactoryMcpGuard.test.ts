@@ -9,6 +9,7 @@ import {
   FactoryImprovementSnapshot,
   FactoryImprovementRecord,
   FactoryIntegrationRead,
+  FactoryMergeGroupRead,
   FactoryIntegrationPatchPage,
   OrchestratorMcpFailure,
   ProjectId,
@@ -65,6 +66,7 @@ const decodeFactorySnapshot = Schema.decodeUnknownEffect(FactorySnapshot);
 const decodeImprovementSnapshot = Schema.decodeUnknownEffect(FactoryImprovementSnapshot);
 const decodeImprovementRecord = Schema.decodeUnknownEffect(FactoryImprovementRecord);
 const decodeIntegrationRead = Schema.decodeUnknownEffect(FactoryIntegrationRead);
+const decodeMergeGroupRead = Schema.decodeUnknownEffect(FactoryMergeGroupRead);
 const decodeIntegrationPatch = Schema.decodeUnknownEffect(FactoryIntegrationPatchPage);
 const decodeRecordReason = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ reason: Schema.String })),
@@ -627,6 +629,106 @@ const scenario = <E, R>(
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })), Effect.scoped);
 
 describe("FactoryMcpGuard", () => {
+  it.effect(
+    "keeps combined review inspection with the current integration lead and human decisions out of MCP",
+    () =>
+      scenario(({ call, store, flags }) =>
+        Effect.gen(function* () {
+          const state = yield* store.snapshot;
+          const integrationId = "combined-feature";
+          const groupId = "combined-group";
+          const webMember = FactoryAssignmentId.make("web-member");
+          const payload = yield* encodeSnapshot({
+            ...state,
+            assignments: [
+              ...state.assignments.map((entry) =>
+                entry.id === assignmentId
+                  ? { ...entry, kind: "implementation" as const, integrationId }
+                  : entry,
+              ),
+              {
+                ...state.assignments.find((entry) => entry.id === assignmentId)!,
+                id: webMember,
+                threadId: ThreadId.make("web-member-lead"),
+                kind: "implementation",
+              },
+            ],
+            integrations: [
+              {
+                id: integrationId,
+                assignmentId,
+                requesterManagerId: managerId,
+                requestIds: ["request"],
+                participantAssignmentIds: [webMember, otherAssignmentId],
+                coordinatorProjectId: ProjectId.make("web"),
+                phase: "awaiting-grants",
+                waitReason: null,
+                hold: null,
+                currentPreparationId: null,
+                currentTestArtifactId: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+            mergeGroups: [
+              {
+                id: groupId,
+                integrationId,
+                integrationAssignmentId: assignmentId,
+                memberAssignmentIds: [webMember, otherAssignmentId],
+                knownPullRequests: [],
+                currentReviewId: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+          });
+          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+          flags.missingProfile = true;
+          const read = yield* call("factory_merge_group_get", { groupId });
+          assert.isFalse(read.isError);
+          const parsed = yield* decodeMergeGroupRead(read.structuredContent);
+          assert.equal(parsed.group.id, groupId);
+          assert.deepEqual(
+            parsed.readiness.members.map((entry) => entry.assignmentId),
+            [webMember, otherAssignmentId],
+          );
+          assert.notProperty(parsed.readiness.members[0]!, "workflow");
+          assert.notProperty(parsed.readiness.members[0]!, "grant");
+          assert.notProperty(parsed, "assignments");
+          assert.isTrue((yield* call("factory_merge_group_get", { groupId: "unrelated" })).isError);
+          for (const caller of [managerId, childId, grandchildId, ThreadId.make("lead-api")]) {
+            assert.isTrue((yield* call("factory_merge_group_get", { groupId }, caller)).isError);
+            assert.isTrue(
+              (yield* call(
+                "factory_merge_group_review",
+                { commandId: `review-${caller}`, groupId },
+                caller,
+              )).isError,
+            );
+          }
+          flags.missingProfile = false;
+          for (const type of ["merge.group.approve", "merge.group.reject"]) {
+            assert.isTrue(
+              (yield* call("factory_dispatch", {
+                command: {
+                  type,
+                  commandId: type,
+                  groupId,
+                  reviewId: "review",
+                  expectedDigest: "digest",
+                  ...(type.endsWith("reject") ? { reason: "Agent must not decide" } : {}),
+                },
+              })).isError,
+            );
+          }
+          assert.isTrue(
+            (yield* call("t3_thread_read", { threadId: ThreadId.make("lead-api") })).isError,
+          );
+          assert.equal(flags.hostCalls, 0);
+        }),
+      ),
+  );
   it.effect(
     "scopes integration identities and paged patches without granting peer source reads",
     () =>

@@ -330,6 +330,13 @@ const make = Effect.gen(function* () {
                       command.operation.kind === intent.operation.kind &&
                       command.operation.id === intent.operation.id
                     );
+                  case "merge.group.inspect":
+                    return (
+                      (command.type === "merge.group.inspected" ||
+                        command.type === "merge.group.inspect.failed") &&
+                      command.groupId === intent.groupId &&
+                      command.reviewId === intent.reviewId
+                    );
                   case "collaboration.message.deliver":
                     return (
                       (command.type === "collaboration.message.recorded" ||

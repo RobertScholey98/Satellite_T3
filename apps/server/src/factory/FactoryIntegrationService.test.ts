@@ -209,6 +209,15 @@ it.effect(
         assert.equal(integration.phase, "awaiting-grants");
         assert.equal(assignment.threadStatus, "created");
         assert.equal(assignment.launchStatus, "pending");
+        const group = state.mergeGroups.find((entry) => entry.integrationId === integration.id)!;
+        assert.isDefined(group);
+        const review = yield* factory.mergeGroupGet({ groupId: group.id });
+        assert.equal(review.integrationLeadThreadId, assignment.threadId);
+        assert.equal(review.readiness.status, "waiting");
+        assert.equal(review.readiness.canApprove, false);
+        assert.equal(review.readiness.canRequestMerge, false);
+        assert.equal(review.readiness.members.length, 2);
+        assert.equal(review.currentReview, null);
         assert.equal(
           state.assignments.filter((entry) => entry.integrationId === integration.id).length,
           1,
@@ -225,6 +234,18 @@ it.effect(
         assert.equal(
           (yield* factory.snapshot({ projectId: ProjectId.make("unrelated") })).integrations.length,
           0,
+        );
+        assert.equal(
+          (yield* factory.snapshot({ projectId: api.project })).mergeGroups[0]?.id,
+          group.id,
+        );
+        assert.deepEqual(
+          (yield* factory.snapshot({ projectId: ProjectId.make("unrelated") })).mergeGroups,
+          [],
+        );
+        assert.equal(
+          (yield* factory.mergeGroupGet({ groupId: "unrelated" }).pipe(Effect.flip)).code,
+          "invalid-state",
         );
       }).pipe(Effect.provide(runtime), Effect.scoped);
     }).pipe(Effect.scoped, Effect.provide(base)),

@@ -13,6 +13,9 @@ import {
   FactoryIntegrationRead,
   FactoryIntegrationPatchPage,
   FactoryIntegrationCommand,
+  FactoryMergeGroupRead,
+  FactoryMergeGroupQuery,
+  CommandId,
   OrchestratorMcpFailure,
   FactoryPreviewActionInput,
   FactoryPreviewActionResult,
@@ -57,6 +60,27 @@ export const FactoryPreviewSnapshotTool = Tool.make("factory_preview_snapshot", 
 export const FactoryPreviewSnapshotToolkit = Toolkit.make(FactoryPreviewSnapshotTool);
 
 export const FactoryToolkit = Toolkit.make(
+  Tool.make("factory_merge_group_get", {
+    description:
+      "Read the consolidated PR readiness and exact combined review for this integration lead's group. Current integration lead only; managers and workers do not review PRs. Includes slim member identities, current checks, review summaries, screenshot references and blockers, never foreign assignment grants, source paths or transcripts. Historical passing evidence is not fresh merge authority.",
+    parameters: FactoryMergeGroupQuery,
+    success: FactoryMergeGroupRead,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }).annotate(Tool.Readonly, true),
+  Tool.make("factory_merge_group_review", {
+    description:
+      "As the current integration lead, request fresh host inspection and a sealed combined review for all linked PRs. The human reviews the combined feature in this integration conversation and sends corrections to owning leads. Agents cannot approve or reject the human decision. All member merges remain blocked until a supported shared merge executor can act; this tool does not merge anything.",
+    parameters: Schema.Struct({
+      commandId: CommandId,
+      groupId: FactoryMergeGroupQuery.fields.groupId,
+    }),
+    success: FactoryCommandResult,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }),
   Tool.make("factory_integration_get", {
     description:
       "Read one integration group's scoped grants, exact candidate/head vector, host verification, test patches and slim participant lead identities. Available to participating project managers/current leads and the integration team. Historical recorded evidence is not fresh merge proof. This never grants arbitrary peer source or transcript access.",

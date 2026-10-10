@@ -42,6 +42,7 @@ import * as FactoryWorkflowEffects from "./factory/FactoryWorkflowEffects.ts";
 import * as FactoryCollaborationEffects from "./factory/FactoryCollaborationEffects.ts";
 import * as FactoryIntegrationEffects from "./factory/FactoryIntegrationEffects.ts";
 import * as FactoryIntegrationExecution from "./factory/FactoryIntegrationExecution.ts";
+import * as FactoryMergeEffects from "./factory/FactoryMergeEffects.ts";
 import * as FactoryWorkflowExecution from "./factory/FactoryWorkflowExecution.ts";
 import * as FactoryImprovementEvidence from "./factory/FactoryImprovementEvidence.ts";
 import * as FactorySchedulingEffects from "./factory/FactorySchedulingEffects.ts";
@@ -587,6 +588,12 @@ const layerSatelliteFeatures = Layer.mergeAll(
     Layer.provide(FactoryImprovementEvidence.layer),
     Layer.provideMerge(
       FactoryService.layer.pipe(
+        Layer.provideMerge(
+          FactoryMergeEffects.layer.pipe(
+            Layer.provide(FactoryControlAccess.layer),
+            Layer.provide(layerPullRequestService),
+          ),
+        ),
         Layer.provideMerge(
           FactoryIntegrationEffects.layer.pipe(
             Layer.provide(FactoryControlAccess.layer),

@@ -29,6 +29,7 @@ import {
   FactoryQuery,
   FactorySnapshot,
 } from "./factory.ts";
+import { FactoryMergeGroupQuery, FactoryMergeGroupRead } from "./factoryMerge.ts";
 import {
   RevdocInput,
   RevdocStartInput,
@@ -1300,6 +1301,11 @@ const WsFactoryGetSnapshotRpc = Rpc.make(FACTORY_WS_METHODS.getSnapshot, {
   success: FactorySnapshot,
   error: factoryRpcError,
 });
+const WsFactoryGetMergeGroupRpc = Rpc.make(FACTORY_WS_METHODS.getMergeGroup, {
+  payload: FactoryMergeGroupQuery,
+  success: FactoryMergeGroupRead,
+  error: factoryRpcError,
+});
 const WsFactoryDispatchCommandRpc = Rpc.make(FACTORY_WS_METHODS.dispatchCommand, {
   payload: FactoryDispatchInput,
   success: FactoryCommandResult,
@@ -1983,6 +1989,7 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
 
 export const WsRpcGroup = RpcGroup.make(
   WsFactoryGetSnapshotRpc,
+  WsFactoryGetMergeGroupRpc,
   WsFactoryDispatchCommandRpc,
   WsFactorySubscribeRpc,
   Rpc.make(ORCHESTRATION_WS_METHODS.getRequestLifecycle, {
