@@ -19,6 +19,11 @@ import {
 import * as Result from "effect/Result";
 import { decideFactoryDelivery, type FactoryDeliveryContext } from "./FactoryDelivery.ts";
 import {
+  decideFactoryRetros,
+  initialFactoryCompletion,
+  type FactoryRetroContext,
+} from "./FactoryRetros.ts";
+import {
   decideFactoryControls,
   factoryExecutionBlocked,
   preserveFactoryManagerPauses,
@@ -83,6 +88,10 @@ export const initialFactorySnapshot = (): FactorySnapshot => ({
   mergeRules: [],
   previewConfigurations: [],
   previewPublicationPolicies: [],
+  retros: [],
+  findings: [],
+  followups: [],
+  projectTrackers: [],
 });
 
 export const effectivePolicy = (
@@ -228,6 +237,7 @@ const reduceModelGrants = (
 export function decide(
   input: FactoryControlContext &
     FactoryDeliveryContext &
+    FactoryRetroContext &
     FactoryOversightContext & {
       readonly state: FactorySnapshot;
       readonly actor: FactoryActor;
@@ -244,6 +254,8 @@ export function decide(
 ): Result.Result<FactoryDecision, FactoryError> {
   const controlDecision = decideFactoryControls(input);
   if (controlDecision !== undefined) return controlDecision;
+  const retroDecision = decideFactoryRetros(input);
+  if (retroDecision !== undefined) return retroDecision;
   const oversightDecision = decideFactoryOversight(input);
   if (oversightDecision !== undefined) return oversightDecision;
   const deliveryDecision = decideFactoryDelivery(input);
@@ -460,6 +472,7 @@ export function decide(
         kind: command.kind,
         title: command.title,
         scope: command.scope,
+        completion: initialFactoryCompletion(command.scope, manager.id),
         oversight: initialFactoryOversight(),
         complexity: command.complexity,
         modelSelection: selected.success.selection,

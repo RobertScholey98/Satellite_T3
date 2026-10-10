@@ -47,6 +47,8 @@ import { type FactoryOversightContext } from "./FactoryOversight.ts";
 import { type FactoryDeliveryContext } from "./FactoryDelivery.ts";
 import { FactoryDeliveryEffects } from "./FactoryDeliveryEffects.ts";
 import { FactoryPreviewService } from "./FactoryPreviewService.ts";
+import { FactoryRetroEffects } from "./FactoryRetroEffects.ts";
+import { type FactoryRetroContext } from "./FactoryRetros.ts";
 import { ServerActivation, forkParked } from "../serverActivation.ts";
 import { type FactoryControlContext } from "./FactoryControls.ts";
 
@@ -118,6 +120,24 @@ const scopedSnapshot =
           previewPublicationPolicies: snapshot.previewPublicationPolicies.filter(
             (policy) => policy.projectId === query.projectId,
           ),
+          retros: snapshot.retros.filter((retro) =>
+            snapshot.assignments.some(
+              (assignment) =>
+                assignment.id === retro.assignmentId && assignment.projectId === query.projectId,
+            ),
+          ),
+          findings: snapshot.findings.filter((finding) =>
+            snapshot.assignments.some(
+              (assignment) =>
+                assignment.id === finding.assignmentId && assignment.projectId === query.projectId,
+            ),
+          ),
+          followups: snapshot.followups.filter(
+            (followup) => followup.projectId === query.projectId,
+          ),
+          projectTrackers: snapshot.projectTrackers.filter(
+            (tracker) => tracker.projectId === query.projectId,
+          ),
         };
 
 const onboardingInstructions = (intent: FactoryThreadLaunchIntent) =>
@@ -150,6 +170,7 @@ export const layer = Layer.effect(
       yield* FactoryRecoveryReconciliation.FactoryRecoveryReconciliation;
     const deliveryEffects = yield* Effect.serviceOption(FactoryDeliveryEffects);
     const previews = yield* Effect.serviceOption(FactoryPreviewService);
+    const retros = yield* Effect.serviceOption(FactoryRetroEffects);
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -274,6 +295,8 @@ export const layer = Layer.effect(
                     "After candidate checks and independent review pass, delivery.publish creates or updates and links the exact PR. delivery.ready reconciles hosting checks and seals the evidence. Wait for the human when requested; discuss corrections directly with them. delivery.merge requests an exact-head conditional merge only when authorized. A queued or unknown hosting response is not a confirmed merge. Use delivery.retry for a visible delivery failure, preserving its reserved operation. Never use generic PR tools to bypass these gates.",
                     "Record meaningful progress using assignment.progress with summary, remainingWork, and evidence references. Before ending a turn with no independent work left, record assignment.wait: dependency with your requested dependency IDs, review with an existing linked open PR, or human-decision with the decision needed. A completed provider turn does not complete the assignment. Use dependency.request for out-of-scope supporting work; approval and commissioning never mean it is delivered. After a host-confirmed delivery wake, report dependency.check-usability against that exact delivery ID and evidence.",
                     "When delivery actually occurs, use assignment.delivery.request: a linked pull-request ref for merged work, or the actual report message ID at the agreed recipient for a non-PR assignment. For a report, first record progress with empty remainingWork and evidence, then send the findings and recommendation to the agreed recipient. The host verifies receipt; do not claim completion from a green check or an opened PR.",
+                    "Declare every required PR with assignment.completion.plan. Versions of the same PR are one obligation. Seal the complete list only when no implementation scope remains. All required PRs must actually merge, or the human must explicitly waive remaining scope, before the host freezes implementation and starts the read-only team retro. A no-PR task follows the exact commissioned report-receipt or human-acceptance target.",
+                    "Use finding.report to raise evidenced problems when discovered, without waiting for the retro. Classify the suspected cause and preserve uncertainty. Escalate reusable or system causes with finding.escalate. Use followup.request for project-scoped triage tickets; creating a ticket does not authorize implementation.",
                     "Human review is required unless the delivery grant and project rules explicitly permit autonomous delivery. Major UI changes require human PR approval and useful screenshots. After merge, conduct your internal retro and then a retro with your manager. Creating a follow-up ticket does not authorize its implementation.",
                   ].join("\n\n")
                 : [
@@ -282,6 +305,7 @@ export const layer = Layer.effect(
                     "You coordinate scoped implementation teams and project priorities. Implementation leads own code, internal reviews, verification, and the complete PR process. You do not implement or review their PRs. You and the system manager are peers with different remits.",
                     "Currently onboarding is in progress. Acknowledge the assignment briefly, then wait for an actionable event or the human. Do not poll, start implementation, or attempt to broaden execution permissions. Unresolved permissions and project decisions must remain visible.",
                     "When factory_snapshot shows an active manager with an approved boundary and the human requests work, use assignment.commission to create a scoped implementation lead. Choose exact source paths and creation directories within that boundary, a completion condition, and task complexity. Omit modelSelection for the configured lead preference. authorizationMessageId may reference the direct human request, or omit it to use the latest direct human message. Discuss gaps with the human before commissioning unclear work.",
+                    "For no-PR work, set scope.noPrTarget explicitly: report-received at the agreed recipient when receipt satisfies the task, otherwise human-acceptance. After confirmed delivery or cancellation with the human's reason, the host starts a read-only team retrospective and sends you its accepted report. Review the causes and owners through retro.manager.submit; you do not review the PR. Project follow-ups become triage tickets, while workflow-wide decisions stay with the human. No process change is a normal result.",
                     "On a dependency request, decide whether separate work is authorized within your remit. Use dependency.approve with the exact supporting work, then assignment.commission with that dependencyId and the same approved scope. Wait for actual host-confirmed delivery and the original lead's usability check. For a recovery incident, read the recorded evidence, use assignment.recovery.begin within the remaining allowance, then use its independent diagnosis to replan. Use replaceLead only when warranted; work and limits are preserved. If recovery cannot proceed, assignment.recovery.escalate must state the failure, attempts, options, and recommendation for the human.",
                   ].join("\n\n"),
           attachments: [],
@@ -480,6 +504,7 @@ export const layer = Layer.effect(
               yield* controlWorker.enqueue(undefined);
               yield* oversightWorker.enqueue(undefined);
               yield* deliveryWorker.enqueue(undefined);
+              yield* retroWorker.enqueue(undefined);
             }
           }
         }
@@ -514,6 +539,7 @@ export const layer = Layer.effect(
               yield* worker.enqueue(undefined);
               yield* oversightWorker.enqueue(undefined);
               yield* deliveryWorker.enqueue(undefined);
+              yield* retroWorker.enqueue(undefined);
             }
           }
         }
@@ -551,6 +577,7 @@ export const layer = Layer.effect(
               yield* worker.enqueue(undefined);
               yield* controlWorker.enqueue(undefined);
               yield* deliveryWorker.enqueue(undefined);
+              yield* retroWorker.enqueue(undefined);
             }
           }
         }
@@ -594,6 +621,48 @@ export const layer = Layer.effect(
               yield* worker.enqueue(undefined);
               yield* controlWorker.enqueue(undefined);
               yield* oversightWorker.enqueue(undefined);
+              yield* retroWorker.enqueue(undefined);
+            }
+          }
+        }
+      }),
+    );
+    const retroWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        if (Option.isNone(retros)) return;
+        yield* retros.value.reconcile.pipe(
+          Effect.catch((cause) =>
+            Effect.logError("Factory retrospective reconciliation remains pending", { cause }),
+          ),
+        );
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) =>
+              !visited.has(entry.id) &&
+              (entry.intent.type === "assignment.conclude" ||
+                entry.intent.type.startsWith("retro.") ||
+                entry.intent.type.startsWith("followup.")),
+          );
+          if (!pending.length) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            yield* retros.value.handle(entry).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory retrospective work remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* worker.enqueue(undefined);
+              yield* controlWorker.enqueue(undefined);
+              yield* oversightWorker.enqueue(undefined);
+              yield* deliveryWorker.enqueue(undefined);
             }
           }
         }
@@ -605,6 +674,7 @@ export const layer = Layer.effect(
         controlWorker.enqueue(undefined),
         oversightWorker.enqueue(undefined),
         deliveryWorker.enqueue(undefined),
+        retroWorker.enqueue(undefined),
       ],
       {
         discard: true,
@@ -619,6 +689,7 @@ export const layer = Layer.effect(
         yield* controlWorker.drain;
         yield* oversightWorker.drain;
         yield* deliveryWorker.drain;
+        yield* retroWorker.drain;
         if (progress === workerProgress) return;
       }
     });
@@ -796,7 +867,11 @@ export const layer = Layer.effect(
         if (command !== undefined) yield* wake;
         else
           yield* Effect.all(
-            [oversightWorker.enqueue(undefined), deliveryWorker.enqueue(undefined)],
+            [
+              oversightWorker.enqueue(undefined),
+              deliveryWorker.enqueue(undefined),
+              retroWorker.enqueue(undefined),
+            ],
             { discard: true },
           );
       }),
@@ -820,8 +895,41 @@ export const layer = Layer.effect(
               }
             : undefined;
         const snapshot = yield* store.snapshot;
+        if (
+          (command.type === "assignment.commission" || command.type === "assignment.handover") &&
+          command.scope.noPrTarget?.kind === "report-received"
+        ) {
+          const recipientId = command.scope.noPrTarget.recipientThreadId;
+          const manager = snapshot.managers.find((entry) => entry.id === command.managerId);
+          const recipient = yield* threads
+            .getThreadShell(recipientId)
+            .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause })));
+          const agreed =
+            recipientId === manager?.threadId ||
+            snapshot.dependencies.some(
+              (dependency) =>
+                "dependencyId" in command &&
+                dependency.id === command.dependencyId &&
+                dependency.unblockCondition.kind === "report-delivered" &&
+                dependency.unblockCondition.recipientThreadId === recipientId,
+            );
+          if (
+            !agreed ||
+            !recipient ||
+            recipient.projectId !== manager?.projectId ||
+            recipient.deletedAt !== null ||
+            recipient.archivedAt !== null
+          )
+            return yield* new FactoryError({
+              code: "invalid-state",
+              detail:
+                "The report recipient must be an available thread agreed for this project assignment.",
+            });
+        }
         let oversightContext: FactoryOversightContext = {};
         let deliveryContext: FactoryDeliveryContext = {};
+        let retroContext: FactoryRetroContext = {};
+        if (Option.isSome(retros)) retroContext = yield* retros.value.context(actor, command);
         if (command.type === "assignment.wait" && command.wait.kind === "review") {
           const assignment = snapshot.assignments.find(
             (entry) => entry.id === command.assignmentId,
@@ -917,6 +1025,7 @@ export const layer = Layer.effect(
           handoverVerified,
           ...oversightContext,
           ...deliveryContext,
+          ...retroContext,
           ...(allocation === undefined ? {} : { allocation }),
         });
         if (Result.isFailure(preflight)) return yield* preflight.failure;
@@ -1008,6 +1117,7 @@ export const layer = Layer.effect(
           handoverVerified,
           ...oversightContext,
           ...deliveryContext,
+          ...retroContext,
           ...(allocation === undefined ? {} : { allocation }),
           ...(qualification === undefined ? {} : { qualification }),
           ...(boundary === undefined ? {} : { boundary }),

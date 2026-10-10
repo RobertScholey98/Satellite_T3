@@ -33,6 +33,7 @@ import { factoryModelKey, factoryModelLabel } from "./FactoryModelPolicyDialog";
 import { FactoryAssignmentControls } from "./FactoryControls";
 import { FactoryOversight } from "./FactoryOversight";
 import { FactoryDelivery } from "./FactoryDelivery";
+import { FactoryRetros } from "./FactoryRetros";
 import { factoryAssignmentCancellation, factoryAssignmentStatus } from "./FactoryControlsReadModel";
 
 export function FactoryAssignmentDialog({
@@ -57,6 +58,9 @@ export function FactoryAssignmentDialog({
   const [description, setDescription] = useState("");
   const [completionCondition, setCompletionCondition] = useState("");
   const [requiresPullRequest, setRequiresPullRequest] = useState(true);
+  const [noPrTarget, setNoPrTarget] = useState<"human-acceptance" | "report-received">(
+    "human-acceptance",
+  );
   const [complexity, setComplexity] = useState<FactoryTaskComplexity>("standard");
   const [kind, setKind] = useState<"implementation" | "rule-change">("implementation");
   const [sourcePaths, setSourcePaths] = useState<readonly string[]>([]);
@@ -149,6 +153,14 @@ export function FactoryAssignmentDialog({
         description: description.trim(),
         completionCondition: completionCondition.trim(),
         requiresPullRequest,
+        ...(!requiresPullRequest
+          ? {
+              noPrTarget:
+                noPrTarget === "report-received"
+                  ? { kind: "report-received" as const, recipientThreadId: manager.id }
+                  : { kind: "human-acceptance" as const },
+            }
+          : {}),
       },
       sourcePaths: [...new Set([...sourcePaths, ...exactNewPaths])],
       creatableDirectories,
@@ -310,6 +322,36 @@ export function FactoryAssignmentDialog({
               />
               <Label htmlFor={`${prefix}-pr`}>Requires a pull request</Label>
             </div>
+            {!requiresPullRequest ? (
+              <div className="space-y-2">
+                <Label htmlFor={`${prefix}-completion-proof`}>Completion approval</Label>
+                <Select
+                  value={noPrTarget}
+                  items={[
+                    { value: "human-acceptance", label: "I accept the outcome" },
+                    { value: "report-received", label: "Manager receives the verified report" },
+                  ]}
+                  onValueChange={(value) => {
+                    if (value) setNoPrTarget(value);
+                  }}
+                  disabled={disabled}
+                >
+                  <SelectTrigger id={`${prefix}-completion-proof`}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectPopup>
+                    <SelectItem value="human-acceptance">I accept the outcome</SelectItem>
+                    <SelectItem value="report-received">
+                      Manager receives the verified report
+                    </SelectItem>
+                  </SelectPopup>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Choose whether receipt of the report is enough to begin the retrospective, or
+                  whether you must accept the result first.
+                </p>
+              </div>
+            ) : null}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label htmlFor={`${prefix}-complexity`}>Task complexity</Label>
@@ -568,6 +610,11 @@ export function FactoryAssignmentDetailsDialog({
               onOpenThread={onOpenRelatedThread}
             />
             <FactoryOversight
+              environment={environment}
+              assignment={assignment}
+              onOpenThread={onOpenRelatedThread}
+            />
+            <FactoryRetros
               environment={environment}
               assignment={assignment}
               onOpenThread={onOpenRelatedThread}

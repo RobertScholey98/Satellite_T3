@@ -17,6 +17,14 @@ const decodeDeliveryHold = Schema.decodeUnknownEffect(
 
 export const assertFactoryProfileActive = Effect.fn("assertFactoryProfileActive")(
   function* (profile: FactoryExecutionProfile | undefined) {
+    if (profile?.retro !== undefined) {
+      const fs = yield* FileSystem.FileSystem;
+      if (yield* fs.exists(profile.retro.stopPath))
+        return yield* new FactoryError({
+          code: "execution-unavailable",
+          detail: "This retrospective runtime has stopped. Its evidence remains available.",
+        });
+    }
     const workspace = profile?.assignmentWorkspace;
     if (workspace === undefined) return;
     const fs = yield* FileSystem.FileSystem;

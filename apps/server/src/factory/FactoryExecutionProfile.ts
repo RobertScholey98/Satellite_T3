@@ -14,6 +14,16 @@ export const FactoryExecutionProfile = Schema.Struct({
   sourceRevision: Schema.optionalKey(Schema.String),
   startingSourceId: Schema.optionalKey(Schema.String),
   startingSourceDigest: Schema.optionalKey(Schema.String),
+  retro: Schema.optionalKey(
+    Schema.Struct({
+      retroId: Schema.String,
+      assignmentId: Schema.String,
+      conclusionId: Schema.String,
+      evidenceDigest: Schema.String,
+      sourceBasis: Schema.Literals(["final-candidate", "starting-snapshot"]),
+      stopPath: Schema.String,
+    }),
+  ),
   inspection: Schema.optionalKey(
     Schema.Struct({
       sourceDigest: Schema.String,

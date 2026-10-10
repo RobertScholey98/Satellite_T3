@@ -12,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { isFactoryModelApproved, resolveFactoryModelPolicy } from "./FactoryModelPolicy.ts";
+import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 
 export class FactoryModelAdmission extends Context.Service<
   FactoryModelAdmission,
@@ -76,12 +77,14 @@ const make = Effect.gen(function* () {
           auxiliary !== undefined &&
           (delegating ||
             threadId !== requestedThreadId ||
+            (auxiliary.kind === "retrospective" &&
+              !factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros)) ||
             !modelSelectionsEqual(auxiliary.modelSelection, selection))
         )
           return yield* new FactoryError({
             code: "permission-denied",
             detail:
-              "Diagnosis uses its approved independent model and cannot delegate implementation.",
+              "Independent review and retrospective conversations use their approved model and cannot delegate implementation.",
           });
         if (manager !== undefined || assignment?.kind === "onboarding") {
           if (

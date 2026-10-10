@@ -121,6 +121,26 @@ must allow the work. Major UI changes and unclear eligibility still require huma
 approval. The host rechecks the current permissions and PR evidence immediately
 before merging, and records delivery only after the host confirms the actual merge.
 
+### Review lessons and follow-up work
+
+The retrospective begins after every required PR has merged or you have explicitly
+waived its remaining scope. For work without a PR, choose whether completion needs
+your acceptance or a report received by the manager. Existing assignments without
+that choice need your acceptance in **Assignment details**.
+
+The team reviews preserved conversations and delivery evidence in a separate,
+read-only retro thread. Its manager then reviews the report and assigns follow-ups.
+Open **Assignment details → Completion and retrospective** to read both reports or
+join either conversation. Cancellation waits for your reason and does not imply
+that the team or process failed. A report can conclude that no process change is needed.
+
+Configure the project's GitHub or Azure DevOps triage destination in **Delivery
+settings** before allowing follow-up tickets. Teams can record project improvements
+as tickets without starting implementation. Shared workflow proposals still need
+your review. If publication fails, retry the recorded follow-up rather than asking
+for another ticket. An uncertain create result preserves its identity and offers
+verification of an existing ticket instead of creating a duplicate.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

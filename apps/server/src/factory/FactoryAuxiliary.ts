@@ -1,9 +1,26 @@
-import type { FactoryAssignment, FactoryAuxiliaryThread } from "@t3tools/contracts";
+import type { FactoryAssignment, FactoryAuxiliaryThread, FactoryRetro } from "@t3tools/contracts";
 
 export function factoryAuxiliaryIsCurrent(
   assignment: FactoryAssignment | undefined,
   auxiliary: FactoryAuxiliaryThread,
+  retros: ReadonlyArray<FactoryRetro> = [],
 ) {
+  if (auxiliary.kind === "retrospective") {
+    const retro = retros.find((entry) => entry.id === auxiliary.incidentId);
+    return (
+      assignment !== undefined &&
+      retro !== undefined &&
+      retro.assignmentId === assignment.id &&
+      retro.threadId === auxiliary.threadId &&
+      retro.conclusionId === assignment.completion?.conclusion?.id &&
+      retro.evidenceDigest === assignment.completion?.conclusion?.evidenceDigest &&
+      retro.execution.status === "ready" &&
+      retro.reports.phase !== "complete" &&
+      (auxiliary.status === "pending" || auxiliary.status === "running") &&
+      auxiliary.qualification?.profileId === retro.execution.qualification.profileId &&
+      auxiliary.sourceDigest === retro.execution.sourceDigest
+    );
+  }
   if (
     !assignment ||
     assignment.outcome ||

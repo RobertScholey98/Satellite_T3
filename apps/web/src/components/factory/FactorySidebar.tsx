@@ -207,6 +207,15 @@ export function FactorySidebar({
                         scopeThreadRef(environment.environmentId, assignment.threadId),
                       ),
                     )),
+              ...(collapsedManagers.has(key)
+                ? []
+                : (environment.data?.retros ?? [])
+                    .filter((retro) =>
+                      assignments.some((assignment) => assignment.id === retro.assignmentId),
+                    )
+                    .map((retro) =>
+                      scopedThreadKey(scopeThreadRef(environment.environmentId, retro.threadId)),
+                    )),
             ])
             .filter((key) => threadUnavailableReason("created", threadsByKey.get(key)) === null)
         : [],
@@ -412,6 +421,9 @@ export function FactorySidebar({
                   {childrenExpanded ? (
                     <SidebarMenuSub>
                       {assignments.map((assignment) => {
+                        const retro = environment.data?.retros.find(
+                          (entry) => entry.assignmentId === assignment.id,
+                        );
                         const threadRef = scopeThreadRef(
                           environment.environmentId,
                           assignment.threadId,
@@ -493,6 +505,33 @@ export function FactorySidebar({
                                 </Button>
                               ) : null}
                             </div>
+                            {retro ? (
+                              <div className="ml-4 pb-1">
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  disabled={
+                                    !threadsByKey.has(
+                                      scopedThreadKey(
+                                        scopeThreadRef(environment.environmentId, retro.threadId),
+                                      ),
+                                    )
+                                  }
+                                  onClick={() =>
+                                    onThreadActivate(
+                                      scopeThreadRef(environment.environmentId, retro.threadId),
+                                    )
+                                  }
+                                >
+                                  Team retro ·{" "}
+                                  {retro.reports.phase === "complete"
+                                    ? "Complete"
+                                    : retro.reports.phase === "manager-pending"
+                                      ? "Manager review"
+                                      : "In progress"}
+                                </Button>
+                              </div>
+                            ) : null}
                             {assignment.wait && assignment.wait.reason !== manager.wait?.reason ? (
                               <p className="mx-2 mb-2 break-words text-xs text-sidebar-muted-foreground">
                                 {assignment.wait.reason}

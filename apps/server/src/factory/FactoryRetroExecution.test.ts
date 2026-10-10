@@ -1,0 +1,536 @@
+import * as Crypto from "effect/Crypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, it } from "@effect/vitest";
+import {
+  CommandId,
+  EnvironmentId,
+  FactoryControlId,
+  ThreadId,
+  type FactorySnapshot,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
+
+import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import {
+  FACTORY_CODEX_IMAGE,
+  FactoryExecutionProfile,
+  factoryDockerArguments,
+} from "./FactoryExecutionProfile.ts";
+import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
+import * as FactoryModelAdmission from "./FactoryModelAdmission.ts";
+import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
+import * as FactoryRetroEvidence from "./FactoryRetroEvidence.ts";
+import * as FactoryRetroExecution from "./FactoryRetroExecution.ts";
+import * as FactoryService from "./FactoryService.ts";
+import * as FactorySource from "./FactorySource.ts";
+import { FactoryStore } from "./FactoryStore.ts";
+import { decide } from "./FactoryState.ts";
+import {
+  deliveryFixture,
+  deliveryIds,
+  deliveryNow,
+  deliverySelection,
+} from "./FactoryDelivery.testkit.ts";
+
+const retroThread = ThreadId.make("retro-thread");
+const profileId = "a4556207-a1c8-4b22-861c-4f835a64b713";
+const encodeProfile = Schema.encodeEffect(Schema.fromJsonString(FactoryExecutionProfile));
+const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
+const input = {
+  assignmentId: deliveryIds.assignment,
+  retroId: "retro",
+  threadId: retroThread,
+  conclusionId: "conclusion",
+  evidenceDigest: "pending",
+};
+
+const fixture = Effect.fn(function* (live = false) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const root = yield* fs.makeTempDirectoryScoped();
+  const config = yield* ServerConfig.ServerConfig.pipe(
+    Effect.provide(ServerConfig.layerTest(root, root)),
+  );
+  const dockerContext = live
+    ? (yield* runner.run({
+        command: "docker",
+        args: ["context", "show"],
+      })).stdout.trim()
+    : "test";
+  const imageId = live
+    ? (yield* runner.run({
+        command: "docker",
+        args: [
+          "--context",
+          dockerContext,
+          "image",
+          "inspect",
+          FACTORY_CODEX_IMAGE,
+          "--format",
+          "{{.Id}}",
+        ],
+      })).stdout.trim()
+    : `sha256:${"a".repeat(64)}`;
+  assert.match(imageId, /^sha256:[a-f0-9]{64}$/);
+  const directory = path.join(config.stateDir, "factory", "execution", profileId);
+  const original: FactoryExecutionProfile = {
+    boundaryId: profileId,
+    dockerContext,
+    imageId,
+    projectSnapshotPath: path.join(directory, "project"),
+    workflowSnapshotPath: path.join(directory, "workflow"),
+    runtimePath: path.join(directory, "sessions"),
+    startingSourceId: "source",
+    startingSourceDigest: "source-digest",
+    assignmentWorkspace: {
+      assignmentId: deliveryIds.assignment,
+      volumeName: "old-revoked-volume",
+      grantEpoch: 1,
+      boundaryId: deliveryIds.boundary,
+      controlsPath: path.join(directory, "controls"),
+      revocationPath: path.join(directory, "revoked.json"),
+      workerUid: 1000,
+      workerGid: 1000,
+    },
+  };
+  yield* fs.makeDirectory(path.join(original.workflowSnapshotPath, "skills", "retro"), {
+    recursive: true,
+  });
+  yield* fs.writeFileString(
+    path.join(original.workflowSnapshotPath, "skills", "retro", "SKILL.md"),
+    "Approved immutable retrospective instructions.",
+  );
+  yield* fs.writeFileString(original.assignmentWorkspace!.revocationPath, "{}");
+  yield* fs.writeFileString(path.join(directory, "profile.json"), yield* encodeProfile(original));
+  const evidenceLayer = FactoryRetroEvidence.layer.pipe(
+    Layer.provide(ServerConfig.layerTest(root, root)),
+  );
+  const sealed = yield* FactoryRetroEvidence.FactoryRetroEvidence.pipe(
+    Effect.flatMap((evidence) =>
+      evidence.seal({
+        retroId: input.retroId,
+        conclusionId: input.conclusionId,
+        assignmentId: input.assignmentId,
+        documents: [
+          { name: "assignment.json", content: "{}" },
+          { name: "team.json", content: "[]" },
+          { name: "feedback.json", content: "[]" },
+        ],
+      }),
+    ),
+    Effect.provide(evidenceLayer),
+  );
+  const request = { ...input, evidenceDigest: sealed.evidenceDigest };
+  const controlId = FactoryControlId.make("cancelled");
+  let state: FactorySnapshot = deliveryFixture();
+  state = {
+    ...state,
+    controls: [
+      {
+        id: controlId,
+        kind: "cancellation",
+        assignmentId: input.assignmentId,
+        managerId: deliveryIds.manager,
+        generation: 1,
+        requestedAt: deliveryNow,
+        updatedAt: deliveryNow,
+        stop: { status: "confirmed", stoppedAt: deliveryNow },
+        reason: { text: "Changed priority", recordedAt: deliveryNow },
+      },
+    ],
+    assignments: state.assignments.map((assignment) => ({
+      ...assignment,
+      qualification: { status: "qualified", profileId, checkedAt: deliveryNow },
+      outcome: { kind: "cancelled", controlId },
+      completion: {
+        phase: "concluded",
+        waitReason: null,
+        plan: {
+          kind: "no-pr",
+          condition: "Report",
+          target: { kind: "report-received", recipientThreadId: deliveryIds.manager },
+        },
+        deliveries: [],
+        waivers: [],
+        acceptance: null,
+        conclusion: {
+          id: request.conclusionId,
+          evidenceDigest: request.evidenceDigest,
+          concludedAt: deliveryNow,
+          kind: "cancelled",
+          controlId,
+          reasonRecordedAt: deliveryNow,
+        },
+      },
+    })),
+    retros: [
+      {
+        id: request.retroId,
+        assignmentId: input.assignmentId,
+        threadId: retroThread,
+        conclusionId: request.conclusionId,
+        evidenceDigest: request.evidenceDigest,
+        modelSelection: deliverySelection,
+        execution: { status: "preparing" },
+        reports: { phase: "team-pending" },
+        createdAt: deliveryNow,
+        updatedAt: deliveryNow,
+      },
+    ],
+  };
+  const content = Buffer.from("preserved starting source\n");
+  const crypto = yield* Crypto.Crypto;
+  const contentDigest = Buffer.from(yield* crypto.digest("SHA-256", content)).toString("hex");
+  const dependencies = Layer.mergeAll(
+    ServerConfig.layerTest(root, root),
+    evidenceLayer,
+    Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
+    Layer.mock(FactorySource.FactorySource)({
+      read: () =>
+        Effect.succeed({
+          source: state.assignments[0]!.startingSource!,
+          request: { requestId: CommandId.make("capture"), projectId: deliveryIds.project },
+          workspaceRoot: "unused",
+          indexData: null,
+          indexFiles: [],
+          files: [
+            {
+              path: "README.md",
+              content: content.toString("base64"),
+              digest: contentDigest,
+              mode: "100644",
+            },
+          ],
+        }),
+    }),
+    Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({}),
+    Layer.mock(ProjectStoreV2)({}),
+    Layer.mock(ProviderInstanceRegistry)({}),
+    Layer.mock(ProjectionStoreV2)({ getThreadShell: () => Effect.succeed(null) }),
+    Layer.mock(ThreadManagementService)({ getThreadShell: () => Effect.succeed(null) }),
+  );
+  return {
+    fs,
+    path,
+    config,
+    original,
+    request,
+    dependencies,
+    getState: () => state,
+    setState: (next: FactorySnapshot) => {
+      state = next;
+    },
+    markReady: (prepared: {
+      qualification: { status: "qualified"; profileId: string; checkedAt: string };
+      sourceDigest: string;
+    }) => {
+      state = {
+        ...state,
+        retros: state.retros.map((retro) => ({
+          ...retro,
+          execution: { status: "ready", ...prepared, launch: "pending" },
+        })),
+        auxiliaryThreads: [
+          {
+            threadId: retroThread,
+            assignmentId: input.assignmentId,
+            incidentId: input.retroId,
+            managerId: deliveryIds.manager,
+            projectId: deliveryIds.project,
+            cycle: 0,
+            kind: "retrospective",
+            modelSelection: deliverySelection,
+            status: "running",
+            qualification: prepared.qualification,
+            sourceDigest: prepared.sourceDigest,
+            createdAt: deliveryNow,
+            updatedAt: deliveryNow,
+          },
+        ],
+      };
+    },
+  };
+});
+
+const live = process.env.SATELLITE_FACTORY_LIVE_TEST === "1" ? it.effect : it.effect.skip;
+live(
+  "qualifies a fresh read-only retrospective after cancellation and preserves its identity across service recreation",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true);
+      const runtimeLayer = FactoryRetroExecution.layer.pipe(Layer.provide(f.dependencies));
+      const prepared = yield* FactoryRetroExecution.FactoryRetroExecution.pipe(
+        Effect.flatMap((runtime) => runtime.prepare(f.request)),
+        Effect.provide(runtimeLayer),
+      );
+      f.markReady(prepared);
+      const profile = yield* f.fs
+        .readFileString(
+          f.path.join(
+            f.config.stateDir,
+            "factory",
+            "execution",
+            prepared.qualification.profileId,
+            "profile.json",
+          ),
+        )
+        .pipe(Effect.flatMap(decodeProfile));
+      assert.equal(profile.retro?.sourceBasis, "starting-snapshot");
+      assert.isUndefined(profile.assignmentWorkspace);
+      assert.notEqual(profile.runtimePath, f.original.runtimePath);
+      assert.notEqual(profile.workflowSnapshotPath, f.original.workflowSnapshotPath);
+      assert.equal(
+        yield* f.fs.readFileString(f.path.join(profile.projectSnapshotPath, "README.md")),
+        "preserved starting source\n",
+      );
+      assert.isFalse(
+        factoryDockerArguments(profile).some((arg) => arg.includes("old-revoked-volume")),
+      );
+      assert.equal(
+        (yield* assertFactoryProfileActive(f.original).pipe(Effect.flip)).code,
+        "execution-unavailable",
+      );
+      const again = yield* FactoryRetroExecution.FactoryRetroExecution.pipe(
+        Effect.flatMap((runtime) => runtime.prepare(f.request)),
+        Effect.provide(runtimeLayer),
+      );
+      assert.equal(again.qualification.profileId, prepared.qualification.profileId);
+      yield* Effect.gen(function* () {
+        const execution = yield* FactoryExecution.FactoryExecution;
+        assert.equal((yield* execution.runtimePolicyFor(retroThread))?.retro?.retroId, "retro");
+        assert.equal(
+          (yield* execution.runtimePolicyFor(deliveryIds.lead).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        const models = yield* FactoryModelAdmission.FactoryModelAdmission;
+        yield* models.assertSelectionFor(retroThread, deliverySelection);
+        assert.equal(
+          (yield* models.assertDelegationFor(retroThread, deliverySelection).pipe(Effect.flip))
+            .code,
+          "permission-denied",
+        );
+        const access = yield* FactoryControlAccess.FactoryControlAccess;
+        const member = yield* access.membership(retroThread);
+        assert.isDefined(member);
+        f.setState(
+          Result.getOrThrow(
+            decide({
+              state: f.getState(),
+              actor: { kind: "human" },
+              now: deliveryNow,
+              command: {
+                type: "thread.takeover",
+                commandId: CommandId.make("takeover"),
+                threadId: retroThread,
+              },
+              controlTarget: member!,
+            }),
+          ).state,
+        );
+        yield* access.assertExecution(retroThread);
+        yield* access.assertDirection({ threadId: retroThread });
+        assert.equal(
+          (yield* access
+            .assertDirection({ threadId: retroThread, senderThreadId: deliveryIds.manager })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        f.setState({
+          ...f.getState(),
+          controls: [
+            {
+              id: FactoryControlId.make("pause"),
+              kind: "project-pause",
+              status: "active",
+              projectId: deliveryIds.project,
+              stop: { status: "confirmed", stoppedAt: deliveryNow },
+              generation: 1,
+              requestedAt: deliveryNow,
+              updatedAt: deliveryNow,
+            },
+          ],
+        });
+        assert.equal(
+          (yield* access.assertExecution(retroThread).pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        f.setState({ ...f.getState(), controls: [] });
+        f.setState({
+          ...f.getState(),
+          controls: [
+            {
+              id: FactoryControlId.make("manager-pause"),
+              kind: "manager-pause",
+              managerId: deliveryIds.manager,
+              priorStatus: "active",
+              generation: 1,
+              status: "active",
+              requestedAt: deliveryNow,
+              updatedAt: deliveryNow,
+              stop: { status: "confirmed", stoppedAt: deliveryNow },
+            },
+          ],
+        });
+        yield* access.assertExecution(retroThread);
+        assert.equal(
+          (yield* access
+            .assertDirection({ threadId: retroThread, senderThreadId: deliveryIds.manager })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        f.setState({
+          ...f.getState(),
+          controls: [],
+          retros: f.getState().retros.map((retro) => ({ ...retro, evidenceDigest: "superseded" })),
+        });
+        assert.equal(
+          (yield* execution.runtimePolicyFor(retroThread).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            FactoryExecution.layer,
+            FactoryControlAccess.layer,
+            FactoryModelAdmission.layer,
+          ).pipe(Layer.provide(f.dependencies)),
+        ),
+      );
+      yield* FactoryRetroExecution.FactoryRetroExecution.pipe(
+        Effect.flatMap((runtime) => runtime.stop({ retroId: input.retroId })),
+        Effect.provide(runtimeLayer),
+      );
+      assert.equal(
+        (yield* assertFactoryProfileActive(profile).pipe(Effect.flip)).code,
+        "execution-unavailable",
+      );
+      assert.equal(
+        (yield* FactoryRetroExecution.FactoryRetroExecution.pipe(
+          Effect.flatMap((runtime) => runtime.prepare(f.request)),
+          Effect.provide(runtimeLayer),
+          Effect.flip,
+        ))._tag,
+        "FactoryError",
+      );
+    }).pipe(Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
+  60_000,
+);
+
+it.effect(
+  "admits only scoped retrospective reads and reports through MCP",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      f.markReady({
+        qualification: { status: "qualified", profileId, checkedAt: deliveryNow },
+        sourceDigest: "source-digest",
+      });
+      const invocation = {
+        environmentId: EnvironmentId.make("test"),
+        issuedAt: 1,
+        requestNamespace: "retro-test",
+        client: undefined,
+        capabilities: new Set(["orchestration" as const]),
+        thread: {
+          threadId: retroThread,
+          providerSessionId: "retro-session",
+          providerInstanceId: deliverySelection.instanceId,
+        },
+      };
+      const accepted: string[] = [];
+      yield* Effect.gen(function* () {
+        const guard = yield* FactoryMcpGuard.FactoryMcpGuard;
+        yield* guard.authorize(invocation, "factory_snapshot");
+        yield* guard.authorize(invocation, "t3_thread_read", { threadId: deliveryIds.lead });
+        for (const [tool, payload] of [
+          ["t3_thread_read", { threadId: deliveryIds.manager }],
+          ["t3_thread_send", { threadId: deliveryIds.lead }],
+          ["delegate_task", {}],
+          ["factory_preview_action", {}],
+          ["http_request", {}],
+          ["issue_create", {}],
+        ] as const)
+          assert.equal(
+            (yield* guard.authorize(invocation, tool, payload).pipe(Effect.flip)).code,
+            "capability_denied",
+          );
+        for (const command of [
+          {
+            type: "assignment.verify",
+            commandId: CommandId.make("verify"),
+            assignmentId: input.assignmentId,
+            expectedEpoch: 1,
+          },
+          {
+            type: "delivery.merge",
+            commandId: CommandId.make("merge"),
+            assignmentId: input.assignmentId,
+            revisionId: "revision",
+          },
+        ] as const)
+          assert.equal(
+            (yield* guard.dispatch(invocation, command).pipe(Effect.flip)).code,
+            "capability_denied",
+          );
+        yield* guard.dispatch(invocation, {
+          type: "retro.team.submit",
+          commandId: CommandId.make("report"),
+          retroId: input.retroId,
+          conclusionId: input.conclusionId,
+          report: {
+            outcome: "Cancelled as requested",
+            helped: "Clear scope",
+            hindered: "None",
+            learning: { kind: "no-process-change", reason: "No process defect found" },
+            contributions: [],
+          },
+        });
+        assert.deepStrictEqual(accepted, ["retro.team.submit"]);
+        f.setState({
+          ...f.getState(),
+          retros: f
+            .getState()
+            .retros.map((retro) => ({ ...retro, execution: { status: "stopped" } })),
+        });
+        assert.equal(
+          (yield* guard.authorize(invocation, "factory_snapshot").pipe(Effect.flip)).code,
+          "capability_denied",
+        );
+      }).pipe(
+        Effect.provide(
+          FactoryMcpGuard.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                f.dependencies,
+                Layer.mock(FactoryExecution.FactoryExecution)({
+                  runtimePolicyFor: () => Effect.succeed(f.original),
+                }),
+                Layer.mock(FactoryService.FactoryService)({
+                  dispatch: (_actor, command) =>
+                    Effect.sync(() => {
+                      accepted.push(command.type);
+                      return { revision: f.getState().revision };
+                    }),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
+  60_000,
+);

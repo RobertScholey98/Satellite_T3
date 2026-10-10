@@ -31,6 +31,11 @@ import * as FactoryPreviewService from "./factory/FactoryPreviewService.ts";
 import * as FactoryControlAccess from "./factory/FactoryControlAccess.ts";
 import * as FactoryPreviewHttp from "./factory/FactoryPreviewHttp.ts";
 import * as FactoryPreviewPublication from "./factory/FactoryPreviewPublication.ts";
+import * as FactoryRetroEffects from "./factory/FactoryRetroEffects.ts";
+import * as FactoryRetroExecution from "./factory/FactoryRetroExecution.ts";
+import * as FactoryRetroEvidence from "./factory/FactoryRetroEvidence.ts";
+import * as IssuePublication from "./issues/IssuePublication.ts";
+import * as IssuePublicationHost from "./issues/IssuePublicationHost.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -573,6 +578,24 @@ const layerSatelliteFeatures = Layer.mergeAll(
       FactoryService.layer.pipe(
         Layer.provideMerge(layerFactoryDelivery),
         Layer.provideMerge(layerFactoryPreview),
+        Layer.provideMerge(
+          FactoryRetroEffects.layer.pipe(
+            Layer.provide(FactoryRetroExecution.layer),
+            Layer.provide(FactoryRetroEvidence.layer),
+            Layer.provide(
+              IssuePublication.layer.pipe(
+                Layer.provide(IssuePublicationHost.layer),
+                Layer.provide(IssueHost.layer),
+                Layer.provide(AzureDevOpsCli.layer),
+                Layer.provide(ProjectStore.layer),
+              ),
+            ),
+            Layer.provide(FactoryControlAccess.layer),
+            Layer.provide(FactoryHandover.layer),
+            Layer.provide(layerPullRequestService),
+            Layer.provide(ProcessRunner.layer),
+          ),
+        ),
         Layer.provide(FactoryHandover.layer),
       ),
     ),

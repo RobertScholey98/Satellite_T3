@@ -145,12 +145,12 @@ const make = Effect.gen(function* () {
       if (
         member.threadId !== member.auxiliaryThreadId ||
         auxiliary === undefined ||
-        !factoryAuxiliaryIsCurrent(assignment, auxiliary)
+        !factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros)
       )
         return yield* new FactoryError({
           code: "permission-denied",
           detail:
-            "Only the current independent review can run. A completed or superseded review cannot resume or create a team.",
+            "Only the current independent review or retrospective can run. A completed or superseded conversation cannot resume or create a team.",
         });
     }
     if (

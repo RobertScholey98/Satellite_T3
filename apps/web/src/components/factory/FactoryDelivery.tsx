@@ -1,15 +1,14 @@
+import { useFactoryCommand } from "./useFactoryCommand";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   resolveDeviceHubAccess,
   withDeviceHubQuery,
 } from "@t3tools/client-runtime/state/deviceHubAccess";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+
 import {
-  CommandId,
   type EnvironmentId,
   type FactoryAssignment,
-  type FactoryDeliveryCommand,
   type FactoryDeliveryRevision,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -17,70 +16,21 @@ import { Link } from "@tanstack/react-router";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
-import { randomUUID } from "../../lib/utils";
+
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { useThreadShell } from "../../state/entities";
-import { factoryEnvironment, type FactoryEnvironmentView } from "../../state/factory";
+import { type FactoryEnvironmentView } from "../../state/factory";
 import { environmentSession } from "../../state/session";
-import { useAtomCommand } from "../../state/use-atom-command";
+
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { factoryAssignmentCancellation, factoryProjectPause } from "./FactoryControlsReadModel";
-
-type DeliveryInput = FactoryDeliveryCommand extends infer Command
-  ? Command extends FactoryDeliveryCommand
-    ? Omit<Command, "commandId">
-    : never
-  : never;
-
-export function useFactoryDeliveryCommand(environment: FactoryEnvironmentView, allowed = true) {
-  const dispatch = useAtomCommand(factoryEnvironment.dispatch, { reportFailure: false });
-  const [pending, setPending] = useState(false);
-  const [revision, setRevision] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const inFlight = useRef(false);
-  const submissions = useRef(new Map<string, CommandId>());
-  const syncing = revision > (environment.data?.revision ?? 0);
-  const disabled =
-    pending || syncing || !allowed || !environment.connected || !environment.canOperate;
-  const submit = async (input: DeliveryInput) => {
-    if (disabled || inFlight.current) return false;
-    inFlight.current = true;
-    setPending(true);
-    setError(null);
-    const content = JSON.stringify(input);
-    const commandId = submissions.current.get(content) ?? CommandId.make(randomUUID());
-    submissions.current.set(content, commandId);
-    try {
-      const result = await dispatch({
-        environmentId: environment.environmentId,
-        input: { command: { ...input, commandId } },
-      });
-      if (result._tag === "Failure") {
-        const cause = squashAtomCommandFailure(result);
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : "Could not save this delivery decision. Try again.",
-        );
-        return false;
-      }
-      submissions.current.delete(content);
-      setRevision(result.value.revision);
-      return true;
-    } finally {
-      inFlight.current = false;
-      setPending(false);
-    }
-  };
-  return { submit, disabled, pending: pending || syncing, error };
-}
 
 const evidenceAccessAtom = Atom.family((environmentId: EnvironmentId) =>
   connectionAtomRuntime
@@ -294,7 +244,7 @@ export function FactoryDelivery({
     assignment.outcome !== undefined ||
     assignment.status === "complete" ||
     factoryAssignmentCancellation(environment.data, assignment) !== undefined;
-  const command = useFactoryDeliveryCommand(environment, !paused && !terminal);
+  const command = useFactoryCommand(environment, !paused && !terminal);
   const [acknowledged, setAcknowledged] = useState<string | null>(null);
   if (assignment.kind === "onboarding") return null;
   const delivery = assignment.delivery;

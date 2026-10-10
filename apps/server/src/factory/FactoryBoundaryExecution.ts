@@ -530,6 +530,7 @@ const make = Effect.gen(function* () {
     if (
       !assignment?.grant ||
       assignment.outcome !== undefined ||
+      (assignment.completion !== undefined && assignment.completion.phase !== "collecting") ||
       (expectedEpoch !== undefined && assignment.grant.epoch !== expectedEpoch)
     )
       return yield* denied();

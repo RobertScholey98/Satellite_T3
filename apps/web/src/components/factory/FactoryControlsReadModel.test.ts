@@ -81,6 +81,10 @@ const initial: FactorySnapshot = {
   mergeRules: [],
   previewConfigurations: [],
   previewPublicationPolicies: [],
+  retros: [],
+  findings: [],
+  followups: [],
+  projectTrackers: [],
 };
 const thread = (
   id: string,

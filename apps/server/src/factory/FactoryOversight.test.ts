@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 
 import { decide, initialFactorySnapshot, type FactoryActor } from "./FactoryState.ts";
 import { initialFactoryOversight, type FactoryOversightContext } from "./FactoryOversight.ts";
+import { initialFactoryCompletion } from "./FactoryRetros.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const commandId = CommandId.make("command");
@@ -1019,6 +1020,15 @@ describe("Factory oversight", () => {
       id: supportId,
       threadId: supportLeadId,
       scope: work.scope,
+      completion: {
+        ...initialFactoryCompletion(work.scope),
+        plan: {
+          kind: "pull-requests",
+          version: 1,
+          sealed: true,
+          requirements: [{ id: "required", ref, expectedHeadSha: null }],
+        },
+      },
       oversight: initialFactoryOversight(),
     };
     state = {
@@ -1077,7 +1087,11 @@ describe("Factory oversight", () => {
       ...state,
       assignments: state.assignments.map((entry) => ({
         ...entry,
-        scope: { ...entry.scope!, requiresPullRequest: false },
+        scope: {
+          ...entry.scope!,
+          requiresPullRequest: false,
+          noPrTarget: { kind: "report-received", recipientThreadId: managerId },
+        },
       })),
     };
     const messageId = MessageId.make("report-message");

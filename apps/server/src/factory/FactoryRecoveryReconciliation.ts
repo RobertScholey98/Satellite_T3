@@ -3,6 +3,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -37,6 +38,83 @@ const make = Effect.gen(function* () {
           (entry) => entry.threadId === intent.threadId,
         );
         const assignment = state.assignments.find((entry) => entry.id === auxiliary?.assignmentId);
+        if (auxiliary?.kind === "retrospective") {
+          const retro = state.retros.find((entry) => entry.id === auxiliary.incidentId);
+          if (
+            !assignment ||
+            !retro ||
+            retro.execution.status !== "ready" ||
+            retro.execution.launch !== "delivered" ||
+            retro.reports.phase !== "team-pending" ||
+            !factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros)
+          ) {
+            yield* store.retireEffect(pending.id);
+            return;
+          }
+          if (
+            factoryExecutionBlocked(state, {
+              threadId: auxiliary.threadId,
+              auxiliaryThreadId: auxiliary.threadId,
+              assignmentId: assignment.id,
+              managerId: assignment.managerId,
+              projectId: assignment.projectId,
+              ancestorThreadIds: [],
+            }) !== undefined
+          )
+            return;
+          if (
+            (yield* store.pending).some(
+              (entry) =>
+                (entry.intent.type === "retro.launch" && entry.intent.retroId === retro.id) ||
+                ((entry.intent.type === "thread.deliver" ||
+                  entry.intent.type === "thread.queue.resume") &&
+                  entry.intent.threadId === auxiliary.threadId),
+            )
+          )
+            return;
+          const sequence = yield* events.latestSequence().pipe(Effect.mapError(failure));
+          const records = yield* threads
+            .getThreadRecords(auxiliary.threadId, ["runs", "runtimeRequests"])
+            .pipe(Effect.mapError(failure));
+          if (records.runtimeRequests.some((request) => request.status === "pending")) return;
+          if (
+            (yield* store.snapshot).revision !== state.revision ||
+            (yield* events.latestSequence().pipe(Effect.mapError(failure))) !== sequence
+          )
+            continue;
+          const active = records.runs.some((run) =>
+            ["queued", "preparing", "starting", "running", "waiting"].includes(run.status),
+          );
+          if (
+            !active &&
+            records.runs.some((run) =>
+              ["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
+                run.status,
+              ),
+            )
+          ) {
+            const recorded = yield* store
+              .commit({
+                actor: { kind: "system" },
+                now: DateTime.formatIso(yield* DateTime.now),
+                command: {
+                  type: "retro.failed",
+                  commandId: CommandId.make(`${pending.id}:retro-terminal`),
+                  retroId: retro.id,
+                  expectedStateRevision: state.revision,
+                  reason:
+                    "The retrospective run stopped without submitting its team report. Its conversation and preserved evidence remain available. Review its last message, then retry the retrospective to finish the report.",
+                },
+              })
+              .pipe(Effect.result);
+            if (Result.isFailure(recorded)) {
+              if (recorded.failure.code === "stale-revision") continue;
+              return yield* recorded.failure;
+            }
+          }
+          yield* store.retireEffect(pending.id);
+          return;
+        }
         if (
           !auxiliary ||
           !assignment ||

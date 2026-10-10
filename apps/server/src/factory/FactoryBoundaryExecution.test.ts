@@ -32,6 +32,7 @@ import { initialFactorySnapshot } from "./FactoryState.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import { FactorySource, type FactorySourceArtifact } from "./FactorySource.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
+import { initialFactoryCompletion } from "./FactoryRetros.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
@@ -639,6 +640,35 @@ live(
         };
         assert.equal(freshProfile.sourceRevision, freshArtifact.source.revision);
         assert.equal(freshProfile.startingSourceDigest, freshArtifact.source.sourceDigest);
+        const collectingState = state;
+        for (const phase of ["concluding", "concluded"] as const) {
+          state = {
+            ...collectingState,
+            assignments: collectingState.assignments.map((entry) =>
+              entry.id === freshAssignment.id
+                ? { ...entry, completion: { ...initialFactoryCompletion(entry.scope), phase } }
+                : entry,
+            ),
+          };
+          assert.equal(
+            (yield* execution
+              .verify({ assignmentId: freshAssignment.id, expectedEpoch: 0 })
+              .pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+          assert.equal(
+            (yield* execution
+              .mutate({
+                assignmentId: freshAssignment.id,
+                expectedEpoch: 0,
+                commandId: CommandId.make(`late-mutate:${phase}`),
+                operation: { kind: "write", path: "src/value.cjs", content: "module.exports=99;" },
+              })
+              .pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+        }
+        state = collectingState;
         assert.equal(
           (yield* execution.verify({ assignmentId: freshAssignment.id, expectedEpoch: 0 })).gates[0]
             ?.status,

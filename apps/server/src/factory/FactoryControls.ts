@@ -16,6 +16,7 @@ import {
 import * as Result from "effect/Result";
 
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
+import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 
 export interface FactoryControlMembership {
   readonly threadId: ThreadId;
@@ -38,10 +39,26 @@ export const factoryExecutionBlocked = (
   state: FactorySnapshot,
   member: FactoryControlMembership,
 ): string | undefined => {
+  const auxiliary = state.auxiliaryThreads.find(
+    (entry) => entry.threadId === member.auxiliaryThreadId,
+  );
+  const retrospective =
+    auxiliary?.kind === "retrospective" &&
+    auxiliary.threadId === member.threadId &&
+    factoryAuxiliaryIsCurrent(
+      state.assignments.find((entry) => entry.id === member.assignmentId),
+      auxiliary,
+      state.retros,
+    );
+  const completion = state.assignments.find(
+    (entry) => entry.id === member.assignmentId,
+  )?.completion;
+  if (!retrospective && completion !== undefined && completion.phase !== "collecting")
+    return "Implementation has concluded. Its retrospective uses a separate read-only conversation.";
   for (const control of state.controls) {
     switch (control.kind) {
       case "cancellation":
-        if (control.assignmentId === member.assignmentId)
+        if (control.assignmentId === member.assignmentId && !retrospective)
           return "This assignment has been cancelled. Its work and evidence remain available.";
         break;
       case "project-pause":
@@ -234,13 +251,19 @@ export function decideFactoryControls(
       if (actor.kind !== "human") return fail("permission-denied");
       const member = input.controlTarget;
       const assignment = state.assignments.find((entry) => entry.id === member?.assignmentId);
+      const auxiliary = state.auxiliaryThreads.find(
+        (entry) => entry.threadId === member?.auxiliaryThreadId,
+      );
+      const retrospective =
+        auxiliary?.kind === "retrospective" &&
+        factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros);
       if (
         !member ||
         member.threadId !== command.threadId ||
         !assignment ||
         assignment.managerId !== member.managerId ||
         assignment.projectId !== member.projectId ||
-        assignment.outcome !== undefined ||
+        (assignment.outcome !== undefined && !retrospective) ||
         member.threadId === member.managerId
       )
         return fail("invalid-state");
@@ -280,6 +303,11 @@ export function decideFactoryControls(
     case "assignment.cancel": {
       const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
       if (!assignment) return fail("assignment-not-found");
+      if (assignment.completion?.phase === "concluded")
+        return fail(
+          "invalid-state",
+          "This implementation has already concluded. Pause the project or take over its retrospective to control the remaining review.",
+        );
       if (
         actor.kind !== "human" &&
         (actor.kind !== "thread" || actor.threadId !== assignment.managerId)
@@ -331,6 +359,15 @@ export function decideFactoryControls(
     }
     case "assignment.cancellation-reason": {
       if (actor.kind !== "human") return fail("permission-denied");
+      if (
+        state.assignments.some(
+          (entry) => entry.id === command.assignmentId && entry.completion?.phase === "concluded",
+        )
+      )
+        return fail(
+          "invalid-state",
+          "The original cancellation reason is part of the concluded retrospective evidence. Add further context in the retrospective conversation.",
+        );
       const control = state.controls.find(
         (entry) => entry.kind === "cancellation" && entry.assignmentId === command.assignmentId,
       );

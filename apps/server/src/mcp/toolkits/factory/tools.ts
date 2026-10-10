@@ -80,7 +80,7 @@ export const FactoryToolkit = Toolkit.make(
   }).annotate(Tool.Readonly, true),
   Tool.make("factory_dispatch", {
     description:
-      "Submit a factory command as this authenticated managed thread. Managers commission scoped implementation assignments against a human request; authorizationMessageId selects that request, or defaults to their latest direct human message. Leads and their team use assignment.file.mutate and assignment.verify within their granted scope and epoch. Onboarding leads submit onboarding.report. Human-only decisions cannot be made through this tool.",
+      "Submit a factory command as this authenticated managed thread. Managers commission scoped implementation assignments against a human request; authorizationMessageId selects that request, or defaults to their latest direct human message. Leads use scoped mutation/verification and declare all required PRs in assignment.completion.plan. Report evidenced problems immediately with finding.report; escalate shared causes with finding.escalate. After host-confirmed conclusion, the read-only retro lead submits retro.team.submit and its manager submits retro.manager.submit. followup.request creates project triage tickets without starting implementation. Human-only decisions cannot be made through this tool.",
     parameters: FactoryDispatchInput,
     success: FactoryCommandResult,
     failure,

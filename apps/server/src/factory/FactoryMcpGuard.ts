@@ -138,6 +138,7 @@ const make = Effect.gen(function* () {
           scopedCommunication =
             (member.auxiliary === undefined || toolName === "t3_thread_read") &&
             sameManager &&
+            (member.auxiliary?.kind !== "retrospective" || sameAssignment) &&
             (member.assignment === undefined ||
               sameAssignment ||
               (ownManager && toolName !== "t3_thread_interrupt"));
@@ -212,6 +213,15 @@ const make = Effect.gen(function* () {
           auxiliaryThreads: snapshot.auxiliaryThreads.filter(
             (entry) => assignment === undefined || entry.assignmentId === assignment.id,
           ),
+          retros: snapshot.retros.filter(
+            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
+          ),
+          findings: snapshot.findings.filter(
+            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
+          ),
+          followups: snapshot.followups.filter(
+            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
+          ),
         };
       }),
     dispatch: (invocation, command) =>
@@ -221,26 +231,41 @@ const make = Effect.gen(function* () {
           .assertExecution(invocation.thread.threadId)
           .pipe(Effect.mapError(unavailable));
         const member = yield* managedCaller(invocation);
+        const retroCommand =
+          member.auxiliary?.kind === "retrospective" &&
+          ((command.type === "retro.team.submit" &&
+            command.retroId === member.auxiliary.incidentId) ||
+            ((command.type === "finding.report" || command.type === "followup.request") &&
+              command.assignmentId === member.assignment?.id) ||
+            (command.type === "finding.escalate" &&
+              (yield* store.snapshot).findings.some(
+                (entry) =>
+                  entry.id === command.findingId && entry.assignmentId === member.assignment?.id,
+              )));
         if (
           member.auxiliary !== undefined &&
           (member.auxiliary.threadId !== invocation.thread.threadId ||
-            (member.auxiliary.kind === "diagnosis"
-              ? command.type !== "auxiliary.report" ||
-                command.threadId !== invocation.thread.threadId
-              : !(
-                  command.type === "delivery.review.report" ||
-                  command.type === "delivery.preview.start" ||
-                  command.type === "delivery.preview.stop"
-                ) ||
-                command.assignmentId !== member.assignment?.id ||
-                command.revisionId !== member.auxiliary.revisionId ||
-                ("reviewId" in command && command.reviewId !== member.auxiliary.incidentId)))
+            (member.auxiliary.kind === "retrospective"
+              ? !retroCommand
+              : member.auxiliary.kind === "diagnosis"
+                ? command.type !== "auxiliary.report" ||
+                  command.threadId !== invocation.thread.threadId
+                : !(
+                    command.type === "delivery.review.report" ||
+                    command.type === "delivery.preview.start" ||
+                    command.type === "delivery.preview.stop"
+                  ) ||
+                  command.assignmentId !== member.assignment?.id ||
+                  command.revisionId !== member.auxiliary.revisionId ||
+                  ("reviewId" in command && command.reviewId !== member.auxiliary.incidentId)))
         )
           return yield* denied();
         const descendantOperation =
           member.assignment !== undefined &&
           member.assignment.kind !== "onboarding" &&
-          (((command.type === "assignment.file.mutate" || command.type === "assignment.verify") &&
+          (((command.type === "assignment.file.mutate" ||
+            command.type === "assignment.verify" ||
+            command.type === "finding.report") &&
             command.assignmentId === member.assignment.id) ||
             (command.type === "guidance.escalate" &&
               command.threadId === invocation.thread.threadId));

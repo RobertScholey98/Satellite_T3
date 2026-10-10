@@ -80,3 +80,5 @@ export * from "./factoryDelivery.ts";
 export * from "./factoryPreview.ts";
 export * from "./factoryModels.ts";
 export * from "./factorySources.ts";
+export * from "./factoryRetros.ts";
+export * from "./issuePublication.ts";

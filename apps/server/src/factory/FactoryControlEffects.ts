@@ -48,6 +48,18 @@ const diagnosisCanResume = (
   );
 };
 
+const currentRetrospective = (
+  state: FactorySnapshot,
+  assignment: FactoryAssignment | undefined,
+  threadId: ThreadId,
+) => {
+  const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === threadId);
+  return (
+    auxiliary?.kind === "retrospective" &&
+    factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros)
+  );
+};
+
 const currentDeliveryReviewNotice = (
   state: FactorySnapshot,
   assignment: FactoryAssignment | undefined,
@@ -63,7 +75,7 @@ const currentDeliveryReviewNotice = (
     auxiliary.assignmentId === assignment.id &&
     auxiliary.revisionId === purpose.revisionId &&
     auxiliary.incidentId === purpose.reviewId &&
-    factoryAuxiliaryIsCurrent(assignment, auxiliary) &&
+    factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros) &&
     preview?.instanceId === purpose.instanceId &&
     preview.reviewId === purpose.reviewId &&
     preview.threadId === intent.threadId &&
@@ -202,7 +214,10 @@ export const layer = Layer.effect(
         if (control.kind === "cancellation") operations.push(boundaries.stop(control.assignmentId));
         if (control.kind === "project-pause") {
           for (const assignment of state.assignments.filter(
-            (entry) => entry.projectId === control.projectId && entry.outcome === undefined,
+            (entry) =>
+              entry.projectId === control.projectId &&
+              entry.outcome === undefined &&
+              (entry.completion === undefined || entry.completion.phase === "collecting"),
           ))
             operations.push(
               boundaries.suspend({ assignmentId: assignment.id, generation: control.generation }),
@@ -275,6 +290,7 @@ export const layer = Layer.effect(
           (entry) =>
             entry.projectId === control.projectId &&
             entry.outcome === undefined &&
+            (entry.completion === undefined || entry.completion.phase === "collecting") &&
             entry.wait?.kind !== "authority",
         )) {
           const resumed = yield* boundaries
@@ -321,14 +337,16 @@ export const layer = Layer.effect(
       const state = yield* store.snapshot;
       const assignment = state.assignments.find((entry) => entry.id === member.assignmentId);
       const manager = state.managers.find((entry) => entry.id === member.managerId);
+      const retrospective = currentRetrospective(state, assignment, intent.threadId);
       if (
-        assignment?.outcome !== undefined ||
-        (assignment?.status === "complete" && intent.kind !== "continuation")
+        !retrospective &&
+        (assignment?.outcome !== undefined ||
+          (assignment?.status === "complete" && intent.kind !== "continuation"))
       ) {
         yield* store.retireEffect(pending.id);
         return;
       }
-      let permitsWait = false;
+      let permitsWait = retrospective;
       if (intent.purpose !== undefined) {
         const purpose = intent.purpose;
         const dependency =
@@ -405,6 +423,24 @@ export const layer = Layer.effect(
         .pipe(Effect.mapError(failure));
       const accepted = records.messages.find((entry) => entry.id === intent.messageId);
       if (accepted === undefined) {
+        if (retrospective) {
+          const latest = yield* store.snapshot;
+          const owner = latest.assignments.find((entry) => entry.id === member.assignmentId);
+          if (!currentRetrospective(latest, owner, intent.threadId)) {
+            yield* store.retireEffect(pending.id);
+            return;
+          }
+          const allowed = yield* access
+            .assertDirection({
+              threadId: intent.threadId,
+              senderThreadId: intent.sourceThreadId ?? null,
+            })
+            .pipe(Effect.result);
+          if (Result.isFailure(allowed)) {
+            if (allowed.failure.code === "permission-denied") return;
+            return yield* allowed.failure;
+          }
+        }
         if (intent.purpose?.kind === "delivery-review") {
           const latest = yield* store.snapshot;
           const owner = latest.assignments.find((entry) => entry.id === member.assignmentId);
@@ -471,12 +507,14 @@ export const layer = Layer.effect(
       const member = yield* access.membership(intent.threadId);
       if (!member) return yield* new FactoryError({ code: "invalid-state" });
       const assignment = state.assignments.find((entry) => entry.id === member.assignmentId);
-      if (assignment?.outcome !== undefined) {
+      const retrospective = currentRetrospective(state, assignment, intent.threadId);
+      if (assignment?.outcome !== undefined && !retrospective) {
         yield* store.retireEffect(pending.id);
         return;
       }
       if (
         assignment?.wait != null &&
+        !retrospective &&
         !(
           diagnosisCanResume(state, assignment, intent.threadId) &&
           control.kind === "project-pause" &&

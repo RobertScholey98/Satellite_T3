@@ -224,11 +224,85 @@ const detail: PullRequestDetail = {
 };
 const claimAssignment: FactoryAssignment = {
   ...assignment,
+  completion: {
+    phase: "collecting",
+    waitReason: null,
+    plan: {
+      kind: "pull-requests",
+      version: 1,
+      sealed: true,
+      requirements: [{ id: "required", ref: prRef, expectedHeadSha: null }],
+    },
+    deliveries: [],
+    waivers: [],
+    acceptance: null,
+    conclusion: null,
+  },
   oversight: {
     deliveryClaim: { kind: "pull-request", ref: prRef },
     recovery: { cyclesUsed: 0, history: [] },
   },
 };
+
+it.effect(
+  "reconciles every required PR after an earlier individual merge without completing the assignment",
+  () => {
+    const secondRef = { ...prRef, number: 43 };
+    const item: FactoryAssignment = {
+      ...claimAssignment,
+      completion: {
+        ...claimAssignment.completion!,
+        plan: {
+          kind: "pull-requests",
+          version: 1,
+          sealed: true,
+          requirements: [
+            { id: "first", ref: prRef, expectedHeadSha: "actual-head" },
+            { id: "second", ref: secondRef, expectedHeadSha: "second-head" },
+          ],
+        },
+      },
+    };
+    return scenario(
+      Effect.gen(function* () {
+        yield* link;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        yield* threads.dispatch({
+          type: "thread.pull-request.link",
+          commandId: CommandId.make("link-second"),
+          threadId: leadId,
+          host: "github.com",
+          repository: secondRef.repository,
+          number: secondRef.number,
+          url: "https://github.com/owner/repo/pull/43",
+          source: "agent",
+        });
+        const first = yield* reconcile("first-required");
+        assert.equal(first.assignments[0]!.completion!.deliveries.length, 1);
+        assert.notEqual(first.assignments[0]!.wait?.kind, "delivered");
+        const store = yield* FactoryStore.FactoryStore;
+        const service = yield* FactoryReconciliation.FactoryReconciliation;
+        for (const pending of yield* store.pending)
+          if (pending.intent.type === "assignment.reconcile") yield* service.handle(pending);
+        const second = yield* store.snapshot;
+        assert.equal(second.assignments[0]!.completion!.deliveries.length, 2);
+        assert.equal(second.assignments[0]!.wait?.kind, "delivered");
+        assert.notEqual(second.assignments[0]!.status, "complete");
+        assert.equal(second.retros.length, 0);
+      }),
+      item,
+    ).pipe(
+      Effect.provide(
+        Layer.mock(PullRequestService)({
+          detail: (input) =>
+            Effect.succeed(
+              input.number === 43 ? { ...detail, number: 43, headSha: "second-head" } : detail,
+            ),
+        }),
+      ),
+    );
+  },
+);
 
 it.effect(
   "accepted team work suppresses recovery and terminal replay never completes an assignment",
@@ -558,6 +632,7 @@ it.effect("a real report must reach its agreed recipient with team provenance an
         description: "Investigate",
         completionCondition: "Deliver findings and recommendation to manager",
         requiresPullRequest: false,
+        noPrTarget: { kind: "report-received", recipientThreadId: managerId },
       },
     },
   ),

@@ -330,7 +330,7 @@ const make = Effect.gen(function* () {
         assignment === undefined ||
         (auxiliary !== undefined &&
           (auxiliary.qualification === undefined ||
-            !factoryAuxiliaryIsCurrent(assignment, auxiliary)))
+            !factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros)))
       )
         return yield* new FactoryError({ code: "execution-unavailable" });
       const profileId = qualification.profileId;
@@ -339,6 +339,21 @@ const make = Effect.gen(function* () {
       const profile = yield* fs
         .readFileString(path.join(root, profileId, "profile.json"))
         .pipe(Effect.flatMap(decodeProfile));
+      if (auxiliary?.kind === "retrospective") {
+        const retro = state.retros.find((entry) => entry.id === auxiliary.incidentId);
+        if (
+          retro === undefined ||
+          profile.retro?.retroId !== retro.id ||
+          profile.retro.assignmentId !== assignment.id ||
+          profile.retro.conclusionId !== retro.conclusionId ||
+          profile.retro.evidenceDigest !== retro.evidenceDigest ||
+          profile.assignmentWorkspace !== undefined ||
+          (yield* fs.exists(profile.retro.stopPath))
+        )
+          return yield* new FactoryError({ code: "execution-unavailable" });
+      } else if (profile.retro !== undefined) {
+        return yield* new FactoryError({ code: "execution-unavailable" });
+      }
       if (
         auxiliary !== undefined &&
         (auxiliary.threadId !== threadId ||

@@ -30,6 +30,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import {
   layer as SatelliteLayer,
@@ -154,6 +155,7 @@ const scenario = <A, E, R>(
   options: {
     assignments?: readonly FactoryAssignment[];
     auxiliaryThreads?: readonly FactoryAuxiliaryThread[];
+    retros?: FactorySnapshot["retros"];
     dependencies?: readonly FactoryDependency[];
     controls?: readonly FactoryControl[];
     effects?: readonly FactoryEffectIntent[];
@@ -195,6 +197,7 @@ const scenario = <A, E, R>(
     yield* sql`INSERT INTO factory_state (id,revision,payload_json) VALUES(1,0,${encodeSnapshot({
       ...initial(assignments),
       auxiliaryThreads,
+      retros: options.retros ?? [],
       dependencies: options.dependencies ?? [],
       controls: options.controls ?? [],
     })})`;
@@ -1552,4 +1555,349 @@ it.effect.each(previewNoticeCases)("$name", (test) =>
       controls: test.controls ?? [],
     },
   ),
+);
+
+const retroId = ThreadId.make("cancelled-assignment-retro");
+const retroCancelId = FactoryControlId.make("retro-cancellation");
+const retroAssignment: FactoryAssignment = {
+  ...assignment,
+  outcome: { kind: "cancelled", controlId: retroCancelId },
+  status: "complete",
+  wait: { kind: "delivered", reason: "Implementation concluded" },
+  completion: {
+    phase: "concluded",
+    waitReason: null,
+    plan: { kind: "pull-requests", version: 1, requirements: [], sealed: true },
+    deliveries: [],
+    waivers: [],
+    acceptance: null,
+    conclusion: {
+      id: "conclusion",
+      kind: "cancelled",
+      controlId: retroCancelId,
+      reasonRecordedAt: now,
+      evidenceDigest: "evidence",
+      concludedAt: now,
+    },
+  },
+};
+const retroState: FactorySnapshot["retros"][number] = {
+  id: "retro",
+  assignmentId,
+  threadId: retroId,
+  conclusionId: "conclusion",
+  evidenceDigest: "evidence",
+  modelSelection: model,
+  execution: {
+    status: "ready",
+    qualification: { status: "qualified", profileId: "retro-profile", checkedAt: now },
+    sourceDigest: "source",
+    launch: "delivered",
+  },
+  reports: { phase: "team-pending" },
+  createdAt: now,
+  updatedAt: now,
+};
+const retroAuxiliary: FactoryAuxiliaryThread = {
+  threadId: retroId,
+  assignmentId,
+  managerId,
+  projectId,
+  incidentId: "retro",
+  cycle: 0,
+  kind: "retrospective",
+  status: "running",
+  modelSelection: model,
+  qualification: { status: "qualified", profileId: "retro-profile", checkedAt: now },
+  sourceDigest: "source",
+  createdAt: now,
+  updatedAt: now,
+};
+const retroCancellation: FactoryControl = {
+  id: retroCancelId,
+  kind: "cancellation",
+  assignmentId,
+  managerId,
+  generation: 1,
+  requestedAt: now,
+  updatedAt: now,
+  stop: { status: "confirmed", stoppedAt: now },
+  reason: { text: "Priorities changed", recordedAt: now },
+};
+
+it.effect.each(["active", "queued", "stopped"] as const)(
+  "project resume restores only the current retrospective after cancellation: %s",
+  (mode) =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        yield* send(retroId, "Gather the team's retrospective");
+        const original = (yield* projections.getThreadProjection(retroId)).runs[0]!;
+        if (mode === "queued")
+          yield* projections.apply({
+            id: EventId.make("queued-retro"),
+            type: "run.updated",
+            threadId: retroId,
+            runId: original.id,
+            occurredAt: yield* DateTime.now,
+            payload: { ...original, status: "queued", queueHeld: false, queuePosition: 1 },
+          });
+        yield* factory.dispatch(human, {
+          type: "project.pause",
+          commandId: CommandId.make("pause-retro"),
+          projectId,
+        });
+        yield* factory.drain;
+        yield* factory.dispatch(human, {
+          type: "project.resume",
+          commandId: CommandId.make("resume-retro"),
+          projectId,
+        });
+        yield* factory.drain;
+        const current = yield* projections.getThreadProjection(retroId);
+        assert.equal(current.runs.at(-1)?.status, mode === "stopped" ? "interrupted" : "starting");
+        assert.equal(current.messages.length, mode === "active" ? 2 : 1);
+        assert.isEmpty((yield* projections.getThreadProjection(leadId)).runs);
+        assert.equal((yield* factory.snapshot({})).assignments[0]?.outcome?.kind, "cancelled");
+      }),
+      {
+        assignments: [retroAssignment],
+        auxiliaryThreads: [retroAuxiliary],
+        retros: [
+          {
+            ...retroState,
+            execution: mode === "stopped" ? { status: "stopped" } : retroState.execution,
+          },
+        ],
+        controls: [retroCancellation],
+        suspend: () => Effect.die("Do not reopen the cancelled assignment boundary"),
+        resume: () => Effect.die("Do not reopen the cancelled assignment boundary"),
+      },
+    ),
+);
+
+it.effect(
+  "handback resumes the current retrospective queue without reopening cancelled implementation",
+  () =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        yield* send(retroId, "Gather remaining team evidence");
+        const run = (yield* projections.getThreadProjection(retroId)).runs[0]!;
+        yield* projections.apply({
+          id: EventId.make("queue-retro-handback"),
+          type: "run.updated",
+          threadId: retroId,
+          runId: run.id,
+          occurredAt: yield* DateTime.now,
+          payload: { ...run, status: "queued", queueHeld: false, queuePosition: 1 },
+        });
+        yield* factory.dispatch(human, {
+          type: "thread.takeover",
+          commandId: CommandId.make("takeover-retro"),
+          threadId: retroId,
+        });
+        yield* factory.dispatch(human, {
+          type: "thread.handback",
+          commandId: CommandId.make("handback-retro"),
+          threadId: retroId,
+        });
+        yield* factory.drain;
+        assert.equal((yield* projections.getThreadProjection(retroId)).runs[0]!.status, "starting");
+        assert.isEmpty((yield* projections.getThreadProjection(leadId)).runs);
+        assert.equal((yield* factory.snapshot({})).assignments[0]!.outcome?.kind, "cancelled");
+      }),
+      {
+        assignments: [retroAssignment],
+        auxiliaryThreads: [retroAuxiliary],
+        retros: [retroState],
+        controls: [retroCancellation],
+      },
+    ),
+);
+
+it.effect.each(["completed", "failed", "interrupted"] as const)(
+  "records a retryable failure when the actual retrospective run ends without its report: %s",
+  (status) =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const events = yield* EventSink.EventSinkV2;
+        yield* send(retroId, "Gather evidence before reporting");
+        const run = (yield* projections.getThreadProjection(retroId)).runs[0]!;
+        const event = {
+          id: EventId.make(`retro-terminal:${status}`),
+          type: "run.updated" as const,
+          threadId: retroId,
+          runId: run.id,
+          occurredAt: yield* DateTime.now,
+          payload: { ...run, status },
+        };
+        const recorded = yield* events.write({ events: [event] });
+        yield* projections.apply(event);
+        if (status === "interrupted") yield* factory.recover;
+        else yield* factory.observe(recorded[0]!);
+        yield* factory.drain;
+        const state = yield* factory.snapshot({});
+        assert.equal(state.retros[0]!.execution.status, "failed");
+        if (state.retros[0]!.execution.status !== "failed")
+          return assert.fail("Expected visible failure");
+        assert.include(state.retros[0]!.execution.reason, "without submitting its team report");
+        assert.equal(state.auxiliaryThreads[0]!.status, "failed");
+        assert.isUndefined(state.assignments[0]!.oversight);
+        yield* factory.dispatch(human, {
+          type: "retro.retry",
+          commandId: CommandId.make("retry-terminal-retro"),
+          retroId: retroState.id,
+        });
+        assert.equal((yield* factory.snapshot({})).retros[0]!.execution.status, "preparing");
+        assert.equal((yield* factory.snapshot({})).assignments[0]!.outcome?.kind, "cancelled");
+      }),
+      {
+        assignments: [retroAssignment],
+        auxiliaryThreads: [retroAuxiliary],
+        retros: [retroState],
+        controls: [retroCancellation],
+      },
+    ),
+);
+
+it.effect(
+  "does not turn a successfully submitted team report into failure when the provider finishes",
+  () =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const events = yield* EventSink.EventSinkV2;
+        const store = yield* FactoryStore.FactoryStore;
+        yield* send(retroId, "Submit the complete report");
+        yield* store.commit({
+          actor: { kind: "thread", threadId: retroId, assignmentId },
+          now,
+          evidenceValidated: true,
+          command: {
+            type: "retro.team.submit",
+            commandId: CommandId.make("accepted-team-report"),
+            retroId: retroState.id,
+            conclusionId: retroState.conclusionId,
+            report: {
+              outcome: "Cancelled for changed priorities",
+              helped: "Clear scope",
+              hindered: "",
+              contributions: [],
+              learning: { kind: "no-process-change", reason: "No process defect found" },
+            },
+          },
+        });
+        const run = (yield* projections.getThreadProjection(retroId)).runs[0]!;
+        const event = {
+          id: EventId.make("reported-retro-completed"),
+          type: "run.updated" as const,
+          threadId: retroId,
+          runId: run.id,
+          occurredAt: yield* DateTime.now,
+          payload: { ...run, status: "completed" as const },
+        };
+        const recorded = yield* events.write({ events: [event] });
+        yield* projections.apply(event);
+        yield* factory.observe(recorded[0]!);
+        yield* factory.drain;
+        const state = yield* factory.snapshot({});
+        assert.equal(state.retros[0]!.execution.status, "ready");
+        assert.equal(state.retros[0]!.reports.phase, "manager-pending");
+        assert.equal(state.auxiliaryThreads[0]!.status, "running");
+      }),
+      {
+        assignments: [retroAssignment],
+        auxiliaryThreads: [retroAuxiliary],
+        retros: [retroState],
+        controls: [retroCancellation],
+      },
+    ),
+);
+
+it.effect(
+  "does not retroactively cancel a concluded implementation while its retrospective is running",
+  () =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        assert.equal(
+          (yield* factory
+            .dispatch(human, {
+              type: "assignment.cancel",
+              commandId: CommandId.make("cancel-concluded-work"),
+              assignmentId,
+            })
+            .pipe(Effect.flip)).code,
+          "invalid-state",
+        );
+        const state = yield* factory.snapshot({});
+        assert.isUndefined(state.assignments[0]!.outcome);
+        assert.equal(state.assignments[0]!.completion?.conclusion?.kind, "no-pr-delivered");
+        assert.equal(state.retros[0]!.execution.status, "ready");
+      }),
+      {
+        assignments: [
+          {
+            ...assignment,
+            status: "waiting",
+            completion: {
+              ...retroAssignment.completion!,
+              conclusion: {
+                id: "conclusion",
+                kind: "no-pr-delivered",
+                evidenceDigest: "evidence",
+                concludedAt: now,
+                proof: { kind: "human-acceptance", commandId: CommandId.make("accepted") },
+              },
+            },
+          },
+        ],
+        auxiliaryThreads: [retroAuxiliary],
+        retros: [retroState],
+      },
+    ),
+);
+
+it.effect(
+  "preserves the sealed cancellation reason and accepts later human guidance separately",
+  () =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        assert.equal(
+          (yield* factory
+            .dispatch(human, {
+              type: "assignment.cancellation-reason",
+              commandId: CommandId.make("rewrite-concluded-reason"),
+              assignmentId,
+              reason: "A different explanation",
+            })
+            .pipe(Effect.flip)).code,
+          "invalid-state",
+        );
+        yield* send(retroId, "Additional context for the retrospective");
+        const records = yield* projections.getThreadProjection(retroId);
+        assert.include(records.messages[0]!.text, "Additional context");
+        const state = yield* factory.snapshot({});
+        const cancellation = state.controls.find((control) => control.kind === "cancellation");
+        assert.equal(
+          cancellation?.kind === "cancellation" ? cancellation.reason?.text : undefined,
+          "Priorities changed",
+        );
+        assert.equal(state.retros[0]!.execution.status, "ready");
+      }),
+      {
+        assignments: [retroAssignment],
+        auxiliaryThreads: [retroAuxiliary],
+        retros: [retroState],
+        controls: [retroCancellation],
+      },
+    ),
 );

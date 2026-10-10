@@ -2476,6 +2476,9 @@ export default function Sidebar() {
           keys.add(scopedThreadKey(scopeThreadRef(environment.environmentId, assignment.threadId)));
         }
       }
+      for (const retro of environment.data?.retros ?? []) {
+        keys.add(scopedThreadKey(scopeThreadRef(environment.environmentId, retro.threadId)));
+      }
     }
     return keys;
   }, [factoryEnvironments]);

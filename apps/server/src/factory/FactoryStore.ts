@@ -4,8 +4,11 @@ import {
   FactoryError,
   FactorySnapshot,
   type FactoryHostCommand,
+  type ProjectId,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -31,6 +34,7 @@ export class FactoryStore extends Context.Service<
   {
     readonly snapshot: Effect.Effect<FactorySnapshot, FactoryError>;
     readonly changes: Stream.Stream<FactorySnapshot>;
+    readonly completionFence: (projectId: ProjectId) => Effect.Effect<string, FactoryError>;
     readonly findReceipt: (
       input: Pick<DecisionInput, "actor" | "command">,
     ) => Effect.Effect<FactoryCommandResult | undefined, FactoryError>;
@@ -55,6 +59,7 @@ export class FactoryStore extends Context.Service<
             | "control.stop.targets.recorded"
             | "auxiliary.prepared"
             | "delivery.review.prepared"
+            | "retro.prepared"
             | "assignment.replacement.prepared"
             | "guidance.observed";
         }
@@ -88,6 +93,22 @@ const make = Effect.gen(function* () {
       : yield* decodeSnapshot(rows[0].payload_json);
   }).pipe(Effect.mapError(storageError));
   const current = yield* SubscriptionRef.make(yield* snapshot);
+  // Thread links and lineage commit independently of factory observations. Compare their
+  // persisted snapshot inside the conclusion transaction, rather than trusting observer lag.
+  const completionFence = (projectId: ProjectId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{
+        readonly thread_id: string;
+        readonly deleted_at: string | null;
+        readonly lineage: string | null;
+        readonly pull_requests: string | null;
+      }>`SELECT thread_id, deleted_at,
+      json_extract(payload_json, '$.lineage') AS lineage,
+      json_extract(payload_json, '$.pullRequests') AS pull_requests
+      FROM orchestration_v2_projection_threads
+      WHERE project_id = ${projectId} ORDER BY thread_id`;
+      return Hex.encode(sha256(new TextEncoder().encode(stableStringify(rows))));
+    }).pipe(Effect.mapError(storageError));
 
   const findReceipt = Effect.fn("FactoryStore.findReceipt")(function* (
     input: Pick<DecisionInput, "actor" | "command">,
@@ -112,7 +133,21 @@ const make = Effect.gen(function* () {
     const receipt = yield* findReceipt(input);
     if (receipt !== undefined) return receipt;
     const request = stableStringify({ actor: input.actor, command: input.command });
-    const planned = decide({ ...input, state: yield* snapshot });
+    const stateBefore = yield* snapshot;
+    if (input.command.type === "assignment.concluded") {
+      const command = input.command;
+      const assignment = stateBefore.assignments.find((entry) => entry.id === command.assignmentId);
+      if (
+        !assignment ||
+        (yield* completionFence(assignment.projectId)) !== command.expectedProjectThreadFence
+      )
+        return yield* new FactoryError({
+          code: "stale-revision",
+          detail:
+            "The project's thread membership or pull-request links changed while retrospective evidence was being sealed.",
+        });
+    }
+    const planned = decide({ ...input, state: stateBefore });
     if (Result.isFailure(planned)) return yield* planned.failure;
     const { state, result, effects } = planned.success;
     const snapshotJson = yield* encodeSnapshot(state);
@@ -148,6 +183,7 @@ const make = Effect.gen(function* () {
 
   return FactoryStore.of({
     snapshot,
+    completionFence,
     changes: SubscriptionRef.changes(current),
     findReceipt,
     observationCursor,
@@ -228,6 +264,33 @@ const make = Effect.gen(function* () {
               const failed = command.type.endsWith(".failed");
               const matches = (() => {
                 switch (intent.type) {
+                  case "assignment.conclude":
+                    return (
+                      (command.type === "assignment.concluded" ||
+                        command.type === "assignment.completion.failed" ||
+                        command.type === "assignment.completion.reopen") &&
+                      command.assignmentId === intent.assignmentId
+                    );
+                  case "retro.launch":
+                    return (
+                      (command.type === "retro.started" || command.type === "retro.failed") &&
+                      command.retroId === intent.retroId
+                    );
+                  case "retro.stop":
+                    return command.type === "retro.stopped" && command.retroId === intent.retroId;
+                  case "followup.publish":
+                    return (
+                      (command.type === "followup.publication.recorded" ||
+                        command.type === "followup.failed") &&
+                      command.followupId === intent.followupId
+                    );
+                  case "followup.link":
+                    return (
+                      (command.type === "followup.linked" ||
+                        command.type === "followup.publication.recorded" ||
+                        command.type === "followup.failed") &&
+                      command.followupId === intent.followupId
+                    );
                   case "delivery.capture":
                     return (
                       command.type === "delivery.captured" &&

@@ -210,6 +210,11 @@ export interface AzureDevOpsRepositoryCloneUrls {
   readonly sshUrl: string;
 }
 
+export const BeforeAzureDevOpsMutation = Context.Reference<Effect.Effect<
+  void,
+  AzureDevOpsCliError
+> | null>("t3/sourceControl/BeforeAzureDevOpsMutation", { defaultValue: () => null });
+
 export class AzureDevOpsCli extends Context.Service<
   AzureDevOpsCli,
   {
@@ -357,28 +362,32 @@ export const make = Effect.gen(function* () {
   const reads = yield* AzureDevOpsReadApi.AzureDevOpsReadApi;
 
   const executeCli: AzureDevOpsCli["Service"]["execute"] = (input) =>
-    process
-      .run({
-        operation: "AzureDevOpsCli.execute",
-        command: "az",
-        args: input.args,
-        cwd: input.cwd,
-        timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        ...(input.maxOutputBytes === undefined ? {} : { maxOutputBytes: input.maxOutputBytes }),
-      })
-      .pipe(
-        Effect.mapError((error) =>
-          AzureDevOpsCommandFailedError.fromVcsError(
-            {
-              operation: "execute",
-              command: "az",
-              cwd: input.cwd,
-              argumentCount: input.args.length,
-            },
-            error,
+    Effect.gen(function* () {
+      const beforeMutation = yield* BeforeAzureDevOpsMutation;
+      if (beforeMutation) yield* beforeMutation;
+      return yield* process
+        .run({
+          operation: "AzureDevOpsCli.execute",
+          command: "az",
+          args: input.args,
+          cwd: input.cwd,
+          timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          ...(input.maxOutputBytes === undefined ? {} : { maxOutputBytes: input.maxOutputBytes }),
+        })
+        .pipe(
+          Effect.mapError((error) =>
+            AzureDevOpsCommandFailedError.fromVcsError(
+              {
+                operation: "execute",
+                command: "az",
+                cwd: input.cwd,
+                argumentCount: input.args.length,
+              },
+              error,
+            ),
           ),
-        ),
-      );
+        );
+    });
 
   const execute: AzureDevOpsCli["Service"]["execute"] = (input) =>
     reads.read(input).pipe(

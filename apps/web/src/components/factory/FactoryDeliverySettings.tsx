@@ -22,7 +22,8 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-field";
 import { Textarea } from "../ui/textarea";
-import { useFactoryDeliveryCommand } from "./FactoryDelivery";
+import { useFactoryCommand } from "./useFactoryCommand";
+import { FactoryTrackerSettings } from "./FactoryTrackerSettings";
 
 function lines(value: string) {
   return value
@@ -52,10 +53,7 @@ export function FactoryDeliverySettings({
 }) {
   const prefix = useId();
   const settingsScope = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
-  const command = useFactoryDeliveryCommand(
-    environment,
-    settingsScope && manager.projectId !== null,
-  );
+  const command = useFactoryCommand(environment, settingsScope && manager.projectId !== null);
   const currentRule = environment.data?.mergeRules
     .toSorted((a, b) => b.version - a.version)
     .find((entry) => entry.projectId === manager.projectId);
@@ -394,6 +392,7 @@ export function FactoryDeliverySettings({
                 Save screenshot permission
               </Button>
             </section>
+            <FactoryTrackerSettings environment={environment} manager={manager} />
             {validation || command.error ? (
               <p role="alert" className="text-sm text-destructive">
                 {validation ?? command.error}

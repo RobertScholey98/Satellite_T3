@@ -301,6 +301,16 @@ export function FactoryAssignmentControls({
   const controls = environment.data?.controls;
   if (!controls) return null;
   const cancellation = factoryAssignmentCancellation(environment.data, assignment);
+  const retro = environment.data?.retros.find(
+    (entry) => entry.threadId === threadId && entry.assignmentId === assignment.id,
+  );
+  const activeRetro =
+    retro !== undefined && retro.reports.phase !== "complete" && retro.execution.status === "ready";
+  const activeImplementation =
+    !retro &&
+    !cancellation &&
+    assignment.status !== "complete" &&
+    (assignment.completion === undefined || assignment.completion.phase === "collecting");
   const takeover = controls.find(
     (control) =>
       control.kind === "takeover" && control.threadId === threadId && control.status === "active",
@@ -315,9 +325,11 @@ export function FactoryAssignmentControls({
     <section className="space-y-2" aria-label="Assignment controls" aria-busy={command.pending}>
       <div className="flex flex-wrap items-center gap-2">
         <span role="status" className="text-xs text-muted-foreground">
-          {factoryAssignmentStatus(environment.data, assignment)}
+          {retro
+            ? `Retro · ${retro.reports.phase}`
+            : factoryAssignmentStatus(environment.data, assignment)}
         </span>
-        {threadId && (takeover || (!cancellation && assignment.status !== "complete")) ? (
+        {threadId && (takeover || activeRetro || activeImplementation) ? (
           <Button
             size="xs"
             variant="outline"
@@ -332,7 +344,7 @@ export function FactoryAssignmentControls({
             {takeover ? "Hand back thread" : "Take over thread"}
           </Button>
         ) : null}
-        {!cancellation && assignment.status !== "complete" ? (
+        {activeImplementation ? (
           <Button
             size="xs"
             variant="ghost-destructive"
@@ -369,18 +381,18 @@ export function FactoryAssignmentControls({
           </Button>
         ) : null}
       </div>
-      {takeover && !cancellation ? (
+      {takeover && (activeImplementation || activeRetro) ? (
         <p className="text-xs text-muted-foreground">
           You direct this thread. Parent instructions wait until handback; its scope and permissions
           stay the same.
         </p>
       ) : null}
-      {threadId && !takeover && !cancellation ? (
+      {threadId && !takeover && (activeImplementation || activeRetro) ? (
         <p className="text-xs text-muted-foreground">
           Messages are guidance; parent coordination continues. Takeover is an explicit choice.
         </p>
       ) : null}
-      {assignment.wait ? (
+      {assignment.wait && !retro ? (
         <p role="status" className="text-xs text-muted-foreground">
           Existing wait: {assignment.wait.reason}
         </p>
@@ -396,7 +408,7 @@ export function FactoryAssignmentControls({
           confirmed.
         </p>
       ) : null}
-      {stopped ? (
+      {stopped && !retro ? (
         <p className="text-xs text-muted-foreground">
           The team has stopped. Work and evidence are preserved.
           {reasonNeeded ? " Your reason is still needed for the retrospective." : ""}
@@ -531,7 +543,7 @@ function ManagedThreadControls({
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs font-medium">
           {assignment
-            ? `${auxiliary?.kind === "delivery-review" ? "Independent reviewer" : auxiliary?.kind === "diagnosis" ? "Recovery diagnosis" : assignment.threadId === thread.id ? "Implementation lead" : "Team member"} · ${manager.name}`
+            ? `${auxiliary?.kind === "retrospective" ? "Retrospective lead" : auxiliary?.kind === "delivery-review" ? "Independent reviewer" : auxiliary?.kind === "diagnosis" ? "Recovery diagnosis" : assignment.threadId === thread.id ? "Implementation lead" : "Team member"} · ${manager.name}`
             : manager.name}
         </span>
         {managerPause ? (

@@ -28,6 +28,8 @@ import {
 } from "./FactoryModelPolicy.ts";
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import { factoryDeliveryWaitReason } from "./FactoryDelivery.ts";
+import { factoryCompletionEligibility, initialFactoryCompletion } from "./FactoryRetros.ts";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 
 export interface FactoryOversightContext {
@@ -83,6 +85,7 @@ export const factorySupportingWorkMatches = (
   approved.scope.description === requested.scope.description &&
   approved.scope.completionCondition === requested.scope.completionCondition &&
   approved.scope.requiresPullRequest === requested.scope.requiresPullRequest &&
+  stableStringify(approved.scope.noPrTarget) === stableStringify(requested.scope.noPrTarget) &&
   approved.complexity === requested.complexity &&
   approved.kind === requested.kind &&
   sameStrings(approved.sourcePaths, requested.sourcePaths) &&
@@ -105,7 +108,7 @@ export const factoryRecoveryBlocked = (state: FactorySnapshot, assignment: Facto
   if (
     assignment.kind === "onboarding" ||
     assignment.outcome !== undefined ||
-    assignment.oversight?.delivery !== undefined ||
+    assignment.completion?.phase === "concluded" ||
     assignment.status === "complete"
   )
     return "This assignment has no implementation recovery pending.";
@@ -223,7 +226,7 @@ export function decideFactoryOversight(
     assignment.kind !== "onboarding" &&
     assignment.outcome === undefined &&
     assignment.status !== "complete" &&
-    assignment.oversight?.delivery === undefined;
+    assignment.completion?.phase !== "concluded";
   const notify = (
     assignment: FactoryAssignment,
     key: string,
@@ -772,41 +775,67 @@ export function decideFactoryOversight(
       const oversight = assignment.oversight ?? initialFactoryOversight();
       const claim = oversight.deliveryClaim;
       const delivery = command.delivery;
+      const completion = assignment.completion ?? initialFactoryCompletion(assignment.scope);
+      const declared =
+        completion.plan.kind === "pull-requests" &&
+        delivery.kind === "pull-request-merged" &&
+        completion.plan.requirements.some((requirement) =>
+          samePullRequest(requirement.ref, delivery.ref),
+        );
       if (
-        claim === undefined ||
-        (delivery.kind === "pull-request-merged"
-          ? claim.kind !== "pull-request" ||
-            !samePullRequest(claim.ref, delivery.ref) ||
+        delivery.kind === "pull-request-merged"
+          ? (!declared &&
+              (claim?.kind !== "pull-request" || !samePullRequest(claim.ref, delivery.ref))) ||
             delivery.projectId !== assignment.projectId ||
             delivery.ref.projectId !== assignment.projectId
-          : claim.kind !== "report" ||
+          : claim?.kind !== "report" ||
             delivery.assignmentId !== assignment.id ||
             delivery.recipientThreadId !== claim.recipientThreadId ||
             delivery.messageId !== claim.messageId ||
-            assignment.scope?.requiresPullRequest)
+            assignment.scope?.requiresPullRequest
       )
         return fail("invalid-state");
+      if (completion.deliveries.some((entry) => entry.id === delivery.id)) return accept();
+      const updated: FactoryAssignment = {
+        ...assignment,
+        completion: { ...completion, deliveries: [...completion.deliveries, delivery] },
+        oversight: { ...oversight, delivery },
+      };
+      const complete = factoryCompletionEligibility(state, updated).eligible;
       const propagated = state.dependencies.map((dependency) => {
         const explicit =
           dependency.unblockCondition.kind === "pull-request-merged" &&
           dependency.unblockCondition.ref !== undefined &&
           delivery.kind === "pull-request-merged" &&
           samePullRequest(dependency.unblockCondition.ref, delivery.ref);
-        return dependency.supportingAssignmentId === assignment.id || explicit
-          ? deliverDependency(dependency, delivery)
-          : undefined;
+        const fact = explicit
+          ? delivery
+          : dependency.supportingAssignmentId === assignment.id && complete
+            ? updated.completion?.deliveries.find((entry) =>
+                factoryDeliverySatisfies(dependency, entry),
+              )
+            : undefined;
+        return fact === undefined ? undefined : deliverDependency(dependency, fact);
       });
       return saveAssignment(
         {
-          ...assignment,
+          ...updated,
           status: "waiting",
           wait: {
-            kind: "delivered",
-            reason: "Delivery is verified. The implementation retrospective remains pending.",
+            kind: complete ? "delivered" : "human-decision",
+            reason: complete
+              ? "All declared deliveries are verified. Final linked-PR reconciliation and retrospective preparation remain."
+              : "An individual delivery is verified. Declare and satisfy every required delivery before the final retrospective.",
           },
-          oversight: { ...oversight, delivery },
         },
-        propagated.flatMap((entry) => (entry === undefined ? [] : [entry.effect])),
+        [
+          ...propagated.flatMap((entry) => (entry === undefined ? [] : [entry.effect])),
+          ...(completion.plan.kind === "pull-requests" &&
+          completion.plan.requirements.length > 0 &&
+          !complete
+            ? [reconcile(updated, `delivery-set:${delivery.id}`)]
+            : []),
+        ],
         {
           dependencies: state.dependencies.map(
             (entry, index) => propagated[index]?.dependency ?? entry,

@@ -19,6 +19,7 @@ import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { PullRequestService } from "../pullRequest/PullRequestService.ts";
 import { FactoryControlAccess } from "./FactoryControlAccess.ts";
 import { factoryRecoveryBlocked } from "./FactoryOversight.ts";
+import { factorySamePullRequest } from "./FactoryRetros.ts";
 import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
 
 export class FactoryReconciliation extends Context.Service<
@@ -51,15 +52,39 @@ export const layer = Layer.effect(
       const thread = yield* threads
         .getThreadShell(assignment.threadId)
         .pipe(Effect.mapError(failure));
-      return (
-        thread?.pullRequests?.some(
+      const hasLink = (shell: NonNullable<typeof thread>) =>
+        shell.pullRequests?.some(
           (link) =>
             link.source !== "stack-dismissed" &&
             link.host === (ref.host ?? "github.com") &&
             link.repository === ref.repository &&
             link.number === ref.number,
-        ) ?? false
-      );
+        ) ?? false;
+      if (thread && hasLink(thread)) return true;
+      const projectThreads = yield* threads
+        .listProjectThreads({ projectId: assignment.projectId, includeSubagents: true })
+        .pipe(Effect.mapError(failure));
+      const team = new Set([assignment.threadId]);
+      let added = true;
+      while (added) {
+        added = false;
+        for (const child of projectThreads) {
+          if (
+            child.lineage.parentThreadId !== null &&
+            team.has(child.lineage.parentThreadId) &&
+            !team.has(child.id)
+          ) {
+            team.add(child.id);
+            added = true;
+          }
+        }
+      }
+      for (const threadId of team) {
+        if (threadId === assignment.threadId) continue;
+        const child = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(failure));
+        if (child && hasLink(child)) return true;
+      }
+      return false;
     });
     const reviewExists = Effect.fn("FactoryReconciliation.reviewExists")(function* (
       assignment: FactoryAssignment,
@@ -90,7 +115,7 @@ export const layer = Layer.effect(
           !assignment ||
           assignment.outcome ||
           assignment.status === "complete" ||
-          assignment.oversight?.delivery
+          assignment.completion?.phase === "concluded"
         ) {
           yield* store.retireEffect(pending.id);
           return;
@@ -175,7 +200,42 @@ export const layer = Layer.effect(
         }
 
         // Delivery observation is a host read. It remains useful while the team is paused or waiting.
-        const claim = assignment.oversight?.deliveryClaim;
+        const plan = assignment.completion?.plan;
+        const unresolved =
+          plan?.kind === "pull-requests"
+            ? plan.requirements.find(
+                (requirement) =>
+                  !assignment.completion?.waivers.some(
+                    (waiver) => waiver.requirementId === requirement.id,
+                  ) &&
+                  !assignment.completion?.deliveries.some(
+                    (delivery) =>
+                      delivery.kind === "pull-request-merged" &&
+                      factorySamePullRequest(delivery.ref, requirement.ref) &&
+                      (requirement.expectedHeadSha === null ||
+                        requirement.expectedHeadSha === delivery.headSha),
+                  ),
+              )
+            : undefined;
+        const claim = unresolved
+          ? { kind: "pull-request" as const, ref: unresolved.ref }
+          : assignment.oversight?.deliveryClaim;
+        if (
+          !unresolved &&
+          claim?.kind === "pull-request" &&
+          assignment.completion?.deliveries.some(
+            (delivery) =>
+              delivery.kind === "pull-request-merged" &&
+              factorySamePullRequest(delivery.ref, claim.ref),
+          )
+        ) {
+          yield* finish({
+            kind: "expected-wait",
+            reason:
+              "Known delivery is verified; the complete assignment disposition remains pending.",
+          });
+          return;
+        }
         if (claim?.kind === "pull-request") {
           if (!(yield* linked(assignment, claim.ref))) {
             yield* finish({
@@ -220,7 +280,12 @@ export const layer = Layer.effect(
             });
             return;
           }
-          if (pr.state === "merged" && pr.headSha && pr.mergedAt) {
+          if (
+            pr.state === "merged" &&
+            pr.headSha &&
+            pr.mergedAt &&
+            (unresolved?.expectedHeadSha == null || unresolved.expectedHeadSha === pr.headSha)
+          ) {
             yield* confirm({
               kind: "pull-request-merged",
               id: `pr:${claim.ref.projectId}:${claim.ref.repository}:${claim.ref.number}:${pr.headSha}`,
@@ -252,6 +317,9 @@ export const layer = Layer.effect(
             .pipe(Effect.mapError(failure));
           const agreed =
             claim.recipientThreadId === assignment.managerId ||
+            (assignment.completion?.plan.kind === "no-pr" &&
+              assignment.completion.plan.target.kind === "report-received" &&
+              assignment.completion.plan.target.recipientThreadId === claim.recipientThreadId) ||
             state.dependencies.some(
               (dep) =>
                 dep.supportingAssignmentId === assignment.id &&

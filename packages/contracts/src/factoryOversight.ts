@@ -26,10 +26,17 @@ export const FactoryEvidence = Schema.Struct({
 });
 export type FactoryEvidence = typeof FactoryEvidence.Type;
 
+export const FactoryNoPrTarget = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("report-received"), recipientThreadId: ThreadId }),
+  Schema.Struct({ kind: Schema.Literal("human-acceptance") }),
+]);
+export type FactoryNoPrTarget = typeof FactoryNoPrTarget.Type;
+
 export const FactoryAssignmentScope = Schema.Struct({
   description: TrimmedNonEmptyString,
   completionCondition: TrimmedNonEmptyString,
   requiresPullRequest: Schema.Boolean,
+  noPrTarget: Schema.optionalKey(FactoryNoPrTarget),
 });
 export type FactoryAssignmentScope = typeof FactoryAssignmentScope.Type;
 
@@ -194,7 +201,7 @@ export const FactoryAuxiliaryThread = Schema.Struct({
   assignmentId: FactoryAssignmentId,
   managerId: ThreadId,
   projectId: ProjectId,
-  kind: Schema.Literals(["diagnosis", "delivery-review"]),
+  kind: Schema.Literals(["diagnosis", "delivery-review", "retrospective"]),
   revisionId: Schema.optionalKey(TrimmedNonEmptyString),
   incidentId: TrimmedNonEmptyString,
   cycle: NonNegativeInt,

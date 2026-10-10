@@ -19,6 +19,16 @@ import {
 } from "./factoryModels.ts";
 import { FactoryStartingSource } from "./factorySources.ts";
 import {
+  FactoryAssignmentCompletion,
+  FactoryRetro,
+  FactoryFinding,
+  FactoryFollowup,
+  FactoryProjectTracker,
+  FactoryRetroCommand,
+  FactoryRetroHostCommand,
+  FactoryRetroEffectIntent,
+} from "./factoryRetros.ts";
+import {
   FactoryAssignmentDelivery,
   FactoryDeliveryCommand,
   FactoryDeliveryHostCommand,
@@ -250,6 +260,7 @@ export const FactoryAssignment = Schema.Struct({
   scope: Schema.optionalKey(FactorySupportingWork.fields.scope),
   oversight: Schema.optionalKey(FactoryAssignmentOversight),
   delivery: Schema.optionalKey(FactoryAssignmentDelivery),
+  completion: Schema.optionalKey(FactoryAssignmentCompletion),
   previousLeadThreadIds: Schema.optionalKey(Schema.Array(ThreadId)),
   modelSelection: Schema.optionalKey(ModelSelection),
   modelPolicy: Schema.optionalKey(FactoryModelPolicy),
@@ -289,6 +300,12 @@ export type FactoryAssignment = typeof FactoryAssignment.Type;
 
 export const FactorySnapshot = Schema.Struct({
   revision: NonNegativeInt,
+  retros: Schema.Array(FactoryRetro).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  findings: Schema.Array(FactoryFinding).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  followups: Schema.Array(FactoryFollowup).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  projectTrackers: Schema.Array(FactoryProjectTracker).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   defaults: FactoryPolicy,
   modelDefaults: Schema.optionalKey(FactoryModelPolicy),
   managers: Schema.Array(FactoryManager),
@@ -320,6 +337,7 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  FactoryRetroCommand,
   FactoryDeliveryCommand,
   FactoryControlCommand,
   FactoryOversightCommand,
@@ -421,6 +439,7 @@ export const FactoryDispatchInput = Schema.Struct({ command: FactoryCommand });
 export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
+  FactoryRetroHostCommand,
   FactoryDeliveryHostCommand,
   FactoryControlHostCommand,
   FactoryOversightHostCommand,
@@ -482,6 +501,7 @@ export const FactoryThreadLaunchIntent = Schema.Struct({
 });
 export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
 export const FactoryEffectIntent = Schema.Union([
+  FactoryRetroEffectIntent,
   FactoryDeliveryEffectIntent,
   FactoryControlEffectIntent,
   FactoryOversightEffectIntent,
@@ -498,6 +518,9 @@ export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 
 export const FactoryCommandResult = Schema.Struct({
   revision: NonNegativeInt,
+  retroId: Schema.optionalKey(TrimmedNonEmptyString),
+  findingId: Schema.optionalKey(TrimmedNonEmptyString),
+  followupId: Schema.optionalKey(TrimmedNonEmptyString),
   controlId: Schema.optionalKey(FactoryControlId),
   managerId: Schema.optionalKey(ThreadId),
   assignmentId: Schema.optionalKey(FactoryAssignmentId),
