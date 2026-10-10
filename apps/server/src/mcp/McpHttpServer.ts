@@ -794,7 +794,7 @@ const layerGuardedRegistry = Layer.effect(
                   }),
                 );
               }
-              return guard.authorize(invocation.value, registration.tool.name).pipe(
+              return guard.authorize(invocation.value, registration.tool.name, payload).pipe(
                 Effect.matchEffect({
                   onFailure: (error) =>
                     Effect.succeed(

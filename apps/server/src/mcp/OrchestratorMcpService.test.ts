@@ -39,6 +39,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import { FactoryExecution } from "../factory/FactoryExecution.ts";
 
 describe("OrchestratorMcpService", () => {
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
@@ -1003,6 +1004,72 @@ describe("OrchestratorMcpService provider resolution", () => {
           Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(layerDependencies))),
         );
       }),
+  );
+
+  it.effect(
+    "advertises managed app-owned delegation without native teams or unrelated creation",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const capabilities = yield* service.capabilities(scope);
+        assert.isTrue(capabilities.features.appOwnedSubagents);
+        assert.isFalse(capabilities.features.nativeSubagents);
+        assert.isFalse(capabilities.features.batchThreadCreation);
+        assert.isFalse(capabilities.features.scheduledTasks);
+        assert.equal(capabilities.features.maxBatchThreads, 0);
+        assert.isTrue(
+          capabilities.providers.find(
+            (provider) => provider.providerInstanceId === codexInstanceId,
+          )!.canRunChildTask,
+        );
+        const unsupported = capabilities.providers.find(
+          (provider) => provider.providerInstanceId === antigravityInstanceId,
+        )!;
+        assert.isFalse(unsupported.canRunChildTask);
+        assert.deepStrictEqual(unsupported.constraints, [
+          "Managed delegation requires the qualified Codex container runtime.",
+        ]);
+      }).pipe(
+        Effect.provide(
+          OrchestratorMcpService.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                NodeServices.layer,
+                Layer.mock(FactoryExecution)({
+                  runtimePolicyFor: () =>
+                    Effect.succeed({
+                      boundaryId: "factory:lead",
+                      dockerContext: "local",
+                      imageId: "sha256:verified",
+                      projectSnapshotPath: "/managed/project",
+                      workflowSnapshotPath: "/managed/workflow",
+                      runtimePath: "/managed/lead",
+                    }),
+                }),
+                Layer.mock(ThreadManagementService.ThreadManagementService)({
+                  getThreadRecords: () => Effect.succeed(parentProjection([])),
+                }),
+                providerRegistryLayer([
+                  providerSnapshot({
+                    instanceId: codexInstanceId,
+                    driver: ProviderDriverKind.make("codex"),
+                    model: "gpt-5.4",
+                  }),
+                  providerSnapshot({
+                    instanceId: antigravityInstanceId,
+                    driver: ProviderDriverKind.make("antigravity"),
+                    model: "ant-model",
+                  }),
+                ]),
+                adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
+                Layer.mock(ProjectService.ProjectService)({}),
+                Layer.mock(SecretRequests.SecretRequests)({}),
+                Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+              ),
+            ),
+          ),
+        ),
+      ),
   );
 
   it.effect(

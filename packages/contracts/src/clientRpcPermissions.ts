@@ -56,8 +56,13 @@ export function clientRpcRequiredScopes(
     const payload = decodeFactoryDispatch(input);
     return payload.command.type === "manager.configure" ||
       payload.command.type === "policy.defaults.configure" ||
+      payload.command.type === "models.defaults.configure" ||
+      payload.command.type === "manager.models.configure" ||
       payload.command.type === "assignments.extend-grant" ||
-      payload.command.type === "manager.approve-onboarding"
+      payload.command.type === "manager.approve-onboarding" ||
+      ((payload.command.type === "assignment.commission" ||
+        payload.command.type === "assignment.handover") &&
+        payload.command.kind === "rule-change")
       ? [AuthOrchestrationOperateScope, AuthSettingsWriteScope]
       : [AuthOrchestrationOperateScope];
   }

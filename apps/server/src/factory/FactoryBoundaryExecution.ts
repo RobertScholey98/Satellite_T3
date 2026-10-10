@@ -9,9 +9,11 @@ import {
   type FactoryBoundaryConfiguration,
   type FactoryDiscoveryQualification,
   type FactoryFileMutation,
+  type FactorySourceId,
   type ThreadId,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -26,6 +28,7 @@ import { ServerConfig } from "../config.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import {
   factoryCanWrite,
+  factoryPathWithin,
   factoryProtectedPath,
   factoryRelativePath,
   factoryValidConfiguration,
@@ -35,11 +38,13 @@ import { FactoryStore } from "./FactoryStore.ts";
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import { factoryVolumeHelper } from "./FactoryVolumeHelper.ts";
 import { factoryWritableProbe } from "./FactoryWritableProbe.ts";
+import { FactorySource, factoryCanonicalText } from "./FactorySource.ts";
 
 const CapturedFile = Schema.Struct({
   path: Schema.String,
   content: Schema.String,
   digest: Schema.String,
+  mode: Schema.optionalKey(Schema.Literals(["100644", "100755"])),
 });
 const CapturedSource = Schema.Struct({ files: Schema.Array(CapturedFile), digest: Schema.String });
 
@@ -55,6 +60,7 @@ export class FactoryBoundaryExecution extends Context.Service<
       readonly threadId: ThreadId;
       readonly boundaryId: FactoryBoundaryId;
       readonly grant: FactoryAssignmentGrant;
+      readonly startingSourceId?: FactorySourceId;
     }) => Effect.Effect<FactoryDiscoveryQualification, FactoryError>;
     readonly mutate: (input: {
       readonly assignmentId: FactoryAssignmentId;
@@ -101,7 +107,9 @@ const make = Effect.gen(function* () {
   const runner = yield* ProcessRunner;
   const config = yield* ServerConfig;
   const store = yield* FactoryStore;
+  const sources = yield* FactorySource;
   const mutex = yield* Semaphore.make(1);
+  const platform = yield* HostProcessPlatform;
   const stoppedEpochs = new Map<string, number>();
   const root = path.join(config.stateDir, "factory");
 
@@ -205,7 +213,7 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.ensuring(docker(profile, ["rm", "--force", name]).pipe(Effect.ignore)));
   });
   const filesAt = Effect.fn("FactoryBoundaryExecution.filesAt")(function* (directory: string) {
-    const files: Array<{ path: string; content: string; digest: string }> = [];
+    const files: Array<typeof CapturedFile.Type> = [];
     const pending = [""];
     let total = 0;
     while (pending.length) {
@@ -228,6 +236,9 @@ const make = Effect.gen(function* () {
             path: file,
             content: Buffer.from(bytes).toString("base64"),
             digest: Buffer.from(yield* crypto.digest("SHA-256", bytes)).toString("hex"),
+            ...(platform === "win32"
+              ? {}
+              : { mode: stat.mode & 0o111 ? ("100755" as const) : ("100644" as const) }),
           });
         } else return yield* denied();
       }
@@ -244,6 +255,8 @@ const make = Effect.gen(function* () {
       const target = path.join(directory, file.path);
       yield* fs.makeDirectory(path.dirname(target), { recursive: true });
       yield* fs.writeFile(target, Buffer.from(file.content, "base64"));
+      if (file.mode !== undefined && platform !== "win32")
+        yield* fs.chmod(target, file.mode === "100755" ? 0o755 : 0o644);
     }
   });
 
@@ -460,7 +473,21 @@ const make = Effect.gen(function* () {
     )
       return yield* denied();
     if (yield* fs.exists(profile.assignmentWorkspace.revocationPath)) return yield* denied();
-    return { ...value, profile };
+    const inventoryPath = path.join(root, "execution", profile.boundaryId, "source-paths.json");
+    const existingPaths = (yield* fs.exists(inventoryPath))
+      ? yield* fs
+          .readFileString(inventoryPath)
+          .pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String))),
+            ),
+          )
+      : (yield* filesAt(profile.projectSnapshotPath)).map((file) => file.path);
+    const pathConfiguration = {
+      ...value.boundary,
+      writablePaths: [...new Set([...value.boundary.writablePaths, ...existingPaths])],
+    };
+    return { ...value, profile, pathConfiguration };
   });
 
   const prepare = Effect.fn("FactoryBoundaryExecution.prepare")(
@@ -473,7 +500,6 @@ const make = Effect.gen(function* () {
       )
         return yield* denied();
       if (
-        grant.sourcePaths.some((file) => !boundary.writablePaths.includes(file)) ||
         grant.creatableDirectories.some(
           (directory) => !boundary.creatableDirectories.includes(directory),
         ) ||
@@ -482,8 +508,94 @@ const make = Effect.gen(function* () {
         return yield* denied();
       const baseline = yield* readBoundary(boundary.id);
       if (stableStringify(baseline) !== stableStringify(boundary)) return yield* denied();
+      if (input.startingSourceId !== assignment.startingSource?.id) return yield* denied();
+      const starting =
+        input.startingSourceId === undefined
+          ? undefined
+          : yield* sources.read(input.startingSourceId);
+      if (
+        starting !== undefined &&
+        (starting.source.projectId !== assignment.projectId ||
+          stableStringify(starting.source) !== stableStringify(assignment.startingSource) ||
+          (starting.source.origin === "handover" &&
+            starting.source.threadId !== assignment.threadId))
+      )
+        return yield* denied();
+      const baselineFiles = yield* filesAt(path.join(root, "boundaries", boundary.id, "source"));
+      const baselineByPath = new Map(baselineFiles.map((file) => [file.path, file]));
+      const files: Array<typeof CapturedFile.Type> =
+        starting === undefined ? [...baselineFiles] : [...starting.files];
+      if (starting !== undefined) {
+        const checkControls = (candidate: ReadonlyArray<typeof CapturedFile.Type>) => {
+          const byPath = new Map(candidate.map((file) => [file.path, file]));
+          return [
+            ...new Set([
+              ...boundary.protectedPaths,
+              ...candidate
+                .filter((file) => factoryProtectedPath(file.path))
+                .map((file) => file.path),
+            ]),
+          ].find((name) => {
+            if (grant.controlChange?.paths.includes(name)) return false;
+            const original = baselineByPath.get(name);
+            const fresh = byPath.get(name);
+            if (
+              name === "SATELLITE_DISCOVERY.md" &&
+              fresh === undefined &&
+              original !== undefined &&
+              /^Read-only tracked-file snapshot at [a-f0-9]{40,64}\.$/.test(
+                Buffer.from(original.content, "base64").toString().split(/\r?\n/)[0] ?? "",
+              )
+            )
+              return false;
+            if (original === undefined || fresh === undefined) return true;
+            return !Buffer.from(
+              factoryCanonicalText(Buffer.from(original.content, "base64")),
+            ).equals(Buffer.from(factoryCanonicalText(Buffer.from(fresh.content, "base64"))));
+          });
+        };
+        const changed = checkControls(starting.files) ?? checkControls(starting.indexFiles);
+        if (changed !== undefined)
+          return yield* unavailable(
+            `The starting source changes protected control ${changed}. Adopt the control change through a separately authorized rule-change task before ordinary delivery.`,
+          );
+        const metadata = baselineByPath.get("SATELLITE_DISCOVERY.md");
+        if (metadata !== undefined && !files.some((file) => file.path === metadata.path))
+          files.push(metadata);
+      }
+      const existingPaths = files.map((file) => file.path);
+      if (
+        new Set(existingPaths.map((file) => file.toLowerCase())).size !== files.length ||
+        existingPaths.some((file) => !factoryRelativePath(file))
+      )
+        return yield* denied();
+      if (
+        grant.sourcePaths.some(
+          (file) =>
+            !factoryRelativePath(file) ||
+            factoryProtectedPath(file) ||
+            boundary.protectedPaths.includes(file) ||
+            (!boundary.writablePaths.includes(file) &&
+              (baselineByPath.has(file) ||
+                !existingPaths.includes(file) ||
+                !boundary.creatableDirectories.some((directory) =>
+                  factoryPathWithin(file, directory),
+                ))),
+        )
+      )
+        return yield* denied();
+      const pathConfiguration = {
+        ...boundary,
+        writablePaths: [...new Set([...boundary.writablePaths, ...existingPaths])],
+      };
       const original = yield* readProfile(boundary.profileId);
-      const profileId = yield* identity({ assignmentId: input.assignmentId, grant });
+      const profileId = yield* identity({
+        assignmentId: input.assignmentId,
+        grant,
+        ...(starting === undefined
+          ? {}
+          : { startingSourceId: starting.source.id, sourceDigest: starting.source.sourceDigest }),
+      });
       const directory = path.join(root, "execution", profileId);
       if (yield* fs.exists(path.join(directory, "profile.json"))) {
         if (yield* fs.exists(path.join(directory, "authority", "revoked.json")))
@@ -506,6 +618,13 @@ const make = Effect.gen(function* () {
         boundaryId: profileId,
         projectSnapshotPath: path.join(directory, "project"),
         runtimePath: path.join(directory, "sessions"),
+        ...(starting === undefined
+          ? {}
+          : {
+              startingSourceId: starting.source.id,
+              startingSourceDigest: starting.source.sourceDigest,
+              sourceRevision: starting.source.revision,
+            }),
         assignmentWorkspace: {
           assignmentId: input.assignmentId,
           volumeName: `satellite-factory-${profileId}`,
@@ -517,8 +636,8 @@ const make = Effect.gen(function* () {
           workerGid: Math.max(process.getgid?.() ?? 10001, 1),
         },
       });
-      const files = yield* filesAt(path.join(root, "boundaries", boundary.id, "source"));
       yield* writeFiles(profile.projectSnapshotPath, files);
+      yield* fs.writeFileString(path.join(directory, "source-paths.json"), json(existingPaths));
       yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
       yield* fs.makeDirectory(path.dirname(profile.assignmentWorkspace!.revocationPath), {
         recursive: true,
@@ -534,22 +653,47 @@ const make = Effect.gen(function* () {
         profile.assignmentWorkspace!.volumeName,
       ]);
       return yield* Effect.gen(function* () {
-        yield* helper(profile, {
-          kind: "initialize",
-          files: files.map((file) => ({
-            ...file,
-            writable: factoryCanWrite(file.path, grant, boundary),
-          })),
-        });
-        const sourcePath = files.find((file) => factoryCanWrite(file.path, grant, boundary))?.path;
+        const existingWritable = files.find((file) =>
+          factoryCanWrite(file.path, grant, pathConfiguration),
+        )?.path;
+        const temporaryPath =
+          existingWritable === undefined
+            ? ([...grant.sourcePaths, ...(grant.controlChange?.paths ?? [])].find(
+                (file) =>
+                  !existingPaths.includes(file) && factoryCanWrite(file, grant, pathConfiguration),
+              ) ??
+              (grant.creatableDirectories[0] === undefined
+                ? undefined
+                : `${grant.creatableDirectories[0]}/factory-runtime-probe-${yield* crypto.randomUUIDv4}.txt`))
+            : undefined;
+        const sourcePath = existingWritable ?? temporaryPath;
         const protectedPath = files.find(
-          (file) => !factoryCanWrite(file.path, grant, boundary),
+          (file) => !factoryCanWrite(file.path, grant, pathConfiguration),
         )?.path;
         if (!sourcePath || !protectedPath)
           return yield* unavailable(
-            "The boundary requires a granted regular source file and a protected regular file for its actual runtime proof.",
+            "The boundary requires granted file access and a protected regular file for its actual runtime proof.",
           );
+        yield* helper(profile, {
+          kind: "initialize",
+          files: [
+            ...files.map((file) => ({
+              ...file,
+              writable: factoryCanWrite(file.path, grant, pathConfiguration),
+            })),
+            ...(temporaryPath === undefined
+              ? []
+              : [{ path: temporaryPath, content: "Cg==", writable: true }]),
+          ],
+        });
         yield* proveWorkspace(profile, sourcePath, protectedPath);
+        if (temporaryPath !== undefined)
+          yield* helper(profile, {
+            kind: "mutate",
+            operation: { kind: "delete", path: temporaryPath },
+            commandId: yield* crypto.randomUUIDv4,
+            request: `remove-runtime-probe:${temporaryPath}`,
+          });
         yield* fs.writeFileString(path.join(directory, "profile.json"), json(profile));
         return {
           status: "qualified" as const,
@@ -572,12 +716,16 @@ const make = Effect.gen(function* () {
 
   const mutate = Effect.fn("FactoryBoundaryExecution.mutate")(
     function* (input: Parameters<FactoryBoundaryExecution["Service"]["mutate"]>[0]) {
-      const { profile, grant, boundary } = yield* prepared(input.assignmentId, input.expectedEpoch);
+      const { profile, grant, pathConfiguration } = yield* prepared(
+        input.assignmentId,
+        input.expectedEpoch,
+      );
       const paths = [
         input.operation.path,
         ...(input.operation.kind === "rename" ? [input.operation.to] : []),
       ];
-      if (paths.some((value) => !factoryCanWrite(value, grant, boundary))) return yield* denied();
+      if (paths.some((value) => !factoryCanWrite(value, grant, pathConfiguration)))
+        return yield* denied();
       if (
         (input.operation.kind === "create" || input.operation.kind === "write") &&
         Buffer.byteLength(input.operation.content, "utf8") > 16 * 1024 * 1024

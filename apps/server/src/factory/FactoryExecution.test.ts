@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   FactoryAssignmentId,
+  FactorySourceId,
   type FactorySnapshot,
   type OrchestrationV2AppThread,
   ProjectId,
@@ -27,6 +28,7 @@ import * as FactoryExecution from "./FactoryExecution.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import { FactoryStore } from "./FactoryStore.ts";
+import * as FactorySource from "./FactorySource.ts";
 
 const owner = ThreadId.make("managed-owner");
 const child = ThreadId.make("native-child");
@@ -68,7 +70,7 @@ const thread = (
 });
 
 it.effect(
-  "restored native descendants inherit a separate runtime inside their original qualified boundary",
+  "isolates persisted and pending descendants while rejecting lineage and source mismatches",
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -76,7 +78,7 @@ it.effect(
       const root = yield* fs.makeTempDirectoryScoped();
       const now = yield* DateTime.now;
       const initial = initialFactorySnapshot();
-      const snapshot: FactorySnapshot = {
+      let snapshot: FactorySnapshot = {
         ...initial,
         assignments: [
           {
@@ -103,7 +105,7 @@ it.effect(
         [ordinary, thread(ordinary, null, now)],
       ]);
       const dependencies = Layer.mergeAll(
-        Layer.mock(FactoryStore)({ snapshot: Effect.succeed(snapshot) }),
+        Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => snapshot) }),
         Layer.mock(ProjectStoreV2)({}),
         Layer.mock(ProviderInstanceRegistry)({ getInstance: () => Effect.succeed(undefined) }),
         Layer.mock(ProcessRunner)({}),
@@ -139,7 +141,14 @@ it.effect(
         assert.equal(childPolicy?.projectSnapshotPath, parentPolicy?.projectSnapshotPath);
         assert.notEqual(childPolicy?.boundaryId, parentPolicy?.boundaryId);
         assert.notEqual(childPolicy?.runtimePath, parentPolicy?.runtimePath);
+        const pendingChild = ThreadId.make("pending-child");
+        const pendingPolicy = yield* execution.runtimePolicyFor(pendingChild, owner);
+        assert.isDefined(pendingPolicy);
+        assert.equal(pendingPolicy?.projectSnapshotPath, parentPolicy?.projectSnapshotPath);
+        assert.notEqual(pendingPolicy?.runtimePath, parentPolicy?.runtimePath);
+        assert.equal(pendingPolicy?.boundaryId, `${profileId}:${pendingChild}`);
         assert.isUndefined(yield* execution.runtimePolicyFor(ordinary));
+        assert.isUndefined(yield* execution.runtimePolicyFor(ordinary, owner));
         assert.isUndefined(yield* execution.runtimePolicyFor(ThreadId.make("not-created-yet")));
         fixtures.set(child, thread(child, ThreadId.make("missing-parent"), now));
         assert.equal(
@@ -152,6 +161,55 @@ it.effect(
           workflow: { repositoryRoot: "/owned", revision: "pinned" },
         });
         assert.equal(unavailable.status, "unavailable");
-      }).pipe(Effect.provide(FactoryExecution.layer.pipe(Layer.provideMerge(dependencies))));
+        const startingSource = {
+          id: FactorySourceId.make("captured-source"),
+          projectId,
+          revision: "project-commit",
+          sourceDigest: "captured-digest",
+          branch: "feature/work",
+          origin: "handover" as const,
+          threadId: owner,
+          capturedAt: DateTime.formatIso(now),
+          fileCount: 1,
+          stagedPaths: [],
+          unstagedPaths: ["src/app.ts"],
+          untrackedPaths: [],
+          deletedPaths: [],
+          excludedPaths: [],
+        };
+        snapshot = {
+          ...snapshot,
+          assignments: [{ ...snapshot.assignments[0]!, kind: "implementation", startingSource }],
+        };
+        assert.equal(
+          (yield* execution.runtimePolicyFor(owner).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        const prepared = {
+          ...profile,
+          startingSourceId: startingSource.id,
+          startingSourceDigest: startingSource.sourceDigest,
+        };
+        yield* fs.writeFileString(
+          path.join(directory, "profile.json"),
+          yield* encodeProfile(prepared),
+        );
+        assert.isDefined(yield* execution.runtimePolicyFor(owner));
+        yield* fs.writeFileString(
+          path.join(directory, "profile.json"),
+          yield* encodeProfile({ ...prepared, startingSourceDigest: "other-source" }),
+        );
+        assert.equal(
+          (yield* execution.runtimePolicyFor(owner).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+      }).pipe(
+        Effect.provide(
+          FactoryExecution.layer.pipe(
+            Layer.provide(FactorySource.layer),
+            Layer.provideMerge(dependencies),
+          ),
+        ),
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

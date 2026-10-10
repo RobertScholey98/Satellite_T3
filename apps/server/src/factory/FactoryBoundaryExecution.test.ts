@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   FactoryAssignmentId,
+  FactorySourceId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -26,6 +27,7 @@ import {
 } from "./FactoryExecutionProfile.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import { FactoryStore } from "./FactoryStore.ts";
+import { FactorySource, type FactorySourceArtifact } from "./FactorySource.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
@@ -123,6 +125,7 @@ live(
         assignments: [onboarding],
       };
       const volumes: Array<string> = [];
+      const sources = new Map<FactorySourceId, FactorySourceArtifact>();
       yield* Effect.addFinalizer(() =>
         Effect.forEach(
           volumes,
@@ -298,6 +301,224 @@ live(
             artifactId: passed.artifactId,
           })).sourceDigest,
           passed.sourceDigest,
+        );
+        const freshId = FactorySourceId.make(yield* (yield* Crypto.Crypto).randomUUIDv4);
+        const freshFiles = yield* Effect.forEach(
+          [
+            ...fixture,
+            ["src/new-existing.cjs", "module.exports = 'fresh';"],
+            ["src/new-unassigned.cjs", "module.exports = 'unassigned';"],
+          ] as ReadonlyArray<readonly [string, string]>,
+          ([name, initialContent]) =>
+            Effect.gen(function* () {
+              const content = name === "src/value.cjs" ? "module.exports = 2;" : initialContent;
+              return {
+                path: name,
+                content: Buffer.from(content).toString("base64"),
+                digest: Buffer.from(
+                  yield* (yield* Crypto.Crypto).digest("SHA-256", Buffer.from(content)),
+                ).toString("hex"),
+                mode: name === "src/new-existing.cjs" ? ("100755" as const) : ("100644" as const),
+              };
+            }),
+        );
+        const freshArtifact: FactorySourceArtifact = {
+          source: {
+            id: freshId,
+            projectId,
+            revision: "c".repeat(40),
+            sourceDigest: "fresh-source-digest",
+            branch: "main",
+            origin: "project",
+            capturedAt: now,
+            fileCount: freshFiles.length,
+            stagedPaths: [],
+            unstagedPaths: [],
+            untrackedPaths: [],
+            deletedPaths: [],
+            excludedPaths: [],
+          },
+          request: { requestId: CommandId.make("fresh-source"), projectId },
+          workspaceRoot: "/original",
+          files: freshFiles,
+          indexFiles: freshFiles,
+          indexData: null,
+        };
+        sources.set(freshId, freshArtifact);
+        const freshAssignment: FactoryAssignment = {
+          ...assignment,
+          id: FactoryAssignmentId.make(`fresh-${profileId}`),
+          threadId: ThreadId.make("fresh-lead"),
+          startingSource: freshArtifact.source,
+          grant: { ...assignment.grant!, sourcePaths: ["src/value.cjs", "src/new-existing.cjs"] },
+        };
+        state = { ...state, assignments: [...state.assignments, freshAssignment] };
+        const freshInput = {
+          assignmentId: freshAssignment.id,
+          threadId: freshAssignment.threadId,
+          boundaryId: boundary.id,
+          grant: freshAssignment.grant!,
+          startingSourceId: freshId,
+        };
+        assert.equal(
+          (yield* execution
+            .prepare({
+              assignmentId: freshInput.assignmentId,
+              threadId: freshInput.threadId,
+              boundaryId: freshInput.boundaryId,
+              grant: freshInput.grant,
+            })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        const changedControls = freshFiles.map((file) =>
+          file.path === "package.json"
+            ? { ...file, content: Buffer.from("{}").toString("base64") }
+            : file,
+        );
+        sources.set(freshId, { ...freshArtifact, files: changedControls });
+        assert.include(
+          (yield* execution.prepare(freshInput).pipe(Effect.flip)).detail!,
+          "protected control package.json",
+        );
+        sources.set(freshId, { ...freshArtifact, indexFiles: changedControls });
+        assert.include(
+          (yield* execution.prepare(freshInput).pipe(Effect.flip)).detail!,
+          "protected control package.json",
+        );
+        sources.set(freshId, freshArtifact);
+        const freshQualification = yield* execution.prepare(freshInput);
+        if (freshQualification.status !== "qualified")
+          return assert.fail(freshQualification.reason);
+        const freshProfile = yield* fs
+          .readFileString(
+            path.join(
+              config.stateDir,
+              "factory",
+              "execution",
+              freshQualification.profileId,
+              "profile.json",
+            ),
+          )
+          .pipe(Effect.flatMap(decodeProfile));
+        volumes.push(freshProfile.assignmentWorkspace!.volumeName);
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === freshAssignment.id
+              ? { ...entry, qualification: freshQualification }
+              : entry,
+          ),
+        };
+        assert.equal(freshProfile.sourceRevision, freshArtifact.source.revision);
+        assert.equal(freshProfile.startingSourceDigest, freshArtifact.source.sourceDigest);
+        assert.equal(
+          (yield* execution.verify({ assignmentId: freshAssignment.id, expectedEpoch: 0 })).gates[0]
+            ?.status,
+          "passed",
+        );
+        const freshWorker = yield* docker([
+          ...factoryDockerArguments(freshProfile).slice(2),
+          "--entrypoint",
+          "node",
+          freshProfile.imageId,
+          "-e",
+          "const f=require('node:fs');if(require('/workspace/src/value.cjs')!==2)throw Error('stale source');f.accessSync('/workspace/src/new-existing.cjs',f.constants.X_OK);f.writeFileSync('/workspace/src/new-existing.cjs','updated');for(const p of ['new-unassigned','unapproved']){let denied=false;try{f.writeFileSync('/workspace/src/'+p+'.cjs','forbidden')}catch(e){denied=e.code==='EACCES'}if(!denied)throw Error('fresh existing file escaped grant')}",
+        ]);
+        assert.equal(freshWorker.code, 0, freshWorker.stderr);
+        for (const kind of ["create-only", "deleted-only"] as const) {
+          const captured = {
+            ...freshArtifact,
+            source: {
+              ...freshArtifact.source,
+              id: FactorySourceId.make(`${freshId}:${kind}`),
+              sourceDigest: `digest:${kind}`,
+            },
+            files:
+              kind === "create-only"
+                ? freshFiles
+                : freshFiles.filter((file) => file.path !== "src/value.cjs"),
+            indexFiles:
+              kind === "create-only"
+                ? freshFiles
+                : freshFiles.filter((file) => file.path !== "src/value.cjs"),
+          };
+          sources.set(captured.source.id, captured);
+          const narrow: FactoryAssignment = {
+            ...freshAssignment,
+            id: FactoryAssignmentId.make(`${freshAssignment.id}:${kind}`),
+            threadId: ThreadId.make(`lead:${kind}`),
+            startingSource: captured.source,
+            grant: {
+              boundaryId: boundary.id,
+              epoch: 0,
+              sourcePaths: kind === "create-only" ? [] : ["src/value.cjs"],
+              creatableDirectories: kind === "create-only" ? ["src"] : [],
+              controlChange: null,
+            },
+          };
+          state = { ...state, assignments: [...state.assignments, narrow] };
+          const qualified = yield* execution.prepare({
+            assignmentId: narrow.id,
+            threadId: narrow.threadId,
+            boundaryId: boundary.id,
+            grant: narrow.grant!,
+            startingSourceId: captured.source.id,
+          });
+          if (qualified.status !== "qualified") return assert.fail(qualified.reason);
+          const narrowProfile = yield* fs
+            .readFileString(
+              path.join(
+                config.stateDir,
+                "factory",
+                "execution",
+                qualified.profileId,
+                "profile.json",
+              ),
+            )
+            .pipe(Effect.flatMap(decodeProfile));
+          volumes.push(narrowProfile.assignmentWorkspace!.volumeName);
+          state = {
+            ...state,
+            assignments: state.assignments.map((entry) =>
+              entry.id === narrow.id ? { ...entry, qualification: qualified } : entry,
+            ),
+          };
+          const inspected = yield* docker([
+            ...factoryDockerArguments(narrowProfile).slice(2),
+            "--entrypoint",
+            "node",
+            narrowProfile.imageId,
+            "-e",
+            `const f=require('node:fs');if(f.readdirSync('/workspace/src').some(p=>p.startsWith('factory-runtime-probe-')))throw Error('probe leaked');${kind === "deleted-only" ? "if(f.existsSync('/workspace/src/value.cjs'))throw Error('deletion lost')" : "try{f.writeFileSync('/workspace/src/value.cjs','bad');throw Error('existing file exposed')}catch(e){if(e.code!=='EACCES')throw e}"}`,
+          ]);
+          assert.equal(inspected.code, 0, inspected.stderr);
+          yield* execution.mutate({
+            assignmentId: narrow.id,
+            expectedEpoch: 0,
+            commandId: CommandId.make(`create:${kind}`),
+            operation: {
+              kind: "create",
+              path: kind === "create-only" ? "src/new-component.cjs" : "src/value.cjs",
+              content: "module.exports = 2;",
+            },
+          });
+          assert.equal(
+            (yield* execution.verify({ assignmentId: narrow.id, expectedEpoch: 0 })).gates[0]
+              ?.status,
+            "passed",
+          );
+        }
+        assert.equal(
+          (yield* execution
+            .mutate({
+              assignmentId: freshAssignment.id,
+              expectedEpoch: 0,
+              commandId: CommandId.make("fresh-unassigned"),
+              operation: { kind: "write", path: "src/new-unassigned.cjs", content: "forbidden" },
+            })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
         );
         const create = {
           assignmentId: assignment.id,
@@ -525,6 +746,12 @@ live(
                 ServerConfig.layerTest(root, root),
                 Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
                 Layer.succeed(ProcessRunner.ProcessRunner, executionRunner),
+                Layer.mock(FactorySource)({
+                  read: (id) =>
+                    sources.has(id)
+                      ? Effect.succeed(sources.get(id)!)
+                      : Effect.die("Missing source fixture"),
+                }),
               ),
             ),
           ),

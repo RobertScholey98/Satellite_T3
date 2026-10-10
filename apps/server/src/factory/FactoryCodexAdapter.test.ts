@@ -67,3 +67,14 @@ it("start and resume map only the managed endpoint and workspace to the provider
     McpProviderSession.clearMcpProviderSession(threadId);
   }
 });
+
+it("managed starts and resumes disable both native agent backends without changing ordinary sessions", () => {
+  const managed = codexThreadRuntimeParams({ threadId: null, runtimePolicy });
+  assert.equal(managed.config["agents.enabled"], false);
+  assert.equal(managed.config["features.multi_agent"], false);
+  assert.equal(managed.config["features.multi_agent_v2"], false);
+  const ordinary = codexThreadRuntimeParams({ threadId: null });
+  assert.isUndefined(ordinary.config["agents.enabled"]);
+  assert.isUndefined(ordinary.config["features.multi_agent"]);
+  assert.isUndefined(ordinary.config["features.multi_agent_v2"]);
+});

@@ -746,7 +746,13 @@ export function buildCodexTurnStartParams(input: {
     const additionalContext =
       input.hasT3Mcp === true
         ? buildCodexAdditionalContext(
-            { model: input.modelSelection.model, reasoningEffort: effort ?? "medium" },
+            {
+              model: input.modelSelection.model,
+              reasoningEffort: effort ?? "medium",
+              ...(input.runtimePolicy.factoryExecution === undefined
+                ? {}
+                : { factoryManaged: true }),
+            },
             {
               browser: input.browserToolsAvailable ?? true,
               device: input.deviceToolsAvailable ?? false,
@@ -1314,6 +1320,13 @@ export function codexThreadRuntimeParams(input: {
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      ...(input.runtimePolicy?.factoryExecution === undefined
+        ? {}
+        : {
+            "agents.enabled": false,
+            "features.multi_agent": false,
+            "features.multi_agent_v2": false,
+          }),
       ...(mcpSession === undefined
         ? {}
         : {

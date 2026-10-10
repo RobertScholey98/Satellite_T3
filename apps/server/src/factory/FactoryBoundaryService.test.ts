@@ -22,6 +22,8 @@ import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
+import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
 
 const projectId = ProjectId.make("boundary-service-web");
 const human = { kind: "human" } as const;
@@ -52,6 +54,8 @@ const boundary = {
   approvedAt: "2026-10-10T12:00:00.000Z",
 } satisfies FactoryBoundary;
 const providerExecution = Layer.succeed(FactoryExecution, {
+  assertSelectionFor: () => Effect.void,
+  assertDelegationFor: () => Effect.void,
   qualify: () =>
     Effect.succeed({
       status: "qualified",
@@ -72,6 +76,7 @@ const runtime = Layer.mergeAll(FactoryStore.layer, ThreadManagement.layer).pipe(
   Layer.provideMerge(SatelliteTestLayer),
 );
 const layer = FactoryService.layer.pipe(
+  Layer.provide(Layer.mergeAll(sourceUnused, handoverUnused)),
   Layer.provideMerge(runtime),
   Layer.provide(providerExecution),
 );

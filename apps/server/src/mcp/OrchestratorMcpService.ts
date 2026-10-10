@@ -95,6 +95,7 @@ import {
 } from "./McpInvocationContext.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as FactoryExecution from "../factory/FactoryExecution.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -848,6 +849,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  const factoryExecution = yield* Effect.serviceOption(FactoryExecution.FactoryExecution);
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
@@ -1786,6 +1788,19 @@ const make = Effect.gen(function* () {
     capabilities: (scope) =>
       Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
+        const managed =
+          parent !== undefined && Option.isSome(factoryExecution)
+            ? (yield* factoryExecution.value
+                .runtimePolicyFor(parent.thread.id)
+                .pipe(
+                  Effect.mapError(() =>
+                    failure(
+                      "capability_denied",
+                      "The managed execution boundary could not be verified.",
+                    ),
+                  ),
+                )) !== undefined
+            : false;
         const providers = yield* loadProviders;
         const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
         return {
@@ -1799,6 +1814,13 @@ const make = Effect.gen(function* () {
               provider,
               orchestrationCapableInstanceIds.has(provider.instanceId),
             );
+            const executionConstraints =
+              managed && provider.driver !== "codex"
+                ? [
+                    ...constraints,
+                    "Managed delegation requires the qualified Codex container runtime.",
+                  ]
+                : constraints;
             return {
               providerInstanceId: provider.instanceId,
               driverKind: provider.driver,
@@ -1811,20 +1833,21 @@ const make = Effect.gen(function* () {
                     ? {}
                     : { options: model.capabilities.optionDescriptors }),
                 })) ?? [],
-              canRunChildTask: constraints.length === 0,
-              canRunCrossProviderChildTask: constraints.length === 0,
-              constraints: [...constraints],
+              canRunChildTask: executionConstraints.length === 0,
+              canRunCrossProviderChildTask: executionConstraints.length === 0,
+              constraints: [...executionConstraints],
             };
           }),
           features: {
             appOwnedSubagents: true,
+            ...(managed ? { nativeSubagents: false } : {}),
             asyncPolling: true,
             cancellation: true,
-            batchThreadCreation: true,
+            batchThreadCreation: !managed,
             threadManagement: true,
             incrementalThreadRead: true,
-            scheduledTasks: true,
-            maxBatchThreads: 20,
+            scheduledTasks: !managed,
+            maxBatchThreads: managed ? 0 : 20,
           },
         };
       }),

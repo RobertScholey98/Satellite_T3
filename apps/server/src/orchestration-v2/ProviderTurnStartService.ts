@@ -521,6 +521,29 @@ export const layer: Layer.Layer<
         thread: projection.thread,
         modelSelection: run.modelSelection,
       });
+      if (
+        providerThread.executionBoundaryId !== resolvedRuntimePolicy.factoryExecution?.boundaryId
+      ) {
+        yield* settleRunBeforeStart({
+          signal: "execution-boundary-changed",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "The execution boundary changed",
+            failure: makeProviderFailure({
+              cause:
+                "The queued provider context belongs to a previous execution boundary. Send the message again to continue safely.",
+              message:
+                "The queued provider context belongs to a previous execution boundary. Send the message again to continue safely.",
+              class: "validation_error",
+            }),
+          },
+        });
+        return;
+      }
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
@@ -628,6 +651,13 @@ export const layer: Layer.Layer<
             return yield* new ProviderTurnStartError({
               runId,
               cause: `Native fork transfer ${nativeForkTransfer.id} has no source provider execution.`,
+            });
+          }
+          if (sourceProviderThread.executionBoundaryId !== providerThread.executionBoundaryId) {
+            return yield* new ProviderTurnStartError({
+              runId,
+              cause:
+                "Native context cannot cross execution boundaries. A portable context handoff is required.",
             });
           }
           return yield* loadFromProvider(
@@ -820,6 +850,7 @@ export const layer: Layer.Layer<
       });
       const runningProviderThread: OrchestrationV2ProviderThread = {
         ...loadedProviderThread,
+        executionBoundaryId: providerThread.executionBoundaryId,
         contextUsage: handoffUsage,
         id: providerThread.id,
         driver: session.driver,

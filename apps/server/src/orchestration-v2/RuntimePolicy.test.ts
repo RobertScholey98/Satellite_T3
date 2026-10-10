@@ -129,6 +129,7 @@ const managedLayer = (driverKind: "codex" | "grok") =>
       Layer.mergeAll(
         Layer.mock(FactoryExecution.FactoryExecution)({
           runtimePolicyFor: () => Effect.succeed(discoveryProfile),
+          assertSelectionFor: () => Effect.void,
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({
           get: () => Effect.die("managed execution must not read the writable checkout"),

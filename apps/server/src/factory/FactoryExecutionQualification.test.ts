@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
+  CommandId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -24,6 +25,7 @@ import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.t
 import * as FactoryExecution from "./FactoryExecution.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { FactoryStore } from "./FactoryStore.ts";
+import * as FactorySource from "./FactorySource.ts";
 
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
 const unavailable = () => Effect.die("Unexpected provider model invocation");
@@ -76,6 +78,16 @@ it.effect(
       const root = yield* fs.makeTempDirectoryScoped();
       const repository = path.join(root, "repository");
       yield* fs.makeDirectory(path.join(repository, "skills", "retro"), { recursive: true });
+      yield* fs.makeDirectory(path.join(repository, ".github"), { recursive: true });
+      yield* fs.writeFileString(
+        path.join(repository, ".github", "control.yml"),
+        "unchanged protected control\n",
+      );
+      yield* fs.writeFileString(
+        path.join(repository, ".gitattributes"),
+        ".github export-ignore\nskills/** export-ignore\nversion.txt export-subst\nREADME.md filter=untrusted\n",
+      );
+      yield* fs.writeFileString(path.join(repository, "version.txt"), "$Format:%H$\n");
       yield* fs.writeFileString(path.join(repository, "README.md"), "tracked source");
       yield* fs.writeFileString(path.join(repository, ".env"), "SYNTHETIC_SECRET=must-not-mount");
       yield* fs.writeFileString(
@@ -101,6 +113,27 @@ it.effect(
         assert.equal((yield* git(args)).code, 0);
       }
       const revision = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
+      yield* fs.writeFileString(
+        path.join(repository, "skills", "retro", "SKILL.md"),
+        "newer committed workflow",
+      );
+      assert.equal((yield* git(["add", "skills/retro/SKILL.md"])).code, 0);
+      assert.equal(
+        (yield* git([
+          "-c",
+          "user.name=Factory Test",
+          "-c",
+          "user.email=factory@example.invalid",
+          "commit",
+          "--quiet",
+          "--message",
+          "newer workflow",
+        ])).code,
+        0,
+      );
+      assert.equal((yield* git(["config", "filter.untrusted.smudge", "exit 91"])).code, 0);
+      assert.equal((yield* git(["config", "filter.untrusted.clean", "exit 92"])).code, 0);
+      assert.equal((yield* git(["config", "filter.untrusted.required", "true"])).code, 0);
       yield* fs.writeFileString(
         path.join(repository, "skills", "retro", "SKILL.md"),
         "uncommitted workflow",
@@ -178,6 +211,28 @@ it.effect(
           ),
           "committed workflow",
         );
+        assert.equal(
+          yield* fs.readFileString(
+            path.join(profile.projectSnapshotPath, ".github", "control.yml"),
+          ),
+          "unchanged protected control\n",
+        );
+        assert.equal(
+          yield* fs.readFileString(path.join(profile.projectSnapshotPath, "version.txt")),
+          "$Format:%H$\n",
+        );
+        const sources = yield* FactorySource.FactorySource;
+        const starting = yield* sources.capture({
+          requestId: CommandId.make("same-baseline"),
+          projectId,
+        });
+        const artifact = yield* sources.read(starting.id);
+        for (const file of artifact.files) {
+          assert.deepStrictEqual(
+            Buffer.from(yield* fs.readFile(path.join(profile.projectSnapshotPath, file.path))),
+            Buffer.from(file.content, "base64"),
+          );
+        }
         assert.isFalse(yield* fs.exists(path.join(profile.projectSnapshotPath, ".env")));
         assert.isFalse(yield* fs.exists(path.join(profile.projectSnapshotPath, ".git")));
         assert.include(
@@ -193,6 +248,13 @@ it.effect(
           assert.equal(rejected.status, "unavailable");
           assert.equal(probeCount, 2);
         }
-      }).pipe(Effect.provide(FactoryExecution.layer.pipe(Layer.provideMerge(dependencies))));
+      }).pipe(
+        Effect.provide(
+          FactoryExecution.layer.pipe(
+            Layer.provideMerge(FactorySource.layer),
+            Layer.provideMerge(dependencies),
+          ),
+        ),
+      );
     }).pipe(Effect.scoped, Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
 );

@@ -389,9 +389,16 @@ describe("FactoryStore", () => {
               (yield* store.pending).map((effect) => ({
                 id: effect.id,
                 threadId: effect.intent.threadId,
-                profileId: effect.intent.profileId,
+                profileId:
+                  effect.intent.type === "thread.launch" ? effect.intent.profileId : undefined,
               })),
-              [{ id: "retry-web:0", threadId: "onboarding-web", profileId: "discovery-v1" }],
+              [
+                {
+                  id: "retry-web:0",
+                  threadId: ThreadId.make("onboarding-web"),
+                  profileId: "discovery-v1",
+                },
+              ],
             );
             yield* store.beginEffect("retry-web:0");
           }),

@@ -7,6 +7,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import {
   CommandId,
   type FactoryAssignment,
+  type FactoryAssignmentId,
   type FactoryManager,
   type FactoryOnboardingReport,
   type EnvironmentId,
@@ -51,6 +52,21 @@ const FactoryPolicyDialog = lazy(() =>
 );
 const FactoryBoundaryDialog = lazy(() =>
   import("./FactoryBoundaryDialog").then((module) => ({ default: module.FactoryBoundaryDialog })),
+);
+const FactoryModelPolicyDialog = lazy(() =>
+  import("./FactoryModelPolicyDialog").then((module) => ({
+    default: module.FactoryModelPolicyDialog,
+  })),
+);
+const FactoryAssignmentDialog = lazy(() =>
+  import("./FactoryAssignmentDialog").then((module) => ({
+    default: module.FactoryAssignmentDialog,
+  })),
+);
+const FactoryAssignmentDetailsDialog = lazy(() =>
+  import("./FactoryAssignmentDialog").then((module) => ({
+    default: module.FactoryAssignmentDetailsDialog,
+  })),
 );
 
 const managerStatusLabels = {
@@ -104,6 +120,18 @@ export function FactorySidebar({
   const [policyTarget, setPolicyTarget] = useState<{
     readonly environmentId: EnvironmentId;
     readonly managerId: ThreadId | null;
+  } | null>(null);
+  const [modelTarget, setModelTarget] = useState<{
+    environmentId: EnvironmentId;
+    managerId: ThreadId | null;
+  } | null>(null);
+  const [assignmentTarget, setAssignmentTarget] = useState<{
+    managerKey: string;
+    mode: "commission" | "handover";
+  } | null>(null);
+  const [assignmentDetails, setAssignmentDetails] = useState<{
+    environmentId: EnvironmentId;
+    assignmentId: FactoryAssignmentId;
   } | null>(null);
   const sectionId = useId();
   const threadsByKey = useMemo(
@@ -205,6 +233,19 @@ export function FactorySidebar({
   const policyManager = policyEnvironment?.data?.managers.find(
     (manager) => manager.id === policyTarget?.managerId,
   );
+  const modelEnvironment = environments.find(
+    (environment) => environment.environmentId === modelTarget?.environmentId,
+  );
+  const modelManager = modelEnvironment?.data?.managers.find(
+    (manager) => manager.id === modelTarget?.managerId,
+  );
+  const assignmentEntry = entries.find((entry) => entry.key === assignmentTarget?.managerKey);
+  const detailsEnvironment = environments.find(
+    (environment) => environment.environmentId === assignmentDetails?.environmentId,
+  );
+  const detailsAssignment = detailsEnvironment?.data?.assignments.find(
+    (assignment) => assignment.id === assignmentDetails?.assignmentId,
+  );
   if (projects.length === 0) return null;
 
   return (
@@ -238,17 +279,27 @@ export function FactorySidebar({
             {relevantEnvironments
               .filter((environment) => environment.data !== null)
               .map((environment) => (
-                <Button
-                  key={environment.environmentId}
-                  size="xs"
-                  variant="ghost"
-                  onClick={() =>
-                    setPolicyTarget({ environmentId: environment.environmentId, managerId: null })
-                  }
-                >
-                  Autonomy defaults
-                  {relevantEnvironments.length > 1 ? ` · ${environment.label}` : ""}
-                </Button>
+                <div key={environment.environmentId} className="flex flex-wrap gap-1">
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() =>
+                      setPolicyTarget({ environmentId: environment.environmentId, managerId: null })
+                    }
+                  >
+                    Autonomy defaults
+                    {relevantEnvironments.length > 1 ? ` · ${environment.label}` : ""}
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="ghost"
+                    onClick={() =>
+                      setModelTarget({ environmentId: environment.environmentId, managerId: null })
+                    }
+                  >
+                    Model defaults{relevantEnvironments.length > 1 ? ` · ${environment.label}` : ""}
+                  </Button>
+                </div>
               ))}
           </div>
           <SidebarMenu>
@@ -350,7 +401,11 @@ export function FactorySidebar({
                             <SidebarMenuButton
                               size="sm"
                               disabled={assignmentUnavailableReason !== null}
-                              title={assignmentUnavailableReason ?? "Project onboarding"}
+                              title={
+                                assignmentUnavailableReason ??
+                                assignment.title ??
+                                "Project onboarding"
+                              }
                               isActive={
                                 assignmentUnavailableReason === null &&
                                 assignmentKey === activeThreadKey
@@ -358,11 +413,21 @@ export function FactorySidebar({
                               onClick={() => onThreadActivate(threadRef)}
                             >
                               <ClipboardListIcon aria-hidden />
-                              <span>Project onboarding</span>
+                              <span>
+                                {assignment.title ??
+                                  (assignment.kind === "onboarding"
+                                    ? "Project onboarding"
+                                    : assignment.kind === "rule-change"
+                                      ? "Rule change"
+                                      : "Implementation")}
+                              </span>
                             </SidebarMenuButton>
                             <div className="ml-2 flex flex-wrap items-center gap-2 pb-1">
                               <span className="text-2xs text-sidebar-muted-foreground">
                                 {assignmentStatusLabels[assignment.status]}
+                                {assignment.preparation && assignment.preparation !== "ready"
+                                  ? ` · ${assignment.preparation}`
+                                  : ""}
                               </span>
                               {assignment.threadStatus === "created" &&
                               assignmentUnavailableReason ? (
@@ -387,6 +452,20 @@ export function FactorySidebar({
                                     {manager.boundaryId ? "View boundary" : "Review boundary"}
                                   </Button>
                                 </>
+                              ) : null}
+                              {assignment.kind !== "onboarding" ? (
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() =>
+                                    setAssignmentDetails({
+                                      environmentId: environment.environmentId,
+                                      assignmentId: assignment.id,
+                                    })
+                                  }
+                                >
+                                  Assignment details
+                                </Button>
                               ) : null}
                             </div>
                             {assignment.wait && assignment.wait.reason !== manager.wait?.reason ? (
@@ -420,6 +499,54 @@ export function FactorySidebar({
                           )}
                         </SidebarMenuSubItem>
                       ) : null}
+                      <SidebarMenuSubItem>
+                        <div className="flex flex-wrap gap-1 py-1">
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            onClick={() =>
+                              setModelTarget({
+                                environmentId: environment.environmentId,
+                                managerId: manager.id,
+                              })
+                            }
+                          >
+                            Team models
+                          </Button>
+                          {manager.boundaryId ? (
+                            <>
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                disabled={
+                                  manager.status !== "active" ||
+                                  !environment.connected ||
+                                  !environment.canOperate
+                                }
+                                onClick={() =>
+                                  setAssignmentTarget({ managerKey: key, mode: "commission" })
+                                }
+                              >
+                                Assign work
+                              </Button>
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                disabled={
+                                  manager.status !== "active" ||
+                                  !environment.connected ||
+                                  !environment.canOperate
+                                }
+                                onClick={() =>
+                                  setAssignmentTarget({ managerKey: key, mode: "handover" })
+                                }
+                              >
+                                Hand over thread
+                              </Button>
+                            </>
+                          ) : null}
+                        </div>
+                      </SidebarMenuSubItem>
                     </SidebarMenuSub>
                   ) : null}
                 </SidebarMenuItem>
@@ -479,6 +606,49 @@ export function FactorySidebar({
             environment={policyEnvironment}
             {...(policyManager ? { manager: policyManager } : {})}
             onClose={() => setPolicyTarget(null)}
+          />
+        ) : null}
+        {modelEnvironment && (modelTarget?.managerId === null || modelManager) ? (
+          <FactoryModelPolicyDialog
+            key={`${modelEnvironment.environmentId}:${modelTarget?.managerId ?? "defaults"}`}
+            environment={modelEnvironment}
+            {...(modelManager ? { manager: modelManager } : {})}
+            onClose={() => setModelTarget(null)}
+          />
+        ) : null}
+        {assignmentEntry && assignmentTarget ? (
+          <FactoryAssignmentDialog
+            key={`${assignmentEntry.key}:${assignmentTarget.mode}`}
+            environment={assignmentEntry.environment}
+            manager={assignmentEntry.manager}
+            projectTitle={assignmentEntry.project?.title ?? "Project"}
+            threads={threads}
+            mode={assignmentTarget.mode}
+            onClose={() => setAssignmentTarget(null)}
+          />
+        ) : null}
+        {detailsEnvironment && detailsAssignment ? (
+          <FactoryAssignmentDetailsDialog
+            key={`${detailsEnvironment.environmentId}:${detailsAssignment.id}`}
+            environment={detailsEnvironment}
+            assignment={detailsAssignment}
+            canOpenThread={
+              threadUnavailableReason(
+                detailsAssignment.threadStatus,
+                threadsByKey.get(
+                  scopedThreadKey(
+                    scopeThreadRef(detailsEnvironment.environmentId, detailsAssignment.threadId),
+                  ),
+                ),
+              ) === null
+            }
+            onOpenThread={() => {
+              setAssignmentDetails(null);
+              onThreadActivate(
+                scopeThreadRef(detailsEnvironment.environmentId, detailsAssignment.threadId),
+              );
+            }}
+            onClose={() => setAssignmentDetails(null)}
           />
         ) : null}
       </Suspense>

@@ -3,12 +3,20 @@ import * as Schema from "effect/Schema";
 import {
   CommandId,
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import {
+  FactoryModelChoice,
+  FactoryModelPolicy,
+  FactoryModelPolicyOverrides,
+  FactoryTaskComplexity,
+} from "./factoryModels.ts";
+import { FactoryStartingSource } from "./factorySources.ts";
 
 export const FactoryAssignmentId = TrimmedNonEmptyString.pipe(Schema.brand("FactoryAssignmentId"));
 export type FactoryAssignmentId = typeof FactoryAssignmentId.Type;
@@ -168,6 +176,7 @@ const FactoryManagerFields = {
   threadId: ThreadId,
   name: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
+  modelOverrides: Schema.optionalKey(FactoryModelPolicyOverrides),
   workflow: FactoryWorkflowVersion,
   overrides: FactoryPolicyOverrides,
   boundaryId: Schema.optionalKey(FactoryBoundaryId),
@@ -193,6 +202,25 @@ export const FactoryManager = Schema.Union([
 ]);
 export type FactoryManager = typeof FactoryManager.Type;
 
+export const FactoryAssignmentScope = Schema.Struct({
+  description: TrimmedNonEmptyString,
+  completionCondition: TrimmedNonEmptyString,
+  requiresPullRequest: Schema.Boolean,
+});
+export type FactoryAssignmentScope = typeof FactoryAssignmentScope.Type;
+
+const FactoryWorkRequestFields = {
+  managerId: ThreadId,
+  title: TrimmedNonEmptyString,
+  scope: FactoryAssignmentScope,
+  complexity: FactoryTaskComplexity,
+  kind: Schema.Literals(["implementation", "rule-change"]),
+  sourcePaths: Schema.Array(TrimmedNonEmptyString),
+  creatableDirectories: Schema.Array(TrimmedNonEmptyString),
+  controlPaths: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+  modelSelection: Schema.optionalKey(ModelSelection),
+};
+
 export const FactoryAssignment = Schema.Struct({
   id: FactoryAssignmentId,
   managerId: ThreadId,
@@ -200,18 +228,24 @@ export const FactoryAssignment = Schema.Struct({
   projectId: ProjectId,
   kind: Schema.Literals(["onboarding", "implementation", "rule-change"]),
   title: Schema.optionalKey(TrimmedNonEmptyString),
-  scope: Schema.optionalKey(
-    Schema.Struct({
-      description: TrimmedNonEmptyString,
-      completionCondition: TrimmedNonEmptyString,
-      requiresPullRequest: Schema.Boolean,
-    }),
-  ),
+  scope: Schema.optionalKey(FactoryAssignmentScope),
   modelSelection: Schema.optionalKey(ModelSelection),
+  modelPolicy: Schema.optionalKey(FactoryModelPolicy),
+  modelChoice: Schema.optionalKey(FactoryModelChoice),
+  complexity: Schema.optionalKey(FactoryTaskComplexity),
+  startingSource: Schema.optionalKey(FactoryStartingSource),
+  origin: Schema.optionalKey(Schema.Literals(["new", "handover"])),
+  preparation: Schema.optionalKey(Schema.Literals(["stopping", "capturing", "preparing", "ready"])),
+  verification: Schema.optionalKey(FactoryVerification),
   authorization: Schema.optionalKey(
     Schema.Union([
       Schema.Struct({ kind: Schema.Literal("human"), commandId: CommandId }),
-      Schema.Struct({ kind: Schema.Literal("manager"), commandId: CommandId, threadId: ThreadId }),
+      Schema.Struct({
+        kind: Schema.Literal("manager"),
+        commandId: CommandId,
+        threadId: ThreadId,
+        messageId: Schema.optionalKey(MessageId),
+      }),
     ]),
   ),
   status: Schema.Literals(["pending", "running", "waiting", "complete"]),
@@ -231,6 +265,7 @@ export type FactoryAssignment = typeof FactoryAssignment.Type;
 export const FactorySnapshot = Schema.Struct({
   revision: NonNegativeInt,
   defaults: FactoryPolicy,
+  modelDefaults: Schema.optionalKey(FactoryModelPolicy),
   managers: Schema.Array(FactoryManager),
   assignments: Schema.Array(FactoryAssignment),
   boundaries: Schema.Array(FactoryBoundary),
@@ -243,6 +278,47 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("models.defaults.configure"),
+    commandId: CommandId,
+    policy: FactoryModelPolicy,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("manager.models.configure"),
+    commandId: CommandId,
+    managerId: ThreadId,
+    overrides: FactoryModelPolicyOverrides,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("assignment.commission"),
+    commandId: CommandId,
+    ...FactoryWorkRequestFields,
+    authorizationMessageId: Schema.optionalKey(MessageId),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("assignment.handover"),
+    commandId: CommandId,
+    ...FactoryWorkRequestFields,
+    threadId: ThreadId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("assignment.retry"),
+    commandId: CommandId,
+    assignmentId: FactoryAssignmentId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("assignment.file.mutate"),
+    commandId: CommandId,
+    assignmentId: FactoryAssignmentId,
+    expectedEpoch: NonNegativeInt,
+    operation: FactoryFileMutation,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("assignment.verify"),
+    commandId: CommandId,
+    assignmentId: FactoryAssignmentId,
+    expectedEpoch: NonNegativeInt,
+  }),
   Schema.Struct({
     type: Schema.Literal("policy.defaults.configure"),
     commandId: CommandId,
@@ -300,6 +376,29 @@ export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
   Schema.Struct({
+    type: Schema.Literal("assignment.preparation.recorded"),
+    commandId: CommandId,
+    assignmentId: FactoryAssignmentId,
+    threadId: ThreadId,
+    stage: Schema.Literals(["capturing", "preparing"]),
+    startingSource: Schema.optionalKey(FactoryStartingSource),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("assignment.prepared"),
+    commandId: CommandId,
+    assignmentId: FactoryAssignmentId,
+    threadId: ThreadId,
+    qualification: FactoryDiscoveryQualification,
+    startingSource: FactoryStartingSource,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("assignment.prepare.failed"),
+    commandId: CommandId,
+    assignmentId: FactoryAssignmentId,
+    threadId: ThreadId,
+    reason: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread.launch.started"),
     commandId: CommandId,
     threadId: ThreadId,
@@ -321,9 +420,9 @@ export type FactoryHostCommand = typeof FactoryHostCommand.Type;
 export const FactoryDecisionCommand = Schema.Union([FactoryCommand, FactoryHostCommand]);
 export type FactoryDecisionCommand = typeof FactoryDecisionCommand.Type;
 
-export const FactoryEffectIntent = Schema.Struct({
+export const FactoryThreadLaunchIntent = Schema.Struct({
   type: Schema.Literal("thread.launch"),
-  purpose: Schema.Literals(["manager", "onboarding"]),
+  purpose: Schema.Literals(["manager", "onboarding", "implementation"]),
   threadId: ThreadId,
   managerId: ThreadId,
   assignmentId: FactoryAssignmentId,
@@ -332,12 +431,24 @@ export const FactoryEffectIntent = Schema.Struct({
   workflow: FactoryWorkflowVersion,
   profileId: TrimmedNonEmptyString,
 });
+export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
+export const FactoryEffectIntent = Schema.Union([
+  FactoryThreadLaunchIntent,
+  Schema.Struct({
+    type: Schema.Literal("assignment.prepare"),
+    managerId: ThreadId,
+    assignmentId: FactoryAssignmentId,
+    threadId: ThreadId,
+    projectId: ProjectId,
+  }),
+]);
 export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 
 export const FactoryCommandResult = Schema.Struct({
   revision: NonNegativeInt,
   managerId: Schema.optionalKey(ThreadId),
   assignmentId: Schema.optionalKey(FactoryAssignmentId),
+  verification: Schema.optionalKey(FactoryVerification),
 });
 export type FactoryCommandResult = typeof FactoryCommandResult.Type;
 

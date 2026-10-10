@@ -80,6 +80,9 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
       "features.browser_use=false",
       "features.computer_use=false",
       "features.codex_hooks=false",
+      "agents.enabled=false",
+      "features.multi_agent=false",
+      "features.multi_agent_v2=false",
     ];
     const authPath = path.join(codexHome, "auth.json");
     if (yield* fs.exists(authPath)) yield* fs.remove(authPath);

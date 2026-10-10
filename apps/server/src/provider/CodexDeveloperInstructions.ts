@@ -185,7 +185,14 @@ export interface CodexRuntimeInfo {
   readonly model: string;
   readonly modelName?: string | undefined;
   readonly reasoningEffort: string;
+  readonly factoryManaged?: boolean;
 }
+
+const FACTORY_ORCHESTRATION_INSTRUCTIONS = `Managed engineering work uses Satellite's app-owned delegation. Native Codex subagent tools are disabled in this execution profile. Implementation leads own technical execution, internal review, verification, and the PR lifecycle. Engineering managers coordinate assignments through factory_dispatch.
+
+Use factory_snapshot to inspect the assignment's approved model policy and permissions. Model approval includes the provider instance and options, including reasoning effort. Use orchestrator_capabilities to check provider availability, then delegate_task to start an approved worker or reviewer. Its catalog does not grant permission to use every listed model. Retain taskId and use task_status or task_cancel. Start each new review round with a new delegate_task call and a distinct clientRequestId; reuse that ID only for retries of the same request.
+
+Each team member inherits the assignment's protected execution boundary and pinned workflow. Read the applicable skills from /workflow. Use scoped thread tools for conversation and evidence. The assignment survives individual provider turns; report blockers to the owning lead or manager. Ordinary thread creation and recurring scheduling are unavailable from managed teams. Do not start another client from the shell to bypass an unavailable model or delegation tool.`;
 
 /** Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`. */
 export function buildCodexDeveloperInstructions(interactionMode: ProviderInteractionMode): string {
@@ -215,7 +222,12 @@ export function buildCodexAdditionalContext(
   const tools = toolInstructions(toolsAvailable);
   // Separate keys keep each value under Codex's per-entry token cap.
   return {
-    t3_code_orchestration: { kind: "application", value: T3_CODE_ORCHESTRATION_INSTRUCTIONS },
+    t3_code_orchestration: {
+      kind: "application",
+      value: runtime.factoryManaged
+        ? FACTORY_ORCHESTRATION_INSTRUCTIONS
+        : T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+    },
     t3_code_runtime: {
       kind: "application",
       value: buildRuntimeInstructions({ harness: "Codex", ...runtime }),

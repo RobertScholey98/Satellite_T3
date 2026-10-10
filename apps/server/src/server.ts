@@ -16,6 +16,8 @@ import * as CommitRecommendationService from "./git/CommitRecommendationService.
 import * as FactoryStore from "./factory/FactoryStore.ts";
 import * as FactoryExecution from "./factory/FactoryExecution.ts";
 import * as FactoryBoundaryExecution from "./factory/FactoryBoundaryExecution.ts";
+import * as FactorySource from "./factory/FactorySource.ts";
+import * as FactoryHandover from "./factory/FactoryHandover.ts";
 import * as FactoryService from "./factory/FactoryService.ts";
 import * as FactoryMcpGuard from "./factory/FactoryMcpGuard.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
@@ -503,6 +505,7 @@ const layerFactoryExecution = Layer.mergeAll(
   FactoryExecution.layer,
   FactoryBoundaryExecution.layer,
 ).pipe(
+  Layer.provideMerge(FactorySource.layer),
   Layer.provideMerge(FactoryStore.layer),
   Layer.provide(ProjectStore.layer),
   Layer.provide(ProjectionStoreV2.layer),
@@ -531,7 +534,9 @@ const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
 );
 
 const layerSatelliteFeatures = Layer.mergeAll(
-  FactoryMcpGuard.layer.pipe(Layer.provideMerge(FactoryService.layer)),
+  FactoryMcpGuard.layer.pipe(
+    Layer.provideMerge(FactoryService.layer.pipe(Layer.provide(FactoryHandover.layer))),
+  ),
   DocumentService.layer,
   RevdocService.layer,
   OpenWorkService.layer,

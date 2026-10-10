@@ -40,7 +40,10 @@ export class FactoryStore extends Context.Service<
     readonly retireEffect: (id: string) => Effect.Effect<void, FactoryError>;
     readonly finishEffect: (input: {
       readonly id: string;
-      readonly command: Exclude<FactoryHostCommand, { readonly type: "thread.launch.started" }>;
+      readonly command: Exclude<
+        FactoryHostCommand,
+        { readonly type: "thread.launch.started" | "assignment.preparation.recorded" }
+      >;
       readonly now: string;
       readonly failed?: boolean;
     }) => Effect.Effect<void, FactoryError>;
@@ -176,9 +179,16 @@ const make = Effect.gen(function* () {
               const effect = rows[0];
               if (effect === undefined) return yield* new FactoryError({ code: "invalid-state" });
               const intent = yield* decodeIntent(effect.payload_json);
-              const failed = input.command.type === "thread.launch.failed";
+              const failed =
+                input.command.type === "thread.launch.failed" ||
+                input.command.type === "assignment.prepare.failed";
               if (
                 intent.threadId !== input.command.threadId ||
+                (intent.type === "assignment.prepare") !==
+                  (input.command.type === "assignment.prepared" ||
+                    input.command.type === "assignment.prepare.failed") ||
+                ("assignmentId" in input.command &&
+                  input.command.assignmentId !== intent.assignmentId) ||
                 failed !== (input.failed ?? false)
               ) {
                 return yield* new FactoryError({ code: "invalid-state" });

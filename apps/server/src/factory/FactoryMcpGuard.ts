@@ -4,11 +4,12 @@ import {
   type FactoryCommandResult,
   type FactoryError,
   type FactorySnapshot,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -22,6 +23,7 @@ export class FactoryMcpGuard extends Context.Service<
     readonly authorize: (
       invocation: McpInvocationScope,
       toolName: string,
+      payload?: unknown,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly snapshot: (
       invocation: McpInvocationScope,
@@ -37,7 +39,7 @@ const denied = () =>
   new OrchestratorMcpFailure({
     code: "capability_denied",
     message:
-      "This managed thread can use only its scoped factory tools. Host tools are unavailable during confined discovery.",
+      "This managed thread can use only its scoped factory and approved team tools. This host tool is outside its execution grant.",
   });
 
 const unavailable = () =>
@@ -45,6 +47,7 @@ const unavailable = () =>
     code: "capability_denied",
     message: "The managed execution boundary could not be verified. No host tool was run.",
   });
+const hasThreadTarget = Schema.is(Schema.Struct({ threadId: ThreadId }));
 
 const make = Effect.gen(function* () {
   const store = yield* FactoryStore.FactoryStore;
@@ -89,11 +92,45 @@ const make = Effect.gen(function* () {
     });
 
   return FactoryMcpGuard.of({
-    authorize: (invocation, toolName) =>
+    authorize: (invocation, toolName, payload) =>
       Effect.gen(function* () {
         const member = yield* membership(invocation);
         if (member === undefined) return;
-        if (toolName !== "factory_snapshot" && toolName !== "factory_dispatch")
+        const implementationTeamTool =
+          member.assignment !== undefined &&
+          member.assignment.kind !== "onboarding" &&
+          ["orchestrator_capabilities", "delegate_task", "task_status", "task_cancel"].includes(
+            toolName,
+          );
+        let scopedCommunication = false;
+        if (
+          ["t3_thread_read", "t3_thread_send", "t3_thread_wait", "t3_thread_interrupt"].includes(
+            toolName,
+          ) &&
+          invocation.thread !== undefined &&
+          hasThreadTarget(payload)
+        ) {
+          const target = yield* membership({
+            ...invocation,
+            thread: { ...invocation.thread, threadId: payload.threadId },
+          });
+          const sameManager = target?.manager.id === member.manager.id;
+          const sameAssignment =
+            member.assignment !== undefined && target?.assignment?.id === member.assignment.id;
+          const ownManager =
+            target?.assignment === undefined && target?.manager.id === member.manager.id;
+          scopedCommunication =
+            sameManager &&
+            (member.assignment === undefined ||
+              sameAssignment ||
+              (ownManager && toolName !== "t3_thread_interrupt"));
+        }
+        if (
+          toolName !== "factory_snapshot" &&
+          toolName !== "factory_dispatch" &&
+          !implementationTeamTool &&
+          !scopedCommunication
+        )
           return yield* denied();
         const profile = yield* execution
           .runtimePolicyFor(member.ownerThreadId)
@@ -117,9 +154,19 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         if (invocation.thread === undefined) return yield* denied();
         const member = yield* managedCaller(invocation);
-        if (member.ownerThreadId !== invocation.thread.threadId) return yield* denied();
+        const descendantOperation =
+          member.assignment !== undefined &&
+          member.assignment.kind !== "onboarding" &&
+          (command.type === "assignment.file.mutate" || command.type === "assignment.verify") &&
+          command.assignmentId === member.assignment.id;
+        if (member.ownerThreadId !== invocation.thread.threadId && !descendantOperation)
+          return yield* denied();
         return yield* factory.dispatch(
-          { kind: "thread", threadId: invocation.thread.threadId },
+          {
+            kind: "thread",
+            threadId: invocation.thread.threadId,
+            ...(member.assignment === undefined ? {} : { assignmentId: member.assignment.id }),
+          },
           command,
         );
       }),

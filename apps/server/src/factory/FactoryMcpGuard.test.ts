@@ -29,6 +29,8 @@ import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
+import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
+import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const managerId = ThreadId.make("manager-web");
@@ -203,6 +205,13 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
       Layer.mock(ProjectService.ProjectService)({}),
     );
     const ProbeToolkit = Toolkit.make(
+      Tool.make("t3_thread_send", {
+        description: "Probe the team communication boundary.",
+        parameters: Schema.Struct({ threadId: ThreadId }),
+        success: Schema.Struct({ ran: Schema.Boolean }),
+        failure: OrchestratorMcpFailure,
+        failureMode: "return",
+      }),
       Tool.make("host_effect", {
         description: "A host operation that managed agents cannot run.",
         parameters: Tool.EmptyParams,
@@ -215,6 +224,12 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
       McpHttpServer.toolkitRegistration(
         ProbeToolkit,
         McpToolAccess.toLayer(ProbeToolkit, {
+          t3_thread_send: McpToolAccess.reads(() =>
+            Effect.sync(() => {
+              flags.hostCalls += 1;
+              return { ran: true };
+            }),
+          ),
           host_effect: McpToolAccess.reads(() =>
             Effect.sync(() => {
               flags.hostCalls += 1;
@@ -228,6 +243,7 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
     ).pipe(
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provide(FactoryMcpGuard.layer.pipe(Layer.provide(FactoryService.layer))),
+      Layer.provide(Layer.mergeAll(sourceUnused, handoverUnused)),
       Layer.provide(external),
     );
     yield* Effect.gen(function* () {
@@ -254,6 +270,25 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })), Effect.scoped);
 
 describe("FactoryMcpGuard", () => {
+  it.effect("checks the actual thread target before permitting team communication", () =>
+    scenario(({ call, flags }) =>
+      Effect.gen(function* () {
+        assert.isFalse(
+          (yield* call("t3_thread_send", { threadId: leadId }, managerId)).isError ?? false,
+        );
+        assert.isFalse(
+          (yield* call("t3_thread_send", { threadId: managerId }, leadId)).isError ?? false,
+        );
+        assert.isFalse(
+          (yield* call("t3_thread_send", { threadId: childId }, leadId)).isError ?? false,
+        );
+        const accepted = flags.hostCalls;
+        assert.isTrue((yield* call("t3_thread_send", { threadId: unmanagedId }, leadId)).isError);
+        assert.isTrue((yield* call("t3_thread_send", { threadId: "manager-api" }, leadId)).isError);
+        assert.equal(flags.hostCalls, accepted);
+      }),
+    ),
+  );
   it.effect("refuses an unauthenticated invocation before a registered handler runs", () =>
     scenario(({ call, flags }) =>
       Effect.gen(function* () {
@@ -287,7 +322,7 @@ describe("FactoryMcpGuard", () => {
         assert.deepEqual(result.content, [
           {
             type: "text",
-            text: "This managed thread can use only its scoped factory tools. Host tools are unavailable during confined discovery.",
+            text: "This managed thread can use only its scoped factory and approved team tools. This host tool is outside its execution grant.",
           },
         ]);
       }),

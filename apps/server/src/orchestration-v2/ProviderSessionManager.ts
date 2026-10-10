@@ -16,6 +16,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import { readIdeaExecution } from "../ideas/IdeaExecution.ts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -191,6 +192,7 @@ export interface ProviderSessionManagerV2Shape {
      * potential re-attach.
      */
     readonly revokeMcpCredential?: boolean;
+    readonly awaitQuiescence?: boolean;
   }) => Effect.Effect<void, ProviderSessionManagerV2Error>;
 }
 
@@ -401,6 +403,11 @@ export const layerWithOptions = (
           }),
       );
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
+      const retiringScopes = new Map<string, Set<Scope.Closeable>>();
+      const scopeClosures = new WeakMap<
+        Scope.Closeable,
+        Deferred.Deferred<Exit.Exit<void, never>>
+      >();
       // One retry per released entry, so a later release with the same id
       // cannot drop cleanup for threads only the earlier session served.
       const releaseRecordRetries = yield* FiberSet.make();
@@ -873,6 +880,9 @@ export const layerWithOptions = (
                 return ["kept", current] as const;
               }
               const updated = new Map(current);
+              const retiring = retiringScopes.get(key) ?? new Set<Scope.Closeable>();
+              retiring.add(existing.scope);
+              retiringScopes.set(key, retiring);
               updated.delete(key);
               return ["removed", updated] as const;
             }),
@@ -887,20 +897,46 @@ export const layerWithOptions = (
           ] as const;
         });
 
-      // Scope close can wedge on a misbehaving adapter finalizer (e.g. a
-      // provider process that never yields its message stream). Time-box it so
-      // the caller, and any lock or worker it holds, moves on and leaves a
-      // diagnosable trail. A close that finishes late is still logged.
+      const closeScope = (scope: Scope.Closeable, providerSessionId?: ProviderSessionId) =>
+        Effect.suspend(() => {
+          const existing = scopeClosures.get(scope);
+          if (existing !== undefined) return Effect.succeed(existing);
+          const receipt = Deferred.makeUnsafe<Exit.Exit<void, never>>();
+          scopeClosures.set(scope, receipt);
+          return Scope.close(scope, Exit.void).pipe(
+            Effect.exit,
+            Effect.tap((exit) =>
+              Effect.sync(() => {
+                if (providerSessionId === undefined || Exit.isFailure(exit)) return;
+                const key = sessionKey(providerSessionId);
+                const retiring = retiringScopes.get(key);
+                retiring?.delete(scope);
+                if (retiring?.size === 0) retiringScopes.delete(key);
+              }),
+            ),
+            Effect.flatMap((exit) => Deferred.succeed(receipt, exit)),
+            Effect.forkDetach({ startImmediately: true }),
+            Effect.as(receipt),
+          );
+        });
+      const awaitRetiringScopes = (providerSessionId: ProviderSessionId) =>
+        Effect.forEach(
+          retiringScopes.get(sessionKey(providerSessionId)) ?? [],
+          (scope) =>
+            closeScope(scope, providerSessionId).pipe(
+              Effect.flatMap(Deferred.await),
+              Effect.flatMap((exit) => exit),
+              Effect.timeout(RELEASE_SCOPE_CLOSE_TIMEOUT_MS),
+            ),
+          { discard: true },
+        );
       const closeScopeWithin = (
         scope: Scope.Closeable,
         annotations: { readonly providerSessionId?: ProviderSessionId; readonly reason: string },
       ) =>
         Effect.gen(function* () {
-          const closeFiber = yield* Scope.close(scope, Exit.void).pipe(
-            Effect.exit,
-            Effect.forkDetach({ startImmediately: true }),
-          );
-          const closeExit = yield* Fiber.join(closeFiber).pipe(
+          const receipt = yield* closeScope(scope, annotations.providerSessionId);
+          const closeExit = yield* Deferred.await(receipt).pipe(
             Effect.timeoutOption(RELEASE_SCOPE_CLOSE_TIMEOUT_MS),
           );
           if (Option.isNone(closeExit)) {
@@ -908,7 +944,7 @@ export const layerWithOptions = (
               ...annotations,
               timeoutMs: RELEASE_SCOPE_CLOSE_TIMEOUT_MS,
             });
-            yield* Fiber.join(closeFiber).pipe(
+            yield* Deferred.await(receipt).pipe(
               Effect.flatMap((exit) =>
                 Exit.isFailure(exit)
                   ? Effect.logWarning("orchestration-v2.provider-session-scope-close-failed", {
@@ -2084,16 +2120,18 @@ export const layerWithOptions = (
         release: releaseEntry,
         detach: (input) =>
           Effect.gen(function* () {
+            if (input.awaitQuiescence === true) yield* awaitRetiringScopes(input.providerSessionId);
             const key = sessionKey(input.providerSessionId);
             const currentEntry = (yield* Ref.get(sessions)).get(key);
             let detachedProviderThreads: ReadonlyArray<OrchestrationV2ProviderThread> = [];
             if (currentEntry?.supportsMultipleProviderThreads === true) {
-              const projection = yield* Effect.option(
-                projectionStore.getThreadRecords(input.threadId, [
-                  "providerThreads",
-                  "providerTurns",
-                ]),
-              );
+              const readProjection = projectionStore.getThreadRecords(input.threadId, [
+                "providerThreads",
+                "providerTurns",
+              ]);
+              const projection = yield* input.awaitQuiescence === true
+                ? readProjection.pipe(Effect.map(Option.some))
+                : Effect.option(readProjection);
               if (Option.isSome(projection)) {
                 const providerThreads = new Map(
                   projection.value.providerThreads
@@ -2101,9 +2139,20 @@ export const layerWithOptions = (
                     .map((thread) => [thread.id, thread] as const),
                 );
                 detachedProviderThreads = [...providerThreads.values()];
-                const activeTurns = projection.value.providerTurns.filter(
-                  (turn) => turn.status === "running" && providerThreads.has(turn.providerThreadId),
-                );
+                const activeTurns =
+                  input.awaitQuiescence === true
+                    ? [
+                        ...new Map(
+                          projection.value.providerTurns
+                            .filter((turn) => providerThreads.has(turn.providerThreadId))
+                            .toSorted((left, right) => left.ordinal - right.ordinal)
+                            .map((turn) => [turn.providerThreadId, turn] as const),
+                        ).values(),
+                      ]
+                    : projection.value.providerTurns.filter(
+                        (turn) =>
+                          turn.status === "running" && providerThreads.has(turn.providerThreadId),
+                      );
                 yield* Effect.forEach(
                   activeTurns,
                   (turn) =>
@@ -2111,23 +2160,45 @@ export const layerWithOptions = (
                       .interruptTurn({
                         providerThread: providerThreads.get(turn.providerThreadId)!,
                         providerTurnId: turn.id,
+                        ...(input.awaitQuiescence === true ? { requestRuntimeRestart: true } : {}),
                       })
                       .pipe(
                         Effect.catchCause((cause) =>
-                          Effect.logWarning(
-                            "orchestration-v2.driver-session.detach-interrupt-failed",
-                            {
-                              providerSessionId: input.providerSessionId,
-                              threadId: input.threadId,
-                              providerTurnId: turn.id,
-                              cause,
-                            },
-                          ),
+                          input.awaitQuiescence === true
+                            ? Effect.failCause(cause)
+                            : Effect.logWarning(
+                                "orchestration-v2.driver-session.detach-interrupt-failed",
+                                {
+                                  providerSessionId: input.providerSessionId,
+                                  threadId: input.threadId,
+                                  providerTurnId: turn.id,
+                                  cause,
+                                },
+                              ),
                         ),
                       ),
                   { concurrency: 1, discard: true },
                 );
               }
+            }
+            if (
+              input.awaitQuiescence === true &&
+              currentEntry?.supportsMultipleProviderThreads === true
+            ) {
+              const unload = currentEntry.exposedRuntime.unloadThread;
+              if (unload === undefined) {
+                return yield* new ProviderSessionReleaseError({
+                  providerSessionId: input.providerSessionId,
+                  reason: "manual_shutdown",
+                  cause: "This shared runtime cannot acknowledge unloading an individual thread.",
+                });
+              }
+              yield* Effect.forEach(
+                detachedProviderThreads.filter((thread) => thread.nativeThreadRef !== null),
+                (providerThread) =>
+                  unload({ providerThread }).pipe(Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS)),
+                { discard: true },
+              );
             }
             const detached = yield* Ref.modify(sessions, (current) => {
               const entry = current.get(key);
@@ -2177,6 +2248,8 @@ export const layerWithOptions = (
               yield* clearMcpSession(input.threadId);
             }
             if (Option.isNone(detached)) {
+              if (input.awaitQuiescence === true)
+                yield* awaitRetiringScopes(input.providerSessionId);
               return;
             }
             if (
@@ -2188,52 +2261,53 @@ export const layerWithOptions = (
                 reason: "manual_shutdown",
                 ...(input.detail === undefined ? {} : { detail: input.detail }),
               });
+              if (input.awaitQuiescence === true)
+                yield* awaitRetiringScopes(input.providerSessionId);
               return;
             }
             // The shared runtime stays up for other threads, so unload this
             // thread's native state rather than leaving it (and its MCP
             // servers) resident until the whole runtime is released.
             const unloadThread = detached.value.exposedRuntime.unloadThread;
-            if (detached.value.supportsMultipleProviderThreads && unloadThread !== undefined) {
+            if (
+              input.awaitQuiescence !== true &&
+              detached.value.supportsMultipleProviderThreads &&
+              unloadThread !== undefined
+            ) {
               // Serialized with re-attachment: a thread whose next turn
               // attaches first stays loaded, and one that attaches during the
               // unload waits for it, so its resume reloads the native thread.
-              yield* threadAttachment.withLock(
-                threadAttachmentKey(input),
-                Effect.gen(function* () {
-                  const entry = (yield* Ref.get(sessions)).get(key);
-                  if (
-                    entry?.runtime !== detached.value.runtime ||
-                    entry.attachedThreadIds.has(input.threadId)
-                  ) {
-                    return;
-                  }
-                  yield* Effect.forEach(
-                    detachedProviderThreads.filter((thread) => thread.nativeThreadRef !== null),
-                    (providerThread) =>
-                      unloadThread({ providerThread }).pipe(
-                        // Bounded so a wedged provider cannot hold up the
-                        // thread's next attach.
-                        Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
-                        Effect.catchCause((cause) =>
-                          Effect.logWarning(
-                            "orchestration-v2.driver-session.detach-unload-failed",
-                            {
-                              providerSessionId: input.providerSessionId,
-                              threadId: input.threadId,
-                              providerThreadId: providerThread.id,
-                              cause,
-                            },
-                          ),
-                        ),
+              yield* Effect.gen(function* () {
+                const entry = (yield* Ref.get(sessions)).get(key);
+                if (
+                  entry?.runtime !== detached.value.runtime ||
+                  entry.attachedThreadIds.has(input.threadId)
+                ) {
+                  return;
+                }
+                yield* Effect.forEach(
+                  detachedProviderThreads.filter((thread) => thread.nativeThreadRef !== null),
+                  (providerThread) =>
+                    unloadThread({ providerThread }).pipe(
+                      // Bounded so a wedged provider cannot hold up the
+                      // thread's next attach.
+                      Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning("orchestration-v2.driver-session.detach-unload-failed", {
+                          providerSessionId: input.providerSessionId,
+                          threadId: input.threadId,
+                          providerThreadId: providerThread.id,
+                          cause,
+                        }),
                       ),
-                    { concurrency: 1, discard: true },
-                  );
-                }),
-              );
+                    ),
+                  { concurrency: 1, discard: true },
+                );
+              });
             }
             yield* scheduleIdleRelease(input.providerSessionId);
           }).pipe(
+            (effect) => threadAttachment.withLock(threadAttachmentKey(input), effect),
             Effect.catchCause((cause) =>
               Effect.fail(
                 new ProviderSessionReleaseError({

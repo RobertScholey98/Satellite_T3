@@ -2,7 +2,7 @@ import type { FactoryAssignmentGrant, FactoryBoundaryConfiguration } from "@t3to
 
 import { admissibleFactorySourcePath } from "./FactoryExecutionProfile.ts";
 
-export function factoryRelativePath(value: string): boolean {
+export function factorySafeRelativePath(value: string): boolean {
   return (
     value.length > 0 &&
     value.length <= 1024 &&
@@ -15,8 +15,12 @@ export function factoryRelativePath(value: string): boolean {
           /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part),
       ) &&
     !value.startsWith("/") &&
-    admissibleFactorySourcePath(value)
+    !value.split("/").some((part) => part === "" || part === "." || part === "..")
   );
+}
+
+export function factoryRelativePath(value: string): boolean {
+  return factorySafeRelativePath(value) && admissibleFactorySourcePath(value);
 }
 
 export function factoryProtectedPath(value: string): boolean {

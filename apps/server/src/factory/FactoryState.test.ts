@@ -174,12 +174,14 @@ describe("factory onboarding decisions", () => {
       ],
     );
     assert.deepEqual(
-      decision.effects.map((effect) => ({
-        type: effect.type,
-        purpose: effect.purpose,
-        threadId: effect.threadId,
-        profileId: effect.profileId,
-      })),
+      decision.effects
+        .filter((effect) => effect.type === "thread.launch")
+        .map((effect) => ({
+          type: effect.type,
+          purpose: effect.purpose,
+          threadId: effect.threadId,
+          profileId: effect.profileId,
+        })),
       [
         {
           type: "thread.launch",
@@ -516,7 +518,10 @@ describe("factory onboarding decisions", () => {
     assert.equal(repaired.state.managers[0]!.workflow.revision, repairedWorkflow.revision);
     assert.equal(repaired.state.assignments[0]!.workflow.revision, repairedWorkflow.revision);
     assert.equal(repaired.state.assignments[0]!.threadId, leadThreadId);
-    assert.equal(repaired.effects[0]!.modelSelection.model, "other-approved-model");
+    assert.equal(
+      repaired.effects.find((effect) => effect.type === "thread.launch")?.modelSelection.model,
+      "other-approved-model",
+    );
     const managerStarted = apply(
       repaired.state,
       {

@@ -36,6 +36,22 @@ remain in effect even if you later raise the defaults. Grant extensions preserve
 task scope and outstanding human approvals. Workflow changes always require your
 review; weakening project safeguards always requires a separately authorized task.
 
+Once the manager is ready, use **Assign work** to set a task, completion condition,
+complexity, and its permitted files. A new implementation lead appears under the
+manager as an ordinary thread. It starts from the project's current committed
+revision and keeps the approved workflow, permissions, and model choices recorded
+for that assignment. Preparation failures remain visible and can be retried.
+
+Use **Model defaults** or **Team models** to approve exact models and options and
+favor them for lead, worker, and reviewer roles at different task complexities.
+Managers inherit defaults unless overridden. Removing an approved model stops
+affected active work; adding it back does not silently restore that work's grant.
+
+To continue work you already started, choose **Hand over thread**. Handover stops
+its running team before capturing the current work, including staged and untracked
+files. The existing conversation, branch, worktree, and PR links stay attached.
+Protected-control changes need a separately authorized rule-change assignment.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

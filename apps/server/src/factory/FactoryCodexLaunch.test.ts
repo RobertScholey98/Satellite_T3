@@ -68,6 +68,9 @@ it.effect(
       assert.include(result.args, "--read-only");
       assert.include(result.args, "ALL");
       assert.include(result.args, "--pull");
+      assert.include(result.args, "agents.enabled=false");
+      assert.include(result.args, "features.multi_agent=false");
+      assert.include(result.args, "features.multi_agent_v2=false");
       assert.equal(
         yield* fs.readFileString(path.join(home, "config.toml")),
         '[mcp_servers.host]\ncommand="privileged"',

@@ -59,6 +59,33 @@ const settingsCommands: ReadonlyArray<FactoryCommand> = [
       gates: [],
     },
   },
+  {
+    type: "models.defaults.configure",
+    commandId: CommandId.make("models"),
+    policy: { approvedModels: [], preferences: [] },
+  },
+  {
+    type: "manager.models.configure",
+    commandId: CommandId.make("manager-models"),
+    managerId,
+    overrides: { approvedModels: [] },
+  },
+  {
+    type: "assignment.commission",
+    commandId: CommandId.make("rule-change"),
+    managerId,
+    title: "Change the lint rule",
+    kind: "rule-change",
+    complexity: "small",
+    scope: {
+      description: "Adjust one approved rule",
+      completionCondition: "Rule reviewed",
+      requiresPullRequest: true,
+    },
+    sourcePaths: [],
+    creatableDirectories: [],
+    controlPaths: ["eslint.config.js"],
+  },
 ];
 const create: FactoryCommand = {
   type: "manager.create",
@@ -122,6 +149,9 @@ describe("factory RPC authority", () => {
           "assignments.extend-grant",
           "manager.configure",
           "manager.approve-onboarding",
+          "models.defaults.configure",
+          "manager.models.configure",
+          "assignment.commission",
         ]);
       }).pipe(Effect.scoped),
   );

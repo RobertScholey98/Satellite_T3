@@ -6,7 +6,7 @@ import {
   ThreadId,
   type FactoryCommand,
   type FactoryCommandResult,
-  type FactoryEffectIntent,
+  type FactoryThreadLaunchIntent,
   type FactoryQuery,
   type FactorySnapshot,
 } from "@t3tools/contracts";
@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -25,6 +26,8 @@ import { ThreadManagementService } from "../orchestration-v2/ThreadManagementSer
 import { ProjectService } from "../project/ProjectService.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
 import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import { FactorySource } from "./FactorySource.ts";
+import { FactoryHandover } from "./FactoryHandover.ts";
 import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
 import { decide, type FactoryActor } from "./FactoryState.ts";
 
@@ -42,6 +45,8 @@ export class FactoryService extends Context.Service<
 >()("t3/factory/FactoryService") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+const renderJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const isFactoryError = Schema.is(FactoryError);
 
 const scopedSnapshot =
   (query: FactoryQuery) =>
@@ -59,7 +64,7 @@ const scopedSnapshot =
           ),
         };
 
-const onboardingInstructions = (intent: FactoryEffectIntent) =>
+const onboardingInstructions = (intent: FactoryThreadLaunchIntent) =>
   [
     `You are the onboarding lead for project ${intent.projectId}, assigned by engineering manager ${intent.managerId}.`,
     `Assignment: ${intent.assignmentId}. You are in a read-only snapshot of the project's tracked files. Untracked files, known credential paths, and symlinks are excluded; identify any discovery gaps.`,
@@ -77,12 +82,37 @@ export const layer = Layer.effect(
     const store = yield* FactoryStore;
     const execution = yield* FactoryExecution;
     const boundaries = yield* FactoryBoundaryExecution;
+    const sources = yield* FactorySource;
+    const handovers = yield* FactoryHandover;
     const threads = yield* ThreadManagementService;
     const projects = yield* ProjectService;
     const commands = yield* Semaphore.make(1);
+    const commandLocks = new Map<
+      CommandId,
+      { readonly semaphore: Semaphore.Semaphore; users: number }
+    >();
+    const withCommand = <A, E, R>(id: CommandId, effect: Effect.Effect<A, E, R>) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          let lock = commandLocks.get(id);
+          if (lock === undefined) {
+            lock = { semaphore: Semaphore.makeUnsafe(1), users: 0 };
+            commandLocks.set(id, lock);
+          }
+          lock.users += 1;
+          return lock;
+        }),
+        (lock) => lock.semaphore.withPermits(1)(effect),
+        (lock) =>
+          Effect.sync(() => {
+            lock.users -= 1;
+            if (lock.users === 0) commandLocks.delete(id);
+          }),
+      );
 
     const launch = Effect.fn("FactoryService.launch")(function* (pending: PendingFactoryEffect) {
       const { intent } = pending;
+      if (intent.type !== "thread.launch") return;
       const snapshot = yield* store.snapshot;
       const assignment = snapshot.assignments.find((entry) => entry.id === intent.assignmentId);
       const manager = snapshot.managers.find((entry) => entry.id === intent.managerId);
@@ -115,7 +145,12 @@ export const layer = Layer.effect(
             commandId: CommandId.make(`factory:${pending.id}:create`),
             threadId: intent.threadId,
             projectId: intent.projectId,
-            title: intent.purpose === "manager" ? manager.name : "Project onboarding",
+            title:
+              intent.purpose === "manager"
+                ? manager.name
+                : intent.purpose === "onboarding"
+                  ? "Project onboarding"
+                  : (assignment.title ?? "Implementation"),
             modelSelection: intent.modelSelection,
             runtimeMode: "approval-required",
             interactionMode: "default",
@@ -148,16 +183,27 @@ export const layer = Layer.effect(
           commandId: CommandId.make(`factory:${pending.id}:initial-message`),
           threadId: intent.threadId,
           messageId,
-          ...(intent.purpose === "onboarding" ? { senderThreadId: intent.managerId } : {}),
+          ...(intent.purpose !== "manager" ? { senderThreadId: intent.managerId } : {}),
           text:
             intent.purpose === "onboarding"
               ? onboardingInstructions(intent)
-              : [
-                  `You are the engineering manager for project ${intent.projectId}. Your durable manager identity is ${intent.managerId}. The human is your manager.`,
-                  `Onboarding lead ${assignment.threadId} owns discovery assignment ${assignment.id}. Use factory_snapshot to inspect its findings and waits. A read-only tracked snapshot is mounted at /workspace; owned workflow ${intent.workflow.revision} is at /workflow.`,
-                  "You coordinate scoped implementation teams and project priorities. Implementation leads own code, internal reviews, verification, and the complete PR process. You do not implement or review their PRs. You and the system manager are peers with different remits.",
-                  "Currently onboarding is in progress. Acknowledge the assignment briefly, then wait for an actionable event or the human. Do not poll, start implementation, or attempt to broaden execution permissions. Unresolved permissions and project decisions must remain visible.",
-                ].join("\n\n"),
+              : intent.purpose === "implementation"
+                ? [
+                    `You lead implementation assignment ${assignment.id} for engineering manager ${manager.id}. You own implementation, your team's reviews, verification, and the complete PR process.`,
+                    `Task: ${assignment.title}. Scope: ${assignment.scope?.description}. Completion: ${assignment.scope?.completionCondition}. Pull request required: ${assignment.scope?.requiresPullRequest ?? true}.`,
+                    `The owned workflow is pinned to ${assignment.workflow.revision} at /workflow. Read its relevant skills. Your approved starting source is ${assignment.startingSource?.revision} (${assignment.startingSource?.sourceDigest}); preserve any handed-over work and existing PR links.`,
+                    `Approved execution grant: ${renderJson(assignment.grant)}. Existing granted files can be edited normally. For creating, renaming, or deleting files use factory_dispatch assignment.file.mutate with the current grant epoch. Use assignment.verify to run the adopted immutable checks and retain its evidence.`,
+                    `Approved exact models: ${renderJson(assignment.modelPolicy)}. Your selected model: ${renderJson(assignment.modelChoice)}. Choose approved models according to task complexity. Native subagent tools are disabled; use delegate_task for your internal team. Every descendant remains inside this assignment's boundary.`,
+                    "Raise an out-of-scope dependency or structural problem when discovered. Do not change protected controls without a separately authorized rule-change assignment. The manager coordinates priorities; it does not review your PR.",
+                    "Human review is required unless the delivery grant and project rules explicitly permit autonomous delivery. Major UI changes require human PR approval and useful screenshots. After merge, conduct your internal retro and then a retro with your manager. Creating a follow-up ticket does not authorize its implementation.",
+                  ].join("\n\n")
+                : [
+                    `You are the engineering manager for project ${intent.projectId}. Your durable manager identity is ${intent.managerId}. The human is your manager.`,
+                    `Onboarding lead ${assignment.threadId} owns discovery assignment ${assignment.id}. Use factory_snapshot to inspect its findings and waits. A read-only tracked snapshot is mounted at /workspace; owned workflow ${intent.workflow.revision} is at /workflow.`,
+                    "You coordinate scoped implementation teams and project priorities. Implementation leads own code, internal reviews, verification, and the complete PR process. You do not implement or review their PRs. You and the system manager are peers with different remits.",
+                    "Currently onboarding is in progress. Acknowledge the assignment briefly, then wait for an actionable event or the human. Do not poll, start implementation, or attempt to broaden execution permissions. Unresolved permissions and project decisions must remain visible.",
+                    "When factory_snapshot shows an active manager with an approved boundary and the human requests work, use assignment.commission to create a scoped implementation lead. Choose exact source paths and creation directories within that boundary, a completion condition, and task complexity. Omit modelSelection for the configured lead preference. authorizationMessageId may reference the direct human request, or omit it to use the latest direct human message. Discuss gaps with the human before commissioning unclear work.",
+                  ].join("\n\n"),
           attachments: [],
           modelSelection: intent.modelSelection,
           mode: "auto",
@@ -177,7 +223,9 @@ export const layer = Layer.effect(
             commandId: CommandId.make(`${pending.id}:receipt`),
             threadId: intent.threadId,
             reason:
-              "The confined thread could not start. Check the environment's provider and Docker availability, then retry onboarding. Existing work is preserved.",
+              intent.purpose === "implementation"
+                ? "The implementation thread could not start. Check the environment's provider and Docker availability, then retry the assignment. Existing work is preserved."
+                : "The confined thread could not start. Check the environment's provider and Docker availability, then retry onboarding. Existing work is preserved.",
           },
           now: yield* nowIso,
           failed: true,
@@ -195,18 +243,126 @@ export const layer = Layer.effect(
       }
     });
 
+    const prepare = Effect.fn("FactoryService.prepare")(function* (pending: PendingFactoryEffect) {
+      const { intent } = pending;
+      if (intent.type !== "assignment.prepare") return;
+      const snapshot = yield* store.snapshot;
+      const assignment = snapshot.assignments.find((entry) => entry.id === intent.assignmentId);
+      const manager = snapshot.managers.find((entry) => entry.id === intent.managerId);
+      if (
+        assignment === undefined ||
+        manager === undefined ||
+        assignment.status === "complete" ||
+        assignment.preparation === "ready"
+      ) {
+        yield* store.retireEffect(pending.id);
+        return;
+      }
+      if (manager.status !== "active" || assignment.status !== "pending") return;
+      yield* store.beginEffect(pending.id);
+      const result = yield* Effect.gen(function* () {
+        if (assignment.grant === undefined)
+          return yield* new FactoryError({ code: "invalid-state" });
+        if (assignment.origin === "handover" && assignment.preparation === "stopping") {
+          yield* handovers.stop({
+            threadId: assignment.threadId,
+            projectId: assignment.projectId,
+            commandId: CommandId.make(`factory:${assignment.id}:stop`),
+          });
+          yield* store.commit({
+            actor: { kind: "system" },
+            command: {
+              type: "assignment.preparation.recorded",
+              commandId: CommandId.make(`factory:${assignment.id}:capturing`),
+              assignmentId: assignment.id,
+              threadId: assignment.threadId,
+              stage: "capturing",
+            },
+            now: yield* nowIso,
+          });
+        }
+        const startingSource =
+          assignment.startingSource ??
+          (yield* sources.capture({
+            requestId: CommandId.make(`factory:${assignment.id}:source`),
+            projectId: assignment.projectId,
+            ...(assignment.origin === "handover" ? { threadId: assignment.threadId } : {}),
+          }));
+        yield* store.commit({
+          actor: { kind: "system" },
+          command: {
+            type: "assignment.preparation.recorded",
+            commandId: CommandId.make(`factory:${assignment.id}:source-recorded`),
+            assignmentId: assignment.id,
+            threadId: assignment.threadId,
+            stage: "preparing",
+            startingSource,
+          },
+          now: yield* nowIso,
+        });
+        const qualification = yield* boundaries.prepare({
+          assignmentId: assignment.id,
+          threadId: assignment.threadId,
+          boundaryId: assignment.grant.boundaryId,
+          grant: assignment.grant,
+          startingSourceId: startingSource.id,
+        });
+        if (qualification.status !== "qualified")
+          return yield* new FactoryError({
+            code: "execution-unavailable",
+            detail: qualification.reason,
+          });
+        if (assignment.origin === "handover") yield* sources.validateCurrent(startingSource.id);
+        return { qualification, startingSource };
+      }).pipe(Effect.result);
+      const current = (yield* store.snapshot).assignments.find(
+        (entry) => entry.id === assignment.id,
+      );
+      if (current?.status !== "pending" || current.grant?.epoch !== assignment.grant?.epoch) {
+        yield* store.retireEffect(pending.id);
+        return;
+      }
+      yield* store.finishEffect({
+        id: pending.id,
+        now: yield* nowIso,
+        ...(Result.isFailure(result) ? { failed: true } : {}),
+        command: Result.isFailure(result)
+          ? {
+              type: "assignment.prepare.failed",
+              commandId: CommandId.make(`${pending.id}:receipt`),
+              assignmentId: assignment.id,
+              threadId: assignment.threadId,
+              reason: isFactoryError(result.failure)
+                ? (result.failure.detail ?? result.failure.message)
+                : "The approved assignment environment could not be prepared. Existing work is preserved; resolve the environment problem and retry.",
+            }
+          : {
+              type: "assignment.prepared",
+              commandId: CommandId.make(`${pending.id}:receipt`),
+              assignmentId: assignment.id,
+              threadId: assignment.threadId,
+              ...result.success,
+            },
+      });
+    });
+
     const worker = yield* makeDrainableWorker((_wake: void) =>
-      store.pending.pipe(
-        Effect.flatMap((pending) =>
-          Effect.forEach(pending, (entry) => commands.withPermits(1)(launch(entry)), {
-            discard: true,
-          }),
-        ),
-      ),
+      Effect.gen(function* () {
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter((entry) => !visited.has(entry.id));
+          if (pending.length === 0) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            if (entry.intent.type === "assignment.prepare") yield* prepare(entry);
+            else yield* commands.withPermits(1)(launch(entry));
+          }
+        }
+      }),
     );
     yield* worker.enqueue(undefined);
 
-    return FactoryService.of({
+    const service = FactoryService.of({
       snapshot: (query) => store.snapshot.pipe(Effect.map(scopedSnapshot(query))),
       changes: (query) => store.changes.pipe(Stream.map(scopedSnapshot(query))),
       drain: worker.drain,
@@ -214,20 +370,68 @@ export const layer = Layer.effect(
         const receipt = yield* store.findReceipt({ actor, command });
         if (receipt !== undefined) return receipt;
         const allocation =
-          command.type === "manager.create"
+          command.type === "manager.create" ||
+          command.type === "assignment.commission" ||
+          command.type === "assignment.handover"
             ? {
-                managerThreadId: ThreadId.make(yield* randomUuidV4),
-                leadThreadId: ThreadId.make(yield* randomUuidV4),
+                managerThreadId:
+                  command.type === "manager.create"
+                    ? ThreadId.make(yield* randomUuidV4)
+                    : command.managerId,
+                leadThreadId:
+                  command.type === "assignment.handover"
+                    ? command.threadId
+                    : ThreadId.make(yield* randomUuidV4),
                 assignmentId: FactoryAssignmentId.make(yield* randomUuidV4),
               }
             : undefined;
         const snapshot = yield* store.snapshot;
+        let humanMessageVerified = false;
+        let humanMessageId: MessageId | undefined;
+        if (command.type === "assignment.commission" && actor.kind === "thread") {
+          const records = yield* threads
+            .getThreadRecords(
+              actor.threadId,
+              ["messages"],
+              command.authorizationMessageId === undefined
+                ? { messageRoles: ["user"] }
+                : { messageIds: [command.authorizationMessageId] },
+            )
+            .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause })));
+          humanMessageId = records.messages.findLast(
+            (message) =>
+              (command.authorizationMessageId === undefined ||
+                message.id === command.authorizationMessageId) &&
+              message.role === "user" &&
+              message.createdBy === "user" &&
+              message.senderThreadId === undefined &&
+              message.scheduledTaskId === undefined,
+          )?.id;
+          humanMessageVerified = humanMessageId !== undefined;
+        }
+        let handoverVerified = false;
+        if (command.type === "assignment.handover" && actor.kind === "human") {
+          const thread = yield* threads
+            .getThreadShell(command.threadId)
+            .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause })));
+          const manager = snapshot.managers.find((entry) => entry.id === command.managerId);
+          handoverVerified =
+            thread !== null &&
+            thread.projectId === manager?.projectId &&
+            thread.deletedAt === null &&
+            thread.archivedAt === null &&
+            thread.lineage.parentThreadId === null &&
+            thread.lineage.relationshipToParent !== "subagent";
+        }
         const now = yield* nowIso;
         const preflight = decide({
           state: snapshot,
           actor,
           command,
           now,
+          humanMessageVerified,
+          ...(humanMessageId === undefined ? {} : { humanMessageId }),
+          handoverVerified,
           ...(allocation === undefined ? {} : { allocation }),
         });
         if (Result.isFailure(preflight)) return yield* preflight.failure;
@@ -294,17 +498,54 @@ export const layer = Layer.effect(
                 configuration: command.configuration,
               })
             : undefined;
+        if (command.type === "assignment.file.mutate") yield* boundaries.mutate(command);
+        const verification =
+          command.type === "assignment.verify" ? yield* boundaries.verify(command) : undefined;
         const result = yield* store.commit({
           actor,
           command,
           now: yield* nowIso,
+          humanMessageVerified,
+          ...(humanMessageId === undefined ? {} : { humanMessageId }),
+          handoverVerified,
           ...(allocation === undefined ? {} : { allocation }),
           ...(qualification === undefined ? {} : { qualification }),
           ...(boundary === undefined ? {} : { boundary }),
+          ...(verification === undefined ? {} : { verification }),
         });
         yield* worker.enqueue(undefined);
         return result;
       }, commands.withPermits(1)),
+    });
+    return FactoryService.of({
+      ...service,
+      dispatch: (actor, command) => {
+        if (command.type !== "assignment.file.mutate" && command.type !== "assignment.verify")
+          return withCommand(command.commandId, service.dispatch(actor, command));
+        return withCommand(
+          command.commandId,
+          Effect.gen(function* () {
+            const receipt = yield* store.findReceipt({ actor, command });
+            if (receipt !== undefined) return receipt;
+            const preflight = decide({
+              state: yield* store.snapshot,
+              actor,
+              command,
+              now: yield* nowIso,
+            });
+            if (Result.isFailure(preflight)) return yield* preflight.failure;
+            if (command.type === "assignment.file.mutate") yield* boundaries.mutate(command);
+            const verification =
+              command.type === "assignment.verify" ? yield* boundaries.verify(command) : undefined;
+            return yield* store.commit({
+              actor,
+              command,
+              now: yield* nowIso,
+              ...(verification === undefined ? {} : { verification }),
+            });
+          }),
+        );
+      },
     });
   }),
 );

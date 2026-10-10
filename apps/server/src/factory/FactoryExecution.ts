@@ -1,4 +1,3 @@
-import * as NodeStream from "@effect/platform-node/NodeStream";
 import {
   FactoryError,
   type FactoryDiscoveryQualification,
@@ -17,23 +16,22 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../config.ts";
 import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
-import { openZipArchive } from "../zipArchive.ts";
 import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryModelAdmission from "./FactoryModelAdmission.ts";
 import {
-  admissibleFactorySourcePath,
   FACTORY_CODEX_IMAGE,
   factoryDockerArguments,
   FactoryExecutionProfile,
 } from "./FactoryExecutionProfile.ts";
 import { factoryExecutionProbe } from "./FactoryExecutionProbe.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
+import { FactorySource } from "./FactorySource.ts";
 
 export { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 
@@ -52,7 +50,17 @@ export class FactoryExecution extends Context.Service<
     }) => Effect.Effect<FactoryDiscoveryQualification>;
     readonly runtimePolicyFor: (
       threadId: ThreadId,
+      pendingParentThreadId?: ThreadId,
     ) => Effect.Effect<FactoryExecutionProfile | undefined, FactoryError>;
+    readonly assertSelectionFor: (
+      threadId: ThreadId,
+      selection: ModelSelection,
+      pendingParentThreadId?: ThreadId,
+    ) => Effect.Effect<void, FactoryError>;
+    readonly assertDelegationFor: (
+      threadId: ThreadId,
+      selection: ModelSelection,
+    ) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryExecution") {}
 
@@ -71,6 +79,8 @@ const make = Effect.gen(function* () {
   const projections = yield* ProjectionStoreV2;
   const providers = yield* ProviderInstanceRegistry;
   const store = yield* FactoryStore;
+  const models = yield* FactoryModelAdmission.FactoryModelAdmission;
+  const sources = yield* FactorySource;
   const root = path.join(config.stateDir, "factory", "execution");
 
   const run = Effect.fn("FactoryExecution.run")(function* (
@@ -91,61 +101,30 @@ const make = Effect.gen(function* () {
     revision: string,
     destination: string,
   ) {
-    const archivePath = `${destination}.zip`;
-    yield* run(
-      "git",
-      ["-c", "core.hooksPath=", "archive", "--format=zip", `--output=${archivePath}`, revision],
-      "The selected repository revision could not be exported for discovery.",
-      repositoryRoot,
-    );
-    yield* Effect.addFinalizer(() => fs.remove(archivePath).pipe(Effect.ignore));
-    const archive = yield* openZipArchive(
-      archivePath,
-      () => new QualificationError({ detail: "The discovery snapshot could not be read." }),
-    );
+    const source = yield* sources
+      .readRevision(repositoryRoot, revision)
+      .pipe(
+        Effect.mapError(
+          (cause) => new QualificationError({ detail: cause.detail ?? cause.message }),
+        ),
+      );
     yield* fs.makeDirectory(destination, { recursive: true });
-    let bytes = 0;
-    const omitted: Array<string> = [];
-    for (;;) {
-      const entry = yield* archive.next;
-      if (entry === null) break;
-      if (entry.fileName.endsWith("/")) continue;
-      const type = (entry.externalFileAttributes >>> 16) & 0o170000;
-      if (!admissibleFactorySourcePath(entry.fileName) || (type !== 0 && type !== 0o100000)) {
-        omitted.push(entry.fileName);
-        continue;
-      }
-      bytes += entry.uncompressedSize;
-      if (bytes > 256 * 1024 * 1024 || entry.uncompressedSize > 16 * 1024 * 1024) {
-        return yield* new QualificationError({
-          detail: "Discovery snapshots are limited to 256 MB and 16 MB per file.",
-        });
-      }
-      const target = path.resolve(destination, entry.fileName);
-      if (!target.startsWith(`${destination}${path.sep}`)) {
-        return yield* new QualificationError({
-          detail: "The discovery snapshot contains an unsafe path.",
-        });
-      }
+    for (const file of source.files) {
+      const target = path.join(destination, file.path);
       yield* fs.makeDirectory(path.dirname(target), { recursive: true });
-      yield* Effect.gen(function* () {
-        const readable = yield* archive.streamEntry(entry);
-        yield* NodeStream.fromReadable<Uint8Array, QualificationError>({
-          evaluate: () => readable,
-          onError: () =>
-            new QualificationError({ detail: "A discovery snapshot file could not be read." }),
-        }).pipe(Stream.run(fs.sink(target, { flag: "wx" })));
-      }).pipe(Effect.scoped);
+      yield* fs.writeFile(target, Buffer.from(file.content, "base64"), { flag: "wx" });
+      yield* fs.chmod(target, file.mode === "100755" ? 0o755 : 0o644);
     }
     yield* fs.writeFileString(
       path.join(destination, "SATELLITE_DISCOVERY.md"),
       [
         `Read-only tracked-file snapshot at ${revision}.`,
-        "Untracked files, credentials, environment files, and symlinks are omitted.",
+        "Untracked files, credentials, and environment files are omitted. Links and unsupported entries prevent capture.",
         "Source files may contain application configuration. No host credential directories are mounted.",
         "This snapshot has no Git metadata. Report findings through the scoped Satellite tools.",
-        `Omitted entries: ${encodePaths(omitted)}`,
+        `Omitted entries: ${encodePaths(source.excludedPaths)}`,
       ].join("\n"),
+      { flag: "wx" },
     );
   }, Effect.scoped);
 
@@ -293,7 +272,7 @@ const make = Effect.gen(function* () {
   );
 
   const runtimePolicyFor = Effect.fn("FactoryExecution.runtimePolicyFor")(
-    function* (threadId: ThreadId) {
+    function* (threadId: ThreadId, pendingParentThreadId?: ThreadId) {
       const state = yield* store.snapshot;
       let current: ThreadId | null = threadId;
       const visited = new Set<ThreadId>();
@@ -316,7 +295,13 @@ const make = Effect.gen(function* () {
                 visited.size === 1 ? Effect.succeed(undefined) : Effect.fail(cause),
             }),
           );
-        if (thread === undefined) return undefined;
+        if (thread === undefined) {
+          if (visited.size === 1 && pendingParentThreadId !== undefined) {
+            current = pendingParentThreadId;
+            continue;
+          }
+          return undefined;
+        }
         current = thread.lineage?.parentThreadId ?? null;
       }
       if (current === null) return undefined;
@@ -331,6 +316,12 @@ const make = Effect.gen(function* () {
       yield* assertFactoryProfileActive(profile).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
       );
+      if (
+        assignment.startingSource !== undefined &&
+        (profile.startingSourceId !== assignment.startingSource.id ||
+          profile.startingSourceDigest !== assignment.startingSource.sourceDigest)
+      )
+        return yield* new FactoryError({ code: "execution-unavailable" });
       if (profile.assignmentWorkspace !== undefined) {
         const workspace = profile.assignmentWorkspace;
         if (
@@ -351,7 +342,14 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(() => new FactoryError({ code: "execution-unavailable" })),
   );
-  return FactoryExecution.of({ qualify, runtimePolicyFor });
+  return FactoryExecution.of({
+    qualify,
+    runtimePolicyFor,
+    assertSelectionFor: models.assertSelectionFor,
+    assertDelegationFor: models.assertDelegationFor,
+  });
 });
 
-export const layer = Layer.effect(FactoryExecution, make);
+export const layer = Layer.effect(FactoryExecution, make).pipe(
+  Layer.provide(FactoryModelAdmission.layer),
+);

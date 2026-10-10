@@ -407,7 +407,13 @@ export function FactoryPolicyDialog({
                           }
                         />
                         <Label htmlFor={`${prefix}-${assignment.id}`}>
-                          {owner.name} · Project onboarding
+                          {owner.name} ·{" "}
+                          {assignment.title ??
+                            (assignment.kind === "onboarding"
+                              ? "Project onboarding"
+                              : assignment.kind === "rule-change"
+                                ? "Rule change"
+                                : "Implementation")}
                         </Label>
                       </div>
                       <p className="text-xs text-muted-foreground">

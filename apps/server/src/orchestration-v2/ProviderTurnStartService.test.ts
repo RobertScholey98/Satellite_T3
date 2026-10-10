@@ -37,6 +37,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import type { FactoryExecutionProfile } from "../factory/FactoryExecution.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -155,6 +156,8 @@ it("does not commit running state when inherited background routing cannot be re
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly executionBoundaryId?: string;
+  readonly factoryExecution?: FactoryExecutionProfile;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
@@ -203,6 +206,9 @@ function makeLocalCommandHarness(input: {
   };
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
+    ...(input.executionBoundaryId === undefined
+      ? {}
+      : { executionBoundaryId: input.executionBoundaryId }),
     driver: ProviderDriverKind.make("codex"),
     providerInstanceId: newInstanceId,
     providerSessionId,
@@ -525,7 +531,15 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProviderAuthService.ProviderAuthService)({ tryHandlePromptCommand }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
-          resolve: () => Effect.succeed({} as never),
+          resolve: () =>
+            Effect.succeed({
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: null,
+              ...(input.factoryExecution === undefined
+                ? {}
+                : { factoryExecution: input.factoryExecution }),
+            }),
         }),
       ),
     ),
@@ -552,6 +566,39 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+effectIt.effect("blocks a stale host context before opening a confined provider session", () =>
+  Effect.gen(function* () {
+    const factoryExecution = {
+      boundaryId: "confined-current",
+      dockerContext: "default",
+      imageId: "sha256:approved",
+      projectSnapshotPath: "/captured",
+      workflowSnapshotPath: "/workflow",
+      runtimePath: "/runtime",
+    };
+    const stale = makeLocalCommandHarness({ text: "Continue", factoryExecution });
+    yield* stale.start;
+    expect(stale.projection().runs.at(-1)?.status).toBe("failed");
+    expect(stale.projection().turnItems.at(-1)).toMatchObject({
+      type: "error",
+      title: "The execution boundary changed",
+      failure: { class: "validation_error" },
+    });
+    expect(stale.open).not.toHaveBeenCalled();
+    const current = makeLocalCommandHarness({
+      text: "Continue",
+      factoryExecution,
+      executionBoundaryId: "confined-current",
+      failReadsAfterRunning: true,
+    });
+    yield* current.start;
+    expect(current.projection().runs.at(-1)?.status).toBe("running");
+    expect(current.projection().providerThreads.at(-1)?.executionBoundaryId).toBe(
+      "confined-current",
+    );
+  }),
+);
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
   Effect.gen(function* () {

@@ -36,7 +36,7 @@ function collect(directory, prefix = '') {
       if (stat.size > 16 * 1024 * 1024) throw Error('file size limit');
       const bytes = fs.readFileSync(target);
       if (bytes.length > 16 * 1024 * 1024) throw Error('file size limit');
-      files.push({ path: relative, content: bytes.toString('base64'), digest: crypto.createHash('sha256').update(bytes).digest('hex') });
+      files.push({ path: relative, content: bytes.toString('base64'), digest: crypto.createHash('sha256').update(bytes).digest('hex'), mode: stat.mode & 0o111 ? '100755' : '100644' });
     }
   }
   return files;
@@ -46,8 +46,9 @@ if (input.kind === 'initialize') {
   for (const file of input.files) {
     const target = safe(file.path);
     parent(target);
-    fs.writeFileSync(target, Buffer.from(file.content, 'base64'), { flag: 'wx', mode: file.writable ? 0o666 : 0o444 });
-    fs.chmodSync(target, file.writable ? 0o666 : 0o444);
+    const mode = file.mode === '100755' ? file.writable ? 0o777 : 0o555 : file.writable ? 0o666 : 0o444;
+    fs.writeFileSync(target, Buffer.from(file.content, 'base64'), { flag: 'wx', mode });
+    fs.chmodSync(target, mode);
   }
   fs.chmodSync('/workspace', 0o755);
   console.log('initialized');
@@ -101,6 +102,6 @@ if (input.kind === 'initialize') {
 } else if (input.kind === 'capture') {
   const files = collect('/workspace');
   if (files.reduce((size, file) => size + file.content.length, 0) > 350 * 1024 * 1024) throw Error('snapshot size limit');
-  console.log(JSON.stringify({ files, digest: crypto.createHash('sha256').update(JSON.stringify(files.map(({ path, digest }) => ({ path, digest })))).digest('hex') }));
+  console.log(JSON.stringify({ files, digest: crypto.createHash('sha256').update(JSON.stringify(files.map(({ path, digest, mode }) => ({ path, digest, mode })))).digest('hex') }));
 } else throw Error('unknown operation');
 `;

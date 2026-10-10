@@ -74,3 +74,5 @@ export * from "./clientRpcPermissions.ts";
 
 export * from "./satelliteOrchestration.ts";
 export * from "./factory.ts";
+export * from "./factoryModels.ts";
+export * from "./factorySources.ts";

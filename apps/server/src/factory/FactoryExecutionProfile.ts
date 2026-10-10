@@ -11,6 +11,8 @@ export const FactoryExecutionProfile = Schema.Struct({
   workflowSnapshotPath: Schema.String,
   runtimePath: Schema.String,
   sourceRevision: Schema.optionalKey(Schema.String),
+  startingSourceId: Schema.optionalKey(Schema.String),
+  startingSourceDigest: Schema.optionalKey(Schema.String),
   assignmentWorkspace: Schema.optionalKey(
     Schema.Struct({
       assignmentId: Schema.String,

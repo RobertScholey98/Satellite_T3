@@ -98,18 +98,36 @@ export const layerFromProjectStore = Layer.effect(
     const factory = yield* FactoryExecution;
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
-        const factoryExecution = yield* factory.runtimePolicyFor(input.thread.id).pipe(
-          Effect.mapError(
-            (cause) =>
-              new RuntimePolicyResolveError({
-                projectId: input.thread.projectId,
-                providerInstanceId: input.modelSelection.instanceId,
-                cause,
-              }),
-          ),
-        );
+        const factoryExecution = yield* factory
+          .runtimePolicyFor(input.thread.id, input.thread.lineage.parentThreadId ?? undefined)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new RuntimePolicyResolveError({
+                  projectId: input.thread.projectId,
+                  providerInstanceId: input.modelSelection.instanceId,
+                  cause,
+                }),
+            ),
+          );
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
         if (factoryExecution !== undefined) {
+          yield* factory
+            .assertSelectionFor(
+              input.thread.id,
+              input.modelSelection,
+              input.thread.lineage.parentThreadId ?? undefined,
+            )
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new RuntimePolicyResolveError({
+                    projectId: input.thread.projectId,
+                    providerInstanceId: input.modelSelection.instanceId,
+                    cause,
+                  }),
+              ),
+            );
           if (instance?.driverKind !== "codex") {
             return yield* new RuntimePolicyResolveError({
               projectId: input.thread.projectId,

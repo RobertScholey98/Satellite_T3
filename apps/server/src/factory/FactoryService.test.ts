@@ -25,6 +25,8 @@ import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
 import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
+import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
+import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
 
 const projectId = ProjectId.make("factory-service-project");
 const human = { kind: "human" } as const;
@@ -54,6 +56,8 @@ const runtime = Layer.mergeAll(
   ThreadManagement.layer,
   CommandReceipts.layer,
   boundaryUnavailable,
+  sourceUnused,
+  handoverUnused,
 ).pipe(Layer.provideMerge(SatelliteTestLayer));
 const layer = FactoryService.layer.pipe(Layer.provideMerge(runtime));
 
@@ -63,6 +67,8 @@ it.effect("creates ordinary durable threads once and records the owning lead's r
     const execution = Layer.succeed(FactoryExecution, {
       qualify: () =>
         Ref.update(qualifications, (count) => count + 1).pipe(Effect.as(qualification)),
+      assertSelectionFor: () => Effect.void,
+      assertDelegationFor: () => Effect.void,
       runtimePolicyFor: () => Effect.succeed(profile),
     });
     yield* Effect.gen(function* () {
@@ -140,6 +146,8 @@ it.effect("persists an actionable wait without launching when confinement is una
     Effect.provideService(FactoryExecution, {
       qualify: () =>
         Effect.succeed({ status: "unavailable", reason: "Start the local Docker engine." }),
+      assertSelectionFor: () => Effect.void,
+      assertDelegationFor: () => Effect.void,
       runtimePolicyFor: () => Effect.die("An unavailable assignment must not launch."),
     }),
   ),
@@ -171,6 +179,8 @@ it.effect("a failed launch remains recoverable and its receipt does not claim su
       Effect.provide(layer),
       Effect.provideService(FactoryExecution, {
         qualify: () => Effect.succeed(qualification),
+        assertSelectionFor: () => Effect.void,
+        assertDelegationFor: () => Effect.void,
         runtimePolicyFor: () =>
           Ref.get(available).pipe(
             Effect.flatMap((ready) =>
@@ -282,6 +292,8 @@ it.effect(
         Effect.provideService(FactoryExecution, {
           qualify: () =>
             Ref.update(qualifications, (count) => count + 1).pipe(Effect.as(qualification)),
+          assertSelectionFor: () => Effect.void,
+          assertDelegationFor: () => Effect.void,
           runtimePolicyFor: () => Effect.succeed(profile),
         }),
       );
@@ -310,6 +322,8 @@ it.effect("reconciles an accepted message after losing its factory acknowledgeme
     const execution = {
       qualify: () =>
         Ref.update(qualifications, (count) => count + 1).pipe(Effect.as(qualification)),
+      assertSelectionFor: () => Effect.void,
+      assertDelegationFor: () => Effect.void,
       runtimePolicyFor: () => Effect.succeed(profile),
     };
     const interceptedThreads = {

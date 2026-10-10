@@ -883,6 +883,7 @@ export type OrchestrationV2ProviderGoal = typeof OrchestrationV2ProviderGoal.Typ
 
 export const OrchestrationV2ProviderThread = Schema.Struct({
   id: ProviderThreadId,
+  executionBoundaryId: Schema.optional(Schema.String),
   driver: ProviderDriverKind,
   providerInstanceId: ProviderInstanceId,
   providerSessionId: Schema.NullOr(ProviderSessionId),
