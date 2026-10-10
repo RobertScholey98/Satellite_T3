@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+if (fs.existsSync('/authority/integration-holds') && fs.readdirSync('/authority/integration-holds').length > 0) throw Error('integration execution hold');
 if (fs.existsSync('/authority/revoked.json')) throw Error('revoked execution');
 if (fs.existsSync('/authority/incidents') && fs.readdirSync('/authority/incidents').length > 0) throw Error('incident execution hold');
 if (fs.existsSync('/authority/suspension.json') && JSON.parse(fs.readFileSync('/authority/suspension.json', 'utf8')).state !== 'resumed') throw Error('suspended execution');

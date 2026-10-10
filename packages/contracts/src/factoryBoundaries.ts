@@ -55,3 +55,23 @@ export const FactoryDiscoveryQualification = Schema.Union([
   }),
 ]);
 export type FactoryDiscoveryQualification = typeof FactoryDiscoveryQualification.Type;
+
+export const FactoryFileMutation = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("create"),
+    path: TrimmedNonEmptyString,
+    content: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("write"),
+    path: TrimmedNonEmptyString,
+    content: Schema.String,
+  }),
+  Schema.Struct({ kind: Schema.Literal("delete"), path: TrimmedNonEmptyString }),
+  Schema.Struct({
+    kind: Schema.Literal("rename"),
+    path: TrimmedNonEmptyString,
+    to: TrimmedNonEmptyString,
+  }),
+]);
+export type FactoryFileMutation = typeof FactoryFileMutation.Type;

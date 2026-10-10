@@ -36,6 +36,11 @@ import { factoryExecutionProbe } from "./FactoryExecutionProbe.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 import { FactorySource } from "./FactorySource.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
+import { IntegrationAdmissionArtifact, integrationDigest } from "./FactoryIntegrationRuntime.ts";
+import {
+  factoryIntegrationAccessBlocked,
+  factoryIntegrationManifestReasons,
+} from "./FactoryIntegration.ts";
 import { factoryGrantChangesSkills } from "./FactoryBoundaryPaths.ts";
 
 export { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
@@ -393,6 +398,60 @@ const make = Effect.gen(function* () {
         )
       )
         return yield* new FactoryError({ code: "execution-unavailable" });
+      if (assignment?.integrationId !== undefined && auxiliary?.kind !== "retrospective") {
+        const integration = state.integrations.find(
+          (entry) => entry.id === assignment.integrationId,
+        );
+        const preparation = state.integrationPreparations.find(
+          (entry) => entry.id === integration?.currentPreparationId,
+        );
+        const identity = profile.integration;
+        const blocked = factoryIntegrationAccessBlocked(state, assignment.integrationId);
+        if (
+          blocked ||
+          !identity ||
+          integration?.assignmentId !== assignment.id ||
+          identity.integrationId !== integration.id ||
+          identity.preparationId !== preparation?.id ||
+          preparation.lifecycle.phase !== "ready" ||
+          preparation.lifecycle.profileId !== profileId ||
+          preparation.lifecycle.manifest.inputDigest !== identity.inputDigest ||
+          integration.hold !== null
+        )
+          return yield* new FactoryError({
+            code: "execution-unavailable",
+            detail: blocked ?? "This integration needs a current, unheld prepared input vector.",
+          });
+        const artifact = yield* fs
+          .readFileString(identity.manifestPath)
+          .pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(Schema.fromJsonString(IntegrationAdmissionArtifact)),
+            ),
+          );
+        const { inputDigest, ...fields } = artifact.manifest;
+        const digest = yield* integrationDigest(fields).pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+        );
+        if (
+          artifact.profileId !== profileId ||
+          artifact.assignmentId !== assignment.id ||
+          artifact.integrationId !== integration.id ||
+          artifact.preparationId !== preparation.id ||
+          digest !== inputDigest ||
+          artifact.manifest.inputDigest !== identity.inputDigest ||
+          factoryIntegrationManifestReasons(state, integration.id, artifact.manifest).length > 0
+        )
+          return yield* new FactoryError({
+            code: "execution-unavailable",
+            detail: "An integration input or project grant changed. Refresh the integration.",
+          });
+      } else if (profile.integration !== undefined) {
+        return yield* new FactoryError({
+          code: "execution-unavailable",
+          detail: "This integration profile belongs to another runtime role.",
+        });
+      }
       yield* assertFactoryProfileActive(profile).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path),

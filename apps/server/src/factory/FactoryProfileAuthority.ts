@@ -17,6 +17,18 @@ const decodeDeliveryHold = Schema.decodeUnknownEffect(
 
 export const assertFactoryProfileActive = Effect.fn("assertFactoryProfileActive")(
   function* (profile: FactoryExecutionProfile | undefined) {
+    if (profile?.integration !== undefined) {
+      const fs = yield* FileSystem.FileSystem;
+      if (
+        (yield* fs.exists(profile.integration.stopPath)) &&
+        (yield* fs.readDirectory(profile.integration.stopPath)).length > 0
+      )
+        return yield* new FactoryError({
+          code: "execution-unavailable",
+          detail:
+            "This integration preparation is held. Refresh its approved inputs before continuing.",
+        });
+    }
     if (profile?.retro !== undefined) {
       const fs = yield* FileSystem.FileSystem;
       if (yield* fs.exists(profile.retro.stopPath))

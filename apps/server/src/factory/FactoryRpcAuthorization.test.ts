@@ -5,6 +5,7 @@ import {
   CommandId,
   FACTORY_WS_METHODS,
   FactoryAssignmentId,
+  FactoryBoundaryId,
   type FactoryCommand,
   ProjectId,
   ProviderInstanceId,
@@ -26,6 +27,25 @@ const group = WsRpcGroup.omit(
 );
 const managerId = ThreadId.make("manager-web");
 const settingsCommands: ReadonlyArray<FactoryCommand> = [
+  {
+    type: "integration.capability.configure",
+    commandId: CommandId.make("integration-capability"),
+    projectId: ProjectId.make("web"),
+    boundaryId: FactoryBoundaryId.make("boundary-web"),
+    paths: {
+      readPaths: ["src/app.ts"],
+      testPaths: ["tests/contract.ts"],
+      fixturePaths: [],
+      testDirectories: [],
+      fixtureDirectories: [],
+    },
+    coordinator: null,
+  },
+  {
+    type: "integration.capability.retry",
+    commandId: CommandId.make("integration-capability-retry"),
+    capabilityId: "capability",
+  },
   {
     type: "collaboration.decision.decide",
     commandId: CommandId.make("collaboration-decision"),
@@ -315,6 +335,8 @@ describe("factory RPC authority", () => {
           assert.deepStrictEqual(yield* client[method]({ command }), { revision: index + 1 });
         }
         assert.deepStrictEqual(handled, [
+          "integration.capability.configure",
+          "integration.capability.retry",
           "collaboration.decision.decide",
           "collaboration.request.respond",
           "shared.repository.register",

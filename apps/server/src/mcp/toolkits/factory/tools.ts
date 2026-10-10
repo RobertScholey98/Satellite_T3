@@ -10,6 +10,9 @@ import {
   FactoryError,
   FactorySnapshot,
   FactoryCollaborationDirectoryEntry,
+  FactoryIntegrationRead,
+  FactoryIntegrationPatchPage,
+  FactoryIntegrationCommand,
   OrchestratorMcpFailure,
   FactoryPreviewActionInput,
   FactoryPreviewActionResult,
@@ -54,6 +57,39 @@ export const FactoryPreviewSnapshotTool = Tool.make("factory_preview_snapshot", 
 export const FactoryPreviewSnapshotToolkit = Toolkit.make(FactoryPreviewSnapshotTool);
 
 export const FactoryToolkit = Toolkit.make(
+  Tool.make("factory_integration_get", {
+    description:
+      "Read one integration group's scoped grants, exact candidate/head vector, host verification, test patches and slim participant lead identities. Available to participating project managers/current leads and the integration team. Historical recorded evidence is not fresh merge proof. This never grants arbitrary peer source or transcript access.",
+    parameters: Schema.Struct({ integrationId: TrimmedNonEmptyString }),
+    success: FactoryIntegrationRead,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }).annotate(Tool.Readonly, true),
+  Tool.make("factory_integration_read_patch", {
+    description:
+      "Read a bounded page of an immutable test/fixture patch listed in factory_integration_get. Owning project managers/current leads can read their own project patch; the requester and integration team can read granted participant patches. Concatenate pages in cursor order and verify the full digest. JSON contains base64 file content, mode, digest and deleted paths; apply through your own assignment boundary and PR process. No arbitrary path or URL is accepted.",
+    parameters: Schema.Struct({
+      patchArtifactId: TrimmedNonEmptyString,
+      cursor: Schema.optionalKey(NonNegativeInt),
+      limit: Schema.optionalKey(
+        Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(16000)),
+      ),
+    }),
+    success: FactoryIntegrationPatchPage,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }).annotate(Tool.Readonly, true),
+  Tool.make("factory_integration_command", {
+    description:
+      "Commission cross-project QA from accepted requests; each project manager grants only a subset of its human-qualified capability. The integration lead refreshes inputs, preserving tests, and its team mutates only granted test/fixture files and runs protected verification. Current leads communicate through integration.message.send; production defects route through integration.defect.report. Integration teams cannot publish, merge or declare ordinary no-PR completion. Capability setup remains human-only. Use factory_integration_get for IDs and current evidence; recorded verification never substitutes for fresh final merge checks.",
+    parameters: Schema.Struct({ command: FactoryIntegrationCommand }),
+    success: FactoryCommandResult,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }),
   Tool.make("factory_collaboration_directory", {
     description:
       "List a bounded page of peer manager identities for a cross-project work request. Managers only. Returns names, project identities and status, never their assignments, files, grants or transcripts. Use factory_dispatch collaboration.request.create for an owned assignment or system investigation. This directory grants no cross-project tool access.",

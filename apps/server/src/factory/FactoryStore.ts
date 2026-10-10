@@ -277,6 +277,59 @@ const make = Effect.gen(function* () {
               const failed = command.type.endsWith(".failed");
               const matches = (() => {
                 switch (intent.type) {
+                  case "integration.thread.create":
+                    return (
+                      (command.type === "integration.thread.created" ||
+                        command.type === "integration.thread.failed") &&
+                      command.integrationId === intent.integrationId
+                    );
+                  case "integration.capability.qualify":
+                    return (
+                      (command.type === "integration.capability.qualified" ||
+                        command.type === "integration.capability.failed") &&
+                      command.capabilityId === intent.capabilityId
+                    );
+                  case "integration.prepare":
+                    return (
+                      (command.type === "integration.prepared" ||
+                        command.type === "integration.prepare.failed") &&
+                      command.integrationId === intent.integrationId &&
+                      command.preparationId === intent.preparationId
+                    );
+                  case "integration.stop":
+                    return (
+                      (command.type === "integration.stopped" ||
+                        command.type === "integration.stop.failed") &&
+                      command.integrationId === intent.integrationId &&
+                      command.holdId === intent.holdId
+                    );
+                  case "integration.file.mutate":
+                    return (
+                      (command.type === "integration.file.mutated" ||
+                        command.type === "integration.file.failed") &&
+                      command.integrationId === intent.integrationId &&
+                      command.preparationId === intent.preparationId &&
+                      command.operationId === intent.operationId
+                    );
+                  case "integration.verify":
+                    return (
+                      (command.type === "integration.verified" ||
+                        command.type === "integration.verify.failed") &&
+                      command.verificationId === intent.verificationId
+                    );
+                  case "integration.message.deliver":
+                    return (
+                      (command.type === "integration.message.recorded" ||
+                        command.type === "integration.message.failed") &&
+                      command.messageId === intent.messageId
+                    );
+                  case "integration.resume":
+                    return (
+                      command.type === "integration.operation.resumed" &&
+                      command.integrationId === intent.integrationId &&
+                      command.operation.kind === intent.operation.kind &&
+                      command.operation.id === intent.operation.id
+                    );
                   case "collaboration.message.deliver":
                     return (
                       (command.type === "collaboration.message.recorded" ||

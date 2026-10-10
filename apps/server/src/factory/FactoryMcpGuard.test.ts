@@ -8,6 +8,8 @@ import {
   FactorySnapshot,
   FactoryImprovementSnapshot,
   FactoryImprovementRecord,
+  FactoryIntegrationRead,
+  FactoryIntegrationPatchPage,
   OrchestratorMcpFailure,
   ProjectId,
   ProviderInstanceId,
@@ -36,6 +38,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
+import { FactoryIntegrationExecution } from "./FactoryIntegrationExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
@@ -61,6 +64,8 @@ const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(FactorySnapshot
 const decodeFactorySnapshot = Schema.decodeUnknownEffect(FactorySnapshot);
 const decodeImprovementSnapshot = Schema.decodeUnknownEffect(FactoryImprovementSnapshot);
 const decodeImprovementRecord = Schema.decodeUnknownEffect(FactoryImprovementRecord);
+const decodeIntegrationRead = Schema.decodeUnknownEffect(FactoryIntegrationRead);
+const decodeIntegrationPatch = Schema.decodeUnknownEffect(FactoryIntegrationPatchPage);
 const decodeRecordReason = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ reason: Schema.String })),
 );
@@ -455,6 +460,22 @@ const scenario = <E, R>(
           ),
       }),
       Layer.mock(DeviceService.DeviceService)({}),
+      Layer.mock(FactoryIntegrationExecution)({
+        readPatch: (input) =>
+          Effect.sync(() => {
+            flags.hostCalls += 1;
+            return {
+              patchArtifactId: input.patchArtifactId,
+              projectId: ProjectId.make(input.patchArtifactId === "patch-api" ? "api" : "web"),
+              digest: "patch-digest",
+              encoding: "json" as const,
+              text: "{}",
+              cursor: input.cursor ?? 0,
+              nextCursor: null,
+              totalCharacters: 2,
+            };
+          }),
+      }),
       Layer.mock(ProjectService.ProjectService)({}),
       Layer.mock(FactoryPreviewService)({
         invoke: (threadId, input) =>
@@ -606,6 +627,116 @@ const scenario = <E, R>(
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })), Effect.scoped);
 
 describe("FactoryMcpGuard", () => {
+  it.effect(
+    "scopes integration identities and paged patches without granting peer source reads",
+    () =>
+      scenario(({ call, store, flags }) =>
+        Effect.gen(function* () {
+          const state = yield* store.snapshot;
+          const integrationAssignmentId = FactoryAssignmentId.make("integration-work");
+          const integrationId = "integration";
+          const payload = yield* encodeSnapshot({
+            ...state,
+            assignments: state.assignments.map((entry) => ({ ...entry, kind: "implementation" })),
+            integrations: [
+              {
+                id: integrationId,
+                assignmentId: integrationAssignmentId,
+                requesterManagerId: managerId,
+                requestIds: ["request"],
+                participantAssignmentIds: [assignmentId, otherAssignmentId],
+                coordinatorProjectId: ProjectId.make("web"),
+                phase: "awaiting-grants",
+                waitReason: null,
+                hold: null,
+                currentPreparationId: null,
+                currentTestArtifactId: "tests",
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+            integrationTestArtifacts: [
+              {
+                id: "tests",
+                integrationId,
+                preparationId: "old-preparation",
+                digest: "digest",
+                capturedAt: now,
+                projects: ["web", "api"].map((name) => ({
+                  projectId: ProjectId.make(name),
+                  grantId: name,
+                  candidateId: name,
+                  candidateDigest: name,
+                  sourceDigest: name,
+                  changedPaths: ["test.js"],
+                  deletedPaths: [],
+                  patchArtifactId: `patch-${name}`,
+                })),
+              },
+            ],
+          });
+          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+          flags.missingProfile = true;
+          const read = yield* call("factory_integration_get", { integrationId }, leadId);
+          assert.isFalse(read.isError);
+          const parsed = yield* decodeIntegrationRead(read.structuredContent);
+          assert.deepEqual(
+            parsed.participants.map((entry) => entry.assignmentId),
+            [assignmentId, otherAssignmentId],
+          );
+          assert.deepEqual(
+            parsed.integrationTestArtifacts[0]!.projects.map((entry) => entry.projectId),
+            ["web"],
+          );
+          assert.notProperty(parsed.participants[1]!, "workflow");
+          assert.notProperty(parsed.participants[1]!, "grant");
+          const ownPatch = yield* call(
+            "factory_integration_read_patch",
+            { patchArtifactId: "patch-web" },
+            leadId,
+          );
+          assert.isFalse(ownPatch.isError);
+          assert.equal(
+            (yield* decodeIntegrationPatch(ownPatch.structuredContent)).projectId,
+            "web",
+          );
+          assert.isTrue(
+            (yield* call(
+              "factory_integration_read_patch",
+              { patchArtifactId: "patch-api" },
+              leadId,
+            )).isError,
+          );
+          assert.isTrue(
+            (yield* call(
+              "factory_integration_read_patch",
+              { patchArtifactId: "unknown" },
+              managerId,
+            )).isError,
+          );
+          assert.isTrue(
+            (yield* call("factory_integration_get", { integrationId: "unrelated" }, managerId))
+              .isError,
+          );
+          assert.isTrue(
+            (yield* call("factory_integration_get", { integrationId }, childId)).isError,
+          );
+          assert.isFalse(
+            (yield* call(
+              "factory_integration_read_patch",
+              { patchArtifactId: "patch-api" },
+              managerId,
+            )).isError,
+          );
+          assert.equal(flags.hostCalls, 2);
+          flags.missingProfile = false;
+          assert.isTrue(
+            (yield* call("t3_thread_read", { threadId: ThreadId.make("lead-api") }, leadId))
+              .isError,
+          );
+        }),
+      ),
+  );
   it.effect(
     "exposes only peer identities to managers and keeps accepted collaboration out of generic tools",
     () =>

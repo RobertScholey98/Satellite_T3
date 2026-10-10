@@ -11,6 +11,10 @@ import * as Layer from "effect/Layer";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
+import {
+  factoryIntegrationAccessBlocked,
+  factoryIntegrationManifestReasons,
+} from "./FactoryIntegration.ts";
 import { factoryRequestParticipants } from "./FactoryCollaboration.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import {
@@ -182,7 +186,14 @@ const make = Effect.gen(function* () {
           entry.threadId === senderThreadId ||
           entry.previousLeadThreadIds?.includes(senderThreadId),
       );
-      if (source && source.projectId !== member.projectId) {
+      const targetAssignment = state.assignments.find((entry) => entry.id === member.assignmentId);
+      if (
+        source &&
+        source.id !== member.assignmentId &&
+        (source.projectId !== member.projectId ||
+          source.integrationId !== undefined ||
+          targetAssignment?.integrationId !== undefined)
+      ) {
         const authorized =
           source.threadId === senderThreadId &&
           source.outcome === undefined &&
@@ -206,7 +217,7 @@ const make = Effect.gen(function* () {
               control.status === "active" &&
               lineage.has(control.threadId),
           ) &&
-          state.crossProjectRequests.some((request) => {
+          (state.crossProjectRequests.some((request) => {
             const participants = factoryRequestParticipants(state, request);
             return (
               participants.some((entry) => entry.id === source.id) &&
@@ -214,7 +225,29 @@ const make = Effect.gen(function* () {
                 (entry) => entry.id === member.assignmentId && entry.threadId === threadId,
               )
             );
-          });
+          }) ||
+            state.integrations.some((integration) => {
+              const target = state.assignments.find(
+                (entry) => entry.id === member.assignmentId && entry.threadId === threadId,
+              );
+              const integrationEdge =
+                (source.id === integration.assignmentId &&
+                  target !== undefined &&
+                  integration.participantAssignmentIds.includes(target.id)) ||
+                (target?.id === integration.assignmentId &&
+                  integration.participantAssignmentIds.includes(source.id));
+              const prepared = state.integrationPreparations.find(
+                (entry) => entry.id === integration.currentPreparationId,
+              )?.lifecycle;
+              return (
+                integrationEdge &&
+                integration.hold === null &&
+                factoryIntegrationAccessBlocked(state, integration.id) === null &&
+                prepared?.phase === "ready" &&
+                factoryIntegrationManifestReasons(state, integration.id, prepared.manifest)
+                  .length === 0
+              );
+            }));
         if (!authorized)
           return yield* new FactoryError({
             code: "permission-denied",

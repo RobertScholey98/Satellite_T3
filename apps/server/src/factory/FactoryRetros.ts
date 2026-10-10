@@ -100,6 +100,8 @@ export function factoryCompletionEligibility(
       },
     };
   }
+  if (assignment.integrationId)
+    return wait("Integration completion requires a confirmed shared merge operation.");
   const completion = assignment.completion;
   if (!completion) return wait("Declare the assignment's complete delivery requirements first.");
   const plan = completion.plan;

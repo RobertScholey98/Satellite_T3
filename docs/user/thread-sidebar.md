@@ -114,6 +114,26 @@ Releasing a restriction leaves other pauses and permissions in place. Canceling
 an assignment withdraws its requests and stops support commissioned solely for
 those requests. Supporting work with another active dependent continues.
 
+For work spanning projects, the requesting manager can commission an integration
+team from accepted requests in **Project collaboration → Integration teams**.
+Its lead gets a normal conversation and coordinates directly with each owning
+lead. Each project owner grants access to its contribution separately.
+
+First configure each project's **Integration capability** against its approved
+boundary. Classify the tests and fixtures the integration team may edit, and
+select a protected Node coordinator in one project. The supported coordinator
+runs the participating applications together in an isolated environment without
+external network access. Unsupported dependencies leave setup unavailable.
+
+The integration team works on frozen copies. Production code stays read-only;
+defects go back to the owning lead. Test patches are recorded for that lead to
+incorporate into its PR. Refresh the inputs after the owning teams make changes,
+then run combined verification again. Refresh preserves test work and reports
+conflicts. Evidence distinguishes unpublished candidates from published PR heads;
+an old successful check does not verify changed inputs. Revoking any required
+grant stops the integration team, while preserving its work for an explicit
+refresh after access is restored.
+
 ### Review and deliver managed work
 
 The implementation team owns its PR, independent review, required checks, and

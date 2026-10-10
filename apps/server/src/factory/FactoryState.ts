@@ -1,4 +1,9 @@
 import {
+  decideFactoryIntegration,
+  reconcileFactoryIntegrations,
+  type FactoryIntegrationContext,
+} from "./FactoryIntegration.ts";
+import {
   decideFactoryCollaboration,
   reconcileFactoryRequestCancellation,
 } from "./FactoryCollaboration.ts";
@@ -85,6 +90,13 @@ export interface FactoryDecision {
 
 export const initialFactorySnapshot = (): FactorySnapshot => ({
   revision: 0,
+  integrationCapabilities: [],
+  integrations: [],
+  integrationGrants: [],
+  integrationPreparations: [],
+  integrationTestArtifacts: [],
+  integrationVerifications: [],
+  integrationMessages: [],
   crossProjectRequests: [],
   collaborationMessages: [],
   collaborationPlans: [],
@@ -275,8 +287,9 @@ const reduceModelGrants = (
     };
   });
 
-export function decide(
-  input: FactoryControlContext &
+function decideCore(
+  input: FactoryIntegrationContext &
+    FactoryControlContext &
     FactoryImprovementContext &
     FactoryWorkflowContext &
     FactoryDeliveryContext &
@@ -298,6 +311,29 @@ export function decide(
 ): Result.Result<FactoryDecision, FactoryError> {
   const requestedAssignmentId =
     "assignmentId" in input.command ? input.command.assignmentId : undefined;
+  const integrationAssignment = input.state.assignments.find(
+    (entry) => entry.id === requestedAssignmentId && entry.integrationId !== undefined,
+  );
+  if (
+    integrationAssignment &&
+    (input.command.type.startsWith("delivery.") ||
+      input.command.type === "assignment.completion.plan" ||
+      input.command.type === "assignment.completion.waive" ||
+      input.command.type === "assignment.completion.accept" ||
+      input.command.type === "assignment.delivery.request" ||
+      input.command.type === "assignment.prepared" ||
+      input.command.type === "assignment.retry" ||
+      input.command.type === "assignment.file.mutate" ||
+      input.command.type === "assignment.verify")
+  ) {
+    return Result.fail(
+      new FactoryError({
+        code: "permission-denied",
+        detail:
+          "Integration teams deliver test evidence and owner patches. Their successful completion requires the shared merge action.",
+      }),
+    );
+  }
   const experiment = input.state.assignments.find(
     (entry) => entry.id === requestedAssignmentId && entry.sharedWork?.kind === "experiment",
   );
@@ -318,6 +354,8 @@ export function decide(
       }),
     );
   }
+  const integrationDecision = decideFactoryIntegration(input);
+  if (integrationDecision !== undefined) return integrationDecision;
   const collaborationDecision = decideFactoryCollaboration(input);
   if (collaborationDecision !== undefined) return collaborationDecision;
   const workflowDecision = decideFactoryWorkflow(input);
@@ -1239,4 +1277,12 @@ export function decide(
     }
   }
   return fail("invalid-state");
+}
+
+export function decide(
+  input: Parameters<typeof decideCore>[0],
+): Result.Result<FactoryDecision, FactoryError> {
+  return Result.map(decideCore(input), (decision) =>
+    reconcileFactoryIntegrations(decision, input.now, input.state),
+  );
 }

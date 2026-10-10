@@ -13,6 +13,8 @@ import {
 } from "../ui/dialog";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { FactoryIntegrationCapability } from "./FactoryIntegrationCapability";
+import { FactoryIntegrationTeams } from "./FactoryIntegrationTeams";
 import { FactoryCollaborationCreate } from "./FactoryCollaborationCreate";
 import { FactoryCollaborationDecisions } from "./FactoryCollaborationDecisions";
 import { FactoryCollaborationIncidents } from "./FactoryCollaborationIncidents";
@@ -32,7 +34,9 @@ export function FactoryCollaborationDialog({
   onClose: () => void;
 }) {
   const prefix = useId();
-  const [view, setView] = useState<"requests" | "create" | "decisions" | "incidents">("requests");
+  const [view, setView] = useState<
+    "requests" | "create" | "decisions" | "incidents" | "integrations" | "integration-capability"
+  >("requests");
   const [filter, setFilter] = useState<"all" | "incoming" | "outgoing">("all");
   const [limit, setLimit] = useState(30);
   const requests =
@@ -59,6 +63,12 @@ export function FactoryCollaborationDialog({
     { value: "create", label: "Request supporting work" },
     { value: "decisions", label: `Consolidated decisions (${pending} pending)` },
     { value: "incidents", label: "Incident restrictions" },
+    ...(manager.role === "project"
+      ? ([
+          { value: "integrations", label: "Integration teams" },
+          { value: "integration-capability", label: "Integration capability" },
+        ] as const)
+      : []),
   ] as const;
   return (
     <Dialog
@@ -103,6 +113,17 @@ export function FactoryCollaborationDialog({
                 ))}
               </SelectPopup>
             </Select>
+            {view === "integrations" ? (
+              <FactoryIntegrationTeams
+                environment={environment}
+                manager={manager}
+                canOpenThread={canOpenThread}
+                onOpenThread={onOpenThread}
+              />
+            ) : null}
+            {view === "integration-capability" ? (
+              <FactoryIntegrationCapability environment={environment} manager={manager} />
+            ) : null}
             {view === "create" ? (
               <FactoryCollaborationCreate
                 environment={environment}

@@ -10,6 +10,8 @@ import {
   type FactoryError,
   type FactorySnapshot,
   type FactoryCollaborationDirectoryEntry,
+  type FactoryIntegrationRead,
+  type FactoryIntegrationPatchPage,
   type IssueDetail,
   ThreadId,
 } from "@t3tools/contracts";
@@ -34,6 +36,9 @@ import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 import { scopeFactoryCollaboration } from "./FactoryCollaborationReadModel.ts";
+import { scopeFactoryIntegration } from "./FactoryIntegrationReadModel.ts";
+import { factoryIntegrationVerificationReadiness } from "./FactoryIntegration.ts";
+import { FactoryIntegrationExecution } from "./FactoryIntegrationExecution.ts";
 
 import * as FactoryImprovementEvidence from "./FactoryImprovementEvidence.ts";
 
@@ -58,6 +63,18 @@ export class FactoryMcpGuard extends Context.Service<
       },
       OrchestratorMcpFailure | FactoryError
     >;
+    readonly integrationRead: (
+      invocation: McpInvocationScope,
+      integrationId: string,
+    ) => Effect.Effect<FactoryIntegrationRead, OrchestratorMcpFailure | FactoryError>;
+    readonly integrationPatch: (
+      invocation: McpInvocationScope,
+      input: {
+        readonly patchArtifactId: string;
+        readonly cursor?: number;
+        readonly limit?: number;
+      },
+    ) => Effect.Effect<FactoryIntegrationPatchPage, OrchestratorMcpFailure | FactoryError>;
     readonly improvementSnapshot: (
       invocation: McpInvocationScope,
       cursor?: number,
@@ -97,6 +114,14 @@ const unavailable = () =>
     message: "The managed execution boundary could not be verified. No host tool was run.",
   });
 const hasThreadTarget = Schema.is(Schema.Struct({ threadId: ThreadId }));
+const isIntegrationRefresh = Schema.is(
+  Schema.Struct({
+    command: Schema.Struct({
+      type: Schema.Literal("integration.refresh"),
+      integrationId: Schema.String,
+    }),
+  }),
+);
 
 const make = Effect.gen(function* () {
   const store = yield* FactoryStore.FactoryStore;
@@ -105,6 +130,7 @@ const make = Effect.gen(function* () {
   const factory = yield* FactoryService.FactoryService;
   const controls = yield* FactoryControlAccess.FactoryControlAccess;
   const scheduling = yield* Effect.serviceOption(FactorySchedulingEffects);
+  const integrationExecution = yield* Effect.serviceOption(FactoryIntegrationExecution);
   const evidence = yield* Effect.serviceOption(
     FactoryImprovementEvidence.FactoryImprovementEvidence,
   );
@@ -151,6 +177,37 @@ const make = Effect.gen(function* () {
       const member = yield* membership(invocation);
       if (member === undefined) return yield* denied();
       return member;
+    });
+
+  const integrationCaller = (invocation: McpInvocationScope) =>
+    Effect.gen(function* () {
+      const member = yield* managedCaller(invocation);
+      if (
+        !invocation.thread ||
+        member.auxiliary ||
+        member.manager.role !== "project" ||
+        (member.assignment === undefined
+          ? member.manager.threadId !== invocation.thread.threadId
+          : member.assignment.threadId !== member.ownerThreadId ||
+            (member.assignment.integrationId === undefined &&
+              invocation.thread.threadId !== member.assignment.threadId))
+      )
+        return yield* denied();
+      yield* controls
+        .assertExecution(invocation.thread.threadId)
+        .pipe(Effect.mapError(unavailable));
+      const state = yield* store.snapshot;
+      const scoped = scopeFactoryIntegration(
+        state,
+        member.assignment
+          ? {
+              kind: "assignment",
+              assignmentId: member.assignment.id,
+              includeLeadCommunication: invocation.thread.threadId === member.assignment.threadId,
+            }
+          : { kind: "manager", managerId: member.manager.id },
+      );
+      return { state, scoped, member };
     });
 
   return FactoryMcpGuard.of({
@@ -269,6 +326,11 @@ const make = Effect.gen(function* () {
           ) &&
           toolName !== "factory_ticket_read" &&
           toolName !== "factory_dispatch" &&
+          ![
+            "factory_integration_get",
+            "factory_integration_command",
+            "factory_integration_read_patch",
+          ].includes(toolName) &&
           !(
             member.auxiliary?.kind === "delivery-review" &&
             [
@@ -281,6 +343,20 @@ const make = Effect.gen(function* () {
           !scopedCommunication
         )
           return yield* denied();
+        if (
+          ["factory_integration_get", "factory_integration_read_patch"].includes(toolName) &&
+          member.auxiliary === undefined &&
+          member.manager.role === "project"
+        )
+          return;
+        if (
+          (toolName === "factory_dispatch" || toolName === "factory_integration_command") &&
+          isIntegrationRefresh(payload) &&
+          member.auxiliary === undefined &&
+          member.assignment?.integrationId === payload.command.integrationId &&
+          invocation.thread?.threadId === member.assignment.threadId
+        )
+          return;
         const profile = yield* execution
           .runtimePolicyFor(member.ownerThreadId)
           .pipe(Effect.mapError(unavailable));
@@ -312,6 +388,16 @@ const make = Effect.gen(function* () {
         ]);
         return {
           ...snapshot,
+          ...scopeFactoryIntegration(
+            snapshot,
+            assignment === undefined
+              ? { kind: "manager", managerId: manager.id }
+              : {
+                  kind: "assignment",
+                  assignmentId: assignment.id,
+                  includeLeadCommunication: invocation.thread?.threadId === assignment.threadId,
+                },
+          ),
           ...scopeFactoryCollaboration(
             snapshot,
             assignment === undefined
@@ -406,6 +492,67 @@ const make = Effect.gen(function* () {
               : entry.id === assignment.scheduling?.candidateId,
           ),
         };
+      }),
+    integrationRead: (invocation, integrationId) =>
+      Effect.gen(function* () {
+        const { state, scoped } = yield* integrationCaller(invocation);
+        const integration = scoped.integrations.find((entry) => entry.id === integrationId);
+        if (!integration) return yield* denied();
+        const slim = (id: FactorySnapshot["assignments"][number]["id"]) => {
+          const assignment = state.assignments.find((entry) => entry.id === id);
+          return assignment
+            ? {
+                assignmentId: assignment.id,
+                projectId: assignment.projectId,
+                managerId: assignment.managerId,
+                threadId: assignment.threadId,
+                title: assignment.title ?? null,
+                status: assignment.status,
+              }
+            : null;
+        };
+        const grants = scoped.integrationGrants.filter(
+          (entry) => entry.integrationId === integrationId,
+        );
+        const capabilityIds = new Set(grants.map((entry) => entry.capabilityId));
+        return {
+          integration,
+          lead: slim(integration.assignmentId),
+          participants: integration.participantAssignmentIds.flatMap((id) => {
+            const entry = slim(id);
+            return entry ? [entry] : [];
+          }),
+          readiness: factoryIntegrationVerificationReadiness(state, integrationId),
+          integrationCapabilities: scoped.integrationCapabilities.filter((entry) =>
+            capabilityIds.has(entry.id),
+          ),
+          integrationGrants: grants,
+          integrationPreparations: scoped.integrationPreparations.filter(
+            (entry) => entry.integrationId === integrationId,
+          ),
+          integrationTestArtifacts: scoped.integrationTestArtifacts.filter(
+            (entry) => entry.integrationId === integrationId,
+          ),
+          integrationVerifications: scoped.integrationVerifications.filter(
+            (entry) => entry.integrationId === integrationId,
+          ),
+          integrationMessages: scoped.integrationMessages.filter(
+            (entry) => entry.integrationId === integrationId,
+          ),
+        };
+      }),
+    integrationPatch: (invocation, input) =>
+      Effect.gen(function* () {
+        const { scoped } = yield* integrationCaller(invocation);
+        const project = scoped.integrationTestArtifacts
+          .flatMap((entry) => entry.projects)
+          .find((entry) => entry.patchArtifactId === input.patchArtifactId);
+        if (!project) return yield* denied();
+        if (Option.isNone(integrationExecution)) return yield* unavailable();
+        const page = yield* integrationExecution.value.readPatch(input);
+        if (page.projectId !== project.projectId || page.patchArtifactId !== input.patchArtifactId)
+          return yield* unavailable();
+        return page;
       }),
     improvementSnapshot: (invocation, cursor = 0) =>
       Effect.gen(function* () {
@@ -629,6 +776,11 @@ const make = Effect.gen(function* () {
       }),
     dispatch: (invocation, command) =>
       Effect.gen(function* () {
+        if (
+          command.type === "integration.capability.configure" ||
+          command.type === "integration.capability.retry"
+        )
+          return yield* denied();
         if (invocation.thread === undefined) return yield* denied();
         yield* controls
           .assertExecution(invocation.thread.threadId)
@@ -710,6 +862,9 @@ const make = Effect.gen(function* () {
             command.type === "assignment.verify" ||
             command.type === "finding.report") &&
             command.assignmentId === member.assignment.id) ||
+            ((command.type === "integration.file.mutate" ||
+              command.type === "integration.verify") &&
+              command.integrationId === member.assignment.integrationId) ||
             (command.type === "guidance.escalate" &&
               command.threadId === invocation.thread.threadId));
         if (member.ownerThreadId !== invocation.thread.threadId && !descendantOperation)

@@ -1,4 +1,16 @@
 import {
+  FactoryIntegrationCapability,
+  FactoryIntegration,
+  FactoryIntegrationGrant,
+  FactoryIntegrationPreparation,
+  FactoryIntegrationTestArtifact,
+  FactoryIntegrationVerification,
+  FactoryIntegrationMessage,
+  FactoryIntegrationCommand,
+  FactoryIntegrationHostCommand,
+  FactoryIntegrationEffectIntent,
+} from "./factoryIntegration.ts";
+import {
   FactoryCollaborationCommand,
   FactoryCollaborationHostCommand,
   FactoryCollaborationEffectIntent,
@@ -25,6 +37,7 @@ import {
   FactoryWorkflowEffectIntent,
 } from "./factoryWorkflow.ts";
 import {
+  FactoryFileMutation,
   FactoryWorkflowVersion,
   FactoryBoundaryId,
   FactoryBoundaryConfiguration,
@@ -32,6 +45,7 @@ import {
   FactoryDiscoveryQualification,
 } from "./factoryBoundaries.ts";
 export {
+  FactoryFileMutation,
   FactoryWorkflowVersion,
   FactoryBoundaryId,
   FactoryGate,
@@ -139,26 +153,6 @@ export const FactoryAssignmentGrant = Schema.Struct({
 });
 export type FactoryAssignmentGrant = typeof FactoryAssignmentGrant.Type;
 
-export const FactoryFileMutation = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("create"),
-    path: TrimmedNonEmptyString,
-    content: Schema.String,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("write"),
-    path: TrimmedNonEmptyString,
-    content: Schema.String,
-  }),
-  Schema.Struct({ kind: Schema.Literal("delete"), path: TrimmedNonEmptyString }),
-  Schema.Struct({
-    kind: Schema.Literal("rename"),
-    path: TrimmedNonEmptyString,
-    to: TrimmedNonEmptyString,
-  }),
-]);
-export type FactoryFileMutation = typeof FactoryFileMutation.Type;
-
 export const FactoryVerification = Schema.Struct({
   artifactId: TrimmedNonEmptyString,
   boundaryId: FactoryBoundaryId,
@@ -254,6 +248,7 @@ export const FactoryAssignment = Schema.Struct({
   managerId: ThreadId,
   threadId: ThreadId,
   projectId: ProjectId,
+  integrationId: Schema.optionalKey(TrimmedNonEmptyString),
   sharedWork: Schema.optionalKey(FactorySharedAssignment),
   scheduling: Schema.optionalKey(
     Schema.Struct({
@@ -306,6 +301,28 @@ export const FactoryAssignment = Schema.Struct({
 export type FactoryAssignment = typeof FactoryAssignment.Type;
 
 export const FactorySnapshot = Schema.Struct({
+  integrationCapabilities: Schema.Array(FactoryIntegrationCapability).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  integrations: Schema.Array(FactoryIntegration).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  integrationGrants: Schema.Array(FactoryIntegrationGrant).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  integrationPreparations: Schema.Array(FactoryIntegrationPreparation).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  integrationTestArtifacts: Schema.Array(FactoryIntegrationTestArtifact).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  integrationVerifications: Schema.Array(FactoryIntegrationVerification).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  integrationMessages: Schema.Array(FactoryIntegrationMessage).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+
   crossProjectRequests: Schema.Array(FactoryCrossProjectRequest).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -420,6 +437,7 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  FactoryIntegrationCommand,
   FactoryCollaborationCommand,
   FactoryWorkflowCommand,
   FactoryImprovementCommand,
@@ -542,6 +560,7 @@ export const FactoryDispatchInput = Schema.Struct({ command: FactoryCommand });
 export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
+  FactoryIntegrationHostCommand,
   FactoryCollaborationHostCommand,
   FactoryWorkflowHostCommand,
   FactoryImprovementHostCommand,
@@ -622,6 +641,7 @@ export const FactoryThreadLaunchIntent = Schema.Struct({
 });
 export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
 export const FactoryEffectIntent = Schema.Union([
+  FactoryIntegrationEffectIntent,
   FactoryCollaborationEffectIntent,
   FactoryWorkflowEffectIntent,
   FactoryImprovementEffectIntent,
@@ -642,6 +662,14 @@ export const FactoryEffectIntent = Schema.Union([
 export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 
 export const FactoryCommandResult = Schema.Struct({
+  integrationId: Schema.optionalKey(TrimmedNonEmptyString),
+  integrationCapabilityId: Schema.optionalKey(TrimmedNonEmptyString),
+  integrationGrantId: Schema.optionalKey(TrimmedNonEmptyString),
+  integrationPreparationId: Schema.optionalKey(TrimmedNonEmptyString),
+  integrationVerificationId: Schema.optionalKey(TrimmedNonEmptyString),
+  integrationMessageId: Schema.optionalKey(TrimmedNonEmptyString),
+  integrationOperationId: Schema.optionalKey(TrimmedNonEmptyString),
+
   requestId: Schema.optionalKey(TrimmedNonEmptyString),
   collaborationMessageId: Schema.optionalKey(TrimmedNonEmptyString),
   planId: Schema.optionalKey(TrimmedNonEmptyString),

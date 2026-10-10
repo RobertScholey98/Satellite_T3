@@ -84,6 +84,8 @@ export function clientRpcRequiredScopes(
       payload.command.type === "workflow.restart.continue" ||
       payload.command.type === "workflow.models.apply" ||
       payload.command.type === "collaboration.decision.decide" ||
+      payload.command.type === "integration.capability.configure" ||
+      payload.command.type === "integration.capability.retry" ||
       (payload.command.type === "collaboration.request.respond" &&
         payload.command.response.kind === "accept" &&
         payload.command.response.support.kind === "commission" &&

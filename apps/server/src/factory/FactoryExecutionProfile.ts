@@ -25,6 +25,16 @@ export const FactoryExecutionProfile = Schema.Struct({
   sourceRevision: Schema.optionalKey(Schema.String),
   startingSourceId: Schema.optionalKey(Schema.String),
   startingSourceDigest: Schema.optionalKey(Schema.String),
+  integration: Schema.optionalKey(
+    Schema.Struct({
+      integrationId: Schema.String,
+      preparationId: Schema.String,
+      inputDigest: Schema.String,
+      grantIds: Schema.Array(Schema.String),
+      manifestPath: Schema.String,
+      stopPath: Schema.String,
+    }),
+  ),
   retro: Schema.optionalKey(
     Schema.Struct({
       retroId: Schema.String,
@@ -114,6 +124,9 @@ export function factoryDockerArguments(profile: FactoryExecutionProfile): Array<
     `type=bind,source=${profile.runtimePath},target=/runtime`,
     "--mount",
     `type=bind,source=${profile.workflowSnapshotPath}/skills,target=/runtime/codex/skills,readonly`,
+    ...(profile.integration === undefined
+      ? []
+      : ["--label", `satellite.factory.preparation=${profile.integration.preparationId}`]),
     ...(profile.inspection === undefined
       ? []
       : [

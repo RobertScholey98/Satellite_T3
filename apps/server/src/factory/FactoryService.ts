@@ -56,7 +56,10 @@ import type { FactorySchedulingContext } from "./FactoryScheduling.ts";
 import * as FactoryWorkflowEffects from "./FactoryWorkflowEffects.ts";
 import * as FactoryCollaborationEffects from "./FactoryCollaborationEffects.ts";
 import { scopeFactoryCollaboration } from "./FactoryCollaborationReadModel.ts";
+import * as FactoryIntegrationEffects from "./FactoryIntegrationEffects.ts";
+import { scopeFactoryIntegration } from "./FactoryIntegrationReadModel.ts";
 import type { FactoryWorkflowContext } from "./FactoryWorkflow.ts";
+import type { FactoryIntegrationContext } from "./FactoryIntegration.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 import { ServerActivation, forkParked } from "../serverActivation.ts";
 import { type FactoryControlContext } from "./FactoryControls.ts";
@@ -92,6 +95,7 @@ const scopedSnapshot =
       : {
           ...snapshot,
           ...scopeFactoryCollaboration(snapshot, { kind: "project", projectId: query.projectId }),
+          ...scopeFactoryIntegration(snapshot, { kind: "project", projectId: query.projectId }),
           sharedRepositories: snapshot.sharedRepositories.filter(
             (entry) => entry.projectId === query.projectId,
           ),
@@ -246,6 +250,9 @@ export const layer = Layer.effect(
     const collaboration = yield* Effect.serviceOption(
       FactoryCollaborationEffects.FactoryCollaborationEffects,
     );
+    const integrations = yield* Effect.serviceOption(
+      FactoryIntegrationEffects.FactoryIntegrationEffects,
+    );
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -331,6 +338,13 @@ export const layer = Layer.effect(
             creationSource: "server",
             ...(assignment.scheduling ? { issueAttempt: assignment.scheduling.issueAttempt } : {}),
           });
+        else if (assignment.integrationId && existing.worktreePath !== profile.projectSnapshotPath)
+          yield* threads.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`factory:${pending.id}:workspace`),
+            threadId: intent.threadId,
+            worktreePath: profile.projectSnapshotPath,
+          });
         yield* store.commit({
           actor: { kind: "system" },
           command: {
@@ -370,46 +384,58 @@ export const layer = Layer.effect(
           text:
             intent.purpose === "onboarding"
               ? onboardingInstructions(intent)
-              : intent.purpose === "implementation"
+              : assignment.integrationId
                 ? [
-                    `You lead implementation assignment ${assignment.id} for engineering manager ${manager.id}. You own implementation, your team's reviews, verification, and the complete PR process.`,
-                    `Task: ${assignment.title}. Scope: ${assignment.scope?.description}. Completion: ${assignment.scope?.completionCondition}. Pull request required: ${assignment.scope?.requiresPullRequest ?? true}.`,
-                    `The owned workflow is pinned to ${assignment.workflow.revision} at /workflow. Read its relevant skills. Your approved starting source is ${assignment.startingSource?.revision} (${assignment.startingSource?.sourceDigest}); preserve any handed-over work and existing PR links.`,
-                    `Approved execution grant: ${renderJson(assignment.grant)}. Existing granted files can be edited normally. For creating, renaming, or deleting files use factory_dispatch assignment.file.mutate with the current grant epoch. Use assignment.verify to run the adopted immutable checks and retain its evidence.`,
-                    ...(profile.requiresSkillAuthoring
-                      ? [
-                          "This assignment creates or edits agent instructions or skills. Before changing them, use /workflow/skills/writing-for-agents/SKILL.md and its SKILL-MECHANICS.md reference, then read and apply every further reference relevant to the edit. Your authoring baseline remains read-only; write only the authorized candidate files.",
-                        ]
-                      : []),
-                    ...(assignment.sharedWork
-                      ? [
-                          assignment.sharedWork.kind === "experiment"
-                            ? "This is an isolated investigation experiment. Produce candidate work and a report for the system manager. Publication, tracker changes, PR creation, merge, deployment, live trials, and workflow adoption are not authorized. A new candidate file does not become an adopted instruction. Complete through the exact commissioned report target."
-                            : "The system manager owns this shared repository assignment. Your team owns implementation, internal review and the PR process. Human PR approval and separate human adoption are required; completing this change never changes the adopted workflow.",
-                        ]
-                      : []),
-                    `Approved exact models: ${renderJson(assignment.modelPolicy)}. Your selected model: ${renderJson(assignment.modelChoice)}. Choose approved models according to task complexity. Native subagent tools are disabled; use delegate_task for your internal team. Every descendant remains inside this assignment's boundary.`,
-                    "Raise an out-of-scope dependency or structural problem when discovered. Do not change protected controls without a separately authorized rule-change assignment. The manager coordinates priorities; it does not review your PR.",
-                    "For an accepted cross-project request, coordinate directly with its current peer lead through collaboration.message.send. Record shared technical changes with collaboration.plan.propose and acknowledge the same plan within each team's existing scope. Changes to outcomes, compatibility, grants or resource limits require a collaboration.decision.raise for the owning managers and human. Peer coordination does not grant access to unrelated threads or source files.",
-                    "Before implementation, declare concrete UI impact with delivery.impact.declare: journeys, navigation, layout, shared components, classification, and evidence. Changed user flows physically hold implementation. While held, use the read-only planning context to submit a concrete markdown or HTML flow via delivery.flow.submit; wait for the human's digest-bound decision and host release before coding. Flow submission records its own approval wait; do not add an assignment.wait for that same decision. The host resumes you automatically after approval and physical release, or after requested changes so you can revise the proposal.",
-                    "For PR work use the host-owned delivery process: delivery.capture with exact selected paths, commit message, and grant epoch freezes the full publication tree and runs protected checks. delivery.review.request starts an independent ordinary review thread against that immutable tree. Follow its findings; changed work needs a new capture and review. For substantial or major UI, the reviewer must exercise the isolated candidate app and record real journeys and screenshots. The project needs a human-approved preview configuration and screenshot-publication permission.",
-                    "After candidate checks and independent review pass, delivery.publish creates or updates and links the exact PR. delivery.ready reconciles hosting checks and seals the evidence. Wait for the human when requested; discuss corrections directly with them. delivery.merge requests an exact-head conditional merge only when authorized. A queued or unknown hosting response is not a confirmed merge. Use delivery.retry for a visible delivery failure, preserving its reserved operation. Never use generic PR tools to bypass these gates.",
-                    "Record meaningful progress using assignment.progress with summary, remainingWork, and evidence references. Before ending a turn with no independent work left, record assignment.wait: dependency with your requested dependency IDs, review with an existing linked open PR, or human-decision with the decision needed. A completed provider turn does not complete the assignment. Use dependency.request for out-of-scope supporting work; approval and commissioning never mean it is delivered. After a host-confirmed delivery wake, report dependency.check-usability against that exact delivery ID and evidence.",
-                    "When delivery actually occurs, use assignment.delivery.request: a linked pull-request ref for merged work, or the actual report message ID at the agreed recipient for a non-PR assignment. For a report, first record progress with empty remainingWork and evidence, then send the findings and recommendation to the agreed recipient. The host verifies receipt; do not claim completion from a green check or an opened PR.",
-                    "Declare every required PR with assignment.completion.plan. Versions of the same PR are one obligation. Seal the complete list only when no implementation scope remains. All required PRs must actually merge, or the human must explicitly waive remaining scope, before the host freezes implementation and starts the read-only team retro. A no-PR task follows the exact commissioned report-receipt or human-acceptance target.",
-                    "Use finding.report to raise evidenced problems when discovered, without waiting for the retro. Classify the suspected cause and preserve uncertainty. Escalate reusable or system causes with finding.escalate. Use followup.request for project-scoped triage tickets; creating a ticket does not authorize implementation.",
-                    "Human review is required unless the delivery grant and project rules explicitly permit autonomous delivery. Major UI changes require human PR approval and useful screenshots. After merge, conduct your internal retro and then a retro with your manager. Creating a follow-up ticket does not authorize its implementation.",
+                    `You lead integration assignment ${assignment.id}, managed by ${manager.id}. Integration identity: ${assignment.integrationId}. Task: ${assignment.title}. Scope: ${assignment.scope?.description}.`,
+                    `Read the owned workflow at /workflow, pinned to ${assignment.workflow.revision}. Use factory_integration_get to inspect the current immutable participant revisions, project-owned grants, preparation, shared plans and verification evidence. Each project manager owns its contribution; the requesting manager cannot extend another project's access.`,
+                    "The prepared workspace contains namespaced candidate snapshots. Production and protected runner files are read-only. Edit only granted test and fixture files. Use factory_integration_command integration.file.mutate for creation, deletion and renames, identifying the current preparation and project grant. Every child agent inherits the same combined boundary.",
+                    "Use integration.verify to run the protected combined checks. Verification stops writers, captures the exact permitted test bytes and then resumes eligible work. A passed old run does not verify changed candidate revisions or later test edits. Refresh explicitly when an owning lead supplies new candidate inputs; retained test edits are preserved or reported as conflicts.",
+                    "Send production defects with integration.defect.report to the owning implementation lead. Use integration.message.send for direct coordination with current participant leads. Request missing scope from the owning managers. Do not patch production files or direct unrelated threads.",
+                    "Return test patch artifacts to their owning leads through factory_integration_read_patch. They incorporate those changes into their PR candidates before final combined verification. A temporary passing test overlay does not prove that the published change includes those tests.",
+                    "Your team owns combined QA and the consolidated review point. Individual project checks, reviews and human approvals still apply. Do not publish an independent integration PR, merge a member separately, or conclude through a generic report. Completion waits for the confirmed shared merge operation, followed by your internal retro and the requesting-manager retro.",
+                    `Approved model policy: ${renderJson(assignment.modelPolicy)}. Use delegate_task for your internal team, selecting approved models for task complexity. Read current factory controls before continuing after an interruption.`,
                   ].join("\n\n")
-                : [
-                    `You are the engineering manager for project ${intent.projectId}. Your durable manager identity is ${intent.managerId}. The human is your manager.`,
-                    `Onboarding lead ${assignment.threadId} owns discovery assignment ${assignment.id}. Use factory_snapshot to inspect its findings and waits. A read-only tracked snapshot is mounted at /workspace; owned workflow ${intent.workflow.revision} is at /workflow.`,
-                    "You coordinate scoped implementation teams and project priorities. Implementation leads own code, internal reviews, verification, and the complete PR process. You do not implement or review their PRs. You and the system manager are peers with different remits.",
-                    "Use factory_collaboration_directory to find a peer manager, then collaboration.request.create to request another project's work against an existing assignment. The receiving manager owns acceptance and commissions its own team with collaboration.request.respond. Defer or decline only with a concrete reason and alternative or reconsideration condition. Raise a single collaboration.decision.raise when existing priorities or authority cannot settle a trade-off. An incident does not stop unrelated work; use incident.restrict only for concrete conflicting assignments and activity, with a reason and resume condition, then incident.release when resolved.",
-                    "Currently onboarding is in progress. Acknowledge the assignment briefly, then wait for an actionable event or the human. Do not poll, start implementation, or attempt to broaden execution permissions. Unresolved permissions and project decisions must remain visible.",
-                    "When factory_snapshot shows an active manager with an approved boundary and the human requests work, use assignment.commission to create a scoped implementation lead. Choose exact source paths and creation directories within that boundary, a completion condition, and task complexity. Omit modelSelection for the configured lead preference. authorizationMessageId may reference the direct human request, or omit it to use the latest direct human message. Discuss gaps with the human before commissioning unclear work.",
-                    "For no-PR work, set scope.noPrTarget explicitly: report-received at the agreed recipient when receipt satisfies the task, otherwise human-acceptance. After confirmed delivery or cancellation with the human's reason, the host starts a read-only team retrospective and sends you its accepted report. Review the causes and owners through retro.manager.submit; you do not review the PR. Project follow-ups become triage tickets, while workflow-wide decisions stay with the human. No process change is a normal result.",
-                    "On a dependency request, decide whether separate work is authorized within your remit. Use dependency.approve with the exact supporting work, then assignment.commission with that dependencyId and the same approved scope. Wait for actual host-confirmed delivery and the original lead's usability check. For a recovery incident, read the recorded evidence, use assignment.recovery.begin within the remaining allowance, then use its independent diagnosis to replan. Use replaceLead only when warranted; work and limits are preserved. If recovery cannot proceed, assignment.recovery.escalate must state the failure, attempts, options, and recommendation for the human.",
-                  ].join("\n\n"),
+                : intent.purpose === "implementation"
+                  ? [
+                      `You lead implementation assignment ${assignment.id} for engineering manager ${manager.id}. You own implementation, your team's reviews, verification, and the complete PR process.`,
+                      `Task: ${assignment.title}. Scope: ${assignment.scope?.description}. Completion: ${assignment.scope?.completionCondition}. Pull request required: ${assignment.scope?.requiresPullRequest ?? true}.`,
+                      `The owned workflow is pinned to ${assignment.workflow.revision} at /workflow. Read its relevant skills. Your approved starting source is ${assignment.startingSource?.revision} (${assignment.startingSource?.sourceDigest}); preserve any handed-over work and existing PR links.`,
+                      `Approved execution grant: ${renderJson(assignment.grant)}. Existing granted files can be edited normally. For creating, renaming, or deleting files use factory_dispatch assignment.file.mutate with the current grant epoch. Use assignment.verify to run the adopted immutable checks and retain its evidence.`,
+                      ...(profile.requiresSkillAuthoring
+                        ? [
+                            "This assignment creates or edits agent instructions or skills. Before changing them, use /workflow/skills/writing-for-agents/SKILL.md and its SKILL-MECHANICS.md reference, then read and apply every further reference relevant to the edit. Your authoring baseline remains read-only; write only the authorized candidate files.",
+                          ]
+                        : []),
+                      ...(assignment.sharedWork
+                        ? [
+                            assignment.sharedWork.kind === "experiment"
+                              ? "This is an isolated investigation experiment. Produce candidate work and a report for the system manager. Publication, tracker changes, PR creation, merge, deployment, live trials, and workflow adoption are not authorized. A new candidate file does not become an adopted instruction. Complete through the exact commissioned report target."
+                              : "The system manager owns this shared repository assignment. Your team owns implementation, internal review and the PR process. Human PR approval and separate human adoption are required; completing this change never changes the adopted workflow.",
+                          ]
+                        : []),
+                      `Approved exact models: ${renderJson(assignment.modelPolicy)}. Your selected model: ${renderJson(assignment.modelChoice)}. Choose approved models according to task complexity. Native subagent tools are disabled; use delegate_task for your internal team. Every descendant remains inside this assignment's boundary.`,
+                      "Raise an out-of-scope dependency or structural problem when discovered. Do not change protected controls without a separately authorized rule-change assignment. The manager coordinates priorities; it does not review your PR.",
+                      "For an accepted cross-project request, coordinate directly with its current peer lead through collaboration.message.send. Record shared technical changes with collaboration.plan.propose and acknowledge the same plan within each team's existing scope. Changes to outcomes, compatibility, grants or resource limits require a collaboration.decision.raise for the owning managers and human. Peer coordination does not grant access to unrelated threads or source files.",
+                      "Before implementation, declare concrete UI impact with delivery.impact.declare: journeys, navigation, layout, shared components, classification, and evidence. Changed user flows physically hold implementation. While held, use the read-only planning context to submit a concrete markdown or HTML flow via delivery.flow.submit; wait for the human's digest-bound decision and host release before coding. Flow submission records its own approval wait; do not add an assignment.wait for that same decision. The host resumes you automatically after approval and physical release, or after requested changes so you can revise the proposal.",
+                      "For PR work use the host-owned delivery process: delivery.capture with exact selected paths, commit message, and grant epoch freezes the full publication tree and runs protected checks. delivery.review.request starts an independent ordinary review thread against that immutable tree. Follow its findings; changed work needs a new capture and review. For substantial or major UI, the reviewer must exercise the isolated candidate app and record real journeys and screenshots. The project needs a human-approved preview configuration and screenshot-publication permission.",
+                      "After candidate checks and independent review pass, delivery.publish creates or updates and links the exact PR. delivery.ready reconciles hosting checks and seals the evidence. Wait for the human when requested; discuss corrections directly with them. delivery.merge requests an exact-head conditional merge only when authorized. A queued or unknown hosting response is not a confirmed merge. Use delivery.retry for a visible delivery failure, preserving its reserved operation. Never use generic PR tools to bypass these gates.",
+                      "Record meaningful progress using assignment.progress with summary, remainingWork, and evidence references. Before ending a turn with no independent work left, record assignment.wait: dependency with your requested dependency IDs, review with an existing linked open PR, or human-decision with the decision needed. A completed provider turn does not complete the assignment. Use dependency.request for out-of-scope supporting work; approval and commissioning never mean it is delivered. After a host-confirmed delivery wake, report dependency.check-usability against that exact delivery ID and evidence.",
+                      "When delivery actually occurs, use assignment.delivery.request: a linked pull-request ref for merged work, or the actual report message ID at the agreed recipient for a non-PR assignment. For a report, first record progress with empty remainingWork and evidence, then send the findings and recommendation to the agreed recipient. The host verifies receipt; do not claim completion from a green check or an opened PR.",
+                      "Declare every required PR with assignment.completion.plan. Versions of the same PR are one obligation. Seal the complete list only when no implementation scope remains. All required PRs must actually merge, or the human must explicitly waive remaining scope, before the host freezes implementation and starts the read-only team retro. A no-PR task follows the exact commissioned report-receipt or human-acceptance target.",
+                      "Use finding.report to raise evidenced problems when discovered, without waiting for the retro. Classify the suspected cause and preserve uncertainty. Escalate reusable or system causes with finding.escalate. Use followup.request for project-scoped triage tickets; creating a ticket does not authorize implementation.",
+                      "Human review is required unless the delivery grant and project rules explicitly permit autonomous delivery. Major UI changes require human PR approval and useful screenshots. After merge, conduct your internal retro and then a retro with your manager. Creating a follow-up ticket does not authorize its implementation.",
+                    ].join("\n\n")
+                  : [
+                      `You are the engineering manager for project ${intent.projectId}. Your durable manager identity is ${intent.managerId}. The human is your manager.`,
+                      `Onboarding lead ${assignment.threadId} owns discovery assignment ${assignment.id}. Use factory_snapshot to inspect its findings and waits. A read-only tracked snapshot is mounted at /workspace; owned workflow ${intent.workflow.revision} is at /workflow.`,
+                      "You coordinate scoped implementation teams and project priorities. Implementation leads own code, internal reviews, verification, and the complete PR process. You do not implement or review their PRs. You and the system manager are peers with different remits.",
+                      "Use factory_collaboration_directory to find a peer manager, then collaboration.request.create to request another project's work against an existing assignment. The receiving manager owns acceptance and commissions its own team with collaboration.request.respond. Defer or decline only with a concrete reason and alternative or reconsideration condition. Raise a single collaboration.decision.raise when existing priorities or authority cannot settle a trade-off. An incident does not stop unrelated work; use incident.restrict only for concrete conflicting assignments and activity, with a reason and resume condition, then incident.release when resolved.",
+                      "For accepted cross-project work, the requesting manager can use integration.commission to create an integration lead. Each participating manager grants only its project's qualified test/fixture access with integration.grant. Capability setup or expansion requires the human; routine narrower grants do not. The integration team owns combined verification and routes production defects to the implementation leads. You do not review their PRs or override another manager's grants.",
+                      "Currently onboarding is in progress. Acknowledge the assignment briefly, then wait for an actionable event or the human. Do not poll, start implementation, or attempt to broaden execution permissions. Unresolved permissions and project decisions must remain visible.",
+                      "When factory_snapshot shows an active manager with an approved boundary and the human requests work, use assignment.commission to create a scoped implementation lead. Choose exact source paths and creation directories within that boundary, a completion condition, and task complexity. Omit modelSelection for the configured lead preference. authorizationMessageId may reference the direct human request, or omit it to use the latest direct human message. Discuss gaps with the human before commissioning unclear work.",
+                      "For no-PR work, set scope.noPrTarget explicitly: report-received at the agreed recipient when receipt satisfies the task, otherwise human-acceptance. After confirmed delivery or cancellation with the human's reason, the host starts a read-only team retrospective and sends you its accepted report. Review the causes and owners through retro.manager.submit; you do not review the PR. Project follow-ups become triage tickets, while workflow-wide decisions stay with the human. No process change is a normal result.",
+                      "On a dependency request, decide whether separate work is authorized within your remit. Use dependency.approve with the exact supporting work, then assignment.commission with that dependencyId and the same approved scope. Wait for actual host-confirmed delivery and the original lead's usability check. For a recovery incident, read the recorded evidence, use assignment.recovery.begin within the remaining allowance, then use its independent diagnosis to replan. Use replaceLead only when warranted; work and limits are preserved. If recovery cannot proceed, assignment.recovery.escalate must state the failure, attempts, options, and recommendation for the human.",
+                    ].join("\n\n"),
           attachments: [],
           modelSelection: intent.modelSelection,
           mode: "auto",
@@ -947,6 +973,125 @@ export const layer = Layer.effect(
         }
       }),
     );
+    const createIntegrationThread = Effect.fn("FactoryService.createIntegrationThread")(function* (
+      pending: PendingFactoryEffect,
+    ) {
+      if (pending.intent.type !== "integration.thread.create") return;
+      const integrationId = pending.intent.integrationId;
+      const state = yield* store.snapshot;
+      const integration = state.integrations.find((entry) => entry.id === integrationId);
+      const assignment = state.assignments.find((entry) => entry.id === integration?.assignmentId);
+      if (!integration || !assignment || assignment.outcome || assignment.status === "complete") {
+        yield* store.retireEffect(pending.id);
+        return;
+      }
+      yield* store.beginEffect(pending.id);
+      const result = yield* Effect.gen(function* () {
+        if (!assignment.modelSelection)
+          return yield* new FactoryError({
+            code: "invalid-state",
+            detail: "The integration thread has no approved model selection.",
+          });
+        const existing = yield* threads.getThreadShell(assignment.threadId);
+        if (
+          existing &&
+          (existing.projectId !== assignment.projectId ||
+            existing.deletedAt !== null ||
+            existing.archivedAt !== null)
+        )
+          return yield* new FactoryError({
+            code: "invalid-state",
+            detail: "The allocated integration thread is unavailable.",
+          });
+        if (!existing)
+          yield* threads.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`factory:${pending.id}:create`),
+            threadId: assignment.threadId,
+            projectId: assignment.projectId,
+            title: assignment.title ?? "Cross-project integration",
+            modelSelection: assignment.modelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdBy: "system",
+            creationSource: "server",
+          });
+      }).pipe(Effect.result);
+      yield* store.finishEffect({
+        id: pending.id,
+        now: yield* nowIso,
+        ...(Result.isFailure(result) ? { failed: true } : {}),
+        command: Result.isFailure(result)
+          ? {
+              type: "integration.thread.failed",
+              commandId: CommandId.make(`${pending.id}:failed`),
+              integrationId,
+              reason:
+                "The integration conversation could not be created. Retry after resolving the thread error.",
+            }
+          : {
+              type: "integration.thread.created",
+              commandId: CommandId.make(`${pending.id}:receipt`),
+              integrationId,
+              threadId: assignment.threadId,
+            },
+      });
+    });
+    const integrationStopWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        if (Option.isNone(integrations)) return;
+        for (const entry of (yield* store.pending).filter(
+          (entry) => entry.intent.type === "integration.stop",
+        ))
+          yield* integrations.value.handle(entry).pipe(
+            Effect.catch((cause) =>
+              Effect.logError("Factory integration shutdown remains pending", {
+                effectId: entry.id,
+                cause,
+              }),
+            ),
+          );
+      }),
+    );
+    const integrationWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        if (Option.isNone(integrations)) return;
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) =>
+              !visited.has(entry.id) &&
+              entry.intent.type.startsWith("integration.") &&
+              entry.intent.type !== "integration.stop",
+          );
+          if (!pending.length) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            yield* (
+              entry.intent.type === "integration.thread.create"
+                ? createIntegrationThread(entry)
+                : integrations.value.handle(entry)
+            ).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory integration work remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* worker.enqueue(undefined);
+              yield* controlWorker.enqueue(undefined);
+            }
+          }
+        }
+      }),
+    );
     const wake = Effect.all(
       [
         worker.enqueue(undefined),
@@ -958,6 +1103,8 @@ export const layer = Layer.effect(
         improvementWorker.enqueue(undefined),
         workflowWorker.enqueue(undefined),
         collaborationWorker.enqueue(undefined),
+        integrationWorker.enqueue(undefined),
+        integrationStopWorker.enqueue(undefined),
       ],
       {
         discard: true,
@@ -974,6 +1121,18 @@ export const layer = Layer.effect(
           Stream.runForEach(() => collaborationWorker.enqueue(undefined)),
         ),
       );
+    if (Option.isSome(integrations))
+      yield* forkParked(
+        store.changes.pipe(
+          Stream.changesWith((left, right) => left.revision === right.revision),
+          Stream.runForEach(() =>
+            Effect.all(
+              [integrationWorker.enqueue(undefined), integrationStopWorker.enqueue(undefined)],
+              { discard: true },
+            ),
+          ),
+        ),
+      );
     const drain = Effect.gen(function* () {
       for (;;) {
         const progress = workerProgress;
@@ -986,6 +1145,8 @@ export const layer = Layer.effect(
         yield* improvementWorker.drain;
         yield* workflowWorker.drain;
         yield* collaborationWorker.drain;
+        yield* integrationWorker.drain;
+        yield* integrationStopWorker.drain;
         if (progress === workerProgress) return;
       }
     });
@@ -1194,6 +1355,7 @@ export const layer = Layer.effect(
           command.type === "manager.create" ||
           command.type === "assignment.commission" ||
           command.type === "assignment.handover" ||
+          command.type === "integration.commission" ||
           sharedManager !== undefined ||
           receiverManager !== undefined
             ? {
@@ -1256,6 +1418,21 @@ export const layer = Layer.effect(
         let schedulingContext: FactorySchedulingContext = {};
         let improvementContext: FactoryImprovementContext = {};
         let workflowContext: FactoryWorkflowContext = {};
+        let integrationContext: FactoryIntegrationContext = {};
+        if (command.type.startsWith("integration.") && Option.isNone(integrations))
+          return yield* new FactoryError({
+            code: "execution-unavailable",
+            detail: "This environment has no qualified integration runtime.",
+          });
+        if (
+          actor.kind === "thread" &&
+          (command.type === "integration.file.mutate" || command.type === "integration.verify")
+        ) {
+          yield* controls.assertExecution(actor.threadId);
+          const membership = yield* controls.membership(actor.threadId);
+          if (membership?.assignmentId)
+            integrationContext = { integrationActorAssignmentId: membership.assignmentId };
+        }
         if (
           Option.isNone(collaboration) &&
           (command.type.startsWith("collaboration.") || command.type.startsWith("incident."))
@@ -1383,6 +1560,7 @@ export const layer = Layer.effect(
           ...schedulingContext,
           ...improvementContext,
           ...workflowContext,
+          ...integrationContext,
           ...(allocation === undefined ? {} : { allocation }),
         });
         if (Result.isFailure(preflight)) {
@@ -1496,6 +1674,7 @@ export const layer = Layer.effect(
             ...schedulingContext,
             ...improvementContext,
             ...workflowContext,
+            ...integrationContext,
             ...(allocation === undefined ? {} : { allocation }),
             ...(qualification === undefined ? {} : { qualification }),
             ...(boundary === undefined ? {} : { boundary }),
@@ -1542,6 +1721,7 @@ export const layer = Layer.effect(
             "incident.restrict",
             "incident.release",
             "incident.retry",
+            "integration.grant.revoke",
           ].includes(command.type)
         )
           return withCommand(
@@ -1556,6 +1736,11 @@ export const layer = Layer.effect(
                 return yield* new FactoryError({
                   code: "execution-unavailable",
                   detail: "This environment has no qualified cross-project coordination runtime.",
+                });
+              if (command.type.startsWith("integration.") && Option.isNone(integrations))
+                return yield* new FactoryError({
+                  code: "execution-unavailable",
+                  detail: "This environment has no qualified integration runtime.",
                 });
               const context: FactoryControlContext = yield* controlContext(command);
               const result = yield* store.commit({
