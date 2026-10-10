@@ -1,8 +1,10 @@
 # Install Satellite
 
-Satellite's release workflow publishes Windows x64 installers and macOS disk images.
-Download the `.exe` for Windows or the `.dmg` for macOS (`arm64` for Apple Silicon,
-`x64` for Intel) from [this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
+Satellite's release workflow publishes Windows x64 installers, macOS disk images,
+and Linux x64 AppImage and Debian packages.
+Download the `.exe` for Windows, the `.dmg` for macOS (`arm64` for Apple Silicon,
+`x64` for Intel), or the x64 `.AppImage` or `.deb` for Linux from
+[this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
 These builds use `~/.satellite-t3/userdata`; they do not migrate
 existing T3 Code or development data.
 
@@ -12,6 +14,12 @@ If macOS blocks the app, try opening it once, then go to **System Settings → P
 & Security → Open Anyway** and confirm. Only do this for a download you trust from
 this fork. To update, quit Satellite and replace it with the newer app from the
 DMG; your data stays in place.
+
+On Linux, download the x64 `.deb` for Debian or Ubuntu and install it with
+`sudo apt install ./SatelliteT3-<version>-x64.deb`. For other distributions,
+download the `.AppImage`, make it executable with
+`chmod +x SatelliteT3-<version>-x64.AppImage`, and run it. Both formats receive
+updates from this fork.
 
 For a source checkout, use the [README setup](../../README.md#build-and-run-from-source).
 The development launcher uses separate data and disables automatic updates.
@@ -40,7 +48,7 @@ The [original T3 installation commands](../../README.md#original-t3-installation
 are retained for the upstream CLI, desktop packages, and mobile apps. They install
 upstream T3 Code and do not provide Satellite's fork features. The hosted app at
 `app.t3.codes` is also upstream. Satellite currently publishes no standalone CLI,
-Linux installer, mobile store release, or bundled WSL runtime.
+mobile store release or bundled WSL runtime.
 
 ## Providers
 

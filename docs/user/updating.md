@@ -2,8 +2,8 @@
 
 ## Satellite desktop and source builds
 
-Windows SatelliteT3 builds use this fork's desktop update feed. Install the
-offered update, or download the Windows installer from
+Windows and Linux SatelliteT3 builds use this fork's desktop update feed. Install the
+offered update, or download the Windows installer or Linux AppImage/Debian package from
 [this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
 Stable installs follow stable releases. Updating the desktop app also updates
 its bundled local server.
