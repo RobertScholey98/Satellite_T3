@@ -8,7 +8,15 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { FactoryToolkit, FactoryPreviewSnapshotToolkit } from "./tools.ts";
 
+const decodePreviewSnapshot = Schema.decodeUnknownEffect(PreviewAutomationSnapshot);
+
 export const layer = McpToolAccess.toLayer(FactoryToolkit, {
+  factory_ticket_read: McpToolAccess.readsAsCaller(({ candidateId }) =>
+    Effect.gen(function* () {
+      const invocation = yield* McpInvocationContext.McpInvocationContext;
+      return yield* (yield* FactoryMcpGuard.FactoryMcpGuard).readTicket(invocation, candidateId);
+    }),
+  ),
   factory_preview_action: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireThreadScope(
@@ -54,9 +62,7 @@ export const layerSnapshot = McpToolAccess.toLayer(FactoryPreviewSnapshotToolkit
         ...input,
         action: { type: "snapshot" },
       });
-      const snapshot = yield* Schema.decodeUnknownEffect(PreviewAutomationSnapshot)(
-        result.result,
-      ).pipe(
+      const snapshot = yield* decodePreviewSnapshot(result.result).pipe(
         Effect.mapError((cause) => new FactoryError({ code: "execution-unavailable", cause })),
       );
       return { ...snapshot, sequence: result.sequence, receiptDigest: result.receiptDigest };

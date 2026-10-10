@@ -36,6 +36,8 @@ import * as FactoryRetroExecution from "./factory/FactoryRetroExecution.ts";
 import * as FactoryRetroEvidence from "./factory/FactoryRetroEvidence.ts";
 import * as IssuePublication from "./issues/IssuePublication.ts";
 import * as IssuePublicationHost from "./issues/IssuePublicationHost.ts";
+import * as IssueScheduling from "./issues/IssueScheduling.ts";
+import * as FactorySchedulingEffects from "./factory/FactorySchedulingEffects.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -578,6 +580,18 @@ const layerSatelliteFeatures = Layer.mergeAll(
       FactoryService.layer.pipe(
         Layer.provideMerge(layerFactoryDelivery),
         Layer.provideMerge(layerFactoryPreview),
+        Layer.provideMerge(
+          FactorySchedulingEffects.layer.pipe(
+            Layer.provide(
+              IssueScheduling.layer.pipe(
+                Layer.provide(IssueHost.layer),
+                Layer.provide(ProjectStore.layer),
+                Layer.provide(AzureDevOpsCli.layer),
+              ),
+            ),
+            Layer.provide(FactoryControlAccess.layer),
+          ),
+        ),
         Layer.provideMerge(
           FactoryRetroEffects.layer.pipe(
             Layer.provide(FactoryRetroExecution.layer),

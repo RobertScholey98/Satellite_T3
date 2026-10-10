@@ -74,6 +74,7 @@ export * from "./clientRpcPermissions.ts";
 
 export * from "./satelliteOrchestration.ts";
 export * from "./factory.ts";
+export * from "./factoryScheduling.ts";
 export * from "./factoryControls.ts";
 export * from "./factoryOversight.ts";
 export * from "./factoryDelivery.ts";

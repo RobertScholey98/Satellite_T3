@@ -4,6 +4,7 @@ import {
   type FactoryCommandResult,
   type FactoryError,
   type FactorySnapshot,
+  type IssueDetail,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -11,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
+import * as Option from "effect/Option";
 
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -18,6 +20,7 @@ import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
 
 export class FactoryMcpGuard extends Context.Service<
   FactoryMcpGuard,
@@ -30,6 +33,13 @@ export class FactoryMcpGuard extends Context.Service<
     readonly snapshot: (
       invocation: McpInvocationScope,
     ) => Effect.Effect<FactorySnapshot, OrchestratorMcpFailure | FactoryError>;
+    readonly readTicket: (
+      invocation: McpInvocationScope,
+      candidateId: string,
+    ) => Effect.Effect<
+      { readonly detail: IssueDetail; readonly detailDigest: string },
+      OrchestratorMcpFailure | FactoryError
+    >;
     readonly dispatch: (
       invocation: McpInvocationScope,
       command: FactoryCommand,
@@ -57,6 +67,7 @@ const make = Effect.gen(function* () {
   const execution = yield* FactoryExecution.FactoryExecution;
   const factory = yield* FactoryService.FactoryService;
   const controls = yield* FactoryControlAccess.FactoryControlAccess;
+  const scheduling = yield* Effect.serviceOption(FactorySchedulingEffects);
 
   const membership = (invocation: McpInvocationScope) =>
     Effect.gen(function* () {
@@ -176,6 +187,7 @@ const make = Effect.gen(function* () {
         }
         if (
           toolName !== "factory_snapshot" &&
+          toolName !== "factory_ticket_read" &&
           toolName !== "factory_dispatch" &&
           !(
             member.auxiliary?.kind === "delivery-review" &&
@@ -238,7 +250,34 @@ const make = Effect.gen(function* () {
           followups: snapshot.followups.filter(
             (entry) => assignment === undefined || entry.assignmentId === assignment.id,
           ),
+          scheduleCandidates: snapshot.scheduleCandidates.filter((entry) =>
+            assignment === undefined
+              ? entry.managerId === manager.id
+              : entry.id === assignment.scheduling?.candidateId,
+          ),
         };
+      }),
+    readTicket: (invocation, candidateId) =>
+      Effect.gen(function* () {
+        if (invocation.thread === undefined) return yield* denied();
+        yield* controls
+          .assertExecution(invocation.thread.threadId)
+          .pipe(Effect.mapError(unavailable));
+        const member = yield* managedCaller(invocation);
+        const candidate = (yield* store.snapshot).scheduleCandidates.find(
+          (entry) => entry.id === candidateId,
+        );
+        if (
+          !candidate ||
+          member.manager.projectId !== candidate.projectId ||
+          candidate.managerId !== member.manager.id ||
+          (member.assignment === undefined
+            ? member.ownerThreadId !== invocation.thread.threadId
+            : member.assignment.scheduling?.candidateId !== candidate.id)
+        )
+          return yield* denied();
+        if (Option.isNone(scheduling)) return yield* unavailable();
+        return yield* scheduling.value.read(candidateId);
       }),
     dispatch: (invocation, command) =>
       Effect.gen(function* () {

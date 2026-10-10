@@ -49,6 +49,8 @@ import { FactoryDeliveryEffects } from "./FactoryDeliveryEffects.ts";
 import { FactoryPreviewService } from "./FactoryPreviewService.ts";
 import { FactoryRetroEffects } from "./FactoryRetroEffects.ts";
 import { type FactoryRetroContext } from "./FactoryRetros.ts";
+import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
+import type { FactorySchedulingContext } from "./FactoryScheduling.ts";
 import { ServerActivation, forkParked } from "../serverActivation.ts";
 import { type FactoryControlContext } from "./FactoryControls.ts";
 
@@ -138,6 +140,12 @@ const scopedSnapshot =
           projectTrackers: snapshot.projectTrackers.filter(
             (tracker) => tracker.projectId === query.projectId,
           ),
+          schedulingConfigurations: snapshot.schedulingConfigurations.filter(
+            (entry) => entry.projectId === query.projectId,
+          ),
+          scheduleCandidates: snapshot.scheduleCandidates.filter(
+            (entry) => entry.projectId === query.projectId,
+          ),
         };
 
 const onboardingInstructions = (intent: FactoryThreadLaunchIntent) =>
@@ -171,6 +179,7 @@ export const layer = Layer.effect(
     const deliveryEffects = yield* Effect.serviceOption(FactoryDeliveryEffects);
     const previews = yield* Effect.serviceOption(FactoryPreviewService);
     const retros = yield* Effect.serviceOption(FactoryRetroEffects);
+    const scheduling = yield* Effect.serviceOption(FactorySchedulingEffects);
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -222,6 +231,7 @@ export const layer = Layer.effect(
         return yield* allowed.failure;
       }
       yield* store.beginEffect(pending.id);
+      let schedulingHold: FactoryError | undefined;
       const result = yield* Effect.gen(function* () {
         const profile = yield* execution.runtimePolicyFor(intent.threadId);
         if (profile === undefined)
@@ -253,6 +263,7 @@ export const layer = Layer.effect(
             worktreePath: profile.projectSnapshotPath,
             createdBy: "system",
             creationSource: "server",
+            ...(assignment.scheduling ? { issueAttempt: assignment.scheduling.issueAttempt } : {}),
           });
         yield* store.commit({
           actor: { kind: "system" },
@@ -272,6 +283,17 @@ export const layer = Layer.effect(
           if (!records.runs.some((run) => run.id === accepted.runId))
             return yield* new FactoryError({ code: "launch-failed" });
           return;
+        }
+        if (assignment.scheduling) {
+          if (Option.isNone(scheduling))
+            return yield* new FactoryError({ code: "execution-unavailable" });
+          yield* scheduling.value.beforeLaunch(assignment, profile.projectSnapshotPath).pipe(
+            Effect.tapError((cause) =>
+              Effect.sync(() => {
+                schedulingHold = cause;
+              }),
+            ),
+          );
         }
         yield* threads.sendToThread({
           projectId: intent.projectId,
@@ -328,6 +350,29 @@ export const layer = Layer.effect(
           })
           .pipe(Effect.result);
         if (Result.isFailure(allowed) && allowed.failure.code === "permission-denied") return;
+        if (schedulingHold) {
+          const reason =
+            schedulingHold.detail ??
+            "Tracker admission is unavailable. This assignment will retry when scheduling conditions change.";
+          const current = latest.assignments.find((entry) => entry.id === assignment.id);
+          if (
+            current?.status !== "waiting" ||
+            current.wait?.kind !== "execution-boundary" ||
+            current.wait.reason !== reason
+          ) {
+            yield* store.commit({
+              actor: { kind: "system" },
+              now: yield* nowIso,
+              command: {
+                type: "thread.launch.failed",
+                commandId: CommandId.make(`${pending.id}:schedule-hold:${latest.revision}`),
+                threadId: intent.threadId,
+                reason,
+              },
+            });
+          }
+          return;
+        }
         yield* Effect.logError("Managed thread launch failed", {
           threadId: intent.threadId,
           cause: result.failure,
@@ -339,9 +384,11 @@ export const layer = Layer.effect(
             commandId: CommandId.make(`${pending.id}:receipt`),
             threadId: intent.threadId,
             reason:
-              intent.purpose === "implementation"
-                ? "The implementation thread could not start. Check the environment's provider and Docker availability, then retry the assignment. Existing work is preserved."
-                : "The confined thread could not start. Check the environment's provider and Docker availability, then retry onboarding. Existing work is preserved.",
+              isFactoryError(result.failure) && result.failure.detail
+                ? result.failure.detail
+                : intent.purpose === "implementation"
+                  ? "The implementation thread could not start. Check the environment's provider and Docker availability, then retry the assignment. Existing work is preserved."
+                  : "The confined thread could not start. Check the environment's provider and Docker availability, then retry onboarding. Existing work is preserved.",
           },
           now: yield* nowIso,
           failed: true,
@@ -668,6 +715,44 @@ export const layer = Layer.effect(
         }
       }),
     );
+    const schedulingWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        if (Option.isNone(scheduling)) return;
+        yield* scheduling.value.reconcile.pipe(
+          Effect.catch((cause) =>
+            Effect.logError("Factory scheduling reconciliation failed", { cause }),
+          ),
+        );
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) => !visited.has(entry.id) && entry.intent.type.startsWith("schedule."),
+          );
+          if (!pending.length) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            yield* scheduling.value.handle(entry).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory scheduling remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* scheduling.value.reconcile.pipe(
+                Effect.catch((cause) =>
+                  Effect.logError("Factory scheduling reconciliation failed", { cause }),
+                ),
+              );
+            }
+          }
+        }
+      }),
+    );
     const wake = Effect.all(
       [
         worker.enqueue(undefined),
@@ -675,6 +760,7 @@ export const layer = Layer.effect(
         oversightWorker.enqueue(undefined),
         deliveryWorker.enqueue(undefined),
         retroWorker.enqueue(undefined),
+        schedulingWorker.enqueue(undefined),
       ],
       {
         discard: true,
@@ -682,6 +768,7 @@ export const layer = Layer.effect(
     );
     if ((yield* ServerActivation) === undefined) yield* wake;
     else yield* forkParked(wake);
+    if (Option.isSome(scheduling)) yield* scheduling.value.watch(wake);
     const drain = Effect.gen(function* () {
       for (;;) {
         const progress = workerProgress;
@@ -690,6 +777,7 @@ export const layer = Layer.effect(
         yield* oversightWorker.drain;
         yield* deliveryWorker.drain;
         yield* retroWorker.drain;
+        yield* schedulingWorker.drain;
         if (progress === workerProgress) return;
       }
     });
@@ -929,7 +1017,10 @@ export const layer = Layer.effect(
         let oversightContext: FactoryOversightContext = {};
         let deliveryContext: FactoryDeliveryContext = {};
         let retroContext: FactoryRetroContext = {};
+        let schedulingContext: FactorySchedulingContext = {};
         if (Option.isSome(retros)) retroContext = yield* retros.value.context(actor, command);
+        if (Option.isSome(scheduling))
+          schedulingContext = yield* scheduling.value.context(actor, command);
         if (command.type === "assignment.wait" && command.wait.kind === "review") {
           const assignment = snapshot.assignments.find(
             (entry) => entry.id === command.assignmentId,
@@ -979,7 +1070,11 @@ export const layer = Layer.effect(
         }
         let humanMessageVerified = false;
         let humanMessageId: MessageId | undefined;
-        if (command.type === "assignment.commission" && actor.kind === "thread") {
+        if (
+          command.type === "assignment.commission" &&
+          actor.kind === "thread" &&
+          command.candidateId === undefined
+        ) {
           const records = yield* threads
             .getThreadRecords(
               actor.threadId,
@@ -1026,9 +1121,14 @@ export const layer = Layer.effect(
           ...oversightContext,
           ...deliveryContext,
           ...retroContext,
+          ...schedulingContext,
           ...(allocation === undefined ? {} : { allocation }),
         });
-        if (Result.isFailure(preflight)) return yield* preflight.failure;
+        if (Result.isFailure(preflight)) {
+          if (schedulingContext.schedulingAdmission && Option.isSome(scheduling))
+            yield* scheduling.value.release(schedulingContext.schedulingAdmission.candidateId);
+          return yield* preflight.failure;
+        }
         if (
           preflight.success.effects.some(
             (effect) =>
@@ -1108,21 +1208,39 @@ export const layer = Layer.effect(
         if (command.type === "assignment.file.mutate") yield* boundaries.mutate(command);
         const verification =
           command.type === "assignment.verify" ? yield* boundaries.verify(command) : undefined;
-        const result = yield* store.commit({
-          actor,
-          command,
-          now: yield* nowIso,
-          humanMessageVerified,
-          ...(humanMessageId === undefined ? {} : { humanMessageId }),
-          handoverVerified,
-          ...oversightContext,
-          ...deliveryContext,
-          ...retroContext,
-          ...(allocation === undefined ? {} : { allocation }),
-          ...(qualification === undefined ? {} : { qualification }),
-          ...(boundary === undefined ? {} : { boundary }),
-          ...(verification === undefined ? {} : { verification }),
-        });
+        const result = yield* store
+          .commit({
+            actor,
+            command,
+            now: yield* nowIso,
+            humanMessageVerified,
+            ...(humanMessageId === undefined ? {} : { humanMessageId }),
+            handoverVerified,
+            ...oversightContext,
+            ...deliveryContext,
+            ...retroContext,
+            ...schedulingContext,
+            ...(allocation === undefined ? {} : { allocation }),
+            ...(qualification === undefined ? {} : { qualification }),
+            ...(boundary === undefined ? {} : { boundary }),
+            ...(verification === undefined ? {} : { verification }),
+          })
+          .pipe(
+            Effect.catch((cause) =>
+              Effect.gen(function* () {
+                const candidateId = schedulingContext.schedulingAdmission?.candidateId;
+                if (
+                  candidateId &&
+                  Option.isSome(scheduling) &&
+                  !(yield* store.snapshot).assignments.some(
+                    (entry) => entry.scheduling?.candidateId === candidateId,
+                  )
+                )
+                  yield* scheduling.value.release(candidateId);
+                return yield* cause;
+              }),
+            ),
+          );
         yield* wake;
         if (command.type === "delivery.preview.stop" && Option.isSome(previews))
           yield* previews.value.reconcile;

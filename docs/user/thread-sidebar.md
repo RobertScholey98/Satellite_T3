@@ -141,6 +141,24 @@ your review. If publication fails, retry the recorded follow-up rather than aski
 for another ticket. An uncertain create result preserves its identity and offers
 verification of an existing ticket instead of creating a duplicate.
 
+### Let a manager select ready work
+
+In **Delivery settings → Project work scheduling**, select a connected project board
+and set the maximum number of concurrent assignments. The board's existing Ready
+mapping determines which ordinary tickets the manager may start. The manager
+prepares each ticket's scope, priority and dependencies before starting its team.
+Inspect those decisions and any hold reasons in the manager's **Work queue**.
+
+To start local retrospective improvements automatically, grant **Schedule by
+project rule** autonomy and approve a rule with bounded paths, complexity and
+causes. **Create tickets** alone leaves those improvements in triage. Rules do not
+change delivery or PR approval requirements. Protected rule changes need their own
+authorized task and the separate rule-change permission.
+
+Disabling scheduling stops new admissions. Existing teams retain their assignment
+controls. A consumed ticket stays linked to its team even if it moves back to
+Ready; explicitly reopen it with a reason when a new assignment is needed.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

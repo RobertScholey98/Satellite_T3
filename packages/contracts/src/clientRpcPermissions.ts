@@ -64,6 +64,7 @@ export function clientRpcRequiredScopes(
       payload.command.type === "delivery.preview.configure" ||
       payload.command.type === "delivery.preview.publication.configure" ||
       payload.command.type === "project.tracker.configure" ||
+      payload.command.type === "project.scheduling.configure" ||
       ((payload.command.type === "assignment.commission" ||
         payload.command.type === "assignment.handover") &&
         payload.command.kind === "rule-change")

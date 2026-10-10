@@ -76,6 +76,18 @@ export interface AttachIssueAttemptInput {
   readonly projectId: ProjectId;
   readonly worktreePath: string;
 }
+
+/** Internal reservation admission, installed only by the environment scheduling service. */
+export const ScheduledIssueReservation = Context.Reference<{
+  readonly requestId: string;
+  readonly allowUnready: boolean;
+  readonly reserve: (link: IssueAttemptLink) => Effect.Effect<void, IssueOperationError>;
+} | null>("t3/issues/ScheduledIssueReservation", { defaultValue: () => null });
+/** Runs after acquiring the issue lock, inside the attachment's SQLite transaction. */
+export const ScheduledIssueAttachment = Context.Reference<{
+  readonly attemptId: string;
+  readonly check: Effect.Effect<void, IssueOperationError>;
+} | null>("t3/issues/ScheduledIssueAttachment", { defaultValue: () => null });
 export interface ObserveIssuePullRequestInput {
   readonly threadId: ThreadId;
   readonly eventKey: string;
@@ -695,7 +707,30 @@ export const makeIssueService = (options: {
               "The board source environment does not match this server.",
             );
           const replay = yield* requestReplay(input.requestId, input);
-          if (replay) return yield* parse(IssueAttemptLink, replay);
+          const admission = yield* ScheduledIssueReservation;
+          if (admission !== null && admission.requestId !== input.requestId)
+            return yield* error(
+              "invalid",
+              "The scheduling reservation does not match this request.",
+            );
+          const checkClaim = (link: IssueAttemptLink) =>
+            transaction(
+              Effect.gen(function* () {
+                if (admission !== null) return yield* admission.reserve(link);
+                const claims = yield* sql`SELECT candidate_id FROM issue_schedule_reservations
+              WHERE issue_key=${canonicalIssueKey(link.issue)} AND status <> 'released'`;
+                if (claims.length)
+                  return yield* error(
+                    "conflict",
+                    "This issue is reserved by a managed assignment. Dismiss its unstarted scheduling candidate before starting other work.",
+                  );
+              }),
+            );
+          if (replay) {
+            const link = yield* parse(IssueAttemptLink, replay);
+            yield* checkClaim(link);
+            return link;
+          }
           const board = yield* readBoard(input.boardId);
           const remote = yield* readRemote(
             board.id,
@@ -708,7 +743,8 @@ export const makeIssueService = (options: {
           if (
             !board.mapping ||
             !item?.columnId ||
-            !issueReadyColumnIds(board.mapping).includes(item.columnId)
+            (!issueReadyColumnIds(board.mapping).includes(item.columnId) &&
+              !admission?.allowUnready)
           )
             return yield* error(
               "conflict",
@@ -729,6 +765,7 @@ export const makeIssueService = (options: {
           };
           yield* transaction(
             Effect.gen(function* () {
+              yield* checkClaim(link);
               const rows = yield* sql<{
                 value: number;
               }>`SELECT COALESCE(MAX(launch_order),0)+1 AS value FROM issue_attempts`;
@@ -836,6 +873,33 @@ export const makeIssueService = (options: {
                 "invalid",
                 "The issue attempt destination does not match this server.",
               );
+            const claims = yield* sql<{ attempt_id: string; status: string }>`
+              SELECT attempt_id,status FROM issue_schedule_reservations
+              WHERE (issue_key=${canonicalIssueKey(input.link.issue)} AND status <> 'released')
+                OR attempt_id=${input.link.attemptId}`;
+            if (
+              claims.some(
+                (claim) => claim.attempt_id !== input.link.attemptId || claim.status === "released",
+              )
+            )
+              return yield* error(
+                "conflict",
+                "The issue reservation was released or belongs to another managed assignment.",
+              );
+            const admission = yield* ScheduledIssueAttachment;
+            if (claims.some((claim) => claim.status === "reserved") && admission === null)
+              return yield* error(
+                "conflict",
+                "Managed issue work needs fresh scheduling admission before its first attachment.",
+              );
+            if (admission !== null) {
+              if (admission.attemptId !== input.link.attemptId)
+                return yield* error(
+                  "invalid",
+                  "The scheduling attachment does not match this attempt.",
+                );
+              yield* admission.check;
+            }
             const rows =
               yield* sql<AttemptRow>`SELECT * FROM issue_attempts WHERE id=${input.link.attemptId}`;
             if (
@@ -852,6 +916,7 @@ export const makeIssueService = (options: {
       VALUES(${input.link.attemptId},${input.link.reservationId},${input.link.boardId},${canonicalIssueKey(input.link.issue)},${json(input.link)},0,${input.projectId},${input.threadId},${input.worktreePath},'attached',${yield* now},${input.link.sourceGeneration})`;
             else
               yield* sql`UPDATE issue_attempts SET project_id=${input.projectId},thread_id=${input.threadId},worktree_path=${input.worktreePath},status=CASE WHEN status='started' THEN status ELSE 'attached' END WHERE id=${input.link.attemptId}`;
+            yield* sql`UPDATE issue_schedule_reservations SET status='attached' WHERE attempt_id=${input.link.attemptId} AND status='reserved'`;
           }),
         ),
       );

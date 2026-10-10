@@ -31,6 +31,12 @@ import {
 } from "./FactoryControls.ts";
 import { constrainAssignmentPolicy, resolveManagerPolicy } from "./FactoryPolicy.ts";
 import {
+  decideFactoryScheduling,
+  validateFactorySchedulingCommission,
+  claimFactoryScheduleCandidate,
+  type FactorySchedulingContext,
+} from "./FactoryScheduling.ts";
+import {
   decideFactoryOversight,
   factorySupportingWorkMatches,
   initialFactoryOversight,
@@ -92,6 +98,8 @@ export const initialFactorySnapshot = (): FactorySnapshot => ({
   findings: [],
   followups: [],
   projectTrackers: [],
+  schedulingConfigurations: [],
+  scheduleCandidates: [],
 });
 
 export const effectivePolicy = (
@@ -238,6 +246,7 @@ export function decide(
   input: FactoryControlContext &
     FactoryDeliveryContext &
     FactoryRetroContext &
+    FactorySchedulingContext &
     FactoryOversightContext & {
       readonly state: FactorySnapshot;
       readonly actor: FactoryActor;
@@ -254,6 +263,8 @@ export function decide(
 ): Result.Result<FactoryDecision, FactoryError> {
   const controlDecision = decideFactoryControls(input);
   if (controlDecision !== undefined) return controlDecision;
+  const schedulingDecision = decideFactoryScheduling(input);
+  if (schedulingDecision !== undefined) return schedulingDecision;
   const retroDecision = decideFactoryRetros(input);
   if (retroDecision !== undefined) return retroDecision;
   const oversightDecision = decideFactoryOversight(input);
@@ -365,6 +376,13 @@ export function decide(
       if (!manager || manager.role !== "project") return fail("manager-not-found");
       const boundary = state.boundaries.find((entry) => entry.id === manager.boundaryId);
       if (manager.status !== "active" || !boundary) return fail("invalid-state");
+      const scheduling =
+        command.type === "assignment.commission" && command.candidateId !== undefined
+          ? validateFactorySchedulingCommission(state, command, input.schedulingAdmission)
+          : undefined;
+      if (scheduling && Result.isFailure(scheduling)) return Result.fail(scheduling.failure);
+      const schedulingCandidate =
+        scheduling && Result.isSuccess(scheduling) ? scheduling.success : undefined;
       const dependency =
         command.type === "assignment.commission" && command.dependencyId !== undefined
           ? state.dependencies.find((entry) => entry.id === command.dependencyId)
@@ -391,7 +409,8 @@ export function decide(
           actor.threadId !== manager.threadId ||
           command.type !== "assignment.commission" ||
           ((!input.humanMessageVerified || input.humanMessageId === undefined) &&
-            !dependencyAuthorized))
+            !dependencyAuthorized &&
+            !schedulingCandidate))
       )
         return fail("permission-denied");
       if (
@@ -469,6 +488,15 @@ export function decide(
         managerId: manager.id,
         threadId: allocation.leadThreadId,
         projectId: manager.projectId,
+        ...(schedulingCandidate
+          ? {
+              scheduling: {
+                candidateId: schedulingCandidate.id,
+                authority: input.schedulingAdmission!.authority,
+                issueAttempt: input.schedulingAdmission!.issueAttempt,
+              },
+            }
+          : {}),
         kind: command.kind,
         title: command.title,
         scope: command.scope,
@@ -481,13 +509,15 @@ export function decide(
         origin: command.type === "assignment.handover" ? "handover" : "new",
         preparation: command.type === "assignment.handover" ? "stopping" : "capturing",
         authorization:
-          actor.kind === "human"
+          actor.kind === "human" && !schedulingCandidate
             ? { kind: "human", commandId: command.commandId }
             : {
                 kind: "manager",
                 commandId: command.commandId,
                 threadId: manager.threadId,
-                ...(input.humanMessageId === undefined ? {} : { messageId: input.humanMessageId }),
+                ...(schedulingCandidate || input.humanMessageId === undefined
+                  ? {}
+                  : { messageId: input.humanMessageId }),
               },
         status: "pending",
         threadStatus: command.type === "assignment.handover" ? "created" : "pending",
@@ -517,6 +547,18 @@ export function decide(
         { managerId: manager.id, assignmentId: assignment.id },
         [preparationIntent(assignment)],
       );
+      if (schedulingCandidate)
+        return Result.map(decision, (value) => ({
+          ...value,
+          state: claimFactoryScheduleCandidate(
+            value.state,
+            schedulingCandidate,
+            assignment.id,
+            input.schedulingAdmission!,
+            now,
+          ),
+          result: { ...value.result, candidateId: schedulingCandidate.id },
+        }));
       return dependency === undefined
         ? decision
         : Result.map(decision, (value) => ({
@@ -955,6 +997,7 @@ export function decide(
                 threadStatus: "created",
                 launchStatus: delivered ? "delivered" : entry.launchStatus,
                 status: delivered && entry.report === null ? "running" : entry.status,
+                wait: delivered && entry.wait?.kind === "execution-boundary" ? null : entry.wait,
                 updatedAt: now,
               }
             : entry,

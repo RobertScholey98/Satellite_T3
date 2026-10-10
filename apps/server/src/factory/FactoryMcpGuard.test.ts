@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type FactoryWait,
+  type FactoryScheduleCandidate,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -34,6 +35,8 @@ import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
+import { initialFactoryCompletion } from "./FactoryRetros.ts";
 import { FactoryPreviewService } from "./FactoryPreviewService.ts";
 import { reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
 import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
@@ -51,6 +54,7 @@ const reviewerId = ThreadId.make("delivery-reviewer");
 const assignmentId = FactoryAssignmentId.make("assignment-web");
 const otherAssignmentId = FactoryAssignmentId.make("assignment-api");
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(FactorySnapshot));
+const decodeFactorySnapshot = Schema.decodeUnknownEffect(FactorySnapshot);
 const decodeMembership = Schema.decodeUnknownSync(
   Schema.Struct({
     managers: Schema.Array(Schema.Struct({ id: Schema.String })),
@@ -109,12 +113,14 @@ interface Scenario {
   readonly flags: { hostCalls: number; missingProfile: boolean; unavailableStore: boolean };
   readonly shells: Map<ThreadId, OrchestrationV2ThreadShell>;
   readonly previewCalls: Array<{ threadId: ThreadId; instanceId: string; action: string }>;
+  readonly ticketReads: string[];
 }
 
 const scenario = <E>(
   test: (context: Scenario) => Effect.Effect<void, E>,
   heldWait?: FactoryWait,
-  withReviewer = false,
+  withReviewer: boolean | "retro" = false,
+  withTickets = false,
 ) =>
   Effect.gen(function* () {
     yield* migration;
@@ -207,6 +213,135 @@ const scenario = <E>(
       });
       yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
     }
+    if (withTickets) {
+      const state = yield* store.snapshot;
+      const candidates: FactoryScheduleCandidate[] = ["own", "other", "api"].map((id) => ({
+        id,
+        projectId: ProjectId.make(id === "api" ? "api" : "web"),
+        managerId: id === "api" ? ThreadId.make("manager-api") : managerId,
+        issue: {
+          hostKind: "github",
+          host: "github.com",
+          repository: "owner/repo",
+          id,
+          number: 1,
+          url: `https://github.com/owner/repo/issues/${id}`,
+        },
+        canonicalIssueKey: id,
+        generation: 0,
+        configurationId: "config",
+        source: { kind: "tracker-ready" },
+        observation: {
+          title: `Ticket ${id}`,
+          boardRevision: 1,
+          itemId: id,
+          columnId: "ready",
+          ready: true,
+          detailDigest: `digest:${id}`,
+          observedAt: now,
+        },
+        lifecycle: { phase: "observed" },
+        notificationDigest: null,
+        notifiedDigest: null,
+        createdAt: now,
+        updatedAt: now,
+      }));
+      const payload = yield* encodeSnapshot({
+        ...state,
+        scheduleCandidates: candidates,
+        assignments: state.assignments.map((entry) =>
+          entry.id !== assignmentId
+            ? entry
+            : {
+                ...entry,
+                kind: "implementation",
+                scheduling: {
+                  candidateId: "own",
+                  authority: {
+                    kind: "tracker-ready",
+                    boardId: "board",
+                    itemId: "own",
+                    observedAt: now,
+                  },
+                  issueAttempt: {
+                    attemptId: "attempt",
+                    reservationId: "reservation",
+                    sourceEnvironmentId: EnvironmentId.make("factory-test"),
+                    destinationEnvironmentId: EnvironmentId.make("factory-test"),
+                    sourceProjectId: ProjectId.make("web"),
+                    boardId: "board",
+                    issue: candidates[0]!.issue,
+                    sourceGeneration: 0,
+                  },
+                },
+              },
+        ),
+      });
+      yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+    }
+    if (withReviewer === "retro") {
+      const state = yield* store.snapshot;
+      const assignment = state.assignments.find((entry) => entry.id === assignmentId)!;
+      const qualification = {
+        status: "qualified" as const,
+        profileId: "retro-profile",
+        checkedAt: now,
+      };
+      const payload = yield* encodeSnapshot({
+        ...state,
+        assignments: state.assignments.map((entry) =>
+          entry.id !== assignmentId
+            ? entry
+            : {
+                ...entry,
+                completion: {
+                  ...initialFactoryCompletion(entry.scope),
+                  phase: "concluded",
+                  conclusion: {
+                    kind: "delivered",
+                    id: "conclusion",
+                    evidenceDigest: "evidence",
+                    concludedAt: now,
+                    planVersion: 1,
+                    deliveryIds: ["delivery"],
+                  },
+                },
+              },
+        ),
+        auxiliaryThreads: state.auxiliaryThreads.map((entry) =>
+          entry.threadId !== reviewerId
+            ? entry
+            : {
+                ...entry,
+                kind: "retrospective",
+                incidentId: "retro",
+                qualification,
+                sourceDigest: "retro-source",
+              },
+        ),
+        retros: [
+          {
+            id: "retro",
+            assignmentId,
+            conclusionId: "conclusion",
+            evidenceDigest: "evidence",
+            threadId: reviewerId,
+            modelSelection: assignment.modelSelection!,
+            execution: {
+              status: "ready",
+              qualification,
+              sourceDigest: "retro-source",
+              launch: "delivered",
+            },
+            reports: { phase: "team-pending" },
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      });
+      yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+    }
+    const ticketReads: string[] = [];
     const flags = { hostCalls: 0, missingProfile: false, unavailableStore: false };
     const previewCalls: Scenario["previewCalls"] = [];
     const shells = new Map<ThreadId, OrchestrationV2ThreadShell>([
@@ -248,6 +383,37 @@ const scenario = <E>(
     for (const [id, shell] of shells)
       shells.set(id, { ...shell, projectId: ProjectId.make("web") });
     const external = Layer.mergeAll(
+      Layer.mock(FactorySchedulingEffects)({
+        watch: () => Effect.void,
+        reconcile: Effect.void,
+        handle: () => Effect.void,
+        context: () => Effect.succeed({}),
+        release: () => Effect.void,
+        beforeLaunch: () => Effect.void,
+        read: (candidateId) =>
+          Effect.sync(() => {
+            ticketReads.push(candidateId);
+            return {
+              detail: {
+                ref: {
+                  hostKind: "github",
+                  host: "github.com",
+                  repository: "owner/repo",
+                  id: candidateId,
+                  number: 1,
+                  url: `https://github.com/owner/repo/issues/${candidateId}`,
+                },
+                title: `Ticket ${candidateId}`,
+                state: "open",
+                updatedAt: now,
+                labels: [],
+                body: "Full ticket body",
+                comments: [],
+              },
+              detailDigest: `digest:${candidateId}`,
+            };
+          }),
+      }),
       boundaryUnavailable,
       Layer.mock(EventSink.EventSinkV2)({}),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({
@@ -412,6 +578,7 @@ const scenario = <E>(
         flags,
         shells,
         previewCalls,
+        ticketReads,
         call: (name, args = {}, caller = leadId) => {
           const result = server
             .callTool({ name, arguments: args })
@@ -430,6 +597,72 @@ const scenario = <E>(
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })), Effect.scoped);
 
 describe("FactoryMcpGuard", () => {
+  it.effect("reads exact scoped tickets without exposing other teams or projects", () =>
+    scenario(
+      ({ call, ticketReads }) =>
+        Effect.gen(function* () {
+          for (const caller of [leadId, childId, grandchildId, reviewerId]) {
+            assert.isFalse(
+              (yield* call("factory_ticket_read", { candidateId: "own" }, caller)).isError ?? false,
+            );
+            assert.isTrue(
+              (yield* call("factory_ticket_read", { candidateId: "other" }, caller)).isError,
+            );
+            const snapshot = yield* call("factory_snapshot", {}, caller);
+            const parsed = yield* decodeFactorySnapshot(snapshot.structuredContent);
+            assert.deepEqual(
+              parsed.scheduleCandidates.map((entry) => entry.id),
+              ["own"],
+            );
+          }
+          assert.isFalse(
+            (yield* call("factory_ticket_read", { candidateId: "other" }, managerId)).isError ??
+              false,
+          );
+          const managerSnapshot = yield* decodeFactorySnapshot(
+            (yield* call("factory_snapshot", {}, managerId)).structuredContent,
+          );
+          assert.deepEqual(
+            managerSnapshot.scheduleCandidates.map((entry) => entry.id),
+            ["own", "other"],
+          );
+          for (const caller of [managerId, leadId, reviewerId, unmanagedId, "client"] as const)
+            assert.isTrue(
+              (yield* call("factory_ticket_read", { candidateId: "api" }, caller)).isError,
+            );
+          assert.deepEqual(ticketReads, ["own", "own", "own", "own", "other"]);
+        }),
+      undefined,
+      true,
+      true,
+    ),
+  );
+  it.effect("lets the current retrospective read only its concluded assignment ticket", () =>
+    scenario(
+      ({ call, ticketReads }) =>
+        Effect.gen(function* () {
+          const own = yield* call("factory_ticket_read", { candidateId: "own" }, reviewerId);
+          assert.isFalse(own.isError ?? false);
+          assert.isTrue(
+            (yield* call("factory_ticket_read", { candidateId: "other" }, reviewerId)).isError,
+          );
+          assert.isTrue(
+            (yield* call("factory_ticket_read", { candidateId: "own" }, leadId)).isError,
+          );
+          const snapshot = yield* decodeFactorySnapshot(
+            (yield* call("factory_snapshot", {}, reviewerId)).structuredContent,
+          );
+          assert.deepEqual(
+            snapshot.scheduleCandidates.map((entry) => entry.id),
+            ["own"],
+          );
+          assert.deepEqual(ticketReads, ["own"]);
+        }),
+      undefined,
+      "retro",
+      true,
+    ),
+  );
   it.effect(
     "routes only the independent reviewer's scoped preview tools with authenticated identity",
     () =>

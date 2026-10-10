@@ -24,6 +24,7 @@ import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-fi
 import { Textarea } from "../ui/textarea";
 import { useFactoryCommand } from "./useFactoryCommand";
 import { FactoryTrackerSettings } from "./FactoryTrackerSettings";
+import { FactorySchedulingSettings } from "./FactorySchedulingSettings";
 
 function lines(value: string) {
   return value
@@ -393,6 +394,7 @@ export function FactoryDeliverySettings({
               </Button>
             </section>
             <FactoryTrackerSettings environment={environment} manager={manager} />
+            <FactorySchedulingSettings environment={environment} manager={manager} />
             {validation || command.error ? (
               <p role="alert" className="text-sm text-destructive">
                 {validation ?? command.error}

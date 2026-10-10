@@ -20,6 +20,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { decide, initialFactorySnapshot } from "./FactoryState.ts";
+import { checkIssueSchedulingFence } from "../issues/IssueScheduling.ts";
 
 type DecisionInput = Omit<Parameters<typeof decide>[0], "state">;
 
@@ -134,6 +135,18 @@ const make = Effect.gen(function* () {
     if (receipt !== undefined) return receipt;
     const request = stableStringify({ actor: input.actor, command: input.command });
     const stateBefore = yield* snapshot;
+    if (
+      input.schedulingAdmission &&
+      !(yield* checkIssueSchedulingFence(input.schedulingAdmission).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(storageError),
+      ))
+    )
+      return yield* new FactoryError({
+        code: "stale-revision",
+        detail:
+          "The tracker mapping, observed board or exclusive reservation changed before commissioning.",
+      });
     if (input.command.type === "assignment.concluded") {
       const command = input.command;
       const assignment = stateBefore.assignments.find((entry) => entry.id === command.assignmentId);
@@ -290,6 +303,13 @@ const make = Effect.gen(function* () {
                         command.type === "followup.publication.recorded" ||
                         command.type === "followup.failed") &&
                       command.followupId === intent.followupId
+                    );
+                  case "schedule.notify":
+                    return (
+                      command.type === "schedule.notified" &&
+                      command.managerId === intent.managerId &&
+                      stableStringify(command.notifications) ===
+                        stableStringify(intent.notifications)
                     );
                   case "delivery.capture":
                     return (

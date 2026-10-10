@@ -84,6 +84,7 @@ import Migration0067 from "./Migrations/067_EngineeringFactory.ts";
 import Migration0068 from "./Migrations/068_FactoryBoundaries.ts";
 import Migration0069 from "./Migrations/069_FactoryObservation.ts";
 import Migration0070 from "./Migrations/070_IssuePublication.ts";
+import Migration0071 from "./Migrations/071_IssueScheduling.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -168,6 +169,7 @@ export const migrationEntries = [
   [68, "FactoryBoundaries", Migration0068],
   [69, "FactoryObservation", Migration0069],
   [70, "IssuePublication", Migration0070],
+  [71, "IssueScheduling", Migration0071],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

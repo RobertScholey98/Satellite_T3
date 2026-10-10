@@ -27,6 +27,15 @@ const group = WsRpcGroup.omit(
 const managerId = ThreadId.make("manager-web");
 const settingsCommands: ReadonlyArray<FactoryCommand> = [
   {
+    type: "project.scheduling.configure",
+    commandId: CommandId.make("schedule-settings"),
+    projectId: ProjectId.make("web"),
+    boardId: "board",
+    enabled: true,
+    maxConcurrentAssignments: 1,
+    improvementRule: null,
+  },
+  {
     type: "delivery.rules.configure",
     commandId: CommandId.make("merge-rules"),
     projectId: ProjectId.make("web"),
@@ -173,6 +182,7 @@ describe("factory RPC authority", () => {
           assert.deepStrictEqual(yield* client[method]({ command }), { revision: index + 1 });
         }
         assert.deepStrictEqual(handled, [
+          "project.scheduling.configure",
           "delivery.rules.configure",
           "delivery.preview.configure",
           "delivery.preview.publication.configure",

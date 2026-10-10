@@ -11,6 +11,15 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { IssueAttemptLink } from "./issues.ts";
+import {
+  FactorySchedulingConfiguration,
+  FactoryScheduleCandidate,
+  FactoryScheduleAuthority,
+  FactorySchedulingCommand,
+  FactorySchedulingHostCommand,
+  FactorySchedulingEffectIntent,
+} from "./factoryScheduling.ts";
 import {
   FactoryModelChoice,
   FactoryModelPolicy,
@@ -255,6 +264,13 @@ export const FactoryAssignment = Schema.Struct({
   managerId: ThreadId,
   threadId: ThreadId,
   projectId: ProjectId,
+  scheduling: Schema.optionalKey(
+    Schema.Struct({
+      candidateId: TrimmedNonEmptyString,
+      authority: FactoryScheduleAuthority,
+      issueAttempt: IssueAttemptLink,
+    }),
+  ),
   kind: Schema.Literals(["onboarding", "implementation", "rule-change"]),
   title: Schema.optionalKey(TrimmedNonEmptyString),
   scope: Schema.optionalKey(FactorySupportingWork.fields.scope),
@@ -300,6 +316,12 @@ export type FactoryAssignment = typeof FactoryAssignment.Type;
 
 export const FactorySnapshot = Schema.Struct({
   revision: NonNegativeInt,
+  schedulingConfigurations: Schema.Array(FactorySchedulingConfiguration).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  scheduleCandidates: Schema.Array(FactoryScheduleCandidate).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   retros: Schema.Array(FactoryRetro).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   findings: Schema.Array(FactoryFinding).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   followups: Schema.Array(FactoryFollowup).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
@@ -337,6 +359,7 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  FactorySchedulingCommand,
   FactoryRetroCommand,
   FactoryDeliveryCommand,
   FactoryControlCommand,
@@ -358,6 +381,7 @@ export const FactoryCommand = Schema.Union([
     ...FactoryWorkRequestFields,
     authorizationMessageId: Schema.optionalKey(MessageId),
     dependencyId: Schema.optionalKey(FactoryDependencyId),
+    candidateId: Schema.optionalKey(TrimmedNonEmptyString),
   }),
   Schema.Struct({
     type: Schema.Literal("assignment.handover"),
@@ -439,6 +463,7 @@ export const FactoryDispatchInput = Schema.Struct({ command: FactoryCommand });
 export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
+  FactorySchedulingHostCommand,
   FactoryRetroHostCommand,
   FactoryDeliveryHostCommand,
   FactoryControlHostCommand,
@@ -501,6 +526,7 @@ export const FactoryThreadLaunchIntent = Schema.Struct({
 });
 export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
 export const FactoryEffectIntent = Schema.Union([
+  FactorySchedulingEffectIntent,
   FactoryRetroEffectIntent,
   FactoryDeliveryEffectIntent,
   FactoryControlEffectIntent,
@@ -518,6 +544,7 @@ export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 
 export const FactoryCommandResult = Schema.Struct({
   revision: NonNegativeInt,
+  candidateId: Schema.optionalKey(TrimmedNonEmptyString),
   retroId: Schema.optionalKey(TrimmedNonEmptyString),
   findingId: Schema.optionalKey(TrimmedNonEmptyString),
   followupId: Schema.optionalKey(TrimmedNonEmptyString),

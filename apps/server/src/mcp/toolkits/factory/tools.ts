@@ -9,6 +9,8 @@ import {
   FactoryPreviewFinishInput,
   FactoryRevisionUxEvidence,
   PreviewAutomationSnapshot,
+  IssueDetail,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -45,6 +47,15 @@ export const FactoryPreviewSnapshotTool = Tool.make("factory_preview_snapshot", 
 export const FactoryPreviewSnapshotToolkit = Toolkit.make(FactoryPreviewSnapshotTool);
 
 export const FactoryToolkit = Toolkit.make(
+  Tool.make("factory_ticket_read", {
+    description:
+      "Read the full current ticket and its detail digest before preparing a scheduling candidate. Managers can read their project's candidates; implementation and retrospective teams can read only their assignment's ticket. Scope is derived from authenticated thread identity.",
+    parameters: Schema.Struct({ candidateId: TrimmedNonEmptyString }),
+    success: Schema.Struct({ detail: IssueDetail, detailDigest: TrimmedNonEmptyString }),
+    failure,
+    failureMode: "return",
+    dependencies,
+  }).annotate(Tool.Readonly, true),
   Tool.make("factory_preview_action", {
     description:
       "Exercise a named journey in the independent review's isolated immutable candidate app. Paths are relative to that app; no arbitrary URL, browser tab, script evaluation, upload, or host access. Use factory_preview_snapshot for page inspection and PNG images.",
@@ -80,7 +91,7 @@ export const FactoryToolkit = Toolkit.make(
   }).annotate(Tool.Readonly, true),
   Tool.make("factory_dispatch", {
     description:
-      "Submit a factory command as this authenticated managed thread. Managers commission scoped implementation assignments against a human request; authorizationMessageId selects that request, or defaults to their latest direct human message. Leads use scoped mutation/verification and declare all required PRs in assignment.completion.plan. Report evidenced problems immediately with finding.report; escalate shared causes with finding.escalate. After host-confirmed conclusion, the read-only retro lead submits retro.team.submit and its manager submits retro.manager.submit. followup.request creates project triage tickets without starting implementation. Human-only decisions cannot be made through this tool.",
+      "Submit a factory command as this authenticated managed thread. Managers commission scoped implementation assignments against a human request; authorizationMessageId selects that request, or defaults to their latest direct human message. For proactive tickets, read factory_ticket_read, prepare exact work with schedule.prepare and commission with candidateId; this requires fresh host-verified Ready placement or an approved project improvement rule and never falls back to a human message. Leads use scoped mutation/verification and declare all required PRs in assignment.completion.plan. Report evidenced problems immediately with finding.report; escalate shared causes with finding.escalate. After host-confirmed conclusion, the read-only retro lead submits retro.team.submit and its manager submits retro.manager.submit. followup.request creates project triage tickets without starting implementation. Human-only decisions cannot be made through this tool.",
     parameters: FactoryDispatchInput,
     success: FactoryCommandResult,
     failure,
