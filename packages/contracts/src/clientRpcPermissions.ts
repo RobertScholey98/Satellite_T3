@@ -54,7 +54,10 @@ export function clientRpcRequiredScopes(
 ): readonly AuthEnvironmentScope[] {
   if (method === FACTORY_WS_METHODS.dispatchCommand && input !== undefined) {
     const payload = decodeFactoryDispatch(input);
-    return payload.command.type === "manager.configure"
+    return payload.command.type === "manager.configure" ||
+      payload.command.type === "policy.defaults.configure" ||
+      payload.command.type === "assignments.extend-grant" ||
+      payload.command.type === "manager.approve-onboarding"
       ? [AuthOrchestrationOperateScope, AuthSettingsWriteScope]
       : [AuthOrchestrationOperateScope];
   }

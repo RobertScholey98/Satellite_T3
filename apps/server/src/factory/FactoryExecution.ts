@@ -33,6 +33,7 @@ import {
   FactoryExecutionProfile,
 } from "./FactoryExecutionProfile.ts";
 import { factoryExecutionProbe } from "./FactoryExecutionProbe.ts";
+import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 
 export { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 
@@ -236,6 +237,7 @@ const make = Effect.gen(function* () {
       }
       const profile = FactoryExecutionProfile.make({
         boundaryId: profileId,
+        sourceRevision: projectRevision,
         dockerContext,
         imageId,
         projectSnapshotPath: path.join(directory, "project"),
@@ -301,7 +303,9 @@ const make = Effect.gen(function* () {
         visited.add(current);
         const manager = state.managers.find((entry) => entry.threadId === current);
         assignment = state.assignments.find(
-          (entry) => entry.threadId === current || entry.managerId === manager?.id,
+          (entry) =>
+            entry.threadId === current ||
+            (entry.managerId === manager?.id && entry.kind === "onboarding"),
         );
         if (assignment !== undefined || manager !== undefined) break;
         const thread: OrchestrationV2AppThread | undefined = yield* projections
@@ -324,6 +328,20 @@ const make = Effect.gen(function* () {
       const profile = yield* fs
         .readFileString(path.join(root, profileId, "profile.json"))
         .pipe(Effect.flatMap(decodeProfile));
+      yield* assertFactoryProfileActive(profile).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+      );
+      if (profile.assignmentWorkspace !== undefined) {
+        const workspace = profile.assignmentWorkspace;
+        if (
+          workspace.assignmentId !== assignment.id ||
+          assignment.grant === undefined ||
+          workspace.grantEpoch !== assignment.grant.epoch ||
+          workspace.boundaryId !== assignment.grant.boundaryId ||
+          !state.boundaries.some((boundary) => boundary.id === assignment.grant?.boundaryId)
+        )
+          return yield* new FactoryError({ code: "execution-unavailable" });
+      }
       const runtimePath = path.join(
         profile.runtimePath,
         Buffer.from(threadId).toString("base64url"),

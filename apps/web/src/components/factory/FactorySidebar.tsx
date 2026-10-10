@@ -9,13 +9,16 @@ import {
   type FactoryAssignment,
   type FactoryManager,
   type FactoryOnboardingReport,
+  type EnvironmentId,
   type ScopedThreadRef,
+  type ThreadId,
 } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
   ClipboardListIcon,
   PlusIcon,
+  Settings2Icon,
   UsersIcon,
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -42,6 +45,12 @@ const RetryManagerDialog = lazy(() =>
 );
 const OnboardingReportDialog = lazy(() =>
   import("./OnboardingReportDialog").then((module) => ({ default: module.OnboardingReportDialog })),
+);
+const FactoryPolicyDialog = lazy(() =>
+  import("./FactoryPolicyDialog").then((module) => ({ default: module.FactoryPolicyDialog })),
+);
+const FactoryBoundaryDialog = lazy(() =>
+  import("./FactoryBoundaryDialog").then((module) => ({ default: module.FactoryBoundaryDialog })),
 );
 
 const managerStatusLabels = {
@@ -91,6 +100,11 @@ export function FactorySidebar({
   const [creating, setCreating] = useState(false);
   const [report, setReport] = useState<FactoryOnboardingReport | null>(null);
   const [setupManagerKey, setSetupManagerKey] = useState<string | null>(null);
+  const [boundaryManagerKey, setBoundaryManagerKey] = useState<string | null>(null);
+  const [policyTarget, setPolicyTarget] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly managerId: ThreadId | null;
+  } | null>(null);
   const sectionId = useId();
   const threadsByKey = useMemo(
     () =>
@@ -181,6 +195,16 @@ export function FactorySidebar({
     scopedProjects.some((project) => project.environmentId === environment.environmentId),
   );
   const setupEntry = entries.find((entry) => entry.key === setupManagerKey);
+  const boundaryEntry = entries.find((entry) => entry.key === boundaryManagerKey);
+  const boundaryReport = boundaryEntry?.assignments.find(
+    (assignment) => assignment.report !== null,
+  )?.report;
+  const policyEnvironment = environments.find(
+    (environment) => environment.environmentId === policyTarget?.environmentId,
+  );
+  const policyManager = policyEnvironment?.data?.managers.find(
+    (manager) => manager.id === policyTarget?.managerId,
+  );
   if (projects.length === 0) return null;
 
   return (
@@ -210,6 +234,23 @@ export function FactorySidebar({
       </div>
       {expanded ? (
         <div id={sectionId}>
+          <div className="flex flex-wrap gap-1 px-1 py-1">
+            {relevantEnvironments
+              .filter((environment) => environment.data !== null)
+              .map((environment) => (
+                <Button
+                  key={environment.environmentId}
+                  size="xs"
+                  variant="ghost"
+                  onClick={() =>
+                    setPolicyTarget({ environmentId: environment.environmentId, managerId: null })
+                  }
+                >
+                  Autonomy defaults
+                  {relevantEnvironments.length > 1 ? ` · ${environment.label}` : ""}
+                </Button>
+              ))}
+          </div>
           <SidebarMenu>
             {entries.map(({ environment, manager, key, project, assignments }) => {
               const childrenExpanded = !collapsedManagers.has(key);
@@ -255,6 +296,20 @@ export function FactorySidebar({
                         <span>{manager.name}</span>
                       </SidebarMenuButton>
                     </div>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label={`Configure ${manager.name} autonomy`}
+                      title="Manager autonomy"
+                      onClick={() =>
+                        setPolicyTarget({
+                          environmentId: environment.environmentId,
+                          managerId: manager.id,
+                        })
+                      }
+                    >
+                      <Settings2Icon aria-hidden />
+                    </Button>
                   </div>
                   <div className="ml-7 flex flex-wrap items-center gap-x-2 gap-y-1 pb-1">
                     <span className="truncate text-2xs text-sidebar-muted-foreground">
@@ -316,13 +371,22 @@ export function FactorySidebar({
                                 </span>
                               ) : null}
                               {assignment.report ? (
-                                <Button
-                                  size="xs"
-                                  variant="ghost"
-                                  onClick={() => setReport(assignment.report)}
-                                >
-                                  View report
-                                </Button>
+                                <>
+                                  <Button
+                                    size="xs"
+                                    variant="ghost"
+                                    onClick={() => setReport(assignment.report)}
+                                  >
+                                    View report
+                                  </Button>
+                                  <Button
+                                    size="xs"
+                                    variant="ghost"
+                                    onClick={() => setBoundaryManagerKey(key)}
+                                  >
+                                    {manager.boundaryId ? "View boundary" : "Review boundary"}
+                                  </Button>
+                                </>
                               ) : null}
                             </div>
                             {assignment.wait && assignment.wait.reason !== manager.wait?.reason ? (
@@ -391,6 +455,15 @@ export function FactorySidebar({
           />
         ) : null}
         {report ? <OnboardingReportDialog report={report} onClose={() => setReport(null)} /> : null}
+        {boundaryEntry && boundaryReport ? (
+          <FactoryBoundaryDialog
+            key={`${boundaryEntry.key}:${boundaryEntry.manager.boundaryId ?? "proposal"}`}
+            environment={boundaryEntry.environment}
+            manager={boundaryEntry.manager}
+            report={boundaryReport}
+            onClose={() => setBoundaryManagerKey(null)}
+          />
+        ) : null}
         {setupEntry?.project ? (
           <RetryManagerDialog
             key={setupEntry.key}
@@ -398,6 +471,14 @@ export function FactorySidebar({
             environment={setupEntry.environment}
             manager={setupEntry.manager}
             onClose={() => setSetupManagerKey(null)}
+          />
+        ) : null}
+        {policyEnvironment && (policyTarget?.managerId === null || policyManager) ? (
+          <FactoryPolicyDialog
+            key={`${policyEnvironment.environmentId}:${policyTarget?.managerId ?? "defaults"}`}
+            environment={policyEnvironment}
+            {...(policyManager ? { manager: policyManager } : {})}
+            onClose={() => setPolicyTarget(null)}
           />
         ) : null}
       </Suspense>

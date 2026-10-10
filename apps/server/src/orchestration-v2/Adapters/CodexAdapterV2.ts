@@ -1,6 +1,7 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { prepareCodexIdeaPolicy } from "../../ideas/CodexIdeaPolicy.ts";
 import { prepareFactoryCodexLaunch } from "../../factory/FactoryCodexLaunch.ts";
+import { assertFactoryProfileActive } from "../../factory/FactoryProfileAuthority.ts";
 import {
   FACTORY_CONTAINER_WORKSPACE,
   factoryContainerEndpoint,
@@ -1821,8 +1822,15 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         // starting their own; a failed handshake leaves the flag unset so the
         // next caller retries.
         const initializePermit = yield* Semaphore.make(1);
+        const checkFactoryAuthority = assertFactoryProfileActive(
+          input.runtimePolicy.factoryExecution,
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.mapError((cause) => toProtocolError(cause.message)),
+        );
         const ensureInitialized = initializePermit.withPermit(
           Effect.gen(function* () {
+            yield* checkFactoryAuthority;
             const alreadyInitialized = yield* Ref.get(initialized);
             if (alreadyInitialized) {
               return;
@@ -1846,6 +1854,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 }),
               );
             yield* client.notify("initialized", undefined);
+            yield* checkFactoryAuthority;
             yield* Ref.set(initialized, true);
           }),
         );
@@ -6338,33 +6347,47 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   }),
               ),
             ),
-          startTurn: (turnInput) => {
-            const goalCommand =
-              turnInput.message.attachments.length === 0 &&
-              turnInput.restartContinuationOfRunId === undefined
-                ? parseCodexGoalCommand(turnInput.message.text)
-                : null;
-            if (goalCommand !== null) return runGoalCommand(turnInput, goalCommand);
-            return Effect.gen(function* () {
-              yield* startNativeTurn(
-                turnInput,
+          startTurn: (turnInput) =>
+            Effect.gen(function* () {
+              if (input.runtimePolicy.factoryExecution !== undefined)
+                yield* ensureInitialized.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterTurnStartError({
+                        driver: CODEX_PROVIDER,
+                        threadId: turnInput.threadId,
+                        providerThreadId: turnInput.providerThread.id,
+                        runId: turnInput.runId,
+                        cause,
+                      }),
+                  ),
+                );
+              const goalCommand =
+                turnInput.message.attachments.length === 0 &&
                 turnInput.restartContinuationOfRunId === undefined
-                  ? yield* toCodexInput(turnInput)
-                  : [],
+                  ? parseCodexGoalCommand(turnInput.message.text)
+                  : null;
+              if (goalCommand !== null) return yield* runGoalCommand(turnInput, goalCommand);
+              return yield* Effect.gen(function* () {
+                yield* startNativeTurn(
+                  turnInput,
+                  turnInput.restartContinuationOfRunId === undefined
+                    ? yield* toCodexInput(turnInput)
+                    : [],
+                );
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterTurnStartError({
+                      driver: CODEX_PROVIDER,
+                      threadId: turnInput.threadId,
+                      providerThreadId: turnInput.providerThread.id,
+                      runId: turnInput.runId,
+                      cause,
+                    }),
+                ),
               );
-            }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterTurnStartError({
-                    driver: CODEX_PROVIDER,
-                    threadId: turnInput.threadId,
-                    providerThreadId: turnInput.providerThread.id,
-                    runId: turnInput.runId,
-                    cause,
-                  }),
-              ),
-            );
-          },
+            }),
           steerTurn: (turnInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);

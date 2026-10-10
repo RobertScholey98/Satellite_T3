@@ -15,6 +15,7 @@ import * as IssueLifecycleReactor from "./issues/IssueLifecycleReactor.ts";
 import * as CommitRecommendationService from "./git/CommitRecommendationService.ts";
 import * as FactoryStore from "./factory/FactoryStore.ts";
 import * as FactoryExecution from "./factory/FactoryExecution.ts";
+import * as FactoryBoundaryExecution from "./factory/FactoryBoundaryExecution.ts";
 import * as FactoryService from "./factory/FactoryService.ts";
 import * as FactoryMcpGuard from "./factory/FactoryMcpGuard.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
@@ -498,7 +499,10 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
-const layerFactoryExecution = FactoryExecution.layer.pipe(
+const layerFactoryExecution = Layer.mergeAll(
+  FactoryExecution.layer,
+  FactoryBoundaryExecution.layer,
+).pipe(
   Layer.provideMerge(FactoryStore.layer),
   Layer.provide(ProjectStore.layer),
   Layer.provide(ProjectionStoreV2.layer),

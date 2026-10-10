@@ -1,0 +1,82 @@
+import type { FactoryAssignmentGrant, FactoryBoundaryConfiguration } from "@t3tools/contracts";
+
+import { admissibleFactorySourcePath } from "./FactoryExecutionProfile.ts";
+
+export function factoryRelativePath(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= 1024 &&
+    !/[\\:]/.test(value) &&
+    !Array.from(value).some((character) => character.charCodeAt(0) < 32) &&
+    !value
+      .split("/")
+      .some(
+        (part) =>
+          /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part),
+      ) &&
+    !value.startsWith("/") &&
+    admissibleFactorySourcePath(value)
+  );
+}
+
+export function factoryProtectedPath(value: string): boolean {
+  return value
+    .split("/")
+    .some((part) =>
+      /^(?:\..*|AGENTS\.md|CLAUDE\.md|GEMINI\.md|SKILL\.md|package(?:-lock)?\.json|[\w.-]*lock(?:\.[\w.-]+)?|(?:ts|js)config(?:\.[\w.-]+)?\.json|(?:eslint|prettier|biome|oxlint|oxfmt|vite|vitest|webpack|rollup|babel|jest|playwright|cypress|turbo|nx|next|nuxt|svelte|astro|tailwind|postcss|commitlint|lint-staged)(?:\.[\w.-]+)?|[\w.-]+\.config\.[\w.-]+|Dockerfile(?:\..*)?|Makefile|[\w.-]+\.(?:ya?ml|toml|ini|cfg)|SATELLITE_DISCOVERY\.md)$/i.test(
+        part,
+      ),
+    );
+}
+
+export function factoryPathWithin(value: string, directory: string): boolean {
+  return value.startsWith(`${directory}/`);
+}
+
+export function factoryCanWrite(
+  value: string,
+  grant: FactoryAssignmentGrant,
+  configuration: FactoryBoundaryConfiguration,
+): boolean {
+  if (!factoryRelativePath(value)) return false;
+  if (
+    [...configuration.protectedPaths, ...configuration.writablePaths].some(
+      (entry) => entry !== value && entry.toLowerCase() === value.toLowerCase(),
+    )
+  )
+    return false;
+  if (grant.controlChange?.paths.includes(value)) return true;
+  if (
+    factoryProtectedPath(value) ||
+    configuration.protectedPaths.some((entry) => value === entry || factoryPathWithin(value, entry))
+  )
+    return false;
+  if (configuration.writablePaths.includes(value)) return grant.sourcePaths.includes(value);
+  return grant.creatableDirectories.some((entry) => factoryPathWithin(value, entry));
+}
+
+export function factoryValidConfiguration(configuration: FactoryBoundaryConfiguration): boolean {
+  if (configuration.writablePaths.length === 0) return false;
+  const paths = [
+    ...configuration.protectedPaths,
+    ...configuration.writablePaths,
+    ...configuration.creatableDirectories,
+  ];
+  if (paths.some((value) => !factoryRelativePath(value))) return false;
+  if (configuration.writablePaths.some((value) => factoryProtectedPath(value))) return false;
+  if (configuration.creatableDirectories.some((value) => factoryProtectedPath(value))) return false;
+  if (configuration.gates.length === 0) return false;
+  return configuration.gates.every(
+    (gate) =>
+      gate.executable === "/usr/local/bin/node" &&
+      (gate.cwd === "." || factoryRelativePath(gate.cwd)) &&
+      gate.timeoutMs > 0 &&
+      gate.timeoutMs <= 300_000 &&
+      gate.protectedInputs.length > 0 &&
+      gate.protectedInputs.every(
+        (value) => factoryRelativePath(value) && configuration.protectedPaths.includes(value),
+      ) &&
+      (gate.args.length === 1 || (gate.args.length === 2 && gate.args[0] === "--test")) &&
+      gate.protectedInputs.some((value) => gate.args.at(-1) === `/workspace/${value}`),
+  );
+}

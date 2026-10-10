@@ -28,6 +28,7 @@ import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const managerId = ThreadId.make("manager-web");
@@ -171,6 +172,7 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
       ],
     ]);
     const external = Layer.mergeAll(
+      boundaryUnavailable,
       Layer.succeed(FactoryStore.FactoryStore, {
         ...store,
         snapshot: Effect.suspend(() =>

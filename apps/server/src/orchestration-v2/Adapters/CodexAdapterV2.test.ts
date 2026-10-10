@@ -1683,6 +1683,7 @@ describe("CodexAdapterV2 session initialize", () => {
   const openReplaySession = (
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
+    runtimePolicy: ProviderAdapterV2RuntimePolicy = CODEX_TEST_RUNTIME_POLICY,
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -1729,14 +1730,14 @@ describe("CodexAdapterV2 session initialize", () => {
         threadId: ThreadId.make(`thread-${transcript.scenario}`),
         providerSessionId: ProviderSessionId.make(`provider-session-${transcript.scenario}`),
         modelSelection: CODEX_TEST_MODEL_SELECTION,
-        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        runtimePolicy,
       });
       return {
         ensureThread: (threadId: string) =>
           runtime.ensureThread({
             threadId: ThreadId.make(threadId),
             modelSelection: CODEX_TEST_MODEL_SELECTION,
-            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+            runtimePolicy,
           }),
         initializeRequests: () => initializeRequests,
       };
@@ -1744,6 +1745,62 @@ describe("CodexAdapterV2 session initialize", () => {
 
   const replayPreamble = (nativeThreadId: string) =>
     codexReplayPreamble({ nativeThreadId, nativeTurnId: "unused", prompt: "unused" });
+
+  it.effect("rejects a managed startup revoked while its container handshake was pending", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "factory-start-fence-" });
+      const revocationPath = path.join(directory, "revoked.json");
+      const initializeAwaitingResponse = yield* Deferred.make<void>();
+      const releaseInitialize = yield* Deferred.make<void>();
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: "factory-revoked-initialize",
+          entries: replayPreamble("revoked-thread").slice(0, 3),
+        }),
+        (entry) =>
+          entry.label === "initialize"
+            ? Deferred.succeed(initializeAwaitingResponse, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseInitialize)),
+              )
+            : Effect.void,
+        {
+          ...CODEX_TEST_RUNTIME_POLICY,
+          factoryExecution: {
+            boundaryId: "profile",
+            dockerContext: "local",
+            imageId: "sha256:approved",
+            projectSnapshotPath: directory,
+            workflowSnapshotPath: directory,
+            runtimePath: directory,
+            assignmentWorkspace: {
+              assignmentId: "assignment",
+              volumeName: "owned-volume",
+              grantEpoch: 0,
+              boundaryId: "baseline",
+              controlsPath: directory,
+              revocationPath,
+              workerUid: 65532,
+              workerGid: 65532,
+            },
+          },
+        },
+      );
+      const starting = yield* session
+        .ensureThread("thread-revoked")
+        .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(initializeAwaitingResponse);
+      yield* fs.writeFileString(revocationPath, "{}");
+      yield* Deferred.succeed(releaseInitialize, undefined);
+      const failure = yield* Fiber.join(starting);
+      assert.equal(failure._tag, "ProviderAdapterEnsureThreadError");
+      assert.include(String(failure.cause), "execution grant was withdrawn");
+      const retried = yield* session.ensureThread("thread-revoked").pipe(Effect.flip);
+      assert.include(String(retried.cause), "execution grant was withdrawn");
+      assert.equal(session.initializeRequests(), 1);
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
 
   it.effect("sends one initialize when two threads start on a fresh session at once", () =>
     Effect.gen(function* () {

@@ -1,6 +1,7 @@
 import {
   type FactoryAssignment,
   type FactoryAssignmentId,
+  type FactoryBoundary,
   type FactoryDecisionCommand,
   type FactoryCommandResult,
   type FactoryDiscoveryQualification,
@@ -13,6 +14,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
+import { constrainAssignmentPolicy, resolveManagerPolicy } from "./FactoryPolicy.ts";
 
 export type FactoryActor =
   | { readonly kind: "human" }
@@ -42,12 +44,53 @@ export const initialFactorySnapshot = (): FactorySnapshot => ({
   },
   managers: [],
   assignments: [],
+  boundaries: [],
 });
 
 export const effectivePolicy = (
   state: Pick<FactorySnapshot, "defaults">,
   manager: Pick<FactoryManager, "overrides">,
-): FactoryPolicy => ({ ...state.defaults, ...manager.overrides });
+): FactoryPolicy => resolveManagerPolicy(state.defaults, manager.overrides);
+
+const reduceGrants = (
+  assignments: ReadonlyArray<FactoryAssignment>,
+  managers: ReadonlyArray<FactoryManager>,
+  defaults: FactoryPolicy,
+  now: string,
+) =>
+  assignments.map((assignment) => {
+    if (assignment.status === "complete") return assignment;
+    const manager = managers.find((entry) => entry.id === assignment.managerId);
+    if (manager === undefined) return assignment;
+    const grantedPolicy = constrainAssignmentPolicy(
+      assignment.grantedPolicy,
+      resolveManagerPolicy(defaults, manager.overrides),
+    );
+    const revokeControlChange =
+      assignment.authorization?.kind === "manager" &&
+      assignment.grant?.controlChange != null &&
+      !grantedPolicy.authorizeRuleWeakening;
+    return {
+      ...assignment,
+      grantedPolicy,
+      ...(revokeControlChange
+        ? {
+            grant: {
+              ...assignment.grant!,
+              controlChange: null,
+              epoch: assignment.grant!.epoch + 1,
+            },
+            status: "waiting" as const,
+            wait: {
+              kind: "authority" as const,
+              reason:
+                "Permission for this rule-change assignment was withdrawn. A new, separately authorized task is required to change protected controls.",
+            },
+          }
+        : {}),
+      updatedAt: now,
+    };
+  });
 
 const unavailableQualification: FactoryDiscoveryQualification = {
   status: "unavailable",
@@ -90,6 +133,7 @@ export function decide(input: {
   readonly now: string;
   readonly allocation?: FactoryAllocation;
   readonly qualification?: FactoryDiscoveryQualification;
+  readonly boundary?: FactoryBoundary;
 }): Result.Result<FactoryDecision, FactoryError> {
   const { state, actor, command, now } = input;
   const fail = (code: FactoryError["code"]) => Result.fail(new FactoryError({ code }));
@@ -98,16 +142,86 @@ export function decide(input: {
     assignments: ReadonlyArray<FactoryAssignment>,
     result: Omit<FactoryCommandResult, "revision">,
     effects: ReadonlyArray<FactoryEffectIntent> = [],
+    defaults: FactoryPolicy = state.defaults,
+    boundaries: ReadonlyArray<FactoryBoundary> = state.boundaries,
   ): Result.Result<FactoryDecision, FactoryError> => {
     const revision = state.revision + 1;
     return Result.succeed({
-      state: { ...state, revision, managers, assignments },
+      state: { ...state, revision, managers, assignments, defaults, boundaries },
       result: { ...result, revision },
       effects,
     });
   };
 
   switch (command.type) {
+    case "policy.defaults.configure": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      return accepted(
+        state.managers,
+        reduceGrants(state.assignments, state.managers, command.defaults, now),
+        {},
+        [],
+        command.defaults,
+      );
+    }
+    case "assignments.extend-grant": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      if (command.assignmentIds.length === 0) return fail("invalid-state");
+      const selected = new Set(command.assignmentIds);
+      for (const id of selected) {
+        const assignment = state.assignments.find((entry) => entry.id === id);
+        if (assignment === undefined) return fail("assignment-not-found");
+        if (assignment.status === "complete") return fail("invalid-state");
+        if (!state.managers.some((entry) => entry.id === assignment.managerId))
+          return fail("manager-not-found");
+      }
+      return accepted(
+        state.managers,
+        state.assignments.map((assignment) => {
+          if (!selected.has(assignment.id)) return assignment;
+          const manager = state.managers.find((entry) => entry.id === assignment.managerId)!;
+          return { ...assignment, grantedPolicy: effectivePolicy(state, manager), updatedAt: now };
+        }),
+        {},
+      );
+    }
+    case "manager.approve-onboarding": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      if (manager === undefined) return fail("manager-not-found");
+      const onboarding = state.assignments.find(
+        (entry) => entry.managerId === manager.id && entry.kind === "onboarding",
+      );
+      if (
+        manager.role !== "project" ||
+        manager.boundaryId !== undefined ||
+        onboarding?.report == null ||
+        onboarding.qualification.status !== "qualified"
+      )
+        return fail("invalid-state");
+      if (input.boundary === undefined)
+        return accepted(state.managers, state.assignments, { managerId: manager.id });
+      const boundary = input.boundary;
+      if (
+        boundary.projectId !== manager.projectId ||
+        boundary.workflow.repositoryRoot !== manager.workflow.repositoryRoot ||
+        boundary.workflow.revision !== manager.workflow.revision ||
+        state.boundaries.some((entry) => entry.id === boundary.id)
+      )
+        return fail("invalid-state");
+      return accepted(
+        state.managers.map((entry) =>
+          entry.id === manager.id
+            ? { ...entry, boundaryId: boundary.id, status: "active", wait: null, updatedAt: now }
+            : entry,
+        ),
+        state.assignments,
+        { managerId: manager.id },
+        [],
+        state.defaults,
+        [...state.boundaries, boundary],
+      );
+    }
     case "manager.create": {
       if (actor.kind !== "human") return fail("permission-denied");
       if (
@@ -181,15 +295,14 @@ export function decide(input: {
       if (actor.kind !== "human") return fail("permission-denied");
       const manager = state.managers.find((entry) => entry.id === command.managerId);
       if (manager === undefined) return fail("manager-not-found");
-      return accepted(
-        state.managers.map((entry) =>
-          entry.id === manager.id
-            ? { ...entry, overrides: command.overrides, updatedAt: now }
-            : entry,
-        ),
-        state.assignments,
-        { managerId: manager.id },
+      const managers = state.managers.map((entry) =>
+        entry.id === manager.id
+          ? { ...entry, overrides: command.overrides, updatedAt: now }
+          : entry,
       );
+      return accepted(managers, reduceGrants(state.assignments, managers, state.defaults, now), {
+        managerId: manager.id,
+      });
     }
     case "manager.retry-onboarding": {
       if (actor.kind !== "human") return fail("permission-denied");

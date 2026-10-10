@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { factoryDockerArguments, type FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
+import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 
 const ModelCredentials = Schema.Struct({
   auth_mode: Schema.optional(Schema.String),
@@ -42,6 +43,7 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const { profile } = input;
+    yield* assertFactoryProfileActive(profile);
     const codexHome = path.join(profile.runtimePath, "codex");
     for (const directory of [profile.runtimePath, codexHome]) {
       yield* fs.makeDirectory(directory, { recursive: true });

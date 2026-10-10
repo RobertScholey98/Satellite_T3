@@ -24,6 +24,7 @@ import {
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
+import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
 
 const projectId = ProjectId.make("factory-service-project");
 const human = { kind: "human" } as const;
@@ -52,6 +53,7 @@ const runtime = Layer.mergeAll(
   FactoryStore.layer,
   ThreadManagement.layer,
   CommandReceipts.layer,
+  boundaryUnavailable,
 ).pipe(Layer.provideMerge(SatelliteTestLayer));
 const layer = FactoryService.layer.pipe(Layer.provideMerge(runtime));
 

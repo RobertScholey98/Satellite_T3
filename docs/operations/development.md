@@ -34,6 +34,13 @@ the selected model account's credentials, but no host Git credentials or Docker 
 Codex accounts stored only in a native keyring currently require file-backed Codex
 authentication before this runner can launch.
 
+Writable assignments use an environment-owned Linux volume with a non-root worker.
+Existing file permissions are granted individually; directory changes go through
+the controlled file service. Required checks run against a captured candidate with
+the approved controls restored at their original paths. The initial verifier accepts
+direct `/usr/local/bin/node` runners, optionally with `--test`, and explicit protected
+inputs. It does not install dependencies or infer an arbitrary project toolchain.
+
 ## Choosing a dev process
 
 Use `pnpm run dev:satellite` for the Satellite desktop configuration.

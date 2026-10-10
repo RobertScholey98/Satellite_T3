@@ -21,6 +21,21 @@ Before either thread starts, **Edit setup and retry** lets you correct the model
 skills revision. After startup, retry preserves the existing conversation and access
 boundary. Reports remain available when their conversation is archived or deleted.
 
+After reviewing the report, approve the project's execution boundary: the existing
+files teams may edit, directories where they may create files, protected controls,
+and required checks. Approval captures an immutable baseline and verifies that the
+environment can enforce it. A failed check leaves setup editable. The current
+runner supports direct Node verification commands; unsupported toolchains need a
+qualified runner before implementation can start.
+
+Use **Autonomy defaults** for environment-wide permissions and the manager's
+autonomy settings for individual overrides. Clearing an override restores that
+setting's defaults. Permission increases apply to future assignments unless you
+explicitly extend selected active grants. Reductions constrain active work and
+remain in effect even if you later raise the defaults. Grant extensions preserve
+task scope and outstanding human approvals. Workflow changes always require your
+review; weakening project safeguards always requires a separately authorized task.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

@@ -24,6 +24,7 @@ import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { ProjectService } from "../project/ProjectService.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
+import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
 import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
 import { decide, type FactoryActor } from "./FactoryState.ts";
 
@@ -53,6 +54,9 @@ const scopedSnapshot =
           assignments: snapshot.assignments.filter(
             (assignment) => assignment.projectId === query.projectId,
           ),
+          boundaries: snapshot.boundaries.filter(
+            (boundary) => boundary.projectId === query.projectId,
+          ),
         };
 
 const onboardingInstructions = (intent: FactoryEffectIntent) =>
@@ -62,6 +66,7 @@ const onboardingInstructions = (intent: FactoryEffectIntent) =>
     `The owned workflow is pinned to ${intent.workflow.revision} and available at /workflow. Read its relevant skills.`,
     "Discover the project's instructions, existing quality checks, issue tracker readiness, verification tools, and protected controls. Cite concrete evidence paths for each finding. Do not change the project or start implementation.",
     "Protected controls include CI and merge requirements, lint and type strictness, architecture boundaries, verification procedures, authority-defining instructions, and shared skills.",
+    "Where the evidence supports it, include a proposedBoundary with exact repository-relative writable source/test paths, directories for new source/test files, additional protected paths, and direct verification commands. Gate executables must be absolute container paths; record their protected configuration inputs. This is a proposal for human approval, not permission to change files. If a supported check or control is unclear, record an unresolved decision instead of inventing one.",
     "Use factory_dispatch with an onboarding.report command and this assignment ID to record your report. List unresolved decisions explicitly. The human owns approval and the manager coordinates future work; you own this investigation.",
     "If a tool or permission is unavailable, report the exact limitation instead of bypassing the boundary.",
   ].join("\n\n");
@@ -71,6 +76,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const store = yield* FactoryStore;
     const execution = yield* FactoryExecution;
+    const boundaries = yield* FactoryBoundaryExecution;
     const threads = yield* ThreadManagementService;
     const projects = yield* ProjectService;
     const commands = yield* Semaphore.make(1);
@@ -225,6 +231,18 @@ export const layer = Layer.effect(
           ...(allocation === undefined ? {} : { allocation }),
         });
         if (Result.isFailure(preflight)) return yield* preflight.failure;
+        for (const assignment of snapshot.assignments) {
+          const next = preflight.success.state.assignments.find(
+            (entry) => entry.id === assignment.id,
+          );
+          if (
+            assignment.grant !== undefined &&
+            next?.grant !== undefined &&
+            assignment.grant.epoch !== next.grant.epoch
+          ) {
+            yield* boundaries.stop(assignment.id);
+          }
+        }
         if (command.type === "manager.create") {
           const project = yield* projects
             .getById(command.projectId)
@@ -269,12 +287,20 @@ export const layer = Layer.effect(
                   modelSelection: requested.modelSelection,
                   workflow: requested.workflow,
                 });
+        const boundary =
+          command.type === "manager.approve-onboarding"
+            ? yield* boundaries.approve({
+                managerId: command.managerId,
+                configuration: command.configuration,
+              })
+            : undefined;
         const result = yield* store.commit({
           actor,
           command,
           now: yield* nowIso,
           ...(allocation === undefined ? {} : { allocation }),
           ...(qualification === undefined ? {} : { qualification }),
+          ...(boundary === undefined ? {} : { boundary }),
         });
         yield* worker.enqueue(undefined);
         return result;

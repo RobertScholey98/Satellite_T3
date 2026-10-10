@@ -10,6 +10,19 @@ export const FactoryExecutionProfile = Schema.Struct({
   projectSnapshotPath: Schema.String,
   workflowSnapshotPath: Schema.String,
   runtimePath: Schema.String,
+  sourceRevision: Schema.optionalKey(Schema.String),
+  assignmentWorkspace: Schema.optionalKey(
+    Schema.Struct({
+      assignmentId: Schema.String,
+      volumeName: Schema.String,
+      grantEpoch: Schema.Number,
+      boundaryId: Schema.String,
+      controlsPath: Schema.String,
+      revocationPath: Schema.String,
+      workerUid: Schema.Number,
+      workerGid: Schema.Number,
+    }),
+  ),
 });
 export type FactoryExecutionProfile = typeof FactoryExecutionProfile.Type;
 
@@ -46,13 +59,25 @@ export function factoryDockerArguments(profile: FactoryExecutionProfile): Array<
     "--tmpfs",
     "/tmp:rw,nosuid,nodev,size=128m",
     "--mount",
-    `type=bind,source=${profile.projectSnapshotPath},target=/workspace,readonly`,
+    profile.assignmentWorkspace === undefined
+      ? `type=bind,source=${profile.projectSnapshotPath},target=/workspace,readonly`
+      : `type=volume,source=${profile.assignmentWorkspace.volumeName},target=/workspace,volume-nocopy`,
     "--mount",
     `type=bind,source=${profile.workflowSnapshotPath},target=/workflow,readonly`,
     "--mount",
     `type=bind,source=${profile.runtimePath},target=/runtime`,
     "--mount",
     `type=bind,source=${profile.workflowSnapshotPath}/skills,target=/runtime/codex/skills,readonly`,
+    ...(profile.assignmentWorkspace === undefined
+      ? []
+      : [
+          "--user",
+          `${profile.assignmentWorkspace.workerUid}:${profile.assignmentWorkspace.workerGid}`,
+          "--mount",
+          `type=bind,source=${profile.assignmentWorkspace.controlsPath},target=/controls,readonly`,
+          "--label",
+          `satellite.factory.assignment=${profile.assignmentWorkspace.assignmentId}`,
+        ]),
   ];
 }
 

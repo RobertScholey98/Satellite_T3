@@ -19,6 +19,90 @@ export const FactoryWorkflowVersion = Schema.Struct({
 });
 export type FactoryWorkflowVersion = typeof FactoryWorkflowVersion.Type;
 
+export const FactoryBoundaryId = TrimmedNonEmptyString.pipe(Schema.brand("FactoryBoundaryId"));
+export type FactoryBoundaryId = typeof FactoryBoundaryId.Type;
+
+export const FactoryGate = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  executable: TrimmedNonEmptyString,
+  args: Schema.Array(Schema.String),
+  cwd: TrimmedNonEmptyString,
+  timeoutMs: NonNegativeInt,
+  protectedInputs: Schema.Array(TrimmedNonEmptyString),
+});
+export type FactoryGate = typeof FactoryGate.Type;
+
+export const FactoryBoundaryConfiguration = Schema.Struct({
+  protectedPaths: Schema.Array(TrimmedNonEmptyString),
+  writablePaths: Schema.Array(TrimmedNonEmptyString),
+  creatableDirectories: Schema.Array(TrimmedNonEmptyString),
+  gates: Schema.Array(FactoryGate),
+});
+export type FactoryBoundaryConfiguration = typeof FactoryBoundaryConfiguration.Type;
+
+export const FactoryBoundary = Schema.Struct({
+  ...FactoryBoundaryConfiguration.fields,
+  id: FactoryBoundaryId,
+  projectId: ProjectId,
+  sourceRevision: TrimmedNonEmptyString,
+  workflow: FactoryWorkflowVersion,
+  profileId: TrimmedNonEmptyString,
+  approvedAt: IsoDateTime,
+});
+export type FactoryBoundary = typeof FactoryBoundary.Type;
+
+export const FactoryAssignmentGrant = Schema.Struct({
+  boundaryId: FactoryBoundaryId,
+  epoch: NonNegativeInt,
+  sourcePaths: Schema.Array(TrimmedNonEmptyString),
+  creatableDirectories: Schema.Array(TrimmedNonEmptyString),
+  controlChange: Schema.NullOr(
+    Schema.Struct({
+      authorizationId: TrimmedNonEmptyString,
+      paths: Schema.Array(TrimmedNonEmptyString),
+    }),
+  ),
+});
+export type FactoryAssignmentGrant = typeof FactoryAssignmentGrant.Type;
+
+export const FactoryFileMutation = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("create"),
+    path: TrimmedNonEmptyString,
+    content: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("write"),
+    path: TrimmedNonEmptyString,
+    content: Schema.String,
+  }),
+  Schema.Struct({ kind: Schema.Literal("delete"), path: TrimmedNonEmptyString }),
+  Schema.Struct({
+    kind: Schema.Literal("rename"),
+    path: TrimmedNonEmptyString,
+    to: TrimmedNonEmptyString,
+  }),
+]);
+export type FactoryFileMutation = typeof FactoryFileMutation.Type;
+
+export const FactoryVerification = Schema.Struct({
+  artifactId: TrimmedNonEmptyString,
+  boundaryId: FactoryBoundaryId,
+  epoch: NonNegativeInt,
+  sourceDigest: TrimmedNonEmptyString,
+  gates: Schema.Array(
+    Schema.Struct({
+      id: TrimmedNonEmptyString,
+      status: Schema.Literals(["passed", "failed"]),
+      exitCode: Schema.NullOr(Schema.Number),
+      output: Schema.String,
+    }),
+  ),
+  checkedAt: IsoDateTime,
+});
+export type FactoryVerification = typeof FactoryVerification.Type;
+
 export const FactoryPolicy = Schema.Struct({
   delivery: Schema.Literals(["human-approval", "project-rule"]),
   projectImprovements: Schema.Literals(["create-tickets", "project-rule"]),
@@ -38,7 +122,7 @@ export const FactoryPolicyOverrides = Schema.Struct({
 export type FactoryPolicyOverrides = typeof FactoryPolicyOverrides.Type;
 
 export const FactoryWait = Schema.Struct({
-  kind: Schema.Literals(["execution-boundary", "human-decision"]),
+  kind: Schema.Literals(["execution-boundary", "human-decision", "authority"]),
   reason: TrimmedNonEmptyString,
 });
 export type FactoryWait = typeof FactoryWait.Type;
@@ -62,6 +146,7 @@ export const FactoryOnboardingReport = Schema.Struct({
   verificationTools: Schema.Array(FactoryOnboardingFinding),
   protectedControls: Schema.Array(FactoryOnboardingFinding),
   unresolvedDecisions: Schema.Array(FactoryOnboardingFinding),
+  proposedBoundary: Schema.optionalKey(FactoryBoundaryConfiguration),
 });
 export type FactoryOnboardingReport = typeof FactoryOnboardingReport.Type;
 
@@ -85,6 +170,7 @@ const FactoryManagerFields = {
   modelSelection: ModelSelection,
   workflow: FactoryWorkflowVersion,
   overrides: FactoryPolicyOverrides,
+  boundaryId: Schema.optionalKey(FactoryBoundaryId),
   status: Schema.Literals(["onboarding", "blocked", "active", "paused"]),
   threadStatus: Schema.Literals(["pending", "created"]),
   launchStatus: Schema.Literals(["pending", "delivered"]),
@@ -112,13 +198,29 @@ export const FactoryAssignment = Schema.Struct({
   managerId: ThreadId,
   threadId: ThreadId,
   projectId: ProjectId,
-  kind: Schema.Literal("onboarding"),
+  kind: Schema.Literals(["onboarding", "implementation", "rule-change"]),
+  title: Schema.optionalKey(TrimmedNonEmptyString),
+  scope: Schema.optionalKey(
+    Schema.Struct({
+      description: TrimmedNonEmptyString,
+      completionCondition: TrimmedNonEmptyString,
+      requiresPullRequest: Schema.Boolean,
+    }),
+  ),
+  modelSelection: Schema.optionalKey(ModelSelection),
+  authorization: Schema.optionalKey(
+    Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("human"), commandId: CommandId }),
+      Schema.Struct({ kind: Schema.Literal("manager"), commandId: CommandId, threadId: ThreadId }),
+    ]),
+  ),
   status: Schema.Literals(["pending", "running", "waiting", "complete"]),
   threadStatus: Schema.Literals(["pending", "created"]),
   launchStatus: Schema.Literals(["pending", "delivered"]),
   qualification: FactoryDiscoveryQualification,
   workflow: FactoryWorkflowVersion,
   grantedPolicy: FactoryPolicy,
+  grant: Schema.optionalKey(FactoryAssignmentGrant),
   wait: Schema.NullOr(FactoryWait),
   report: Schema.NullOr(FactoryOnboardingReport),
   createdAt: IsoDateTime,
@@ -131,6 +233,7 @@ export const FactorySnapshot = Schema.Struct({
   defaults: FactoryPolicy,
   managers: Schema.Array(FactoryManager),
   assignments: Schema.Array(FactoryAssignment),
+  boundaries: Schema.Array(FactoryBoundary),
 });
 export type FactorySnapshot = typeof FactorySnapshot.Type;
 
@@ -140,6 +243,22 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("policy.defaults.configure"),
+    commandId: CommandId,
+    defaults: FactoryPolicy,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("assignments.extend-grant"),
+    commandId: CommandId,
+    assignmentIds: Schema.Array(FactoryAssignmentId),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("manager.approve-onboarding"),
+    commandId: CommandId,
+    managerId: ThreadId,
+    configuration: FactoryBoundaryConfiguration,
+  }),
   Schema.Struct({
     type: Schema.Literal("manager.create"),
     commandId: CommandId,
@@ -223,6 +342,7 @@ export const FactoryCommandResult = Schema.Struct({
 export type FactoryCommandResult = typeof FactoryCommandResult.Type;
 
 export class FactoryError extends Schema.TaggedError<FactoryError>()("FactoryError", {
+  detail: Schema.optionalKey(TrimmedNonEmptyString),
   code: Schema.Literals([
     "permission-denied",
     "project-already-managed",
@@ -237,6 +357,7 @@ export class FactoryError extends Schema.TaggedError<FactoryError>()("FactoryErr
   cause: Schema.optional(Schema.Defect()),
 }) {
   override get message(): string {
+    if (this.detail !== undefined) return this.detail;
     switch (this.code) {
       case "permission-denied":
         return "This caller cannot make that engineering-management decision.";
