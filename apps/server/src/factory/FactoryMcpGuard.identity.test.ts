@@ -3,8 +3,12 @@ import {
   CommandId,
   EnvironmentId,
   FactoryAssignmentId,
+  FactoryControlId,
+  FactoryDependencyId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
+  RunId,
   ThreadId,
   type FactorySnapshot,
 } from "@t3tools/contracts";
@@ -264,3 +268,157 @@ it.effect("retired leads and their descendants cannot escape through direct MCP 
     }),
   );
 });
+
+it.effect(
+  "assignment snapshots exclude sibling guidance and controls without hiding shared pauses",
+  () => {
+    const siblingId = FactoryAssignmentId.make("sibling-assignment");
+    const siblingLead = ThreadId.make("sibling-lead");
+    const retroId = ThreadId.make("retro");
+    const controlFields = {
+      generation: 1,
+      requestedAt: now,
+      updatedAt: now,
+    };
+    const pauseFields = {
+      ...controlFields,
+      status: "released" as const,
+      stop: { status: "confirmed" as const, stoppedAt: now },
+      resumeThreadIds: [leadId, siblingLead],
+      resumeQueues: [{ threadId: siblingLead, runIds: [RunId.make("sibling-run")] }],
+    };
+    const dependency = {
+      description: "Supporting work",
+      unblockCondition: { kind: "pull-request-merged" as const, projectId },
+      requestedBy: managerId,
+      evidence: [],
+      state: "requested" as const,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const snapshot: FactorySnapshot = {
+      ...state,
+      assignments: [
+        ...state.assignments,
+        { ...state.assignments[0]!, id: siblingId, threadId: siblingLead },
+      ],
+      auxiliaryThreads: [
+        ...state.auxiliaryThreads,
+        {
+          ...state.auxiliaryThreads[0]!,
+          threadId: retroId,
+          kind: "retrospective",
+          incidentId: "retro",
+        },
+      ],
+      guidance: [
+        {
+          assignmentId,
+          threadId: workerId,
+          messageId: MessageId.make("own-message"),
+          observedAt: now,
+        },
+        {
+          assignmentId: siblingId,
+          threadId: siblingLead,
+          messageId: MessageId.make("sibling-message"),
+          observedAt: now,
+        },
+      ],
+      controls: [
+        ...[assignmentId, siblingId].flatMap((id) => [
+          {
+            ...controlFields,
+            kind: "cancellation" as const,
+            id: FactoryControlId.make(`cancel:${id}`),
+            assignmentId: id,
+            managerId,
+            stop: { status: "confirmed" as const, stoppedAt: now },
+          },
+          {
+            ...controlFields,
+            kind: "takeover" as const,
+            id: FactoryControlId.make(`takeover:${id}`),
+            assignmentId: id,
+            managerId,
+            threadId: id === assignmentId ? workerId : siblingLead,
+            parentThreadId: managerId,
+            status: "released" as const,
+          },
+        ]),
+        {
+          ...pauseFields,
+          kind: "manager-pause",
+          id: FactoryControlId.make("manager-pause"),
+          managerId,
+          priorStatus: "active",
+        },
+        {
+          ...pauseFields,
+          kind: "manager-pause",
+          id: FactoryControlId.make("other-manager-pause"),
+          managerId: ThreadId.make("other-manager"),
+          priorStatus: "active",
+        },
+        {
+          ...pauseFields,
+          kind: "project-pause",
+          id: FactoryControlId.make("project-pause"),
+          projectId,
+        },
+      ],
+      dependencies: [
+        {
+          ...dependency,
+          id: FactoryDependencyId.make("requested"),
+          assignmentId,
+          supportingAssignmentId: siblingId,
+        },
+        {
+          ...dependency,
+          id: FactoryDependencyId.make("supporting"),
+          assignmentId: siblingId,
+          supportingAssignmentId: assignmentId,
+        },
+        { ...dependency, id: FactoryDependencyId.make("unrelated"), assignmentId: siblingId },
+      ],
+    };
+    return scenario(snapshot, (guard) =>
+      Effect.gen(function* () {
+        for (const caller of [leadId, workerId, diagnosisId, retroId]) {
+          const visible = yield* guard.snapshot(invocation(caller));
+          assert.deepStrictEqual(
+            visible.guidance.map((entry) => entry.messageId),
+            ["own-message"],
+          );
+          assert.deepStrictEqual(
+            visible.controls.map((entry) => entry.id),
+            [
+              `cancel:${assignmentId}`,
+              `takeover:${assignmentId}`,
+              "manager-pause",
+              "project-pause",
+            ],
+          );
+          for (const control of visible.controls) {
+            assert.notProperty(control, "resumeThreadIds");
+            assert.notProperty(control, "resumeQueues");
+          }
+          assert.deepStrictEqual(
+            visible.assignments.map((entry) => entry.id),
+            [assignmentId],
+          );
+          assert.deepStrictEqual(
+            visible.dependencies.map((entry) => entry.id),
+            ["requested", "supporting"],
+          );
+        }
+        const managed = yield* guard.snapshot(invocation(managerId));
+        assert.deepStrictEqual(managed.guidance, snapshot.guidance);
+        assert.deepStrictEqual(managed.controls, snapshot.controls);
+        assert.deepStrictEqual(managed.dependencies, snapshot.dependencies);
+        assert.deepStrictEqual(managed.assignments, snapshot.assignments);
+      }),
+    );
+  },
+);

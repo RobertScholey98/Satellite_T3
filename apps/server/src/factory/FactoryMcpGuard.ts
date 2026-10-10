@@ -10,6 +10,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -204,6 +205,21 @@ const make = Effect.gen(function* () {
           assignments: snapshot.assignments.filter((entry) =>
             assignment === undefined ? entry.managerId === manager.id : entry.id === assignment.id,
           ),
+          guidance: snapshot.guidance.filter(
+            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
+          ),
+          controls: snapshot.controls.flatMap((entry): FactorySnapshot["controls"] => {
+            if (assignment === undefined) return [entry];
+            if (entry.kind === "manager-pause")
+              return entry.managerId === assignment.managerId
+                ? [Struct.omit(entry, ["resumeThreadIds", "resumeQueues"])]
+                : [];
+            if (entry.kind === "project-pause")
+              return entry.projectId === assignment.projectId
+                ? [Struct.omit(entry, ["resumeThreadIds", "resumeQueues"])]
+                : [];
+            return entry.assignmentId === assignment.id ? [entry] : [];
+          }),
           dependencies: snapshot.dependencies.filter(
             (entry) =>
               assignment === undefined ||
