@@ -20,6 +20,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Result from "effect/Result";
+import { FactoryControlAccess, factoryDirectionSender } from "../factory/FactoryControlAccess.ts";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -111,6 +113,69 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const factoryControls = yield* Effect.serviceOption(FactoryControlAccess);
+
+    const makeFactoryStartGuard =
+      (input: {
+        readonly run: OrchestrationV2Run;
+        readonly attempt: OrchestrationV2RunAttempt;
+        readonly rootNode: OrchestrationV2ExecutionNode;
+        readonly senderThreadId: ThreadId | null | undefined;
+      }) =>
+      (expectedStatus: "starting" | "running") =>
+        Effect.gen(function* () {
+          if (Option.isNone(factoryControls)) return true;
+          const admitted = yield* factoryControls.value
+            .assertDirection({
+              threadId: input.run.threadId,
+              senderThreadId: input.senderThreadId,
+            })
+            .pipe(Effect.result);
+          if (Result.isSuccess(admitted)) return true;
+          if (admitted.failure.code !== "permission-denied") return yield* admitted.failure;
+          const now = yield* DateTime.now;
+          const payloads = [
+            {
+              type: "run.updated",
+              payload: {
+                ...input.run,
+                status: "queued",
+                queueHeld: input.run.queueHeld ?? false,
+                queuePosition: input.run.queuePosition ?? input.run.ordinal,
+                startedAt: null,
+              },
+            },
+            {
+              type: "run-attempt.updated",
+              payload: { ...input.attempt, status: "pending", startedAt: null },
+            },
+            {
+              type: "node.updated",
+              payload: { ...input.rootNode, status: "pending", startedAt: null },
+            },
+          ] as const;
+          const events = yield* Effect.forEach(payloads, (event) =>
+            Effect.gen(function* () {
+              return {
+                ...event,
+                id: yield* idAllocator.allocate.event({ threadId: input.run.threadId }),
+                threadId: input.run.threadId,
+                runId: input.run.id,
+                nodeId: input.rootNode.id,
+                providerInstanceId: input.run.providerInstanceId,
+                occurredAt: now,
+              } satisfies OrchestrationV2DomainEvent;
+            }),
+          );
+          yield* eventSink.writeIfRunCurrent({
+            threadId: input.run.threadId,
+            runId: input.run.id,
+            activeAttemptId: input.attempt.id,
+            expectedStatus,
+            events,
+          });
+          return false;
+        });
 
     // These callbacks outlive startup while a run drains background work. Build
     // them outside start's scope so they cannot retain its full thread history.
@@ -123,6 +188,7 @@ export const layer: Layer.Layer<
       readonly inheritedBackgroundTurnItems: ReturnType<
         typeof RunExecutionService.selectInheritedBackgroundTurnItems
       >;
+      readonly factoryStartGuard: ReturnType<typeof makeFactoryStartGuard>;
     }) => {
       // Guards and background routing need live execution state, not a fresh
       // allocation of every completed message and tool output in the thread.
@@ -150,7 +216,19 @@ export const layer: Layer.Layer<
             ),
             Effect.catchCause(() => Effect.succeed(input.inheritedBackgroundTurnItems)),
           ),
-        shouldStartProviderTurn: () => isCurrentAttemptInStatus("running"),
+        shouldStartProviderTurn: () =>
+          Effect.gen(function* () {
+            if (!(yield* isCurrentAttemptInStatus("running"))) return false;
+            return yield* input.factoryStartGuard("running").pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProjectionStore.ProjectionStoreReadError({
+                    threadId: input.threadId,
+                    cause,
+                  }),
+              ),
+            );
+          }),
         shouldFinalizeRun: () =>
           projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
             Effect.map((current) => {
@@ -370,6 +448,13 @@ export const layer: Layer.Layer<
           });
         },
       );
+      const factoryStartGuard = makeFactoryStartGuard({
+        run,
+        attempt,
+        rootNode,
+        senderThreadId: factoryDirectionSender(message),
+      });
+      if (!(yield* factoryStartGuard("starting"))) return;
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
           message.text.trim().toLowerCase() === "/compact" && !projection.hasConversation;
@@ -514,6 +599,7 @@ export const layer: Layer.Layer<
         providerThreadId: providerThread.id,
         runOrdinal: run.ordinal,
         inheritedBackgroundTurnItems,
+        factoryStartGuard,
       });
       const { isCurrentAttemptInStatus } = runControls;
 
@@ -1204,6 +1290,14 @@ export const layer: Layer.Layer<
               }),
           });
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
+          if (!(yield* factoryStartGuard("running")))
+            return yield* new ProviderAdapterTurnStartError({
+              driver: session.driver,
+              threadId: run.threadId,
+              providerThreadId: providerThread.id,
+              runId: run.id,
+              cause: "An engineering control held this turn before provider delivery.",
+            });
           const start = compact ? session.compactThread! : session.startTurn;
           const context = [delivery.context, restartNote]
             .filter((part) => part !== "")
@@ -1244,7 +1338,8 @@ export const layer: Layer.Layer<
         effectiveHandoffs.length === 0 &&
         missedItems.length === 0 &&
         restartNote === "" &&
-        !noteContinuation
+        !noteContinuation &&
+        Option.isNone(factoryControls)
           ? session
           : makeDeliverySession(session, startWithHandoffs);
       yield* runExecution.startRootRun({

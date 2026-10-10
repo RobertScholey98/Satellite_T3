@@ -16,6 +16,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 
 export class FactoryMcpGuard extends Context.Service<
   FactoryMcpGuard,
@@ -54,6 +55,7 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const execution = yield* FactoryExecution.FactoryExecution;
   const factory = yield* FactoryService.FactoryService;
+  const controls = yield* FactoryControlAccess.FactoryControlAccess;
 
   const membership = (invocation: McpInvocationScope) =>
     Effect.gen(function* () {
@@ -96,6 +98,10 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const member = yield* membership(invocation);
         if (member === undefined) return;
+        if (invocation.thread !== undefined)
+          yield* controls
+            .assertExecution(invocation.thread.threadId)
+            .pipe(Effect.mapError(unavailable));
         const implementationTeamTool =
           member.assignment !== undefined &&
           member.assignment.kind !== "onboarding" &&
@@ -124,6 +130,24 @@ const make = Effect.gen(function* () {
             (member.assignment === undefined ||
               sameAssignment ||
               (ownManager && toolName !== "t3_thread_interrupt"));
+          if (
+            scopedCommunication &&
+            (toolName === "t3_thread_send" || toolName === "t3_thread_interrupt")
+          )
+            yield* controls
+              .assertDirection({
+                threadId: payload.threadId,
+                senderThreadId: invocation.thread.threadId,
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorMcpFailure({
+                      code: "capability_denied",
+                      message: cause.detail ?? cause.message,
+                    }),
+                ),
+              );
         }
         if (
           toolName !== "factory_snapshot" &&
@@ -157,8 +181,10 @@ const make = Effect.gen(function* () {
         const descendantOperation =
           member.assignment !== undefined &&
           member.assignment.kind !== "onboarding" &&
-          (command.type === "assignment.file.mutate" || command.type === "assignment.verify") &&
-          command.assignmentId === member.assignment.id;
+          (((command.type === "assignment.file.mutate" || command.type === "assignment.verify") &&
+            command.assignmentId === member.assignment.id) ||
+            (command.type === "guidance.escalate" &&
+              command.threadId === invocation.thread.threadId));
         if (member.ownerThreadId !== invocation.thread.threadId && !descendantOperation)
           return yield* denied();
         return yield* factory.dispatch(
@@ -173,4 +199,6 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(FactoryMcpGuard, make);
+export const layer = Layer.effect(FactoryMcpGuard, make).pipe(
+  Layer.provide(FactoryControlAccess.layer),
+);

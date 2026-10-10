@@ -33,7 +33,12 @@ import {
   factoryRelativePath,
   factoryValidConfiguration,
 } from "./FactoryBoundaryPaths.ts";
-import { factoryDockerArguments, FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
+import {
+  factoryDockerArguments,
+  FactoryExecutionProfile,
+  FactoryExecutionSuspension,
+} from "./FactoryExecutionProfile.ts";
+import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import { factoryVolumeHelper } from "./FactoryVolumeHelper.ts";
@@ -84,6 +89,14 @@ export class FactoryBoundaryExecution extends Context.Service<
       FactoryError
     >;
     readonly stop: (assignmentId: FactoryAssignmentId) => Effect.Effect<void, FactoryError>;
+    readonly suspend: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly generation: number;
+    }) => Effect.Effect<void, FactoryError>;
+    readonly resume: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly generation: number;
+    }) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryBoundaryExecution") {}
 
@@ -92,6 +105,9 @@ const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryEx
 const decodeBoundary = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryBoundary));
 const decodeCapture = Schema.decodeUnknownEffect(Schema.fromJsonString(CapturedSource));
 const decodeVerification = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryVerification));
+const decodeSuspension = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(FactoryExecutionSuspension),
+);
 const unavailable = (detail: string) => new FactoryError({ code: "execution-unavailable", detail });
 const denied = () => new FactoryError({ code: "permission-denied" });
 const isFactoryError = Schema.is(FactoryError);
@@ -109,9 +125,15 @@ const make = Effect.gen(function* () {
   const store = yield* FactoryStore;
   const sources = yield* FactorySource;
   const mutex = yield* Semaphore.make(1);
+  const controlMutex = yield* Semaphore.make(1);
   const platform = yield* HostProcessPlatform;
   const stoppedEpochs = new Map<string, number>();
   const root = path.join(config.stateDir, "factory");
+  const assertActive = (profile: FactoryExecutionProfile) =>
+    assertFactoryProfileActive(profile).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+    );
 
   const identity = (value: unknown) =>
     crypto.digest("SHA-256", new TextEncoder().encode(stableStringify(value))).pipe(
@@ -162,7 +184,7 @@ const make = Effect.gen(function* () {
     input: unknown,
   ) {
     if (profile.assignmentWorkspace === undefined) return yield* denied();
-    if (yield* fs.exists(profile.assignmentWorkspace.revocationPath)) return yield* denied();
+    yield* assertActive(profile);
     if (
       (stoppedEpochs.get(profile.assignmentWorkspace.assignmentId) ?? -1) >=
       profile.assignmentWorkspace.grantEpoch
@@ -426,14 +448,28 @@ const make = Effect.gen(function* () {
   const current = Effect.fn("FactoryBoundaryExecution.current")(function* (
     assignmentId: FactoryAssignmentId,
     expectedEpoch?: number,
+    resuming = false,
   ) {
     const state = yield* store.snapshot;
     const assignment = state.assignments.find((entry) => entry.id === assignmentId);
     if (
       !assignment?.grant ||
+      assignment.outcome !== undefined ||
       (expectedEpoch !== undefined && assignment.grant.epoch !== expectedEpoch)
     )
       return yield* denied();
+    if (
+      !resuming &&
+      state.controls.some(
+        (control) =>
+          control.kind === "project-pause" &&
+          control.projectId === assignment.projectId &&
+          control.status === "active",
+      )
+    )
+      return yield* unavailable(
+        "This project is paused. Resume it before continuing managed work.",
+      );
     if ((stoppedEpochs.get(assignmentId) ?? -1) >= assignment.grant.epoch) return yield* denied();
     if (assignment.kind === "onboarding" || assignment.authorization === undefined)
       return yield* denied();
@@ -473,6 +509,7 @@ const make = Effect.gen(function* () {
     )
       return yield* denied();
     if (yield* fs.exists(profile.assignmentWorkspace.revocationPath)) return yield* denied();
+    yield* assertActive(profile);
     const inventoryPath = path.join(root, "execution", profile.boundaryId, "source-paths.json");
     const existingPaths = (yield* fs.exists(inventoryPath))
       ? yield* fs
@@ -598,15 +635,9 @@ const make = Effect.gen(function* () {
       });
       const directory = path.join(root, "execution", profileId);
       if (yield* fs.exists(path.join(directory, "profile.json"))) {
-        if (yield* fs.exists(path.join(directory, "authority", "revoked.json")))
-          return yield* unavailable(
-            "This execution profile was revoked. Commission or authorize a new grant epoch before resuming work.",
-          );
-        yield* docker(yield* readProfile(profileId), [
-          "volume",
-          "inspect",
-          `satellite-factory-${profileId}`,
-        ]);
+        const profile = yield* readProfile(profileId);
+        yield* assertActive(profile);
+        yield* docker(profile, ["volume", "inspect", `satellite-factory-${profileId}`]);
         return {
           status: "qualified" as const,
           profileId,
@@ -694,6 +725,7 @@ const make = Effect.gen(function* () {
             commandId: yield* crypto.randomUUIDv4,
             request: `remove-runtime-probe:${temporaryPath}`,
           });
+        yield* current(input.assignmentId, input.grant.epoch);
         yield* fs.writeFileString(path.join(directory, "profile.json"), json(profile));
         return {
           status: "qualified" as const,
@@ -774,6 +806,7 @@ const make = Effect.gen(function* () {
       const gates: Array<FactoryVerification["gates"][number]> = [];
       for (const gate of boundary.gates) {
         yield* current(input.assignmentId, input.expectedEpoch);
+        yield* assertActive(profile);
         const containerName = `satellite-factory-verify-${yield* crypto.randomUUIDv4}`;
         const result = yield* runner
           .run({
@@ -816,7 +849,7 @@ const make = Effect.gen(function* () {
               "/usr/local/bin/node",
               profile.imageId,
               "-e",
-              `const fs=require('node:fs');const {spawn}=require('node:child_process');if(fs.existsSync('/authority/revoked.json'))process.exit(143);const child=spawn(${json(gate.executable)},${json(gate.args)},{stdio:'inherit'});const timer=setInterval(()=>{if(fs.existsSync('/authority/revoked.json')){child.kill('SIGKILL');process.exit(143)}},25);child.on('error',()=>{clearInterval(timer);process.exit(1)});child.on('exit',code=>{clearInterval(timer);process.exit(code??1)});`,
+              `const fs=require('node:fs');const {spawn}=require('node:child_process');const stopped=()=>{try{return fs.existsSync('/authority/revoked.json')||(fs.existsSync('/authority/suspension.json')&&JSON.parse(fs.readFileSync('/authority/suspension.json','utf8')).state!=='resumed')}catch{return true}};if(stopped())process.exit(143);const child=spawn(${json(gate.executable)},${json(gate.args)},{stdio:'inherit'});const timer=setInterval(()=>{if(stopped()){child.kill('SIGKILL');process.exit(143)}},25);child.on('error',()=>{clearInterval(timer);process.exit(1)});child.on('exit',code=>{clearInterval(timer);process.exit(code??1)});`,
             ],
             timeout: gate.timeoutMs,
             maxOutputBytes: 128 * 1024,
@@ -884,15 +917,138 @@ const make = Effect.gen(function* () {
     Effect.mapError(preserve),
   );
 
-  const stop = Effect.fn("FactoryBoundaryExecution.stop")(function* (
+  const assignmentProfile = Effect.fn("FactoryBoundaryExecution.assignmentProfile")(function* (
     assignmentId: FactoryAssignmentId,
   ) {
     const assignment = (yield* store.snapshot).assignments.find(
       (entry) => entry.id === assignmentId,
     );
-    if (assignment?.qualification.status !== "qualified") return;
+    if (assignment === undefined) return yield* denied();
+    if (assignment.qualification.status !== "qualified") return undefined;
     const profile = yield* readProfile(assignment.qualification.profileId);
-    if (profile.assignmentWorkspace?.assignmentId !== assignmentId) return;
+    if (profile.assignmentWorkspace === undefined) return undefined;
+    if (profile.assignmentWorkspace.assignmentId !== assignmentId) return yield* denied();
+    return profile;
+  });
+  const killOwned = Effect.fn("FactoryBoundaryExecution.killOwned")(function* (
+    profile: FactoryExecutionProfile,
+    assignmentId = profile.assignmentWorkspace?.assignmentId,
+  ) {
+    if (assignmentId === undefined) return yield* denied();
+    const containers = yield* docker(profile, [
+      "ps",
+      "--quiet",
+      "--filter",
+      `label=satellite.factory.assignment=${assignmentId}`,
+    ]);
+    for (const id of containers.split(/\s+/).filter(Boolean)) {
+      if (!/^[a-f0-9]{12,64}$/.test(id)) return yield* denied();
+      yield* docker(profile, ["rm", "--force", id]);
+    }
+  });
+  const drain = (profile: FactoryExecutionProfile, assignmentId?: string) =>
+    Effect.gen(function* () {
+      yield* killOwned(profile, assignmentId);
+      yield* mutex.withPermit(Effect.void);
+      yield* killOwned(profile, assignmentId);
+    });
+  const suspensionPath = (profile: FactoryExecutionProfile) =>
+    path.join(path.dirname(profile.assignmentWorkspace!.revocationPath), "suspension.json");
+  const writeSuspension = Effect.fn("FactoryBoundaryExecution.writeSuspension")(function* (
+    profile: FactoryExecutionProfile,
+    suspension: FactoryExecutionSuspension,
+  ) {
+    const target = suspensionPath(profile);
+    const temporary = `${target}.${yield* crypto.randomUUIDv4}`;
+    yield* fs.writeFileString(temporary, json(suspension), { flag: "wx" });
+    yield* fs
+      .rename(temporary, target)
+      .pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
+  });
+  const readSuspension = (profile: FactoryExecutionProfile) =>
+    Effect.gen(function* () {
+      const target = suspensionPath(profile);
+      return (yield* fs.exists(target))
+        ? yield* fs.readFileString(target).pipe(Effect.flatMap(decodeSuspension))
+        : undefined;
+    });
+  const suspend = Effect.fn("FactoryBoundaryExecution.suspend")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["suspend"]>[0]) {
+      if (!Number.isSafeInteger(input.generation) || input.generation < 0) return yield* denied();
+      const profile = yield* assignmentProfile(input.assignmentId);
+      if (profile === undefined) {
+        const state = yield* store.snapshot;
+        const assignment = state.assignments.find((entry) => entry.id === input.assignmentId);
+        const boundary = state.boundaries.find(
+          (entry) => entry.id === assignment?.grant?.boundaryId,
+        );
+        if (boundary !== undefined)
+          yield* drain(yield* readProfile(boundary.profileId), input.assignmentId);
+        else yield* mutex.withPermit(Effect.void);
+        return;
+      }
+      const previous = yield* readSuspension(profile);
+      if (previous !== undefined) {
+        if (previous.generation > input.generation)
+          return yield* new FactoryError({
+            code: "invalid-state",
+            detail: "A newer pause controls this assignment.",
+          });
+        if (previous.generation === input.generation && previous.state === "resumed") return;
+      }
+      yield* writeSuspension(profile, { generation: input.generation, state: "suspended" });
+      yield* drain(profile);
+    },
+    controlMutex.withPermit,
+    Effect.mapError(preserve),
+  );
+  const resume = Effect.fn("FactoryBoundaryExecution.resume")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["resume"]>[0]) {
+      if (!Number.isSafeInteger(input.generation) || input.generation < 0) return yield* denied();
+      const profile = yield* assignmentProfile(input.assignmentId);
+      if (profile === undefined) return;
+      const { grant } = yield* current(input.assignmentId, undefined, true);
+      if (
+        profile.assignmentWorkspace!.grantEpoch !== grant.epoch ||
+        profile.assignmentWorkspace!.boundaryId !== grant.boundaryId
+      )
+        return yield* denied();
+      if (yield* fs.exists(profile.assignmentWorkspace!.revocationPath)) return yield* denied();
+      const previous = yield* readSuspension(profile);
+      if (previous === undefined || previous.generation !== input.generation)
+        return yield* new FactoryError({
+          code: "invalid-state",
+          detail: "This resume request does not match the assignment's current pause.",
+        });
+      if (previous.state === "resumed") return;
+      yield* drain(profile);
+      yield* docker(profile, ["volume", "inspect", profile.assignmentWorkspace!.volumeName]);
+      yield* current(input.assignmentId, grant.epoch, true);
+      if (yield* fs.exists(profile.assignmentWorkspace!.revocationPath)) return yield* denied();
+      yield* writeSuspension(profile, { generation: input.generation, state: "resumed" });
+    },
+    controlMutex.withPermit,
+    Effect.mapError(preserve),
+  );
+  const stop = Effect.fn("FactoryBoundaryExecution.stop")(function* (
+    assignmentId: FactoryAssignmentId,
+  ) {
+    const state = yield* store.snapshot;
+    const assignment = state.assignments.find((entry) => entry.id === assignmentId);
+    if (assignment === undefined) return yield* denied();
+    if (assignment.grant !== undefined)
+      stoppedEpochs.set(
+        assignmentId,
+        Math.max(stoppedEpochs.get(assignmentId) ?? -1, assignment.grant.epoch),
+      );
+    const profile = yield* assignmentProfile(assignmentId);
+    if (profile?.assignmentWorkspace === undefined) {
+      const boundary = state.boundaries.find((entry) => entry.id === assignment.grant?.boundaryId);
+      if (boundary !== undefined)
+        yield* drain(yield* readProfile(boundary.profileId), assignmentId);
+      else yield* mutex.withPermit(Effect.void);
+      return;
+    }
     yield* fs.writeFileString(
       profile.assignmentWorkspace.revocationPath,
       json({
@@ -901,24 +1057,22 @@ const make = Effect.gen(function* () {
         stoppedAt: DateTime.formatIso(yield* DateTime.now),
       }),
     );
-    stoppedEpochs.set(assignmentId, profile.assignmentWorkspace.grantEpoch);
-    const killOwned = Effect.gen(function* () {
-      const containers = yield* docker(profile, [
-        "ps",
-        "--quiet",
-        "--filter",
-        `label=satellite.factory.assignment=${assignmentId}`,
-      ]);
-      for (const id of containers.split(/\s+/).filter(Boolean)) {
-        if (!/^[a-f0-9]{12,64}$/.test(id)) return yield* denied();
-        yield* docker(profile, ["rm", "--force", id]);
-      }
-    });
-    yield* killOwned;
-    yield* mutex.withPermit(Effect.void);
-    yield* killOwned;
+    stoppedEpochs.set(
+      assignmentId,
+      Math.max(stoppedEpochs.get(assignmentId) ?? -1, profile.assignmentWorkspace.grantEpoch),
+    );
+    yield* drain(profile);
   }, Effect.mapError(preserve));
-  return FactoryBoundaryExecution.of({ approve, prepare, mutate, verify, exportArtifact, stop });
+  return FactoryBoundaryExecution.of({
+    approve,
+    prepare,
+    mutate,
+    verify,
+    exportArtifact,
+    stop,
+    suspend,
+    resume,
+  });
 });
 
 export const layer = Layer.effect(FactoryBoundaryExecution, make);

@@ -239,6 +239,67 @@ it.effect("same-model handover keeps conversation history in a fresh confined na
   }),
 );
 
+it.effect("a strict worker stop preserves its parent and independent implementation teams", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const handover = yield* FactoryHandover.FactoryHandover;
+    yield* create();
+    yield* send("Coordinate the project");
+    const independent = ThreadId.make("independent-implementation-team");
+    yield* create(independent);
+    yield* send("Continue authorized implementation", independent);
+    const parent = yield* projections.getThreadProjection(threadId);
+    const run = parent.runs[0]!;
+    yield* orchestrator.dispatch({
+      type: "delegated_task.request",
+      commandId: CommandId.make("delegate-for-shared-stop"),
+      parentThreadId: threadId,
+      parentRunId: run.id,
+      parentNodeId: run.rootNodeId!,
+      task: "Inspect one scoped concern",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      completionWake: "always",
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const child = (yield* projections.getThreadProjection(threadId)).subagents[0]!.childThreadId!;
+    assert.equal(
+      (yield* handover
+        .stop({ threadId: child, projectId, commandId: CommandId.make("invalid-worker-handover") })
+        .pipe(Effect.flip)).code,
+      "invalid-state",
+    );
+    yield* handover.stopTeam({
+      threadId: child,
+      projectId,
+      commandId: CommandId.make("stop-worker"),
+    });
+    assert.equal((yield* projections.getThreadProjection(child)).runs[0]?.status, "interrupted");
+    assert.equal((yield* projections.getThreadProjection(threadId)).runs[0]?.status, "starting");
+    assert.equal((yield* projections.getThreadProjection(independent)).runs[0]?.status, "starting");
+    yield* handover.stopTeam({ threadId, projectId, commandId: CommandId.make("pause-manager") });
+    assert.equal((yield* projections.getThreadProjection(threadId)).runs[0]?.status, "interrupted");
+    assert.equal((yield* projections.getThreadProjection(independent)).runs[0]?.status, "starting");
+  }).pipe(
+    Effect.provide(
+      FactoryHandover.layer.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            ThreadManagement.layer.pipe(Layer.provideMerge(Satellite.layer)),
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+              detach: () => Effect.void,
+            }),
+          ),
+        ),
+      ),
+    ),
+    Effect.scoped,
+  ),
+);
+
 it.effect(
   "a held host queue fails visibly instead of resuming its old context after handover",
   () =>
@@ -275,4 +336,67 @@ it.effect(
         );
       }).pipe(Effect.provide(Satellite.layer.pipe(Layer.provide(execution))));
     }),
+);
+
+it.effect("strict stop reaches ordinary forks even when another provider fails to detach", () =>
+  Effect.gen(function* () {
+    const detached = yield* Ref.make<ThreadId[]>([]);
+    const provider = Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+      detach: (input) =>
+        Ref.update(detached, (ids) => [...ids, input.threadId]).pipe(
+          Effect.andThen(
+            input.threadId === threadId
+              ? Effect.fail(
+                  new ProviderSessionManager.ProviderSessionCloseError({
+                    providerSessionId: input.providerSessionId,
+                  }),
+                )
+              : Effect.void,
+          ),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const handover = yield* FactoryHandover.FactoryHandover;
+      yield* create();
+      yield* send("Original completed turn");
+      yield* terminalize();
+      const sourceRunId = (yield* projections.getThreadProjection(threadId)).runs[0]!.id;
+      const children = [ThreadId.make("ordinary-fork-one"), ThreadId.make("ordinary-fork-two")];
+      for (const child of children) {
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make(`create:${child}`),
+          sourceThreadId: threadId,
+          targetThreadId: child,
+          sourcePoint: { type: "run", runId: sourceRunId },
+          title: "Forked managed work",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* send("Continue scoped work", child);
+      }
+      const failure = yield* handover
+        .stopTeam({ threadId, projectId, commandId: CommandId.make("cancel-forked-team") })
+        .pipe(Effect.flip);
+      assert.equal(failure.code, "execution-unavailable");
+      assert.deepEqual((yield* Ref.get(detached)).toSorted(), [threadId, ...children].toSorted());
+      for (const child of children) {
+        const projection = yield* projections.getThreadProjection(child);
+        assert.equal(projection.runs.at(-1)?.status, "interrupted");
+        assert.equal(projection.thread.lineage.relationshipToParent, "fork");
+        assert.equal(projection.messages.at(-1)?.text, "Continue scoped work");
+      }
+    }).pipe(
+      Effect.provide(
+        FactoryHandover.layer.pipe(
+          Layer.provideMerge(
+            Layer.merge(ThreadManagement.layer.pipe(Layer.provideMerge(Satellite.layer)), provider),
+          ),
+        ),
+      ),
+      Effect.scoped,
+    );
+  }),
 );

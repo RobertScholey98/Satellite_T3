@@ -1,4 +1,4 @@
-import type { CodexSettings } from "@t3tools/contracts";
+import { FactoryError, type CodexSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -32,6 +32,7 @@ export class FactoryCodexLaunchError extends Schema.TaggedError<FactoryCodexLaun
 const decodeCredentials = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelCredentials));
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(ModelCredentials));
 const isLaunchError = Schema.is(FactoryCodexLaunchError);
+const isAuthorityError = Schema.is(FactoryError);
 
 export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
   function* (input: {
@@ -139,7 +140,9 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
     isLaunchError(cause)
       ? cause
       : new FactoryCodexLaunchError({
-          detail: "The isolated Codex model account could not be prepared.",
+          detail: isAuthorityError(cause)
+            ? (cause.detail ?? "The managed execution boundary is unavailable.")
+            : "The isolated Codex model account could not be prepared.",
         }),
   ),
 );

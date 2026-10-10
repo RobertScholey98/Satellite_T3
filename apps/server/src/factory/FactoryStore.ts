@@ -35,6 +35,12 @@ export class FactoryStore extends Context.Service<
       input: Pick<DecisionInput, "actor" | "command">,
     ) => Effect.Effect<FactoryCommandResult | undefined, FactoryError>;
     readonly commit: (input: DecisionInput) => Effect.Effect<FactoryCommandResult, FactoryError>;
+    readonly observationCursor: Effect.Effect<number, FactoryError>;
+    readonly observe: (input: {
+      readonly sequence: number;
+      readonly command?: FactoryHostCommand;
+      readonly now: string;
+    }) => Effect.Effect<void, FactoryError>;
     readonly pending: Effect.Effect<ReadonlyArray<PendingFactoryEffect>, FactoryError>;
     readonly beginEffect: (id: string) => Effect.Effect<void, FactoryError>;
     readonly retireEffect: (id: string) => Effect.Effect<void, FactoryError>;
@@ -42,7 +48,13 @@ export class FactoryStore extends Context.Service<
       readonly id: string;
       readonly command: Exclude<
         FactoryHostCommand,
-        { readonly type: "thread.launch.started" | "assignment.preparation.recorded" }
+        {
+          readonly type:
+            | "thread.launch.started"
+            | "assignment.preparation.recorded"
+            | "control.stop.targets.recorded"
+            | "guidance.observed";
+        }
       >;
       readonly now: string;
       readonly failed?: boolean;
@@ -124,11 +136,41 @@ const make = Effect.gen(function* () {
   });
 
   const publish = snapshot.pipe(Effect.flatMap((value) => SubscriptionRef.set(current, value)));
+  const observationCursor = Effect.gen(function* () {
+    const rows = yield* sql<{ readonly sequence: number }>`
+      SELECT sequence FROM factory_observers WHERE name = 'orchestration'
+    `;
+    return rows[0]?.sequence ?? 0;
+  }).pipe(Effect.mapError(storageError));
 
   return FactoryStore.of({
     snapshot,
     changes: SubscriptionRef.changes(current),
     findReceipt,
+    observationCursor,
+    observe: (input) =>
+      mutex.withPermits(1)(
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              if ((yield* observationCursor) >= input.sequence) return false;
+              if (input.command !== undefined)
+                yield* commitTransaction({
+                  actor: { kind: "system" },
+                  command: input.command,
+                  now: input.now,
+                });
+              yield* sql`INSERT INTO factory_observers (name, sequence)
+        VALUES ('orchestration', ${input.sequence})
+        ON CONFLICT(name) DO UPDATE SET sequence = excluded.sequence`;
+              return input.command !== undefined;
+            }),
+          )
+          .pipe(
+            Effect.mapError(preserveDomainError),
+            Effect.flatMap((changed) => (changed ? publish : Effect.void)),
+          ),
+      ),
     commit: (input) =>
       mutex.withPermits(1)(
         sql.withTransaction(commitTransaction(input)).pipe(
@@ -179,18 +221,52 @@ const make = Effect.gen(function* () {
               const effect = rows[0];
               if (effect === undefined) return yield* new FactoryError({ code: "invalid-state" });
               const intent = yield* decodeIntent(effect.payload_json);
-              const failed =
-                input.command.type === "thread.launch.failed" ||
-                input.command.type === "assignment.prepare.failed";
-              if (
-                intent.threadId !== input.command.threadId ||
-                (intent.type === "assignment.prepare") !==
-                  (input.command.type === "assignment.prepared" ||
-                    input.command.type === "assignment.prepare.failed") ||
-                ("assignmentId" in input.command &&
-                  input.command.assignmentId !== intent.assignmentId) ||
-                failed !== (input.failed ?? false)
-              ) {
+              const command = input.command;
+              const failed = command.type.endsWith(".failed");
+              const matches = (() => {
+                switch (intent.type) {
+                  case "thread.launch":
+                    return (
+                      (command.type === "thread.launch.recorded" ||
+                        command.type === "thread.launch.failed") &&
+                      intent.threadId === command.threadId
+                    );
+                  case "assignment.prepare":
+                    return (
+                      (command.type === "assignment.prepared" ||
+                        command.type === "assignment.prepare.failed") &&
+                      intent.threadId === command.threadId &&
+                      intent.assignmentId === command.assignmentId
+                    );
+                  case "control.stop":
+                  case "control.resume":
+                    return (
+                      (intent.type === "control.stop"
+                        ? command.type === "control.stop.recorded" ||
+                          command.type === "control.stop.failed"
+                        : command.type === "control.resume.recorded" ||
+                          command.type === "control.resume.failed") &&
+                      "controlId" in command &&
+                      intent.controlId === command.controlId &&
+                      "generation" in command &&
+                      intent.generation === command.generation
+                    );
+                  case "thread.deliver":
+                    return (
+                      command.type === "thread.delivery.recorded" &&
+                      intent.threadId === command.threadId &&
+                      intent.messageId === command.messageId
+                    );
+                  case "thread.queue.resume":
+                    return (
+                      command.type === "thread.queue.resumed" &&
+                      intent.threadId === command.threadId &&
+                      intent.controlId === command.controlId &&
+                      intent.generation === command.generation
+                    );
+                }
+              })();
+              if (!matches || failed !== (input.failed ?? false)) {
                 return yield* new FactoryError({ code: "invalid-state" });
               }
               const status = failed ? "failed" : "completed";

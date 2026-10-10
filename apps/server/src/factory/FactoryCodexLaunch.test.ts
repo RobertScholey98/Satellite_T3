@@ -135,3 +135,58 @@ it("excludes credential paths and traversal while retaining ordinary tracked pro
     "https://environment.example/mcp",
   );
 });
+
+it.effect(
+  "suspension blocks provider launch across recreation without granting revoked execution",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const authority = path.join(root, "authority");
+      yield* fs.makeDirectory(authority);
+      const profile = {
+        boundaryId: "suspended-profile",
+        dockerContext: "local",
+        imageId: "sha256:qualified",
+        projectSnapshotPath: root,
+        workflowSnapshotPath: root,
+        runtimePath: path.join(root, "runtime"),
+        assignmentWorkspace: {
+          assignmentId: "paused-assignment",
+          volumeName: "preserved-volume",
+          grantEpoch: 3,
+          boundaryId: "approved-boundary",
+          controlsPath: root,
+          revocationPath: path.join(authority, "revoked.json"),
+          workerUid: 10001,
+          workerGid: 10001,
+        },
+      };
+      const launch = () =>
+        prepareFactoryCodexLaunch({
+          profile,
+          settings: settings({ homePath: path.join(root, "empty") }),
+          environment: { OPENAI_API_KEY: "test-model-key" },
+          containerName: "factory-paused",
+        });
+      yield* fs.writeFileString(
+        path.join(authority, "suspension.json"),
+        '{"generation":1,"state":"suspended"}',
+      );
+      assert.include((yield* launch().pipe(Effect.flip)).detail, "paused");
+      assert.isFalse(yield* fs.exists(profile.runtimePath));
+      yield* fs.writeFileString(
+        path.join(authority, "suspension.json"),
+        '{"generation":1,"state":"resumed"}',
+      );
+      const result = yield* launch();
+      assert.equal(result.command, "docker");
+      assert.include(
+        result.args,
+        "type=volume,source=preserved-volume,target=/workspace,volume-nocopy",
+      );
+      yield* fs.writeFileString(profile.assignmentWorkspace.revocationPath, "{}");
+      assert.include((yield* launch().pipe(Effect.flip)).detail, "withdrawn");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

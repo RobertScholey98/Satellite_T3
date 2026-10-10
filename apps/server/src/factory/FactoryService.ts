@@ -9,8 +9,10 @@ import {
   type FactoryThreadLaunchIntent,
   type FactoryQuery,
   type FactorySnapshot,
+  type OrchestrationV2StoredEvent,
+  type FactoryHostCommand,
 } from "@t3tools/contracts";
-import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -30,6 +32,9 @@ import { FactorySource } from "./FactorySource.ts";
 import { FactoryHandover } from "./FactoryHandover.ts";
 import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
 import { decide, type FactoryActor } from "./FactoryState.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import * as FactoryControlEffects from "./FactoryControlEffects.ts";
+import { type FactoryControlContext } from "./FactoryControls.ts";
 
 export class FactoryService extends Context.Service<
   FactoryService,
@@ -41,6 +46,7 @@ export class FactoryService extends Context.Service<
       command: FactoryCommand,
     ) => Effect.Effect<FactoryCommandResult, FactoryError>;
     readonly drain: Effect.Effect<void>;
+    readonly observe: (event: OrchestrationV2StoredEvent) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryService") {}
 
@@ -61,6 +67,20 @@ const scopedSnapshot =
           ),
           boundaries: snapshot.boundaries.filter(
             (boundary) => boundary.projectId === query.projectId,
+          ),
+          controls: snapshot.controls.filter((control) =>
+            control.kind === "project-pause"
+              ? control.projectId === query.projectId
+              : snapshot.managers.some(
+                  (manager) =>
+                    manager.id === control.managerId && manager.projectId === query.projectId,
+                ),
+          ),
+          guidance: snapshot.guidance.filter((guidance) =>
+            snapshot.assignments.some(
+              (assignment) =>
+                assignment.id === guidance.assignmentId && assignment.projectId === query.projectId,
+            ),
           ),
         };
 
@@ -86,6 +106,8 @@ export const layer = Layer.effect(
     const handovers = yield* FactoryHandover;
     const threads = yield* ThreadManagementService;
     const projects = yield* ProjectService;
+    const controls = yield* FactoryControlAccess.FactoryControlAccess;
+    const controlEffects = yield* FactoryControlEffects.FactoryControlEffects;
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -126,6 +148,16 @@ export const layer = Layer.effect(
         return;
       }
       if (manager.status === "blocked" || manager.status === "paused") return;
+      const allowed = yield* controls
+        .assertDirection({
+          threadId: intent.threadId,
+          senderThreadId: intent.purpose === "manager" ? null : intent.managerId,
+        })
+        .pipe(Effect.result);
+      if (Result.isFailure(allowed)) {
+        if (allowed.failure.code === "permission-denied") return;
+        return yield* allowed.failure;
+      }
       yield* store.beginEffect(pending.id);
       const result = yield* Effect.gen(function* () {
         const profile = yield* execution.runtimePolicyFor(intent.threadId);
@@ -212,6 +244,18 @@ export const layer = Layer.effect(
         });
       }).pipe(Effect.result);
       if (result._tag === "Failure") {
+        const latest = yield* store.snapshot;
+        if (latest.assignments.find((entry) => entry.id === assignment.id)?.outcome !== undefined) {
+          yield* store.retireEffect(pending.id);
+          return;
+        }
+        const allowed = yield* controls
+          .assertDirection({
+            threadId: intent.threadId,
+            senderThreadId: intent.purpose === "manager" ? null : intent.managerId,
+          })
+          .pipe(Effect.result);
+        if (Result.isFailure(allowed) && allowed.failure.code === "permission-denied") return;
         yield* Effect.logError("Managed thread launch failed", {
           threadId: intent.threadId,
           cause: result.failure,
@@ -259,6 +303,13 @@ export const layer = Layer.effect(
         return;
       }
       if (manager.status !== "active" || assignment.status !== "pending") return;
+      const allowed = yield* controls
+        .assertDirection({ threadId: intent.threadId, senderThreadId: intent.managerId })
+        .pipe(Effect.result);
+      if (Result.isFailure(allowed)) {
+        if (allowed.failure.code === "permission-denied") return;
+        return yield* allowed.failure;
+      }
       yield* store.beginEffect(pending.id);
       const result = yield* Effect.gen(function* () {
         if (assignment.grant === undefined)
@@ -322,6 +373,12 @@ export const layer = Layer.effect(
         yield* store.retireEffect(pending.id);
         return;
       }
+      if (Result.isFailure(result)) {
+        const allowed = yield* controls
+          .assertDirection({ threadId: intent.threadId, senderThreadId: intent.managerId })
+          .pipe(Effect.result);
+        if (Result.isFailure(allowed) && allowed.failure.code === "permission-denied") return;
+      }
       yield* store.finishEffect({
         id: pending.id,
         now: yield* nowIso,
@@ -346,26 +403,131 @@ export const layer = Layer.effect(
       });
     });
 
-    const worker = yield* makeDrainableWorker((_wake: void) =>
+    let workerProgress = 0;
+    const worker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
         const visited = new Set<string>();
         for (;;) {
-          const pending = (yield* store.pending).filter((entry) => !visited.has(entry.id));
+          const pending = (yield* store.pending).filter(
+            (entry) =>
+              !visited.has(entry.id) &&
+              (entry.intent.type === "thread.launch" || entry.intent.type === "assignment.prepare"),
+          );
           if (pending.length === 0) return;
           for (const entry of pending) {
             visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
             if (entry.intent.type === "assignment.prepare") yield* prepare(entry);
-            else yield* commands.withPermits(1)(launch(entry));
+            else if (entry.intent.type === "thread.launch")
+              yield* commands.withPermits(1)(launch(entry));
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* controlWorker.enqueue(undefined);
+            }
+          }
+        }
+      }),
+    );
+    const controlWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) =>
+              !visited.has(entry.id) &&
+              entry.intent.type !== "thread.launch" &&
+              entry.intent.type !== "assignment.prepare",
+          );
+          if (pending.length === 0) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            yield* controlEffects.run(entry).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory control effect remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* worker.enqueue(undefined);
+            }
           }
         }
       }),
     );
     yield* worker.enqueue(undefined);
+    yield* controlWorker.enqueue(undefined);
+    const wake = Effect.all([worker.enqueue(undefined), controlWorker.enqueue(undefined)], {
+      discard: true,
+    });
+    const drain = Effect.gen(function* () {
+      for (;;) {
+        const progress = workerProgress;
+        yield* worker.drain;
+        yield* controlWorker.drain;
+        if (progress === workerProgress) return;
+      }
+    });
+
+    const controlContext = Effect.fn("FactoryService.controlContext")(function* (
+      command: FactoryCommand,
+    ) {
+      if (command.type === "thread.takeover" || command.type === "thread.handback") {
+        const controlTarget = yield* controls.membership(command.threadId);
+        return controlTarget === undefined ? {} : { controlTarget };
+      }
+      if (command.type !== "guidance.escalate") return {};
+      const target = yield* controls.membership(command.threadId);
+      if (target === undefined) return {};
+      const records = yield* threads
+        .getThreadRecords(command.threadId, ["messages"], { messageIds: [command.messageId] })
+        .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause })));
+      const message = records.messages.find(
+        (entry) =>
+          entry.id === command.messageId &&
+          entry.role === "user" &&
+          FactoryControlAccess.factoryDirectionSender(entry) === undefined,
+      );
+      return message === undefined ? {} : { guidance: { messageId: message.id, target } };
+    });
 
     const service = FactoryService.of({
       snapshot: (query) => store.snapshot.pipe(Effect.map(scopedSnapshot(query))),
       changes: (query) => store.changes.pipe(Stream.map(scopedSnapshot(query))),
-      drain: worker.drain,
+      drain,
+      observe: Effect.fn("FactoryService.observe")(function* (stored) {
+        let command: FactoryHostCommand | undefined;
+        const event = stored.event;
+        if (
+          event.type === "message.updated" &&
+          event.payload.role === "user" &&
+          FactoryControlAccess.factoryDirectionSender(event.payload) === undefined
+        ) {
+          const membership = yield* controls.membership(event.threadId).pipe(Effect.result);
+          if (Result.isFailure(membership) && membership.failure.code !== "execution-unavailable")
+            return yield* membership.failure;
+          const member = Result.isSuccess(membership) ? membership.success : undefined;
+          if (member?.assignmentId !== undefined)
+            command = {
+              type: "guidance.observed",
+              commandId: CommandId.make(`factory:guidance:${event.threadId}:${event.payload.id}`),
+              threadId: event.threadId,
+              messageId: event.payload.id,
+              assignmentId: member.assignmentId,
+            };
+        }
+        yield* store.observe({
+          sequence: stored.sequence,
+          ...(command === undefined ? {} : { command }),
+          now: yield* nowIso,
+        });
+        if (command !== undefined) yield* controlWorker.enqueue(undefined);
+      }),
       dispatch: Effect.fn("FactoryService.dispatch")(function* (actor, command) {
         const receipt = yield* store.findReceipt({ actor, command });
         if (receipt !== undefined) return receipt;
@@ -513,13 +675,43 @@ export const layer = Layer.effect(
           ...(boundary === undefined ? {} : { boundary }),
           ...(verification === undefined ? {} : { verification }),
         });
-        yield* worker.enqueue(undefined);
+        yield* wake;
         return result;
       }, commands.withPermits(1)),
     });
     return FactoryService.of({
       ...service,
       dispatch: (actor, command) => {
+        if (
+          [
+            "manager.pause",
+            "manager.resume",
+            "project.pause",
+            "project.resume",
+            "thread.takeover",
+            "thread.handback",
+            "assignment.cancel",
+            "assignment.cancellation-reason",
+            "control.retry",
+            "guidance.escalate",
+          ].includes(command.type)
+        )
+          return withCommand(
+            command.commandId,
+            Effect.gen(function* () {
+              const receipt = yield* store.findReceipt({ actor, command });
+              if (receipt !== undefined) return receipt;
+              const context: FactoryControlContext = yield* controlContext(command);
+              const result = yield* store.commit({
+                actor,
+                command,
+                ...context,
+                now: yield* nowIso,
+              });
+              yield* wake;
+              return result;
+            }),
+          );
         if (command.type !== "assignment.file.mutate" && command.type !== "assignment.verify")
           return withCommand(command.commandId, service.dispatch(actor, command));
         return withCommand(
@@ -548,4 +740,4 @@ export const layer = Layer.effect(
       },
     });
   }),
-);
+).pipe(Layer.provide(FactoryControlEffects.layer), Layer.provide(FactoryControlAccess.layer));

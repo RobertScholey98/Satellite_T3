@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   FactoryAssignmentId,
+  FactoryControlId,
   FactorySourceId,
   ProjectId,
   ProviderInstanceId,
@@ -12,6 +13,8 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -28,6 +31,7 @@ import {
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import { FactorySource, type FactorySourceArtifact } from "./FactorySource.ts";
+import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
@@ -64,11 +68,43 @@ live(
       const imageId = imageInspection.stdout.trim();
       let rejectDocker = false;
       let loseMutationResponse = false;
+      let preparationBarrier:
+        | {
+            assignmentId: FactoryAssignmentId;
+            entered: Deferred.Deferred<void>;
+            release: Deferred.Deferred<void>;
+            stopping: Deferred.Deferred<void>;
+            volumeName: string | undefined;
+          }
+        | undefined;
       const executionRunner = ProcessRunner.ProcessRunner.of({
         run: (input) => {
           if (rejectDocker && input.command === "docker")
             return Effect.succeed({ ...imageInspection, code: null });
-          return runner.run(input).pipe(
+          const barrier = preparationBarrier;
+          const preparationProbe =
+            barrier !== undefined &&
+            input.args?.includes(`satellite.factory.assignment=${barrier.assignmentId}`) &&
+            input.args.some((arg) => arg.includes("factory-writable-boundary-ok"));
+          if (preparationProbe)
+            barrier.volumeName = input.args
+              ?.find((arg) => arg.startsWith("type=volume,source="))
+              ?.split(",")[1]
+              ?.slice("source=".length);
+          const before = preparationProbe
+            ? Deferred.succeed(barrier.entered, undefined).pipe(
+                Effect.andThen(Deferred.await(barrier.release)),
+              )
+            : Effect.void;
+          return before.pipe(
+            Effect.andThen(runner.run(input)),
+            Effect.tap(() =>
+              barrier !== undefined &&
+              input.args?.includes("ps") &&
+              input.args.includes(`label=satellite.factory.assignment=${barrier.assignmentId}`)
+                ? Deferred.succeed(barrier.stopping, undefined)
+                : Effect.void,
+            ),
             Effect.map((result) => {
               if (loseMutationResponse && input.stdin?.includes('"kind":"mutate"')) {
                 loseMutationResponse = false;
@@ -244,6 +280,72 @@ live(
           },
         };
         state = { ...state, boundaries: [boundary], assignments: [onboarding, assignment] };
+        const cancelledDuringPreparation: FactoryAssignment = {
+          ...assignment,
+          id: FactoryAssignmentId.make(`cancel-preparing-${profileId}`),
+          threadId: ThreadId.make("cancel-preparing-lead"),
+          qualification: { status: "unavailable", reason: "Preparing the workspace" },
+        };
+        state = { ...state, assignments: [...state.assignments, cancelledDuringPreparation] };
+        const prepareCancelled = {
+          assignmentId: cancelledDuringPreparation.id,
+          threadId: cancelledDuringPreparation.threadId,
+          boundaryId: boundary.id,
+          grant: cancelledDuringPreparation.grant!,
+        };
+        const barrier = {
+          assignmentId: cancelledDuringPreparation.id,
+          entered: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+          stopping: yield* Deferred.make<void>(),
+          volumeName: undefined as string | undefined,
+        };
+        preparationBarrier = barrier;
+        const preparing = yield* execution
+          .prepare(prepareCancelled)
+          .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(barrier.entered);
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === cancelledDuringPreparation.id
+              ? {
+                  ...entry,
+                  outcome: {
+                    kind: "cancelled",
+                    controlId: FactoryControlId.make("cancel-preparing"),
+                  },
+                }
+              : entry,
+          ),
+        };
+        const stopping = yield* execution
+          .stop(cancelledDuringPreparation.id)
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(barrier.stopping);
+        assert.isUndefined(
+          stopping.pollUnsafe(),
+          "Stop cannot confirm while preparation still holds its operation permit",
+        );
+        yield* Deferred.succeed(barrier.release, undefined);
+        assert.equal((yield* Fiber.join(preparing))._tag, "Failure");
+        yield* Fiber.join(stopping);
+        preparationBarrier = undefined;
+        assert.isDefined(barrier.volumeName);
+        assert.notEqual((yield* docker(["volume", "inspect", barrier.volumeName!])).code, 0);
+        const cancelledProfileId = barrier.volumeName!.slice("satellite-factory-".length);
+        assert.isFalse(
+          yield* fs.exists(
+            path.join(config.stateDir, "factory", "execution", cancelledProfileId, "profile.json"),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const recreated = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+          assert.equal(
+            (yield* recreated.prepare(prepareCancelled).pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+        }).pipe(Effect.provide(FactoryBoundaryExecution.layer));
         const qualification = yield* execution.prepare({
           assignmentId: assignment.id,
           threadId: assignment.threadId,
@@ -284,6 +386,131 @@ live(
           "require('node:fs').writeFileSync('/workspace/src/value.cjs', 'module.exports = 2;')",
         ]);
         assert.equal(worker.code, 0, worker.stderr);
+        const runningBeforePause = yield* docker([
+          ...factoryDockerArguments(prepared).slice(2),
+          "--detach",
+          "--entrypoint",
+          "node",
+          prepared.imageId,
+          "-e",
+          "setInterval(()=>{},1000)",
+        ]);
+        assert.equal(runningBeforePause.code, 0, runningBeforePause.stderr);
+        const pausedContainerId = runningBeforePause.stdout.trim();
+        const unaffected = yield* docker([
+          "run",
+          "--rm",
+          "--detach",
+          "--entrypoint",
+          "node",
+          prepared.imageId,
+          "-e",
+          "setInterval(()=>{},1000)",
+        ]);
+        assert.equal(unaffected.code, 0, unaffected.stderr);
+        const unaffectedId = unaffected.stdout.trim();
+        yield* Effect.addFinalizer(() =>
+          docker(["rm", "--force", pausedContainerId, unaffectedId]).pipe(Effect.ignore),
+        );
+        rejectDocker = true;
+        assert.equal(
+          (yield* execution
+            .suspend({ assignmentId: assignment.id, generation: 1 })
+            .pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.include(
+          (yield* assertFactoryProfileActive(prepared).pipe(Effect.flip)).detail!,
+          "paused",
+        );
+        rejectDocker = false;
+        yield* execution.suspend({ assignmentId: assignment.id, generation: 1 });
+        assert.notEqual((yield* docker(["inspect", pausedContainerId])).code, 0);
+        assert.equal(
+          (yield* docker([
+            "inspect",
+            "--format",
+            "{{.State.Running}}",
+            unaffectedId,
+          ])).stdout.trim(),
+          "true",
+        );
+        yield* Effect.gen(function* () {
+          const restarted = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+          assert.include(
+            (yield* restarted
+              .verify({ assignmentId: assignment.id, expectedEpoch: 0 })
+              .pipe(Effect.flip)).detail!,
+            "paused",
+          );
+          assert.include(
+            (yield* restarted
+              .mutate({
+                assignmentId: assignment.id,
+                expectedEpoch: 0,
+                commandId: CommandId.make("denied-while-paused"),
+                operation: { kind: "write", path: "src/value.cjs", content: "module.exports = 9;" },
+              })
+              .pipe(Effect.flip)).detail!,
+            "paused",
+          );
+          assert.include(
+            (yield* restarted
+              .prepare({
+                assignmentId: assignment.id,
+                threadId: assignment.threadId,
+                boundaryId: boundary.id,
+                grant: assignment.grant!,
+              })
+              .pipe(Effect.flip)).detail!,
+            "paused",
+          );
+          assert.equal(
+            (yield* restarted
+              .resume({ assignmentId: assignment.id, generation: 0 })
+              .pipe(Effect.flip)).code,
+            "invalid-state",
+          );
+          yield* restarted.resume({ assignmentId: assignment.id, generation: 1 });
+          yield* restarted.resume({ assignmentId: assignment.id, generation: 1 });
+          yield* restarted.suspend({ assignmentId: assignment.id, generation: 1 });
+          yield* assertFactoryProfileActive(prepared);
+          yield* restarted.suspend({ assignmentId: assignment.id, generation: 2 });
+          assert.equal(
+            (yield* restarted
+              .resume({ assignmentId: assignment.id, generation: 1 })
+              .pipe(Effect.flip)).code,
+            "invalid-state",
+          );
+          assert.equal(
+            (yield* restarted
+              .suspend({ assignmentId: assignment.id, generation: 1 })
+              .pipe(Effect.flip)).code,
+            "invalid-state",
+          );
+          assert.include(
+            (yield* assertFactoryProfileActive(prepared).pipe(Effect.flip)).detail!,
+            "paused",
+          );
+          yield* restarted.resume({ assignmentId: assignment.id, generation: 2 });
+          const preserved = yield* restarted.verify({
+            assignmentId: assignment.id,
+            expectedEpoch: 0,
+          });
+          assert.equal(preserved.gates[0]?.status, "passed");
+          const artifact = yield* restarted.exportArtifact({
+            assignmentId: assignment.id,
+            artifactId: preserved.artifactId,
+          });
+          assert.equal(
+            yield* fs.readFileString(path.join(artifact.sourcePath, "src", "value.cjs")),
+            "module.exports = 2;",
+          );
+          assert.equal(
+            state.assignments.find((entry) => entry.id === assignment.id)?.grant?.epoch,
+            0,
+          );
+        }).pipe(Effect.provide(FactoryBoundaryExecution.layer));
         const narrowed = yield* docker([
           ...factoryDockerArguments(prepared).slice(2),
           "--entrypoint",
@@ -737,7 +964,28 @@ live(
               .pipe(Effect.flip)).code,
             "permission-denied",
           );
+          assert.equal(
+            (yield* restarted
+              .resume({ assignmentId: assignment.id, generation: 2 })
+              .pipe(Effect.flip)).code,
+            "permission-denied",
+          );
         }).pipe(Effect.provide(FactoryBoundaryExecution.layer));
+        yield* execution.suspend({ assignmentId: freshAssignment.id, generation: 1 });
+        assert.equal(
+          (yield* docker(["volume", "rm", freshProfile.assignmentWorkspace!.volumeName])).code,
+          0,
+        );
+        assert.equal(
+          (yield* execution
+            .resume({ assignmentId: freshAssignment.id, generation: 1 })
+            .pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.include(
+          (yield* assertFactoryProfileActive(freshProfile).pipe(Effect.flip)).detail!,
+          "paused",
+        );
       }).pipe(
         Effect.provide(
           FactoryBoundaryExecution.layer.pipe(
@@ -758,5 +1006,5 @@ live(
         ),
       );
     }).pipe(Effect.scoped, Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
-  120000,
+  180000,
 );

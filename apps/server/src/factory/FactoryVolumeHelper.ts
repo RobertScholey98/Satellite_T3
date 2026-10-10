@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 if (fs.existsSync('/authority/revoked.json')) throw Error('revoked execution');
+if (fs.existsSync('/authority/suspension.json') && JSON.parse(fs.readFileSync('/authority/suspension.json', 'utf8')).state !== 'resumed') throw Error('suspended execution');
 function safe(name) {
   if (typeof name !== 'string' || name.length > 1024 || /[\\:\x00-\x1f]/.test(name) || name.split('/').some(p => !p || p === '.' || p === '..')) throw Error('unsafe path');
   const target = '/workspace/' + name;

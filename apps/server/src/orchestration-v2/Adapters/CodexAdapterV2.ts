@@ -1668,6 +1668,7 @@ export const createCodexAdapterV2 = (
     const continuationRequests = yield* ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const hostEnvironment = yield* HostProcessEnvironment;
     const idAllocator = yield* IdAllocatorV2;
     const serverConfig = yield* ServerConfig;
@@ -1699,6 +1700,7 @@ export const createCodexAdapterV2 = (
       clientFactory,
       crypto,
       fileSystem,
+      path,
       idAllocator,
       serverConfig,
       continuationRequests,
@@ -1716,7 +1718,12 @@ export const CodexAdapterV2Driver: ProviderAdapterDriver<CodexSettings, CodexAda
 const layer: Layer.Layer<
   ProviderAdapterV2,
   never,
-  CodexAppServerClientFactory | Crypto.Crypto | FileSystem.FileSystem | IdAllocatorV2 | ServerConfig
+  | CodexAppServerClientFactory
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | Path.Path
+  | IdAllocatorV2
+  | ServerConfig
 > = Layer.effect(
   ProviderAdapterV2,
   Effect.gen(function* () {
@@ -1724,6 +1731,7 @@ const layer: Layer.Layer<
     const continuationRequests = yield* ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const hostEnvironment = yield* HostProcessEnvironment;
     const idAllocator = yield* IdAllocatorV2;
     const serverConfig = yield* ServerConfig;
@@ -1735,6 +1743,7 @@ const layer: Layer.Layer<
       clientFactory,
       crypto,
       fileSystem,
+      path,
       idAllocator,
       serverConfig,
       continuationRequests,
@@ -1756,6 +1765,7 @@ export interface CodexAdapterV2Options {
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   readonly crypto: Crypto.Crypto;
   readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
   readonly idAllocator: IdAllocatorV2Shape;
   readonly serverConfig: ServerConfig["Service"];
   /**
@@ -1769,7 +1779,7 @@ export interface CodexAdapterV2Options {
 }
 
 export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): ProviderAdapterV2Shape {
-  const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
+  const { clientFactory, crypto, fileSystem, path, idAllocator, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
 
   return ProviderAdapterV2.of({
@@ -1839,6 +1849,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           input.runtimePolicy.factoryExecution,
         ).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
           Effect.mapError((cause) => toProtocolError(cause.message)),
         );
         const ensureInitialized = initializePermit.withPermit(

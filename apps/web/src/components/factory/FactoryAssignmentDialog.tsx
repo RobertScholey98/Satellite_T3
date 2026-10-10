@@ -30,6 +30,8 @@ import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import { factoryModelKey, factoryModelLabel } from "./FactoryModelPolicyDialog";
+import { FactoryAssignmentControls } from "./FactoryControls";
+import { factoryAssignmentCancellation, factoryAssignmentStatus } from "./FactoryControlsReadModel";
 
 export function FactoryAssignmentDialog({
   environment,
@@ -103,7 +105,16 @@ export function FactoryAssignmentDialog({
       controlPaths.some((path) => !boundary.protectedPaths.includes(path)));
   const ruleContent = JSON.stringify({ title, description, completionCondition, controlPaths });
   const disabled =
-    pending || !environment.connected || !environment.canOperate || manager.status !== "active";
+    pending ||
+    !environment.connected ||
+    !environment.canOperate ||
+    manager.status !== "active" ||
+    snapshot?.controls?.some(
+      (control) =>
+        ((control.kind === "project-pause" && control.projectId === manager.projectId) ||
+          (control.kind === "manager-pause" && control.managerId === manager.id)) &&
+        control.status === "active",
+    ) === true;
   const canSubmit =
     !disabled &&
     !staleGrant &&
@@ -194,6 +205,16 @@ export function FactoryAssignmentDialog({
             {!environment.connected ? (
               <p role="status" className="text-sm text-muted-foreground">
                 Reconnect to this environment to authorize work.
+              </p>
+            ) : null}
+            {snapshot?.controls?.some(
+              (control) =>
+                control.kind === "project-pause" &&
+                control.projectId === manager.projectId &&
+                control.status === "active",
+            ) ? (
+              <p role="status" className="text-sm text-muted-foreground">
+                Resume the project before authorizing work.
               </p>
             ) : null}
             {!environment.canOperate ? (
@@ -528,13 +549,14 @@ export function FactoryAssignmentDetailsDialog({
         <DialogHeader>
           <DialogTitle>{assignment.title ?? "Managed assignment"}</DialogTitle>
           <DialogDescription>
-            {assignment.kind} · {assignment.status}
+            {assignment.kind} · {factoryAssignmentStatus(environment.data, assignment)}
             {assignment.preparation ? ` · ${assignment.preparation}` : ""} · {environment.label}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
           <div className="space-y-5">
-            {assignment.wait ? (
+            <FactoryAssignmentControls environment={environment} assignment={assignment} />
+            {!environment.data?.controls && assignment.wait ? (
               <p role="status" className="text-sm text-muted-foreground">
                 {assignment.wait.reason}
               </p>
@@ -667,7 +689,9 @@ export function FactoryAssignmentDetailsDialog({
           <Button variant="outline" disabled={pending} onClick={onClose}>
             Close
           </Button>
-          {assignment.status === "waiting" && assignment.kind !== "onboarding" ? (
+          {assignment.status === "waiting" &&
+          assignment.kind !== "onboarding" &&
+          !factoryAssignmentCancellation(environment.data, assignment) ? (
             <Button
               variant="outline"
               disabled={pending || !environment.connected || !environment.canOperate}

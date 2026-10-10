@@ -12,4 +12,6 @@ export const layerUnavailable = Layer.succeed(FactoryBoundaryExecution, {
   verify: unexpected,
   exportArtifact: unexpected,
   stop: unexpected,
+  suspend: unexpected,
+  resume: unexpected,
 });

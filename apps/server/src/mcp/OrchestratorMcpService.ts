@@ -96,6 +96,7 @@ import {
 import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as FactoryExecution from "../factory/FactoryExecution.ts";
+import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -850,6 +851,7 @@ const make = Effect.gen(function* () {
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const factoryExecution = yield* Effect.serviceOption(FactoryExecution.FactoryExecution);
+  const factoryControls = yield* Effect.serviceOption(FactoryControlAccess);
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
@@ -1991,6 +1993,13 @@ const make = Effect.gen(function* () {
         // delegated. All of them are checked before anything is stopped.
         const assertStoppable = (threadId: ThreadId): Effect.Effect<void, OrchestratorMcpFailure> =>
           Effect.gen(function* () {
+            if (Option.isSome(factoryControls))
+              yield* factoryControls.value
+                .assertDirection({
+                  threadId,
+                  senderThreadId: scope.thread.threadId,
+                })
+                .pipe(Effect.mapError((error) => failure("task_not_cancellable", error.message)));
             const shell = yield* threadManagement
               .getThreadShell(threadId)
               .pipe(Effect.mapError(threadManagementFailure));

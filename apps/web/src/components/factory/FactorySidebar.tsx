@@ -6,7 +6,6 @@ import type {
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   CommandId,
-  type FactoryAssignment,
   type FactoryAssignmentId,
   type FactoryManager,
   type FactoryOnboardingReport,
@@ -30,6 +29,12 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { CollapsibleSectionHeader } from "../ui/collapsible-section-header";
+import {
+  factoryAssignmentStatus,
+  factoryManagerPause,
+  factoryPauseStatus,
+  factoryProjectPause,
+} from "./FactoryControlsReadModel";
 import {
   SidebarGroup,
   SidebarMenu,
@@ -68,6 +73,9 @@ const FactoryAssignmentDetailsDialog = lazy(() =>
     default: module.FactoryAssignmentDetailsDialog,
   })),
 );
+const FactoryManagerControlsDialog = lazy(() =>
+  import("./FactoryControls").then((module) => ({ default: module.FactoryManagerControlsDialog })),
+);
 
 const managerStatusLabels = {
   onboarding: "Onboarding",
@@ -75,13 +83,6 @@ const managerStatusLabels = {
   active: "Ready",
   paused: "Paused",
 } satisfies Record<FactoryManager["status"], string>;
-
-const assignmentStatusLabels = {
-  pending: "Preparing",
-  running: "Working",
-  waiting: "Waiting",
-  complete: "Complete",
-} satisfies Record<FactoryAssignment["status"], string>;
 
 function threadUnavailableReason(
   status: FactoryManager["threadStatus"],
@@ -117,6 +118,7 @@ export function FactorySidebar({
   const [report, setReport] = useState<FactoryOnboardingReport | null>(null);
   const [setupManagerKey, setSetupManagerKey] = useState<string | null>(null);
   const [boundaryManagerKey, setBoundaryManagerKey] = useState<string | null>(null);
+  const [controlsManagerKey, setControlsManagerKey] = useState<string | null>(null);
   const [policyTarget, setPolicyTarget] = useState<{
     readonly environmentId: EnvironmentId;
     readonly managerId: ThreadId | null;
@@ -223,6 +225,7 @@ export function FactorySidebar({
     scopedProjects.some((project) => project.environmentId === environment.environmentId),
   );
   const setupEntry = entries.find((entry) => entry.key === setupManagerKey);
+  const controlsEntry = entries.find((entry) => entry.key === controlsManagerKey);
   const boundaryEntry = entries.find((entry) => entry.key === boundaryManagerKey);
   const boundaryReport = boundaryEntry?.assignments.find(
     (assignment) => assignment.report !== null,
@@ -304,6 +307,8 @@ export function FactorySidebar({
           </div>
           <SidebarMenu>
             {entries.map(({ environment, manager, key, project, assignments }) => {
+              const managerPause = factoryManagerPause(environment.data, manager.id);
+              const projectPause = factoryProjectPause(environment.data, manager.projectId);
               const childrenExpanded = !collapsedManagers.has(key);
               const unavailableReason = threadUnavailableReason(
                 manager.threadStatus,
@@ -368,8 +373,20 @@ export function FactorySidebar({
                       {environments.length > 1 ? ` · ${environment.label}` : ""}
                     </span>
                     <Badge variant={manager.wait ? "warning" : "secondary"} size="sm">
-                      {managerStatusLabels[manager.status]}
+                      {managerPause
+                        ? `Manager: ${factoryPauseStatus(managerPause)}`
+                        : managerStatusLabels[manager.status]}
                     </Badge>
+                    {projectPause ? (
+                      <Badge variant="warning" size="sm">
+                        Project: {factoryPauseStatus(projectPause)}
+                      </Badge>
+                    ) : null}
+                    {environment.data?.controls ? (
+                      <Button size="xs" variant="ghost" onClick={() => setControlsManagerKey(key)}>
+                        Controls
+                      </Button>
+                    ) : null}
                     {manager.threadStatus === "created" && unavailableReason ? (
                       <span className="text-2xs text-sidebar-muted-foreground">
                         {unavailableReason}
@@ -424,7 +441,7 @@ export function FactorySidebar({
                             </SidebarMenuButton>
                             <div className="ml-2 flex flex-wrap items-center gap-2 pb-1">
                               <span className="text-2xs text-sidebar-muted-foreground">
-                                {assignmentStatusLabels[assignment.status]}
+                                {factoryAssignmentStatus(environment.data, assignment)}
                                 {assignment.preparation && assignment.preparation !== "ready"
                                   ? ` · ${assignment.preparation}`
                                   : ""}
@@ -453,7 +470,7 @@ export function FactorySidebar({
                                   </Button>
                                 </>
                               ) : null}
-                              {assignment.kind !== "onboarding" ? (
+                              {assignment.kind !== "onboarding" || environment.data?.controls ? (
                                 <Button
                                   size="xs"
                                   variant="ghost"
@@ -520,6 +537,8 @@ export function FactorySidebar({
                                 variant="ghost"
                                 disabled={
                                   manager.status !== "active" ||
+                                  projectPause !== undefined ||
+                                  managerPause !== undefined ||
                                   !environment.connected ||
                                   !environment.canOperate
                                 }
@@ -534,6 +553,8 @@ export function FactorySidebar({
                                 variant="ghost"
                                 disabled={
                                   manager.status !== "active" ||
+                                  projectPause !== undefined ||
+                                  managerPause !== undefined ||
                                   !environment.connected ||
                                   !environment.canOperate
                                 }
@@ -574,6 +595,14 @@ export function FactorySidebar({
         </div>
       ) : null}
       <Suspense fallback={null}>
+        {controlsEntry ? (
+          <FactoryManagerControlsDialog
+            key={controlsEntry.key}
+            environment={controlsEntry.environment}
+            manager={controlsEntry.manager}
+            onClose={() => setControlsManagerKey(null)}
+          />
+        ) : null}
         {creating ? (
           <CreateManagerDialog
             projects={scopedProjects}

@@ -19,6 +19,7 @@ import * as FactoryBoundaryExecution from "./factory/FactoryBoundaryExecution.ts
 import * as FactorySource from "./factory/FactorySource.ts";
 import * as FactoryHandover from "./factory/FactoryHandover.ts";
 import * as FactoryService from "./factory/FactoryService.ts";
+import * as FactoryObserver from "./factory/FactoryObserver.ts";
 import * as FactoryMcpGuard from "./factory/FactoryMcpGuard.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
@@ -534,7 +535,7 @@ const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
 );
 
 const layerSatelliteFeatures = Layer.mergeAll(
-  FactoryMcpGuard.layer.pipe(
+  Layer.merge(FactoryMcpGuard.layer, FactoryObserver.layer).pipe(
     Layer.provideMerge(FactoryService.layer.pipe(Layer.provide(FactoryHandover.layer))),
   ),
   DocumentService.layer,

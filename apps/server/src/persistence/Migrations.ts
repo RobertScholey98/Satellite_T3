@@ -82,6 +82,7 @@ import Migration0065 from "./Migrations/057_ScheduledTaskWebhooks.ts";
 import Migration0066 from "./Migrations/058_WebhookRelayDeliveries.ts";
 import Migration0067 from "./Migrations/067_EngineeringFactory.ts";
 import Migration0068 from "./Migrations/068_FactoryBoundaries.ts";
+import Migration0069 from "./Migrations/069_FactoryObservation.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -164,6 +165,7 @@ export const migrationEntries = [
   [66, "WebhookRelayDeliveries", Migration0066],
   [67, "EngineeringFactory", Migration0067],
   [68, "FactoryBoundaries", Migration0068],
+  [69, "FactoryObservation", Migration0069],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

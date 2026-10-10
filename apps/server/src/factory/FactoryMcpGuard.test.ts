@@ -22,6 +22,7 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
@@ -126,16 +127,19 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
     yield* seed("web", managerId, leadId, assignmentId);
     yield* seed("api", ThreadId.make("manager-api"), ThreadId.make("lead-api"), otherAssignmentId);
     const pending = yield* store.pending;
-    yield* Effect.forEach(pending, (operation) =>
-      store.finishEffect({
-        id: operation.id,
-        command: {
-          type: "thread.launch.recorded",
-          commandId: CommandId.make(`${operation.id}:recorded`),
-          threadId: operation.intent.threadId,
-        },
-        now,
-      }),
+    yield* Effect.forEach(
+      pending.filter((operation) => operation.intent.type === "thread.launch"),
+      (operation) =>
+        store.finishEffect({
+          id: operation.id,
+          command: {
+            type: "thread.launch.recorded",
+            commandId: CommandId.make(`${operation.id}:recorded`),
+            threadId:
+              operation.intent.type === "thread.launch" ? operation.intent.threadId : leadId,
+          },
+          now,
+        }),
     );
     const flags = { hostCalls: 0, missingProfile: false, unavailableStore: false };
     const shells = new Map<ThreadId, OrchestrationV2ThreadShell>([
@@ -173,8 +177,13 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>) =>
         },
       ],
     ]);
+    for (const [id, shell] of shells)
+      shells.set(id, { ...shell, projectId: ProjectId.make("web") });
     const external = Layer.mergeAll(
       boundaryUnavailable,
+      Layer.mock(ProjectionStore.ProjectionStoreV2)({
+        getThreadShell: (id) => Effect.sync(() => shells.get(id) ?? null),
+      }),
       Layer.succeed(FactoryStore.FactoryStore, {
         ...store,
         snapshot: Effect.suspend(() =>

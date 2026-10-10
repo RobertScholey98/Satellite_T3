@@ -2,6 +2,7 @@ import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
+  FactoryError,
   MessageId,
   NodeId,
   ProviderSessionId,
@@ -38,6 +39,7 @@ import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import type { FactoryExecutionProfile } from "../factory/FactoryExecution.ts";
+import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -174,6 +176,10 @@ function makeLocalCommandHarness(input: {
   readonly writeFailure?: unknown;
   /** Loads the thread and starts the run, then fails every later state read. */
   readonly failReadsAfterRunning?: boolean;
+  readonly factoryDirection?: FactoryControlAccess["Service"]["assertDirection"];
+  readonly senderThreadId?: ThreadId;
+  readonly beforeProviderThreadLoaded?: () => void;
+  readonly startExecution?: RunExecutionService.RunExecutionServiceV2Shape["startRootRun"];
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -234,6 +240,7 @@ function makeLocalCommandHarness(input: {
     attachments: [],
     streaming: false,
     createdBy: "user",
+    ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
     creationSource: "web",
     createdAt: now,
     updatedAt: now,
@@ -399,6 +406,7 @@ function makeLocalCommandHarness(input: {
       ),
     ensureThread: () => Effect.succeed(providerThread),
   };
+  const nativeStart = vi.fn(() => Effect.void);
   const open = vi.fn(() =>
     input.interruptOpen === true
       ? Effect.interrupt
@@ -420,7 +428,7 @@ function makeLocalCommandHarness(input: {
                   ),
                 ),
               )
-            : input.failReadsAfterRunning === true
+            : input.failReadsAfterRunning === true || input.startExecution !== undefined
               ? Effect.succeed({
                   driver: providerThread.driver,
                   providerSession: {
@@ -435,16 +443,22 @@ function makeLocalCommandHarness(input: {
                     updatedAt: now,
                     lastError: null,
                   },
-                  ensureThread: () => Effect.succeed(providerThread),
+                  ensureThread: () =>
+                    Effect.sync(() => {
+                      input.beforeProviderThreadLoaded?.();
+                      return providerThread;
+                    }),
+                  startTurn: nativeStart,
                 } as never)
               : Effect.die("A local command must not open a native session."),
   );
-  const startRootRun = vi.fn<
-    (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
-  >(() =>
-    input.failReadsAfterRunning === true
-      ? Effect.void
-      : Effect.die("A local command must not start a native turn."),
+  const startRootRun = vi.fn<RunExecutionService.RunExecutionServiceV2Shape["startRootRun"]>(
+    (execution) =>
+      input.startExecution !== undefined
+        ? input.startExecution(execution)
+        : input.failReadsAfterRunning === true
+          ? Effect.void
+          : Effect.die("A local command must not start a native turn."),
   );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
@@ -541,11 +555,17 @@ function makeLocalCommandHarness(input: {
                 : { factoryExecution: input.factoryExecution }),
             }),
         }),
+        input.factoryDirection === undefined
+          ? Layer.empty
+          : Layer.mock(FactoryControlAccess)({
+              assertDirection: input.factoryDirection,
+            }),
       ),
     ),
   );
   return {
     open,
+    nativeStart,
     writeIfRunCurrent,
     startRootRun,
     tryHandlePromptCommand,
@@ -566,6 +586,114 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+const startProviderFor = (execution: RunExecutionService.RunExecutionServiceV2StartRootRunInput) =>
+  execution.session.startTurn({
+    appThread: execution.appThread,
+    threadId: execution.run.threadId,
+    runId: execution.run.id,
+    runOrdinal: execution.run.ordinal,
+    providerTurnOrdinal: execution.providerTurnOrdinal,
+    attemptId: execution.attemptId,
+    rootNodeId: execution.rootNode.id,
+    providerThread: execution.providerThread,
+    message: execution.message,
+    modelSelection: execution.modelSelection,
+    runtimePolicy: execution.runtimePolicy,
+  });
+
+effectIt.effect(
+  "holds a parent-directed turn before opening a provider while allowing direct human guidance",
+  () =>
+    Effect.gen(function* () {
+      const parent = ThreadId.make("factory-parent");
+      const factoryDirection: FactoryControlAccess["Service"]["assertDirection"] = (input) =>
+        input.senderThreadId === parent
+          ? Effect.fail(new FactoryError({ code: "permission-denied" }))
+          : Effect.void;
+      const held = makeLocalCommandHarness({
+        text: "Parent instruction",
+        senderThreadId: parent,
+        factoryDirection,
+      });
+      yield* held.start;
+      expect(held.open).not.toHaveBeenCalled();
+      expect(held.projection().runs.at(-1)?.status).toBe("queued");
+      expect(held.projection().runs.at(-1)?.queueHeld).toBe(false);
+      expect(held.projection().attempts.at(-1)?.status).toBe("pending");
+      let admitted = false;
+      const human = makeLocalCommandHarness({
+        text: "Human guidance",
+        factoryDirection,
+        startExecution: (execution) =>
+          Effect.gen(function* () {
+            admitted = yield* execution.shouldStartProviderTurn!();
+            if (admitted) yield* startProviderFor(execution);
+          }).pipe(Effect.orDie),
+      });
+      yield* human.start;
+      expect(admitted).toBe(true);
+      expect(human.nativeStart).toHaveBeenCalledOnce();
+      expect(human.projection().runs.at(-1)?.status).toBe("running");
+    }),
+);
+
+effectIt.effect("preserves the same queued run when takeover arrives during provider setup", () =>
+  Effect.gen(function* () {
+    let blocked = false;
+    let admitted = true;
+    const harness = makeLocalCommandHarness({
+      text: "Parent instruction",
+      senderThreadId: ThreadId.make("factory-parent"),
+      factoryDirection: () =>
+        blocked ? Effect.fail(new FactoryError({ code: "permission-denied" })) : Effect.void,
+      beforeProviderThreadLoaded: () => {
+        blocked = true;
+      },
+      startExecution: (execution) =>
+        Effect.gen(function* () {
+          admitted = yield* execution.shouldStartProviderTurn!();
+        }).pipe(Effect.orDie),
+    });
+    const original = harness.projection().runs.at(-1)!;
+    yield* harness.start;
+    expect(admitted).toBe(false);
+    expect(harness.nativeStart).not.toHaveBeenCalled();
+    const held = harness.projection().runs.at(-1)!;
+    expect(held.id).toBe(original.id);
+    expect(held.userMessageId).toBe(original.userMessageId);
+    expect(held.activeAttemptId).toBe(original.activeAttemptId);
+    expect(held.status).toBe("queued");
+    expect(held.startedAt).toBeNull();
+    expect(harness.projection().nodes.at(-1)?.status).toBe("pending");
+  }),
+);
+
+effectIt.effect("checks again at provider delivery after the last run-start check", () =>
+  Effect.gen(function* () {
+    let blocked = false;
+    let rejected = false;
+    const harness = makeLocalCommandHarness({
+      text: "Parent instruction",
+      senderThreadId: ThreadId.make("factory-parent"),
+      factoryDirection: () =>
+        blocked ? Effect.fail(new FactoryError({ code: "permission-denied" })) : Effect.void,
+      startExecution: (execution) =>
+        Effect.gen(function* () {
+          expect(yield* execution.shouldStartProviderTurn!()).toBe(true);
+          blocked = true;
+          const error = yield* startProviderFor(execution).pipe(Effect.flip);
+          rejected = error._tag === "ProviderAdapterTurnStartError";
+          expect(yield* execution.shouldFinalizeRun!()).toBe(false);
+        }).pipe(Effect.orDie),
+    });
+    yield* harness.start;
+    expect(rejected).toBe(true);
+    expect(harness.nativeStart).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("queued");
+    expect(harness.projection().runs.at(-1)?.completedAt).toBeNull();
+  }),
+);
 
 effectIt.effect("blocks a stale host context before opening a confined provider session", () =>
   Effect.gen(function* () {

@@ -173,7 +173,7 @@ const scenario = <A, E, R>(
               capture: options?.capture ?? ((input) => Effect.succeed(source(input.threadId))),
               validateCurrent: () => Effect.void,
             }),
-            Layer.succeed(FactoryHandover, { stop: options?.stop ?? (() => Effect.void) }),
+            Layer.mock(FactoryHandover)({ stop: options?.stop ?? (() => Effect.void) }),
           ),
         ),
       ),

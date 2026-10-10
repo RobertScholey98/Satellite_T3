@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  FactoryError,
   EnvironmentId,
   NodeId,
   type OrchestrationV2ThreadShell,
@@ -40,6 +41,7 @@ import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { FactoryExecution } from "../factory/FactoryExecution.ts";
+import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
 
 describe("OrchestratorMcpService", () => {
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
@@ -587,6 +589,7 @@ describe("OrchestratorMcpService", () => {
    */
   const cancelOverRaisedGrandchild = (child: {
     readonly deleted: boolean;
+    readonly takeover?: "child" | "grandchild";
     /** The grandchild passes the check, and its user raises it before the stop reaches it. */
     readonly raisedDuringStop?: boolean;
   }) =>
@@ -655,7 +658,9 @@ describe("OrchestratorMcpService", () => {
           // to full access.
           getThreadShell: (threadId) =>
             Effect.succeed(
-              threadId === grandchildThreadId && child.raisedDuringStop !== true
+              threadId === grandchildThreadId &&
+                child.raisedDuringStop !== true &&
+                child.takeover === undefined
                 ? liveThreadShell(threadId)
                 : threadId === childThreadId && child.deleted
                   ? null
@@ -696,6 +701,22 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        child.takeover === undefined
+          ? Layer.empty
+          : Layer.mock(FactoryControlAccess)({
+              assertDirection: (input) => {
+                assert.strictEqual(input.senderThreadId, parentThreadId);
+                return input.threadId ===
+                  (child.takeover === "child" ? childThreadId : grandchildThreadId)
+                  ? Effect.fail(
+                      new FactoryError({
+                        code: "permission-denied",
+                        detail: "The user has taken over this thread.",
+                      }),
+                    )
+                  : Effect.void;
+              },
+            }),
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-grandchild"),
@@ -730,6 +751,18 @@ describe("OrchestratorMcpService", () => {
         dispatched: [],
         stoppedBelow: false,
       });
+    }),
+  );
+
+  it.effect("refuses parent cancellation before stopping a taken-over child or descendant", () =>
+    Effect.gen(function* () {
+      for (const takeover of ["child", "grandchild"] as const) {
+        assert.deepEqual(yield* cancelOverRaisedGrandchild({ deleted: false, takeover }), {
+          code: "task_not_cancellable",
+          dispatched: [],
+          stoppedBelow: false,
+        });
+      }
     }),
   );
 

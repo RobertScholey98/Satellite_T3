@@ -112,6 +112,8 @@ import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import { FactoryExecution } from "../factory/FactoryExecution.ts";
+import { FactoryControlAccess, factoryDirectionSender } from "../factory/FactoryControlAccess.ts";
+import * as Result from "effect/Result";
 import {
   makeSubagentChildThread,
   subagentResultForRun,
@@ -849,6 +851,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const runtimePolicy = yield* RuntimePolicyV2;
   const factoryExecution = yield* Effect.serviceOption(FactoryExecution);
+  const factoryControls = yield* Effect.serviceOption(FactoryControlAccess);
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
 
@@ -1195,6 +1198,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     });
 
+  const nextAdmittedQueuedRun = (
+    threadId: ThreadId,
+    projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
+  ) =>
+    Effect.gen(function* () {
+      if (Option.isNone(factoryControls)) return nextQueuedRun(projection);
+      for (const candidate of queuedRunsInDeliveryOrder(projection)) {
+        const message = projection.messages.find((entry) => entry.id === candidate.userMessageId);
+        if (message === undefined) return candidate;
+        const admitted = yield* factoryControls.value
+          .assertDirection({
+            threadId,
+            senderThreadId: factoryDirectionSender(message),
+          })
+          .pipe(Effect.result);
+        if (Result.isSuccess(admitted)) return candidate;
+        if (admitted.failure.code !== "permission-denied")
+          return yield* new OrchestratorDispatchError({
+            commandId: CommandId.make(`command:system:start-queued:${candidate.id}`),
+            commandType: "message.dispatch",
+            cause: admitted.failure,
+          });
+      }
+    });
+
   const failQueuedRunStart = (threadId: ThreadId, cause: unknown) =>
     Effect.gen(function* () {
       const projection = yield* projectionStore.getThreadRecords(
@@ -1202,7 +1230,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ["runs", "nodes", "attempts", "providerThreads", "turnItems", "messages"],
         { turnItemTypes: [], messageRoles: ["user"] },
       );
-      const queuedRun = nextQueuedRun(projection);
+      const queuedRun = yield* nextAdmittedQueuedRun(threadId, projection);
       if (queuedRun === undefined) return;
       const now = yield* DateTime.now;
       const rootNode = projection.nodes.find((node) => node.id === queuedRun.rootNodeId);
@@ -1330,7 +1358,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (usageLimitBlockedRun(projection.runs, projection.turnItems, sessionError) !== null) {
         return;
       }
-      const queuedRun = nextQueuedRun(projection);
+      const queuedRun = yield* nextAdmittedQueuedRun(threadId, projection);
       if (queuedRun === undefined) {
         return;
       }
@@ -1408,6 +1436,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const commandId = CommandId.make(`command:system:start-queued:${queuedRun.id}`);
+      if (Option.isSome(factoryControls)) {
+        const admitted = yield* factoryControls.value
+          .assertDirection({
+            threadId,
+            senderThreadId: factoryDirectionSender(queuedMessage),
+          })
+          .pipe(Effect.result);
+        if (Result.isFailure(admitted)) {
+          if (admitted.failure.code !== "permission-denied")
+            return yield* new OrchestratorDispatchError({
+              commandId,
+              commandType: "message.dispatch",
+              cause: admitted.failure,
+            });
+          return;
+        }
+      }
       const executionBoundaryId = Option.isSome(factoryExecution)
         ? (yield* factoryExecution.value.runtimePolicyFor(threadId).pipe(
             Effect.mapError(
@@ -4598,6 +4643,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     delegatedFrom?: ThreadId,
   ) =>
     Effect.gen(function* () {
+      if (Option.isSome(factoryControls))
+        yield* factoryControls.value
+          .assertDirection({
+            threadId: command.threadId,
+            senderThreadId: factoryDirectionSender(command),
+            ...(delegatedFrom === undefined ? {} : { pendingParentThreadId: delegatedFrom }),
+          })
+          .pipe(mapDispatchError(command));
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       if (command.manualContinuationOfRunId !== undefined) {
         const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
@@ -7569,6 +7622,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Automatic completion deliveries cannot be promoted to Steer.",
         });
       }
+
+      if (Option.isSome(factoryControls))
+        yield* factoryControls.value
+          .assertDirection({
+            threadId: command.threadId,
+            senderThreadId: factoryDirectionSender(queuedMessage),
+          })
+          .pipe(mapDispatchError(command));
 
       const now = yield* DateTime.now;
       const emitEvent = emit(events, command);
@@ -10642,7 +10703,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
         }
         const now = yield* DateTime.now;
-        const queued = projection.runs.filter((run) => run.status === "queued");
+        const queued = projection.runs.filter(
+          (run) =>
+            run.status === "queued" &&
+            (command.runIds === undefined || command.runIds.includes(run.id)),
+        );
         for (const run of queued) {
           yield* emit(
             events,

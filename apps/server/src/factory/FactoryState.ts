@@ -17,6 +17,12 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
+import {
+  decideFactoryControls,
+  factoryExecutionBlocked,
+  preserveFactoryManagerPauses,
+  type FactoryControlContext,
+} from "./FactoryControls.ts";
 import { constrainAssignmentPolicy, resolveManagerPolicy } from "./FactoryPolicy.ts";
 import {
   constrainFactoryModelPolicy,
@@ -63,6 +69,8 @@ export const initialFactorySnapshot = (): FactorySnapshot => ({
   managers: [],
   assignments: [],
   boundaries: [],
+  controls: [],
+  guidance: [],
 });
 
 export const effectivePolicy = (
@@ -205,19 +213,23 @@ const reduceModelGrants = (
     };
   });
 
-export function decide(input: {
-  readonly state: FactorySnapshot;
-  readonly actor: FactoryActor;
-  readonly command: FactoryDecisionCommand;
-  readonly now: string;
-  readonly allocation?: FactoryAllocation;
-  readonly qualification?: FactoryDiscoveryQualification;
-  readonly boundary?: FactoryBoundary;
-  readonly verification?: FactoryVerification;
-  readonly humanMessageVerified?: boolean;
-  readonly humanMessageId?: MessageId;
-  readonly handoverVerified?: boolean;
-}): Result.Result<FactoryDecision, FactoryError> {
+export function decide(
+  input: FactoryControlContext & {
+    readonly state: FactorySnapshot;
+    readonly actor: FactoryActor;
+    readonly command: FactoryDecisionCommand;
+    readonly now: string;
+    readonly allocation?: FactoryAllocation;
+    readonly qualification?: FactoryDiscoveryQualification;
+    readonly boundary?: FactoryBoundary;
+    readonly verification?: FactoryVerification;
+    readonly humanMessageVerified?: boolean;
+    readonly humanMessageId?: MessageId;
+    readonly handoverVerified?: boolean;
+  },
+): Result.Result<FactoryDecision, FactoryError> {
+  const controlDecision = decideFactoryControls(input);
+  if (controlDecision !== undefined) return controlDecision;
   const { state, actor, command, now } = input;
   const fail = (code: FactoryError["code"]) => Result.fail(new FactoryError({ code }));
   const accepted = (
@@ -230,12 +242,23 @@ export function decide(input: {
     modelDefaults: FactoryModelPolicy | undefined = state.modelDefaults,
   ): Result.Result<FactoryDecision, FactoryError> => {
     const revision = state.revision + 1;
+    const preserved = preserveFactoryManagerPauses(state, managers);
     return Result.succeed({
       state: {
         ...state,
         revision,
-        managers,
-        assignments,
+        ...preserved,
+        assignments: assignments.map((assignment) => {
+          const previous = state.assignments.find((entry) => entry.id === assignment.id);
+          return previous?.outcome === undefined
+            ? assignment
+            : {
+                ...assignment,
+                outcome: previous.outcome,
+                status: previous.status,
+                wait: previous.wait,
+              };
+        }),
         defaults,
         boundaries,
         ...(modelDefaults === undefined ? {} : { modelDefaults }),
@@ -244,6 +267,41 @@ export function decide(input: {
       effects,
     });
   };
+
+  if (command.type === "assignment.commission" || command.type === "assignment.handover") {
+    const manager = state.managers.find((entry) => entry.id === command.managerId);
+    if (
+      manager?.role === "project" &&
+      factoryExecutionBlocked(state, {
+        threadId: manager.threadId,
+        managerId: manager.id,
+        projectId: manager.projectId,
+        ancestorThreadIds: [],
+      }) !== undefined
+    )
+      return fail("invalid-state");
+  }
+  if (
+    command.type === "assignment.retry" ||
+    command.type === "assignment.file.mutate" ||
+    command.type === "assignment.verify" ||
+    command.type === "onboarding.report"
+  ) {
+    const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
+    if (assignment?.outcome !== undefined) return fail("invalid-state");
+    if (
+      assignment &&
+      command.type !== "onboarding.report" &&
+      factoryExecutionBlocked(state, {
+        threadId: assignment.threadId,
+        managerId: assignment.managerId,
+        projectId: assignment.projectId,
+        assignmentId: assignment.id,
+        ancestorThreadIds: [],
+      }) !== undefined
+    )
+      return fail("invalid-state");
+  }
 
   switch (command.type) {
     case "models.defaults.configure": {
@@ -873,4 +931,5 @@ export function decide(input: {
       );
     }
   }
+  return fail("invalid-state");
 }

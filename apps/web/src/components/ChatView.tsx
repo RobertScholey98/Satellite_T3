@@ -183,6 +183,7 @@ import { IssueDraftFields } from "./work/IssueDraftFields";
 import { unwrapWorkResult } from "./work/commands";
 import { validWorktreeName } from "./work/work.logic";
 import { ThreadIssueLinks } from "./work/ThreadIssueLinks";
+import { FactoryThreadControls } from "./factory/FactoryControls";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
 import { isMacPlatform } from "../lib/utils";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -11566,6 +11567,9 @@ export default function ChatView(props: ChatViewProps) {
         ) : null}
         {!ideaWorkspace && !embeddedDraft && isServerThread ? (
           <ThreadIssueLinks threadRef={routeThreadRef} />
+        ) : null}
+        {!ideaWorkspace && !embeddedDraft && isServerThread ? (
+          <FactoryThreadControls threadRef={routeThreadRef} />
         ) : null}
 
         {/* Main content area with optional plan sidebar */}

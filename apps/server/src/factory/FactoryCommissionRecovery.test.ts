@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -168,6 +169,7 @@ it.effect(
         );
         const runtime = Layer.mergeAll(
           FactoryStore.layer,
+          ProjectionStore.layer,
           ProjectStore.layer,
           ThreadManagement.layer,
         ).pipe(Layer.provideMerge(orchestration), Layer.provideMerge(database));

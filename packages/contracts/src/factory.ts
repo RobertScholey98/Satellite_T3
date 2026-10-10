@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 
 import {
   CommandId,
@@ -17,9 +18,16 @@ import {
   FactoryTaskComplexity,
 } from "./factoryModels.ts";
 import { FactoryStartingSource } from "./factorySources.ts";
-
-export const FactoryAssignmentId = TrimmedNonEmptyString.pipe(Schema.brand("FactoryAssignmentId"));
-export type FactoryAssignmentId = typeof FactoryAssignmentId.Type;
+import {
+  FactoryAssignmentId,
+  FactoryControl,
+  FactoryControlId,
+  FactoryControlCommand,
+  FactoryControlHostCommand,
+  FactoryControlEffectIntent,
+  FactoryGuidance,
+} from "./factoryControls.ts";
+export { FactoryAssignmentId } from "./factoryControls.ts";
 
 export const FactoryWorkflowVersion = Schema.Struct({
   repositoryRoot: TrimmedNonEmptyString,
@@ -237,6 +245,9 @@ export const FactoryAssignment = Schema.Struct({
   origin: Schema.optionalKey(Schema.Literals(["new", "handover"])),
   preparation: Schema.optionalKey(Schema.Literals(["stopping", "capturing", "preparing", "ready"])),
   verification: Schema.optionalKey(FactoryVerification),
+  outcome: Schema.optionalKey(
+    Schema.Struct({ kind: Schema.Literal("cancelled"), controlId: FactoryControlId }),
+  ),
   authorization: Schema.optionalKey(
     Schema.Union([
       Schema.Struct({ kind: Schema.Literal("human"), commandId: CommandId }),
@@ -269,6 +280,8 @@ export const FactorySnapshot = Schema.Struct({
   managers: Schema.Array(FactoryManager),
   assignments: Schema.Array(FactoryAssignment),
   boundaries: Schema.Array(FactoryBoundary),
+  controls: Schema.Array(FactoryControl).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  guidance: Schema.Array(FactoryGuidance).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type FactorySnapshot = typeof FactorySnapshot.Type;
 
@@ -278,6 +291,7 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  FactoryControlCommand,
   Schema.Struct({
     type: Schema.Literal("models.defaults.configure"),
     commandId: CommandId,
@@ -375,6 +389,7 @@ export const FactoryDispatchInput = Schema.Struct({ command: FactoryCommand });
 export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
+  FactoryControlHostCommand,
   Schema.Struct({
     type: Schema.Literal("assignment.preparation.recorded"),
     commandId: CommandId,
@@ -433,6 +448,7 @@ export const FactoryThreadLaunchIntent = Schema.Struct({
 });
 export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
 export const FactoryEffectIntent = Schema.Union([
+  FactoryControlEffectIntent,
   FactoryThreadLaunchIntent,
   Schema.Struct({
     type: Schema.Literal("assignment.prepare"),
@@ -446,6 +462,7 @@ export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 
 export const FactoryCommandResult = Schema.Struct({
   revision: NonNegativeInt,
+  controlId: Schema.optionalKey(FactoryControlId),
   managerId: Schema.optionalKey(ThreadId),
   assignmentId: Schema.optionalKey(FactoryAssignmentId),
   verification: Schema.optionalKey(FactoryVerification),

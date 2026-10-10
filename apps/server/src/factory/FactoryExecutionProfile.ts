@@ -28,6 +28,12 @@ export const FactoryExecutionProfile = Schema.Struct({
 });
 export type FactoryExecutionProfile = typeof FactoryExecutionProfile.Type;
 
+export const FactoryExecutionSuspension = Schema.Struct({
+  generation: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  state: Schema.Literals(["suspended", "resumed"]),
+});
+export type FactoryExecutionSuspension = typeof FactoryExecutionSuspension.Type;
+
 export function factoryContainerEndpoint(endpoint: string): string {
   const url = new URL(endpoint);
   if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {

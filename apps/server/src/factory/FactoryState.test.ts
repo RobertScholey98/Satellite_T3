@@ -351,8 +351,8 @@ describe("factory onboarding decisions", () => {
     assert.equal(retried.state.managers.length, 1);
     assert.equal(retried.state.assignments.length, 1);
     assert.deepEqual(
-      retried.effects.map((effect) => effect.threadId),
-      ["thread-manager-web", "thread-onboarding-web"],
+      retried.effects.map((effect) => ("threadId" in effect ? effect.threadId : undefined)),
+      [ThreadId.make("thread-manager-web"), ThreadId.make("thread-onboarding-web")],
     );
     assert.equal(retried.state.assignments[0]?.id, "assignment-onboarding-web");
     assert.equal(retried.state.managers[0]?.status, "onboarding");
@@ -599,8 +599,8 @@ describe("factory onboarding decisions", () => {
     const effectJson = encodeEffects(decision.effects);
     const effects = decodeEffects(effectJson);
     assert.deepEqual(
-      effects.map((effect) => effect.threadId),
-      ["thread-manager-web", "thread-onboarding-web"],
+      effects.map((effect) => ("threadId" in effect ? effect.threadId : undefined)),
+      [ThreadId.make("thread-manager-web"), ThreadId.make("thread-onboarding-web")],
     );
   });
 });

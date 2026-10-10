@@ -3003,6 +3003,7 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("queue.resume"),
     commandId: CommandId,
     threadId: ThreadId,
+    runIds: Schema.optionalKey(Schema.Array(RunId)),
   }),
   Schema.Struct({
     type: Schema.Literal("queued-run.reorder"),

@@ -52,6 +52,30 @@ its running team before capturing the current work, including staged and untrack
 files. The existing conversation, branch, worktree, and PR links stay attached.
 Protected-control changes need a separately authorized rule-change assignment.
 
+### Guide, pause, or stop managed work
+
+Messages to an implementation lead or its app-owned workers are guidance. The
+lead receives a reference to guidance you give its workers. Scope and priority
+decisions can be escalated to the engineering manager without changing the
+assignment's permissions.
+
+Choose **Take over thread** to suspend parent direction while you work directly
+with that thread. Its tools and current scope stay available. **Hand back thread**
+restores parent coordination and eligible queued messages. Existing manual queue
+holds still require the ordinary queue resume action.
+
+Open **Controls** beside the manager, or **Manager and project controls** in a
+managed conversation. **Pause manager** stops manager coordination while existing
+teams continue within their grants. **Pause project** stops the manager and all its
+managed teams. Both preserve edited work. Resume releases only the selected pause;
+other pauses, takeovers, permission restrictions, and approval waits remain active.
+
+**Cancel assignment** starts stopping its dedicated team immediately. Once stopping
+is confirmed, provide a reason for its retrospective. Dismissing that prompt leaves
+**Add reason** available in the conversation and assignment details. If stopping
+fails, the assignment remains blocked and offers a retry. Control state and missing
+reasons survive restarting the environment.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

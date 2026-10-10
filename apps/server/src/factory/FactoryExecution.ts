@@ -24,6 +24,7 @@ import { ProcessRunner } from "../processRunner.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import * as FactoryModelAdmission from "./FactoryModelAdmission.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import {
   FACTORY_CODEX_IMAGE,
   factoryDockerArguments,
@@ -80,6 +81,7 @@ const make = Effect.gen(function* () {
   const providers = yield* ProviderInstanceRegistry;
   const store = yield* FactoryStore;
   const models = yield* FactoryModelAdmission.FactoryModelAdmission;
+  const controls = yield* FactoryControlAccess.FactoryControlAccess;
   const sources = yield* FactorySource;
   const root = path.join(config.stateDir, "factory", "execution");
 
@@ -273,6 +275,7 @@ const make = Effect.gen(function* () {
 
   const runtimePolicyFor = Effect.fn("FactoryExecution.runtimePolicyFor")(
     function* (threadId: ThreadId, pendingParentThreadId?: ThreadId) {
+      yield* controls.assertExecution(threadId, pendingParentThreadId);
       const state = yield* store.snapshot;
       let current: ThreadId | null = threadId;
       const visited = new Set<ThreadId>();
@@ -315,6 +318,7 @@ const make = Effect.gen(function* () {
         .pipe(Effect.flatMap(decodeProfile));
       yield* assertFactoryProfileActive(profile).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
       );
       if (
         assignment.startingSource !== undefined &&
@@ -352,4 +356,5 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(FactoryExecution, make).pipe(
   Layer.provide(FactoryModelAdmission.layer),
+  Layer.provideMerge(FactoryControlAccess.layer),
 );

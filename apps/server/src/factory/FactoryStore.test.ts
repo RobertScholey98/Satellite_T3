@@ -18,6 +18,7 @@ import * as Result from "effect/Result";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
+import observationMigration from "../persistence/Migrations/069_FactoryObservation.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
@@ -40,7 +41,7 @@ const createInput = {
 };
 
 const openStore = FactoryStore.FactoryStore.pipe(Effect.provide(Layer.fresh(FactoryStore.layer)));
-const setup = migration.pipe(Effect.andThen(openStore));
+const setup = migration.pipe(Effect.andThen(observationMigration), Effect.andThen(openStore));
 const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 const inFile = <A, E>(filename: string, effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
@@ -63,6 +64,48 @@ function assertFailure(result: Result.Result<unknown, FactoryError>, code: Facto
 }
 
 describe("FactoryStore", () => {
+  it.effect(
+    "advances observation only with the durable decision and ignores replayed sequences",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const store = yield* setup;
+          yield* store.commit(createInput);
+          const command = {
+            type: "thread.launch.started" as const,
+            commandId: CommandId.make("observed-launch"),
+            threadId: managerId,
+          };
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`CREATE TRIGGER reject_observation BEFORE INSERT ON factory_observers
+        BEGIN SELECT RAISE(ABORT, 'injected cursor failure'); END`;
+          assertFailure(
+            yield* store.observe({ sequence: 10, command, now }).pipe(Effect.result),
+            "persistence",
+          );
+          assert.equal(yield* store.observationCursor, 0);
+          assert.equal((yield* store.snapshot).revision, 1);
+          assert.equal(yield* store.findReceipt({ actor: { kind: "system" }, command }), undefined);
+          yield* sql`DROP TRIGGER reject_observation`;
+          yield* store.observe({ sequence: 10, command, now });
+          const saved = yield* store.snapshot;
+          assert.equal(yield* store.observationCursor, 10);
+          yield* store.observe({
+            sequence: 10,
+            command: { ...command, commandId: CommandId.make("duplicate-observation") },
+            now,
+          });
+          yield* store.observe({ sequence: 9, now });
+          const reopened = yield* openStore;
+          assert.deepEqual(yield* reopened.snapshot, saved);
+          assert.equal(yield* reopened.observationCursor, 10);
+          yield* reopened.observe({ sequence: 12, now });
+          assert.equal(yield* reopened.observationCursor, 12);
+          assert.deepEqual(yield* reopened.snapshot, saved);
+        }),
+      ),
+  );
+
   it.effect("replays a command without changing identities, revision, or launch intent", () =>
     run(
       Effect.gen(function* () {
@@ -95,10 +138,13 @@ describe("FactoryStore", () => {
         );
         const pending = yield* store.pending;
         assert.deepEqual(
-          pending.map((effect) => ({ id: effect.id, threadId: effect.intent.threadId })),
+          pending.map((effect) => ({
+            id: effect.id,
+            threadId: "threadId" in effect.intent ? effect.intent.threadId : undefined,
+          })),
           [
-            { id: "create-web:0", threadId: "manager-web" },
-            { id: "create-web:1", threadId: "onboarding-web" },
+            { id: "create-web:0", threadId: ThreadId.make("manager-web") },
+            { id: "create-web:1", threadId: ThreadId.make("onboarding-web") },
           ],
         );
       }),
@@ -388,7 +434,7 @@ describe("FactoryStore", () => {
             assert.deepEqual(
               (yield* store.pending).map((effect) => ({
                 id: effect.id,
-                threadId: effect.intent.threadId,
+                threadId: "threadId" in effect.intent ? effect.intent.threadId : undefined,
                 profileId:
                   effect.intent.type === "thread.launch" ? effect.intent.profileId : undefined,
               })),
