@@ -32,6 +32,11 @@ export const PinnedGitHubCredential = Context.Reference<{
   readonly credentialFingerprint: string;
 } | null>("t3/sourceControl/PinnedGitHubCredential", { defaultValue: () => null });
 
+export const BeforeGitHubMutation = Context.Reference<Effect.Effect<
+  void,
+  GitHubApiRequestError
+> | null>("t3/sourceControl/BeforeGitHubMutation", { defaultValue: () => null });
+
 /**
  * Set by interactive callers (a user's read or write, not a background sweep). Requests made
  * under it may spend the GraphQL reserve and go through a rate-limit pause: a user acting on a
@@ -418,6 +423,10 @@ export const make = Effect.gen(function* () {
       // One deadline covers the headers and the body: a host that answers headers and then stalls
       // must not hold a slot of the shared gate for undici's own five-minute body timeout.
       const { response, collected } = yield* Effect.gen(function* () {
+        if (["POST", "PUT", "PATCH", "DELETE"].includes(input.request.method)) {
+          const admitted = yield* BeforeGitHubMutation;
+          if (admitted) yield* admitted;
+        }
         const response: HttpClientResponse.HttpClientResponse = yield* httpClient
           .execute(
             input.request.pipe(

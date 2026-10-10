@@ -2007,6 +2007,9 @@ export const layerWithOptions = (
                     ? new Map()
                     : new Map([[input.threadId, mcpCredentialId]]),
                 supportsMultipleProviderThreads:
+                  // Managed boundaries own the whole provider process, even when
+                  // the provider ordinarily supports sharing one across threads.
+                  input.runtimePolicy.factoryExecution === undefined &&
                   runtime.providerSession.capabilities.sessions
                     .supportsMultipleProviderThreadsPerSession,
                 runtime,

@@ -17,6 +17,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
+import { decideFactoryDelivery, type FactoryDeliveryContext } from "./FactoryDelivery.ts";
 import {
   decideFactoryControls,
   factoryExecutionBlocked,
@@ -79,6 +80,9 @@ export const initialFactorySnapshot = (): FactorySnapshot => ({
   guidance: [],
   dependencies: [],
   auxiliaryThreads: [],
+  mergeRules: [],
+  previewConfigurations: [],
+  previewPublicationPolicies: [],
 });
 
 export const effectivePolicy = (
@@ -223,6 +227,7 @@ const reduceModelGrants = (
 
 export function decide(
   input: FactoryControlContext &
+    FactoryDeliveryContext &
     FactoryOversightContext & {
       readonly state: FactorySnapshot;
       readonly actor: FactoryActor;
@@ -241,6 +246,8 @@ export function decide(
   if (controlDecision !== undefined) return controlDecision;
   const oversightDecision = decideFactoryOversight(input);
   if (oversightDecision !== undefined) return oversightDecision;
+  const deliveryDecision = decideFactoryDelivery(input);
+  if (deliveryDecision !== undefined) return deliveryDecision;
   const { state, actor, command, now } = input;
   const fail = (code: FactoryError["code"]) => Result.fail(new FactoryError({ code }));
   const accepted = (
@@ -554,6 +561,8 @@ export function decide(
         assignment.kind === "onboarding" ||
         assignment.preparation !== "ready" ||
         assignment.status === "complete" ||
+        (assignment.delivery?.flow !== undefined &&
+          assignment.delivery.flow.status !== "released") ||
         assignment.grant?.epoch !== command.expectedEpoch
       )
         return fail("invalid-state");

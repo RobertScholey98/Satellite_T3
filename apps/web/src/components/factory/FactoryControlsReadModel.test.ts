@@ -78,6 +78,9 @@ const initial: FactorySnapshot = {
   guidance: [],
   dependencies: [],
   auxiliaryThreads: [],
+  mergeRules: [],
+  previewConfigurations: [],
+  previewPublicationPolicies: [],
 };
 const thread = (
   id: string,
@@ -106,6 +109,39 @@ const cancellation: Extract<FactoryControl, { kind: "cancellation" }> = {
 const decodeSnapshot = Schema.decodeUnknownSync(FactorySnapshot);
 
 describe("factory thread controls", () => {
+  it("shows managed controls for independent reviewers and retains their lead ancestry", () => {
+    const reviewer = ThreadId.make("reviewer");
+    const state: FactorySnapshot = {
+      ...initial,
+      auxiliaryThreads: [
+        {
+          threadId: reviewer,
+          assignmentId: assignment.id,
+          managerId,
+          projectId,
+          kind: "delivery-review",
+          incidentId: "review",
+          revisionId: "revision",
+          cycle: 0,
+          status: "running",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+    const member = factoryThreadMembership(state, { environmentId, threadId: reviewer }, [
+      thread("reviewer"),
+    ]);
+    expect(member?.assignment?.id).toBe(assignment.id);
+    expect(member?.auxiliary?.kind).toBe("delivery-review");
+    expect(member?.ancestorThreadIds).toEqual([leadId]);
+    expect(
+      factoryThreadMembership(state, { environmentId, threadId: reviewer }, [
+        thread("reviewer", null, environmentId, ProjectId.make("foreign")),
+      ]),
+    ).toBeNull();
+  });
   it("resolves nested app workers to their assignment and preserves ordinary threads", () => {
     const roster = [
       thread("manager"),

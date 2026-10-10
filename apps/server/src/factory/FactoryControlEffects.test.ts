@@ -42,6 +42,8 @@ import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { FactorySource } from "./FactorySource.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
+import { reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
+import { FactoryPreviewService } from "./FactoryPreviewService.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("controls-project");
@@ -161,6 +163,7 @@ const scenario = <A, E, R>(
     stop?: FactoryBoundaryExecution["Service"]["stop"];
     prepare?: FactoryBoundaryExecution["Service"]["prepare"];
     verify?: FactoryBoundaryExecution["Service"]["verify"];
+    previewReconcile?: Effect.Effect<void, FactoryError>;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -203,44 +206,51 @@ const scenario = <A, E, R>(
           VALUES(${`persisted-delivery:${index}`},'persisted-delivery',${encodeIntent(intent)},'pending',${now})`;
     }
     return yield* body.pipe(
-      Effect.provide(FactoryService.layer),
       Effect.provide(
-        Layer.mergeAll(
-          Layer.mock(FactoryExecution)({
-            qualify: () => Effect.succeed(qualification),
-            assertSelectionFor: () => Effect.void,
-            assertDelegationFor: () => Effect.void,
-            runtimePolicyFor: () => Effect.succeed(undefined),
-          }),
-          Layer.mock(FactoryBoundaryExecution)({
-            suspend: options.suspend ?? (() => Effect.void),
-            resume: options.resume ?? (() => Effect.void),
-            stop: options.stop ?? (() => Effect.void),
-            prepare:
-              options.prepare ?? (() => Effect.die("Controls must not prepare another volume.")),
-            verify: options.verify ?? (() => Effect.die("Unexpected verification.")),
-          }),
-          Layer.mock(FactoryHandover)({
-            stopTeam:
-              options.stopTeam ??
-              ((input) =>
-                threads
-                  .dispatch({
-                    type: "thread.stop",
-                    threadId: input.threadId,
-                    commandId: CommandId.make(`${input.commandId}:${input.threadId}`),
-                  })
-                  .pipe(
-                    Effect.asVoid,
-                    Effect.mapError(
-                      (cause) => new FactoryError({ code: "execution-unavailable", cause }),
-                    ),
-                  )),
-          }),
-          Layer.mock(FactorySource)({
-            capture: () => Effect.succeed(source),
-            validateCurrent: () => Effect.void,
-          }),
+        FactoryService.layer.pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(
+              options.previewReconcile === undefined
+                ? Layer.empty
+                : Layer.mock(FactoryPreviewService)({ reconcile: options.previewReconcile }),
+              Layer.mock(FactoryExecution)({
+                qualify: () => Effect.succeed(qualification),
+                assertSelectionFor: () => Effect.void,
+                assertDelegationFor: () => Effect.void,
+                runtimePolicyFor: () => Effect.succeed(undefined),
+              }),
+              Layer.mock(FactoryBoundaryExecution)({
+                suspend: options.suspend ?? (() => Effect.void),
+                resume: options.resume ?? (() => Effect.void),
+                stop: options.stop ?? (() => Effect.void),
+                prepare:
+                  options.prepare ??
+                  (() => Effect.die("Controls must not prepare another volume.")),
+                verify: options.verify ?? (() => Effect.die("Unexpected verification.")),
+              }),
+              Layer.mock(FactoryHandover)({
+                stopTeam:
+                  options.stopTeam ??
+                  ((input) =>
+                    threads
+                      .dispatch({
+                        type: "thread.stop",
+                        threadId: input.threadId,
+                        commandId: CommandId.make(`${input.commandId}:${input.threadId}`),
+                      })
+                      .pipe(
+                        Effect.asVoid,
+                        Effect.mapError(
+                          (cause) => new FactoryError({ code: "execution-unavailable", cause }),
+                        ),
+                      )),
+              }),
+              Layer.mock(FactorySource)({
+                capture: () => Effect.succeed(source),
+                validateCurrent: () => Effect.void,
+              }),
+            ),
+          ),
         ),
       ),
     );
@@ -328,6 +338,45 @@ it.effect("manager pause stops its own thread while an implementation team keeps
       assert.equal(state.assignments[0]?.wait, null);
     }),
   ),
+);
+
+it.effect(
+  "preview cleanup failure cannot prevent a durable project pause from stopping its team",
+  () =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        yield* send(managerId);
+        yield* send(leadId);
+        const command = {
+          type: "project.pause" as const,
+          commandId: CommandId.make("pause-despite-preview"),
+          projectId,
+        };
+        const receipt = yield* factory.dispatch(human, command);
+        yield* factory.drain;
+        const current = yield* factory.snapshot({});
+        const pause = current.controls.find((entry) => entry.kind === "project-pause");
+        assert.equal(pause?.kind === "project-pause" ? pause.stop.status : null, "confirmed");
+        for (const threadId of [managerId, leadId])
+          assert.equal(
+            (yield* projections.getThreadProjection(threadId)).runs.at(-1)?.status,
+            "interrupted",
+          );
+        assert.deepStrictEqual(yield* factory.dispatch(human, command), receipt);
+        yield* factory.drain;
+        assert.deepStrictEqual((yield* factory.snapshot({})).controls, current.controls);
+      }),
+      {
+        previewReconcile: Effect.fail(
+          new FactoryError({
+            code: "execution-unavailable",
+            detail: "Review browser failed to close.",
+          }),
+        ),
+      },
+    ),
 );
 
 it.effect(
@@ -1095,6 +1144,46 @@ const deliveryCases: readonly {
   dependency?: FactoryDependency;
   expected: "completed" | "pending" | "superseded";
 }[] = [
+  ...(
+    [
+      null,
+      { kind: "human-decision", reason: "Choose a payment provider" },
+      dependencyWait,
+      {
+        kind: "flow-review",
+        holdId: "other-flow",
+        artifactId: "other-artifact",
+        reason: "A different flow is pending",
+      },
+    ] satisfies FactoryAssignment["wait"][]
+  ).map((wait) => ({
+    name: `flow release ${wait === null ? "resumes without a second decision" : `preserves an independent ${wait.kind} wait`}`,
+    assignment: {
+      ...assignment,
+      wait,
+      delivery: {
+        revisions: [],
+        readiness: [],
+        retroFindings: [],
+        directionHeld: false,
+        flow: {
+          holdId: "approved-flow",
+          status: "released" as const,
+          artifactId: "approved-artifact",
+        },
+      },
+    },
+    intent: {
+      type: "thread.deliver" as const,
+      threadId: leadId,
+      messageId: MessageId.make("released-flow"),
+      kind: "continuation" as const,
+      sourceThreadId: leadId,
+      text: "The exact flow was approved and physically released. Continue the authorized work.",
+      purpose: { kind: "delivery-flow" as const, holdId: "approved-flow" },
+    },
+    expected: wait === null ? ("completed" as const) : ("pending" as const),
+  })),
   {
     name: "checks the current dependency delivery through its matching wait",
     assignment: { ...assignment, wait: dependencyWait },
@@ -1290,6 +1379,177 @@ it.effect.each(controlCases)("purpose-specific delivery respects $kind", (contro
       dependencies: [dependency],
       controls: [control],
       effects: [usabilityIntent, recoveryIntent],
+    },
+  ),
+);
+
+const deliveryReviewerId = ThreadId.make("candidate-reviewer");
+const deliveryReviewId = "review:command";
+const deliveryRevisionId = "revision:command";
+const deliveryPreviewId = "review-preview";
+const reviewWait: FactoryAssignment["wait"] = {
+  kind: "review",
+  reason: "Human review remains pending",
+  ref: { projectId, repository: "owner/repo", number: 20 },
+};
+const reviewNoticeAssignment: FactoryAssignment = {
+  ...assignment,
+  status: "waiting",
+  wait: reviewWait,
+  delivery: {
+    ...reviewedDeliveryFixture().assignments[0]!.delivery!,
+    revisions: reviewedDeliveryFixture().assignments[0]!.delivery!.revisions.map((entry) => ({
+      ...entry,
+      reviews: entry.reviews.map((review) => ({
+        ...review,
+        threadId: deliveryReviewerId,
+        status: "running",
+      })),
+      preview: {
+        instanceId: deliveryPreviewId,
+        configurationId: "preview-config",
+        reviewId: deliveryReviewId,
+        threadId: deliveryReviewerId,
+        status: "ready",
+      },
+    })),
+  },
+};
+const deliveryReviewer: FactoryAuxiliaryThread = {
+  threadId: deliveryReviewerId,
+  assignmentId,
+  managerId,
+  projectId,
+  kind: "delivery-review",
+  incidentId: deliveryReviewId,
+  revisionId: deliveryRevisionId,
+  cycle: 0,
+  status: "running",
+  modelSelection: model,
+  sourceDigest: "digest",
+  qualification,
+  createdAt: now,
+  updatedAt: now,
+};
+const previewNotice: Extract<FactoryEffectIntent, { type: "thread.deliver" }> = {
+  type: "thread.deliver",
+  threadId: deliveryReviewerId,
+  sourceThreadId: leadId,
+  messageId: MessageId.make("preview-ready"),
+  kind: "continuation",
+  text: "The candidate preview is ready.",
+  purpose: {
+    kind: "delivery-review",
+    revisionId: deliveryRevisionId,
+    reviewId: deliveryReviewId,
+    instanceId: deliveryPreviewId,
+  },
+};
+const previewNoticeCases: ReadonlyArray<{
+  name: string;
+  assignment?: FactoryAssignment;
+  auxiliary?: FactoryAuxiliaryThread;
+  intent?: typeof previewNotice;
+  controls?: ReadonlyArray<FactoryControl>;
+  expected: "completed" | "pending" | "superseded";
+}> = [
+  {
+    name: "delivers the exact candidate preview through the lead's review wait",
+    expected: "completed",
+  },
+  {
+    name: "delivers the exact preview failure through the lead's review wait",
+    assignment: {
+      ...reviewNoticeAssignment,
+      delivery: {
+        ...reviewNoticeAssignment.delivery!,
+        revisions: reviewNoticeAssignment.delivery!.revisions.map((entry) => ({
+          ...entry,
+          preview: { ...entry.preview!, status: "failed" },
+        })),
+      },
+    },
+    expected: "completed",
+  },
+  ...(["authority", "human-decision", "recovery"] as const).map((kind) => ({
+    name: `preview readiness cannot bypass a ${kind} wait`,
+    assignment: { ...reviewNoticeAssignment, wait: { kind, reason: "Unrelated prerequisite" } },
+    expected: "pending" as const,
+  })),
+  {
+    name: "preview readiness cannot bypass a dependency wait",
+    assignment: { ...reviewNoticeAssignment, wait: dependencyWait },
+    expected: "pending",
+  },
+  {
+    name: "retires an obsolete preview instance notice",
+    intent: {
+      ...previewNotice,
+      purpose: {
+        kind: "delivery-review",
+        revisionId: deliveryRevisionId,
+        reviewId: deliveryReviewId,
+        instanceId: "old-preview",
+      },
+    },
+    expected: "superseded",
+  },
+  {
+    name: "retires a completed independent reviewer notice",
+    auxiliary: { ...deliveryReviewer, status: "complete" },
+    expected: "superseded",
+  },
+  {
+    name: "retires a notice after the candidate changes",
+    auxiliary: { ...deliveryReviewer, sourceDigest: "old-candidate" },
+    expected: "superseded",
+  },
+  {
+    name: "holds preview direction during project pause",
+    controls: controlCases.filter((entry) => entry.kind === "project-pause"),
+    expected: "pending",
+  },
+  {
+    name: "holds preview direction during cancellation",
+    controls: controlCases.filter((entry) => entry.kind === "cancellation"),
+    expected: "pending",
+  },
+  {
+    name: "holds preview direction while the reviewer is taken over",
+    controls: controlCases
+      .filter((entry) => entry.kind === "takeover")
+      .map((entry) => ({ ...entry, threadId: deliveryReviewerId, parentThreadId: leadId })),
+    expected: "pending",
+  },
+  {
+    name: "continues the team's review while its manager is paused",
+    controls: controlCases.filter((entry) => entry.kind === "manager-pause"),
+    expected: "completed",
+  },
+];
+it.effect.each(previewNoticeCases)("$name", (test) =>
+  scenario(
+    Effect.gen(function* () {
+      const factory = yield* FactoryService.FactoryService;
+      yield* factory.drain;
+      const projection = yield* (yield* ProjectionStore.ProjectionStoreV2).getThreadProjection(
+        deliveryReviewerId,
+      );
+      assert.equal(projection.messages.length, test.expected === "completed" ? 1 : 0);
+      const rows = yield* (yield* SqlClient.SqlClient)<{
+        readonly status: string;
+      }>`SELECT status FROM factory_outbox WHERE effect_id = 'persisted-delivery:0'`;
+      assert.equal(rows[0]?.status, test.expected);
+      assert.deepStrictEqual(
+        (yield* factory.snapshot({})).assignments[0]?.wait,
+        (test.assignment ?? reviewNoticeAssignment).wait,
+      );
+    }),
+    {
+      assignments: [test.assignment ?? reviewNoticeAssignment],
+      auxiliaryThreads: [test.auxiliary ?? deliveryReviewer],
+      effects: [test.intent ?? previewNotice],
+      controls: test.controls ?? [],
     },
   ),
 );

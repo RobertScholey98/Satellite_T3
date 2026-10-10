@@ -60,6 +60,9 @@ export function clientRpcRequiredScopes(
       payload.command.type === "manager.models.configure" ||
       payload.command.type === "assignments.extend-grant" ||
       payload.command.type === "manager.approve-onboarding" ||
+      payload.command.type === "delivery.rules.configure" ||
+      payload.command.type === "delivery.preview.configure" ||
+      payload.command.type === "delivery.preview.publication.configure" ||
       ((payload.command.type === "assignment.commission" ||
         payload.command.type === "assignment.handover") &&
         payload.command.kind === "rule-change")

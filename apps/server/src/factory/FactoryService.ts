@@ -44,6 +44,9 @@ import {
   selectFactoryModel,
 } from "./FactoryModelPolicy.ts";
 import { type FactoryOversightContext } from "./FactoryOversight.ts";
+import { type FactoryDeliveryContext } from "./FactoryDelivery.ts";
+import { FactoryDeliveryEffects } from "./FactoryDeliveryEffects.ts";
+import { FactoryPreviewService } from "./FactoryPreviewService.ts";
 import { ServerActivation, forkParked } from "../serverActivation.ts";
 import { type FactoryControlContext } from "./FactoryControls.ts";
 
@@ -108,6 +111,13 @@ const scopedSnapshot =
           auxiliaryThreads: snapshot.auxiliaryThreads.filter(
             (thread) => thread.projectId === query.projectId,
           ),
+          mergeRules: snapshot.mergeRules.filter((rule) => rule.projectId === query.projectId),
+          previewConfigurations: snapshot.previewConfigurations.filter(
+            (config) => config.projectId === query.projectId,
+          ),
+          previewPublicationPolicies: snapshot.previewPublicationPolicies.filter(
+            (policy) => policy.projectId === query.projectId,
+          ),
         };
 
 const onboardingInstructions = (intent: FactoryThreadLaunchIntent) =>
@@ -138,6 +148,8 @@ export const layer = Layer.effect(
     const reconciliation = yield* FactoryReconciliation.FactoryReconciliation;
     const recoveryReconciliation =
       yield* FactoryRecoveryReconciliation.FactoryRecoveryReconciliation;
+    const deliveryEffects = yield* Effect.serviceOption(FactoryDeliveryEffects);
+    const previews = yield* Effect.serviceOption(FactoryPreviewService);
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -257,6 +269,9 @@ export const layer = Layer.effect(
                     `Approved execution grant: ${renderJson(assignment.grant)}. Existing granted files can be edited normally. For creating, renaming, or deleting files use factory_dispatch assignment.file.mutate with the current grant epoch. Use assignment.verify to run the adopted immutable checks and retain its evidence.`,
                     `Approved exact models: ${renderJson(assignment.modelPolicy)}. Your selected model: ${renderJson(assignment.modelChoice)}. Choose approved models according to task complexity. Native subagent tools are disabled; use delegate_task for your internal team. Every descendant remains inside this assignment's boundary.`,
                     "Raise an out-of-scope dependency or structural problem when discovered. Do not change protected controls without a separately authorized rule-change assignment. The manager coordinates priorities; it does not review your PR.",
+                    "Before implementation, declare concrete UI impact with delivery.impact.declare: journeys, navigation, layout, shared components, classification, and evidence. Changed user flows physically hold implementation. While held, use the read-only planning context to submit a concrete markdown or HTML flow via delivery.flow.submit; wait for the human's digest-bound decision and host release before coding. Flow submission records its own approval wait; do not add an assignment.wait for that same decision. The host resumes you automatically after approval and physical release, or after requested changes so you can revise the proposal.",
+                    "For PR work use the host-owned delivery process: delivery.capture with exact selected paths, commit message, and grant epoch freezes the full publication tree and runs protected checks. delivery.review.request starts an independent ordinary review thread against that immutable tree. Follow its findings; changed work needs a new capture and review. For substantial or major UI, the reviewer must exercise the isolated candidate app and record real journeys and screenshots. The project needs a human-approved preview configuration and screenshot-publication permission.",
+                    "After candidate checks and independent review pass, delivery.publish creates or updates and links the exact PR. delivery.ready reconciles hosting checks and seals the evidence. Wait for the human when requested; discuss corrections directly with them. delivery.merge requests an exact-head conditional merge only when authorized. A queued or unknown hosting response is not a confirmed merge. Use delivery.retry for a visible delivery failure, preserving its reserved operation. Never use generic PR tools to bypass these gates.",
                     "Record meaningful progress using assignment.progress with summary, remainingWork, and evidence references. Before ending a turn with no independent work left, record assignment.wait: dependency with your requested dependency IDs, review with an existing linked open PR, or human-decision with the decision needed. A completed provider turn does not complete the assignment. Use dependency.request for out-of-scope supporting work; approval and commissioning never mean it is delivered. After a host-confirmed delivery wake, report dependency.check-usability against that exact delivery ID and evidence.",
                     "When delivery actually occurs, use assignment.delivery.request: a linked pull-request ref for merged work, or the actual report message ID at the agreed recipient for a non-PR assignment. For a report, first record progress with empty remainingWork and evidence, then send the findings and recommendation to the agreed recipient. The host verifies receipt; do not claim completion from a green check or an opened PR.",
                     "Human review is required unless the delivery grant and project rules explicitly permit autonomous delivery. Major UI changes require human PR approval and useful screenshots. After merge, conduct your internal retro and then a retro with your manager. Creating a follow-up ticket does not authorize its implementation.",
@@ -464,6 +479,7 @@ export const layer = Layer.effect(
               visited.clear();
               yield* controlWorker.enqueue(undefined);
               yield* oversightWorker.enqueue(undefined);
+              yield* deliveryWorker.enqueue(undefined);
             }
           }
         }
@@ -497,6 +513,7 @@ export const layer = Layer.effect(
               visited.clear();
               yield* worker.enqueue(undefined);
               yield* oversightWorker.enqueue(undefined);
+              yield* deliveryWorker.enqueue(undefined);
             }
           }
         }
@@ -533,6 +550,50 @@ export const layer = Layer.effect(
               visited.clear();
               yield* worker.enqueue(undefined);
               yield* controlWorker.enqueue(undefined);
+              yield* deliveryWorker.enqueue(undefined);
+            }
+          }
+        }
+      }),
+    );
+    const deliveryWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        if (Option.isNone(deliveryEffects) && Option.isNone(previews)) return;
+        if (Option.isSome(previews))
+          yield* previews.value.reconcile.pipe(
+            Effect.catch((cause) =>
+              Effect.logError("Factory preview shutdown remains pending", { cause }),
+            ),
+          );
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) => !visited.has(entry.id) && entry.intent.type.startsWith("delivery."),
+          );
+          if (!pending.length) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            const handler =
+              entry.intent.type === "delivery.preview.start" ||
+              entry.intent.type === "delivery.preview.stop"
+                ? previews
+                : deliveryEffects;
+            if (Option.isNone(handler)) continue;
+            yield* handler.value.handle(entry).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory delivery remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* worker.enqueue(undefined);
+              yield* controlWorker.enqueue(undefined);
+              yield* oversightWorker.enqueue(undefined);
             }
           }
         }
@@ -543,6 +604,7 @@ export const layer = Layer.effect(
         worker.enqueue(undefined),
         controlWorker.enqueue(undefined),
         oversightWorker.enqueue(undefined),
+        deliveryWorker.enqueue(undefined),
       ],
       {
         discard: true,
@@ -556,6 +618,7 @@ export const layer = Layer.effect(
         yield* worker.drain;
         yield* controlWorker.drain;
         yield* oversightWorker.drain;
+        yield* deliveryWorker.drain;
         if (progress === workerProgress) return;
       }
     });
@@ -731,7 +794,11 @@ export const layer = Layer.effect(
           now: yield* nowIso,
         });
         if (command !== undefined) yield* wake;
-        else yield* oversightWorker.enqueue(undefined);
+        else
+          yield* Effect.all(
+            [oversightWorker.enqueue(undefined), deliveryWorker.enqueue(undefined)],
+            { discard: true },
+          );
       }),
       dispatch: Effect.fn("FactoryService.dispatch")(function* (actor, command) {
         const receipt = yield* store.findReceipt({ actor, command });
@@ -754,6 +821,7 @@ export const layer = Layer.effect(
             : undefined;
         const snapshot = yield* store.snapshot;
         let oversightContext: FactoryOversightContext = {};
+        let deliveryContext: FactoryDeliveryContext = {};
         if (command.type === "assignment.wait" && command.wait.kind === "review") {
           const assignment = snapshot.assignments.find(
             (entry) => entry.id === command.assignmentId,
@@ -766,6 +834,7 @@ export const layer = Layer.effect(
         }
         if (
           command.type === "assignment.recovery.begin" ||
+          command.type === "delivery.review.request" ||
           (command.type === "assignment.recovery.replan" && command.replaceLead)
         ) {
           const assignment = snapshot.assignments.find(
@@ -784,7 +853,7 @@ export const layer = Layer.effect(
           );
           const choice = selectFactoryModel({
             policy,
-            role: command.type === "assignment.recovery.begin" ? "reviewer" : "lead",
+            role: command.type === "assignment.recovery.replan" ? "lead" : "reviewer",
             complexity: assignment.complexity ?? "standard",
           });
           if (Result.isFailure(choice)) return yield* choice.failure;
@@ -792,10 +861,13 @@ export const layer = Layer.effect(
             threadId: ThreadId.make(yield* randomUuidV4),
             modelSelection: choice.success.selection,
           };
-          oversightContext =
-            command.type === "assignment.recovery.begin"
-              ? { auxiliaryAllocation: selected }
-              : { replacementAllocation: selected };
+          if (command.type === "delivery.review.request")
+            deliveryContext = { deliveryReviewAllocation: selected };
+          else
+            oversightContext =
+              command.type === "assignment.recovery.begin"
+                ? { auxiliaryAllocation: selected }
+                : { replacementAllocation: selected };
         }
         let humanMessageVerified = false;
         let humanMessageId: MessageId | undefined;
@@ -844,9 +916,23 @@ export const layer = Layer.effect(
           ...(humanMessageId === undefined ? {} : { humanMessageId }),
           handoverVerified,
           ...oversightContext,
+          ...deliveryContext,
           ...(allocation === undefined ? {} : { allocation }),
         });
         if (Result.isFailure(preflight)) return yield* preflight.failure;
+        if (
+          preflight.success.effects.some(
+            (effect) =>
+              effect.type.startsWith("delivery.") &&
+              (effect.type.startsWith("delivery.preview.")
+                ? Option.isNone(previews)
+                : Option.isNone(deliveryEffects)),
+          )
+        )
+          return yield* new FactoryError({
+            code: "execution-unavailable",
+            detail: "This environment has no qualified delivery runtime for that action.",
+          });
         for (const assignment of snapshot.assignments) {
           const next = preflight.success.state.assignments.find(
             (entry) => entry.id === assignment.id,
@@ -921,12 +1007,15 @@ export const layer = Layer.effect(
           ...(humanMessageId === undefined ? {} : { humanMessageId }),
           handoverVerified,
           ...oversightContext,
+          ...deliveryContext,
           ...(allocation === undefined ? {} : { allocation }),
           ...(qualification === undefined ? {} : { qualification }),
           ...(boundary === undefined ? {} : { boundary }),
           ...(verification === undefined ? {} : { verification }),
         });
         yield* wake;
+        if (command.type === "delivery.preview.stop" && Option.isSome(previews))
+          yield* previews.value.reconcile;
         return result;
       }, commands.withPermits(1)),
     });
@@ -960,6 +1049,14 @@ export const layer = Layer.effect(
                 now: yield* nowIso,
               });
               yield* wake;
+              if (Option.isSome(previews))
+                yield* previews.value.reconcile.pipe(
+                  Effect.catch((cause) =>
+                    Effect.logError("Factory preview shutdown remains pending after control", {
+                      cause,
+                    }),
+                  ),
+                );
               return result;
             }),
           );

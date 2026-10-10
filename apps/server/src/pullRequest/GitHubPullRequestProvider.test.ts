@@ -25,6 +25,46 @@ const coreFields = {
   },
 };
 
+it.effect(
+  "forwards the host-only conditional requirement and approved revision independently of cleanup",
+  () =>
+    Effect.gen(function* () {
+      const calls: unknown[] = [];
+      const provider = yield* make.pipe(
+        Effect.provide(
+          Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+            revalidateChecks: (_input, read) => read,
+            runPullRequestAction: (input) =>
+              Effect.sync(() => {
+                calls.push(input);
+              }),
+          }),
+        ),
+      );
+      yield* provider.runAction({
+        cwd: "/w",
+        host: "github.com",
+        repository: "acme/web",
+        number: 7,
+        action: "merge",
+        expectedHeadSha: "approved-head",
+        requireConditionalMerge: true,
+      });
+      expect(provider.capabilities.conditionalMerge).toBe(true);
+      expect(calls).toEqual([
+        {
+          cwd: "/w",
+          host: "github.com",
+          repository: "acme/web",
+          number: 7,
+          action: "merge",
+          expectedHeadSha: "approved-head",
+          requireConditionalMerge: true,
+        },
+      ]);
+    }),
+);
+
 it.effect("maps credential verification failures without relabeling operation failures", () =>
   Effect.gen(function* () {
     let verificationFails = true;

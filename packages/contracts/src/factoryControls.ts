@@ -217,6 +217,14 @@ export const FactoryControlEffectIntent = Schema.Union([
     kind: Schema.Literals(["guidance", "coordination", "continuation"]),
     purpose: Schema.optionalKey(
       Schema.Union([
+        Schema.Struct({ kind: Schema.Literal("delivery"), revisionId: TrimmedNonEmptyString }),
+        Schema.Struct({
+          kind: Schema.Literal("delivery-review"),
+          revisionId: TrimmedNonEmptyString,
+          reviewId: TrimmedNonEmptyString,
+          instanceId: TrimmedNonEmptyString,
+        }),
+        Schema.Struct({ kind: Schema.Literal("delivery-flow"), holdId: TrimmedNonEmptyString }),
         Schema.Struct({
           kind: Schema.Literal("dependency-usability"),
           dependencyId: TrimmedNonEmptyString,

@@ -7,6 +7,8 @@ import * as Layer from "effect/Layer";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { factoryRecoveryBlocked } from "./FactoryOversight.ts";
+import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
+import { factoryExecutionBlocked } from "./FactoryControls.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 
 export class FactoryRecoveryReconciliation extends Context.Service<
@@ -35,7 +37,6 @@ const make = Effect.gen(function* () {
           (entry) => entry.threadId === intent.threadId,
         );
         const assignment = state.assignments.find((entry) => entry.id === auxiliary?.assignmentId);
-        const incident = assignment?.oversight?.recovery.incident;
         if (
           !auxiliary ||
           !assignment ||
@@ -44,24 +45,34 @@ const make = Effect.gen(function* () {
           auxiliary.status === "complete" ||
           auxiliary.status === "failed" ||
           auxiliary.findings ||
-          !incident ||
-          incident.id !== auxiliary.incidentId ||
-          incident.diagnosisThreadId !== auxiliary.threadId ||
-          incident.phase !== "diagnosing"
+          !factoryAuxiliaryIsCurrent(assignment, auxiliary)
         ) {
           yield* store.retireEffect(pending.id);
           return;
         }
         if (
           auxiliary.status === "pending" ||
-          factoryRecoveryBlocked(state, assignment) !== undefined
+          (auxiliary.kind === "diagnosis"
+            ? factoryRecoveryBlocked(state, assignment)
+            : factoryExecutionBlocked(state, {
+                threadId: auxiliary.threadId,
+                managerId: assignment.managerId,
+                projectId: assignment.projectId,
+                assignmentId: assignment.id,
+                ancestorThreadIds: [],
+              })) !== undefined
         )
           return;
         if (
           (yield* store.pending).some(
             (entry) =>
-              entry.intent.type === "auxiliary.launch" &&
-              entry.intent.threadId === auxiliary.threadId,
+              ((entry.intent.type === "auxiliary.launch" ||
+                entry.intent.type === "delivery.review.launch" ||
+                entry.intent.type === "thread.deliver") &&
+                entry.intent.threadId === auxiliary.threadId) ||
+              (entry.intent.type === "delivery.preview.start" &&
+                entry.intent.assignmentId === assignment.id &&
+                entry.intent.revisionId === auxiliary.revisionId),
           )
         )
           return;
@@ -126,7 +137,9 @@ const make = Effect.gen(function* () {
               : {
                   kind: "failed",
                   reason:
-                    "The independent diagnosis stopped without reporting findings. Its transcript and inspected evidence are preserved; review them before authorizing further recovery.",
+                    auxiliary.kind === "diagnosis"
+                      ? "The independent diagnosis stopped without reporting findings. Its transcript and inspected evidence are preserved; review them before authorizing further recovery."
+                      : "The independent candidate review stopped without reporting findings. Its transcript and candidate are preserved. Request another review or address its recorded blocker.",
                 },
           },
         });

@@ -6,10 +6,14 @@ import * as Schema from "effect/Schema";
 
 import {
   FactoryExecutionSuspension,
+  FactoryDeliveryExecutionHold,
   type FactoryExecutionProfile,
 } from "./FactoryExecutionProfile.ts";
 
 const isFactoryError = Schema.is(FactoryError);
+const decodeDeliveryHold = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(FactoryDeliveryExecutionHold),
+);
 
 export const assertFactoryProfileActive = Effect.fn("assertFactoryProfileActive")(
   function* (profile: FactoryExecutionProfile | undefined) {
@@ -38,6 +42,23 @@ export const assertFactoryProfileActive = Effect.fn("assertFactoryProfileActive"
           detail: "This assignment is paused. Resume its project before continuing managed work.",
         });
     }
+    const holdPath = path.join(path.dirname(workspace.revocationPath), "delivery-hold.json");
+    const hold = (yield* fs.exists(holdPath))
+      ? yield* fs.readFileString(holdPath).pipe(Effect.flatMap(decodeDeliveryHold))
+      : undefined;
+    if (
+      (hold?.state === "held" &&
+        (hold.epoch !== workspace.grantEpoch ||
+          profile?.inspection?.deliveryHoldId !== hold.holdId ||
+          (profile.profileId ?? profile.boundaryId) !== hold.profileId)) ||
+      (profile?.inspection?.deliveryHoldId !== undefined &&
+        (hold?.state !== "held" || hold.holdId !== profile.inspection.deliveryHoldId))
+    )
+      return yield* new FactoryError({
+        code: "execution-unavailable",
+        detail:
+          "Implementation is held for the current UI flow decision. Only its bounded read-only planning context may run.",
+      });
   },
   Effect.mapError((cause) =>
     isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause }),

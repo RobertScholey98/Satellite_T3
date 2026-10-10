@@ -27,6 +27,7 @@ import {
   resolveFactoryModelPolicy,
 } from "./FactoryModelPolicy.ts";
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
+import { factoryDeliveryWaitReason } from "./FactoryDelivery.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 
 export interface FactoryOversightContext {
@@ -108,6 +109,8 @@ export const factoryRecoveryBlocked = (state: FactorySnapshot, assignment: Facto
     assignment.status === "complete"
   )
     return "This assignment has no implementation recovery pending.";
+  const deliveryWait = factoryDeliveryWaitReason(assignment);
+  if (deliveryWait) return deliveryWait;
   const blocked = factoryDirectionBlocked(state, member(assignment), assignment.managerId);
   if (blocked !== undefined) return blocked;
   if (
@@ -255,6 +258,16 @@ export function decideFactoryOversight(
     assignmentId: assignment.id,
     triggerId,
   });
+  const deliveryInspection = (assignment: FactoryAssignment): FactoryEffectIntent[] => {
+    const revision = assignment.delivery?.revisions.find(
+      (entry) => entry.id === assignment.delivery?.currentRevisionId,
+    );
+    return revision?.status === "published" &&
+      revision.publication?.ref !== undefined &&
+      !["requested", "unknown", "merged"].includes(revision.merge?.status ?? "")
+      ? [{ type: "delivery.inspect", assignmentId: assignment.id, revisionId: revision.id }]
+      : [];
+  };
   const approvedModel = (
     assignment: FactoryAssignment,
     manager: FactoryManager,
@@ -639,22 +652,25 @@ export function decideFactoryOversight(
       return accept(
         {},
         {},
-        state.assignments
-          .filter(
-            (assignment) =>
-              assignment.projectId === command.projectId &&
-              activeAssignment(assignment) &&
-              (assignment.oversight?.deliveryClaim !== undefined ||
-                state.dependencies.some(
-                  (dependency) =>
-                    dependency.assignmentId === assignment.id &&
-                    dependency.authorization !== undefined &&
-                    dependency.state !== "usable" &&
-                    dependency.unblockCondition.kind === "pull-request-merged" &&
-                    dependency.unblockCondition.ref !== undefined,
-                )),
-          )
-          .map((assignment) => reconcile(assignment, command.triggerId)),
+        state.assignments.flatMap((assignment) => {
+          if (assignment.projectId !== command.projectId || !activeAssignment(assignment))
+            return [];
+          const inspection = deliveryInspection(assignment);
+          const needsReconciliation =
+            assignment.oversight?.deliveryClaim !== undefined ||
+            inspection.length > 0 ||
+            state.dependencies.some(
+              (dependency) =>
+                dependency.assignmentId === assignment.id &&
+                dependency.authorization !== undefined &&
+                dependency.state !== "usable" &&
+                dependency.unblockCondition.kind === "pull-request-merged" &&
+                dependency.unblockCondition.ref !== undefined,
+            );
+          return needsReconciliation
+            ? [reconcile(assignment, command.triggerId), ...inspection]
+            : [];
+        }),
       );
     }
     case "assignment.reconcile.requested": {
@@ -664,7 +680,9 @@ export function decideFactoryOversight(
       return accept(
         {},
         {},
-        activeAssignment(assignment) ? [reconcile(assignment, command.triggerId)] : [],
+        activeAssignment(assignment)
+          ? [reconcile(assignment, command.triggerId), ...deliveryInspection(assignment)]
+          : [],
       );
     }
     case "assignment.reconciled": {
@@ -889,6 +907,62 @@ export function decideFactoryOversight(
       const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === command.threadId);
       if (!auxiliary) return fail("assignment-not-found");
       const assignment = state.assignments.find((entry) => entry.id === auxiliary.assignmentId);
+      if (auxiliary.kind === "delivery-review") {
+        const delivery = assignment?.delivery;
+        const revision = delivery?.revisions.find((entry) => entry.id === auxiliary.revisionId);
+        const review = revision?.reviews.find((entry) => entry.threadId === auxiliary.threadId);
+        if (
+          command.observation.kind === "active" ||
+          !assignment ||
+          !activeAssignment(assignment) ||
+          auxiliary.status !== "running" ||
+          !delivery ||
+          !revision ||
+          delivery.currentRevisionId !== revision.id ||
+          review?.status !== "running"
+        )
+          return accept();
+        const reason = command.observation.reason;
+        return saveAssignment(
+          {
+            ...assignment,
+            delivery: {
+              ...delivery,
+              readiness: [reason],
+              revisions: delivery.revisions.map((entry) =>
+                entry.id === revision.id
+                  ? {
+                      ...entry,
+                      reviews: entry.reviews.map((item) =>
+                        item.id === review.id
+                          ? { ...item, status: "failed", findings: reason }
+                          : item,
+                      ),
+                    }
+                  : entry,
+              ),
+            },
+          },
+          [
+            {
+              type: "thread.deliver",
+              threadId: assignment.threadId,
+              sourceThreadId: assignment.threadId,
+              messageId: MessageId.make(`factory-review:${command.commandId}`),
+              kind: "continuation",
+              purpose: { kind: "delivery", revisionId: revision.id },
+              text: reason,
+            },
+          ],
+          {
+            auxiliaryThreads: state.auxiliaryThreads.map((entry) =>
+              entry.threadId === auxiliary.threadId
+                ? { ...entry, status: "failed", failure: reason, updatedAt: now }
+                : entry,
+            ),
+          },
+        );
+      }
       const incident = assignment?.oversight?.recovery.incident;
       if (
         command.observation.kind === "active" ||

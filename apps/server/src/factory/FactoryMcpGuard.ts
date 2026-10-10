@@ -175,6 +175,14 @@ const make = Effect.gen(function* () {
         if (
           toolName !== "factory_snapshot" &&
           toolName !== "factory_dispatch" &&
+          !(
+            member.auxiliary?.kind === "delivery-review" &&
+            [
+              "factory_preview_action",
+              "factory_preview_snapshot",
+              "factory_preview_finish",
+            ].includes(toolName)
+          ) &&
           !implementationTeamTool &&
           !scopedCommunication
         )
@@ -215,9 +223,18 @@ const make = Effect.gen(function* () {
         const member = yield* managedCaller(invocation);
         if (
           member.auxiliary !== undefined &&
-          (command.type !== "auxiliary.report" ||
-            command.threadId !== invocation.thread.threadId ||
-            member.auxiliary.threadId !== invocation.thread.threadId)
+          (member.auxiliary.threadId !== invocation.thread.threadId ||
+            (member.auxiliary.kind === "diagnosis"
+              ? command.type !== "auxiliary.report" ||
+                command.threadId !== invocation.thread.threadId
+              : !(
+                  command.type === "delivery.review.report" ||
+                  command.type === "delivery.preview.start" ||
+                  command.type === "delivery.preview.stop"
+                ) ||
+                command.assignmentId !== member.assignment?.id ||
+                command.revisionId !== member.auxiliary.revisionId ||
+                ("reviewId" in command && command.reviewId !== member.auxiliary.incidentId)))
         )
           return yield* denied();
         const descendantOperation =

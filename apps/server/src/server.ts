@@ -14,6 +14,7 @@ import * as IssueHost from "./issues/IssueHost.ts";
 import * as IssueLifecycleReactor from "./issues/IssueLifecycleReactor.ts";
 import * as CommitRecommendationService from "./git/CommitRecommendationService.ts";
 import * as FactoryStore from "./factory/FactoryStore.ts";
+import * as FactoryPullRequestGate from "./factory/FactoryPullRequestGate.ts";
 import * as FactoryExecution from "./factory/FactoryExecution.ts";
 import * as FactoryBoundaryExecution from "./factory/FactoryBoundaryExecution.ts";
 import * as FactorySource from "./factory/FactorySource.ts";
@@ -21,6 +22,15 @@ import * as FactoryHandover from "./factory/FactoryHandover.ts";
 import * as FactoryService from "./factory/FactoryService.ts";
 import * as FactoryObserver from "./factory/FactoryObserver.ts";
 import * as FactoryMcpGuard from "./factory/FactoryMcpGuard.ts";
+import * as FactoryPublication from "./factory/FactoryPublication.ts";
+import * as FactoryPublicationHost from "./factory/FactoryPublicationHost.ts";
+import * as FactoryDeliveryEffects from "./factory/FactoryDeliveryEffects.ts";
+import * as FactoryPreviewExecution from "./factory/FactoryPreviewExecution.ts";
+import * as FactoryPreviewEvidence from "./factory/FactoryPreviewEvidence.ts";
+import * as FactoryPreviewService from "./factory/FactoryPreviewService.ts";
+import * as FactoryControlAccess from "./factory/FactoryControlAccess.ts";
+import * as FactoryPreviewHttp from "./factory/FactoryPreviewHttp.ts";
+import * as FactoryPreviewPublication from "./factory/FactoryPreviewPublication.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -358,6 +368,7 @@ const layerIssueService = IssueService.layer.pipe(
 );
 
 const layerPullRequestService = PullRequestService.layer.pipe(
+  Layer.provide(FactoryPullRequestGate.layer.pipe(Layer.provide(FactoryStore.layer))),
   Layer.provide(PullRequestProviderRegistry.layer),
   // Where the viewed-file marks live for a host that keeps none of its own.
   Layer.provide(PullRequestFilesViewed.layer),
@@ -506,6 +517,7 @@ const layerFactoryExecution = Layer.mergeAll(
   FactoryExecution.layer,
   FactoryBoundaryExecution.layer,
 ).pipe(
+  Layer.provideMerge(FactoryPublication.layer),
   Layer.provideMerge(FactorySource.layer),
   Layer.provideMerge(FactoryStore.layer),
   Layer.provide(ProjectStore.layer),
@@ -534,9 +546,36 @@ const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
   Layer.provideMerge(layerOrchestrationV2Runtime),
 );
 
+const layerServerBrowser = ServerBrowser.layer.pipe(
+  Layer.provide(DesktopBrowserChannel.layer),
+  Layer.provide(PreviewBrowser.layer),
+);
+
+const layerFactoryPreview = FactoryPreviewService.layer.pipe(
+  Layer.provideMerge(FactoryPreviewEvidence.layer),
+  Layer.provideMerge(FactoryPreviewExecution.layer),
+  Layer.provide(FactoryControlAccess.layer),
+  Layer.provide(layerServerBrowser),
+  Layer.provide(ProcessRunner.layer),
+);
+
+const layerFactoryDelivery = FactoryDeliveryEffects.layer.pipe(
+  Layer.provide(FactoryPublicationHost.layer),
+  Layer.provide(FactoryPreviewPublication.layer),
+  Layer.provide(FactoryControlAccess.layer),
+  Layer.provide(FactoryHandover.layer),
+  Layer.provide(layerPullRequestService),
+);
+
 const layerSatelliteFeatures = Layer.mergeAll(
   Layer.merge(FactoryMcpGuard.layer, FactoryObserver.layer).pipe(
-    Layer.provideMerge(FactoryService.layer.pipe(Layer.provide(FactoryHandover.layer))),
+    Layer.provideMerge(
+      FactoryService.layer.pipe(
+        Layer.provideMerge(layerFactoryDelivery),
+        Layer.provideMerge(layerFactoryPreview),
+        Layer.provide(FactoryHandover.layer),
+      ),
+    ),
     Layer.provide(layerPullRequestService),
   ),
   DocumentService.layer,
@@ -757,6 +796,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAttachmentUploadRoute,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    FactoryPreviewHttp.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),
@@ -776,7 +816,7 @@ const layerMakeRoutes = Layer.mergeAll(
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(layerPullRequestService),
   // The stream route and the WebSocket RPCs share one browser.
-  Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
+  Layer.provide(layerServerBrowser),
   // Server browser tabs and HTML render previews install and run the same headless browser.
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(PreviewAutomationBroker.layer),

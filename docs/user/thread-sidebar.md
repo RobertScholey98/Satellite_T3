@@ -93,6 +93,34 @@ exhausted, the human decision includes the failure, attempts, options, and a
 recommendation. Expected review, dependency, and human-decision waits do not
 consume recovery cycles. Observation and recovery receipts survive restart.
 
+### Review and deliver managed work
+
+The implementation team owns its PR, independent review, required checks, and
+merge process. Open **Assignment details → Delivery and review** to inspect the
+candidate, review findings, and reasons delivery is waiting. Human approval applies
+to the exact PR head and evidence shown; changed work needs fresh verification and
+approval. Give corrections directly to the implementation lead. The manager keeps
+visibility while human review is pending, without directing that work.
+
+Changed user flows pause implementation for a concrete flow proposal. Approve or
+reject that proposal in the assignment details before implementation continues.
+Substantial UI work also needs an independent reviewer to exercise the frozen
+candidate and capture screenshots. In **Delivery settings**, configure a supported
+Node preview entry point and pinned image before requesting this verification.
+Preview data is disposable and the app has no external network access; a preview
+that needs an unavailable service remains blocked with an explanation.
+
+Screenshot publication requires a separate project setting. Enabling it allows
+the host to publish the verified images to immutable evidence refs in that project's
+repository and link them in the PR. Check that the preview contains suitable test
+data before enabling this setting.
+
+Human approval is the default. To permit routine autonomous merges, configure an
+explicit project merge rule and grant the manager that delivery autonomy. Both
+must allow the work. Major UI changes and unclear eligibility still require human
+approval. The host rechecks the current permissions and PR evidence immediately
+before merging, and records delivery only after the host confirms the actual merge.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

@@ -5,6 +5,7 @@ export const FACTORY_CONTAINER_WORKSPACE = "/workspace";
 
 export const FactoryExecutionProfile = Schema.Struct({
   boundaryId: Schema.String,
+  profileId: Schema.optionalKey(Schema.String),
   dockerContext: Schema.String,
   imageId: Schema.String,
   projectSnapshotPath: Schema.String,
@@ -14,7 +15,12 @@ export const FactoryExecutionProfile = Schema.Struct({
   startingSourceId: Schema.optionalKey(Schema.String),
   startingSourceDigest: Schema.optionalKey(Schema.String),
   inspection: Schema.optionalKey(
-    Schema.Struct({ sourceDigest: Schema.String, evidencePath: Schema.String }),
+    Schema.Struct({
+      sourceDigest: Schema.String,
+      evidencePath: Schema.String,
+      candidateId: Schema.optionalKey(Schema.String),
+      deliveryHoldId: Schema.optionalKey(Schema.String),
+    }),
   ),
   assignmentWorkspace: Schema.optionalKey(
     Schema.Struct({
@@ -36,6 +42,14 @@ export const FactoryExecutionSuspension = Schema.Struct({
   state: Schema.Literals(["suspended", "resumed"]),
 });
 export type FactoryExecutionSuspension = typeof FactoryExecutionSuspension.Type;
+export const FactoryDeliveryExecutionHold = Schema.Struct({
+  holdId: Schema.String,
+  epoch: Schema.Int,
+  state: Schema.Literals(["held", "released"]),
+  profileId: Schema.String,
+  sourceDigest: Schema.String,
+});
+export type FactoryDeliveryExecutionHold = typeof FactoryDeliveryExecutionHold.Type;
 
 export function factoryContainerEndpoint(endpoint: string): string {
   const url = new URL(endpoint);

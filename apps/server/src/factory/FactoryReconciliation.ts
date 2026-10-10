@@ -7,6 +7,7 @@ import {
   type PullRequestRef,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import { factoryDeliveryWaitReason } from "./FactoryDelivery.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -305,6 +306,11 @@ export const layer = Layer.effect(
               "Report delivery needs the actual team-authored message at the agreed recipient, a completed progress report, and evidence references.",
             evidence: [],
           });
+          return;
+        }
+        const deliveryWait = factoryDeliveryWaitReason(assignment);
+        if (deliveryWait) {
+          yield* finish({ kind: "expected-wait", reason: deliveryWait });
           return;
         }
         const blocked = factoryRecoveryBlocked(state, assignment);

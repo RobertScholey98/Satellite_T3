@@ -32,6 +32,7 @@ import { Textarea } from "../ui/textarea";
 import { factoryModelKey, factoryModelLabel } from "./FactoryModelPolicyDialog";
 import { FactoryAssignmentControls } from "./FactoryControls";
 import { FactoryOversight } from "./FactoryOversight";
+import { FactoryDelivery } from "./FactoryDelivery";
 import { factoryAssignmentCancellation, factoryAssignmentStatus } from "./FactoryControlsReadModel";
 
 export function FactoryAssignmentDialog({
@@ -559,6 +560,13 @@ export function FactoryAssignmentDetailsDialog({
         <DialogPanel>
           <div className="space-y-5">
             <FactoryAssignmentControls environment={environment} assignment={assignment} />
+            <FactoryDelivery
+              environment={environment}
+              assignment={assignment}
+              canOpenLead={canOpenThread}
+              onOpenLead={onOpenThread}
+              onOpenThread={onOpenRelatedThread}
+            />
             <FactoryOversight
               environment={environment}
               assignment={assignment}

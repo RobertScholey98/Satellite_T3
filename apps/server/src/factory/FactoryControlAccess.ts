@@ -9,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import {
   factoryDirectionBlocked,
@@ -87,7 +88,10 @@ const make = Effect.gen(function* () {
           projectId: owner.projectId,
           ...(assignment === undefined ? {} : { assignmentId: assignment.id }),
           ...(auxiliary === undefined ? {} : { auxiliaryThreadId: auxiliary.threadId }),
-          ancestorThreadIds: ancestors.toReversed(),
+          ancestorThreadIds:
+            auxiliary?.kind === "delivery-review" && assignment !== undefined
+              ? [assignment.threadId, ...ancestors.toReversed()]
+              : ancestors.toReversed(),
         } satisfies FactoryControlMembership;
       }
       const thread = yield* projections
@@ -137,21 +141,16 @@ const make = Effect.gen(function* () {
       const auxiliary = state.auxiliaryThreads.find(
         (entry) => entry.threadId === member.auxiliaryThreadId,
       );
-      const incident = state.assignments.find((entry) => entry.id === member.assignmentId)
-        ?.oversight?.recovery.incident;
+      const assignment = state.assignments.find((entry) => entry.id === member.assignmentId);
       if (
         member.threadId !== member.auxiliaryThreadId ||
         auxiliary === undefined ||
-        auxiliary.status === "complete" ||
-        auxiliary.status === "failed" ||
-        incident?.phase !== "diagnosing" ||
-        incident.id !== auxiliary.incidentId ||
-        incident.diagnosisThreadId !== auxiliary.threadId
+        !factoryAuxiliaryIsCurrent(assignment, auxiliary)
       )
         return yield* new FactoryError({
           code: "permission-denied",
           detail:
-            "Only the current independent diagnosis can run. A completed or superseded diagnosis cannot resume or create a team.",
+            "Only the current independent review can run. A completed or superseded review cannot resume or create a team.",
         });
     }
     if (

@@ -32,9 +32,11 @@ import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as PreviewBrowser from "../../../preview/PreviewBrowser.ts";
+import { FactoryPreviewService } from "../../../factory/FactoryPreviewService.ts";
 
 const layerStubServices = Layer.mergeAll(
   McpToolAccessTestkit.unmanagedFactoryLayer,
+  Layer.mock(FactoryPreviewService)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(DeviceService.DeviceService)({}),

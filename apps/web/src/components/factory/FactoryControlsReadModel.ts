@@ -30,7 +30,10 @@ export function factoryThreadMembership(
     visited.add(threadId);
     const thread = byId.get(threadId);
     if (!thread || thread.projectId !== requested.projectId) return null;
-    const assignment = snapshot.assignments.find((entry) => entry.threadId === threadId);
+    const auxiliary = snapshot.auxiliaryThreads.find((entry) => entry.threadId === threadId);
+    const assignment = snapshot.assignments.find(
+      (entry) => entry.threadId === threadId || entry.id === auxiliary?.assignmentId,
+    );
     const manager = snapshot.managers.find((entry) =>
       assignment ? entry.id === assignment.managerId : entry.threadId === threadId,
     );
@@ -41,7 +44,15 @@ export function factoryThreadMembership(
         (assignment && assignment.projectId !== requested.projectId)
       )
         return null;
-      return { manager, assignment, ancestorThreadIds: ancestors };
+      return {
+        manager,
+        assignment,
+        auxiliary,
+        ancestorThreadIds:
+          auxiliary?.kind === "delivery-review" && assignment
+            ? [...ancestors, assignment.threadId]
+            : ancestors,
+      };
     }
     threadId = thread.lineage.parentThreadId;
     if (threadId !== null) ancestors.push(threadId);

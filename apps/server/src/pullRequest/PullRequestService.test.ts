@@ -18,11 +18,13 @@ import type {
   PullRequestReviewCapabilities,
   PullRequestReviewerCapabilities,
   SourceControlProviderKind,
+  FactorySnapshot,
 } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import type { ServerSettings } from "@t3tools/contracts";
 import * as ServerSettingsService from "../serverSettings.ts";
-import { PullRequestOperationError } from "@t3tools/contracts";
+import { FactoryControlId, PullRequestOperationError } from "@t3tools/contracts";
+import { BeforeGitHubMutation } from "../sourceControl/GitHubApi.ts";
 
 import * as ProjectService from "../project/ProjectService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -40,6 +42,16 @@ import {
 import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./PullRequestService.ts";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
+import type { ProviderMergeEvidence } from "./pullRequestMergeEvidence.ts";
+import * as FactoryPullRequestGate from "../factory/FactoryPullRequestGate.ts";
+import { FactoryStore } from "../factory/FactoryStore.ts";
+import {
+  applyDelivery,
+  deliveryActors,
+  deliveryIds,
+  deliveryRevisionCommand,
+  reviewedDeliveryFixture,
+} from "../factory/FactoryDelivery.testkit.ts";
 import {
   FILE_REVISIONS_CACHE_CAPACITY,
   MAX_FILE_REVISION_PATHS,
@@ -411,6 +423,540 @@ const requestFailed = new PullRequestProviderError({
   detail: "HTTP 404",
 });
 
+const mergeEvidence: ProviderMergeEvidence = {
+  headSha: "approved-head",
+  baseSha: "base",
+  baseBranch: "main",
+  state: "open",
+  isDraft: false,
+  mergeability: "mergeable",
+  mergeState: "CLEAN",
+  reviewDecision: "approved",
+  autoMergeEnabled: false,
+  mergeQueueEnabled: false,
+  checks: [],
+  reviews: [],
+  complete: true,
+  issues: [],
+};
+
+const factoryProject = () =>
+  project({
+    id: "project-alias",
+    title: "Same repository alias",
+    workspaceRoot: "/factory",
+    repository: "owner/repo",
+  });
+const factoryRef = {
+  projectId: "project-alias" as ProjectId,
+  host: "github.com",
+  repository: "owner/repo",
+  number: 20,
+};
+const managedDetail = (number = 20) => ({
+  ...hostedChangeRequest("Managed work"),
+  number,
+  headBranch: number === 20 ? "factory/work" : "unmanaged",
+  headSha: number === 20 ? "head" : "other-head",
+});
+const approvedFactoryMerge = () => {
+  const approved = applyDelivery(
+    reviewedDeliveryFixture(),
+    {
+      ...deliveryRevisionCommand,
+      type: "delivery.approve",
+      expectedHeadSha: "head",
+      bundleDigest: "bundle",
+    },
+    deliveryActors.human,
+  ).state;
+  return applyDelivery(approved, { ...deliveryRevisionCommand, type: "delivery.merge" }).state;
+};
+const factoryPermit = {
+  assignmentId: deliveryIds.assignment,
+  revisionId: deliveryRevisionCommand.revisionId,
+  operationId: "merge:command",
+};
+
+it.effect.each(["pause", "cancel", "grant", "wait", "ordinary"] as const)(
+  "rechecks %s after provider staging and before an actual merge write",
+  (scenario) =>
+    Effect.gen(function* () {
+      let state = approvedFactoryMerge();
+      let staged = 0;
+      let mutations = 0;
+      let hadGuard = false;
+      const base = fakeProvider("github");
+      const service = yield* makeService({
+        factorySnapshot: () => state,
+        projects: [factoryProject()],
+        providers: [
+          {
+            ...base,
+            capabilities: { ...base.capabilities, conditionalMerge: true },
+            getChangeRequest: ({ number }) => Effect.succeed(managedDetail(number)),
+            runAction: () =>
+              Effect.gen(function* () {
+                staged++;
+                if (scenario === "pause" || scenario === "ordinary")
+                  state = {
+                    ...state,
+                    controls: [
+                      {
+                        id: FactoryControlId.make("queued-pause"),
+                        kind: "project-pause",
+                        projectId: deliveryIds.project,
+                        status: "active",
+                        generation: 1,
+                        requestedAt: "2026-10-10T21:00:00.000Z",
+                        updatedAt: "2026-10-10T21:00:00.000Z",
+                        stop: { status: "pending" },
+                      },
+                    ],
+                  };
+                else
+                  state = {
+                    ...state,
+                    assignments: state.assignments.map((assignment) => ({
+                      ...assignment,
+                      ...(scenario === "cancel"
+                        ? {
+                            outcome: {
+                              kind: "cancelled" as const,
+                              controlId: FactoryControlId.make("queued-cancel"),
+                            },
+                          }
+                        : {}),
+                      ...(scenario === "grant"
+                        ? { grant: { ...assignment.grant!, epoch: assignment.grant!.epoch + 1 } }
+                        : {}),
+                      ...(scenario === "wait"
+                        ? {
+                            wait: {
+                              kind: "human-decision" as const,
+                              reason: "Resolve the integration contract first",
+                            },
+                          }
+                        : {}),
+                    })),
+                  };
+                const guard = yield* BeforeGitHubMutation;
+                hadGuard = guard !== null;
+                if (guard) yield* guard;
+                mutations++;
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new PullRequestProviderError({
+                      provider: "github",
+                      operation: "merge",
+                      reason: "failed",
+                      detail: "Merge was not admitted",
+                      cause,
+                    }),
+                ),
+              ),
+          },
+        ],
+      });
+      const action = service
+        .runAction({
+          ...factoryRef,
+          number: scenario === "ordinary" ? 21 : 20,
+          action: "merge",
+          expectedHeadSha: scenario === "ordinary" ? "other-head" : "head",
+        })
+        .pipe(Effect.provideService(FactoryPullRequestGate.FactoryDeliveryPermit, factoryPermit));
+      if (scenario === "ordinary") yield* action;
+      else yield* action.pipe(Effect.flip);
+      assert.equal(staged, 1);
+      assert.equal(hadGuard, scenario !== "ordinary");
+      assert.equal(mutations, scenario === "ordinary" ? 1 : 0);
+    }),
+);
+
+it.effect(
+  "blocks a generic managed merge through a different project alias despite a supplied expected head",
+  () =>
+    Effect.gen(function* () {
+      let mutations = 0;
+      const base = fakeProvider("github");
+      const service = yield* makeService({
+        factorySnapshot: approvedFactoryMerge(),
+        projects: [factoryProject()],
+        providers: [
+          {
+            ...base,
+            capabilities: { ...base.capabilities, conditionalMerge: true },
+            getChangeRequest: () => Effect.succeed(managedDetail()),
+            runAction: () =>
+              Effect.sync(() => {
+                mutations++;
+              }),
+          },
+        ],
+      });
+      const error = yield* service
+        .runAction({ ...factoryRef, action: "merge", expectedHeadSha: "head" })
+        .pipe(Effect.flip);
+      assert.strictEqual(error._tag, "PullRequestOperationError");
+      assert.strictEqual(mutations, 0);
+    }),
+);
+
+it.effect(
+  "forwards an exact internally authorized managed merge with the host-only conditional requirement",
+  () =>
+    Effect.gen(function* () {
+      const mutations: unknown[] = [];
+      const base = fakeProvider("github");
+      const service = yield* makeService({
+        factorySnapshot: approvedFactoryMerge(),
+        projects: [factoryProject()],
+        providers: [
+          {
+            ...base,
+            capabilities: { ...base.capabilities, conditionalMerge: true },
+            getChangeRequest: () => Effect.succeed(managedDetail()),
+            runAction: (input) =>
+              Effect.sync(() => {
+                mutations.push(input);
+              }),
+          },
+        ],
+      });
+      yield* service
+        .runAction({ ...factoryRef, action: "merge", expectedHeadSha: "head" })
+        .pipe(Effect.provideService(FactoryPullRequestGate.FactoryDeliveryPermit, factoryPermit));
+      assert.deepStrictEqual(mutations, [
+        {
+          cwd: "/factory",
+          repository: "owner/repo",
+          host: "github.com",
+          number: 20,
+          action: "merge",
+          expectedHeadSha: "head",
+          requireConditionalMerge: true,
+        },
+      ]);
+    }),
+);
+
+it.effect("blocks a pending publication by reserved branch before its PR number is recorded", () =>
+  Effect.gen(function* () {
+    let mutations = 0;
+    const initial = reviewedDeliveryFixture();
+    const state: FactorySnapshot = {
+      ...initial,
+      assignments: initial.assignments.map((assignment) => ({
+        ...assignment,
+        delivery: {
+          ...assignment.delivery!,
+          revisions: assignment.delivery!.revisions.map((revision) => {
+            const { ref: _ref, ...publication } = revision.publication!;
+            return { ...revision, publication };
+          }),
+        },
+      })),
+    };
+    const service = yield* makeService({
+      factorySnapshot: state,
+      projects: [factoryProject()],
+      providers: [
+        fakeProvider("github", {
+          getChangeRequest: () => Effect.succeed({ ...managedDetail(), number: 99 }),
+          runAction: () =>
+            Effect.sync(() => {
+              mutations++;
+            }),
+        }),
+      ],
+    });
+    const error = yield* service
+      .runAction({ ...factoryRef, number: 99, action: "merge" })
+      .pipe(Effect.flip);
+    assert.strictEqual(error._tag, "PullRequestOperationError");
+    assert.strictEqual(mutations, 0);
+  }),
+);
+
+it.effect(
+  "inspects every stack member and refuses a managed layer behind an unmanaged anchor",
+  () =>
+    Effect.gen(function* () {
+      const reads: number[] = [];
+      let mutations = 0;
+      const base = fakeProvider("github");
+      const service = yield* makeService({
+        factorySnapshot: reviewedDeliveryFixture(),
+        projects: [factoryProject()],
+        providers: [
+          {
+            ...base,
+            capabilities: { ...base.capabilities, stackActions: true },
+            getChangeRequest: ({ number }) =>
+              Effect.sync(() => {
+                reads.push(number);
+                return managedDetail(number);
+              }),
+            getChangeRequestStack: () =>
+              Effect.succeed({
+                id: "stack-3",
+                number: 3,
+                url: "https://github.com/owner/repo/stacks/3",
+                base: "main",
+                layers: [
+                  { number: 21, headBranch: "unmanaged", state: "open" },
+                  { number: 20, headBranch: "factory/work", state: "open" },
+                ],
+              }),
+            runAction: () =>
+              Effect.sync(() => {
+                mutations++;
+              }),
+          },
+        ],
+      });
+      const error = yield* service
+        .runAction({
+          ...factoryRef,
+          number: 21,
+          action: "merge",
+          stackNumber: 3,
+          expectedStackHeads: [
+            { number: 21, headSha: "other-head" },
+            { number: 20, headSha: "head" },
+          ],
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(error._tag, "PullRequestOperationError");
+      assert.deepStrictEqual(reads, [21, 20]);
+      assert.strictEqual(mutations, 0);
+    }),
+);
+
+it.effect("preserves an unrelated stack merge inside a repository that also has managed work", () =>
+  Effect.gen(function* () {
+    const mutations: unknown[] = [];
+    const base = fakeProvider("github");
+    const service = yield* makeService({
+      factorySnapshot: reviewedDeliveryFixture(),
+      projects: [factoryProject()],
+      providers: [
+        {
+          ...base,
+          capabilities: { ...base.capabilities, stackActions: true },
+          getChangeRequest: ({ number }) => Effect.succeed(managedDetail(number)),
+          getChangeRequestStack: () =>
+            Effect.succeed({
+              id: "stack-3",
+              number: 3,
+              url: "https://github.com/owner/repo/stacks/3",
+              base: "main",
+              layers: [
+                { number: 21, headBranch: "unmanaged", state: "open" },
+                { number: 22, headBranch: "unmanaged", state: "closed" },
+              ],
+            }),
+          runAction: (input) =>
+            Effect.sync(() => {
+              mutations.push(input);
+            }),
+        },
+      ],
+    });
+    yield* service.runAction({
+      ...factoryRef,
+      number: 21,
+      action: "merge",
+      stackNumber: 3,
+      expectedStackHeads: [{ number: 21, headSha: "other-head" }],
+    });
+    assert.lengthOf(mutations, 1);
+    assert.deepStrictEqual(mutations[0], {
+      cwd: "/factory",
+      host: "github.com",
+      repository: "owner/repo",
+      number: 21,
+      action: "merge",
+      stackNumber: 3,
+      expectedStackHeads: [{ number: 21, headSha: "other-head" }],
+    });
+  }),
+);
+
+it.effect.each(["different-stack", "new-member", "missing-head"] as const)(
+  "refuses factory stack authorization against %s",
+  (scenario) =>
+    Effect.gen(function* () {
+      let mutations = 0;
+      const base = fakeProvider("github");
+      const service = yield* makeService({
+        factorySnapshot: reviewedDeliveryFixture(),
+        projects: [factoryProject()],
+        providers: [
+          {
+            ...base,
+            capabilities: { ...base.capabilities, stackActions: true },
+            getChangeRequest: ({ number }) => {
+              const { headSha, ...detail } = managedDetail(number);
+              return Effect.succeed(scenario === "missing-head" ? detail : { ...detail, headSha });
+            },
+            getChangeRequestStack: () =>
+              Effect.succeed({
+                id: "stack-3",
+                number: 3,
+                url: "https://github.com/owner/repo/stacks/3",
+                base: "main",
+                layers: [{ number: 21, headBranch: "unmanaged", state: "open" }],
+              }),
+            runAction: () =>
+              Effect.sync(() => {
+                mutations++;
+              }),
+          },
+        ],
+      });
+      const error = yield* service
+        .runAction({
+          ...factoryRef,
+          number: 21,
+          action: "merge",
+          stackNumber: scenario === "different-stack" ? 4 : 3,
+          expectedStackHeads: [
+            { number: 21, headSha: "other-head" },
+            ...(scenario === "new-member" ? [{ number: 20, headSha: "head" }] : []),
+          ],
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(error._tag, "PullRequestOperationError");
+      assert.strictEqual(mutations, 0);
+    }),
+);
+
+it.effect(
+  "inspects merge evidence uncached on its canonical host under a verified credential",
+  () =>
+    Effect.gen(function* () {
+      const reads: unknown[] = [];
+      let verified = 0;
+      const provider = fakeProvider("github");
+      const service = yield* makeService({
+        projects: [
+          project({ id: "web", title: "Web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          {
+            ...provider,
+            capabilities: { ...provider.capabilities, conditionalMerge: true },
+            withVerifiedCredential: (_input, use) =>
+              Effect.suspend(() => {
+                verified++;
+                return use({
+                  accountId: "1",
+                  viewer: "viewer",
+                  credentialFingerprint: "credential",
+                });
+              }),
+            inspectForMerge: (input) =>
+              Effect.sync(() => {
+                reads.push(input);
+                return { ...mergeEvidence, headSha: `head-${reads.length}` };
+              }),
+          },
+        ],
+      });
+      const ref = {
+        projectId: "web" as ProjectId,
+        repository: "ACME/WEB",
+        host: "GITHUB.COM",
+        number: 7,
+      };
+      assert.strictEqual((yield* service.inspectForMerge(ref)).headSha, "head-1");
+      assert.strictEqual((yield* service.inspectForMerge(ref)).headSha, "head-2");
+      assert.strictEqual(verified, 2);
+      assert.deepStrictEqual(
+        reads,
+        [1, 2].map(() => ({ cwd: "/w", repository: "acme/web", host: "github.com", number: 7 })),
+      );
+    }),
+);
+
+it.effect("threads an approved head through the service independently of message cleanup", () =>
+  Effect.gen(function* () {
+    const calls: unknown[] = [];
+    const provider = fakeProvider("github");
+    const service = yield* makeService({
+      settings: { ...DEFAULT_SERVER_SETTINGS, removeAgentCreditsOnMerge: false },
+      projects: [project({ id: "web", title: "Web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        {
+          ...provider,
+          capabilities: { ...provider.capabilities, conditionalMerge: true },
+          runAction: (input) =>
+            Effect.sync(() => {
+              calls.push(input);
+            }),
+          getChangeRequest: () => Effect.succeed(hostedChangeRequest("body")),
+        },
+      ],
+    });
+    yield* service.runAction({
+      projectId: "web" as ProjectId,
+      repository: "acme/web",
+      number: 7,
+      action: "merge",
+      expectedHeadSha: "approved-head",
+    });
+    assert.deepStrictEqual(calls, [
+      {
+        cwd: "/w",
+        repository: "acme/web",
+        host: "github.com",
+        number: 7,
+        action: "merge",
+        expectedHeadSha: "approved-head",
+      },
+    ]);
+  }),
+);
+
+it.effect(
+  "refuses unqualified merge evidence and an expected head that the provider cannot enforce",
+  () =>
+    Effect.gen(function* () {
+      let mutations = 0;
+      const service = yield* makeService({
+        projects: [
+          project({ id: "web", title: "Web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          fakeProvider("github", {
+            runAction: () =>
+              Effect.sync(() => {
+                mutations++;
+              }),
+            getChangeRequest: () => Effect.succeed(hostedChangeRequest("body")),
+          }),
+        ],
+      });
+      const ref = { projectId: "web" as ProjectId, repository: "acme/web", number: 7 };
+      assert.strictEqual(
+        (yield* service.inspectForMerge(ref).pipe(Effect.flip))._tag,
+        "PullRequestOperationError",
+      );
+      assert.strictEqual(
+        (yield* service
+          .runAction({ ...ref, action: "merge", expectedHeadSha: "approved-head" })
+          .pipe(Effect.flip))._tag,
+        "PullRequestOperationError",
+      );
+      assert.strictEqual(mutations, 0);
+      yield* service.runAction({ ...ref, action: "merge" });
+      assert.strictEqual(mutations, 1);
+    }),
+);
+
 /** Everything a host could offer, so a fixture only narrows what its own test is about. */
 const FULL_REVIEW: PullRequestReviewCapabilities = {
   inlineComment: true,
@@ -468,6 +1014,7 @@ function fakeProvider(
 }
 
 function makeService(input: {
+  readonly factorySnapshot?: FactorySnapshot | (() => FactorySnapshot);
   readonly settings?: ServerSettings;
   readonly projects: ReadonlyArray<OrchestrationProjectShell>;
   readonly providers: ReadonlyArray<PullRequestProviderApi>;
@@ -479,6 +1026,18 @@ function makeService(input: {
   return Effect.flatMap(
     Layer.build(
       Layer.mergeAll(
+        input.factorySnapshot === undefined
+          ? Layer.empty
+          : FactoryPullRequestGate.layer.pipe(
+              Layer.provide(
+                Layer.mock(FactoryStore)({
+                  snapshot:
+                    typeof input.factorySnapshot === "function"
+                      ? Effect.sync(input.factorySnapshot)
+                      : Effect.succeed(input.factorySnapshot),
+                }),
+              ),
+            ),
         Layer.mock(ServerSettingsService.ServerSettingsService)({
           getSettings: Effect.succeed(input.settings ?? DEFAULT_SERVER_SETTINGS),
         }),

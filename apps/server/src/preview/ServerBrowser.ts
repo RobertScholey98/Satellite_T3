@@ -19,6 +19,7 @@ import {
   type PreviewAutomationOpenInput,
   type PreviewAutomationPressInput,
   type PreviewAutomationRequest,
+  type PreviewAutomationOperation,
   type PreviewAutomationResizeInput,
   type PreviewAutomationScrollInput,
   type PreviewAutomationSelectInput,
@@ -33,6 +34,7 @@ import {
   type PreviewSessionSnapshot,
   type PreviewViewportSetting,
   ThreadId,
+  PreviewTabId,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
   type PreviewAppearancePreference,
 } from "@t3tools/contracts";
@@ -75,6 +77,7 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
+import { isRestrictedPreviewUrl } from "./ServerBrowserOriginPolicy.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
 const RENDER_SCALE = 2;
@@ -203,6 +206,22 @@ export interface ServerBrowserViewer {
 export class ServerBrowser extends Context.Service<
   ServerBrowser,
   {
+    readonly invokeRestricted: (input: {
+      readonly sessionId: string;
+      readonly threadId: ThreadId;
+      readonly origin: string;
+      readonly operation:
+        | "navigate"
+        | "snapshot"
+        | "click"
+        | "type"
+        | "press"
+        | "select"
+        | "scroll";
+      readonly input: unknown;
+    }) => Effect.Effect<unknown, ServerBrowserLaunchError>;
+    readonly closeRestricted: (sessionId: string) => Effect.Effect<void, ServerBrowserLaunchError>;
+    readonly closeAllRestricted: () => Effect.Effect<void, ServerBrowserLaunchError>;
     readonly attachViewer: (input: {
       readonly threadId: string;
       readonly tabId: string;
@@ -446,6 +465,11 @@ const make = Effect.gen(function* () {
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
 
   const tabs = new Map<string, ServerTab>();
+  const restrictedSessions = new Map<
+    string,
+    { readonly threadId: ThreadId; readonly origin: string; tabId?: string; closed?: boolean }
+  >();
+  const restrictedPrefix = "factory-preview:";
   const pendingTabs = new Map<string, Promise<ServerTab>>();
   /** Sessions closed while their tab was still opening; the open discards its page. */
   const closedPendingTabs = new Set<string>();
@@ -700,10 +724,15 @@ const make = Effect.gen(function* () {
   };
 
   const createTab = async (snapshot: PreviewSessionSnapshot): Promise<ServerTab> => {
+    const restricted = snapshot.automationOwner
+      ? restrictedSessions.get(snapshot.automationOwner)
+      : undefined;
+    if (snapshot.automationOwner?.startsWith(restrictedPrefix) && !restricted)
+      throw new Error("The restricted preview session must be reopened by its owner.");
     const adopted = adoptedPages.get(tabKey(snapshot.threadId, snapshot.tabId));
     adoptedPages.delete(tabKey(snapshot.threadId, snapshot.tabId));
     const desktop =
-      adopted === undefined && (await desktopRenders(snapshot))
+      restricted === undefined && adopted === undefined && (await desktopRenders(snapshot))
         ? await connectDesktop(snapshot)
         : null;
     const isolatedContext =
@@ -717,11 +746,27 @@ const make = Effect.gen(function* () {
       (await contexts.contextFor(
         snapshot.profileId ?? "default",
         isolatedContext ? tabKey(snapshot.threadId, snapshot.tabId) : undefined,
+        restricted?.origin,
       ));
     if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
     // The desktop page already has its own clipboard; the bridge script is for headless tabs.
-    if (!desktop) await prepareContext(context);
+    if (!desktop && !restricted) await prepareContext(context);
     const page = adopted?.page ?? desktop?.page ?? (await context.newPage());
+    if (restricted?.closed) {
+      await context.close();
+      throw new Error("The restricted preview closed during startup.");
+    }
+    if (restricted) {
+      page.on("framenavigated", (frame) => {
+        if (
+          frame.url() !== "about:blank" &&
+          !isRestrictedPreviewUrl(frame.url(), restricted.origin)
+        )
+          void page.close().catch(constVoid);
+      });
+      page.on("download", (download) => void download.cancel().catch(constVoid));
+      page.on("filechooser", (chooser) => void chooser.setFiles([]).catch(constVoid));
+    }
     const cdp = await context.newCDPSession(page);
     page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
     page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
@@ -818,8 +863,10 @@ const make = Effect.gen(function* () {
       tab.dialog = dialog;
       broadcastControl(tab);
     });
-    page.on("download", (download) => void saveDownload(tab, download));
-    page.on("filechooser", (chooser) => void offerFileChooser(tab, chooser));
+    if (!restricted) {
+      page.on("download", (download) => void saveDownload(tab, download));
+      page.on("filechooser", (chooser) => void offerFileChooser(tab, chooser));
+    }
     // Popups become tabs and keep `window.opener`, so sign-in popups can report back.
     page.on("popup", (popup) => void adoptPopup(tab, popup));
     // Playwright cannot reload a crashed page, so it must leave the tab list.
@@ -1003,6 +1050,10 @@ const make = Effect.gen(function* () {
 
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
     const agentId = opener.control.agentId;
+    if (agentId?.startsWith(restrictedPrefix)) {
+      await popup.close().catch(constVoid);
+      return;
+    }
     // A popup past an agent's limit closes; its page sees window.open return a closed window.
     if (opener.closing || (agentId !== null && atTabLimit(agentId))) {
       await popup.close().catch(constVoid);
@@ -1457,7 +1508,12 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const runOperation = async (request: PreviewAutomationRequest): Promise<unknown> => {
+  const runOperation = async (
+    request: PreviewAutomationRequest,
+    restrictedCall = false,
+  ): Promise<unknown> => {
+    if (!restrictedCall && request.agentSessionId?.startsWith(restrictedPrefix))
+      throw new Error("Restricted previews accept only their evidence owner's operations.");
     const input = request.input;
     switch (request.operation) {
       case "status":
@@ -1622,6 +1678,14 @@ const make = Effect.gen(function* () {
     switch (request.operation) {
       case "navigate": {
         const navigateInput = input as PreviewAutomationNavigateInput;
+        const restricted = tab.control.agentId
+          ? restrictedSessions.get(tab.control.agentId)
+          : undefined;
+        if (
+          restricted &&
+          !isRestrictedPreviewUrl(resolveNavigationUrl(navigateInput), restricted.origin)
+        )
+          throw new Error("Navigation must stay on the approved candidate instance.");
         await recordAction(tab, "navigate", () =>
           navigate(
             tab,
@@ -1961,7 +2025,7 @@ const make = Effect.gen(function* () {
       };
       const viewer: ViewerState = {
         id: NodeCrypto.randomUUID(),
-        canOperate: input.canOperate,
+        canOperate: input.canOperate && !tab.control.agentId?.startsWith(restrictedPrefix),
         pressedKeys: new Map(),
         pressedButtons: new Map(),
         push: (next) => {
@@ -2191,7 +2255,100 @@ const make = Effect.gen(function* () {
       catch: (cause) => new PreviewClearProfileError({ profileId, cause }),
     });
 
+  const closeRestricted = (id: string) =>
+    Effect.tryPromise({
+      try: async () => {
+        const sessionId = `${restrictedPrefix}${id}`;
+        const session = restrictedSessions.get(sessionId);
+        if (!session) return;
+        session.closed = true;
+        const { sessions } = await Effect.runPromise(manager.list({ threadId: session.threadId }));
+        for (const snapshot of sessions.filter((entry) => entry.automationOwner === sessionId)) {
+          const key = tabKey(session.threadId, snapshot.tabId);
+          const tab = tabs.get(key);
+          await Effect.runPromise(
+            manager.close({ threadId: session.threadId, tabId: snapshot.tabId }),
+          );
+          if (tab) {
+            await tab.page.context().close();
+            dropTab(tab, false);
+          }
+          await pendingTabs.get(key)?.catch(constVoid);
+        }
+        restrictedSessions.delete(sessionId);
+      },
+      catch: (cause) => new ServerBrowserLaunchError({ cause }),
+    });
+
   return ServerBrowser.of({
+    invokeRestricted: (input) =>
+      Effect.tryPromise({
+        try: async () => {
+          const sessionId = `${restrictedPrefix}${input.sessionId}`;
+          const parsed = new URL(input.origin);
+          if (
+            parsed.origin !== input.origin ||
+            parsed.protocol !== "http:" ||
+            parsed.hostname !== "127.0.0.1"
+          )
+            throw new Error("A restricted preview needs an approved loopback HTTP origin.");
+          let session = restrictedSessions.get(sessionId);
+          if (session?.closed) throw new Error("The restricted preview is closing.");
+          if (session && (session.origin !== input.origin || session.threadId !== input.threadId))
+            throw new Error("The restricted session belongs to a different candidate or reviewer.");
+          if (!session) {
+            session = { threadId: input.threadId, origin: input.origin };
+            restrictedSessions.set(sessionId, session);
+          }
+          let operation: PreviewAutomationOperation = input.operation;
+          let operationInput = input.input;
+          if (input.operation === "navigate") {
+            const navigation = input.input as PreviewAutomationNavigateInput;
+            if (!isRestrictedPreviewUrl(resolveNavigationUrl(navigation), input.origin))
+              throw new Error("Navigation must stay on the approved candidate instance.");
+            if (!session.tabId) {
+              operation = "open";
+              operationInput = {
+                url: resolveNavigationUrl(navigation),
+                reuseExistingTab: false,
+                show: false,
+              };
+            }
+          } else if (!session.tabId)
+            throw new Error("Navigate to the candidate before inspecting or interacting.");
+          const result = await runOperation(
+            {
+              requestId: NodeCrypto.randomUUID(),
+              threadId: input.threadId,
+              agentSessionId: sessionId,
+              operation,
+              input: operationInput,
+              timeoutMs: NAVIGATION_TIMEOUT_MS,
+              ...(session.tabId
+                ? { tabId: PreviewTabId.make(session.tabId), tabIdExplicit: true }
+                : {}),
+            },
+            true,
+          );
+          if (
+            operation === "open" &&
+            typeof result === "object" &&
+            result !== null &&
+            "tabId" in result &&
+            typeof result.tabId === "string"
+          )
+            session.tabId = result.tabId;
+          return result;
+        },
+        catch: (cause) => new ServerBrowserLaunchError({ cause }),
+      }),
+    closeRestricted,
+    closeAllRestricted: () =>
+      Effect.forEach(
+        [...restrictedSessions.keys()],
+        (id) => closeRestricted(id.slice(restrictedPrefix.length)),
+        { discard: true },
+      ),
     attachViewer,
     clearProfile,
     openDownload,

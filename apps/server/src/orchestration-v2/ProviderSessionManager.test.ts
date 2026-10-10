@@ -1159,6 +1159,77 @@ it.effect("ProviderSessionManagerV2 rejects reuse across managed execution bound
   }),
 );
 
+it.effect(
+  "strict factory detach closes the dedicated runtime before switching profiles and is repeatable",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const threadId = ThreadId.make("factory-profile-switch");
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const stoppedSessions: ProviderSessionId[] = [];
+        for (const boundaryId of ["implementation", "held-planning"]) {
+          const providerSessionId = yield* ids.allocate.providerSession({
+            providerInstanceId: modelSelection.instanceId,
+            threadId,
+          });
+          const providerThread = makeProviderThread({
+            idAllocator: ids,
+            threadId,
+            providerSessionId,
+            now,
+          });
+          yield* sink.write({
+            events: [
+              {
+                id: yield* ids.allocate.event({ threadId }),
+                type: "provider-thread.updated",
+                threadId,
+                driver: CODEX_DRIVER,
+                occurredAt: now,
+                payload: providerThread,
+              },
+            ],
+          });
+          yield* manager.open({
+            threadId,
+            providerSessionId,
+            modelSelection,
+            runtimePolicy: {
+              ...runtimePolicy,
+              factoryExecution: {
+                boundaryId,
+                dockerContext: "local",
+                imageId: "sha256:verified",
+                projectSnapshotPath: "/project",
+                workflowSnapshotPath: "/workflow",
+                runtimePath: "/runtime",
+              },
+            },
+          });
+          stoppedSessions.push(providerSessionId);
+          for (const oldSession of stoppedSessions)
+            yield* manager.detach({
+              threadId,
+              providerSessionId: oldSession,
+              awaitQuiescence: true,
+              revokeMcpCredential: true,
+            });
+          assert.equal((yield* Ref.get(state)).closeCount, stoppedSessions.length);
+          assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        }
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+        assert.equal((yield* Ref.get(state)).openCount, 2);
+      }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })), Effect.scoped);
+    }),
+);
+
 it.effect("ProviderSessionManagerV2 cleans up an open interrupted mid-handshake", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
@@ -1844,7 +1915,14 @@ it.effect(
         assert.equal(resolved?.thread.threadId, threadId);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+          new Set([
+            "preview",
+            "orchestration",
+            "worktree",
+            "pull-requests",
+            "documents",
+            "commits",
+          ]),
         );
 
         yield* manager.close(providerSessionId);
@@ -1901,7 +1979,7 @@ it.effect(
         const resolved = yield* registry.resolve(token!);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["orchestration", "worktree", "pull-requests"]),
+          new Set(["orchestration", "worktree", "pull-requests", "documents", "commits"]),
         );
 
         yield* manager.close(providerSessionId);
@@ -4368,54 +4446,73 @@ it.effect(
     }),
 );
 
-it.effect("strict detach waits for an exclusive runtime already removed by another release", () =>
-  Effect.gen(function* () {
-    const state = yield* Ref.make(emptyState);
-    const entered = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
-    const completed = yield* Ref.make(false);
-    const beforeClose = Deferred.succeed(entered, undefined).pipe(
-      Effect.andThen(Deferred.await(release)),
-    );
-    yield* Effect.gen(function* () {
-      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
-      const ids = yield* IdAllocator.IdAllocatorV2;
-      const threadId = ThreadId.make("strict-exclusive-owner");
-      const sink = yield* EventSink.EventSinkV2;
-      yield* sink.write({
-        events: [
-          yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now }),
-        ],
-      });
-      const providerSessionId = yield* ids.allocate.providerSession({
-        providerInstanceId: modelSelection.instanceId,
-        threadId,
-      });
-      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
-      const ordinary = yield* manager.close(providerSessionId).pipe(Effect.forkScoped);
-      yield* Deferred.await(entered);
-      const strict = yield* manager
-        .detach({ threadId, providerSessionId, awaitQuiescence: true })
-        .pipe(Effect.andThen(Ref.set(completed, true)), Effect.forkScoped);
-      yield* Effect.yieldNow;
-      assert.equal(yield* Ref.get(completed), false);
-      yield* Deferred.succeed(release, undefined);
-      yield* Fiber.join(ordinary);
-      yield* Fiber.join(strict);
-      assert.equal(yield* Ref.get(completed), true);
-      assert.equal((yield* Ref.get(state)).closeCount, 1);
-    }).pipe(
-      Effect.provide(
-        layerTest({
-          state,
-          idleTimeoutMs: 60_000,
-          capabilities: ExclusiveCapabilities,
-          beforeClose,
-        }),
-      ),
-      Effect.scoped,
-    );
-  }),
+it.effect.each([false, true])(
+  "strict detach awaits an already retiring runtime (managed boundary: %s)",
+  (managed) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const completed = yield* Ref.make(false);
+      const beforeClose = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const threadId = ThreadId.make("strict-exclusive-owner");
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now }),
+          ],
+        });
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: managed
+            ? {
+                ...runtimePolicy,
+                factoryExecution: {
+                  boundaryId: "managed-retiring",
+                  dockerContext: "local",
+                  imageId: "sha256:verified",
+                  projectSnapshotPath: "/project",
+                  workflowSnapshotPath: "/workflow",
+                  runtimePath: "/runtime",
+                },
+              }
+            : runtimePolicy,
+        });
+        const ordinary = yield* manager.close(providerSessionId).pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        const strict = yield* manager
+          .detach({ threadId, providerSessionId, awaitQuiescence: true })
+          .pipe(Effect.andThen(Ref.set(completed, true)), Effect.forkScoped);
+        yield* Effect.yieldNow;
+        assert.equal(yield* Ref.get(completed), false);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(ordinary);
+        yield* Fiber.join(strict);
+        assert.equal(yield* Ref.get(completed), true);
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            capabilities: managed ? CodexCapabilities : ExclusiveCapabilities,
+            beforeClose,
+          }),
+        ),
+        Effect.scoped,
+      );
+    }),
 );
 
 it.effect(

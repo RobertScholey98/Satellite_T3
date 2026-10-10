@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
+import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -312,16 +313,24 @@ const make = Effect.gen(function* () {
         current = thread.lineage?.parentThreadId ?? null;
       }
       if (current === null) return undefined;
-      const qualification = auxiliary?.qualification ?? assignment?.qualification;
-      const incident = assignment?.oversight?.recovery.incident;
+      const flow = assignment?.delivery?.flow;
+      const heldFlow = auxiliary === undefined && flow !== undefined && flow.status !== "released";
+      if (
+        heldFlow &&
+        (flow.status === "stopping" || threadId !== assignment?.threadId || !flow.qualification)
+      )
+        return yield* new FactoryError({
+          code: "execution-unavailable",
+          detail: "Implementation is held while the concrete UI flow is prepared for human review.",
+        });
+      const qualification =
+        auxiliary?.qualification ?? (heldFlow ? flow.qualification : assignment?.qualification);
       if (
         qualification?.status !== "qualified" ||
         assignment === undefined ||
         (auxiliary !== undefined &&
           (auxiliary.qualification === undefined ||
-            incident?.phase !== "diagnosing" ||
-            incident.id !== auxiliary.incidentId ||
-            incident.diagnosisThreadId !== auxiliary.threadId))
+            !factoryAuxiliaryIsCurrent(assignment, auxiliary)))
       )
         return yield* new FactoryError({ code: "execution-unavailable" });
       const profileId = qualification.profileId;
@@ -337,7 +346,15 @@ const make = Effect.gen(function* () {
           profile.inspection.sourceDigest !== auxiliary.sourceDigest)
       )
         return yield* new FactoryError({ code: "execution-unavailable" });
-      if (auxiliary === undefined && profile.inspection !== undefined)
+      if (
+        auxiliary === undefined &&
+        profile.inspection !== undefined &&
+        !(
+          heldFlow &&
+          profile.inspection.deliveryHoldId === flow.holdId &&
+          profile.inspection.sourceDigest === flow.sourceDigest
+        )
+      )
         return yield* new FactoryError({ code: "execution-unavailable" });
       yield* assertFactoryProfileActive(profile).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
@@ -365,7 +382,12 @@ const make = Effect.gen(function* () {
         Buffer.from(threadId).toString("base64url"),
       );
       yield* fs.makeDirectory(path.join(runtimePath, "codex"), { recursive: true });
-      return { ...profile, boundaryId: `${profile.boundaryId}:${threadId}`, runtimePath };
+      return {
+        ...profile,
+        profileId,
+        boundaryId: `${profile.boundaryId}:${threadId}`,
+        runtimePath,
+      };
     },
     Effect.mapError(() => new FactoryError({ code: "execution-unavailable" })),
   );

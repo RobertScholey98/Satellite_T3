@@ -513,7 +513,7 @@ function ManagedThreadControls({
     ? factoryThreadMembership(environment.data, threadRef, threads)
     : null;
   if (!membership) return null;
-  const { manager, assignment, ancestorThreadIds } = membership;
+  const { manager, assignment, auxiliary, ancestorThreadIds } = membership;
   const controls = environment.data?.controls ?? [];
   const ancestorTakeover = controls.some(
     (control) =>
@@ -531,7 +531,7 @@ function ManagedThreadControls({
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs font-medium">
           {assignment
-            ? `${assignment.threadId === thread.id ? "Implementation lead" : "Team member"} · ${manager.name}`
+            ? `${auxiliary?.kind === "delivery-review" ? "Independent reviewer" : auxiliary?.kind === "diagnosis" ? "Recovery diagnosis" : assignment.threadId === thread.id ? "Implementation lead" : "Team member"} · ${manager.name}`
             : manager.name}
         </span>
         {managerPause ? (

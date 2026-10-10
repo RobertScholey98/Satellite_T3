@@ -20,6 +20,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -37,6 +38,7 @@ import {
   factoryDockerArguments,
   FactoryExecutionProfile,
   FactoryExecutionSuspension,
+  FactoryDeliveryExecutionHold,
 } from "./FactoryExecutionProfile.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 import { FactoryStore } from "./FactoryStore.ts";
@@ -44,6 +46,8 @@ import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import { factoryVolumeHelper } from "./FactoryVolumeHelper.ts";
 import { factoryWritableProbe } from "./FactoryWritableProbe.ts";
 import { FactorySource, factoryCanonicalText } from "./FactorySource.ts";
+import { FactoryCandidateArtifact } from "./FactoryCandidate.ts";
+import * as FactoryPublication from "./FactoryPublication.ts";
 
 const CapturedFile = Schema.Struct({
   path: Schema.String,
@@ -56,6 +60,52 @@ const CapturedSource = Schema.Struct({ files: Schema.Array(CapturedFile), digest
 export class FactoryBoundaryExecution extends Context.Service<
   FactoryBoundaryExecution,
   {
+    readonly setDeliveryHold: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly threadId: ThreadId;
+      readonly expectedEpoch: number;
+      readonly holdId: string;
+      readonly held: boolean;
+    }) => Effect.Effect<
+      | {
+          readonly qualification: Extract<FactoryDiscoveryQualification, { status: "qualified" }>;
+          readonly sourceDigest: string;
+        }
+      | undefined,
+      FactoryError
+    >;
+    readonly captureCandidate: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly expectedEpoch: number;
+      readonly commandId: CommandId;
+      readonly selectedPaths: ReadonlyArray<string>;
+    }) => Effect.Effect<FactoryCandidateArtifact, FactoryError>;
+    readonly readCandidate: (
+      candidateId: string,
+    ) => Effect.Effect<FactoryCandidateArtifact, FactoryError>;
+    readonly finalizeCandidate: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly expectedEpoch: number;
+      readonly candidateId: string;
+      readonly reservationId: string;
+    }) => Effect.Effect<FactoryCandidateArtifact, FactoryError>;
+    readonly verifyCandidate: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly expectedEpoch: number;
+      readonly candidateId: string;
+    }) => Effect.Effect<FactoryVerification, FactoryError>;
+    readonly inspectCandidate: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly expectedEpoch: number;
+      readonly candidateId: string;
+      readonly threadId: ThreadId;
+    }) => Effect.Effect<
+      {
+        readonly qualification: Extract<FactoryDiscoveryQualification, { status: "qualified" }>;
+        readonly sourceDigest: string;
+      },
+      FactoryError
+    >;
     readonly approve: (input: {
       readonly managerId: ThreadId;
       readonly configuration: FactoryBoundaryConfiguration;
@@ -124,6 +174,10 @@ const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryEx
 const decodeBoundary = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryBoundary));
 const decodeCapture = Schema.decodeUnknownEffect(Schema.fromJsonString(CapturedSource));
 const decodeVerification = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryVerification));
+const decodeCandidate = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryCandidateArtifact));
+const decodeDeliveryHold = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(FactoryDeliveryExecutionHold),
+);
 const decodeSuspension = Schema.decodeUnknownEffect(
   Schema.fromJsonString(FactoryExecutionSuspension),
 );
@@ -143,6 +197,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const store = yield* FactoryStore;
   const sources = yield* FactorySource;
+  const publication = yield* Effect.serviceOption(FactoryPublication.FactoryPublication);
   const mutex = yield* Semaphore.make(1);
   const controlMutex = yield* Semaphore.make(1);
   const platform = yield* HostProcessPlatform;
@@ -515,6 +570,16 @@ const make = Effect.gen(function* () {
     if (!boundary || assignment.projectId !== boundary.projectId) return yield* denied();
     return { assignment, boundary, grant: assignment.grant };
   });
+  const admitImplementation = Effect.fn("FactoryBoundaryExecution.admitImplementation")(function* (
+    assignmentId: FactoryAssignmentId,
+    expectedEpoch: number,
+  ) {
+    const { assignment } = yield* current(assignmentId, expectedEpoch);
+    if (assignment.delivery?.flow !== undefined && assignment.delivery.flow.status !== "released")
+      return yield* unavailable(
+        "Implementation is held for the concrete UI flow decision. Wait for human approval and confirmed release before changing or verifying the assignment.",
+      );
+  });
   const prepared = Effect.fn("FactoryBoundaryExecution.prepared")(function* (
     assignmentId: FactoryAssignmentId,
     expectedEpoch?: number,
@@ -563,6 +628,212 @@ const make = Effect.gen(function* () {
     yield* docker(profile, ["volume", "inspect", profile.assignmentWorkspace!.volumeName]);
     return value;
   });
+  const candidatePath = (candidateId: string) =>
+    /^[a-f0-9-]{36}$/.test(candidateId)
+      ? Effect.succeed(path.join(root, "candidates", candidateId))
+      : Effect.fail(denied());
+  const candidateDigest = Effect.fn("FactoryBoundaryExecution.candidateDigest")(function* (
+    files: FactoryCandidateArtifact["files"],
+  ) {
+    const names = new Set<string>();
+    let total = 0;
+    for (const file of files) {
+      if (!factoryRelativePath(file.path) || names.has(file.path.toLowerCase()))
+        return yield* denied();
+      names.add(file.path.toLowerCase());
+      const bytes = Buffer.from(file.content, "base64");
+      total += bytes.length;
+      if (
+        bytes.toString("base64") !== file.content ||
+        bytes.length > 16 * 1024 * 1024 ||
+        total > 256 * 1024 * 1024 ||
+        Buffer.from(yield* crypto.digest("SHA-256", bytes)).toString("hex") !== file.digest
+      )
+        return yield* denied();
+    }
+    return Buffer.from(
+      yield* crypto.digest(
+        "SHA-256",
+        Buffer.from(
+          json(files.map(({ path: name, digest, mode }) => ({ path: name, digest, mode }))),
+        ),
+      ),
+    ).toString("hex");
+  });
+  const readCandidate = Effect.fn("FactoryBoundaryExecution.readCandidate")(function* (
+    candidateId: string,
+  ) {
+    const directory = yield* candidatePath(candidateId);
+    const manifest = path.join(
+      directory,
+      (yield* fs.exists(path.join(directory, "final.json"))) ? "final.json" : "capture.json",
+    );
+    const candidate = yield* fs.readFileString(manifest).pipe(Effect.flatMap(decodeCandidate));
+    if (
+      candidate.id !== candidateId ||
+      (yield* candidateDigest(candidate.files)) !== candidate.sourceDigest ||
+      (candidate.finalized &&
+        (yield* candidateDigest(candidate.finalized.files)) !== candidate.finalized.sourceDigest)
+    )
+      return yield* denied();
+    return candidate;
+  }, Effect.mapError(preserve));
+  const candidateSource = Effect.fn("FactoryBoundaryExecution.candidateSource")(function* (input: {
+    assignmentId: FactoryAssignmentId;
+    expectedEpoch: number;
+    candidateId: string;
+  }) {
+    const value = yield* prepared(input.assignmentId, input.expectedEpoch);
+    const candidate = yield* readCandidate(input.candidateId);
+    if (
+      candidate.assignmentId !== input.assignmentId ||
+      candidate.projectId !== value.assignment.projectId ||
+      candidate.startingSource.id !== value.assignment.startingSource?.id ||
+      stableStringify(candidate.grant) !== stableStringify(value.grant) ||
+      stableStringify(candidate.workflow) !== stableStringify(value.assignment.workflow)
+    )
+      return yield* denied();
+    return { ...value, candidate };
+  });
+  const captureCandidate = Effect.fn("FactoryBoundaryExecution.captureCandidate")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["captureCandidate"]>[0]) {
+      const { assignment, profile, grant, boundary, pathConfiguration } = yield* recoverySource(
+        input.assignmentId,
+        input.expectedEpoch,
+      );
+      if (
+        !assignment.startingSource ||
+        input.selectedPaths.length === 0 ||
+        new Set(input.selectedPaths.map((entry) => entry.toLowerCase())).size !==
+          input.selectedPaths.length ||
+        input.selectedPaths.some((entry) => !factoryCanWrite(entry, grant, pathConfiguration))
+      )
+        return yield* denied();
+      const id = yield* identity({
+        kind: "candidate",
+        assignmentId: assignment.id,
+        commandId: input.commandId,
+      });
+      const directory = yield* candidatePath(id);
+      if (yield* fs.exists(path.join(directory, "capture.json"))) {
+        const existing = (yield* candidateSource({ ...input, candidateId: id })).candidate;
+        if (stableStringify(existing.selectedPaths) !== stableStringify(input.selectedPaths))
+          return yield* denied();
+        return existing;
+      }
+      const starting = yield* sources.read(assignment.startingSource.id);
+      const captured = yield* helper(profile, { kind: "capture" }).pipe(
+        Effect.flatMap(decodeCapture),
+      );
+      const files = captured.files.map((file) => ({
+        ...file,
+        mode: file.mode ?? ("100644" as const),
+      }));
+      const sourceDigest = yield* candidateDigest(files);
+      if (sourceDigest !== captured.digest) return yield* denied();
+      const present = new Set(files.map((file) => file.path));
+      const candidate: FactoryCandidateArtifact = {
+        id,
+        assignmentId: assignment.id,
+        projectId: assignment.projectId,
+        leadThreadId: assignment.threadId,
+        startingSource: assignment.startingSource,
+        workflow: assignment.workflow,
+        grant,
+        configuration: {
+          protectedPaths: boundary.protectedPaths,
+          writablePaths: boundary.writablePaths,
+          creatableDirectories: boundary.creatableDirectories,
+          gates: boundary.gates,
+        },
+        files,
+        sourceDigest,
+        deletedPaths: [
+          ...new Set([...starting.files.map((file) => file.path), ...starting.source.deletedPaths]),
+        ].filter((name) => !present.has(name)),
+        selectedPaths: [...input.selectedPaths],
+        startingFiles: starting.files,
+        startingIndexFiles: starting.indexFiles,
+        capturedAt: DateTime.formatIso(yield* DateTime.now),
+      };
+      if (
+        candidate.selectedPaths.some(
+          (name) => !present.has(name) && !candidate.deletedPaths.includes(name),
+        )
+      )
+        return yield* denied();
+      yield* current(input.assignmentId, input.expectedEpoch);
+      yield* assertActive(profile);
+      yield* fs.makeDirectory(directory, { recursive: true });
+      const temporary = path.join(directory, `capture.${yield* crypto.randomUUIDv4}.json`);
+      yield* fs.writeFileString(temporary, json(candidate), { flag: "wx" });
+      yield* fs.rename(temporary, path.join(directory, "capture.json"));
+      return candidate;
+    },
+    mutex.withPermit,
+    Effect.mapError(preserve),
+  );
+  const finalizeCandidate = Effect.fn("FactoryBoundaryExecution.finalizeCandidate")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["finalizeCandidate"]>[0]) {
+      const { candidate, profile } = yield* candidateSource(input);
+      if (candidate.finalized) {
+        if (candidate.finalized.reservationId !== input.reservationId) return yield* denied();
+        return candidate;
+      }
+      if (Option.isNone(publication))
+        return yield* unavailable(
+          "The private publication service is required before a candidate can be reviewed or verified.",
+        );
+      const artifact = yield* publication.value
+        .read(input.reservationId)
+        .pipe(Effect.mapError(preserve));
+      const { reservation, prepared: publicationPrepared } = artifact;
+      if (
+        reservation.id !== input.reservationId ||
+        reservation.assignmentId !== candidate.assignmentId ||
+        reservation.sourceId !== candidate.startingSource.id ||
+        reservation.boundaryId !== candidate.grant.boundaryId ||
+        reservation.epoch !== candidate.grant.epoch ||
+        publicationPrepared.reservationId !== input.reservationId ||
+        publicationPrepared.candidateId !== candidate.id ||
+        publicationPrepared.candidateDigest !== candidate.sourceDigest ||
+        stableStringify(publicationPrepared.selectedPaths) !==
+          stableStringify(candidate.selectedPaths) ||
+        artifact.candidate.id !== candidate.id ||
+        artifact.candidate.sourceDigest !== candidate.sourceDigest ||
+        stableStringify(artifact.candidate.selectedPaths) !==
+          stableStringify(candidate.selectedPaths) ||
+        stableStringify(artifact.candidate.files) !== stableStringify(candidate.files) ||
+        stableStringify(artifact.candidate.deletedPaths) !==
+          stableStringify(candidate.deletedPaths) ||
+        stableStringify(artifact.candidate.grant) !== stableStringify(candidate.grant) ||
+        stableStringify(artifact.candidate.configuration) !==
+          stableStringify(candidate.configuration) ||
+        (yield* candidateDigest(artifact.publishedFiles)) !==
+          publicationPrepared.publishedSourceDigest
+      )
+        return yield* denied();
+      const finalized: FactoryCandidateArtifact = {
+        ...candidate,
+        finalized: {
+          reservationId: input.reservationId,
+          files: artifact.publishedFiles,
+          sourceDigest: publicationPrepared.publishedSourceDigest,
+          treeOid: publicationPrepared.treeOid,
+          commitOid: publicationPrepared.commitOid,
+        },
+      };
+      yield* current(input.assignmentId, input.expectedEpoch);
+      yield* assertActive(profile);
+      const directory = yield* candidatePath(candidate.id);
+      const temporary = path.join(directory, `final.${yield* crypto.randomUUIDv4}.json`);
+      yield* fs.writeFileString(temporary, json(finalized), { flag: "wx" });
+      yield* fs.rename(temporary, path.join(directory, "final.json"));
+      return finalized;
+    },
+    mutex.withPermit,
+    Effect.mapError(preserve),
+  );
   const publishProfile = Effect.fn("FactoryBoundaryExecution.publishProfile")(function* (
     directory: string,
     profile: FactoryExecutionProfile,
@@ -642,6 +913,81 @@ const make = Effect.gen(function* () {
           checkedAt: DateTime.formatIso(yield* DateTime.now),
         },
         sourceDigest: profile.inspection!.sourceDigest,
+      };
+    },
+    mutex.withPermit,
+    Effect.mapError(preserve),
+  );
+  const inspectCandidate = Effect.fn("FactoryBoundaryExecution.inspectCandidate")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["inspectCandidate"]>[0]) {
+      const { candidate, assignment, profile: original, grant } = yield* candidateSource(input);
+      if (!candidate.finalized)
+        return yield* unavailable(
+          "Prepare the exact publication tree before requesting independent review.",
+        );
+      const final = candidate.finalized;
+      const profileId = yield* identity({
+        kind: "candidate-inspection",
+        candidateId: candidate.id,
+        sourceDigest: final.sourceDigest,
+        threadId: input.threadId,
+        grant,
+      });
+      const directory = path.join(root, "execution", profileId);
+      if (yield* fs.exists(path.join(directory, "profile.json"))) {
+        const existing = yield* readProfile(profileId);
+        if (
+          existing.inspection?.candidateId !== candidate.id ||
+          existing.inspection.sourceDigest !== final.sourceDigest ||
+          stableStringify(existing.assignmentWorkspace) !==
+            stableStringify(original.assignmentWorkspace)
+        )
+          return yield* denied();
+        yield* assertActive(existing);
+      } else {
+        const projectSnapshotPath = path.join(directory, "project");
+        const evidencePath = path.join(directory, "evidence");
+        for (const target of [projectSnapshotPath, evidencePath])
+          yield* fs.remove(target, { recursive: true, force: true });
+        yield* writeFiles(projectSnapshotPath, final.files);
+        yield* fs.makeDirectory(evidencePath, { recursive: true });
+        yield* fs.writeFileString(
+          path.join(evidencePath, "candidate.json"),
+          json({
+            candidateId: candidate.id,
+            assignmentId: assignment.id,
+            scope: assignment.scope,
+            startingSource: candidate.startingSource,
+            workflow: candidate.workflow,
+            grant,
+            selectedPaths: candidate.selectedPaths,
+            deletedPaths: candidate.deletedPaths,
+            sourceDigest: final.sourceDigest,
+            rawSourceDigest: candidate.sourceDigest,
+            treeOid: final.treeOid,
+            commitOid: final.commitOid,
+            files: final.files.map(({ path, digest, mode }) => ({ path, digest, mode })),
+          }),
+        );
+        const profile = FactoryExecutionProfile.make({
+          ...original,
+          boundaryId: profileId,
+          projectSnapshotPath,
+          runtimePath: path.join(directory, "sessions"),
+          inspection: { candidateId: candidate.id, sourceDigest: final.sourceDigest, evidencePath },
+        });
+        yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
+        yield* current(input.assignmentId, input.expectedEpoch);
+        yield* assertActive(original);
+        yield* publishProfile(directory, profile);
+      }
+      return {
+        qualification: {
+          status: "qualified" as const,
+          profileId,
+          checkedAt: DateTime.formatIso(yield* DateTime.now),
+        },
+        sourceDigest: final.sourceDigest,
       };
     },
     mutex.withPermit,
@@ -912,6 +1258,7 @@ const make = Effect.gen(function* () {
 
   const mutate = Effect.fn("FactoryBoundaryExecution.mutate")(
     function* (input: Parameters<FactoryBoundaryExecution["Service"]["mutate"]>[0]) {
+      yield* admitImplementation(input.assignmentId, input.expectedEpoch);
       const { profile, grant, pathConfiguration } = yield* prepared(
         input.assignmentId,
         input.expectedEpoch,
@@ -945,6 +1292,7 @@ const make = Effect.gen(function* () {
         input.operation.kind === "create" || input.operation.kind === "write"
           ? { ...input.operation, content: Buffer.from(input.operation.content).toString("base64") }
           : input.operation;
+      yield* admitImplementation(input.assignmentId, input.expectedEpoch);
       yield* helper(profile, { kind: "mutate", operation, commandId: receiptId, request });
       yield* fs.makeDirectory(path.dirname(receiptPath), { recursive: true });
       yield* fs.writeFileString(receiptPath, request);
@@ -954,11 +1302,23 @@ const make = Effect.gen(function* () {
   );
 
   const verify = Effect.fn("FactoryBoundaryExecution.verify")(
-    function* (input: Parameters<FactoryBoundaryExecution["Service"]["verify"]>[0]) {
+    function* (
+      input: Parameters<FactoryBoundaryExecution["Service"]["verify"]>[0],
+      candidateId?: string,
+    ) {
+      yield* admitImplementation(input.assignmentId, input.expectedEpoch);
       const { profile, boundary, grant } = yield* prepared(input.assignmentId, input.expectedEpoch);
-      const source = yield* helper(profile, { kind: "capture" }).pipe(
-        Effect.flatMap(decodeCapture),
-      );
+      const candidate =
+        candidateId === undefined
+          ? undefined
+          : (yield* candidateSource({ ...input, candidateId })).candidate;
+      if (candidate && !candidate.finalized)
+        return yield* unavailable(
+          "Prepare the exact publication tree before verifying this candidate.",
+        );
+      const source = candidate?.finalized
+        ? { files: candidate.finalized.files, digest: candidate.finalized.sourceDigest }
+        : yield* helper(profile, { kind: "capture" }).pipe(Effect.flatMap(decodeCapture));
       const artifactId = yield* crypto.randomUUIDv4;
       const directory = path.join(root, "execution", profile.boundaryId, "artifacts", artifactId);
       yield* writeFiles(path.join(directory, "source"), source.files);
@@ -969,7 +1329,7 @@ const make = Effect.gen(function* () {
       );
       const gates: Array<FactoryVerification["gates"][number]> = [];
       for (const gate of boundary.gates) {
-        yield* current(input.assignmentId, input.expectedEpoch);
+        yield* admitImplementation(input.assignmentId, input.expectedEpoch);
         yield* assertActive(profile);
         const containerName = `satellite-factory-verify-${yield* crypto.randomUUIDv4}`;
         const result = yield* runner
@@ -1013,7 +1373,7 @@ const make = Effect.gen(function* () {
               "/usr/local/bin/node",
               profile.imageId,
               "-e",
-              `const fs=require('node:fs');const {spawn}=require('node:child_process');const stopped=()=>{try{return fs.existsSync('/authority/revoked.json')||(fs.existsSync('/authority/suspension.json')&&JSON.parse(fs.readFileSync('/authority/suspension.json','utf8')).state!=='resumed')}catch{return true}};if(stopped())process.exit(143);const child=spawn(${json(gate.executable)},${json(gate.args)},{stdio:'inherit'});const timer=setInterval(()=>{if(stopped()){child.kill('SIGKILL');process.exit(143)}},25);child.on('error',()=>{clearInterval(timer);process.exit(1)});child.on('exit',code=>{clearInterval(timer);process.exit(code??1)});`,
+              `const fs=require('node:fs');const {spawn}=require('node:child_process');const stopped=()=>{try{return fs.existsSync('/authority/revoked.json')||(fs.existsSync('/authority/suspension.json')&&JSON.parse(fs.readFileSync('/authority/suspension.json','utf8')).state!=='resumed')||(fs.existsSync('/authority/delivery-hold.json')&&JSON.parse(fs.readFileSync('/authority/delivery-hold.json','utf8')).state==='held')}catch{return true}};if(stopped())process.exit(143);const child=spawn(${json(gate.executable)},${json(gate.args)},{stdio:'inherit'});const timer=setInterval(()=>{if(stopped()){child.kill('SIGKILL');process.exit(143)}},25);child.on('error',()=>{clearInterval(timer);process.exit(1)});child.on('exit',code=>{clearInterval(timer);process.exit(code??1)});`,
             ],
             timeout: gate.timeoutMs,
             maxOutputBytes: 128 * 1024,
@@ -1028,6 +1388,7 @@ const make = Effect.gen(function* () {
           output: `${result.stdout}${result.stderr}`,
         });
       }
+      yield* admitImplementation(input.assignmentId, input.expectedEpoch);
       const result = FactoryVerification.make({
         artifactId,
         boundaryId: boundary.id,
@@ -1038,6 +1399,16 @@ const make = Effect.gen(function* () {
       });
       yield* fs.writeFileString(path.join(directory, "source.json"), json(source));
       yield* fs.writeFileString(path.join(directory, "verification.json"), json(result));
+      if (candidate)
+        yield* fs.writeFileString(
+          path.join(directory, "candidate.json"),
+          json({
+            candidateId: candidate.id,
+            sourceDigest: source.digest,
+            treeOid: candidate.finalized!.treeOid,
+            commitOid: candidate.finalized!.commitOid,
+          }),
+        );
       return result;
     },
     mutex.withPermit,
@@ -1194,6 +1565,143 @@ const make = Effect.gen(function* () {
     controlMutex.withPermit,
     Effect.mapError(preserve),
   );
+  const setDeliveryHold = Effect.fn("FactoryBoundaryExecution.setDeliveryHold")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["setDeliveryHold"]>[0]) {
+      const { assignment, grant } = yield* current(input.assignmentId, input.expectedEpoch, true);
+      if (
+        assignment.threadId !== input.threadId ||
+        assignment.delivery?.flow?.holdId !== input.holdId ||
+        (input.held
+          ? !["stopping", "held"].includes(assignment.delivery.flow.status)
+          : !["releasing", "released"].includes(assignment.delivery.flow.status))
+      )
+        return yield* denied();
+      const original = yield* assignmentProfile(input.assignmentId);
+      if (
+        !original?.assignmentWorkspace ||
+        original.inspection ||
+        original.assignmentWorkspace.grantEpoch !== grant.epoch ||
+        (yield* fs.exists(original.assignmentWorkspace.revocationPath))
+      )
+        return yield* denied();
+      const markerPath = path.join(
+        path.dirname(original.assignmentWorkspace.revocationPath),
+        "delivery-hold.json",
+      );
+      const previous = (yield* fs.exists(markerPath))
+        ? yield* fs.readFileString(markerPath).pipe(Effect.flatMap(decodeDeliveryHold))
+        : undefined;
+      const writeMarker = (marker: FactoryDeliveryExecutionHold) =>
+        Effect.gen(function* () {
+          const temporary = `${markerPath}.${yield* crypto.randomUUIDv4}`;
+          yield* fs.writeFileString(temporary, json(marker), { flag: "wx" });
+          yield* fs
+            .rename(temporary, markerPath)
+            .pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
+        });
+      if (!input.held) {
+        if (!previous || previous.holdId !== input.holdId || previous.epoch !== input.expectedEpoch)
+          return yield* denied();
+        if (previous.state === "released") return undefined;
+        yield* drain(original);
+        const latest = yield* current(input.assignmentId, input.expectedEpoch, true);
+        if (
+          latest.assignment.threadId !== input.threadId ||
+          latest.assignment.delivery?.flow?.holdId !== input.holdId ||
+          !["releasing", "released"].includes(latest.assignment.delivery.flow.status)
+        )
+          return yield* denied();
+        yield* writeMarker({ ...previous, state: "released" });
+        return undefined;
+      }
+      if (previous?.state === "held") {
+        if (previous.holdId !== input.holdId || previous.epoch !== input.expectedEpoch)
+          return yield* denied();
+        const profile = yield* readProfile(previous.profileId);
+        yield* assertActive(profile);
+        return {
+          qualification: {
+            status: "qualified" as const,
+            profileId: previous.profileId,
+            checkedAt: DateTime.formatIso(yield* DateTime.now),
+          },
+          sourceDigest: previous.sourceDigest,
+        };
+      }
+      if (previous?.holdId === input.holdId) return yield* denied();
+      return yield* mutex.withPermit(
+        Effect.gen(function* () {
+          const { profile } = yield* recoverySource(input.assignmentId, input.expectedEpoch);
+          const captured = yield* helper(profile, { kind: "capture" }).pipe(
+            Effect.flatMap(decodeCapture),
+          );
+          const profileId = yield* identity({
+            kind: "delivery-flow",
+            assignmentId: assignment.id,
+            threadId: input.threadId,
+            holdId: input.holdId,
+            grant,
+          });
+          const directory = path.join(root, "execution", profileId);
+          const projectSnapshotPath = path.join(directory, "project");
+          const evidencePath = path.join(directory, "evidence");
+          for (const target of [projectSnapshotPath, evidencePath])
+            yield* fs.remove(target, { recursive: true, force: true });
+          yield* writeFiles(projectSnapshotPath, captured.files);
+          yield* fs.makeDirectory(evidencePath, { recursive: true });
+          yield* fs.writeFileString(
+            path.join(evidencePath, "flow.json"),
+            json({
+              assignmentId: assignment.id,
+              holdId: input.holdId,
+              scope: assignment.scope,
+              grant,
+              workflow: assignment.workflow,
+              sourceDigest: captured.digest,
+            }),
+          );
+          const inspection = FactoryExecutionProfile.make({
+            ...profile,
+            boundaryId: profileId,
+            projectSnapshotPath,
+            runtimePath: path.join(directory, "sessions"),
+            inspection: {
+              sourceDigest: captured.digest,
+              evidencePath,
+              deliveryHoldId: input.holdId,
+            },
+          });
+          yield* fs.makeDirectory(path.join(inspection.runtimePath, "codex"), { recursive: true });
+          const latest = yield* current(input.assignmentId, input.expectedEpoch);
+          if (
+            latest.assignment.delivery?.flow?.holdId !== input.holdId ||
+            !["stopping", "held"].includes(latest.assignment.delivery.flow.status)
+          )
+            return yield* denied();
+          yield* assertActive(profile);
+          yield* publishProfile(directory, inspection);
+          yield* writeMarker({
+            holdId: input.holdId,
+            epoch: input.expectedEpoch,
+            state: "held",
+            profileId,
+            sourceDigest: captured.digest,
+          });
+          yield* killOwned(profile);
+          return {
+            qualification: {
+              status: "qualified" as const,
+              profileId,
+              checkedAt: DateTime.formatIso(yield* DateTime.now),
+            },
+            sourceDigest: captured.digest,
+          };
+        }),
+      );
+    },
+    controlMutex.withPermit,
+    Effect.mapError(preserve),
+  );
   const stop = Effect.fn("FactoryBoundaryExecution.stop")(function* (
     assignmentId: FactoryAssignmentId,
   ) {
@@ -1228,6 +1736,12 @@ const make = Effect.gen(function* () {
     yield* drain(profile);
   }, Effect.mapError(preserve));
   return FactoryBoundaryExecution.of({
+    setDeliveryHold,
+    captureCandidate,
+    readCandidate,
+    finalizeCandidate,
+    verifyCandidate: (input) => verify(input, input.candidateId),
+    inspectCandidate,
     approve,
     prepare,
     inspect,

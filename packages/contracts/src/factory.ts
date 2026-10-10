@@ -19,6 +19,15 @@ import {
 } from "./factoryModels.ts";
 import { FactoryStartingSource } from "./factorySources.ts";
 import {
+  FactoryAssignmentDelivery,
+  FactoryDeliveryCommand,
+  FactoryDeliveryHostCommand,
+  FactoryDeliveryEffectIntent,
+  FactoryProjectMergeRule,
+  FactoryApprovedPreviewConfiguration,
+  FactoryPreviewPublicationPolicy,
+} from "./factoryDelivery.ts";
+import {
   FactoryAssignmentOversight,
   FactoryAuxiliaryThread,
   FactoryDependency,
@@ -153,6 +162,12 @@ export type FactoryPolicyOverrides = typeof FactoryPolicyOverrides.Type;
 export const FactoryWait = Schema.Union([
   FactoryExpectedWait,
   Schema.Struct({
+    kind: Schema.Literal("flow-review"),
+    holdId: TrimmedNonEmptyString,
+    artifactId: TrimmedNonEmptyString,
+    reason: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
     kind: Schema.Literals(["execution-boundary", "authority", "recovery", "delivered"]),
     reason: TrimmedNonEmptyString,
   }),
@@ -234,6 +249,7 @@ export const FactoryAssignment = Schema.Struct({
   title: Schema.optionalKey(TrimmedNonEmptyString),
   scope: Schema.optionalKey(FactorySupportingWork.fields.scope),
   oversight: Schema.optionalKey(FactoryAssignmentOversight),
+  delivery: Schema.optionalKey(FactoryAssignmentDelivery),
   previousLeadThreadIds: Schema.optionalKey(Schema.Array(ThreadId)),
   modelSelection: Schema.optionalKey(ModelSelection),
   modelPolicy: Schema.optionalKey(FactoryModelPolicy),
@@ -286,6 +302,15 @@ export const FactorySnapshot = Schema.Struct({
   auxiliaryThreads: Schema.Array(FactoryAuxiliaryThread).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  mergeRules: Schema.Array(FactoryProjectMergeRule).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  previewConfigurations: Schema.Array(FactoryApprovedPreviewConfiguration).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  previewPublicationPolicies: Schema.Array(FactoryPreviewPublicationPolicy).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
 });
 export type FactorySnapshot = typeof FactorySnapshot.Type;
 
@@ -295,6 +320,7 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  FactoryDeliveryCommand,
   FactoryControlCommand,
   FactoryOversightCommand,
   Schema.Struct({
@@ -395,6 +421,7 @@ export const FactoryDispatchInput = Schema.Struct({ command: FactoryCommand });
 export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
+  FactoryDeliveryHostCommand,
   FactoryControlHostCommand,
   FactoryOversightHostCommand,
   Schema.Struct({
@@ -455,6 +482,7 @@ export const FactoryThreadLaunchIntent = Schema.Struct({
 });
 export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
 export const FactoryEffectIntent = Schema.Union([
+  FactoryDeliveryEffectIntent,
   FactoryControlEffectIntent,
   FactoryOversightEffectIntent,
   FactoryThreadLaunchIntent,
@@ -476,6 +504,7 @@ export const FactoryCommandResult = Schema.Struct({
   dependencyId: Schema.optionalKey(FactoryDependencyId),
   auxiliaryThreadId: Schema.optionalKey(ThreadId),
   verification: Schema.optionalKey(FactoryVerification),
+  deliveryRevisionId: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type FactoryCommandResult = typeof FactoryCommandResult.Type;
 
@@ -488,6 +517,7 @@ export class FactoryError extends Schema.TaggedError<FactoryError>()("FactoryErr
     "assignment-not-found",
     "invalid-state",
     "command-conflict",
+    "stale-revision",
     "persistence",
     "launch-failed",
     "execution-unavailable",
@@ -509,6 +539,8 @@ export class FactoryError extends Schema.TaggedError<FactoryError>()("FactoryErr
         return "This action is not available in the assignment's current state.";
       case "command-conflict":
         return "This command ID was already used for a different request.";
+      case "stale-revision":
+        return "The evidence changed before this decision was recorded. Reconcile it again.";
       case "persistence":
         return "Could not read or save engineering-management state.";
       case "launch-failed":

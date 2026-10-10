@@ -17,6 +17,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as Access from "./FactoryControlAccess.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import { decide, initialFactorySnapshot } from "./FactoryState.ts";
+import { deliveryIds, reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
 
 const managerId = ThreadId.make("control-manager");
 const leadId = ThreadId.make("control-lead");
@@ -201,6 +202,22 @@ it.effect.each(["pending", "running"] as const)(
       const access = yield* Access.FactoryControlAccess;
       yield* access.assertExecution(diagnosisId);
       assert.equal((yield* access.membership(diagnosisId))?.auxiliaryThreadId, diagnosisId);
+      const controlTarget = (yield* access.membership(diagnosisId))!;
+      const taken = Result.getOrThrow(
+        decide({
+          state: snapshot,
+          actor: { kind: "human" },
+          now,
+          controlTarget,
+          command: {
+            type: "thread.takeover",
+            commandId: CommandId.make("take-diagnosis"),
+            threadId: diagnosisId,
+          },
+        }),
+      );
+      const takeover = taken.state.controls[0]!;
+      assert.equal(takeover.kind === "takeover" ? takeover.parentThreadId : null, managerId);
       assert.equal(
         (yield* access.assertExecution(childId).pipe(Effect.flip)).code,
         "permission-denied",
@@ -245,5 +262,59 @@ it.effect.each(["pending", "running"] as const)(
           ),
         );
     }).pipe(Effect.provide(layer(new Map([[childId, shell(childId, diagnosisId)]]), snapshot)));
+  },
+);
+
+it.effect(
+  "gives the independent reviewer a logical lead parent and holds its direction during takeover",
+  () => {
+    const fixture = reviewedDeliveryFixture();
+    const snapshot: FactorySnapshot = {
+      ...fixture,
+      auxiliaryThreads: fixture.auxiliaryThreads.map((entry) => ({ ...entry, status: "running" })),
+      assignments: fixture.assignments.map((entry) => ({
+        ...entry,
+        delivery: {
+          ...entry.delivery!,
+          revisions: entry.delivery!.revisions.map((revision) => ({
+            ...revision,
+            reviews: revision.reviews.map((review) => ({ ...review, status: "running" })),
+          })),
+        },
+      })),
+    };
+    return Effect.gen(function* () {
+      const access = yield* Access.FactoryControlAccess;
+      const controlTarget = (yield* access.membership(deliveryIds.reviewer))!;
+      assert.deepStrictEqual(controlTarget.ancestorThreadIds, [deliveryIds.lead]);
+      const taken = Result.getOrThrow(
+        decide({
+          state: snapshot,
+          actor: { kind: "human" },
+          now,
+          controlTarget,
+          command: {
+            type: "thread.takeover",
+            commandId: CommandId.make("take-reviewer"),
+            threadId: deliveryIds.reviewer,
+          },
+        }),
+      );
+      const takeover = taken.state.controls[0]!;
+      assert.equal(takeover.kind === "takeover" ? takeover.parentThreadId : null, deliveryIds.lead);
+      yield* Effect.gen(function* () {
+        const controlled = yield* Access.FactoryControlAccess;
+        assert.equal(
+          (yield* controlled
+            .assertDirection({ threadId: deliveryIds.reviewer, senderThreadId: deliveryIds.lead })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        yield* controlled.assertDirection({
+          threadId: deliveryIds.reviewer,
+          senderThreadId: undefined,
+        });
+      }).pipe(Effect.provide(Layer.fresh(layer(new Map(), taken.state))));
+    }).pipe(Effect.provide(layer(new Map(), snapshot)));
   },
 );

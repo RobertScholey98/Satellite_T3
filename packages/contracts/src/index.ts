@@ -76,5 +76,7 @@ export * from "./satelliteOrchestration.ts";
 export * from "./factory.ts";
 export * from "./factoryControls.ts";
 export * from "./factoryOversight.ts";
+export * from "./factoryDelivery.ts";
+export * from "./factoryPreview.ts";
 export * from "./factoryModels.ts";
 export * from "./factorySources.ts";

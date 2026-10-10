@@ -77,6 +77,11 @@ const FactoryAssignmentDetailsDialog = lazy(() =>
 const FactoryManagerControlsDialog = lazy(() =>
   import("./FactoryControls").then((module) => ({ default: module.FactoryManagerControlsDialog })),
 );
+const FactoryDeliverySettings = lazy(() =>
+  import("./FactoryDeliverySettings").then((module) => ({
+    default: module.FactoryDeliverySettings,
+  })),
+);
 
 const managerStatusLabels = {
   onboarding: "Onboarding",
@@ -120,6 +125,7 @@ export function FactorySidebar({
   const [setupManagerKey, setSetupManagerKey] = useState<string | null>(null);
   const [boundaryManagerKey, setBoundaryManagerKey] = useState<string | null>(null);
   const [controlsManagerKey, setControlsManagerKey] = useState<string | null>(null);
+  const [deliveryManagerKey, setDeliveryManagerKey] = useState<string | null>(null);
   const [policyTarget, setPolicyTarget] = useState<{
     readonly environmentId: EnvironmentId;
     readonly managerId: ThreadId | null;
@@ -227,6 +233,7 @@ export function FactorySidebar({
   );
   const setupEntry = entries.find((entry) => entry.key === setupManagerKey);
   const controlsEntry = entries.find((entry) => entry.key === controlsManagerKey);
+  const deliveryEntry = entries.find((entry) => entry.key === deliveryManagerKey);
   const boundaryEntry = entries.find((entry) => entry.key === boundaryManagerKey);
   const boundaryReport = boundaryEntry?.assignments.find(
     (assignment) => assignment.report !== null,
@@ -536,6 +543,13 @@ export function FactorySidebar({
                           >
                             Team models
                           </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            onClick={() => setDeliveryManagerKey(key)}
+                          >
+                            Delivery settings
+                          </Button>
                           {manager.boundaryId ? (
                             <>
                               <Button
@@ -601,6 +615,14 @@ export function FactorySidebar({
         </div>
       ) : null}
       <Suspense fallback={null}>
+        {deliveryEntry ? (
+          <FactoryDeliverySettings
+            key={deliveryEntry.key}
+            environment={deliveryEntry.environment}
+            manager={deliveryEntry.manager}
+            onClose={() => setDeliveryManagerKey(null)}
+          />
+        ) : null}
         {controlsEntry ? (
           <FactoryManagerControlsDialog
             key={controlsEntry.key}

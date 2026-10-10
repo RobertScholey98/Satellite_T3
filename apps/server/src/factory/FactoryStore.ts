@@ -54,6 +54,7 @@ export class FactoryStore extends Context.Service<
             | "assignment.preparation.recorded"
             | "control.stop.targets.recorded"
             | "auxiliary.prepared"
+            | "delivery.review.prepared"
             | "assignment.replacement.prepared"
             | "guidance.observed";
         }
@@ -227,6 +228,60 @@ const make = Effect.gen(function* () {
               const failed = command.type.endsWith(".failed");
               const matches = (() => {
                 switch (intent.type) {
+                  case "delivery.capture":
+                    return (
+                      command.type === "delivery.captured" &&
+                      command.assignmentId === intent.assignmentId &&
+                      command.revisionId === intent.revisionId
+                    );
+                  case "delivery.publish":
+                    return (
+                      command.type === "delivery.published" &&
+                      command.assignmentId === intent.assignmentId &&
+                      command.revisionId === intent.revisionId
+                    );
+                  case "delivery.inspect":
+                    return (
+                      command.type === "delivery.inspected" &&
+                      command.assignmentId === intent.assignmentId &&
+                      command.revisionId === intent.revisionId
+                    );
+                  case "delivery.merge":
+                    return (
+                      command.type === "delivery.merge.recorded" &&
+                      command.assignmentId === intent.assignmentId &&
+                      command.revisionId === intent.revisionId &&
+                      command.operationId === intent.operationId
+                    );
+                  case "delivery.review.launch":
+                    return (
+                      command.type === "delivery.review.started" &&
+                      command.assignmentId === intent.assignmentId &&
+                      command.revisionId === intent.revisionId &&
+                      command.reviewId === intent.reviewId
+                    );
+                  case "delivery.flow.hold":
+                    return (
+                      command.type === "delivery.flow.recorded" &&
+                      command.assignmentId === intent.assignmentId &&
+                      command.holdId === intent.holdId &&
+                      command.held === intent.held
+                    );
+                  case "delivery.flow.capture":
+                    return (
+                      command.type === "delivery.flow.artifact" &&
+                      command.assignmentId === intent.assignmentId &&
+                      command.holdId === intent.holdId &&
+                      command.artifactId === intent.artifactId
+                    );
+                  case "delivery.preview.start":
+                  case "delivery.preview.stop":
+                    return (
+                      command.type === "delivery.preview.recorded" &&
+                      command.assignmentId === intent.assignmentId &&
+                      command.revisionId === intent.revisionId &&
+                      command.instanceId === intent.instanceId
+                    );
                   case "assignment.reconcile":
                     return (
                       ((command.type === "assignment.reconciled" &&

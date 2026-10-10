@@ -3,6 +3,7 @@ import {
   FactoryError,
   type FactoryAssignment,
   type FactoryControl,
+  type FactoryEffectIntent,
   type FactorySnapshot,
   type ProjectId,
   type RunId,
@@ -16,6 +17,7 @@ import * as Result from "effect/Result";
 
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import { FactoryControlAccess } from "./FactoryControlAccess.ts";
 import { FactoryHandover } from "./FactoryHandover.ts";
 import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
@@ -43,6 +45,30 @@ const diagnosisCanResume = (
     incident.phase === "diagnosing" &&
     incident.diagnosisThreadId === auxiliary.threadId &&
     assignment?.wait?.kind === "recovery"
+  );
+};
+
+const currentDeliveryReviewNotice = (
+  state: FactorySnapshot,
+  assignment: FactoryAssignment | undefined,
+  intent: Extract<FactoryEffectIntent, { type: "thread.deliver" }>,
+) => {
+  const purpose = intent.purpose;
+  if (purpose?.kind !== "delivery-review" || !assignment) return false;
+  const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === intent.threadId);
+  const revision = assignment.delivery?.revisions.find((entry) => entry.id === purpose.revisionId);
+  const preview = revision?.preview;
+  return (
+    auxiliary?.kind === "delivery-review" &&
+    auxiliary.assignmentId === assignment.id &&
+    auxiliary.revisionId === purpose.revisionId &&
+    auxiliary.incidentId === purpose.reviewId &&
+    factoryAuxiliaryIsCurrent(assignment, auxiliary) &&
+    preview?.instanceId === purpose.instanceId &&
+    preview.reviewId === purpose.reviewId &&
+    preview.threadId === intent.threadId &&
+    ["ready", "failed"].includes(preview.status) &&
+    intent.sourceThreadId === assignment.threadId
   );
 };
 
@@ -312,12 +338,19 @@ export const layer = Layer.effect(
         const incident = assignment?.oversight?.recovery.incident;
         const current =
           assignment !== undefined &&
-          assignment.threadId === intent.threadId &&
-          (purpose.kind === "dependency-usability"
-            ? dependency?.assignmentId === assignment.id &&
-              dependency.state === "checking" &&
-              dependency.delivery?.id === purpose.deliveryId
-            : incident?.id === purpose.incidentId && incident.phase === "continuing");
+          (purpose.kind === "delivery-review"
+            ? currentDeliveryReviewNotice(state, assignment, intent)
+            : assignment.threadId === intent.threadId &&
+              (purpose.kind === "dependency-usability"
+                ? dependency?.assignmentId === assignment.id &&
+                  dependency.state === "checking" &&
+                  dependency.delivery?.id === purpose.deliveryId
+                : purpose.kind === "delivery"
+                  ? assignment.delivery?.currentRevisionId === purpose.revisionId
+                  : purpose.kind === "delivery-flow"
+                    ? assignment.delivery?.flow?.holdId === purpose.holdId &&
+                      assignment.delivery.flow.status !== "stopping"
+                    : incident?.id === purpose.incidentId && incident.phase === "continuing"));
         if (!current) {
           yield* store.retireEffect(pending.id);
           return;
@@ -326,7 +359,11 @@ export const layer = Layer.effect(
           purpose.kind === "dependency-usability"
             ? assignment?.wait?.kind === "dependency" &&
               assignment.wait.dependencyIds.some((id) => id === purpose.dependencyId)
-            : assignment?.wait?.kind === "recovery";
+            : purpose.kind === "recovery"
+              ? assignment?.wait?.kind === "recovery"
+              : purpose.kind === "delivery" || purpose.kind === "delivery-review"
+                ? assignment?.wait?.kind === "review"
+                : false;
       }
       if (
         intent.kind === "continuation" &&
@@ -367,7 +404,23 @@ export const layer = Layer.effect(
         .getThreadRecords(intent.threadId, ["messages", "runs"], { messageIds: [intent.messageId] })
         .pipe(Effect.mapError(failure));
       const accepted = records.messages.find((entry) => entry.id === intent.messageId);
-      if (accepted === undefined)
+      if (accepted === undefined) {
+        if (intent.purpose?.kind === "delivery-review") {
+          const latest = yield* store.snapshot;
+          const owner = latest.assignments.find((entry) => entry.id === member.assignmentId);
+          if (!currentDeliveryReviewNotice(latest, owner, intent)) {
+            yield* store.retireEffect(pending.id);
+            return;
+          }
+          if (owner?.wait != null && owner.wait.kind !== "review") return;
+          const allowed = yield* access
+            .assertDirection({ threadId: intent.threadId, senderThreadId: intent.sourceThreadId })
+            .pipe(Effect.result);
+          if (Result.isFailure(allowed)) {
+            if (allowed.failure.code === "permission-denied") return;
+            return yield* allowed.failure;
+          }
+        }
         yield* threads
           .sendToThread({
             projectId: member.projectId,
@@ -384,7 +437,7 @@ export const layer = Layer.effect(
             creationSource: "server",
           })
           .pipe(Effect.mapError(failure));
-      else if (!records.runs.some((entry) => entry.id === accepted.runId))
+      } else if (!records.runs.some((entry) => entry.id === accepted.runId))
         return yield* new FactoryError({ code: "invalid-state" });
       yield* store.finishEffect({
         id: pending.id,

@@ -69,7 +69,12 @@ import {
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 import * as FactoryMcpGuard from "../factory/FactoryMcpGuard.ts";
-import { FactoryToolkit } from "./toolkits/factory/tools.ts";
+import {
+  FactoryToolkit,
+  FactoryPreviewSnapshotTool,
+  FactoryPreviewSnapshotToolkit,
+} from "./toolkits/factory/tools.ts";
+import { FactoryPreviewService } from "../factory/FactoryPreviewService.ts";
 import * as FactoryHandlers from "./toolkits/factory/handlers.ts";
 
 /** Where an MCP client discovers how to sign in (RFC 9728), at this request's own origin. */
@@ -744,6 +749,30 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
   );
 });
 
+const registerFactoryPreviewSnapshot = Effect.fn("McpHttpServer.registerFactoryPreviewSnapshot")(
+  function* () {
+    const previews = yield* FactoryPreviewService;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const guard = yield* FactoryMcpGuard.FactoryMcpGuard;
+    const built = yield* FactoryPreviewSnapshotToolkit;
+    yield* registerImageTool(
+      FactoryPreviewSnapshotTool,
+      (payload) =>
+        built
+          .handle("factory_preview_snapshot", payload)
+          .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
+      (effect) =>
+        effect.pipe(
+          Effect.provideService(FactoryPreviewService, previews),
+          Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+          Effect.provideService(FactoryMcpGuard.FactoryMcpGuard, guard),
+        ),
+      "factory-preview",
+      "Candidate app inspection failed.",
+    );
+  },
+);
+
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 
 const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(function* () {
@@ -839,7 +868,10 @@ const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, 
     Layer.provide(layerGuardedRegistry),
   );
 
-export const layerFactoryToolkit = toolkitRegistration(FactoryToolkit, FactoryHandlers.layer);
+export const layerFactoryToolkit = Layer.mergeAll(
+  toolkitRegistration(FactoryToolkit, FactoryHandlers.layer),
+  imageToolRegistration(registerFactoryPreviewSnapshot(), FactoryHandlers.layerSnapshot),
+);
 
 export const layerHtmlToolkit = Layer.mergeAll(
   toolkitRegistration(HtmlRenderToolkit, HtmlHandlers.layerRender),

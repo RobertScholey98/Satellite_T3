@@ -34,6 +34,8 @@ import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { FactoryPreviewService } from "./FactoryPreviewService.ts";
+import { reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
 import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
 import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
 import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
@@ -45,6 +47,7 @@ const childId = ThreadId.make("child-web");
 const grandchildId = ThreadId.make("grandchild-web");
 const forkId = ThreadId.make("fork-web");
 const unmanagedId = ThreadId.make("independent-thread");
+const reviewerId = ThreadId.make("delivery-reviewer");
 const assignmentId = FactoryAssignmentId.make("assignment-web");
 const otherAssignmentId = FactoryAssignmentId.make("assignment-api");
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(FactorySnapshot));
@@ -105,9 +108,14 @@ interface Scenario {
   readonly store: FactoryStore.FactoryStore["Service"];
   readonly flags: { hostCalls: number; missingProfile: boolean; unavailableStore: boolean };
   readonly shells: Map<ThreadId, OrchestrationV2ThreadShell>;
+  readonly previewCalls: Array<{ threadId: ThreadId; instanceId: string; action: string }>;
 }
 
-const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>, heldWait?: FactoryWait) =>
+const scenario = <E>(
+  test: (context: Scenario) => Effect.Effect<void, E>,
+  heldWait?: FactoryWait,
+  withReviewer = false,
+) =>
   Effect.gen(function* () {
     yield* migration;
     const store = yield* FactoryStore.FactoryStore.pipe(Effect.provide(FactoryStore.layer));
@@ -160,11 +168,52 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>, heldWa
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
     }
+    if (withReviewer) {
+      const state = yield* store.snapshot;
+      const fixture = reviewedDeliveryFixture();
+      const assignment = fixture.assignments[0]!;
+      const payload = yield* encodeSnapshot({
+        ...state,
+        assignments: state.assignments.map((entry) =>
+          entry.id !== assignmentId
+            ? entry
+            : {
+                ...assignment,
+                id: assignmentId,
+                threadId: leadId,
+                managerId,
+                projectId: ProjectId.make("web"),
+                delivery: {
+                  ...assignment.delivery!,
+                  revisions: assignment.delivery!.revisions.map((revision) => ({
+                    ...revision,
+                    reviews: revision.reviews.map((review) => ({
+                      ...review,
+                      threadId: reviewerId,
+                      status: "running",
+                    })),
+                  })),
+                },
+              },
+        ),
+        auxiliaryThreads: fixture.auxiliaryThreads.map((entry) => ({
+          ...entry,
+          threadId: reviewerId,
+          assignmentId,
+          managerId,
+          projectId: ProjectId.make("web"),
+          status: "running",
+        })),
+      });
+      yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+    }
     const flags = { hostCalls: 0, missingProfile: false, unavailableStore: false };
+    const previewCalls: Scenario["previewCalls"] = [];
     const shells = new Map<ThreadId, OrchestrationV2ThreadShell>([
       [managerId, liveThreadShell(managerId)],
       [leadId, liveThreadShell(leadId)],
       [unmanagedId, liveThreadShell(unmanagedId)],
+      [reviewerId, liveThreadShell(reviewerId)],
       [
         forkId,
         {
@@ -232,6 +281,48 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>, heldWa
       }),
       Layer.mock(DeviceService.DeviceService)({}),
       Layer.mock(ProjectService.ProjectService)({}),
+      Layer.mock(FactoryPreviewService)({
+        invoke: (threadId, input) =>
+          Effect.sync(() => {
+            previewCalls.push({
+              threadId,
+              instanceId: input.instanceId,
+              action: input.action.type,
+            });
+            return {
+              sequence: 1,
+              receiptDigest: "receipt",
+              result:
+                input.action.type === "snapshot"
+                  ? {
+                      url: "http://127.0.0.1:9000/",
+                      title: "Candidate",
+                      loading: false,
+                      visibleText: "Save",
+                      interactiveElements: [],
+                      accessibilityTree: '- button "Save"',
+                      consoleEntries: [],
+                      networkEntries: [],
+                      actionTimeline: [],
+                      screenshot: { mimeType: "image/png", data: "aW1hZ2U=", width: 1, height: 1 },
+                    }
+                  : null,
+            };
+          }),
+        finish: (threadId, input) =>
+          Effect.sync(() => {
+            previewCalls.push({ threadId, instanceId: input.instanceId, action: "finish" });
+            return {
+              instanceId: input.instanceId,
+              candidateDigest: "digest",
+              reviewThreadId: threadId,
+              operationsDigest: "operations",
+              screenshots: [{ label: "Screenshot", location: "candidate://screenshot" }],
+              journeys: [{ label: "Save", location: "candidate://journey" }],
+              observedAt: now,
+            };
+          }),
+      }),
     );
     const ProbeToolkit = Toolkit.make(
       Tool.make("t3_thread_send", {
@@ -258,6 +349,13 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>, heldWa
       Tool.make("host_effect", {
         description: "A host operation that managed agents cannot run.",
         parameters: Tool.EmptyParams,
+        success: Schema.Struct({ ran: Schema.Boolean }),
+        failure: OrchestratorMcpFailure,
+        failureMode: "return",
+      }),
+      Tool.make("preview_navigate", {
+        description: "Probe the unrestricted host browser boundary.",
+        parameters: Schema.Struct({ url: Schema.String }),
         success: Schema.Struct({ ran: Schema.Boolean }),
         failure: OrchestratorMcpFailure,
         failureMode: "return",
@@ -291,6 +389,12 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>, heldWa
               return { ran: true };
             }),
           ),
+          preview_navigate: McpToolAccess.reads(() =>
+            Effect.sync(() => {
+              flags.hostCalls += 1;
+              return { ran: true };
+            }),
+          ),
         }),
       ),
       McpHttpServer.layerFactoryToolkit,
@@ -307,6 +411,7 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>, heldWa
         store,
         flags,
         shells,
+        previewCalls,
         call: (name, args = {}, caller = leadId) => {
           const result = server
             .callTool({ name, arguments: args })
@@ -325,6 +430,185 @@ const scenario = <E>(test: (context: Scenario) => Effect.Effect<void, E>, heldWa
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })), Effect.scoped);
 
 describe("FactoryMcpGuard", () => {
+  it.effect(
+    "routes only the independent reviewer's scoped preview tools with authenticated identity",
+    () =>
+      scenario(
+        ({ call, previewCalls, flags }) =>
+          Effect.gen(function* () {
+            const input = {
+              commandId: "preview-action",
+              instanceId: "candidate-app",
+              journey: "Save",
+            };
+            assert.isFalse(
+              (yield* call(
+                "factory_preview_action",
+                { ...input, action: { type: "navigate", path: "/" } },
+                reviewerId,
+              )).isError ?? false,
+            );
+            const snapshot = yield* call(
+              "factory_preview_snapshot",
+              { ...input, commandId: "preview-snapshot" },
+              reviewerId,
+            );
+            assert.isFalse(snapshot.isError ?? false);
+            assert.isTrue(snapshot.content.some((entry) => entry.type === "image"));
+            assert.isFalse(
+              (yield* call(
+                "factory_preview_finish",
+                { commandId: "preview-finish", instanceId: "candidate-app", journeys: ["Save"] },
+                reviewerId,
+              )).isError ?? false,
+            );
+            assert.deepStrictEqual(previewCalls, [
+              { threadId: reviewerId, instanceId: "candidate-app", action: "navigate" },
+              { threadId: reviewerId, instanceId: "candidate-app", action: "snapshot" },
+              { threadId: reviewerId, instanceId: "candidate-app", action: "finish" },
+            ]);
+            for (const caller of [leadId, managerId, childId]) {
+              assert.isTrue(
+                (yield* call(
+                  "factory_preview_action",
+                  { ...input, action: { type: "navigate", path: "/" } },
+                  caller,
+                )).isError,
+              );
+            }
+            assert.isTrue(
+              (yield* call("preview_navigate", { url: "https://outside.example" }, reviewerId))
+                .isError,
+            );
+            assert.isTrue((yield* call("host_effect", {}, reviewerId)).isError);
+            assert.lengthOf(previewCalls, 3);
+            assert.equal(flags.hostCalls, 0);
+          }),
+        undefined,
+        true,
+      ),
+  );
+
+  it.effect("rejects spoofed review authority and never trusts payload caller fields", () =>
+    scenario(
+      ({ call, previewCalls }) =>
+        Effect.gen(function* () {
+          const base = {
+            commandId: "spoof",
+            assignmentId,
+            revisionId: "revision:command",
+            type: "delivery.preview.start",
+            configurationId: "preview-configuration",
+          };
+          for (const command of [
+            { ...base, reviewId: "another-review" },
+            { ...base, reviewId: "review:command", revisionId: "another-revision" },
+            { ...base, reviewId: "review:command", assignmentId: otherAssignmentId },
+          ])
+            assert.isTrue((yield* call("factory_dispatch", { command }, reviewerId)).isError);
+          const spoofed = yield* call(
+            "factory_preview_action",
+            {
+              commandId: "spoof-thread",
+              instanceId: "candidate-app",
+              journey: "Save",
+              action: { type: "navigate", path: "/" },
+              threadId: unmanagedId,
+              actor: { kind: "human" },
+            },
+            reviewerId,
+          );
+          assert.isFalse(spoofed.isError ?? false);
+          assert.equal(previewCalls[0]?.threadId, reviewerId);
+          assert.isTrue(
+            (yield* call(
+              "factory_preview_action",
+              {
+                commandId: "spoof-reviewer",
+                instanceId: "candidate-app",
+                journey: "Save",
+                action: { type: "navigate", path: "/" },
+                threadId: reviewerId,
+              },
+              leadId,
+            )).isError,
+          );
+          const arbitraryTab = yield* call(
+            "factory_preview_action",
+            {
+              commandId: "spoof-tab",
+              instanceId: "candidate-app",
+              journey: "Save",
+              action: { type: "click", input: { locator: "button", tabId: "user-tab" } },
+            },
+            reviewerId,
+          ).pipe(Effect.flip);
+          assert.equal(arbitraryTab._tag, "InvalidParams");
+          assert.lengthOf(previewCalls, 1);
+        }),
+      undefined,
+      true,
+    ),
+  );
+
+  it.effect.each(["complete", "superseded"] as const)(
+    "denies preview work after its reviewer is %s",
+    (retired) =>
+      scenario(
+        ({ call, store, previewCalls }) =>
+          Effect.gen(function* () {
+            if (retired === "complete")
+              yield* store.commit({
+                actor: { kind: "thread", threadId: reviewerId },
+                now,
+                command: {
+                  type: "delivery.review.report",
+                  commandId: CommandId.make("finish-review"),
+                  assignmentId,
+                  revisionId: "revision:command",
+                  reviewId: "review:command",
+                  verdict: "passed",
+                  confirmsImpact: true,
+                  findings: "Reviewed candidate",
+                  evidence: [{ label: "Source", location: "candidate://src" }],
+                },
+              });
+            else
+              yield* store.commit({
+                actor: { kind: "thread", threadId: leadId },
+                now,
+                command: {
+                  type: "delivery.capture",
+                  commandId: CommandId.make("replace-candidate"),
+                  assignmentId,
+                  expectedEpoch: 1,
+                  selectedPaths: ["src/feature.ts"],
+                  commitMessage: "fix: revise candidate",
+                },
+              });
+            const base = { commandId: "retired", instanceId: "candidate-app", journey: "Save" };
+            assert.isTrue(
+              (yield* call(
+                "factory_preview_action",
+                { ...base, action: { type: "navigate", path: "/" } },
+                reviewerId,
+              )).isError,
+            );
+            assert.isTrue((yield* call("factory_preview_snapshot", base, reviewerId)).isError);
+            assert.isTrue(
+              (yield* call(
+                "factory_preview_finish",
+                { commandId: "retired-finish", instanceId: "candidate-app", journeys: ["Save"] },
+                reviewerId,
+              )).isError,
+            );
+            assert.lengthOf(previewCalls, 0);
+          }),
+        undefined,
+        true,
+      ),
+  );
+
   it.effect.each<FactoryWait>([
     {
       kind: "dependency",

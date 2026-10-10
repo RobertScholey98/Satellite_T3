@@ -27,6 +27,34 @@ const group = WsRpcGroup.omit(
 const managerId = ThreadId.make("manager-web");
 const settingsCommands: ReadonlyArray<FactoryCommand> = [
   {
+    type: "delivery.rules.configure",
+    commandId: CommandId.make("merge-rules"),
+    projectId: ProjectId.make("web"),
+    enabled: true,
+    kinds: ["implementation"],
+    allowedPaths: ["src"],
+    excludedPaths: ["src/security"],
+    allowEstablishedPatterns: true,
+  },
+  {
+    type: "delivery.preview.configure",
+    commandId: CommandId.make("preview-runtime"),
+    projectId: ProjectId.make("web"),
+    configuration: {
+      imageId: `sha256:${"a".repeat(64)}`,
+      executable: "/usr/local/bin/node",
+      args: ["/workspace/server.js"],
+      port: 3000,
+      data: "ephemeral",
+    },
+  },
+  {
+    type: "delivery.preview.publication.configure",
+    commandId: CommandId.make("preview-publication"),
+    projectId: ProjectId.make("web"),
+    enabled: true,
+  },
+  {
     type: "policy.defaults.configure",
     commandId: CommandId.make("defaults"),
     defaults: {
@@ -145,6 +173,9 @@ describe("factory RPC authority", () => {
           assert.deepStrictEqual(yield* client[method]({ command }), { revision: index + 1 });
         }
         assert.deepStrictEqual(handled, [
+          "delivery.rules.configure",
+          "delivery.preview.configure",
+          "delivery.preview.publication.configure",
           "policy.defaults.configure",
           "assignments.extend-grant",
           "manager.configure",

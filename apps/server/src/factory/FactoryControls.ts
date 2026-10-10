@@ -66,6 +66,13 @@ export const factoryDirectionBlocked = (
   const blocked = factoryExecutionBlocked(state, member);
   if (blocked !== undefined || senderThreadId === undefined) return blocked;
   if (
+    senderThreadId === member.managerId &&
+    state.assignments.some(
+      (assignment) => assignment.id === member.assignmentId && assignment.delivery?.directionHeld,
+    )
+  )
+    return "The human is reviewing this assignment with its implementation lead. Manager direction waits until review handback.";
+  if (
     senderThreadId !== null &&
     state.controls.some(
       (entry) =>
