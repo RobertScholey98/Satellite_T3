@@ -115,7 +115,7 @@ export const FactoryToolkit = Toolkit.make(
   }),
   Tool.make("factory_snapshot", {
     description:
-      "Read this managed thread's manager and assignment state. The server derives scope from your authenticated thread.",
+      "Read this managed thread's manager and assignment state. A system manager sees its registered shared repositories, exact work plans, owned teams, workflow releases, validation and recommendations; implementation teams see only their assignment. The server derives scope from your authenticated thread and does not expose unrelated application projects.",
     parameters: Tool.EmptyParams,
     success: FactorySnapshot,
     failure,
@@ -124,7 +124,7 @@ export const FactoryToolkit = Toolkit.make(
   }).annotate(Tool.Readonly, true),
   Tool.make("factory_dispatch", {
     description:
-      "Submit a factory command as this authenticated managed thread. Managers commission scoped implementation assignments against a human request; authorizationMessageId selects that request, or defaults to their latest direct human message. For proactive tickets, read factory_ticket_read, prepare exact work with schedule.prepare and commission with candidateId; this requires fresh host-verified Ready placement or an approved project improvement rule and never falls back to a human message. Leads use scoped mutation/verification and declare all required PRs in assignment.completion.plan. Report evidenced problems immediately with finding.report; escalate shared causes with finding.escalate. After host-confirmed conclusion, the read-only retro lead submits retro.team.submit and its manager submits retro.manager.submit. followup.request creates project triage tickets without starting implementation. Human-only decisions cannot be made through this tool.",
+      "Submit a factory command as this authenticated managed thread. Project managers commission scoped assignments against a human request or host-verified scheduling authority. System managers use shared.work.propose for an exact plan against an accepted proposal revision, then shared.work.commission after human authorization; enabled bounded investigations may use experiment.commission. Shared work stays in registered owned repositories, never application projects. Skill work must use writing-for-agents and its references. Leads mutate/verify only their assignment and declare required PRs with assignment.completion.plan. Experiments cannot publish PRs, merge, create tracker tickets or change adoption. After host-confirmed conclusion, the independent retro submits retro.team.submit and its manager submits retro.manager.submit. System managers record available outcomes using improvement.validation.record and can recommend standing model preferences with workflow.models.recommend. Adoption, live trials, settings and standing model application remain human-only. Report evidenced problems with finding.report; escalate shared causes with finding.escalate. followup.request creates project triage tickets without starting implementation.",
     parameters: FactoryDispatchInput,
     success: FactoryCommandResult,
     failure,

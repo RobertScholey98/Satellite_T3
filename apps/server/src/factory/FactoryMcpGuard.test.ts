@@ -45,6 +45,7 @@ import { reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
 import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
 import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
 import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
+import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const managerId = ThreadId.make("manager-web");
@@ -606,6 +607,73 @@ const scenario = <E, R>(
 
 describe("FactoryMcpGuard", () => {
   it.effect(
+    "scopes shared teams to registered work and denies experiment publication across descendants",
+    () =>
+      scenario(
+        ({ call, store, shells, flags }) =>
+          Effect.gen(function* () {
+            const shared = sharedAccessFixture(yield* store.snapshot, true);
+            const sql = yield* SqlClient.SqlClient;
+            const payload = yield* encodeSnapshot(shared);
+            yield* sql`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+            shells.set(managerId, {
+              ...liveThreadShell(managerId),
+              projectId: ProjectId.make("system-reference"),
+            });
+            const own = yield* decodeFactorySnapshot(
+              (yield* call("factory_snapshot", {}, managerId)).structuredContent,
+            );
+            assert.deepEqual(
+              own.assignments.map((entry) => entry.id),
+              [assignmentId],
+            );
+            assert.equal(own.projectTrackers.length, 0);
+            assert.equal(own.sharedRepositories.length, 1);
+            const child = yield* decodeFactorySnapshot(
+              (yield* call("factory_snapshot", {}, grandchildId)).structuredContent,
+            );
+            assert.deepEqual(
+              child.assignments.map((entry) => entry.id),
+              [assignmentId],
+            );
+            assert.equal(child.workflowExperiments.length, 1);
+            assert.isFalse(
+              (yield* call("t3_thread_read", { threadId: leadId }, managerId)).isError ?? false,
+            );
+            assert.isTrue(
+              (yield* call("t3_thread_read", { threadId: ThreadId.make("lead-api") }, managerId))
+                .isError,
+            );
+            const previousHostCalls = flags.hostCalls;
+            for (const caller of [leadId, childId, grandchildId]) {
+              assert.isTrue((yield* call("host_effect", {}, caller)).isError);
+              assert.isTrue(
+                (yield* call(
+                  "factory_dispatch",
+                  {
+                    command: {
+                      type: "delivery.publish",
+                      commandId: `forbidden:${caller}`,
+                      assignmentId,
+                      revisionId: "revision",
+                      title: "Forbidden experiment publication",
+                      body: "Experiment must remain isolated.",
+                    },
+                  },
+                  caller,
+                )).isError,
+              );
+            }
+            assert.equal(flags.hostCalls, previousHostCalls);
+            const missing = yield* encodeSnapshot({ ...shared, workflowExperiments: [] });
+            yield* sql`UPDATE factory_state SET payload_json = ${missing} WHERE id = 1`;
+            assert.isTrue((yield* call("factory_snapshot", {}, grandchildId)).isError);
+          }),
+        undefined,
+        true,
+      ),
+  );
+  it.effect(
     "gives the system peer only compact investigation tools and denies project delivery and generic host reads",
     () =>
       scenario(({ call, store, shells, flags }) =>
@@ -742,8 +810,15 @@ describe("FactoryMcpGuard", () => {
           assert.isFalse(response.isError ?? false);
           assert.notProperty(response.structuredContent, "assignments");
           assert.notProperty(response.structuredContent, "retros");
+          const owned = yield* decodeFactorySnapshot(
+            (yield* call("factory_snapshot", {}, systemId)).structuredContent,
+          );
+          assert.equal(owned.assignments.length, 0);
+          assert.deepEqual(
+            owned.managers.map((entry) => entry.id),
+            [systemId],
+          );
           for (const name of [
-            "factory_snapshot",
             "host_effect",
             "preview_navigate",
             "t3_thread_read",
@@ -1065,13 +1140,15 @@ describe("FactoryMcpGuard", () => {
           assert.equal(flags.hostCalls, 0);
           for (const name of ["t3_thread_read", "t3_thread_wait"])
             assert.isFalse((yield* call(name, { threadId: leadId }, managerId)).isError ?? false);
-          assert.isFalse(
+          assert.equal(
             (yield* call("t3_thread_send", { threadId: managerId }, leadId)).isError ?? false,
+            heldWait.kind === "authority",
           );
-          assert.isFalse(
+          assert.equal(
             (yield* call("t3_thread_send", { threadId: leadId }, childId)).isError ?? false,
+            heldWait.kind === "authority",
           );
-          assert.equal(flags.hostCalls, 4);
+          assert.equal(flags.hostCalls, heldWait.kind === "authority" ? 2 : 4);
         }),
       heldWait,
     ),

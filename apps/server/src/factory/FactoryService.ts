@@ -53,6 +53,9 @@ import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
 import { FactoryImprovementEffects } from "./FactoryImprovementEffects.ts";
 import type { FactoryImprovementContext } from "./FactoryImprovements.ts";
 import type { FactorySchedulingContext } from "./FactoryScheduling.ts";
+import * as FactoryWorkflowEffects from "./FactoryWorkflowEffects.ts";
+import type { FactoryWorkflowContext } from "./FactoryWorkflow.ts";
+import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 import { ServerActivation, forkParked } from "../serverActivation.ts";
 import { type FactoryControlContext } from "./FactoryControls.ts";
 
@@ -86,6 +89,34 @@ const scopedSnapshot =
       ? snapshot
       : {
           ...snapshot,
+          sharedRepositories: snapshot.sharedRepositories.filter(
+            (entry) => entry.projectId === query.projectId,
+          ),
+          sharedWorks: snapshot.sharedWorks.filter((entry) =>
+            snapshot.sharedRepositories.some(
+              (repository) =>
+                repository.id === entry.plan.repositoryId &&
+                repository.projectId === query.projectId,
+            ),
+          ),
+          experimentConfigurations: [],
+          workflowExperiments: snapshot.workflowExperiments.filter((entry) =>
+            snapshot.assignments.some(
+              (assignment) =>
+                assignment.id === entry.assignmentId && assignment.projectId === query.projectId,
+            ),
+          ),
+          workflowReleases: [],
+          workflowAdoptions: [],
+          workflowOverrides: [],
+          workflowMigrations: snapshot.workflowMigrations.filter((entry) =>
+            snapshot.assignments.some(
+              (assignment) =>
+                assignment.id === entry.assignmentId && assignment.projectId === query.projectId,
+            ),
+          ),
+          improvementValidations: [],
+          modelRecommendations: [],
           improvementConfigurations: [],
           improvementIntakes: [],
           improvementBatches: [],
@@ -95,7 +126,16 @@ const scopedSnapshot =
           improvementFeedback: [],
           improvementRecurrences: [],
           improvementEvidenceReads: [],
-          managers: snapshot.managers.filter((manager) => manager.projectId === query.projectId),
+          managers: snapshot.managers.filter(
+            (manager) =>
+              manager.projectId === query.projectId ||
+              snapshot.assignments.some(
+                (assignment) =>
+                  assignment.projectId === query.projectId &&
+                  assignment.managerId === manager.id &&
+                  factorySharedAssignmentOwned(snapshot, assignment),
+              ),
+          ),
           assignments: snapshot.assignments.filter(
             (assignment) => assignment.projectId === query.projectId,
           ),
@@ -107,7 +147,14 @@ const scopedSnapshot =
               ? control.projectId === query.projectId
               : snapshot.managers.some(
                   (manager) =>
-                    manager.id === control.managerId && manager.projectId === query.projectId,
+                    manager.id === control.managerId &&
+                    (manager.projectId === query.projectId ||
+                      snapshot.assignments.some(
+                        (assignment) =>
+                          assignment.projectId === query.projectId &&
+                          assignment.managerId === manager.id &&
+                          factorySharedAssignmentOwned(snapshot, assignment),
+                      )),
                 ),
           ),
           guidance: snapshot.guidance.filter((guidance) =>
@@ -192,6 +239,7 @@ export const layer = Layer.effect(
     const retros = yield* Effect.serviceOption(FactoryRetroEffects);
     const scheduling = yield* Effect.serviceOption(FactorySchedulingEffects);
     const improvements = yield* Effect.serviceOption(FactoryImprovementEffects);
+    const workflows = yield* Effect.serviceOption(FactoryWorkflowEffects.FactoryWorkflowEffects);
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -322,6 +370,18 @@ export const layer = Layer.effect(
                     `Task: ${assignment.title}. Scope: ${assignment.scope?.description}. Completion: ${assignment.scope?.completionCondition}. Pull request required: ${assignment.scope?.requiresPullRequest ?? true}.`,
                     `The owned workflow is pinned to ${assignment.workflow.revision} at /workflow. Read its relevant skills. Your approved starting source is ${assignment.startingSource?.revision} (${assignment.startingSource?.sourceDigest}); preserve any handed-over work and existing PR links.`,
                     `Approved execution grant: ${renderJson(assignment.grant)}. Existing granted files can be edited normally. For creating, renaming, or deleting files use factory_dispatch assignment.file.mutate with the current grant epoch. Use assignment.verify to run the adopted immutable checks and retain its evidence.`,
+                    ...(profile.requiresSkillAuthoring
+                      ? [
+                          "This assignment creates or edits agent instructions or skills. Before changing them, use /workflow/skills/writing-for-agents/SKILL.md and its SKILL-MECHANICS.md reference, then read and apply every further reference relevant to the edit. Your authoring baseline remains read-only; write only the authorized candidate files.",
+                        ]
+                      : []),
+                    ...(assignment.sharedWork
+                      ? [
+                          assignment.sharedWork.kind === "experiment"
+                            ? "This is an isolated investigation experiment. Produce candidate work and a report for the system manager. Publication, tracker changes, PR creation, merge, deployment, live trials, and workflow adoption are not authorized. A new candidate file does not become an adopted instruction. Complete through the exact commissioned report target."
+                            : "The system manager owns this shared repository assignment. Your team owns implementation, internal review and the PR process. Human PR approval and separate human adoption are required; completing this change never changes the adopted workflow.",
+                        ]
+                      : []),
                     `Approved exact models: ${renderJson(assignment.modelPolicy)}. Your selected model: ${renderJson(assignment.modelChoice)}. Choose approved models according to task complexity. Native subagent tools are disabled; use delegate_task for your internal team. Every descendant remains inside this assignment's boundary.`,
                     "Raise an out-of-scope dependency or structural problem when discovered. Do not change protected controls without a separately authorized rule-change assignment. The manager coordinates priorities; it does not review your PR.",
                     "Before implementation, declare concrete UI impact with delivery.impact.declare: journeys, navigation, layout, shared components, classification, and evidence. Changed user flows physically hold implementation. While held, use the read-only planning context to submit a concrete markdown or HTML flow via delivery.flow.submit; wait for the human's digest-bound decision and host release before coding. Flow submission records its own approval wait; do not add an assignment.wait for that same decision. The host resumes you automatically after approval and physical release, or after requested changes so you can revise the proposal.",
@@ -806,6 +866,34 @@ export const layer = Layer.effect(
         }
       }),
     );
+    const workflowWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        if (Option.isNone(workflows)) return;
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) => !visited.has(entry.id) && entry.intent.type.startsWith("workflow."),
+          );
+          if (!pending.length) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            yield* workflows.value.handle(entry).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory workflow operation remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+            }
+          }
+        }
+      }),
+    );
     const wake = Effect.all(
       [
         worker.enqueue(undefined),
@@ -815,6 +903,7 @@ export const layer = Layer.effect(
         retroWorker.enqueue(undefined),
         schedulingWorker.enqueue(undefined),
         improvementWorker.enqueue(undefined),
+        workflowWorker.enqueue(undefined),
       ],
       {
         discard: true,
@@ -834,6 +923,7 @@ export const layer = Layer.effect(
         yield* retroWorker.drain;
         yield* schedulingWorker.drain;
         yield* improvementWorker.drain;
+        yield* workflowWorker.drain;
         if (progress === workerProgress) return;
       }
     });
@@ -1022,15 +1112,23 @@ export const layer = Layer.effect(
       dispatch: Effect.fn("FactoryService.dispatch")(function* (actor, command) {
         const receipt = yield* store.findReceipt({ actor, command });
         if (receipt !== undefined) return receipt;
+        const snapshot = yield* store.snapshot;
+        const sharedManager =
+          command.type === "shared.work.commission" || command.type === "experiment.commission"
+            ? snapshot.managers.find((entry) => entry.role === "system")
+            : undefined;
         const allocation =
           command.type === "manager.create" ||
           command.type === "assignment.commission" ||
-          command.type === "assignment.handover"
+          command.type === "assignment.handover" ||
+          sharedManager !== undefined
             ? {
                 managerThreadId:
                   command.type === "manager.create"
                     ? ThreadId.make(yield* randomUuidV4)
-                    : command.managerId,
+                    : "managerId" in command
+                      ? command.managerId
+                      : sharedManager!.id,
                 leadThreadId:
                   command.type === "assignment.handover"
                     ? command.threadId
@@ -1038,7 +1136,6 @@ export const layer = Layer.effect(
                 assignmentId: FactoryAssignmentId.make(yield* randomUuidV4),
               }
             : undefined;
-        const snapshot = yield* store.snapshot;
         if (
           (command.type === "assignment.commission" || command.type === "assignment.handover") &&
           command.scope.noPrTarget?.kind === "report-received"
@@ -1075,6 +1172,18 @@ export const layer = Layer.effect(
         let retroContext: FactoryRetroContext = {};
         let schedulingContext: FactorySchedulingContext = {};
         let improvementContext: FactoryImprovementContext = {};
+        let workflowContext: FactoryWorkflowContext = {};
+        if (Option.isSome(workflows))
+          workflowContext = yield* workflows.value.context(actor, command);
+        else if (
+          command.type.startsWith("shared.") ||
+          command.type.startsWith("workflow.") ||
+          command.type.startsWith("experiment.")
+        )
+          return yield* new FactoryError({
+            code: "execution-unavailable",
+            detail: "This environment has no qualified workflow adoption runtime.",
+          });
         if (Option.isSome(improvements))
           improvementContext = yield* improvements.value.context(actor, command);
         if (Option.isSome(retros)) retroContext = yield* retros.value.context(actor, command);
@@ -1182,6 +1291,7 @@ export const layer = Layer.effect(
           ...retroContext,
           ...schedulingContext,
           ...improvementContext,
+          ...workflowContext,
           ...(allocation === undefined ? {} : { allocation }),
         });
         if (Result.isFailure(preflight)) {
@@ -1248,6 +1358,19 @@ export const layer = Layer.effect(
               return yield* new FactoryError({ code: "invalid-state" });
           }
         }
+        const onboarding =
+          requested === undefined
+            ? undefined
+            : preflight.success.state.assignments.find(
+                (entry) =>
+                  entry.kind === "onboarding" &&
+                  entry.managerId ===
+                    (command.type === "manager.create"
+                      ? allocation?.managerThreadId
+                      : "managerId" in command
+                        ? command.managerId
+                        : undefined),
+              );
         const qualification =
           requested?.projectId == null
             ? undefined
@@ -1256,7 +1379,7 @@ export const layer = Layer.effect(
               : yield* execution.qualify({
                   projectId: requested.projectId,
                   modelSelection: requested.modelSelection,
-                  workflow: requested.workflow,
+                  workflow: onboarding?.workflow ?? requested.workflow,
                 });
         const boundary =
           command.type === "manager.approve-onboarding"
@@ -1281,6 +1404,7 @@ export const layer = Layer.effect(
             ...retroContext,
             ...schedulingContext,
             ...improvementContext,
+            ...workflowContext,
             ...(allocation === undefined ? {} : { allocation }),
             ...(qualification === undefined ? {} : { qualification }),
             ...(boundary === undefined ? {} : { boundary }),

@@ -8,11 +8,13 @@ const unexpected = () => Effect.die("This fixture cannot run managed delivery op
 export const layerUnavailable = Layer.succeed(FactoryBoundaryExecution, {
   setDeliveryHold: unexpected,
   captureCandidate: unexpected,
+  captureMigration: unexpected,
   readCandidate: unexpected,
   finalizeCandidate: unexpected,
   verifyCandidate: unexpected,
   inspectCandidate: unexpected,
   approve: unexpected,
+  approveShared: unexpected,
   prepare: unexpected,
   inspect: unexpected,
   rebind: unexpected,

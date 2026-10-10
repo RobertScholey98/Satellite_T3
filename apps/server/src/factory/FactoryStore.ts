@@ -277,6 +277,33 @@ const make = Effect.gen(function* () {
               const failed = command.type.endsWith(".failed");
               const matches = (() => {
                 switch (intent.type) {
+                  case "workflow.work.notify":
+                    return (
+                      (command.type === "workflow.work.notified" ||
+                        command.type === "workflow.work.notify.failed") &&
+                      command.workId === intent.workId &&
+                      command.managerId === intent.managerId
+                    );
+                  case "workflow.restart.stop":
+                    return (
+                      (command.type === "workflow.restart.stopped" ||
+                        (command.type === "workflow.restart.failed" && command.step === "stop")) &&
+                      command.migrationId === intent.migrationId
+                    );
+                  case "workflow.restart.prepare":
+                    return (
+                      (command.type === "workflow.restart.prepared" ||
+                        (command.type === "workflow.restart.failed" &&
+                          command.step === "prepare")) &&
+                      command.migrationId === intent.migrationId
+                    );
+                  case "workflow.restart.resume":
+                    return (
+                      (command.type === "workflow.restart.resumed" ||
+                        (command.type === "workflow.restart.failed" &&
+                          command.step === "resume")) &&
+                      command.migrationId === intent.migrationId
+                    );
                   case "assignment.conclude":
                     return (
                       (command.type === "assignment.concluded" ||

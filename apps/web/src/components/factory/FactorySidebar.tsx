@@ -234,11 +234,43 @@ export function FactorySidebar({
                         (manager) =>
                           manager.role === "system" && manager.threadStatus === "created",
                       )
-                      .map((manager) =>
-                        scopedThreadKey(
+                      .flatMap((manager) => {
+                        const key = scopedThreadKey(
                           scopeThreadRef(environment.environmentId, manager.threadId),
-                        ),
-                      )
+                        );
+                        const assignments =
+                          environment.data?.assignments.filter(
+                            (assignment) => assignment.managerId === manager.id,
+                          ) ?? [];
+                        return [
+                          key,
+                          ...(collapsedManagers.has(key)
+                            ? []
+                            : [
+                                ...assignments
+                                  .filter((assignment) => assignment.threadStatus === "created")
+                                  .map((assignment) =>
+                                    scopedThreadKey(
+                                      scopeThreadRef(
+                                        environment.environmentId,
+                                        assignment.threadId,
+                                      ),
+                                    ),
+                                  ),
+                                ...(environment.data?.retros ?? [])
+                                  .filter((retro) =>
+                                    assignments.some(
+                                      (assignment) => assignment.id === retro.assignmentId,
+                                    ),
+                                  )
+                                  .map((retro) =>
+                                    scopedThreadKey(
+                                      scopeThreadRef(environment.environmentId, retro.threadId),
+                                    ),
+                                  ),
+                              ]),
+                        ];
+                      })
                   : [],
               ),
             )
@@ -356,12 +388,35 @@ export function FactorySidebar({
                 (project) => project.environmentId === environment.environmentId,
               )}
               activeThreadId={
-                environment.data?.managers.find(
+                activeThreadKey &&
+                threadsByKey.get(activeThreadKey)?.environmentId === environment.environmentId
+                  ? (threadsByKey.get(activeThreadKey)?.id ?? null)
+                  : null
+              }
+              teamsExpanded={
+                !environment.data?.managers.some(
                   (manager) =>
                     manager.role === "system" &&
-                    scopedThreadKey(scopeThreadRef(environment.environmentId, manager.threadId)) ===
-                      activeThreadKey,
-                )?.threadId ?? null
+                    collapsedManagers.has(
+                      scopedThreadKey(scopeThreadRef(environment.environmentId, manager.threadId)),
+                    ),
+                )
+              }
+              onToggleTeams={() => {
+                const manager = environment.data?.managers.find((entry) => entry.role === "system");
+                if (!manager) return;
+                const key = scopedThreadKey(
+                  scopeThreadRef(environment.environmentId, manager.threadId),
+                );
+                setCollapsedManagers((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(key)) next.delete(key);
+                  else next.add(key);
+                  return next;
+                });
+              }}
+              onAssignmentDetails={(assignmentId) =>
+                setAssignmentDetails({ environmentId: environment.environmentId, assignmentId })
               }
               canOpenThread={(id) =>
                 threadUnavailableReason(

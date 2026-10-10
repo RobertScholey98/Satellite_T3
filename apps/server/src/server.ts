@@ -38,6 +38,8 @@ import * as IssuePublication from "./issues/IssuePublication.ts";
 import * as IssuePublicationHost from "./issues/IssuePublicationHost.ts";
 import * as IssueScheduling from "./issues/IssueScheduling.ts";
 import * as FactoryImprovementEffects from "./factory/FactoryImprovementEffects.ts";
+import * as FactoryWorkflowEffects from "./factory/FactoryWorkflowEffects.ts";
+import * as FactoryWorkflowExecution from "./factory/FactoryWorkflowExecution.ts";
 import * as FactoryImprovementEvidence from "./factory/FactoryImprovementEvidence.ts";
 import * as FactorySchedulingEffects from "./factory/FactorySchedulingEffects.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
@@ -526,6 +528,7 @@ const layerFactoryExecution = Layer.mergeAll(
   FactoryExecution.layer,
   FactoryBoundaryExecution.layer,
 ).pipe(
+  Layer.provideMerge(FactoryWorkflowExecution.layer),
   Layer.provideMerge(FactoryPublication.layer),
   Layer.provideMerge(FactorySource.layer),
   Layer.provideMerge(FactoryStore.layer),
@@ -581,6 +584,12 @@ const layerSatelliteFeatures = Layer.mergeAll(
     Layer.provide(FactoryImprovementEvidence.layer),
     Layer.provideMerge(
       FactoryService.layer.pipe(
+        Layer.provideMerge(
+          FactoryWorkflowEffects.layer.pipe(
+            Layer.provide(FactoryControlAccess.layer),
+            Layer.provide(FactoryHandover.layer),
+          ),
+        ),
         Layer.provideMerge(
           FactoryImprovementEffects.layer.pipe(Layer.provide(FactoryControlAccess.layer)),
         ),

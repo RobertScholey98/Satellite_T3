@@ -27,6 +27,74 @@ const group = WsRpcGroup.omit(
 const managerId = ThreadId.make("manager-web");
 const settingsCommands: ReadonlyArray<FactoryCommand> = [
   {
+    type: "shared.repository.register",
+    commandId: CommandId.make("shared-register"),
+    projectId: ProjectId.make("skills"),
+    kind: "skills",
+    configuration: {
+      protectedPaths: ["skills/example/SKILL.md"],
+      writablePaths: [],
+      creatableDirectories: [],
+      gates: [],
+      verification: "protected-integrity",
+    },
+  },
+  {
+    type: "shared.repository.configure",
+    commandId: CommandId.make("shared-configure"),
+    repositoryId: "skills",
+    enabled: false,
+  },
+  { type: "shared.work.authorize", commandId: CommandId.make("shared-authorize"), workId: "work" },
+  {
+    type: "shared.work.notify.retry",
+    commandId: CommandId.make("shared-notify-retry"),
+    workId: "work",
+  },
+  {
+    type: "shared.work.revoke",
+    commandId: CommandId.make("shared-revoke"),
+    workId: "work",
+    reason: "Authority withdrawn",
+  },
+  {
+    type: "experiment.configure",
+    commandId: CommandId.make("experiment-configure"),
+    enabled: true,
+    maxConcurrent: 1,
+    maxPerInvestigation: 1,
+  },
+  {
+    type: "workflow.adopt",
+    commandId: CommandId.make("workflow-adopt"),
+    releaseId: "release",
+    scope: { kind: "default" },
+  },
+  { type: "workflow.override.clear", commandId: CommandId.make("workflow-clear"), managerId },
+  {
+    type: "workflow.restart",
+    commandId: CommandId.make("workflow-restart"),
+    releaseId: "release",
+    assignmentIds: [FactoryAssignmentId.make("assignment")],
+    kind: "trial",
+    reason: "Explicit trial",
+  },
+  {
+    type: "workflow.restart.retry",
+    commandId: CommandId.make("workflow-retry"),
+    migrationId: "migration",
+  },
+  {
+    type: "workflow.restart.continue",
+    commandId: CommandId.make("workflow-continue"),
+    migrationId: "migration",
+  },
+  {
+    type: "workflow.models.apply",
+    commandId: CommandId.make("workflow-models"),
+    recommendationId: "recommendation",
+  },
+  {
     type: "system.create",
     commandId: CommandId.make("system-create"),
     workspaceProjectId: ProjectId.make("web"),
@@ -215,6 +283,18 @@ describe("factory RPC authority", () => {
           assert.deepStrictEqual(yield* client[method]({ command }), { revision: index + 1 });
         }
         assert.deepStrictEqual(handled, [
+          "shared.repository.register",
+          "shared.repository.configure",
+          "shared.work.authorize",
+          "shared.work.notify.retry",
+          "shared.work.revoke",
+          "experiment.configure",
+          "workflow.adopt",
+          "workflow.override.clear",
+          "workflow.restart",
+          "workflow.restart.retry",
+          "workflow.restart.continue",
+          "workflow.models.apply",
           "system.create",
           "system.retry",
           "improvement.configure",

@@ -38,6 +38,7 @@ import { initialFactorySnapshot } from "./FactoryState.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
 import type { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
+import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("web");
@@ -266,6 +267,32 @@ const createLead = (threadId = leadId, selection = leadModel) =>
   });
 
 describe("factory model admission", () => {
+  it.effect(
+    "admits shared implementation descendants within their approved pool and denies unowned claims",
+    () =>
+      scenario(
+        sharedAccessFixture(snapshot),
+        Effect.gen(function* () {
+          const admission = yield* FactoryModelAdmission.FactoryModelAdmission;
+          yield* createThread(childId, {
+            rootThreadId: leadId,
+            parentThreadId: leadId,
+            relationshipToParent: "subagent",
+          });
+          yield* admission.assertSelectionFor(childId, workerModel);
+          yield* admission.assertDelegationFor(childId, leadModel);
+          assert.equal(
+            (yield* admission.assertSelectionFor(childId, outsideModel).pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+          yield* saveSnapshot({ ...sharedAccessFixture(snapshot), sharedWorks: [] });
+          assert.equal(
+            (yield* admission.assertSelectionFor(childId, workerModel).pipe(Effect.flip)).code,
+            "execution-unavailable",
+          );
+        }),
+      ),
+  );
   it.effect(
     "restricts independent diagnosis to its pinned model and prohibits delegated children",
     () => {

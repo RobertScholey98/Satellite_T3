@@ -17,6 +17,10 @@ import * as Result from "effect/Result";
 
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
+import {
+  factorySharedAssignmentEnabled,
+  factoryWorkflowRestartPending,
+} from "./FactoryWorkflowOwnership.ts";
 
 export interface FactoryControlMembership {
   readonly threadId: ThreadId;
@@ -51,11 +55,20 @@ export const factoryExecutionBlocked = (
       auxiliary,
       state.retros,
     );
-  const completion = state.assignments.find(
-    (entry) => entry.id === member.assignmentId,
-  )?.completion;
+  const assignment = state.assignments.find((entry) => entry.id === member.assignmentId);
+  const completion = assignment?.completion;
   if (!retrospective && completion !== undefined && completion.phase !== "collecting")
     return "Implementation has concluded. Its retrospective uses a separate read-only conversation.";
+  if (!retrospective && assignment && factoryWorkflowRestartPending(state, assignment.id))
+    return "This team is stopped while its explicitly selected workflow restart is prepared.";
+  if (!retrospective && assignment?.wait?.kind === "authority")
+    return "This team's authority is held. A workflow restart does not restore permission to work.";
+  if (
+    !retrospective &&
+    assignment?.sharedWork &&
+    !factorySharedAssignmentEnabled(state, assignment)
+  )
+    return "This shared assignment no longer has active repository, work or experiment authority.";
   for (const control of state.controls) {
     switch (control.kind) {
       case "cancellation":
@@ -65,7 +78,7 @@ export const factoryExecutionBlocked = (
       case "project-pause":
         if (
           control.status === "active" &&
-          member.managerRole !== "system" &&
+          (member.managerRole !== "system" || member.assignmentId !== undefined) &&
           control.projectId === member.projectId
         )
           return "This project's manager and teams are paused.";
@@ -196,7 +209,12 @@ export function decideFactoryControls(
         command.type === "manager.pause"
           ? state.managers.find((entry) => entry.id === command.managerId)
           : state.managers.find((entry) => entry.projectId === command.projectId);
-      if (!manager) return fail("manager-not-found");
+      if (
+        !manager &&
+        (command.type !== "project.pause" ||
+          !state.sharedRepositories.some((entry) => entry.projectId === command.projectId))
+      )
+        return fail("manager-not-found");
       const id = FactoryControlId.make(
         command.type === "manager.pause"
           ? `manager-pause:${command.managerId}`
@@ -221,7 +239,7 @@ export function decideFactoryControls(
         };
         return save(control, [stopIntent(control)]);
       }
-      if (manager.status === "paused") return fail("invalid-state");
+      if (!manager || manager.status === "paused") return fail("invalid-state");
       const control: FactoryControl = {
         ...shared,
         kind: "manager-pause",

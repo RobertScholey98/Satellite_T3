@@ -195,9 +195,11 @@ const make = Effect.gen(function* () {
         const sourceBasis = final ? "final-candidate" : "starting-snapshot";
         const staging = path.join(directory, `snapshot-${yield* crypto.randomUUIDv4}`);
         const projectSnapshotPath = path.join(staging, "project");
-        const workflowSnapshotPath = path.join(staging, "workflow");
+        const workflowSnapshotPath =
+          original.workflow?.snapshotPath ?? path.join(staging, "workflow");
         yield* writeFiles(projectSnapshotPath, final?.files ?? starting.files);
-        yield* copyWorkflow(original.workflowSnapshotPath, workflowSnapshotPath);
+        if (original.workflow === undefined)
+          yield* copyWorkflow(original.workflowSnapshotPath, workflowSnapshotPath);
         profile = FactoryExecutionProfile.make({
           boundaryId: profileId,
           profileId,
@@ -205,6 +207,10 @@ const make = Effect.gen(function* () {
           imageId: original.imageId,
           projectSnapshotPath,
           workflowSnapshotPath,
+          ...(original.workflow === undefined ? {} : { workflow: original.workflow }),
+          ...(original.requiresSkillAuthoring === undefined
+            ? {}
+            : { requiresSkillAuthoring: original.requiresSkillAuthoring }),
           runtimePath: path.join(directory, "sessions"),
           startingSourceId: assignment.startingSource.id,
           startingSourceDigest: assignment.startingSource.sourceDigest,

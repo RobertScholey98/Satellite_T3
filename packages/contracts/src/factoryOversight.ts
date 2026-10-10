@@ -233,6 +233,21 @@ export const FactoryExpectedWait = Schema.Union([
 ]);
 export type FactoryExpectedWait = typeof FactoryExpectedWait.Type;
 
+export const FactoryWait = Schema.Union([
+  FactoryExpectedWait,
+  Schema.Struct({
+    kind: Schema.Literal("flow-review"),
+    holdId: TrimmedNonEmptyString,
+    artifactId: TrimmedNonEmptyString,
+    reason: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    kind: Schema.Literals(["execution-boundary", "authority", "recovery", "delivered"]),
+    reason: TrimmedNonEmptyString,
+  }),
+]);
+export type FactoryWait = typeof FactoryWait.Type;
+
 const AssignmentCommandFields = { commandId: CommandId, assignmentId: FactoryAssignmentId };
 const RecoveryCommandFields = { ...AssignmentCommandFields, incidentId: TrimmedNonEmptyString };
 export const FactoryOversightCommand = Schema.Union([

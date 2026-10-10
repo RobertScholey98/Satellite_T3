@@ -20,6 +20,7 @@ import * as Result from "effect/Result";
 import { isFactoryModelApproved, resolveFactoryModelPolicy } from "./FactoryModelPolicy.ts";
 import { preserveFactoryManagerPauses } from "./FactoryControls.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
+import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 
 export interface FactoryImprovementContext {
   readonly systemManagerCreation?: {
@@ -203,12 +204,44 @@ export function decideFactoryImprovements(
   const systemActor = actor.kind === "thread" && actor.threadId === manager?.threadId;
   const fail = (detail: string, code: FactoryError["code"] = "permission-denied") =>
     Result.fail(new FactoryError({ code, detail }));
-  if (!recognized)
+  if (!recognized) {
+    const assignmentId =
+      "assignmentId" in command
+        ? command.assignmentId
+        : "retroId" in command
+          ? state.retros.find((entry) => entry.id === command.retroId)?.assignmentId
+          : "findingId" in command
+            ? state.findings.find((entry) => entry.id === command.findingId)?.assignmentId
+            : "dependencyId" in command
+              ? state.dependencies.find((entry) => entry.id === command.dependencyId)?.assignmentId
+              : undefined;
+    const assignment = state.assignments.find((entry) => entry.id === assignmentId);
+    if (
+      systemActor &&
+      assignment &&
+      availableManager(state) &&
+      factorySharedAssignmentOwned(state, assignment) &&
+      [
+        "assignment.retry",
+        "assignment.wait.resolve",
+        "assignment.recovery.begin",
+        "assignment.recovery.replan",
+        "assignment.recovery.escalate",
+        "assignment.completion.retry",
+        "dependency.check-usability",
+        "finding.route",
+        "finding.escalate",
+        "retro.manager.submit",
+        "retro.retry",
+      ].includes(command.type)
+    )
+      return undefined;
     return systemActor
       ? fail(
           "The system manager investigates shared process. It cannot direct project delivery or change project permissions.",
         )
       : undefined;
+  }
   const accepted = (
     changes: Partial<FactorySnapshot> = {},
     result: Omit<FactoryCommandResult, "revision"> = {},

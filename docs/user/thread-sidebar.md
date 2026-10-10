@@ -162,6 +162,36 @@ Acceptance records your decision; it does not silently change project rules or
 adopt a new workflow. Mark proposals useful, noisy, or unclear to guide later
 investigations. Pause the system manager independently of project work.
 
+Open **Workflow delivery** under the system manager to register your owned
+skills or shared tooling repository. Choose an existing project workspace that
+has no project manager and approve its exact file boundary. A Markdown skills
+library can use protected-file integrity checks without a build command. Project
+verification skills stay in their project; the shared library needs no extra manager.
+
+The system manager proposes an implementation plan for an accepted improvement.
+Review its scope, expected benefit, assessment approach, and protected edits before
+authorizing it. Authorization wakes the manager to commission a normal team.
+That team owns its reviews, human-approved PR, and retrospective. Skill edits use
+your pinned writing-for-agents instructions and applicable references.
+
+Adoption is a separate human decision on an exact committed release. Set an
+environment default or a manager override for future assignments. Existing teams
+keep their pinned version. To move selected active teams, explicitly restart them
+on a release; their work, conversation, PRs, and outstanding decisions are preserved.
+A failed restart remains stopped with a retry action. Current permission reductions
+still apply to teams using an older workflow.
+
+Optional experiments start disabled. Their limits bound concurrent work and work
+per investigation. They permit isolated candidate authoring and inspection under
+the approved baseline, without publication or execution of a candidate workflow.
+Live trials require your explicit selection. Pstack remains the library's origin;
+Satellite does not monitor or update it from upstream.
+
+Implementation can finish while outcome assessment remains open. The system
+manager records success, failure, or insufficient evidence with a next step when
+evidence arrives. Standing model preference recommendations also come to you for
+review; ordinary choices within an approved model pool remain autonomous.
+
 ### Let a manager select ready work
 
 In **Delivery settings → Project work scheduling**, select a connected project board

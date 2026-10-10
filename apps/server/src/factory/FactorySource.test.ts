@@ -196,6 +196,54 @@ it.effect(
         assert.isFalse(yield* fs.exists(path.join(repository, "filter-executed")));
         assert.isFalse(yield* fs.exists(path.join(repository, "monitor-executed")));
         yield* source.validateCurrent(handover.id);
+        const migrationInput = {
+          requestId: CommandId.make("migration-capture"),
+          previousSourceId: handover.id,
+          threadId,
+          files: [
+            ...artifact.files.filter((entry) => entry.path !== "source.cjs"),
+            {
+              ...artifact.files.find((entry) => entry.path === "untracked.dat")!,
+              path: "candidate.dat",
+            },
+          ],
+        };
+        const migrated = yield* source.captureArtifact(migrationInput);
+        const migratedArtifact = yield* source.read(migrated.id);
+        assert.deepEqual(migratedArtifact.indexFiles, artifact.indexFiles);
+        assert.equal(migratedArtifact.indexData, artifact.indexData);
+        assert.equal(migratedArtifact.workspaceRoot, repository);
+        assert.equal(migrated.revision, handover.revision);
+        assert.deepEqual(migrated.stagedPaths, ["binary.dat", "source.cjs"]);
+        assert.deepEqual(migrated.deletedPaths, ["deleted.cjs", "source.cjs"]);
+        assert.deepEqual(migrated.untrackedPaths, ["candidate.dat", "untracked.dat"]);
+        assert.equal(
+          yield* fs.readFileString(path.join(repository, "source.cjs")),
+          "module.exports = 4;\r\n",
+        );
+        assert.deepEqual(yield* fs.readFile(path.join(repository, ".git", "index")), indexBefore);
+        assert.isFalse(yield* fs.exists(path.join(repository, "candidate.dat")));
+        assert.deepEqual(yield* source.captureArtifact(migrationInput), migrated);
+        assert.equal(
+          (yield* source
+            .captureArtifact({ ...migrationInput, files: artifact.files })
+            .pipe(Effect.flip)).code,
+          "command-conflict",
+        );
+        assert.equal(
+          (yield* source
+            .captureArtifact({
+              ...migrationInput,
+              requestId: CommandId.make("invalid-migration-file"),
+              files: [{ ...artifact.files[0]!, digest: "invalid" }],
+            })
+            .pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.equal(
+          (yield* source.validateCurrent(migrated.id).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
         yield* put("source.cjs", "changed after capture");
         assert.equal(
           (yield* source.validateCurrent(handover.id).pipe(Effect.flip)).code,

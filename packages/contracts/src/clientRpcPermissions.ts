@@ -71,6 +71,18 @@ export function clientRpcRequiredScopes(
       payload.command.type === "improvement.flush" ||
       payload.command.type === "improvement.batch.retry" ||
       payload.command.type === "proposal.decide" ||
+      payload.command.type === "shared.repository.register" ||
+      payload.command.type === "shared.repository.configure" ||
+      payload.command.type === "shared.work.authorize" ||
+      payload.command.type === "shared.work.notify.retry" ||
+      payload.command.type === "shared.work.revoke" ||
+      payload.command.type === "experiment.configure" ||
+      payload.command.type === "workflow.adopt" ||
+      payload.command.type === "workflow.override.clear" ||
+      payload.command.type === "workflow.restart" ||
+      payload.command.type === "workflow.restart.retry" ||
+      payload.command.type === "workflow.restart.continue" ||
+      payload.command.type === "workflow.models.apply" ||
       ((payload.command.type === "assignment.commission" ||
         payload.command.type === "assignment.handover") &&
         payload.command.kind === "rule-change")

@@ -1,3 +1,34 @@
+import {
+  FactorySharedRepository,
+  FactorySharedWork,
+  FactoryExperimentConfiguration,
+  FactoryWorkflowExperiment,
+  FactorySharedAssignment,
+  FactoryWorkflowRelease,
+  FactoryWorkflowAdoption,
+  FactoryWorkflowOverride,
+  FactoryWorkflowMigration,
+  FactoryImprovementValidation,
+  FactoryModelRecommendation,
+  FactoryWorkflowCommand,
+  FactoryWorkflowHostCommand,
+  FactoryWorkflowEffectIntent,
+} from "./factoryWorkflow.ts";
+import {
+  FactoryWorkflowVersion,
+  FactoryBoundaryId,
+  FactoryBoundaryConfiguration,
+  FactoryBoundary,
+  FactoryDiscoveryQualification,
+} from "./factoryBoundaries.ts";
+export {
+  FactoryWorkflowVersion,
+  FactoryBoundaryId,
+  FactoryGate,
+  FactoryBoundaryConfiguration,
+  FactoryBoundary,
+  FactoryDiscoveryQualification,
+} from "./factoryBoundaries.ts";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 
@@ -66,7 +97,7 @@ import {
   FactoryDependency,
   FactoryDependencyId,
   FactoryEvidence,
-  FactoryExpectedWait,
+  FactoryWait,
   FactoryOversightCommand,
   FactoryOversightEffectIntent,
   FactoryOversightHostCommand,
@@ -82,46 +113,7 @@ import {
   FactoryGuidance,
 } from "./factoryControls.ts";
 export { FactoryAssignmentId } from "./factoryControls.ts";
-export { FactoryAssignmentScope, FactoryEvidence } from "./factoryOversight.ts";
-
-export const FactoryWorkflowVersion = Schema.Struct({
-  repositoryRoot: TrimmedNonEmptyString,
-  revision: TrimmedNonEmptyString,
-});
-export type FactoryWorkflowVersion = typeof FactoryWorkflowVersion.Type;
-
-export const FactoryBoundaryId = TrimmedNonEmptyString.pipe(Schema.brand("FactoryBoundaryId"));
-export type FactoryBoundaryId = typeof FactoryBoundaryId.Type;
-
-export const FactoryGate = Schema.Struct({
-  id: TrimmedNonEmptyString,
-  label: TrimmedNonEmptyString,
-  executable: TrimmedNonEmptyString,
-  args: Schema.Array(Schema.String),
-  cwd: TrimmedNonEmptyString,
-  timeoutMs: NonNegativeInt,
-  protectedInputs: Schema.Array(TrimmedNonEmptyString),
-});
-export type FactoryGate = typeof FactoryGate.Type;
-
-export const FactoryBoundaryConfiguration = Schema.Struct({
-  protectedPaths: Schema.Array(TrimmedNonEmptyString),
-  writablePaths: Schema.Array(TrimmedNonEmptyString),
-  creatableDirectories: Schema.Array(TrimmedNonEmptyString),
-  gates: Schema.Array(FactoryGate),
-});
-export type FactoryBoundaryConfiguration = typeof FactoryBoundaryConfiguration.Type;
-
-export const FactoryBoundary = Schema.Struct({
-  ...FactoryBoundaryConfiguration.fields,
-  id: FactoryBoundaryId,
-  projectId: ProjectId,
-  sourceRevision: TrimmedNonEmptyString,
-  workflow: FactoryWorkflowVersion,
-  profileId: TrimmedNonEmptyString,
-  approvedAt: IsoDateTime,
-});
-export type FactoryBoundary = typeof FactoryBoundary.Type;
+export { FactoryAssignmentScope, FactoryEvidence, FactoryWait } from "./factoryOversight.ts";
 
 export const FactoryAssignmentGrant = Schema.Struct({
   boundaryId: FactoryBoundaryId,
@@ -192,21 +184,6 @@ export const FactoryPolicyOverrides = Schema.Struct({
 });
 export type FactoryPolicyOverrides = typeof FactoryPolicyOverrides.Type;
 
-export const FactoryWait = Schema.Union([
-  FactoryExpectedWait,
-  Schema.Struct({
-    kind: Schema.Literal("flow-review"),
-    holdId: TrimmedNonEmptyString,
-    artifactId: TrimmedNonEmptyString,
-    reason: TrimmedNonEmptyString,
-  }),
-  Schema.Struct({
-    kind: Schema.Literals(["execution-boundary", "authority", "recovery", "delivered"]),
-    reason: TrimmedNonEmptyString,
-  }),
-]);
-export type FactoryWait = typeof FactoryWait.Type;
-
 export const FactoryOnboardingFinding = Schema.Struct({
   description: TrimmedNonEmptyString,
   evidence: Schema.Array(FactoryEvidence),
@@ -223,19 +200,6 @@ export const FactoryOnboardingReport = Schema.Struct({
   proposedBoundary: Schema.optionalKey(FactoryBoundaryConfiguration),
 });
 export type FactoryOnboardingReport = typeof FactoryOnboardingReport.Type;
-
-export const FactoryDiscoveryQualification = Schema.Union([
-  Schema.Struct({
-    status: Schema.Literal("qualified"),
-    profileId: TrimmedNonEmptyString,
-    checkedAt: IsoDateTime,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("unavailable"),
-    reason: TrimmedNonEmptyString,
-  }),
-]);
-export type FactoryDiscoveryQualification = typeof FactoryDiscoveryQualification.Type;
 
 const FactoryManagerFields = {
   id: ThreadId,
@@ -280,6 +244,7 @@ export const FactoryAssignment = Schema.Struct({
   managerId: ThreadId,
   threadId: ThreadId,
   projectId: ProjectId,
+  sharedWork: Schema.optionalKey(FactorySharedAssignment),
   scheduling: Schema.optionalKey(
     Schema.Struct({
       candidateId: TrimmedNonEmptyString,
@@ -331,6 +296,34 @@ export const FactoryAssignment = Schema.Struct({
 export type FactoryAssignment = typeof FactoryAssignment.Type;
 
 export const FactorySnapshot = Schema.Struct({
+  sharedRepositories: Schema.Array(FactorySharedRepository).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  sharedWorks: Schema.Array(FactorySharedWork).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  experimentConfigurations: Schema.Array(FactoryExperimentConfiguration).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  workflowExperiments: Schema.Array(FactoryWorkflowExperiment).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  workflowReleases: Schema.Array(FactoryWorkflowRelease).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  workflowAdoptions: Schema.Array(FactoryWorkflowAdoption).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  workflowOverrides: Schema.Array(FactoryWorkflowOverride).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  workflowMigrations: Schema.Array(FactoryWorkflowMigration).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  improvementValidations: Schema.Array(FactoryImprovementValidation).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  modelRecommendations: Schema.Array(FactoryModelRecommendation).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   revision: NonNegativeInt,
   improvementConfigurations: Schema.Array(FactoryImprovementConfiguration).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -402,6 +395,7 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  FactoryWorkflowCommand,
   FactoryImprovementCommand,
   Schema.Struct({
     type: Schema.Literal("system.create"),
@@ -522,6 +516,7 @@ export const FactoryDispatchInput = Schema.Struct({ command: FactoryCommand });
 export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
+  FactoryWorkflowHostCommand,
   FactoryImprovementHostCommand,
   Schema.Struct({
     type: Schema.Literal("system.launch.recorded"),
@@ -600,6 +595,7 @@ export const FactoryThreadLaunchIntent = Schema.Struct({
 });
 export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
 export const FactoryEffectIntent = Schema.Union([
+  FactoryWorkflowEffectIntent,
   FactoryImprovementEffectIntent,
   FactorySchedulingEffectIntent,
   FactoryRetroEffectIntent,
@@ -618,6 +614,14 @@ export const FactoryEffectIntent = Schema.Union([
 export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 
 export const FactoryCommandResult = Schema.Struct({
+  repositoryId: Schema.optionalKey(TrimmedNonEmptyString),
+  workId: Schema.optionalKey(TrimmedNonEmptyString),
+  experimentId: Schema.optionalKey(TrimmedNonEmptyString),
+  releaseId: Schema.optionalKey(TrimmedNonEmptyString),
+  adoptionId: Schema.optionalKey(TrimmedNonEmptyString),
+  validationId: Schema.optionalKey(TrimmedNonEmptyString),
+  recommendationId: Schema.optionalKey(TrimmedNonEmptyString),
+  migrationIds: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
   revision: NonNegativeInt,
   intakeId: Schema.optionalKey(TrimmedNonEmptyString),
   batchId: Schema.optionalKey(TrimmedNonEmptyString),

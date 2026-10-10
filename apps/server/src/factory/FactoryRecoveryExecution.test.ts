@@ -39,6 +39,15 @@ live(
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const workflowBytes = Buffer.from("Pinned skill");
+      const workflowFile = {
+        path: "skills/SKILL.md",
+        content: workflowBytes.toString("base64"),
+        digest: Buffer.from(
+          yield* (yield* Crypto.Crypto).digest("SHA-256", workflowBytes),
+        ).toString("hex"),
+        mode: "100644" as const,
+      };
       const path = yield* Path.Path;
       const runner = yield* ProcessRunner.ProcessRunner;
       const root = yield* fs.makeTempDirectoryScoped();
@@ -399,6 +408,7 @@ live(
                 ServerConfig.layerTest(root, root),
                 Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
                 Layer.mock(FactorySource)({
+                  readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
                   read: () => Effect.die("Recovery must not recapture the original repository"),
                 }),
                 Layer.succeed(ProcessRunner.ProcessRunner, {
@@ -412,6 +422,9 @@ live(
           ),
         ),
       );
-    }).pipe(Effect.scoped, Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    ),
   120000,
 );

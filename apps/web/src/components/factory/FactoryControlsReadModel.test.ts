@@ -113,6 +113,39 @@ const cancellation: Extract<FactoryControl, { kind: "cancellation" }> = {
 const decodeSnapshot = Schema.decodeUnknownSync(FactorySnapshot);
 
 describe("factory thread controls", () => {
+  it("resolves shared implementation teams in their repository while the peer manager uses its own workspace", () => {
+    const workspace = ProjectId.make("workflow-reference");
+    const state = decodeSnapshot({
+      ...initial,
+      managers: [
+        {
+          ...initial.managers[0],
+          role: "system",
+          projectId: null,
+          workspaceProjectId: workspace,
+          qualification: { status: "qualified", profileId: "system-profile", checkedAt: now },
+        },
+      ],
+    });
+    const roster = [
+      thread("manager", null, environmentId, workspace),
+      thread("lead"),
+      thread("worker", "lead"),
+    ];
+    expect(
+      factoryThreadMembership(state, { environmentId, threadId: managerId }, roster)?.manager.id,
+    ).toBe(managerId);
+    expect(
+      factoryThreadMembership(state, { environmentId, threadId: ThreadId.make("worker") }, roster)
+        ?.assignment?.id,
+    ).toBe(assignment.id);
+    expect(
+      factoryThreadMembership(state, { environmentId, threadId: ThreadId.make("worker") }, [
+        roster[1]!,
+        thread("worker", "lead", environmentId, workspace),
+      ]),
+    ).toBeNull();
+  });
   it("shows managed controls for independent reviewers and retains their lead ancestry", () => {
     const reviewer = ThreadId.make("reviewer");
     const state: FactorySnapshot = {

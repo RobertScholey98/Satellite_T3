@@ -31,6 +31,7 @@ import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
+import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 
 import * as FactoryImprovementEvidence from "./FactoryImprovementEvidence.ts";
 
@@ -119,6 +120,8 @@ const make = Effect.gen(function* () {
         if (assignment !== undefined) {
           const owner = state.managers.find((entry) => entry.id === assignment.managerId);
           if (owner === undefined) return yield* unavailable();
+          if (owner.role === "system" && !factorySharedAssignmentOwned(state, assignment))
+            return yield* unavailable();
           return { ownerThreadId: threadId, manager: owner, assignment, auxiliary };
         }
         const thread = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
@@ -147,7 +150,7 @@ const make = Effect.gen(function* () {
           yield* controls
             .assertExecution(invocation.thread.threadId)
             .pipe(Effect.mapError(unavailable));
-        if (member.manager.role === "system") {
+        if (member.manager.role === "system" && member.assignment === undefined) {
           if (
             invocation.thread?.threadId !== member.manager.threadId ||
             ![
@@ -155,6 +158,11 @@ const make = Effect.gen(function* () {
               "factory_improvement_record",
               "factory_investigation_read",
               "factory_dispatch",
+              "factory_snapshot",
+              "t3_thread_read",
+              "t3_thread_send",
+              "t3_thread_wait",
+              "t3_thread_interrupt",
             ].includes(toolName)
           )
             return yield* denied();
@@ -162,7 +170,16 @@ const make = Effect.gen(function* () {
             .runtimePolicyFor(member.ownerThreadId)
             .pipe(Effect.mapError(unavailable));
           if (!profile) return yield* unavailable();
-          return;
+          if (
+            [
+              "factory_improvement_snapshot",
+              "factory_improvement_record",
+              "factory_investigation_read",
+              "factory_dispatch",
+              "factory_snapshot",
+            ].includes(toolName)
+          )
+            return;
         }
         const implementationTeamTool =
           member.auxiliary === undefined &&
@@ -253,8 +270,27 @@ const make = Effect.gen(function* () {
     snapshot: (invocation) =>
       Effect.gen(function* () {
         const { manager, assignment } = yield* managedCaller(invocation);
-        if (manager.projectId === null) return yield* denied();
-        const snapshot = yield* factory.snapshot({ projectId: manager.projectId });
+        const snapshot =
+          manager.role === "system" && assignment === undefined
+            ? yield* store.snapshot
+            : yield* factory.snapshot({ projectId: assignment?.projectId ?? manager.projectId! });
+        const ownedAssignments = snapshot.assignments.filter((entry) =>
+          assignment === undefined ? entry.managerId === manager.id : entry.id === assignment.id,
+        );
+        const assignmentIds = new Set(ownedAssignments.map((entry) => entry.id));
+        const projectIds = new Set(ownedAssignments.map((entry) => entry.projectId));
+        if (manager.projectId !== null) projectIds.add(manager.projectId);
+        const systemManager = manager.role === "system" && assignment === undefined;
+        const repositories = snapshot.sharedRepositories.filter((entry) =>
+          systemManager
+            ? entry.managerId === manager.id
+            : entry.id === assignment?.sharedWork?.repositoryId,
+        );
+        const repositoryIds = new Set(repositories.map((entry) => entry.id));
+        const boundaryIds = new Set([
+          ...ownedAssignments.flatMap((entry) => (entry.grant ? [entry.grant.boundaryId] : [])),
+          ...repositories.map((entry) => entry.boundaryId),
+        ]);
         return {
           ...snapshot,
           improvementConfigurations: [],
@@ -266,43 +302,75 @@ const make = Effect.gen(function* () {
           improvementFeedback: [],
           improvementRecurrences: [],
           improvementEvidenceReads: [],
+          sharedRepositories: repositories,
+          sharedWorks: snapshot.sharedWorks.filter((entry) =>
+            systemManager
+              ? entry.managerId === manager.id
+              : assignment?.sharedWork?.kind === "implementation" &&
+                entry.id === assignment.sharedWork.workId,
+          ),
+          experimentConfigurations: systemManager
+            ? snapshot.experimentConfigurations.slice(-1)
+            : [],
+          workflowExperiments: snapshot.workflowExperiments.filter((entry) =>
+            systemManager ? entry.managerId === manager.id : entry.assignmentId === assignment?.id,
+          ),
+          workflowReleases: snapshot.workflowReleases.filter((entry) =>
+            systemManager
+              ? repositoryIds.has(entry.repositoryId)
+              : entry.version.revision === assignment?.workflow.revision &&
+                entry.version.repositoryRoot === assignment.workflow.repositoryRoot,
+          ),
+          workflowAdoptions: systemManager ? snapshot.workflowAdoptions : [],
+          workflowOverrides: systemManager ? snapshot.workflowOverrides : [],
+          workflowMigrations: snapshot.workflowMigrations.filter((entry) =>
+            assignmentIds.has(entry.assignmentId),
+          ),
+          improvementValidations: snapshot.improvementValidations.filter(
+            (entry) =>
+              systemManager ||
+              (entry.assignmentId !== null && assignmentIds.has(entry.assignmentId)),
+          ),
+          modelRecommendations: systemManager ? snapshot.modelRecommendations : [],
           managers: snapshot.managers.filter((entry) => entry.id === manager.id),
-          assignments: snapshot.assignments.filter((entry) =>
-            assignment === undefined ? entry.managerId === manager.id : entry.id === assignment.id,
+          assignments: ownedAssignments,
+          boundaries: snapshot.boundaries.filter((entry) =>
+            manager.role === "system" ? boundaryIds.has(entry.id) : projectIds.has(entry.projectId),
           ),
-          guidance: snapshot.guidance.filter(
-            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
+          mergeRules: manager.role === "system" ? [] : snapshot.mergeRules,
+          previewConfigurations: snapshot.previewConfigurations.filter((entry) =>
+            projectIds.has(entry.projectId),
           ),
+          previewPublicationPolicies: snapshot.previewPublicationPolicies.filter((entry) =>
+            projectIds.has(entry.projectId),
+          ),
+          projectTrackers: manager.role === "system" ? [] : snapshot.projectTrackers,
+          schedulingConfigurations:
+            manager.role === "system" ? [] : snapshot.schedulingConfigurations,
+          guidance: snapshot.guidance.filter((entry) => assignmentIds.has(entry.assignmentId)),
           controls: snapshot.controls.flatMap((entry): FactorySnapshot["controls"] => {
-            if (assignment === undefined) return [entry];
             if (entry.kind === "manager-pause")
-              return entry.managerId === assignment.managerId
+              return entry.managerId === manager.id
                 ? [Struct.omit(entry, ["resumeThreadIds", "resumeQueues"])]
                 : [];
             if (entry.kind === "project-pause")
-              return entry.projectId === assignment.projectId
+              return projectIds.has(entry.projectId)
                 ? [Struct.omit(entry, ["resumeThreadIds", "resumeQueues"])]
                 : [];
-            return entry.assignmentId === assignment.id ? [entry] : [];
+            return assignmentIds.has(entry.assignmentId) ? [entry] : [];
           }),
           dependencies: snapshot.dependencies.filter(
             (entry) =>
-              assignment === undefined ||
-              entry.assignmentId === assignment.id ||
-              entry.supportingAssignmentId === assignment.id,
+              assignmentIds.has(entry.assignmentId) ||
+              (entry.supportingAssignmentId != null &&
+                assignmentIds.has(entry.supportingAssignmentId)),
           ),
-          auxiliaryThreads: snapshot.auxiliaryThreads.filter(
-            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
+          auxiliaryThreads: snapshot.auxiliaryThreads.filter((entry) =>
+            assignmentIds.has(entry.assignmentId),
           ),
-          retros: snapshot.retros.filter(
-            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
-          ),
-          findings: snapshot.findings.filter(
-            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
-          ),
-          followups: snapshot.followups.filter(
-            (entry) => assignment === undefined || entry.assignmentId === assignment.id,
-          ),
+          retros: snapshot.retros.filter((entry) => assignmentIds.has(entry.assignmentId)),
+          findings: snapshot.findings.filter((entry) => assignmentIds.has(entry.assignmentId)),
+          followups: snapshot.followups.filter((entry) => assignmentIds.has(entry.assignmentId)),
           scheduleCandidates: snapshot.scheduleCandidates.filter((entry) =>
             assignment === undefined
               ? entry.managerId === manager.id
@@ -513,13 +581,39 @@ const make = Effect.gen(function* () {
         const member = yield* managedCaller(invocation);
         if (
           member.manager.role === "system" &&
+          member.assignment === undefined &&
           ![
             "investigation.open",
             "investigation.update",
             "investigation.recurrence",
             "proposal.write",
             "proposal.submit",
+            "shared.work.propose",
+            "shared.work.commission",
+            "experiment.commission",
+            "workflow.release.register",
+            "improvement.validation.record",
+            "workflow.models.recommend",
+            "retro.manager.submit",
+            "retro.retry",
+            "finding.route",
+            "assignment.completion.retry",
+            "assignment.wait.resolve",
+            "assignment.retry",
+            "dependency.check-usability",
+            "assignment.recovery.begin",
+            "assignment.recovery.replan",
+            "assignment.recovery.escalate",
+            "finding.escalate",
           ].includes(command.type)
+        )
+          return yield* denied();
+        if (
+          member.assignment?.sharedWork?.kind === "experiment" &&
+          ((command.type.startsWith("delivery.") &&
+            command.type !== "delivery.impact.declare" &&
+            !command.type.startsWith("delivery.flow.")) ||
+            command.type === "followup.request")
         )
           return yield* denied();
         const retroCommand =

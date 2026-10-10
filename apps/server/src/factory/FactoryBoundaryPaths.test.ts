@@ -5,7 +5,11 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
-import { factoryCanWrite, factoryValidConfiguration } from "./FactoryBoundaryPaths.ts";
+import {
+  factoryCanWrite,
+  factoryValidConfiguration,
+  factoryGrantChangesSkills,
+} from "./FactoryBoundaryPaths.ts";
 
 const configuration: FactoryBoundaryConfiguration = {
   protectedPaths: ["tests/required.cjs"],
@@ -32,6 +36,35 @@ const grant: FactoryAssignmentGrant = {
 };
 
 describe("managed assignment paths", () => {
+  it("qualifies Markdown-only repositories and restricts new protected skill files to exact approvals", () => {
+    const skills = {
+      protectedPaths: ["existing/SKILL.md"],
+      protectedCreatablePaths: ["new/SKILL.md"],
+      writablePaths: [],
+      creatableDirectories: [],
+      skillRoots: ["."],
+      verification: "protected-integrity" as const,
+      gates: [],
+    };
+    const approved = {
+      ...grant,
+      sourcePaths: [],
+      creatableDirectories: [],
+      controlChange: {
+        authorizationId: "human-approval",
+        paths: ["new/SKILL.md", "other/SKILL.md"],
+      },
+    };
+    expect(factoryValidConfiguration(skills)).toBe(true);
+    expect(factoryCanWrite("new/SKILL.md", approved, skills)).toBe(true);
+    expect(factoryCanWrite("other/SKILL.md", approved, skills)).toBe(false);
+    expect(factoryCanWrite("new/skill.md", approved, skills)).toBe(false);
+    expect(factoryCanWrite("existing/SKILL.md", approved, skills)).toBe(false);
+    expect(factoryGrantChangesSkills({ ...grant, sourcePaths: ["reference.md"] }, skills)).toBe(
+      true,
+    );
+    expect(factoryValidConfiguration({ ...skills, verification: "gates" })).toBe(false);
+  });
   it("permits source creation without granting missing nested controls or path escapes", () => {
     expect(factoryCanWrite("src/new/component.ts", grant, configuration)).toBe(true);
     for (const file of [

@@ -10,6 +10,7 @@ import * as Layer from "effect/Layer";
 
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
+import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import {
   factoryDirectionBlocked,
@@ -77,16 +78,25 @@ const make = Effect.gen(function* () {
         const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
         if (
           owner === undefined ||
-          (owner.role === "system" && requestedThreadId !== owner.threadId) ||
+          (owner.role === "system" &&
+            assignment === undefined &&
+            requestedThreadId !== owner.threadId) ||
           (projectId !== undefined &&
-            projectId !== (owner.role === "system" ? owner.workspaceProjectId : owner.projectId)) ||
-          (assignment !== undefined && assignment.projectId !== owner.projectId)
+            projectId !==
+              (assignment?.projectId ??
+                (owner.role === "system" ? owner.workspaceProjectId : owner.projectId))) ||
+          (assignment !== undefined &&
+            (owner.role === "system"
+              ? !factorySharedAssignmentOwned(state, assignment)
+              : assignment.projectId !== owner.projectId))
         )
           return yield* new FactoryError({ code: "execution-unavailable" });
         return {
           threadId: requestedThreadId,
           managerId: owner.id,
-          projectId: owner.role === "system" ? owner.workspaceProjectId : owner.projectId,
+          projectId:
+            assignment?.projectId ??
+            (owner.role === "system" ? owner.workspaceProjectId : owner.projectId),
           managerRole: owner.role,
           ...(assignment === undefined ? {} : { assignmentId: assignment.id }),
           ...(auxiliary === undefined ? {} : { auxiliaryThreadId: auxiliary.threadId }),

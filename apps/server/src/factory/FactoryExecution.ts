@@ -35,6 +35,8 @@ import {
 import { factoryExecutionProbe } from "./FactoryExecutionProbe.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 import { FactorySource } from "./FactorySource.ts";
+import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
+import { factoryGrantChangesSkills } from "./FactoryBoundaryPaths.ts";
 
 export { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 
@@ -85,6 +87,7 @@ const make = Effect.gen(function* () {
   const models = yield* FactoryModelAdmission.FactoryModelAdmission;
   const controls = yield* FactoryControlAccess.FactoryControlAccess;
   const sources = yield* FactorySource;
+  const workflows = yield* FactoryWorkflowExecution.FactoryWorkflowExecution;
   const root = path.join(config.stateDir, "factory", "execution");
 
   const run = Effect.fn("FactoryExecution.run")(function* (
@@ -218,21 +221,22 @@ const make = Effect.gen(function* () {
           detail: "The discovery storage path cannot contain links or commas.",
         });
       }
+      const workflow = yield* workflows.snapshot({ version: input.workflow });
       const profile = FactoryExecutionProfile.make({
         boundaryId: profileId,
         sourceRevision: projectRevision,
         dockerContext,
         imageId,
         projectSnapshotPath: path.join(directory, "project"),
-        workflowSnapshotPath: path.join(directory, "workflow"),
+        workflowSnapshotPath: workflow.snapshotPath,
+        workflow,
         runtimePath: path.join(directory, "sessions"),
       });
       yield* snapshot(project.value.workspaceRoot, projectRevision, profile.projectSnapshotPath);
-      yield* snapshot(
-        input.workflow.repositoryRoot,
-        workflowRevision,
-        profile.workflowSnapshotPath,
-      );
+      if (workflowRevision !== input.workflow.revision)
+        return yield* new QualificationError({
+          detail: "The workflow did not resolve to its exact approved revision.",
+        });
       if (!(yield* fs.exists(path.join(profile.workflowSnapshotPath, "skills")))) {
         return yield* new QualificationError({
           detail: "The pinned workflow repository must contain a skills directory.",
@@ -354,8 +358,7 @@ const make = Effect.gen(function* () {
           profile.inspection !== undefined ||
           profile.retro !== undefined ||
           profile.startingSourceId !== undefined ||
-          profile.projectSnapshotPath !== path.join(root, profileId, "project") ||
-          profile.workflowSnapshotPath !== path.join(root, profileId, "workflow"))
+          profile.projectSnapshotPath !== path.join(root, profileId, "project"))
       )
         return yield* new FactoryError({ code: "execution-unavailable" });
       if (auxiliary?.kind === "retrospective") {
@@ -394,6 +397,21 @@ const make = Effect.gen(function* () {
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path),
       );
+      const boundary = state.boundaries.find((entry) => entry.id === assignment?.grant?.boundaryId);
+      const sharedPurpose = assignment?.sharedWork;
+      const requiresSkillAuthoring =
+        (assignment?.grant !== undefined &&
+          boundary !== undefined &&
+          factoryGrantChangesSkills(assignment.grant, boundary)) ||
+        (sharedPurpose?.kind === "implementation" &&
+          state.sharedWorks.some(
+            (entry) => entry.id === sharedPurpose.workId && entry.plan.changesSkills,
+          ));
+      const workflow = yield* workflows.resolve({
+        profile,
+        expectedVersion: systemManager?.workflow ?? assignment!.workflow,
+        requireSkillAuthoring: requiresSkillAuthoring,
+      });
       if (
         assignment?.startingSource !== undefined &&
         (profile.startingSourceId !== assignment.startingSource.id ||
@@ -418,6 +436,9 @@ const make = Effect.gen(function* () {
       yield* fs.makeDirectory(path.join(runtimePath, "codex"), { recursive: true });
       return {
         ...profile,
+        workflow,
+        workflowSnapshotPath: workflow.snapshotPath,
+        requiresSkillAuthoring,
         profileId,
         boundaryId: `${profile.boundaryId}:${threadId}`,
         runtimePath,
@@ -434,6 +455,7 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(FactoryExecution, make).pipe(
+  Layer.provide(FactoryWorkflowExecution.layer),
   Layer.provide(FactoryModelAdmission.layer),
   Layer.provideMerge(FactoryControlAccess.layer),
 );

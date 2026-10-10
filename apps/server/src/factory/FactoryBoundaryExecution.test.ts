@@ -53,6 +53,7 @@ live(
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const crypto = yield* Crypto.Crypto;
       const path = yield* Path.Path;
       const runner = yield* ProcessRunner.ProcessRunner;
       const root = yield* fs.makeTempDirectoryScoped();
@@ -209,6 +210,15 @@ live(
           path.join(profile.workflowSnapshotPath, "skills", "SKILL.md"),
           "Owned immutable skill",
         );
+        yield* fs.makeDirectory(
+          path.join(profile.workflowSnapshotPath, "skills", "writing-for-agents"),
+          { recursive: true },
+        );
+        for (const name of ["SKILL.md", "SKILL-MECHANICS.md"])
+          yield* fs.writeFileString(
+            path.join(profile.workflowSnapshotPath, "skills", "writing-for-agents", name),
+            "Approved authoring instructions",
+          );
         yield* fs.writeFileString(path.join(directory, "profile.json"), json(profile));
         const configuration = {
           protectedPaths: ["tests/required.cjs"],
@@ -1025,6 +1035,29 @@ live(
                 Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
                 Layer.succeed(ProcessRunner.ProcessRunner, executionRunner),
                 Layer.mock(FactorySource)({
+                  readRevision: () =>
+                    Effect.gen(function* () {
+                      const files = [];
+                      for (const [name, text] of [
+                        ["skills/SKILL.md", "Owned immutable skill"],
+                        ["skills/writing-for-agents/SKILL.md", "Approved authoring instructions"],
+                        [
+                          "skills/writing-for-agents/SKILL-MECHANICS.md",
+                          "Approved authoring instructions",
+                        ],
+                      ]) {
+                        const bytes = Buffer.from(text!);
+                        files.push({
+                          path: name!,
+                          content: bytes.toString("base64"),
+                          digest: Buffer.from(
+                            yield* (yield* Crypto.Crypto).digest("SHA-256", bytes),
+                          ).toString("hex"),
+                          mode: "100644" as const,
+                        });
+                      }
+                      return { files, excludedPaths: [] };
+                    }).pipe(Effect.provideService(Crypto.Crypto, crypto), Effect.orDie),
                   read: (id) =>
                     sources.has(id)
                       ? Effect.succeed(sources.get(id)!)
@@ -1035,6 +1068,9 @@ live(
           ),
         ),
       );
-    }).pipe(Effect.scoped, Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    ),
   180000,
 );

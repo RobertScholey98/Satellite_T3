@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -36,6 +37,7 @@ import * as FactoryRetroEvidence from "./FactoryRetroEvidence.ts";
 import * as FactoryRetroExecution from "./FactoryRetroExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactorySource from "./FactorySource.ts";
+import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import { decide } from "./FactoryState.ts";
 import {
@@ -195,11 +197,19 @@ const fixture = Effect.fn(function* (live = false) {
   const content = Buffer.from("preserved starting source\n");
   const crypto = yield* Crypto.Crypto;
   const contentDigest = Buffer.from(yield* crypto.digest("SHA-256", content)).toString("hex");
+  const workflowBytes = Buffer.from("Approved immutable retrospective instructions.");
+  const workflowFile = {
+    path: "skills/retro/SKILL.md",
+    content: workflowBytes.toString("base64"),
+    digest: Buffer.from(yield* crypto.digest("SHA-256", workflowBytes)).toString("hex"),
+    mode: "100644" as const,
+  };
   const dependencies = Layer.mergeAll(
     ServerConfig.layerTest(root, root),
     evidenceLayer,
     Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
     Layer.mock(FactorySource.FactorySource)({
+      readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
       read: () =>
         Effect.succeed({
           source: state.assignments[0]!.startingSource!,
@@ -267,6 +277,64 @@ const fixture = Effect.fn(function* (live = false) {
 });
 
 const live = process.env.SATELLITE_FACTORY_LIVE_TEST === "1" ? it.effect : it.effect.skip;
+it.effect(
+  "retrospectives retain the exact workflow identity without copying or remounting different instructions",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const workflow = yield* FactoryWorkflowExecution.FactoryWorkflowExecution.pipe(
+        Effect.flatMap((service) =>
+          service.snapshot({ version: f.getState().assignments[0]!.workflow }),
+        ),
+        Effect.provide(FactoryWorkflowExecution.layer.pipe(Layer.provide(f.dependencies))),
+      );
+      const original = { ...f.original, workflow, workflowSnapshotPath: workflow.snapshotPath };
+      yield* f.fs.writeFileString(
+        f.path.join(f.config.stateDir, "factory", "execution", profileId, "profile.json"),
+        yield* encodeProfile(original),
+      );
+      const prepared = yield* FactoryRetroExecution.FactoryRetroExecution.pipe(
+        Effect.flatMap((service) => service.prepare(f.request)),
+        Effect.provide(
+          FactoryRetroExecution.layer.pipe(
+            Layer.provide(f.dependencies),
+            Layer.provide(
+              Layer.mock(ProcessRunner.ProcessRunner)({
+                run: () =>
+                  Effect.succeed({
+                    stdout: "factory-boundary-ok",
+                    stderr: "",
+                    code: ChildProcessSpawner.ExitCode(0),
+                    timedOut: false,
+                    stdoutTruncated: false,
+                    stderrTruncated: false,
+                    stdoutInvalidUtf8: false,
+                    stderrInvalidUtf8: false,
+                  }),
+              }),
+            ),
+          ),
+        ),
+      );
+      const profile = yield* f.fs
+        .readFileString(
+          f.path.join(
+            f.config.stateDir,
+            "factory",
+            "execution",
+            prepared.qualification.profileId,
+            "profile.json",
+          ),
+        )
+        .pipe(Effect.flatMap(decodeProfile));
+      assert.deepEqual(profile.workflow, workflow);
+      assert.equal(profile.workflowSnapshotPath, workflow.snapshotPath);
+      assert.isUndefined(profile.assignmentWorkspace);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    ),
+);
 live(
   "qualifies a fresh read-only retrospective after cancellation and preserves its identity across service recreation",
   () =>
@@ -426,7 +494,7 @@ live(
         ))._tag,
         "FactoryError",
       );
-    }).pipe(Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
   60_000,
 );
 
@@ -531,6 +599,6 @@ it.effect(
           ),
         ),
       );
-    }).pipe(Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
   60_000,
 );

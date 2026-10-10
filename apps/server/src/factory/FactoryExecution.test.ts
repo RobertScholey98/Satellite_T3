@@ -11,6 +11,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -79,6 +80,15 @@ it.effect(
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
       const now = yield* DateTime.now;
+      const workflowContent = Buffer.from("Approved workflow baseline");
+      const workflowFile = {
+        path: "skills/implementation/SKILL.md",
+        content: workflowContent.toString("base64"),
+        digest: Buffer.from(
+          yield* (yield* Crypto.Crypto).digest("SHA-256", workflowContent),
+        ).toString("hex"),
+        mode: "100644" as const,
+      };
       const initial = initialFactorySnapshot();
       let snapshot: FactorySnapshot = {
         ...initial,
@@ -156,6 +166,14 @@ it.effect(
           runtimePath: path.join(directory, "sessions"),
         };
         yield* fs.makeDirectory(directory, { recursive: true });
+        yield* fs.makeDirectory(
+          path.join(profile.workflowSnapshotPath, "skills", "implementation"),
+          { recursive: true },
+        );
+        yield* fs.writeFile(
+          path.join(profile.workflowSnapshotPath, workflowFile.path),
+          workflowContent,
+        );
         yield* fs.writeFileString(
           path.join(directory, "profile.json"),
           yield* encodeProfile(profile),
@@ -191,6 +209,7 @@ it.effect(
         };
         const systemPolicy = yield* execution.runtimePolicyFor(systemId);
         assert.equal(systemPolicy?.projectSnapshotPath, profile.projectSnapshotPath);
+        assert.isDefined(systemPolicy?.workflow);
         assert.isUndefined(systemPolicy?.assignmentWorkspace);
         yield* execution.assertSelectionFor(systemId, {
           instanceId: ProviderInstanceId.make("codex"),
@@ -475,7 +494,11 @@ it.effect(
       }).pipe(
         Effect.provide(
           FactoryExecution.layer.pipe(
-            Layer.provide(FactorySource.layer),
+            Layer.provide(
+              Layer.mock(FactorySource.FactorySource)({
+                readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
+              }),
+            ),
             Layer.provideMerge(dependencies),
           ),
         ),

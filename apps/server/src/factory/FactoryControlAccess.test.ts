@@ -18,6 +18,7 @@ import * as Access from "./FactoryControlAccess.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import { decide, initialFactorySnapshot } from "./FactoryState.ts";
 import { deliveryIds, reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
+import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
 
 const managerId = ThreadId.make("control-manager");
 const leadId = ThreadId.make("control-lead");
@@ -67,6 +68,58 @@ const layer = (
   );
 
 it.effect(
+  "admits real shared teams across the manager workspace and holds migrations and disabled experiments",
+  () => {
+    const shared = sharedAccessFixture(state, true);
+    const roster = new Map([
+      [workerId, shell(workerId, leadId)],
+      [childId, shell(childId, workerId)],
+    ]);
+    return Effect.gen(function* () {
+      const access = yield* Access.FactoryControlAccess;
+      assert.equal((yield* access.membership(childId))?.projectId, projectId);
+      yield* access.assertExecution(childId);
+      for (const changed of [
+        { ...shared, sharedRepositories: [] },
+        {
+          ...shared,
+          experimentConfigurations: shared.experimentConfigurations.map((entry) => ({
+            ...entry,
+            enabled: false,
+          })),
+        },
+        {
+          ...shared,
+          workflowMigrations: [
+            {
+              id: "migration",
+              assignmentId,
+              releaseId: "release",
+              previousVersion: shared.assignments[0]!.workflow,
+              previousEpoch: 0,
+              preparedEpoch: null,
+              retainedAuthorityReason: null,
+              previousState: { status: "running" as const, wait: null },
+              kind: "migration" as const,
+              reason: "Human restart",
+              commandId: CommandId.make("restart"),
+              createdAt: now,
+              lifecycle: { phase: "stopping" as const },
+            },
+          ],
+        },
+      ])
+        yield* Effect.gen(function* () {
+          const current = yield* Access.FactoryControlAccess;
+          assert.isTrue(
+            Result.isFailure(yield* current.assertExecution(childId).pipe(Effect.result)),
+          );
+        }).pipe(Effect.provide(Layer.fresh(layer(roster, changed))));
+    }).pipe(Effect.provide(layer(roster, shared)));
+  },
+);
+
+it.effect(
   "derives nested ownership from persisted lineage and ignores a caller's alternative parent",
   () =>
     Effect.gen(function* () {
@@ -75,6 +128,7 @@ it.effect(
       assert.deepStrictEqual(member, {
         threadId: childId,
         managerId,
+        managerRole: "project",
         projectId,
         assignmentId,
         ancestorThreadIds: [leadId, workerId],

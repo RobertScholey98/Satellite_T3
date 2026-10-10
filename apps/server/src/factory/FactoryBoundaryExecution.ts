@@ -3,13 +3,16 @@ import {
   FactoryBoundaryId,
   FactoryError,
   FactoryVerification,
-  type CommandId,
+  CommandId,
+  type FactoryStartingSource,
   type FactoryAssignmentGrant,
   type FactoryAssignmentId,
   type FactoryBoundaryConfiguration,
   type FactoryDiscoveryQualification,
   type FactoryFileMutation,
   type FactorySourceId,
+  type FactoryWorkflowVersion,
+  type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
@@ -33,6 +36,7 @@ import {
   factoryProtectedPath,
   factoryRelativePath,
   factoryValidConfiguration,
+  factoryGrantChangesSkills,
 } from "./FactoryBoundaryPaths.ts";
 import {
   factoryDockerArguments,
@@ -48,6 +52,8 @@ import { factoryWritableProbe } from "./FactoryWritableProbe.ts";
 import { FactorySource, factoryCanonicalText } from "./FactorySource.ts";
 import { FactoryCandidateArtifact } from "./FactoryCandidate.ts";
 import * as FactoryPublication from "./FactoryPublication.ts";
+import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
+import { factorySharedAssignmentEnabled } from "./FactoryWorkflowOwnership.ts";
 
 const CapturedFile = Schema.Struct({
   path: Schema.String,
@@ -74,6 +80,11 @@ export class FactoryBoundaryExecution extends Context.Service<
       | undefined,
       FactoryError
     >;
+    readonly captureMigration: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly migrationId: string;
+      readonly expectedEpoch: number;
+    }) => Effect.Effect<FactoryStartingSource, FactoryError>;
     readonly captureCandidate: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly expectedEpoch: number;
@@ -108,6 +119,13 @@ export class FactoryBoundaryExecution extends Context.Service<
     >;
     readonly approve: (input: {
       readonly managerId: ThreadId;
+      readonly configuration: FactoryBoundaryConfiguration;
+    }) => Effect.Effect<FactoryBoundary, FactoryError>;
+    readonly approveShared: (input: {
+      readonly managerId: ThreadId;
+      readonly projectId: ProjectId;
+      readonly workflow: FactoryWorkflowVersion;
+      readonly qualification: Extract<FactoryDiscoveryQualification, { status: "qualified" }>;
       readonly configuration: FactoryBoundaryConfiguration;
     }) => Effect.Effect<FactoryBoundary, FactoryError>;
     readonly prepare: (input: {
@@ -190,6 +208,7 @@ const preserve = (cause: unknown) =>
     : unavailable("The managed boundary could not complete the requested filesystem operation.");
 
 const make = Effect.gen(function* () {
+  const workflows = yield* FactoryWorkflowExecution.FactoryWorkflowExecution;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
@@ -386,8 +405,17 @@ const make = Effect.gen(function* () {
   });
 
   const approve = Effect.fn("FactoryBoundaryExecution.approve")(
-    function* (input: Parameters<FactoryBoundaryExecution["Service"]["approve"]>[0]) {
-      if (input.configuration.writablePaths.length === 0)
+    function* (
+      input:
+        | Parameters<FactoryBoundaryExecution["Service"]["approve"]>[0]
+        | Parameters<FactoryBoundaryExecution["Service"]["approveShared"]>[0],
+    ) {
+      const shared = "projectId" in input;
+      if (
+        !shared &&
+        (input.configuration.writablePaths.length === 0 ||
+          input.configuration.verification === "protected-integrity")
+      )
         return yield* unavailable(
           "Select at least one existing source or feature-test file to qualify ordinary managed delivery.",
         );
@@ -397,14 +425,28 @@ const make = Effect.gen(function* () {
         );
       const state = yield* store.snapshot;
       const manager = state.managers.find(
-        (entry) => entry.id === input.managerId && entry.role === "project",
+        (entry) => entry.id === input.managerId && entry.role === (shared ? "system" : "project"),
       );
-      const discovery = state.assignments.find(
-        (entry) => entry.managerId === input.managerId && entry.kind === "onboarding",
-      );
+      const discovery = shared
+        ? input
+        : state.assignments.find(
+            (entry) => entry.managerId === input.managerId && entry.kind === "onboarding",
+          );
       if (!manager || !discovery || discovery.qualification.status !== "qualified")
         return yield* denied();
-      const profile = yield* readProfile(discovery.qualification.profileId);
+      if (
+        shared &&
+        state.managers.some(
+          (entry) => entry.role === "project" && entry.projectId === input.projectId,
+        )
+      )
+        return yield* denied();
+      const original = yield* readProfile(discovery.qualification.profileId);
+      const workflow = yield* workflows.resolve({
+        profile: original,
+        expectedVersion: discovery.workflow,
+      });
+      const profile = { ...original, workflow, workflowSnapshotPath: workflow.snapshotPath };
       const sourceRevision =
         profile.sourceRevision ??
         /^Read-only tracked-file snapshot at ([a-f0-9]{40,64})\.$/i.exec(
@@ -418,6 +460,10 @@ const make = Effect.gen(function* () {
         );
       const files = yield* filesAt(profile.projectSnapshotPath);
       const existing = new Set(files.map((file) => file.path));
+      if (input.configuration.protectedCreatablePaths?.some((file) => existing.has(file)))
+        return yield* unavailable(
+          "Protected creation paths must name absent files; use an exact protected edit for existing files.",
+        );
       if (
         [...input.configuration.writablePaths, ...input.configuration.protectedPaths].some(
           (file) => !existing.has(file),
@@ -468,6 +514,9 @@ const make = Effect.gen(function* () {
         );
       }
       const proofFiles = existingBoundary ? yield* filesAt(path.join(directory, "source")) : files;
+      const proofSource = boundary.writablePaths[0] ?? "SATELLITE_FACTORY_WRITE_PROBE.txt";
+      if (boundary.protectedPaths.length === 0)
+        return yield* unavailable("Boundary qualification requires an existing protected file.");
       const proofId = yield* crypto.randomUUIDv4;
       const proofDirectory = path.join(directory, "qualification", proofId);
       const proofProfile = FactoryExecutionProfile.make({
@@ -496,16 +545,18 @@ const make = Effect.gen(function* () {
       yield* Effect.gen(function* () {
         yield* helper(proofProfile, {
           kind: "initialize",
-          files: proofFiles.map((file) => ({
-            ...file,
-            writable: boundary.writablePaths.includes(file.path),
-          })),
+          files: proofFiles
+            .map((file) => ({
+              ...file,
+              writable: boundary.writablePaths.includes(file.path),
+            }))
+            .concat(
+              boundary.writablePaths.length
+                ? []
+                : [{ path: proofSource, content: "Cg==", digest: "", writable: true }],
+            ),
         });
-        yield* proveWorkspace(
-          proofProfile,
-          boundary.writablePaths[0]!,
-          boundary.protectedPaths[0]!,
-        );
+        yield* proveWorkspace(proofProfile, proofSource, boundary.protectedPaths[0]!);
       }).pipe(
         Effect.ensuring(
           docker(proofProfile, ["volume", "rm", proofProfile.assignmentWorkspace!.volumeName]).pipe(
@@ -524,6 +575,7 @@ const make = Effect.gen(function* () {
     assignmentId: FactoryAssignmentId,
     expectedEpoch?: number,
     resuming = false,
+    preparing = false,
   ) {
     const state = yield* store.snapshot;
     const assignment = state.assignments.find((entry) => entry.id === assignmentId);
@@ -533,6 +585,27 @@ const make = Effect.gen(function* () {
       (assignment.completion !== undefined && assignment.completion.phase !== "collecting") ||
       (expectedEpoch !== undefined && assignment.grant.epoch !== expectedEpoch)
     )
+      return yield* denied();
+    const migration = state.workflowMigrations.find(
+      (entry) => entry.assignmentId === assignmentId && entry.lifecycle.phase !== "ready",
+    );
+    if (
+      migration &&
+      (!preparing ||
+        migration.lifecycle.phase !== "preparing" ||
+        assignment.grant.epoch !== migration.preparedEpoch)
+    )
+      return yield* denied();
+    const admissionState =
+      migration && preparing
+        ? {
+            ...state,
+            workflowMigrations: state.workflowMigrations.filter(
+              (entry) => entry.id !== migration.id,
+            ),
+          }
+        : state;
+    if (assignment.sharedWork && !factorySharedAssignmentEnabled(admissionState, assignment))
       return yield* denied();
     if (
       !resuming &&
@@ -561,15 +634,27 @@ const make = Effect.gen(function* () {
         if (
           !manager ||
           assignment.authorization.threadId !== manager.threadId ||
-          !assignment.grantedPolicy.authorizeRuleWeakening ||
-          !resolveManagerPolicy(state.defaults, manager.overrides).authorizeRuleWeakening
+          (assignment.sharedWork?.kind !== "experiment" &&
+            (!assignment.grantedPolicy.authorizeRuleWeakening ||
+              !resolveManagerPolicy(state.defaults, manager.overrides).authorizeRuleWeakening))
         )
           return yield* denied();
       }
     } else if (assignment.kind === "rule-change") return yield* denied();
     const boundary = state.boundaries.find((entry) => entry.id === assignment.grant?.boundaryId);
     if (!boundary || assignment.projectId !== boundary.projectId) return yield* denied();
-    return { assignment, boundary, grant: assignment.grant };
+    const sharedPurpose = assignment.sharedWork;
+    return {
+      assignment,
+      boundary,
+      grant: assignment.grant,
+      requiresSkillAuthoring:
+        factoryGrantChangesSkills(assignment.grant, boundary) ||
+        (sharedPurpose?.kind === "implementation" &&
+          state.sharedWorks.some(
+            (entry) => entry.id === sharedPurpose.workId && entry.plan.changesSkills,
+          )),
+    };
   });
   const admitImplementation = Effect.fn("FactoryBoundaryExecution.admitImplementation")(function* (
     assignmentId: FactoryAssignmentId,
@@ -587,7 +672,19 @@ const make = Effect.gen(function* () {
   ) {
     const value = yield* current(assignmentId, expectedEpoch);
     if (value.assignment.qualification.status !== "qualified") return yield* denied();
-    const profile = yield* readProfile(value.assignment.qualification.profileId);
+    const storedProfile = yield* readProfile(value.assignment.qualification.profileId);
+    const requiresSkillAuthoring = value.requiresSkillAuthoring;
+    const workflow = yield* workflows.resolve({
+      profile: storedProfile,
+      expectedVersion: value.assignment.workflow,
+      requireSkillAuthoring: requiresSkillAuthoring,
+    });
+    const profile = {
+      ...storedProfile,
+      workflow,
+      workflowSnapshotPath: workflow.snapshotPath,
+      requiresSkillAuthoring,
+    };
     if (
       profile.inspection !== undefined ||
       profile.assignmentWorkspace?.assignmentId !== assignmentId ||
@@ -661,6 +758,107 @@ const make = Effect.gen(function* () {
       ),
     ).toString("hex");
   });
+  const captureMigration = Effect.fn("FactoryBoundaryExecution.captureMigration")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["captureMigration"]>[0]) {
+      const admitted = Effect.gen(function* () {
+        const state = yield* store.snapshot;
+        const migration = state.workflowMigrations.find(
+          (entry) =>
+            entry.id === input.migrationId &&
+            entry.assignmentId === input.assignmentId &&
+            entry.previousEpoch === input.expectedEpoch,
+        );
+        const assignment = state.assignments.find((entry) => entry.id === input.assignmentId);
+        if (
+          !migration ||
+          (migration.lifecycle.phase !== "stopping" &&
+            !(migration.lifecycle.phase === "failed" && migration.lifecycle.step === "stop")) ||
+          !assignment?.grant ||
+          assignment.grant.epoch < input.expectedEpoch ||
+          assignment.qualification.status !== "qualified" ||
+          !assignment.startingSource
+        )
+          return yield* denied();
+        return assignment;
+      });
+      const assignment = yield* admitted;
+      if (assignment.qualification.status !== "qualified" || !assignment.startingSource)
+        return yield* denied();
+      const qualification = assignment.qualification;
+      const sourceId = assignment.startingSource.id;
+      const recheck = Effect.gen(function* () {
+        const fresh = yield* admitted;
+        if (
+          fresh.threadId !== assignment.threadId ||
+          fresh.startingSource?.id !== sourceId ||
+          fresh.qualification.status !== "qualified" ||
+          fresh.qualification.profileId !== qualification.profileId
+        )
+          return yield* denied();
+      });
+      const profile = yield* readProfile(assignment.qualification.profileId);
+      const workspace = profile.assignmentWorkspace;
+      if (
+        !workspace ||
+        profile.inspection ||
+        workspace.assignmentId !== input.assignmentId ||
+        workspace.grantEpoch !== input.expectedEpoch ||
+        workspace.boundaryId !== assignment.grant?.boundaryId ||
+        !(yield* fs.exists(workspace.revocationPath))
+      )
+        return yield* denied();
+      const captureName = `satellite-factory-migration-${yield* crypto.randomUUIDv4}`;
+      const capture = yield* docker(
+        profile,
+        [
+          "run",
+          "--name",
+          captureName,
+          "--rm",
+          "--interactive",
+          "--pull",
+          "never",
+          "--network",
+          "none",
+          "--read-only",
+          "--cap-drop",
+          "ALL",
+          "--security-opt",
+          "no-new-privileges",
+          "--memory",
+          "1g",
+          "--pids-limit",
+          "32",
+          "--mount",
+          `type=volume,source=${workspace.volumeName},target=/workspace,readonly,volume-nocopy`,
+          "--entrypoint",
+          "node",
+          profile.imageId,
+          "-e",
+          factoryVolumeHelper,
+        ],
+        json({ kind: "capture" }),
+      ).pipe(
+        Effect.flatMap(decodeCapture),
+        Effect.ensuring(docker(profile, ["rm", "--force", captureName]).pipe(Effect.ignore)),
+      );
+      const files = capture.files
+        .filter((file) => file.path !== "SATELLITE_DISCOVERY.md")
+        .map((file) => ({ ...file, mode: file.mode ?? ("100644" as const) }));
+      yield* candidateDigest(files);
+      yield* recheck;
+      const source = yield* sources.captureArtifact({
+        requestId: CommandId.make(`factory-migration:${input.migrationId}`),
+        previousSourceId: assignment.startingSource.id,
+        threadId: assignment.threadId,
+        files,
+      });
+      yield* recheck;
+      return source;
+    },
+    mutex.withPermit,
+    Effect.mapError(preserve),
+  );
   const readCandidate = Effect.fn("FactoryBoundaryExecution.readCandidate")(function* (
     candidateId: string,
   ) {
@@ -743,6 +941,11 @@ const make = Effect.gen(function* () {
         grant,
         configuration: {
           protectedPaths: boundary.protectedPaths,
+          ...(boundary.protectedCreatablePaths === undefined
+            ? {}
+            : { protectedCreatablePaths: boundary.protectedCreatablePaths }),
+          ...(boundary.skillRoots === undefined ? {} : { skillRoots: boundary.skillRoots }),
+          ...(boundary.verification === undefined ? {} : { verification: boundary.verification }),
           writablePaths: boundary.writablePaths,
           creatableDirectories: boundary.creatableDirectories,
           gates: boundary.gates,
@@ -1040,7 +1243,12 @@ const make = Effect.gen(function* () {
 
   const prepare = Effect.fn("FactoryBoundaryExecution.prepare")(
     function* (input: Parameters<FactoryBoundaryExecution["Service"]["prepare"]>[0]) {
-      const { assignment, boundary, grant } = yield* current(input.assignmentId, input.grant.epoch);
+      const { assignment, boundary, grant, requiresSkillAuthoring } = yield* current(
+        input.assignmentId,
+        input.grant.epoch,
+        false,
+        true,
+      );
       if (
         assignment.threadId !== input.threadId ||
         input.boundaryId !== boundary.id ||
@@ -1051,7 +1259,12 @@ const make = Effect.gen(function* () {
         grant.creatableDirectories.some(
           (directory) => !boundary.creatableDirectories.includes(directory),
         ) ||
-        grant.controlChange?.paths.some((file) => !factoryRelativePath(file))
+        grant.controlChange?.paths.some(
+          (file) =>
+            !factoryRelativePath(file) ||
+            (!boundary.protectedPaths.includes(file) &&
+              !(boundary.protectedCreatablePaths ?? []).includes(file)),
+        )
       )
         return yield* denied();
       const baseline = yield* readBoundary(boundary.id);
@@ -1137,9 +1350,14 @@ const make = Effect.gen(function* () {
         writablePaths: [...new Set([...boundary.writablePaths, ...existingPaths])],
       };
       const original = yield* readProfile(boundary.profileId);
+      const workflow = yield* workflows.snapshot({
+        version: assignment.workflow,
+        requireSkillAuthoring: requiresSkillAuthoring,
+      });
       const profileId = yield* identity({
         assignmentId: input.assignmentId,
         grant,
+        workflow,
         ...(starting === undefined
           ? {}
           : { startingSourceId: starting.source.id, sourceDigest: starting.source.sourceDigest }),
@@ -1147,6 +1365,11 @@ const make = Effect.gen(function* () {
       const directory = path.join(root, "execution", profileId);
       if (yield* fs.exists(path.join(directory, "profile.json"))) {
         const profile = yield* readProfile(profileId);
+        yield* workflows.resolve({
+          profile,
+          expectedVersion: assignment.workflow,
+          requireSkillAuthoring: requiresSkillAuthoring,
+        });
         yield* assertActive(profile);
         yield* docker(profile, ["volume", "inspect", `satellite-factory-${profileId}`]);
         return {
@@ -1158,6 +1381,9 @@ const make = Effect.gen(function* () {
       const profile = FactoryExecutionProfile.make({
         ...original,
         boundaryId: profileId,
+        workflow,
+        workflowSnapshotPath: workflow.snapshotPath,
+        requiresSkillAuthoring,
         projectSnapshotPath: path.join(directory, "project"),
         runtimePath: path.join(directory, "sessions"),
         ...(starting === undefined
@@ -1236,7 +1462,7 @@ const make = Effect.gen(function* () {
             commandId: yield* crypto.randomUUIDv4,
             request: `remove-runtime-probe:${temporaryPath}`,
           });
-        yield* current(input.assignmentId, input.grant.epoch);
+        yield* current(input.assignmentId, input.grant.epoch, false, true);
         yield* fs.writeFileString(path.join(directory, "profile.json"), json(profile));
         return {
           status: "qualified" as const,
@@ -1329,6 +1555,40 @@ const make = Effect.gen(function* () {
         yield* filesAt(profile.assignmentWorkspace!.controlsPath),
       );
       const gates: Array<FactoryVerification["gates"][number]> = [];
+      if (boundary.verification === "protected-integrity") {
+        yield* candidateDigest(
+          source.files.map((file) => ({ ...file, mode: file.mode ?? ("100644" as const) })),
+        );
+        const baseline = yield* filesAt(profile.projectSnapshotPath);
+        const original = new Map(baseline.map((file) => [file.path, file]));
+        const captured = new Map(source.files.map((file) => [file.path, file]));
+        const configuration = {
+          ...boundary,
+          writablePaths: [...new Set([...boundary.writablePaths, ...original.keys()])],
+        };
+        for (const name of new Set([...original.keys(), ...captured.keys()])) {
+          const before = original.get(name);
+          const after = captured.get(name);
+          const unchanged =
+            before &&
+            after &&
+            (before.mode === undefined || after.mode === undefined || before.mode === after.mode) &&
+            Buffer.from(factoryCanonicalText(Buffer.from(before.content, "base64"))).equals(
+              Buffer.from(factoryCanonicalText(Buffer.from(after.content, "base64"))),
+            );
+          if (!unchanged && !factoryCanWrite(name, grant, configuration))
+            return yield* unavailable(
+              `Protected integrity verification rejected an ungranted change to ${name}.`,
+            );
+        }
+        gates.push({
+          id: "protected-integrity",
+          status: "passed",
+          exitCode: 0,
+          output:
+            "Verified captured file digests and preserved every path outside the exact assignment grant.",
+        });
+      }
       for (const gate of boundary.gates) {
         yield* admitImplementation(input.assignmentId, input.expectedEpoch);
         yield* assertActive(profile);
@@ -1739,11 +1999,13 @@ const make = Effect.gen(function* () {
   return FactoryBoundaryExecution.of({
     setDeliveryHold,
     captureCandidate,
+    captureMigration,
     readCandidate,
     finalizeCandidate,
     verifyCandidate: (input) => verify(input, input.candidateId),
     inspectCandidate,
     approve,
+    approveShared: approve,
     prepare,
     inspect,
     rebind,
@@ -1756,4 +2018,6 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(FactoryBoundaryExecution, make);
+export const layer = Layer.effect(FactoryBoundaryExecution, make).pipe(
+  Layer.provide(FactoryWorkflowExecution.layer),
+);

@@ -13,6 +13,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { isFactoryModelApproved, resolveFactoryModelPolicy } from "./FactoryModelPolicy.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
+import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 
 export class FactoryModelAdmission extends Context.Service<
   FactoryModelAdmission,
@@ -67,7 +68,10 @@ const make = Effect.gen(function* () {
             projectId !==
               (assignment?.projectId ??
                 (owner.role === "system" ? owner.workspaceProjectId : owner.projectId))) ||
-          (assignment !== undefined && assignment.projectId !== owner.projectId)
+          (assignment !== undefined &&
+            (owner.role === "system"
+              ? !factorySharedAssignmentOwned(state, assignment)
+              : assignment.projectId !== owner.projectId))
         ) {
           return yield* new FactoryError({ code: "execution-unavailable" });
         }

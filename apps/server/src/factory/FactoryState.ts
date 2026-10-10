@@ -1,4 +1,10 @@
 import {
+  decideFactoryWorkflow,
+  effectiveFactoryWorkflow,
+  type FactoryWorkflowContext,
+} from "./FactoryWorkflow.ts";
+import { commissionFactoryAssignment } from "./FactoryAssignmentCommission.ts";
+import {
   type FactoryAssignment,
   type FactoryAssignmentId,
   type FactoryBoundary,
@@ -22,11 +28,7 @@ import {
   type FactoryImprovementContext,
 } from "./FactoryImprovements.ts";
 import { decideFactoryDelivery, type FactoryDeliveryContext } from "./FactoryDelivery.ts";
-import {
-  decideFactoryRetros,
-  initialFactoryCompletion,
-  type FactoryRetroContext,
-} from "./FactoryRetros.ts";
+import { decideFactoryRetros, type FactoryRetroContext } from "./FactoryRetros.ts";
 import {
   decideFactoryControls,
   factoryExecutionBlocked,
@@ -43,13 +45,11 @@ import {
 import {
   decideFactoryOversight,
   factorySupportingWorkMatches,
-  initialFactoryOversight,
   type FactoryOversightContext,
 } from "./FactoryOversight.ts";
 import {
   constrainFactoryModelPolicy,
   resolveFactoryModelPolicy,
-  selectFactoryModel,
   isFactoryModelApproved,
 } from "./FactoryModelPolicy.ts";
 import {
@@ -81,6 +81,16 @@ export interface FactoryDecision {
 
 export const initialFactorySnapshot = (): FactorySnapshot => ({
   revision: 0,
+  sharedRepositories: [],
+  sharedWorks: [],
+  experimentConfigurations: [],
+  workflowExperiments: [],
+  workflowReleases: [],
+  workflowAdoptions: [],
+  workflowOverrides: [],
+  workflowMigrations: [],
+  improvementValidations: [],
+  modelRecommendations: [],
   improvementConfigurations: [],
   improvementIntakes: [],
   improvementBatches: [],
@@ -136,6 +146,7 @@ const reduceGrants = (
     );
     const revokeControlChange =
       assignment.authorization?.kind === "manager" &&
+      assignment.sharedWork?.kind !== "experiment" &&
       assignment.grant?.controlChange != null &&
       !grantedPolicy.authorizeRuleWeakening;
     return {
@@ -258,6 +269,7 @@ const reduceModelGrants = (
 export function decide(
   input: FactoryControlContext &
     FactoryImprovementContext &
+    FactoryWorkflowContext &
     FactoryDeliveryContext &
     FactoryRetroContext &
     FactorySchedulingContext &
@@ -275,6 +287,83 @@ export function decide(
       readonly handoverVerified?: boolean;
     },
 ): Result.Result<FactoryDecision, FactoryError> {
+  const requestedAssignmentId =
+    "assignmentId" in input.command ? input.command.assignmentId : undefined;
+  const experiment = input.state.assignments.find(
+    (entry) => entry.id === requestedAssignmentId && entry.sharedWork?.kind === "experiment",
+  );
+  if (
+    experiment &&
+    ((input.command.type.startsWith("delivery.") &&
+      input.command.type !== "delivery.impact.declare" &&
+      !input.command.type.startsWith("delivery.flow.")) ||
+      input.command.type === "followup.request" ||
+      (input.command.type === "assignment.delivery.request" &&
+        input.command.claim.kind === "pull-request"))
+  ) {
+    return Result.fail(
+      new FactoryError({
+        code: "permission-denied",
+        detail:
+          "Isolated experiments produce reports and evidence. Live publication requires a separate authorized implementation.",
+      }),
+    );
+  }
+  const workflowDecision = decideFactoryWorkflow(input);
+  if (workflowDecision !== undefined) return workflowDecision;
+  if (input.command.type === "workflow.models.apply") {
+    const command = input.command;
+    const recommendation = input.state.modelRecommendations.find(
+      (entry) => entry.id === command.recommendationId,
+    );
+    if (
+      input.actor.kind !== "human" ||
+      !recommendation ||
+      recommendation.applied !== null ||
+      !input.state.improvementDecisions.some(
+        (entry) =>
+          entry.proposalId === recommendation.proposalId &&
+          entry.revision === recommendation.proposalRevision &&
+          entry.outcome === "accepted",
+      )
+    ) {
+      return Result.fail(
+        new FactoryError({
+          code: "permission-denied",
+          detail: "Only the human can apply an accepted exact model recommendation once.",
+        }),
+      );
+    }
+    const target = recommendation.target;
+    const configured = decide({
+      ...input,
+      command:
+        target.kind === "default"
+          ? {
+              type: "models.defaults.configure",
+              commandId: command.commandId,
+              policy: target.policy,
+            }
+          : {
+              type: "manager.models.configure",
+              commandId: command.commandId,
+              managerId: target.managerId,
+              overrides: target.overrides,
+            },
+    });
+    return Result.map(configured, (value) => ({
+      ...value,
+      result: { ...value.result, recommendationId: recommendation.id },
+      state: {
+        ...value.state,
+        modelRecommendations: value.state.modelRecommendations.map((entry) =>
+          entry.id === recommendation.id
+            ? { ...entry, applied: { commandId: command.commandId, appliedAt: input.now } }
+            : entry,
+        ),
+      },
+    }));
+  }
   const improvementDecision = decideFactoryImprovements(input);
   if (improvementDecision !== undefined) return improvementDecision;
   if (input.command.type === "manager.resume" || input.command.type === "control.retry") {
@@ -541,7 +630,10 @@ export function decide(
         return fail("permission-denied");
       if (
         controls.some(
-          (file) => !factoryRelativePath(file) || !boundary.protectedPaths.includes(file),
+          (file) =>
+            !factoryRelativePath(file) ||
+            (!boundary.protectedPaths.includes(file) &&
+              !boundary.protectedCreatablePaths?.includes(file)),
         )
       )
         return fail("permission-denied");
@@ -557,6 +649,7 @@ export function decide(
             !factoryRelativePath(file) ||
             factoryProtectedPath(file) ||
             boundary.protectedPaths.includes(file) ||
+            boundary.protectedCreatablePaths?.includes(file) ||
             (!boundary.writablePaths.includes(file) &&
               !boundary.creatableDirectories.some((directory) =>
                 factoryPathWithin(file, directory),
@@ -570,56 +663,17 @@ export function decide(
         controls.length === 0
       )
         return fail("invalid-state");
-      const allocation = input.allocation;
-      if (
-        !allocation ||
-        state.assignments.some(
-          (entry) =>
-            entry.id === allocation.assignmentId || entry.threadId === allocation.leadThreadId,
-        ) ||
-        state.managers.some((entry) => entry.threadId === allocation.leadThreadId)
-      )
-        return fail("invalid-state");
-      if (command.type === "assignment.handover" && allocation.leadThreadId !== command.threadId)
-        return fail("invalid-state");
-      const modelPolicy = resolveFactoryModelPolicy(
-        state.modelDefaults,
-        manager.modelOverrides,
-        manager.modelSelection,
-      );
-      const selected = selectFactoryModel({
-        policy: modelPolicy,
-        ...(manager.modelOverrides === undefined ? {} : { overrides: manager.modelOverrides }),
-        role: "lead",
-        complexity: command.complexity,
-        ...(command.modelSelection === undefined ? {} : { selection: command.modelSelection }),
-      });
-      if (Result.isFailure(selected)) return Result.fail(selected.failure);
-      const assignment: FactoryAssignment = {
-        id: allocation.assignmentId,
-        managerId: manager.id,
-        threadId: allocation.leadThreadId,
-        projectId: manager.projectId,
-        ...(schedulingCandidate
-          ? {
-              scheduling: {
-                candidateId: schedulingCandidate.id,
-                authority: input.schedulingAdmission!.authority,
-                issueAttempt: input.schedulingAdmission!.issueAttempt,
-              },
-            }
-          : {}),
-        kind: command.kind,
-        title: command.title,
-        scope: command.scope,
-        completion: initialFactoryCompletion(command.scope, manager.id),
-        oversight: initialFactoryOversight(),
-        complexity: command.complexity,
-        modelSelection: selected.success.selection,
-        modelChoice: selected.success,
-        modelPolicy,
-        origin: command.type === "assignment.handover" ? "handover" : "new",
-        preparation: command.type === "assignment.handover" ? "stopping" : "capturing",
+      const constructed = commissionFactoryAssignment({
+        state,
+        manager,
+        boundary,
+        work: command,
+        allocation: input.allocation,
+        workflow: effectiveFactoryWorkflow(state, manager),
+        policy,
+        now,
+        controlAuthorizationId: command.commandId,
+        ...(command.type === "assignment.handover" ? { existingThreadId: command.threadId } : {}),
         authorization:
           actor.kind === "human" && !schedulingCandidate
             ? { kind: "human", commandId: command.commandId }
@@ -631,27 +685,19 @@ export function decide(
                   ? {}
                   : { messageId: input.humanMessageId }),
               },
-        status: "pending",
-        threadStatus: command.type === "assignment.handover" ? "created" : "pending",
-        launchStatus: "pending",
-        qualification: {
-          status: "unavailable",
-          reason: "Preparing the assignment's approved execution environment.",
-        },
-        workflow: manager.workflow,
-        grantedPolicy: policy,
-        grant: {
-          boundaryId: boundary.id,
-          epoch: 0,
-          sourcePaths: command.sourcePaths,
-          creatableDirectories: command.creatableDirectories,
-          controlChange:
-            controls.length === 0 ? null : { authorizationId: command.commandId, paths: controls },
-        },
-        wait: null,
-        report: null,
-        createdAt: now,
-        updatedAt: now,
+      });
+      if (Result.isFailure(constructed)) return Result.fail(constructed.failure);
+      const assignment: FactoryAssignment = {
+        ...constructed.success,
+        ...(schedulingCandidate
+          ? {
+              scheduling: {
+                candidateId: schedulingCandidate.id,
+                authority: input.schedulingAdmission!.authority,
+                issueAttempt: input.schedulingAdmission!.issueAttempt,
+              },
+            }
+          : {}),
       };
       const decision = accepted(
         state.managers,
@@ -860,7 +906,15 @@ export function decide(
         state.assignments.map((assignment) => {
           if (!selected.has(assignment.id)) return assignment;
           const manager = state.managers.find((entry) => entry.id === assignment.managerId)!;
-          return { ...assignment, grantedPolicy: effectivePolicy(state, manager), updatedAt: now };
+          const policy = effectivePolicy(state, manager);
+          return {
+            ...assignment,
+            grantedPolicy:
+              assignment.sharedWork === undefined
+                ? policy
+                : { ...policy, delivery: "human-approval" as const },
+            updatedAt: now,
+          };
         }),
         {},
       );
@@ -884,8 +938,8 @@ export function decide(
       const boundary = input.boundary;
       if (
         boundary.projectId !== manager.projectId ||
-        boundary.workflow.repositoryRoot !== manager.workflow.repositoryRoot ||
-        boundary.workflow.revision !== manager.workflow.revision ||
+        boundary.workflow.repositoryRoot !== onboarding.workflow.repositoryRoot ||
+        boundary.workflow.revision !== onboarding.workflow.revision ||
         state.boundaries.some((entry) => entry.id === boundary.id)
       )
         return fail("invalid-state");
@@ -904,6 +958,15 @@ export function decide(
     }
     case "manager.create": {
       if (actor.kind !== "human") return fail("permission-denied");
+      if (
+        state.sharedRepositories.some(
+          (entry) =>
+            entry.projectId === command.projectId ||
+            (input.projectRepositoryRoot !== undefined &&
+              entry.repositoryRoot === input.projectRepositoryRoot),
+        )
+      )
+        return fail("project-already-managed");
       if (
         state.managers.some(
           (manager) => manager.role === "project" && manager.projectId === command.projectId,
@@ -957,7 +1020,7 @@ export function decide(
         threadStatus: "pending",
         launchStatus: "pending",
         qualification,
-        workflow: command.workflow,
+        workflow: effectiveFactoryWorkflow(state, manager),
         grantedPolicy: effectivePolicy(state, manager),
         wait,
         report: null,
@@ -1022,7 +1085,10 @@ export function decide(
       };
       const updatedAssignment: FactoryAssignment = {
         ...assignment,
-        workflow: command.workflow ?? assignment.workflow,
+        workflow:
+          command.workflow === undefined
+            ? assignment.workflow
+            : effectiveFactoryWorkflow(state, updatedManager),
         qualification,
         status: wait === null ? "pending" : "waiting",
         wait,

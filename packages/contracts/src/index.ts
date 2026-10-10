@@ -86,3 +86,5 @@ export * from "./factoryRetros.ts";
 export * from "./issuePublication.ts";
 export * from "./factoryImprovementEvidence.ts";
 export * from "./factoryImprovementSnapshot.ts";
+
+export * from "./factoryWorkflow.ts";

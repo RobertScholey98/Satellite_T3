@@ -46,6 +46,9 @@ const SourceManifest = Schema.Struct({
   files: Schema.Array(FactorySourceFile),
   indexFiles: Schema.Array(FactorySourceFile),
   indexData: Schema.NullOr(Schema.String),
+  artifactCapture: Schema.optionalKey(
+    Schema.Struct({ previousSourceId: FactorySourceId, filesDigest: Schema.String }),
+  ),
 });
 export type FactorySourceArtifact = typeof SourceManifest.Type;
 
@@ -56,6 +59,12 @@ export class FactorySource extends Context.Service<
       input: typeof CaptureRequest.Type,
     ) => Effect.Effect<FactoryStartingSource, FactoryError>;
     readonly read: (id: FactorySourceId) => Effect.Effect<FactorySourceArtifact, FactoryError>;
+    readonly captureArtifact: (input: {
+      readonly requestId: CommandId;
+      readonly previousSourceId: FactorySourceId;
+      readonly threadId: ThreadId;
+      readonly files: ReadonlyArray<FactorySourceFile>;
+    }) => Effect.Effect<FactoryStartingSource, FactoryError>;
     readonly readRevision: (
       repositoryRoot: string,
       revision: string,
@@ -468,7 +477,10 @@ const make = Effect.gen(function* () {
       const destination = path.join(root, id, "source.json");
       if (yield* fs.exists(destination)) {
         const previous = yield* read(id);
-        if (stableStringify(previous.request) !== stableStringify(input))
+        if (
+          previous.artifactCapture ||
+          stableStringify(previous.request) !== stableStringify(input)
+        )
           return yield* new FactoryError({ code: "command-conflict" });
         return previous.source;
       }
@@ -530,10 +542,120 @@ const make = Effect.gen(function* () {
     mutex.withPermit,
     Effect.mapError(preserve),
   );
+  const captureArtifact = Effect.fn("FactorySource.captureArtifact")(
+    function* (input: Parameters<FactorySource["Service"]["captureArtifact"]>[0]) {
+      const original = yield* read(input.previousSourceId);
+      const files = input.files.toSorted((a, b) => a.path.localeCompare(b.path));
+      const names = new Set<string>();
+      let total = 0;
+      for (const entry of files) {
+        const bytes = Buffer.from(entry.content, "base64");
+        total += bytes.length;
+        if (
+          !factorySafeRelativePath(entry.path) ||
+          !admissibleFactorySourcePath(entry.path) ||
+          names.has(entry.path.toLowerCase()) ||
+          bytes.length > 16 * 1024 * 1024 ||
+          total > LIMIT ||
+          (entry.mode !== "100644" && entry.mode !== "100755") ||
+          (yield* digest(bytes)) !== entry.digest
+        )
+          return yield* unavailable(
+            "The stopped candidate contains an invalid or oversized source file.",
+          );
+        names.add(entry.path.toLowerCase());
+      }
+      const filesDigest = yield* digest(Buffer.from(stableStringify(files)));
+      const encoded = yield* digest(Buffer.from(`factory-source:${input.requestId}`));
+      const id = FactorySourceId.make(
+        `${encoded.slice(0, 8)}-${encoded.slice(8, 12)}-${encoded.slice(12, 16)}-${encoded.slice(16, 20)}-${encoded.slice(20, 32)}`,
+      );
+      const destination = path.join(root, id, "source.json");
+      const request = {
+        requestId: input.requestId,
+        projectId: original.source.projectId,
+        threadId: input.threadId,
+      };
+      const artifactCapture = { previousSourceId: input.previousSourceId, filesDigest };
+      if (yield* fs.exists(destination)) {
+        const previous = yield* read(id);
+        if (
+          stableStringify(previous.request) !== stableStringify(request) ||
+          stableStringify(previous.artifactCapture) !== stableStringify(artifactCapture)
+        )
+          return yield* new FactoryError({ code: "command-conflict" });
+        return previous.source;
+      }
+      const sourceDigest = yield* digest(
+        Buffer.from(
+          stableStringify({
+            revision: original.source.revision,
+            branch: original.source.branch,
+            files: files.map(({ path, digest, mode }) => ({ path, digest, mode })),
+            indexFiles: original.indexFiles.map(({ path, digest, mode }) => ({
+              path,
+              digest,
+              mode,
+            })),
+            indexData: original.indexData,
+            excludedPaths: original.source.excludedPaths,
+          }),
+        ),
+      );
+      const current = new Map(files.map((entry) => [entry.path, entry]));
+      const indexed = new Map(original.indexFiles.map((entry) => [entry.path, entry]));
+      const source = FactoryStartingSource.make({
+        ...original.source,
+        id,
+        sourceDigest,
+        origin: "handover",
+        threadId: input.threadId,
+        capturedAt: DateTime.formatIso(yield* DateTime.now),
+        fileCount: files.length,
+        unstagedPaths: original.indexFiles
+          .filter(
+            (entry) =>
+              current.get(entry.path)?.digest !== entry.digest ||
+              current.get(entry.path)?.mode !== entry.mode,
+          )
+          .map((entry) => entry.path),
+        untrackedPaths: files
+          .filter((entry) => !indexed.has(entry.path))
+          .map((entry) => entry.path),
+        deletedPaths: [
+          ...new Set([
+            ...original.source.deletedPaths,
+            ...original.files.map((entry) => entry.path),
+            ...indexed.keys(),
+          ]),
+        ]
+          .filter((name) => !current.has(name))
+          .sort(),
+      });
+      const manifest = SourceManifest.make({
+        ...original,
+        source,
+        request,
+        files,
+        artifactCapture,
+      });
+      yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
+      const temporary = `${destination}.${yield* crypto.randomUUIDv4}`;
+      yield* fs.writeFileString(temporary, yield* encodeManifest(manifest), { flag: "wx" });
+      yield* fs.rename(temporary, destination);
+      return source;
+    },
+    mutex.withPermit,
+    Effect.mapError(preserve),
+  );
   const validateCurrent = Effect.fn("FactorySource.validateCurrent")(function* (
     id: FactorySourceId,
   ) {
     const artifact = yield* read(id);
+    if (artifact.artifactCapture)
+      return yield* unavailable(
+        "This source was captured from a stopped managed candidate and requires its migration authority.",
+      );
     if (
       (yield* inspect(artifact.workspaceRoot, artifact.source.origin === "handover"))
         .sourceDigest !== artifact.source.sourceDigest
@@ -553,7 +675,7 @@ const make = Effect.gen(function* () {
     const result = yield* inspect(repositoryRoot, false, revision);
     return { files: result.files, excludedPaths: result.excludedPaths };
   }, Effect.mapError(preserve));
-  return FactorySource.of({ capture, read, readRevision, validateCurrent });
+  return FactorySource.of({ capture, captureArtifact, read, readRevision, validateCurrent });
 });
 
 export const layer = Layer.effect(FactorySource, make);

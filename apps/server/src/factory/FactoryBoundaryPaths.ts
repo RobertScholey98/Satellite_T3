@@ -37,6 +37,24 @@ export function factoryPathWithin(value: string, directory: string): boolean {
   return value.startsWith(`${directory}/`);
 }
 
+export function factoryGrantChangesSkills(
+  grant: FactoryAssignmentGrant,
+  configuration: FactoryBoundaryConfiguration,
+): boolean {
+  const paths = [
+    ...grant.sourcePaths,
+    ...grant.creatableDirectories,
+    ...(grant.controlChange?.paths ?? []),
+  ];
+  return paths.some(
+    (value) =>
+      /(?:^|\/)(?:SKILL|SKILL-MECHANICS|AGENTS|CLAUDE)\.md$/i.test(value) ||
+      configuration.skillRoots?.some(
+        (root) => root === "." || value === root || factoryPathWithin(value, root),
+      ),
+  );
+}
+
 export function factoryCanWrite(
   value: string,
   grant: FactoryAssignmentGrant,
@@ -44,15 +62,23 @@ export function factoryCanWrite(
 ): boolean {
   if (!factoryRelativePath(value)) return false;
   if (
-    [...configuration.protectedPaths, ...configuration.writablePaths].some(
-      (entry) => entry !== value && entry.toLowerCase() === value.toLowerCase(),
-    )
+    [
+      ...configuration.protectedPaths,
+      ...(configuration.protectedCreatablePaths ?? []),
+      ...configuration.writablePaths,
+    ].some((entry) => entry !== value && entry.toLowerCase() === value.toLowerCase())
   )
     return false;
-  if (grant.controlChange?.paths.includes(value)) return true;
+  if (grant.controlChange?.paths.includes(value))
+    return (
+      configuration.protectedPaths.includes(value) ||
+      (configuration.protectedCreatablePaths ?? []).includes(value)
+    );
   if (
     factoryProtectedPath(value) ||
-    configuration.protectedPaths.some((entry) => value === entry || factoryPathWithin(value, entry))
+    [...configuration.protectedPaths, ...(configuration.protectedCreatablePaths ?? [])].some(
+      (entry) => value === entry || factoryPathWithin(value, entry),
+    )
   )
     return false;
   if (configuration.writablePaths.includes(value)) return grant.sourcePaths.includes(value);
@@ -60,16 +86,23 @@ export function factoryCanWrite(
 }
 
 export function factoryValidConfiguration(configuration: FactoryBoundaryConfiguration): boolean {
-  if (configuration.writablePaths.length === 0) return false;
+  if (
+    configuration.writablePaths.length === 0 &&
+    configuration.verification !== "protected-integrity"
+  )
+    return false;
   const paths = [
     ...configuration.protectedPaths,
     ...configuration.writablePaths,
     ...configuration.creatableDirectories,
+    ...(configuration.protectedCreatablePaths ?? []),
   ];
   if (paths.some((value) => !factoryRelativePath(value))) return false;
+  if (configuration.skillRoots?.some((value) => value !== "." && !factoryRelativePath(value)))
+    return false;
   if (configuration.writablePaths.some((value) => factoryProtectedPath(value))) return false;
   if (configuration.creatableDirectories.some((value) => factoryProtectedPath(value))) return false;
-  if (configuration.gates.length === 0) return false;
+  if (configuration.gates.length === 0) return configuration.verification === "protected-integrity";
   return configuration.gates.every(
     (gate) =>
       gate.executable === "/usr/local/bin/node" &&

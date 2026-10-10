@@ -40,7 +40,10 @@ export function factoryThreadMembership(
     if (assignment && !manager) return null;
     if (manager) {
       if (
-        manager.projectId !== requested.projectId ||
+        (manager.role === "project" && manager.projectId !== requested.projectId) ||
+        (assignment?.projectId ??
+          (manager.role === "system" ? manager.workspaceProjectId : manager.projectId)) !==
+          requested.projectId ||
         (assignment && assignment.projectId !== requested.projectId)
       )
         return null;

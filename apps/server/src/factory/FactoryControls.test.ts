@@ -17,6 +17,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import { decide, initialFactorySnapshot, type FactoryActor } from "./FactoryState.ts";
+import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
 import {
   factoryDirectionBlocked,
   factoryExecutionBlocked,
@@ -104,6 +105,27 @@ const failure = (
 };
 
 describe("Factory controls", () => {
+  it("keeps withdrawn authority held after a workflow restart becomes ready", () => {
+    const shared = sharedAccessFixture(fixture());
+    const held: FactorySnapshot = {
+      ...shared,
+      assignments: shared.assignments.map((entry) => ({
+        ...entry,
+        wait: { kind: "authority", reason: "Repository authority was withdrawn" },
+      })),
+    };
+    assert.isDefined(factoryExecutionBlocked(held, { ...worker, managerRole: "system" }));
+    assert.isDefined(factoryExecutionBlocked(held, { ...child, managerRole: "system" }));
+    assert.isUndefined(factoryExecutionBlocked(held, { ...managerMember, managerRole: "system" }));
+  });
+  it("pauses shared repository teams without pausing the peer system manager", () => {
+    const shared = sharedAccessFixture(fixture());
+    const paused = apply(shared, { type: "project.pause", commandId, projectId }).state;
+    assert.isDefined(factoryExecutionBlocked(paused, { ...worker, managerRole: "system" }));
+    assert.isUndefined(
+      factoryExecutionBlocked(paused, { ...managerMember, managerRole: "system" }),
+    );
+  });
   it("pauses manager initiation and direction while existing teams keep working", () => {
     const paused = apply(fixture(), { type: "manager.pause", commandId, managerId });
     assert.strictEqual(paused.state.managers[0]?.status, "paused");

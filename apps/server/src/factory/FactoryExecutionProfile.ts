@@ -1,4 +1,13 @@
 import * as Schema from "effect/Schema";
+import { FactoryWorkflowVersion } from "@t3tools/contracts";
+
+export const FactoryWorkflowSnapshot = Schema.Struct({
+  version: FactoryWorkflowVersion,
+  digest: Schema.String,
+  snapshotPath: Schema.String,
+  manifestPath: Schema.String,
+});
+export type FactoryWorkflowSnapshot = typeof FactoryWorkflowSnapshot.Type;
 
 export const FACTORY_CODEX_IMAGE = "satellite-factory-codex:0.161.0";
 export const FACTORY_CONTAINER_WORKSPACE = "/workspace";
@@ -10,6 +19,8 @@ export const FactoryExecutionProfile = Schema.Struct({
   imageId: Schema.String,
   projectSnapshotPath: Schema.String,
   workflowSnapshotPath: Schema.String,
+  workflow: Schema.optionalKey(FactoryWorkflowSnapshot),
+  requiresSkillAuthoring: Schema.optionalKey(Schema.Boolean),
   runtimePath: Schema.String,
   sourceRevision: Schema.optionalKey(Schema.String),
   startingSourceId: Schema.optionalKey(Schema.String),
