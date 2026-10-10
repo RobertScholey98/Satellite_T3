@@ -37,6 +37,8 @@ import * as FactoryRetroEvidence from "./factory/FactoryRetroEvidence.ts";
 import * as IssuePublication from "./issues/IssuePublication.ts";
 import * as IssuePublicationHost from "./issues/IssuePublicationHost.ts";
 import * as IssueScheduling from "./issues/IssueScheduling.ts";
+import * as FactoryImprovementEffects from "./factory/FactoryImprovementEffects.ts";
+import * as FactoryImprovementEvidence from "./factory/FactoryImprovementEvidence.ts";
 import * as FactorySchedulingEffects from "./factory/FactorySchedulingEffects.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
@@ -576,8 +578,12 @@ const layerFactoryDelivery = FactoryDeliveryEffects.layer.pipe(
 
 const layerSatelliteFeatures = Layer.mergeAll(
   Layer.merge(FactoryMcpGuard.layer, FactoryObserver.layer).pipe(
+    Layer.provide(FactoryImprovementEvidence.layer),
     Layer.provideMerge(
       FactoryService.layer.pipe(
+        Layer.provideMerge(
+          FactoryImprovementEffects.layer.pipe(Layer.provide(FactoryControlAccess.layer)),
+        ),
         Layer.provideMerge(layerFactoryDelivery),
         Layer.provideMerge(layerFactoryPreview),
         Layer.provideMerge(

@@ -21,6 +21,7 @@ import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 export interface FactoryControlMembership {
   readonly threadId: ThreadId;
   readonly managerId: ThreadId;
+  readonly managerRole?: "project" | "system";
   readonly projectId: ProjectId;
   readonly assignmentId?: FactoryAssignmentId;
   readonly auxiliaryThreadId?: ThreadId;
@@ -62,7 +63,11 @@ export const factoryExecutionBlocked = (
           return "This assignment has been cancelled. Its work and evidence remain available.";
         break;
       case "project-pause":
-        if (control.status === "active" && control.projectId === member.projectId)
+        if (
+          control.status === "active" &&
+          member.managerRole !== "system" &&
+          control.projectId === member.projectId
+        )
           return "This project's manager and teams are paused.";
         break;
       case "manager-pause":

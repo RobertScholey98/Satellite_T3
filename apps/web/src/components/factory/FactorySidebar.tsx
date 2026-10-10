@@ -36,6 +36,7 @@ import {
   factoryProjectPause,
 } from "./FactoryControlsReadModel";
 import { factoryOversightSummary } from "./FactoryOversightReadModel";
+import { FactorySystemManagerRow } from "./FactorySystemManagerRow";
 import {
   SidebarGroup,
   SidebarMenu,
@@ -223,9 +224,27 @@ export function FactorySidebar({
                       scopedThreadKey(scopeThreadRef(environment.environmentId, retro.threadId)),
                     )),
             ])
+            .concat(
+              environments.flatMap((environment) =>
+                scopedProjects.some(
+                  (project) => project.environmentId === environment.environmentId,
+                )
+                  ? (environment.data?.managers ?? [])
+                      .filter(
+                        (manager) =>
+                          manager.role === "system" && manager.threadStatus === "created",
+                      )
+                      .map((manager) =>
+                        scopedThreadKey(
+                          scopeThreadRef(environment.environmentId, manager.threadId),
+                        ),
+                      )
+                  : [],
+              ),
+            )
             .filter((key) => threadUnavailableReason("created", threadsByKey.get(key)) === null)
         : [],
-    [collapsedManagers, entries, expanded, threadsByKey],
+    [collapsedManagers, entries, expanded, threadsByKey, environments, scopedProjects],
   );
   useEffect(() => {
     onVisibleThreadsChange(visibleKeys);
@@ -329,6 +348,32 @@ export function FactorySidebar({
                 </div>
               ))}
           </div>
+          {relevantEnvironments.map((environment) => (
+            <FactorySystemManagerRow
+              key={environment.environmentId}
+              environment={environment}
+              projects={projects.filter(
+                (project) => project.environmentId === environment.environmentId,
+              )}
+              activeThreadId={
+                environment.data?.managers.find(
+                  (manager) =>
+                    manager.role === "system" &&
+                    scopedThreadKey(scopeThreadRef(environment.environmentId, manager.threadId)) ===
+                      activeThreadKey,
+                )?.threadId ?? null
+              }
+              canOpenThread={(id) =>
+                threadUnavailableReason(
+                  "created",
+                  threadsByKey.get(scopedThreadKey(scopeThreadRef(environment.environmentId, id))),
+                ) === null
+              }
+              onOpenThread={(id) => {
+                onThreadActivate(scopeThreadRef(environment.environmentId, id));
+              }}
+            />
+          ))}
           <SidebarMenu>
             {entries.map(({ environment, manager, key, project, assignments }) => {
               const managerPause = factoryManagerPause(environment.data, manager.id);

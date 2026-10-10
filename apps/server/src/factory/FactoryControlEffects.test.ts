@@ -154,6 +154,7 @@ const scenario = <A, E, R>(
   body: Effect.Effect<A, E, R>,
   options: {
     assignments?: readonly FactoryAssignment[];
+    systemManager?: boolean;
     auxiliaryThreads?: readonly FactoryAuxiliaryThread[];
     retros?: FactorySnapshot["retros"];
     dependencies?: readonly FactoryDependency[];
@@ -196,6 +197,17 @@ const scenario = <A, E, R>(
     const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO factory_state (id,revision,payload_json) VALUES(1,0,${encodeSnapshot({
       ...initial(assignments),
+      managers: initial(assignments).managers.map((manager) =>
+        options.systemManager
+          ? {
+              ...manager,
+              role: "system" as const,
+              projectId: null,
+              workspaceProjectId: projectId,
+              qualification,
+            }
+          : manager,
+      ),
       auxiliaryThreads,
       retros: options.retros ?? [],
       dependencies: options.dependencies ?? [],
@@ -310,6 +322,47 @@ const delegate = Effect.gen(function* () {
   });
   return (yield* projections.getThreadProjection(leadId)).subagents[0]!.childThreadId!;
 });
+
+it.effect(
+  "system peer pause physically stops and resumes its own workspace thread without an assignment",
+  () =>
+    scenario(
+      Effect.gen(function* () {
+        const factory = yield* FactoryService.FactoryService;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        yield* send(managerId, "Investigate workflow evidence");
+        yield* factory.dispatch(human, {
+          type: "manager.pause",
+          commandId: CommandId.make("pause-system-peer"),
+          managerId,
+        });
+        yield* factory.drain;
+        const paused = yield* factory.snapshot({});
+        assert.equal(paused.assignments.length, 0);
+        assert.equal(paused.managers[0]?.projectId, null);
+        assert.equal(paused.managers[0]?.status, "paused");
+        assert.equal(
+          paused.controls[0]?.kind === "manager-pause" ? paused.controls[0].stop.status : null,
+          "confirmed",
+        );
+        assert.equal(
+          (yield* projections.getThreadProjection(managerId)).runs.at(-1)?.status,
+          "interrupted",
+        );
+        yield* factory.dispatch(human, {
+          type: "manager.resume",
+          commandId: CommandId.make("resume-system-peer"),
+          managerId,
+        });
+        yield* factory.drain;
+        assert.equal((yield* factory.snapshot({})).managers[0]?.status, "active");
+        const resumed = yield* projections.getThreadProjection(managerId);
+        assert.equal(resumed.runs.length, 2);
+        assert.equal(resumed.runs.at(-1)?.status, "starting");
+      }),
+      { assignments: [], systemManager: true },
+    ),
+);
 
 it.effect("manager pause stops its own thread while an implementation team keeps working", () =>
   scenario(

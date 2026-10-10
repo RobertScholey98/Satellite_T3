@@ -141,6 +141,27 @@ your review. If publication fails, retry the recorded follow-up rather than aski
 for another ticket. An uncertain create result preserves its identity and offers
 verification of an existing ticket instead of creating a duplicate.
 
+### Improve shared engineering workflows
+
+Create one **System manager** for an environment from the sidebar. Choose an
+existing workspace and pin your owned skills repository. This manager investigates
+shared process alongside the project managers; it cannot change their priorities
+or permissions. Its workspace is read-only.
+
+Explicit escalations reach it promptly. Routine retro findings arrive in bounded
+batches, including a sample of findings classified as local. In **Shared
+improvements**, adjust the review allowance, batch size, maximum waiting time,
+and sampling rate. Disabling review holds delivery and preserves incoming evidence.
+You can request a routine batch early within the remaining allowance.
+If delivery fails, retry that batch to preserve its evidence and review allowance.
+
+Review proposals with their source findings, affected scope, tradeoffs, and
+uncertainty. Accept, reject, or defer the exact version shown and record your
+reason. Workflow proposals do not require tests or a trial before your decision.
+Acceptance records your decision; it does not silently change project rules or
+adopt a new workflow. Mark proposals useful, noisy, or unclear to guide later
+investigations. Pause the system manager independently of project work.
+
 ### Let a manager select ready work
 
 In **Delivery settings → Project work scheduling**, select a connected project board

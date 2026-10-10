@@ -77,15 +77,17 @@ const make = Effect.gen(function* () {
         const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
         if (
           owner === undefined ||
-          owner.projectId === null ||
-          (projectId !== undefined && projectId !== owner.projectId) ||
+          (owner.role === "system" && requestedThreadId !== owner.threadId) ||
+          (projectId !== undefined &&
+            projectId !== (owner.role === "system" ? owner.workspaceProjectId : owner.projectId)) ||
           (assignment !== undefined && assignment.projectId !== owner.projectId)
         )
           return yield* new FactoryError({ code: "execution-unavailable" });
         return {
           threadId: requestedThreadId,
           managerId: owner.id,
-          projectId: owner.projectId,
+          projectId: owner.role === "system" ? owner.workspaceProjectId : owner.projectId,
+          managerRole: owner.role,
           ...(assignment === undefined ? {} : { assignmentId: assignment.id }),
           ...(auxiliary === undefined ? {} : { auxiliaryThreadId: auxiliary.threadId }),
           ancestorThreadIds:

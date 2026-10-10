@@ -27,6 +27,39 @@ const group = WsRpcGroup.omit(
 const managerId = ThreadId.make("manager-web");
 const settingsCommands: ReadonlyArray<FactoryCommand> = [
   {
+    type: "system.create",
+    commandId: CommandId.make("system-create"),
+    workspaceProjectId: ProjectId.make("web"),
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
+    workflow: { repositoryRoot: "/owned-workflow", revision: "approved-commit" },
+  },
+  { type: "system.retry", commandId: CommandId.make("system-retry"), managerId },
+  {
+    type: "improvement.configure",
+    commandId: CommandId.make("improvement-config"),
+    enabled: true,
+    routineThreshold: 10,
+    maxAgeHours: 24,
+    sampleEvery: 5,
+    maxBatchItems: 20,
+    maxSummaryChars: 16000,
+    routineBatchesPerDay: 2,
+  },
+  { type: "improvement.flush", commandId: CommandId.make("improvement-flush") },
+  {
+    type: "improvement.batch.retry",
+    commandId: CommandId.make("retry-evidence"),
+    batchId: "batch",
+  },
+  {
+    type: "proposal.decide",
+    commandId: CommandId.make("proposal-decision"),
+    proposalId: "proposal",
+    revision: "revision",
+    outcome: "accepted",
+    reason: "Review supports adoption",
+  },
+  {
     type: "project.scheduling.configure",
     commandId: CommandId.make("schedule-settings"),
     projectId: ProjectId.make("web"),
@@ -182,6 +215,12 @@ describe("factory RPC authority", () => {
           assert.deepStrictEqual(yield* client[method]({ command }), { revision: index + 1 });
         }
         assert.deepStrictEqual(handled, [
+          "system.create",
+          "system.retry",
+          "improvement.configure",
+          "improvement.flush",
+          "improvement.batch.retry",
+          "proposal.decide",
           "project.scheduling.configure",
           "delivery.rules.configure",
           "delivery.preview.configure",

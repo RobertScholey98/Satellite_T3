@@ -1,6 +1,7 @@
 import {
   FactoryError,
   type FactoryDiscoveryQualification,
+  type FactoryManager,
   type FactoryWorkflowVersion,
   type ModelSelection,
   type OrchestrationV2AppThread,
@@ -280,12 +281,14 @@ const make = Effect.gen(function* () {
       const state = yield* store.snapshot;
       let current: ThreadId | null = threadId;
       const visited = new Set<ThreadId>();
+      let systemManager: Extract<FactoryManager, { role: "system" }> | undefined;
       let assignment: (typeof state.assignments)[number] | undefined;
       let auxiliary: (typeof state.auxiliaryThreads)[number] | undefined;
       while (current !== null) {
         if (visited.has(current)) return yield* new FactoryError({ code: "execution-unavailable" });
         visited.add(current);
         const manager = state.managers.find((entry) => entry.threadId === current);
+        if (manager?.role === "system") systemManager = manager;
         auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === current);
         assignment = state.assignments.find(
           (entry) =>
@@ -313,6 +316,8 @@ const make = Effect.gen(function* () {
         current = thread.lineage?.parentThreadId ?? null;
       }
       if (current === null) return undefined;
+      if (systemManager !== undefined)
+        yield* models.assertSelectionFor(threadId, systemManager.modelSelection);
       const flow = assignment?.delivery?.flow;
       const heldFlow = auxiliary === undefined && flow !== undefined && flow.status !== "released";
       if (
@@ -324,10 +329,12 @@ const make = Effect.gen(function* () {
           detail: "Implementation is held while the concrete UI flow is prepared for human review.",
         });
       const qualification =
-        auxiliary?.qualification ?? (heldFlow ? flow.qualification : assignment?.qualification);
+        systemManager?.qualification ??
+        auxiliary?.qualification ??
+        (heldFlow ? flow.qualification : assignment?.qualification);
       if (
         qualification?.status !== "qualified" ||
-        assignment === undefined ||
+        (assignment === undefined && systemManager === undefined) ||
         (auxiliary !== undefined &&
           (auxiliary.qualification === undefined ||
             !factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros)))
@@ -339,12 +346,24 @@ const make = Effect.gen(function* () {
       const profile = yield* fs
         .readFileString(path.join(root, profileId, "profile.json"))
         .pipe(Effect.flatMap(decodeProfile));
+      if (
+        systemManager !== undefined &&
+        (systemManager.threadId !== threadId ||
+          profile.boundaryId !== profileId ||
+          profile.assignmentWorkspace !== undefined ||
+          profile.inspection !== undefined ||
+          profile.retro !== undefined ||
+          profile.startingSourceId !== undefined ||
+          profile.projectSnapshotPath !== path.join(root, profileId, "project") ||
+          profile.workflowSnapshotPath !== path.join(root, profileId, "workflow"))
+      )
+        return yield* new FactoryError({ code: "execution-unavailable" });
       if (auxiliary?.kind === "retrospective") {
         const retro = state.retros.find((entry) => entry.id === auxiliary.incidentId);
         if (
           retro === undefined ||
           profile.retro?.retroId !== retro.id ||
-          profile.retro.assignmentId !== assignment.id ||
+          profile.retro.assignmentId !== assignment?.id ||
           profile.retro.conclusionId !== retro.conclusionId ||
           profile.retro.evidenceDigest !== retro.evidenceDigest ||
           profile.assignmentWorkspace !== undefined ||
@@ -376,7 +395,7 @@ const make = Effect.gen(function* () {
         Effect.provideService(Path.Path, path),
       );
       if (
-        assignment.startingSource !== undefined &&
+        assignment?.startingSource !== undefined &&
         (profile.startingSourceId !== assignment.startingSource.id ||
           profile.startingSourceDigest !== assignment.startingSource.sourceDigest)
       )
@@ -384,8 +403,8 @@ const make = Effect.gen(function* () {
       if (profile.assignmentWorkspace !== undefined) {
         const workspace = profile.assignmentWorkspace;
         if (
-          workspace.assignmentId !== assignment.id ||
-          assignment.grant === undefined ||
+          workspace.assignmentId !== assignment?.id ||
+          assignment?.grant === undefined ||
           workspace.grantEpoch !== assignment.grant.epoch ||
           workspace.boundaryId !== assignment.grant.boundaryId ||
           !state.boundaries.some((boundary) => boundary.id === assignment.grant?.boundaryId)

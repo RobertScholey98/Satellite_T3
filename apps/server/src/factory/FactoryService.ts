@@ -50,6 +50,8 @@ import { FactoryPreviewService } from "./FactoryPreviewService.ts";
 import { FactoryRetroEffects } from "./FactoryRetroEffects.ts";
 import { type FactoryRetroContext } from "./FactoryRetros.ts";
 import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
+import { FactoryImprovementEffects } from "./FactoryImprovementEffects.ts";
+import type { FactoryImprovementContext } from "./FactoryImprovements.ts";
 import type { FactorySchedulingContext } from "./FactoryScheduling.ts";
 import { ServerActivation, forkParked } from "../serverActivation.ts";
 import { type FactoryControlContext } from "./FactoryControls.ts";
@@ -84,6 +86,15 @@ const scopedSnapshot =
       ? snapshot
       : {
           ...snapshot,
+          improvementConfigurations: [],
+          improvementIntakes: [],
+          improvementBatches: [],
+          improvementInvestigations: [],
+          improvementProposals: [],
+          improvementDecisions: [],
+          improvementFeedback: [],
+          improvementRecurrences: [],
+          improvementEvidenceReads: [],
           managers: snapshot.managers.filter((manager) => manager.projectId === query.projectId),
           assignments: snapshot.assignments.filter(
             (assignment) => assignment.projectId === query.projectId,
@@ -180,6 +191,7 @@ export const layer = Layer.effect(
     const previews = yield* Effect.serviceOption(FactoryPreviewService);
     const retros = yield* Effect.serviceOption(FactoryRetroEffects);
     const scheduling = yield* Effect.serviceOption(FactorySchedulingEffects);
+    const improvements = yield* Effect.serviceOption(FactoryImprovementEffects);
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -753,6 +765,47 @@ export const layer = Layer.effect(
         }
       }),
     );
+    const improvementWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        if (Option.isNone(improvements)) return;
+        yield* improvements.value.reconcile.pipe(
+          Effect.catch((cause) =>
+            Effect.logError("Factory improvement intake remains pending", { cause }),
+          ),
+        );
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) =>
+              !visited.has(entry.id) &&
+              (entry.intent.type.startsWith("improvement.") ||
+                entry.intent.type === "system.launch"),
+          );
+          if (!pending.length) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            yield* improvements.value.handle(entry).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory improvement work remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* improvements.value.reconcile.pipe(
+                Effect.catch((cause) =>
+                  Effect.logError("Factory improvement intake remains pending", { cause }),
+                ),
+              );
+            }
+          }
+        }
+      }),
+    );
     const wake = Effect.all(
       [
         worker.enqueue(undefined),
@@ -761,6 +814,7 @@ export const layer = Layer.effect(
         deliveryWorker.enqueue(undefined),
         retroWorker.enqueue(undefined),
         schedulingWorker.enqueue(undefined),
+        improvementWorker.enqueue(undefined),
       ],
       {
         discard: true,
@@ -769,6 +823,7 @@ export const layer = Layer.effect(
     if ((yield* ServerActivation) === undefined) yield* wake;
     else yield* forkParked(wake);
     if (Option.isSome(scheduling)) yield* scheduling.value.watch(wake);
+    if (Option.isSome(improvements)) yield* improvements.value.watch(wake);
     const drain = Effect.gen(function* () {
       for (;;) {
         const progress = workerProgress;
@@ -778,6 +833,7 @@ export const layer = Layer.effect(
         yield* deliveryWorker.drain;
         yield* retroWorker.drain;
         yield* schedulingWorker.drain;
+        yield* improvementWorker.drain;
         if (progress === workerProgress) return;
       }
     });
@@ -1018,6 +1074,9 @@ export const layer = Layer.effect(
         let deliveryContext: FactoryDeliveryContext = {};
         let retroContext: FactoryRetroContext = {};
         let schedulingContext: FactorySchedulingContext = {};
+        let improvementContext: FactoryImprovementContext = {};
+        if (Option.isSome(improvements))
+          improvementContext = yield* improvements.value.context(actor, command);
         if (Option.isSome(retros)) retroContext = yield* retros.value.context(actor, command);
         if (Option.isSome(scheduling))
           schedulingContext = yield* scheduling.value.context(actor, command);
@@ -1122,6 +1181,7 @@ export const layer = Layer.effect(
           ...deliveryContext,
           ...retroContext,
           ...schedulingContext,
+          ...improvementContext,
           ...(allocation === undefined ? {} : { allocation }),
         });
         if (Result.isFailure(preflight)) {
@@ -1220,6 +1280,7 @@ export const layer = Layer.effect(
             ...deliveryContext,
             ...retroContext,
             ...schedulingContext,
+            ...improvementContext,
             ...(allocation === undefined ? {} : { allocation }),
             ...(qualification === undefined ? {} : { qualification }),
             ...(boundary === undefined ? {} : { boundary }),

@@ -1,6 +1,11 @@
 import {
   OrchestratorMcpFailure,
   type FactoryCommand,
+  type FactoryImprovementSnapshot,
+  type FactoryImprovementRecordRead,
+  type FactoryImprovementRecord,
+  type FactoryInvestigationRead,
+  type FactoryInvestigationEvidence,
   type FactoryCommandResult,
   type FactoryError,
   type FactorySnapshot,
@@ -8,6 +13,11 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import { stableStringify } from "@t3tools/shared/relaySigning";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
+import * as DateTime from "effect/DateTime";
+import { factoryImprovementConfiguration } from "./FactoryImprovements.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -22,6 +32,8 @@ import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
 
+import * as FactoryImprovementEvidence from "./FactoryImprovementEvidence.ts";
+
 export class FactoryMcpGuard extends Context.Service<
   FactoryMcpGuard,
   {
@@ -33,6 +45,18 @@ export class FactoryMcpGuard extends Context.Service<
     readonly snapshot: (
       invocation: McpInvocationScope,
     ) => Effect.Effect<FactorySnapshot, OrchestratorMcpFailure | FactoryError>;
+    readonly improvementSnapshot: (
+      invocation: McpInvocationScope,
+      cursor?: number,
+    ) => Effect.Effect<FactoryImprovementSnapshot, OrchestratorMcpFailure | FactoryError>;
+    readonly improvementRecord: (
+      invocation: McpInvocationScope,
+      input: FactoryImprovementRecordRead,
+    ) => Effect.Effect<FactoryImprovementRecord, OrchestratorMcpFailure | FactoryError>;
+    readonly readInvestigation: (
+      invocation: McpInvocationScope,
+      input: FactoryInvestigationRead,
+    ) => Effect.Effect<FactoryInvestigationEvidence, OrchestratorMcpFailure | FactoryError>;
     readonly readTicket: (
       invocation: McpInvocationScope,
       candidateId: string,
@@ -68,6 +92,9 @@ const make = Effect.gen(function* () {
   const factory = yield* FactoryService.FactoryService;
   const controls = yield* FactoryControlAccess.FactoryControlAccess;
   const scheduling = yield* Effect.serviceOption(FactorySchedulingEffects);
+  const evidence = yield* Effect.serviceOption(
+    FactoryImprovementEvidence.FactoryImprovementEvidence,
+  );
 
   const membership = (invocation: McpInvocationScope) =>
     Effect.gen(function* () {
@@ -120,6 +147,23 @@ const make = Effect.gen(function* () {
           yield* controls
             .assertExecution(invocation.thread.threadId)
             .pipe(Effect.mapError(unavailable));
+        if (member.manager.role === "system") {
+          if (
+            invocation.thread?.threadId !== member.manager.threadId ||
+            ![
+              "factory_improvement_snapshot",
+              "factory_improvement_record",
+              "factory_investigation_read",
+              "factory_dispatch",
+            ].includes(toolName)
+          )
+            return yield* denied();
+          const profile = yield* execution
+            .runtimePolicyFor(member.ownerThreadId)
+            .pipe(Effect.mapError(unavailable));
+          if (!profile) return yield* unavailable();
+          return;
+        }
         const implementationTeamTool =
           member.auxiliary === undefined &&
           member.assignment !== undefined &&
@@ -213,6 +257,15 @@ const make = Effect.gen(function* () {
         const snapshot = yield* factory.snapshot({ projectId: manager.projectId });
         return {
           ...snapshot,
+          improvementConfigurations: [],
+          improvementIntakes: [],
+          improvementBatches: [],
+          improvementInvestigations: [],
+          improvementProposals: [],
+          improvementDecisions: [],
+          improvementFeedback: [],
+          improvementRecurrences: [],
+          improvementEvidenceReads: [],
           managers: snapshot.managers.filter((entry) => entry.id === manager.id),
           assignments: snapshot.assignments.filter((entry) =>
             assignment === undefined ? entry.managerId === manager.id : entry.id === assignment.id,
@@ -257,6 +310,178 @@ const make = Effect.gen(function* () {
           ),
         };
       }),
+    improvementSnapshot: (invocation, cursor = 0) =>
+      Effect.gen(function* () {
+        const member = yield* managedCaller(invocation);
+        if (
+          member.manager.role !== "system" ||
+          invocation.thread?.threadId !== member.manager.threadId ||
+          !Number.isInteger(cursor) ||
+          cursor < 0
+        )
+          return yield* denied();
+        yield* controls.assertExecution(member.manager.threadId);
+        const state = yield* store.snapshot;
+        const visible = new Set(
+          state.improvementIntakes
+            .filter((entry) => entry.delivery.phase !== "skipped")
+            .map((entry) => entry.findingId),
+        );
+        const findings = state.findings.filter((entry) => visible.has(entry.id)).toReversed();
+        const investigations = state.improvementInvestigations.toReversed();
+        const proposals = state.improvementProposals.toReversed();
+        const decisions = state.improvementDecisions.toReversed();
+        const feedback = state.improvementFeedback.toReversed();
+        const recurrences = state.improvementRecurrences.toReversed();
+        const settings = factoryImprovementConfiguration(state);
+        const day = DateTime.formatIso(yield* DateTime.now).slice(0, 10);
+        const used = state.improvementBatches.filter(
+          (entry) => entry.kind === "routine" && entry.budgetDay === day,
+        ).length;
+        const hasMore =
+          Math.max(
+            findings.length,
+            investigations.length,
+            proposals.length,
+            decisions.length,
+            feedback.length,
+            recurrences.length,
+          ) >
+          cursor + 5;
+        return {
+          revision: state.revision,
+          managerId: member.manager.id,
+          settings,
+          budget: { day, used, remaining: Math.max(0, settings.routineBatchesPerDay - used) },
+          decisions: decisions.slice(cursor, cursor + 5).map((entry) => ({
+            proposalId: entry.proposalId,
+            revision: entry.revision,
+            outcome: entry.outcome,
+            reason: entry.reason.slice(0, 1000),
+            decidedAt: entry.decidedAt,
+          })),
+          feedback: feedback.slice(cursor, cursor + 5).map((entry) => ({
+            id: entry.id,
+            proposalId: entry.proposalId,
+            revision: entry.revision,
+            usefulness: entry.usefulness,
+            reason: entry.reason.slice(0, 1000),
+          })),
+          recurrences: recurrences.slice(cursor, cursor + 5).map((entry) => ({
+            id: entry.id,
+            investigationId: entry.investigationId,
+            findingId: entry.findingId,
+            reason: entry.reason.slice(0, 1000),
+          })),
+          queued: state.improvementIntakes.filter((entry) => entry.delivery.phase === "queued")
+            .length,
+          findings: findings.slice(cursor, cursor + 5).flatMap((entry) => {
+            const assignment = state.assignments.find((item) => item.id === entry.assignmentId);
+            return assignment
+              ? [
+                  {
+                    id: entry.id,
+                    assignmentId: entry.assignmentId,
+                    projectId: assignment.projectId,
+                    summary: entry.problem.slice(0, 700),
+                    evidence: entry.evidence,
+                  },
+                ]
+              : [];
+          }),
+          investigations: investigations.slice(cursor, cursor + 5).map((entry) => ({
+            id: entry.id,
+            title: entry.title.slice(0, 200),
+            findingIds: entry.findingIds,
+            phase: entry.lifecycle.phase,
+            assessment: entry.assessment.slice(0, 500),
+            uncertainty: entry.uncertainty.slice(0, 500),
+          })),
+          proposals: proposals.slice(cursor, cursor + 5).map((entry) => ({
+            id: entry.id,
+            revision: entry.revision,
+            investigationId: entry.investigationId,
+            phase: entry.phase,
+            problem: entry.content.problem.slice(0, 500),
+            requestedDecision: entry.content.requestedDecision.slice(0, 500),
+          })),
+          hasMore,
+          nextCursor: hasMore ? cursor + 5 : null,
+        };
+      }),
+    improvementRecord: (invocation, input) =>
+      Effect.gen(function* () {
+        const member = yield* managedCaller(invocation);
+        if (
+          member.manager.role !== "system" ||
+          invocation.thread?.threadId !== member.manager.threadId
+        )
+          return yield* denied();
+        yield* controls.assertExecution(member.manager.threadId);
+        const state = yield* store.snapshot;
+        const manager = state.managers.find((entry) => entry.id === member.manager.id);
+        if (
+          manager?.role !== "system" ||
+          manager.status !== "active" ||
+          manager.qualification.status !== "qualified"
+        )
+          return yield* denied();
+        const ref = input.record;
+        const record =
+          ref.kind === "proposal"
+            ? state.improvementProposals.find(
+                (entry) => entry.id === ref.id && entry.revision === ref.revision,
+              )
+            : ref.kind === "decision"
+              ? state.improvementDecisions.find(
+                  (entry) => entry.proposalId === ref.id && entry.revision === ref.revision,
+                )
+              : ref.kind === "investigation"
+                ? state.improvementInvestigations.find((entry) => entry.id === ref.id)
+                : ref.kind === "feedback"
+                  ? state.improvementFeedback.find((entry) => entry.id === ref.id)
+                  : state.improvementRecurrences.find((entry) => entry.id === ref.id);
+        const limit = input.limit ?? 8000;
+        const offset = input.cursor?.offset ?? 0;
+        if (
+          !record ||
+          !Number.isInteger(limit) ||
+          limit < 1 ||
+          limit > 16000 ||
+          !Number.isInteger(offset) ||
+          offset < 0
+        )
+          return yield* denied();
+        const serialized = stableStringify(record);
+        const digest = Hex.encode(sha256(new TextEncoder().encode(serialized)));
+        if (
+          (input.cursor !== undefined && input.cursor.digest !== digest) ||
+          offset > serialized.length
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The record changed while paging. Restart this named record read.",
+          });
+        const text = serialized.slice(offset, offset + limit);
+        const nextOffset = offset + text.length;
+        return {
+          record: ref,
+          digest,
+          text,
+          nextCursor: nextOffset < serialized.length ? { offset: nextOffset, digest } : null,
+        };
+      }),
+    readInvestigation: (invocation, input) =>
+      Effect.gen(function* () {
+        const member = yield* managedCaller(invocation);
+        if (
+          member.manager.role !== "system" ||
+          invocation.thread?.threadId !== member.manager.threadId
+        )
+          return yield* denied();
+        if (Option.isNone(evidence)) return yield* unavailable();
+        return yield* evidence.value.read(member.manager.id, input);
+      }),
     readTicket: (invocation, candidateId) =>
       Effect.gen(function* () {
         if (invocation.thread === undefined) return yield* denied();
@@ -286,6 +511,17 @@ const make = Effect.gen(function* () {
           .assertExecution(invocation.thread.threadId)
           .pipe(Effect.mapError(unavailable));
         const member = yield* managedCaller(invocation);
+        if (
+          member.manager.role === "system" &&
+          ![
+            "investigation.open",
+            "investigation.update",
+            "investigation.recurrence",
+            "proposal.write",
+            "proposal.submit",
+          ].includes(command.type)
+        )
+          return yield* denied();
         const retroCommand =
           member.auxiliary?.kind === "retrospective" &&
           ((command.type === "retro.team.submit" &&

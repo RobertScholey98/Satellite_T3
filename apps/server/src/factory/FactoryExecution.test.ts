@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   FactoryAssignmentId,
+  FactoryControlId,
   FactorySourceId,
   type FactorySnapshot,
   type OrchestrationV2AppThread,
@@ -159,6 +160,119 @@ it.effect(
           path.join(directory, "profile.json"),
           yield* encodeProfile(profile),
         );
+        const projectSnapshot = snapshot;
+        const systemId = ThreadId.make("system-manager");
+        snapshot = {
+          ...snapshot,
+          assignments: [],
+          managers: [
+            {
+              ...snapshot.managers[0]!,
+              id: systemId,
+              threadId: systemId,
+              role: "system",
+              projectId: null,
+              workspaceProjectId: projectId,
+              qualification: { status: "qualified", profileId, checkedAt: DateTime.formatIso(now) },
+            },
+          ],
+          controls: [
+            {
+              id: FactoryControlId.make("workspace-pause"),
+              generation: 1,
+              kind: "project-pause",
+              projectId,
+              status: "active",
+              stop: { status: "confirmed", stoppedAt: DateTime.formatIso(now) },
+              requestedAt: DateTime.formatIso(now),
+              updatedAt: DateTime.formatIso(now),
+            },
+          ],
+        };
+        const systemPolicy = yield* execution.runtimePolicyFor(systemId);
+        assert.equal(systemPolicy?.projectSnapshotPath, profile.projectSnapshotPath);
+        assert.isUndefined(systemPolicy?.assignmentWorkspace);
+        yield* execution.assertSelectionFor(systemId, {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "test",
+        });
+        assert.equal(
+          (yield* execution
+            .assertDelegationFor(systemId, {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "test",
+            })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        assert.equal(
+          (yield* execution
+            .runtimePolicyFor(ThreadId.make("system-child"), systemId)
+            .pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        snapshot = {
+          ...snapshot,
+          controls: [
+            ...snapshot.controls,
+            {
+              id: FactoryControlId.make("system-pause"),
+              kind: "manager-pause",
+              managerId: systemId,
+              priorStatus: "active",
+              status: "active",
+              generation: 1,
+              stop: { status: "pending" },
+              requestedAt: DateTime.formatIso(now),
+              updatedAt: DateTime.formatIso(now),
+            },
+          ],
+        };
+        assert.equal(
+          (yield* execution.runtimePolicyFor(systemId).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        snapshot = {
+          ...snapshot,
+          controls: [],
+          modelDefaults: { approvedModels: [], preferences: [] },
+        };
+        assert.equal(
+          (yield* execution.runtimePolicyFor(systemId).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.equal(
+          (yield* execution
+            .assertSelectionFor(systemId, {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "test",
+            })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        snapshot = {
+          ...snapshot,
+          modelDefaults: {
+            approvedModels: [{ instanceId: ProviderInstanceId.make("codex"), model: "test" }],
+            preferences: [],
+          },
+        };
+        yield* fs.writeFileString(
+          path.join(directory, "profile.json"),
+          yield* encodeProfile({
+            ...profile,
+            projectSnapshotPath: path.join(directory, "another-project"),
+          }),
+        );
+        assert.equal(
+          (yield* execution.runtimePolicyFor(systemId).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        yield* fs.writeFileString(
+          path.join(directory, "profile.json"),
+          yield* encodeProfile(profile),
+        );
+        snapshot = projectSnapshot;
         const parentPolicy = yield* execution.runtimePolicyFor(owner);
         const childPolicy = yield* execution.runtimePolicyFor(child);
         assert.isDefined(parentPolicy);

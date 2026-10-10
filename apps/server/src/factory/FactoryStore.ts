@@ -304,6 +304,19 @@ const make = Effect.gen(function* () {
                         command.type === "followup.failed") &&
                       command.followupId === intent.followupId
                     );
+                  case "system.launch":
+                    return (
+                      (command.type === "system.launch.recorded" ||
+                        command.type === "system.launch.failed") &&
+                      command.managerId === intent.managerId &&
+                      command.profileId === intent.profileId
+                    );
+                  case "improvement.notify":
+                    return (
+                      command.type === "improvement.batch.delivered" &&
+                      command.batchId === intent.batchId &&
+                      command.digest === intent.digest
+                    );
                   case "schedule.notify":
                     return (
                       command.type === "schedule.notified" &&

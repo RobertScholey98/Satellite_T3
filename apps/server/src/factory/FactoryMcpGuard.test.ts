@@ -6,6 +6,8 @@ import {
   FactoryDependencyId,
   FactoryError,
   FactorySnapshot,
+  FactoryImprovementSnapshot,
+  FactoryImprovementRecord,
   OrchestratorMcpFailure,
   ProjectId,
   ProviderInstanceId,
@@ -16,6 +18,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -55,6 +58,11 @@ const assignmentId = FactoryAssignmentId.make("assignment-web");
 const otherAssignmentId = FactoryAssignmentId.make("assignment-api");
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(FactorySnapshot));
 const decodeFactorySnapshot = Schema.decodeUnknownEffect(FactorySnapshot);
+const decodeImprovementSnapshot = Schema.decodeUnknownEffect(FactoryImprovementSnapshot);
+const decodeImprovementRecord = Schema.decodeUnknownEffect(FactoryImprovementRecord);
+const decodeRecordReason = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ reason: Schema.String })),
+);
 const decodeMembership = Schema.decodeUnknownSync(
   Schema.Struct({
     managers: Schema.Array(Schema.Struct({ id: Schema.String })),
@@ -116,8 +124,8 @@ interface Scenario {
   readonly ticketReads: string[];
 }
 
-const scenario = <E>(
-  test: (context: Scenario) => Effect.Effect<void, E>,
+const scenario = <E, R>(
+  test: (context: Scenario) => Effect.Effect<void, E, R>,
   heldWait?: FactoryWait,
   withReviewer: boolean | "retro" = false,
   withTickets = false,
@@ -597,6 +605,193 @@ const scenario = <E>(
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })), Effect.scoped);
 
 describe("FactoryMcpGuard", () => {
+  it.effect(
+    "gives the system peer only compact investigation tools and denies project delivery and generic host reads",
+    () =>
+      scenario(({ call, store, shells, flags }) =>
+        Effect.gen(function* () {
+          const systemId = ThreadId.make("system-manager");
+          yield* store.commit({
+            actor: { kind: "human" },
+            command: {
+              type: "system.create",
+              commandId: CommandId.make("create-system"),
+              workspaceProjectId: ProjectId.make("web"),
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "approved-model",
+              },
+              workflow: { repositoryRoot: "/owned", revision: "pinned" },
+            },
+            systemManagerCreation: {
+              threadId: systemId,
+              qualification: { status: "qualified", profileId: "system-profile", checkedAt: now },
+            },
+            now,
+          });
+          yield* store.commit({
+            actor: { kind: "system" },
+            command: {
+              type: "system.launch.recorded",
+              commandId: CommandId.make("launch-system"),
+              managerId: systemId,
+              profileId: "system-profile",
+            },
+            now,
+          });
+          shells.set(systemId, { ...liveThreadShell(systemId), projectId: ProjectId.make("web") });
+          const state = yield* store.snapshot;
+          const budgetDay = DateTime.formatIso(yield* DateTime.now).slice(0, 10);
+          const projected = yield* encodeSnapshot({
+            ...state,
+            improvementDecisions: Array.from({ length: 7 }, (_, index) => ({
+              proposalId: "proposal",
+              revision: `revision-${index}`,
+              outcome: "deferred" as const,
+              reason: "Keep this decision rationale ".repeat(80),
+              commandId: CommandId.make(`decision-${index}`),
+              decidedAt: now,
+            })),
+            improvementFeedback: [
+              {
+                id: "feedback",
+                proposalId: "proposal",
+                revision: "revision-6",
+                usefulness: "noisy",
+                reason: "Repeated recommendation",
+                recordedAt: now,
+              },
+            ],
+            improvementRecurrences: [
+              {
+                id: "recurrence",
+                investigationId: "investigation",
+                findingId: "finding",
+                reason: "Failure returned",
+                recordedAt: now,
+              },
+            ],
+            improvementBatches: [
+              {
+                id: "spent",
+                managerId: systemId,
+                kind: "routine",
+                intakeIds: ["intake"],
+                digest: "batch-digest",
+                summary: "Consumed review",
+                budgetDay,
+                createdAt: now,
+                delivery: { status: "pending" },
+              },
+            ],
+          });
+          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json=${projected} WHERE id=1`;
+          const response = yield* call("factory_improvement_snapshot", {}, systemId);
+          const compact = yield* decodeImprovementSnapshot(response.structuredContent);
+          assert.equal(compact.decisions.length, 5);
+          assert.equal(compact.decisions[0]?.reason.length, 1000);
+          assert.equal(compact.feedback[0]?.usefulness, "noisy");
+          assert.equal(compact.recurrences[0]?.findingId, "finding");
+          assert.equal(compact.budget.used, 1);
+          assert.equal(compact.budget.remaining, compact.settings.routineBatchesPerDay - 1);
+          assert.equal(compact.nextCursor, 5);
+          const next = yield* decodeImprovementSnapshot(
+            (yield* call("factory_improvement_snapshot", { cursor: compact.nextCursor }, systemId))
+              .structuredContent,
+          );
+          assert.equal(next.decisions.length, 2);
+          assert.equal(next.nextCursor, null);
+          const project = yield* decodeFactorySnapshot(
+            (yield* call("factory_snapshot", {}, managerId)).structuredContent,
+          );
+          assert.equal(project.improvementDecisions.length, 0);
+          assert.equal(project.improvementFeedback.length, 0);
+          const namedRecord = { kind: "decision", id: "proposal", revision: "revision-6" };
+          const readRecord = (cursor?: { offset: number; digest: string }) =>
+            call(
+              "factory_improvement_record",
+              { record: namedRecord, limit: 1000, ...(cursor ? { cursor } : {}) },
+              systemId,
+            ).pipe(Effect.flatMap((result) => decodeImprovementRecord(result.structuredContent)));
+          let page = yield* readRecord();
+          assert.equal(page.text.length, 1000);
+          let complete = page.text;
+          while (page.nextCursor !== null) {
+            page = yield* readRecord(page.nextCursor);
+            complete += page.text;
+          }
+          const fullRecord = yield* decodeRecordReason(complete);
+          assert.equal(fullRecord.reason, "Keep this decision rationale ".repeat(80).trim());
+          assert.isTrue(
+            (yield* call("factory_improvement_record", { record: namedRecord }, managerId)).isError,
+          );
+          assert.isTrue(
+            (yield* call(
+              "factory_improvement_record",
+              { record: { ...namedRecord, revision: "other-revision" } },
+              systemId,
+            )).isError,
+          );
+          assert.isTrue(
+            (yield* call(
+              "factory_improvement_record",
+              { record: namedRecord, cursor: { offset: 1000, digest: "stale" } },
+              systemId,
+            )).isError,
+          );
+          assert.isFalse(response.isError ?? false);
+          assert.notProperty(response.structuredContent, "assignments");
+          assert.notProperty(response.structuredContent, "retros");
+          for (const name of [
+            "factory_snapshot",
+            "host_effect",
+            "preview_navigate",
+            "t3_thread_read",
+            "t3_thread_send",
+            "t3_thread_wait",
+          ]) {
+            const result = yield* call(name, { threadId: leadId }, systemId);
+            assert.isTrue(result.isError, name);
+          }
+          for (const command of [
+            { type: "manager.pause", commandId: "system-pause-other", managerId },
+            { type: "project.pause", commandId: "system-pause-project", projectId: "web" },
+            {
+              type: "proposal.decide",
+              commandId: "system-self-approve",
+              proposalId: "proposal",
+              revision: "revision",
+              outcome: "accepted",
+              reason: "Self approval",
+            },
+          ])
+            assert.isTrue((yield* call("factory_dispatch", { command }, systemId)).isError);
+          assert.isTrue((yield* call("factory_improvement_snapshot", {}, managerId)).isError);
+          const descendant = ThreadId.make("system-descendant");
+          shells.set(descendant, {
+            ...liveThreadShell(descendant),
+            projectId: ProjectId.make("web"),
+            lineage: {
+              rootThreadId: systemId,
+              parentThreadId: systemId,
+              relationshipToParent: "subagent",
+            },
+          });
+          assert.isTrue((yield* call("factory_improvement_snapshot", {}, descendant)).isError);
+          assert.equal(flags.hostCalls, 0);
+          yield* store.commit({
+            actor: { kind: "human" },
+            command: {
+              type: "manager.pause",
+              commandId: CommandId.make("pause-system"),
+              managerId: systemId,
+            },
+            now,
+          });
+          assert.isTrue((yield* call("factory_improvement_snapshot", {}, systemId)).isError);
+        }),
+      ),
+  );
   it.effect("reads exact scoped tickets without exposing other teams or projects", () =>
     scenario(
       ({ call, ticketReads }) =>

@@ -63,7 +63,10 @@ const make = Effect.gen(function* () {
         const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
         if (
           owner === undefined ||
-          (projectId !== undefined && projectId !== (assignment?.projectId ?? owner.projectId)) ||
+          (projectId !== undefined &&
+            projectId !==
+              (assignment?.projectId ??
+                (owner.role === "system" ? owner.workspaceProjectId : owner.projectId))) ||
           (assignment !== undefined && assignment.projectId !== owner.projectId)
         ) {
           return yield* new FactoryError({ code: "execution-unavailable" });
@@ -90,7 +93,16 @@ const make = Effect.gen(function* () {
           if (
             !delegating &&
             threadId === requestedThreadId &&
-            modelSelectionsEqual(owner.modelSelection, selection)
+            modelSelectionsEqual(owner.modelSelection, selection) &&
+            (owner.role !== "system" ||
+              isFactoryModelApproved(
+                resolveFactoryModelPolicy(
+                  state.modelDefaults,
+                  owner.modelOverrides,
+                  owner.modelSelection,
+                ),
+                selection,
+              ))
           )
             return;
           return yield* new FactoryError({

@@ -102,9 +102,15 @@ export const layer = Layer.effect(
           return [];
         case "manager-pause": {
           const manager = state.managers.find((entry) => entry.id === control.managerId);
-          return manager?.projectId == null
+          return manager === undefined
             ? []
-            : [{ threadId: manager.threadId, projectId: manager.projectId }];
+            : [
+                {
+                  threadId: manager.threadId,
+                  projectId:
+                    manager.role === "system" ? manager.workspaceProjectId : manager.projectId,
+                },
+              ];
         }
         case "cancellation": {
           const assignment = state.assignments.find((entry) => entry.id === control.assignmentId);

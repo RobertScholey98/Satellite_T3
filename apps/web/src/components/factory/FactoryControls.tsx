@@ -136,7 +136,11 @@ export function FactoryManagerControls({
     <div className="space-y-4" aria-busy={command.pending}>
       <PauseControl
         label="Manager"
-        description="Stops new assignments and manager coordination. Existing teams can continue within their grants."
+        description={
+          manager.role === "system"
+            ? "Stops shared investigations and evidence delivery. Project managers and their teams continue."
+            : "Stops new assignments and manager coordination. Existing teams can continue within their grants."
+        }
         control={managerPause}
         disabled={command.disabled}
         onPause={() => void command.submit({ type: "manager.pause", managerId: manager.id })}

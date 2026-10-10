@@ -17,6 +17,10 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
+import {
+  decideFactoryImprovements,
+  type FactoryImprovementContext,
+} from "./FactoryImprovements.ts";
 import { decideFactoryDelivery, type FactoryDeliveryContext } from "./FactoryDelivery.ts";
 import {
   decideFactoryRetros,
@@ -77,6 +81,15 @@ export interface FactoryDecision {
 
 export const initialFactorySnapshot = (): FactorySnapshot => ({
   revision: 0,
+  improvementConfigurations: [],
+  improvementIntakes: [],
+  improvementBatches: [],
+  improvementInvestigations: [],
+  improvementProposals: [],
+  improvementDecisions: [],
+  improvementFeedback: [],
+  improvementRecurrences: [],
+  improvementEvidenceReads: [],
   defaults: {
     delivery: "human-approval",
     projectImprovements: "create-tickets",
@@ -244,6 +257,7 @@ const reduceModelGrants = (
 
 export function decide(
   input: FactoryControlContext &
+    FactoryImprovementContext &
     FactoryDeliveryContext &
     FactoryRetroContext &
     FactorySchedulingContext &
@@ -261,6 +275,38 @@ export function decide(
       readonly handoverVerified?: boolean;
     },
 ): Result.Result<FactoryDecision, FactoryError> {
+  const improvementDecision = decideFactoryImprovements(input);
+  if (improvementDecision !== undefined) return improvementDecision;
+  if (input.command.type === "manager.resume" || input.command.type === "control.retry") {
+    const retryControlId =
+      input.command.type === "control.retry" ? input.command.controlId : undefined;
+    const retryControl = input.state.controls.find((entry) => entry.id === retryControlId);
+    const requestedManagerId =
+      input.command.type === "manager.resume"
+        ? input.command.managerId
+        : retryControl?.kind === "manager-pause" && retryControl.resume !== undefined
+          ? retryControl.managerId
+          : undefined;
+    const manager = input.state.managers.find((entry) => entry.id === requestedManagerId);
+    if (
+      manager?.role === "system" &&
+      !isFactoryModelApproved(
+        resolveFactoryModelPolicy(
+          input.state.modelDefaults,
+          manager.modelOverrides,
+          manager.modelSelection,
+        ),
+        manager.modelSelection,
+      )
+    )
+      return Result.fail(
+        new FactoryError({
+          code: "permission-denied",
+          detail:
+            "Restore this system manager's model to its approved pool before explicitly resuming it.",
+        }),
+      );
+  }
   const controlDecision = decideFactoryControls(input);
   if (controlDecision !== undefined) return controlDecision;
   const schedulingDecision = decideFactoryScheduling(input);
@@ -309,6 +355,72 @@ export function decide(
     });
   };
 
+  const pauseRevokedSystemManager = (
+    decision: FactoryDecision,
+  ): Result.Result<FactoryDecision, FactoryError> => {
+    const manager = decision.state.managers.find((entry) => entry.role === "system");
+    if (
+      !manager ||
+      isFactoryModelApproved(
+        resolveFactoryModelPolicy(
+          decision.state.modelDefaults,
+          manager.modelOverrides,
+          manager.modelSelection,
+        ),
+        manager.modelSelection,
+      )
+    )
+      return Result.succeed(decision);
+    if (manager.status === "paused") {
+      const pause = decision.state.controls.find(
+        (entry) =>
+          entry.kind === "manager-pause" &&
+          entry.managerId === manager.id &&
+          entry.status === "active",
+      );
+      if (pause?.kind !== "manager-pause" || pause.resume === undefined)
+        return Result.succeed(decision);
+      const {
+        resume: _resume,
+        resumeThreadIds: _threads,
+        resumeQueues: _queues,
+        ...retained
+      } = pause;
+      const restarted = {
+        ...retained,
+        generation: pause.generation + 1,
+        stop: { status: "pending" as const },
+        requestedAt: now,
+        updatedAt: now,
+      };
+      return Result.succeed({
+        ...decision,
+        state: {
+          ...decision.state,
+          controls: decision.state.controls.map((entry) =>
+            entry.id === pause.id ? restarted : entry,
+          ),
+        },
+        effects: [
+          ...decision.effects,
+          { type: "control.stop", controlId: pause.id, generation: restarted.generation },
+        ],
+      });
+    }
+    const paused = decideFactoryControls({
+      state: decision.state,
+      actor: { kind: "human" },
+      command: { type: "manager.pause", commandId: command.commandId, managerId: manager.id },
+      now,
+    });
+    if (paused === undefined) return fail("invalid-state");
+    return Result.map(paused, (value) => ({
+      state: { ...value.state, revision: decision.state.revision },
+      result: decision.result,
+      effects: [...decision.effects, ...value.effects],
+    }));
+  };
+
   if (command.type === "assignment.commission" || command.type === "assignment.handover") {
     const manager = state.managers.find((entry) => entry.id === command.managerId);
     if (
@@ -355,7 +467,7 @@ export function decide(
         state.defaults,
         state.boundaries,
         command.policy,
-      );
+      ).pipe(Result.flatMap(pauseRevokedSystemManager));
     }
     case "manager.models.configure": {
       if (actor.kind !== "human") return fail("permission-denied");
@@ -368,7 +480,7 @@ export function decide(
       );
       return accepted(managers, reduceModelGrants(state, managers, state.modelDefaults), {
         managerId: command.managerId,
-      });
+      }).pipe(Result.flatMap(pauseRevokedSystemManager));
     }
     case "assignment.commission":
     case "assignment.handover": {

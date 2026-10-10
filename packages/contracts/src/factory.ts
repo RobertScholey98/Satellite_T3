@@ -13,6 +13,20 @@ import {
 import { ModelSelection } from "./modelSelection.ts";
 import { IssueAttemptLink } from "./issues.ts";
 import {
+  FactoryImprovementConfiguration,
+  FactoryImprovementIntake,
+  FactoryImprovementBatch,
+  FactoryImprovementInvestigation,
+  FactoryImprovementProposal,
+  FactoryImprovementDecision,
+  FactoryImprovementFeedback,
+  FactoryImprovementRecurrence,
+  FactoryImprovementEvidenceRead,
+  FactoryImprovementCommand,
+  FactoryImprovementHostCommand,
+  FactoryImprovementEffectIntent,
+} from "./factoryImprovements.ts";
+import {
   FactorySchedulingConfiguration,
   FactoryScheduleCandidate,
   FactoryScheduleAuthority,
@@ -250,6 +264,8 @@ export const FactoryManager = Schema.Union([
     ...FactoryManagerFields,
     role: Schema.Literal("system"),
     projectId: Schema.Null,
+    workspaceProjectId: ProjectId,
+    qualification: FactoryDiscoveryQualification,
   }),
 ]);
 export type FactoryManager = typeof FactoryManager.Type;
@@ -316,6 +332,33 @@ export type FactoryAssignment = typeof FactoryAssignment.Type;
 
 export const FactorySnapshot = Schema.Struct({
   revision: NonNegativeInt,
+  improvementConfigurations: Schema.Array(FactoryImprovementConfiguration).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  improvementIntakes: Schema.Array(FactoryImprovementIntake).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  improvementBatches: Schema.Array(FactoryImprovementBatch).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  improvementInvestigations: Schema.Array(FactoryImprovementInvestigation).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  improvementProposals: Schema.Array(FactoryImprovementProposal).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  improvementDecisions: Schema.Array(FactoryImprovementDecision).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  improvementFeedback: Schema.Array(FactoryImprovementFeedback).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  improvementRecurrences: Schema.Array(FactoryImprovementRecurrence).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  improvementEvidenceReads: Schema.Array(FactoryImprovementEvidenceRead).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   schedulingConfigurations: Schema.Array(FactorySchedulingConfiguration).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -359,6 +402,22 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  FactoryImprovementCommand,
+  Schema.Struct({
+    type: Schema.Literal("system.create"),
+    commandId: CommandId,
+    workspaceProjectId: ProjectId,
+    name: Schema.optionalKey(TrimmedNonEmptyString),
+    modelSelection: ModelSelection,
+    workflow: FactoryWorkflowVersion,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("system.retry"),
+    commandId: CommandId,
+    managerId: ThreadId,
+    modelSelection: Schema.optionalKey(ModelSelection),
+    workflow: Schema.optionalKey(FactoryWorkflowVersion),
+  }),
   FactorySchedulingCommand,
   FactoryRetroCommand,
   FactoryDeliveryCommand,
@@ -463,6 +522,21 @@ export const FactoryDispatchInput = Schema.Struct({ command: FactoryCommand });
 export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
+  FactoryImprovementHostCommand,
+  Schema.Struct({
+    type: Schema.Literal("system.launch.recorded"),
+    commandId: CommandId,
+    managerId: ThreadId,
+    profileId: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("system.launch.failed"),
+    commandId: CommandId,
+    managerId: ThreadId,
+    profileId: TrimmedNonEmptyString,
+    threadCreated: Schema.Boolean,
+    reason: TrimmedNonEmptyString,
+  }),
   FactorySchedulingHostCommand,
   FactoryRetroHostCommand,
   FactoryDeliveryHostCommand,
@@ -526,6 +600,7 @@ export const FactoryThreadLaunchIntent = Schema.Struct({
 });
 export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
 export const FactoryEffectIntent = Schema.Union([
+  FactoryImprovementEffectIntent,
   FactorySchedulingEffectIntent,
   FactoryRetroEffectIntent,
   FactoryDeliveryEffectIntent,
@@ -544,6 +619,11 @@ export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 
 export const FactoryCommandResult = Schema.Struct({
   revision: NonNegativeInt,
+  intakeId: Schema.optionalKey(TrimmedNonEmptyString),
+  batchId: Schema.optionalKey(TrimmedNonEmptyString),
+  investigationId: Schema.optionalKey(TrimmedNonEmptyString),
+  proposalId: Schema.optionalKey(TrimmedNonEmptyString),
+  proposalRevision: Schema.optionalKey(TrimmedNonEmptyString),
   candidateId: Schema.optionalKey(TrimmedNonEmptyString),
   retroId: Schema.optionalKey(TrimmedNonEmptyString),
   findingId: Schema.optionalKey(TrimmedNonEmptyString),

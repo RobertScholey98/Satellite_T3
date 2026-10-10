@@ -1,5 +1,11 @@
 import {
   FactoryCommandResult,
+  FactoryImprovementSnapshot,
+  FactoryImprovementRecordRead,
+  FactoryImprovementRecord,
+  FactoryInvestigationRead,
+  FactoryInvestigationEvidence,
+  NonNegativeInt,
   FactoryDispatchInput,
   FactoryError,
   FactorySnapshot,
@@ -47,6 +53,33 @@ export const FactoryPreviewSnapshotTool = Tool.make("factory_preview_snapshot", 
 export const FactoryPreviewSnapshotToolkit = Toolkit.make(FactoryPreviewSnapshotTool);
 
 export const FactoryToolkit = Toolkit.make(
+  Tool.make("factory_improvement_record", {
+    description:
+      "Recover the complete durable text of a named investigation, exact proposal revision or decision, usefulness feedback, or recurrence. System-manager only. Bounded pages preserve a digest; use nextCursor until complete. This reads the shared improvement record, never its source threads or files.",
+    parameters: FactoryImprovementRecordRead,
+    success: FactoryImprovementRecord,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }).annotate(Tool.Readonly, true),
+  Tool.make("factory_improvement_snapshot", {
+    description:
+      "Read bounded finding summaries, named investigations, and proposal summaries for the system manager. No project transcripts are included. Use nextCursor for subsequent pages and factory_investigation_read for linked source evidence.",
+    parameters: Schema.Struct({ cursor: Schema.optionalKey(NonNegativeInt) }),
+    success: FactoryImprovementSnapshot,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }).annotate(Tool.Readonly, true),
+  Tool.make("factory_investigation_read", {
+    description:
+      "Read one bounded page of host-verified evidence attached to a finding in an open named investigation. Only the system manager may read; source assignment, actual thread records and immutable references are verified. Returns a digest and nextCursor; never accepts paths or URLs.",
+    parameters: FactoryInvestigationRead,
+    success: FactoryInvestigationEvidence,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }).annotate(Tool.Readonly, true),
   Tool.make("factory_ticket_read", {
     description:
       "Read the full current ticket and its detail digest before preparing a scheduling candidate. Managers can read their project's candidates; implementation and retrospective teams can read only their assignment's ticket. Scope is derived from authenticated thread identity.",
