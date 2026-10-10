@@ -1,3 +1,4 @@
+import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import {
   FactoryControlId,
   FactoryError,
@@ -56,6 +57,11 @@ export const factoryExecutionBlocked = (
       state.retros,
     );
   const assignment = state.assignments.find((entry) => entry.id === member.assignmentId);
+  const incident =
+    assignment && !retrospective
+      ? factoryIncidentBlocked(state, assignment.id, "execution")
+      : undefined;
+  if (incident) return incident;
   const completion = assignment?.completion;
   if (!retrospective && completion !== undefined && completion.phase !== "collecting")
     return "Implementation has concluded. Its retrospective uses a separate read-only conversation.";

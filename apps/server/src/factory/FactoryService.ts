@@ -54,6 +54,8 @@ import { FactoryImprovementEffects } from "./FactoryImprovementEffects.ts";
 import type { FactoryImprovementContext } from "./FactoryImprovements.ts";
 import type { FactorySchedulingContext } from "./FactoryScheduling.ts";
 import * as FactoryWorkflowEffects from "./FactoryWorkflowEffects.ts";
+import * as FactoryCollaborationEffects from "./FactoryCollaborationEffects.ts";
+import { scopeFactoryCollaboration } from "./FactoryCollaborationReadModel.ts";
 import type { FactoryWorkflowContext } from "./FactoryWorkflow.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 import { ServerActivation, forkParked } from "../serverActivation.ts";
@@ -89,6 +91,7 @@ const scopedSnapshot =
       ? snapshot
       : {
           ...snapshot,
+          ...scopeFactoryCollaboration(snapshot, { kind: "project", projectId: query.projectId }),
           sharedRepositories: snapshot.sharedRepositories.filter(
             (entry) => entry.projectId === query.projectId,
           ),
@@ -240,6 +243,9 @@ export const layer = Layer.effect(
     const scheduling = yield* Effect.serviceOption(FactorySchedulingEffects);
     const improvements = yield* Effect.serviceOption(FactoryImprovementEffects);
     const workflows = yield* Effect.serviceOption(FactoryWorkflowEffects.FactoryWorkflowEffects);
+    const collaboration = yield* Effect.serviceOption(
+      FactoryCollaborationEffects.FactoryCollaborationEffects,
+    );
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -384,6 +390,7 @@ export const layer = Layer.effect(
                       : []),
                     `Approved exact models: ${renderJson(assignment.modelPolicy)}. Your selected model: ${renderJson(assignment.modelChoice)}. Choose approved models according to task complexity. Native subagent tools are disabled; use delegate_task for your internal team. Every descendant remains inside this assignment's boundary.`,
                     "Raise an out-of-scope dependency or structural problem when discovered. Do not change protected controls without a separately authorized rule-change assignment. The manager coordinates priorities; it does not review your PR.",
+                    "For an accepted cross-project request, coordinate directly with its current peer lead through collaboration.message.send. Record shared technical changes with collaboration.plan.propose and acknowledge the same plan within each team's existing scope. Changes to outcomes, compatibility, grants or resource limits require a collaboration.decision.raise for the owning managers and human. Peer coordination does not grant access to unrelated threads or source files.",
                     "Before implementation, declare concrete UI impact with delivery.impact.declare: journeys, navigation, layout, shared components, classification, and evidence. Changed user flows physically hold implementation. While held, use the read-only planning context to submit a concrete markdown or HTML flow via delivery.flow.submit; wait for the human's digest-bound decision and host release before coding. Flow submission records its own approval wait; do not add an assignment.wait for that same decision. The host resumes you automatically after approval and physical release, or after requested changes so you can revise the proposal.",
                     "For PR work use the host-owned delivery process: delivery.capture with exact selected paths, commit message, and grant epoch freezes the full publication tree and runs protected checks. delivery.review.request starts an independent ordinary review thread against that immutable tree. Follow its findings; changed work needs a new capture and review. For substantial or major UI, the reviewer must exercise the isolated candidate app and record real journeys and screenshots. The project needs a human-approved preview configuration and screenshot-publication permission.",
                     "After candidate checks and independent review pass, delivery.publish creates or updates and links the exact PR. delivery.ready reconciles hosting checks and seals the evidence. Wait for the human when requested; discuss corrections directly with them. delivery.merge requests an exact-head conditional merge only when authorized. A queued or unknown hosting response is not a confirmed merge. Use delivery.retry for a visible delivery failure, preserving its reserved operation. Never use generic PR tools to bypass these gates.",
@@ -397,6 +404,7 @@ export const layer = Layer.effect(
                     `You are the engineering manager for project ${intent.projectId}. Your durable manager identity is ${intent.managerId}. The human is your manager.`,
                     `Onboarding lead ${assignment.threadId} owns discovery assignment ${assignment.id}. Use factory_snapshot to inspect its findings and waits. A read-only tracked snapshot is mounted at /workspace; owned workflow ${intent.workflow.revision} is at /workflow.`,
                     "You coordinate scoped implementation teams and project priorities. Implementation leads own code, internal reviews, verification, and the complete PR process. You do not implement or review their PRs. You and the system manager are peers with different remits.",
+                    "Use factory_collaboration_directory to find a peer manager, then collaboration.request.create to request another project's work against an existing assignment. The receiving manager owns acceptance and commissions its own team with collaboration.request.respond. Defer or decline only with a concrete reason and alternative or reconsideration condition. Raise a single collaboration.decision.raise when existing priorities or authority cannot settle a trade-off. An incident does not stop unrelated work; use incident.restrict only for concrete conflicting assignments and activity, with a reason and resume condition, then incident.release when resolved.",
                     "Currently onboarding is in progress. Acknowledge the assignment briefly, then wait for an actionable event or the human. Do not poll, start implementation, or attempt to broaden execution permissions. Unresolved permissions and project decisions must remain visible.",
                     "When factory_snapshot shows an active manager with an approved boundary and the human requests work, use assignment.commission to create a scoped implementation lead. Choose exact source paths and creation directories within that boundary, a completion condition, and task complexity. Omit modelSelection for the configured lead preference. authorizationMessageId may reference the direct human request, or omit it to use the latest direct human message. Discuss gaps with the human before commissioning unclear work.",
                     "For no-PR work, set scope.noPrTarget explicitly: report-received at the agreed recipient when receipt satisfies the task, otherwise human-acceptance. After confirmed delivery or cancellation with the human's reason, the host starts a read-only team retrospective and sends you its accepted report. Review the causes and owners through retro.manager.submit; you do not review the PR. Project follow-ups become triage tickets, while workflow-wide decisions stay with the human. No process change is a normal result.",
@@ -894,6 +902,51 @@ export const layer = Layer.effect(
         }
       }),
     );
+    const collaborationWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      Effect.gen(function* () {
+        if (Option.isNone(collaboration)) return;
+        yield* collaboration.value.reconcile.pipe(
+          Effect.catch((cause) =>
+            Effect.logError("Factory collaboration reconciliation remains pending", { cause }),
+          ),
+        );
+        const visited = new Set<string>();
+        for (;;) {
+          const pending = (yield* store.pending).filter(
+            (entry) =>
+              !visited.has(entry.id) &&
+              (entry.intent.type.startsWith("collaboration.") ||
+                entry.intent.type.startsWith("incident.")),
+          );
+          if (!pending.length) return;
+          for (const entry of pending) {
+            visited.add(entry.id);
+            const revision = (yield* store.snapshot).revision;
+            yield* collaboration.value.handle(entry).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Factory collaboration work remains pending", {
+                  effectId: entry.id,
+                  cause,
+                }),
+              ),
+            );
+            if ((yield* store.snapshot).revision !== revision) {
+              workerProgress += 1;
+              visited.clear();
+              yield* collaboration.value.reconcile.pipe(
+                Effect.catch((cause) =>
+                  Effect.logError("Factory collaboration reconciliation remains pending", {
+                    cause,
+                  }),
+                ),
+              );
+              yield* worker.enqueue(undefined);
+              yield* controlWorker.enqueue(undefined);
+            }
+          }
+        }
+      }),
+    );
     const wake = Effect.all(
       [
         worker.enqueue(undefined),
@@ -904,6 +957,7 @@ export const layer = Layer.effect(
         schedulingWorker.enqueue(undefined),
         improvementWorker.enqueue(undefined),
         workflowWorker.enqueue(undefined),
+        collaborationWorker.enqueue(undefined),
       ],
       {
         discard: true,
@@ -913,6 +967,13 @@ export const layer = Layer.effect(
     else yield* forkParked(wake);
     if (Option.isSome(scheduling)) yield* scheduling.value.watch(wake);
     if (Option.isSome(improvements)) yield* improvements.value.watch(wake);
+    if (Option.isSome(collaboration))
+      yield* forkParked(
+        store.changes.pipe(
+          Stream.changesWith((left, right) => left.revision === right.revision),
+          Stream.runForEach(() => collaborationWorker.enqueue(undefined)),
+        ),
+      );
     const drain = Effect.gen(function* () {
       for (;;) {
         const progress = workerProgress;
@@ -924,6 +985,7 @@ export const layer = Layer.effect(
         yield* schedulingWorker.drain;
         yield* improvementWorker.drain;
         yield* workflowWorker.drain;
+        yield* collaborationWorker.drain;
         if (progress === workerProgress) return;
       }
     });
@@ -1117,18 +1179,30 @@ export const layer = Layer.effect(
           command.type === "shared.work.commission" || command.type === "experiment.commission"
             ? snapshot.managers.find((entry) => entry.role === "system")
             : undefined;
+        const receiverManager =
+          command.type === "collaboration.request.respond" &&
+          command.response.kind === "accept" &&
+          command.response.support.kind === "commission"
+            ? snapshot.managers.find(
+                (manager) =>
+                  manager.id ===
+                  snapshot.crossProjectRequests.find((request) => request.id === command.requestId)
+                    ?.receiverManagerId,
+              )
+            : undefined;
         const allocation =
           command.type === "manager.create" ||
           command.type === "assignment.commission" ||
           command.type === "assignment.handover" ||
-          sharedManager !== undefined
+          sharedManager !== undefined ||
+          receiverManager !== undefined
             ? {
                 managerThreadId:
                   command.type === "manager.create"
                     ? ThreadId.make(yield* randomUuidV4)
                     : "managerId" in command
                       ? command.managerId
-                      : sharedManager!.id,
+                      : (receiverManager ?? sharedManager)!.id,
                 leadThreadId:
                   command.type === "assignment.handover"
                     ? command.threadId
@@ -1136,12 +1210,21 @@ export const layer = Layer.effect(
                 assignmentId: FactoryAssignmentId.make(yield* randomUuidV4),
               }
             : undefined;
-        if (
-          (command.type === "assignment.commission" || command.type === "assignment.handover") &&
-          command.scope.noPrTarget?.kind === "report-received"
-        ) {
-          const recipientId = command.scope.noPrTarget.recipientThreadId;
-          const manager = snapshot.managers.find((entry) => entry.id === command.managerId);
+        const reportTarget =
+          command.type === "assignment.commission" || command.type === "assignment.handover"
+            ? command.scope.noPrTarget
+            : command.type === "collaboration.request.respond" &&
+                command.response.kind === "accept" &&
+                command.response.support.kind === "commission"
+              ? command.response.support.work.scope.noPrTarget
+              : undefined;
+        if (reportTarget?.kind === "report-received") {
+          const recipientId = reportTarget.recipientThreadId;
+          const manager =
+            receiverManager ??
+            snapshot.managers.find(
+              (entry) => "managerId" in command && entry.id === command.managerId,
+            );
           const recipient = yield* threads
             .getThreadShell(recipientId)
             .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause })));
@@ -1173,6 +1256,14 @@ export const layer = Layer.effect(
         let schedulingContext: FactorySchedulingContext = {};
         let improvementContext: FactoryImprovementContext = {};
         let workflowContext: FactoryWorkflowContext = {};
+        if (
+          Option.isNone(collaboration) &&
+          (command.type.startsWith("collaboration.") || command.type.startsWith("incident."))
+        )
+          return yield* new FactoryError({
+            code: "execution-unavailable",
+            detail: "This environment has no qualified cross-project coordination runtime.",
+          });
         if (Option.isSome(workflows))
           workflowContext = yield* workflows.value.context(actor, command);
         else if (
@@ -1447,6 +1538,10 @@ export const layer = Layer.effect(
             "assignment.cancellation-reason",
             "control.retry",
             "guidance.escalate",
+            "collaboration.request.withdraw",
+            "incident.restrict",
+            "incident.release",
+            "incident.retry",
           ].includes(command.type)
         )
           return withCommand(
@@ -1454,6 +1549,14 @@ export const layer = Layer.effect(
             Effect.gen(function* () {
               const receipt = yield* store.findReceipt({ actor, command });
               if (receipt !== undefined) return receipt;
+              if (
+                Option.isNone(collaboration) &&
+                (command.type.startsWith("collaboration.") || command.type.startsWith("incident."))
+              )
+                return yield* new FactoryError({
+                  code: "execution-unavailable",
+                  detail: "This environment has no qualified cross-project coordination runtime.",
+                });
               const context: FactoryControlContext = yield* controlContext(command);
               const result = yield* store.commit({
                 actor,

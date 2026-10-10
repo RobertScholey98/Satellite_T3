@@ -31,6 +31,7 @@ import * as FactoryPublication from "./FactoryPublication.ts";
 import * as FactoryPreviewPublication from "./FactoryPreviewPublication.ts";
 import * as FactorySource from "./FactorySource.ts";
 import { FactoryStore } from "./FactoryStore.ts";
+import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 
 const ReservationRecord = Schema.Struct({
@@ -451,13 +452,15 @@ const make = Effect.gen(function* () {
             detail: "The publication revision is no longer current.",
           });
         yield* requireRevision(current, revision);
-        const blocked = factoryExecutionBlocked(state, {
-          assignmentId: current.id,
-          managerId: current.managerId,
-          projectId: current.projectId,
-          threadId: current.threadId,
-          ancestorThreadIds: [],
-        });
+        const blocked =
+          factoryIncidentBlocked(state, assignment.id, "delivery") ??
+          factoryExecutionBlocked(state, {
+            assignmentId: current.id,
+            managerId: current.managerId,
+            projectId: current.projectId,
+            threadId: current.threadId,
+            ancestorThreadIds: [],
+          });
         if (blocked) return yield* new FactoryError({ code: "permission-denied", detail: blocked });
       });
       const pinned = revision.publication;

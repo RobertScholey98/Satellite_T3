@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   FactoryAssignmentId,
+  FactoryControlId,
   FactorySourceId,
   ProjectId,
   ProviderInstanceId,
@@ -28,6 +29,7 @@ import {
 } from "./FactorySource.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import { FactoryStore } from "./FactoryStore.ts";
+import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
@@ -256,6 +258,119 @@ it.effect(
         );
         assert.equal(assigned.requiresSkillAuthoring, true);
         state = { ...state, assignments: [{ ...assignment, qualification: prepared }] };
+        const unrelated = {
+          ...assignment,
+          id: FactoryAssignmentId.make("unrelated"),
+          threadId: ThreadId.make("unrelated-lead"),
+        };
+        state = { ...state, assignments: [...state.assignments, unrelated] };
+        const unrelatedQualification = yield* service.prepare({
+          assignmentId: unrelated.id,
+          threadId: unrelated.threadId,
+          boundaryId: boundary.id,
+          grant: unrelated.grant!,
+          startingSourceId: source.source.id,
+        });
+        assert.equal(unrelatedQualification.status, "qualified");
+        if (unrelatedQualification.status !== "qualified") return;
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === unrelated.id ? { ...entry, qualification: unrelatedQualification } : entry,
+          ),
+        };
+        const unrelatedProfile = yield* fs
+          .readFileString(
+            path.join(
+              config.stateDir,
+              "factory",
+              "execution",
+              unrelatedQualification.profileId,
+              "profile.json",
+            ),
+          )
+          .pipe(Effect.flatMap(decodeProfile));
+        state = {
+          ...state,
+          incidentRestrictions: ["incident-a", "incident-b"].map((id) => ({
+            id,
+            managerId,
+            projectId,
+            assignmentIds: [assignment.id],
+            activity: "execution" as const,
+            reason: "Production incident",
+            resumeCondition: { kind: "assignment-concluded" as const, assignmentId: assignment.id },
+            phase: "active" as const,
+            stop: { phase: "confirmed" as const },
+            resume: null,
+            createdAt: now,
+            updatedAt: now,
+          })),
+        };
+        for (const restriction of state.incidentRestrictions)
+          yield* service.setIncidentHold({
+            assignmentId: assignment.id,
+            restrictionId: restriction.id,
+            held: true,
+          });
+        assert.equal(
+          (yield* assertFactoryProfileActive(assigned).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        state = {
+          ...state,
+          controls: [
+            {
+              kind: "project-pause",
+              id: FactoryControlId.make("project-pause"),
+              projectId,
+              generation: 1,
+              status: "active",
+              stop: { status: "confirmed", stoppedAt: now },
+              requestedAt: now,
+              updatedAt: now,
+            },
+          ],
+        };
+        for (const owner of [assignment, unrelated])
+          yield* service.suspend({ assignmentId: owner.id, generation: 1 });
+        for (const owner of [assignment, unrelated])
+          yield* service.resume({ assignmentId: owner.id, generation: 1 });
+        state = { ...state, controls: [] };
+        yield* assertFactoryProfileActive(unrelatedProfile);
+        assert.equal(
+          (yield* assertFactoryProfileActive(assigned).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.equal(
+          (yield* service
+            .verify({ assignmentId: assignment.id, expectedEpoch: 0 })
+            .pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        state = {
+          ...state,
+          incidentRestrictions: state.incidentRestrictions.map((entry) => ({
+            ...entry,
+            phase: "releasing" as const,
+          })),
+        };
+        yield* service.setIncidentHold({
+          assignmentId: assignment.id,
+          restrictionId: "incident-a",
+          held: false,
+        });
+        assert.equal(
+          (yield* assertFactoryProfileActive(assigned).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        yield* service.setIncidentHold({
+          assignmentId: assignment.id,
+          restrictionId: "incident-b",
+          held: false,
+        });
+        yield* assertFactoryProfileActive(assigned);
+        state = { ...state, incidentRestrictions: [] };
         const integrity = yield* service.verify({ assignmentId: assignment.id, expectedEpoch: 0 });
         assert.deepEqual(
           integrity.gates.map((gate) => gate.id),

@@ -1,4 +1,14 @@
 import {
+  FactoryCollaborationCommand,
+  FactoryCollaborationHostCommand,
+  FactoryCollaborationEffectIntent,
+  FactoryCrossProjectRequest,
+  FactoryCollaborationMessage,
+  FactoryCollaborationPlan,
+  FactoryCollaborationDecision,
+  FactoryIncidentRestriction,
+} from "./factoryCollaboration.ts";
+import {
   FactorySharedRepository,
   FactorySharedWork,
   FactoryExperimentConfiguration,
@@ -296,6 +306,21 @@ export const FactoryAssignment = Schema.Struct({
 export type FactoryAssignment = typeof FactoryAssignment.Type;
 
 export const FactorySnapshot = Schema.Struct({
+  crossProjectRequests: Schema.Array(FactoryCrossProjectRequest).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  collaborationMessages: Schema.Array(FactoryCollaborationMessage).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  collaborationPlans: Schema.Array(FactoryCollaborationPlan).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  collaborationDecisions: Schema.Array(FactoryCollaborationDecision).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  incidentRestrictions: Schema.Array(FactoryIncidentRestriction).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   sharedRepositories: Schema.Array(FactorySharedRepository).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -395,6 +420,7 @@ export const FactoryQuery = Schema.Struct({
 export type FactoryQuery = typeof FactoryQuery.Type;
 
 export const FactoryCommand = Schema.Union([
+  FactoryCollaborationCommand,
   FactoryWorkflowCommand,
   FactoryImprovementCommand,
   Schema.Struct({
@@ -516,6 +542,7 @@ export const FactoryDispatchInput = Schema.Struct({ command: FactoryCommand });
 export type FactoryDispatchInput = typeof FactoryDispatchInput.Type;
 
 export const FactoryHostCommand = Schema.Union([
+  FactoryCollaborationHostCommand,
   FactoryWorkflowHostCommand,
   FactoryImprovementHostCommand,
   Schema.Struct({
@@ -595,6 +622,7 @@ export const FactoryThreadLaunchIntent = Schema.Struct({
 });
 export type FactoryThreadLaunchIntent = typeof FactoryThreadLaunchIntent.Type;
 export const FactoryEffectIntent = Schema.Union([
+  FactoryCollaborationEffectIntent,
   FactoryWorkflowEffectIntent,
   FactoryImprovementEffectIntent,
   FactorySchedulingEffectIntent,
@@ -614,6 +642,11 @@ export const FactoryEffectIntent = Schema.Union([
 export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 
 export const FactoryCommandResult = Schema.Struct({
+  requestId: Schema.optionalKey(TrimmedNonEmptyString),
+  collaborationMessageId: Schema.optionalKey(TrimmedNonEmptyString),
+  planId: Schema.optionalKey(TrimmedNonEmptyString),
+  decisionId: Schema.optionalKey(TrimmedNonEmptyString),
+  restrictionId: Schema.optionalKey(TrimmedNonEmptyString),
   repositoryId: Schema.optionalKey(TrimmedNonEmptyString),
   workId: Schema.optionalKey(TrimmedNonEmptyString),
   experimentId: Schema.optionalKey(TrimmedNonEmptyString),

@@ -607,6 +607,91 @@ const scenario = <E, R>(
 
 describe("FactoryMcpGuard", () => {
   it.effect(
+    "exposes only peer identities to managers and keeps accepted collaboration out of generic tools",
+    () =>
+      scenario(({ call, store, flags }) =>
+        Effect.gen(function* () {
+          const state = yield* store.snapshot;
+          const directory = yield* call("factory_collaboration_directory", {}, managerId);
+          assert.deepEqual(directory.structuredContent, {
+            entries: [
+              {
+                managerId: "manager-api",
+                name: state.managers.find((entry) => entry.id === "manager-api")!.name,
+                role: "project",
+                projectId: "api",
+                status: "onboarding",
+              },
+            ],
+            nextCursor: null,
+          });
+          for (const caller of [leadId, childId, grandchildId, unmanagedId] as const)
+            assert.isTrue((yield* call("factory_collaboration_directory", {}, caller)).isError);
+          const payload = yield* encodeSnapshot({
+            ...state,
+            crossProjectRequests: [
+              {
+                id: "peer-request",
+                origin: { kind: "assignment", assignmentId },
+                originManagerId: managerId,
+                originThreadId: leadId,
+                originalLeadThreadId: leadId,
+                receiverManagerId: ThreadId.make("manager-api"),
+                outcome: "Add API",
+                acceptanceConditions: "Frontend works",
+                compatibility: "Existing callers supported",
+                generation: 1,
+                lifecycle: {
+                  phase: "accepted",
+                  notifiedConclusionId: null,
+                  support: { assignmentId: otherAssignmentId, dedicated: true },
+                },
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+            collaborationMessages: [
+              {
+                id: "peer-message",
+                requestId: "peer-request",
+                fromAssignmentId: assignmentId,
+                toAssignmentId: otherAssignmentId,
+                senderThreadId: leadId,
+                text: "Agreed API detail",
+                createdAt: now,
+                delivery: { phase: "pending" },
+              },
+            ],
+          });
+          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json=${payload} WHERE id=1`;
+          const lead = yield* decodeFactorySnapshot(
+            (yield* call("factory_snapshot", {}, leadId)).structuredContent,
+          );
+          assert.deepEqual(
+            lead.crossProjectRequests.map((entry) => entry.id),
+            ["peer-request"],
+          );
+          assert.deepEqual(
+            lead.collaborationMessages.map((entry) => entry.id),
+            ["peer-message"],
+          );
+          assert.deepEqual(
+            lead.assignments.map((entry) => entry.id),
+            [assignmentId],
+          );
+          const child = yield* decodeFactorySnapshot(
+            (yield* call("factory_snapshot", {}, childId)).structuredContent,
+          );
+          assert.isEmpty(child.collaborationMessages);
+          for (const name of ["t3_thread_send", "t3_thread_read", "t3_thread_wait"])
+            assert.isTrue(
+              (yield* call(name, { threadId: ThreadId.make("lead-api") }, leadId)).isError,
+            );
+          assert.equal(flags.hostCalls, 0);
+        }),
+      ),
+  );
+  it.effect(
     "scopes shared teams to registered work and denies experiment publication across descendants",
     () =>
       scenario(

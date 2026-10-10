@@ -36,6 +36,11 @@ const Improvements = lazy(() =>
 const Workflow = lazy(() =>
   import("./FactoryWorkflowDialog").then((module) => ({ default: module.FactoryWorkflowDialog })),
 );
+const Collaboration = lazy(() =>
+  import("./FactoryCollaborationDialog").then((module) => ({
+    default: module.FactoryCollaborationDialog,
+  })),
+);
 
 export function FactorySystemManagerRow({
   environment,
@@ -56,7 +61,9 @@ export function FactorySystemManagerRow({
   canOpenThread: (id: ThreadId) => boolean;
   onOpenThread: (id: ThreadId) => void;
 }) {
-  const [dialog, setDialog] = useState<"setup" | "improvements" | "workflow" | null>(null);
+  const [dialog, setDialog] = useState<
+    "setup" | "improvements" | "workflow" | "collaboration" | null
+  >(null);
   const settingsScope = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
   const manager = environment.data?.managers.find((entry) => entry.role === "system");
   const pause = manager ? factoryManagerPause(environment.data, manager.id) : undefined;
@@ -118,6 +125,9 @@ export function FactorySystemManagerRow({
               </Button>
               <Button size="xs" variant="ghost" onClick={() => setDialog("workflow")}>
                 Workflow delivery
+              </Button>
+              <Button size="xs" variant="ghost" onClick={() => setDialog("collaboration")}>
+                Project collaboration
               </Button>
               {manager.status === "blocked" ? (
                 <Button
@@ -210,6 +220,15 @@ export function FactorySystemManagerRow({
         </div>
       )}
       <Suspense fallback={null}>
+        {dialog === "collaboration" && manager ? (
+          <Collaboration
+            environment={environment}
+            manager={manager}
+            canOpenThread={canOpenThread}
+            onOpenThread={openThread}
+            onClose={() => setDialog(null)}
+          />
+        ) : null}
         {dialog === "workflow" && manager ? (
           <Workflow
             environment={environment}

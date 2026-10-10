@@ -18,6 +18,7 @@ import * as Result from "effect/Result";
 import { FactoryPreviewExecution } from "./FactoryPreviewExecution.ts";
 import { FactoryPreviewEvidence } from "./FactoryPreviewEvidence.ts";
 import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 
 const previewIsCurrent = (
@@ -37,6 +38,7 @@ const previewIsCurrent = (
     review !== undefined &&
     ["pending", "running"].includes(review.status) &&
     (!assignment.delivery?.flow || assignment.delivery.flow.status === "released") &&
+    !factoryIncidentBlocked(state, assignment.id, "preview") &&
     !factoryExecutionBlocked(state, {
       threadId: preview.threadId,
       assignmentId: assignment.id,
@@ -162,8 +164,9 @@ export const layer = Layer.effect(
           assignment.status === "complete" ||
           assignment.delivery?.currentRevisionId !== revision.id;
         if (
-          intent.type === "delivery.preview.start" &&
-          !obsolete &&
+          (intent.type === "delivery.preview.start" &&
+            !obsolete &&
+            factoryIncidentBlocked(state, assignment.id, "preview")) ||
           factoryExecutionBlocked(state, {
             threadId: preview.threadId,
             assignmentId: assignment.id,

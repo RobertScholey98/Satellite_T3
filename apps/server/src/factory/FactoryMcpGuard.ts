@@ -9,6 +9,7 @@ import {
   type FactoryCommandResult,
   type FactoryError,
   type FactorySnapshot,
+  type FactoryCollaborationDirectoryEntry,
   type IssueDetail,
   ThreadId,
 } from "@t3tools/contracts";
@@ -32,6 +33,7 @@ import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
+import { scopeFactoryCollaboration } from "./FactoryCollaborationReadModel.ts";
 
 import * as FactoryImprovementEvidence from "./FactoryImprovementEvidence.ts";
 
@@ -46,6 +48,16 @@ export class FactoryMcpGuard extends Context.Service<
     readonly snapshot: (
       invocation: McpInvocationScope,
     ) => Effect.Effect<FactorySnapshot, OrchestratorMcpFailure | FactoryError>;
+    readonly collaborationDirectory: (
+      invocation: McpInvocationScope,
+      cursor?: number,
+    ) => Effect.Effect<
+      {
+        readonly entries: readonly FactoryCollaborationDirectoryEntry[];
+        readonly nextCursor: number | null;
+      },
+      OrchestratorMcpFailure | FactoryError
+    >;
     readonly improvementSnapshot: (
       invocation: McpInvocationScope,
       cursor?: number,
@@ -159,6 +171,7 @@ const make = Effect.gen(function* () {
               "factory_investigation_read",
               "factory_dispatch",
               "factory_snapshot",
+              "factory_collaboration_directory",
               "t3_thread_read",
               "t3_thread_send",
               "t3_thread_wait",
@@ -177,6 +190,7 @@ const make = Effect.gen(function* () {
               "factory_investigation_read",
               "factory_dispatch",
               "factory_snapshot",
+              "factory_collaboration_directory",
             ].includes(toolName)
           )
             return;
@@ -248,6 +262,11 @@ const make = Effect.gen(function* () {
         }
         if (
           toolName !== "factory_snapshot" &&
+          !(
+            toolName === "factory_collaboration_directory" &&
+            member.assignment === undefined &&
+            invocation.thread?.threadId === member.manager.threadId
+          ) &&
           toolName !== "factory_ticket_read" &&
           toolName !== "factory_dispatch" &&
           !(
@@ -293,6 +312,16 @@ const make = Effect.gen(function* () {
         ]);
         return {
           ...snapshot,
+          ...scopeFactoryCollaboration(
+            snapshot,
+            assignment === undefined
+              ? { kind: "manager", managerId: manager.id }
+              : {
+                  kind: "assignment",
+                  assignmentId: assignment.id,
+                  includeLeadCommunication: invocation.thread?.threadId === assignment.threadId,
+                },
+          ),
           improvementConfigurations: [],
           improvementIntakes: [],
           improvementBatches: [],
@@ -539,6 +568,32 @@ const make = Effect.gen(function* () {
           nextCursor: nextOffset < serialized.length ? { offset: nextOffset, digest } : null,
         };
       }),
+    collaborationDirectory: (invocation, cursor = 0) =>
+      Effect.gen(function* () {
+        const member = yield* managedCaller(invocation);
+        if (
+          member.assignment !== undefined ||
+          invocation.thread?.threadId !== member.manager.threadId ||
+          !Number.isInteger(cursor) ||
+          cursor < 0
+        )
+          return yield* denied();
+        yield* controls.assertExecution(member.manager.threadId).pipe(Effect.mapError(unavailable));
+        const entries = (yield* store.snapshot).managers
+          .filter((entry) => entry.id !== member.manager.id)
+          .map((entry) => ({
+            managerId: entry.id,
+            name: entry.name,
+            role: entry.role,
+            projectId: entry.projectId,
+            status: entry.status,
+          }));
+        const page = entries.slice(cursor, cursor + 30);
+        return {
+          entries: page,
+          nextCursor: cursor + page.length < entries.length ? cursor + page.length : null,
+        };
+      }),
     readInvestigation: (invocation, input) =>
       Effect.gen(function* () {
         const member = yield* managedCaller(invocation);
@@ -605,6 +660,9 @@ const make = Effect.gen(function* () {
             "assignment.recovery.replan",
             "assignment.recovery.escalate",
             "finding.escalate",
+            "collaboration.request.create",
+            "collaboration.request.withdraw",
+            "collaboration.decision.raise",
           ].includes(command.type)
         )
           return yield* denied();

@@ -1,4 +1,8 @@
 import {
+  decideFactoryCollaboration,
+  reconcileFactoryRequestCancellation,
+} from "./FactoryCollaboration.ts";
+import {
   decideFactoryWorkflow,
   effectiveFactoryWorkflow,
   type FactoryWorkflowContext,
@@ -81,6 +85,11 @@ export interface FactoryDecision {
 
 export const initialFactorySnapshot = (): FactorySnapshot => ({
   revision: 0,
+  crossProjectRequests: [],
+  collaborationMessages: [],
+  collaborationPlans: [],
+  collaborationDecisions: [],
+  incidentRestrictions: [],
   sharedRepositories: [],
   sharedWorks: [],
   experimentConfigurations: [],
@@ -309,6 +318,8 @@ export function decide(
       }),
     );
   }
+  const collaborationDecision = decideFactoryCollaboration(input);
+  if (collaborationDecision !== undefined) return collaborationDecision;
   const workflowDecision = decideFactoryWorkflow(input);
   if (workflowDecision !== undefined) return workflowDecision;
   if (input.command.type === "workflow.models.apply") {
@@ -397,7 +408,10 @@ export function decide(
       );
   }
   const controlDecision = decideFactoryControls(input);
-  if (controlDecision !== undefined) return controlDecision;
+  if (controlDecision !== undefined)
+    return Result.map(controlDecision, (value) =>
+      reconcileFactoryRequestCancellation(value, input.now),
+    );
   const schedulingDecision = decideFactoryScheduling(input);
   if (schedulingDecision !== undefined) return schedulingDecision;
   const retroDecision = decideFactoryRetros(input);

@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
 import { stableStringify } from "@t3tools/shared/relaySigning";
+import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 import { factoryPathWithin, factoryRelativePath } from "./FactoryBoundaryPaths.ts";
 import { constrainAssignmentPolicy, resolveManagerPolicy } from "./FactoryPolicy.ts";
@@ -105,13 +106,15 @@ export function factoryDeliveryReadiness(
     reasons.push(
       "The candidate was prepared under a different source, boundary, workflow, or grant.",
     );
-  const blocked = factoryExecutionBlocked(state, {
-    threadId: assignment.threadId,
-    managerId: assignment.managerId,
-    projectId: assignment.projectId,
-    assignmentId: assignment.id,
-    ancestorThreadIds: [],
-  });
+  const blocked =
+    factoryIncidentBlocked(state, assignment.id, "delivery") ??
+    factoryExecutionBlocked(state, {
+      threadId: assignment.threadId,
+      managerId: assignment.managerId,
+      projectId: assignment.projectId,
+      assignmentId: assignment.id,
+      ancestorThreadIds: [],
+    });
   if (blocked) reasons.push(blocked);
   if (assignment.wait && assignment.wait.kind !== "review")
     reasons.push(`The assignment is waiting on ${assignment.wait.kind} before delivery.`);

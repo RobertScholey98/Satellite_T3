@@ -88,3 +88,5 @@ export * from "./factoryImprovementEvidence.ts";
 export * from "./factoryImprovementSnapshot.ts";
 
 export * from "./factoryWorkflow.ts";
+
+export * from "./factoryCollaboration.ts";

@@ -88,6 +88,11 @@ const FactoryScheduleCandidates = lazy(() =>
     default: module.FactoryScheduleCandidates,
   })),
 );
+const FactoryCollaborationDialog = lazy(() =>
+  import("./FactoryCollaborationDialog").then((module) => ({
+    default: module.FactoryCollaborationDialog,
+  })),
+);
 
 const managerStatusLabels = {
   onboarding: "Onboarding",
@@ -133,6 +138,7 @@ export function FactorySidebar({
   const [controlsManagerKey, setControlsManagerKey] = useState<string | null>(null);
   const [deliveryManagerKey, setDeliveryManagerKey] = useState<string | null>(null);
   const [schedulingManagerKey, setSchedulingManagerKey] = useState<string | null>(null);
+  const [collaborationManagerKey, setCollaborationManagerKey] = useState<string | null>(null);
   const [policyTarget, setPolicyTarget] = useState<{
     readonly environmentId: EnvironmentId;
     readonly managerId: ThreadId | null;
@@ -301,6 +307,7 @@ export function FactorySidebar({
   const controlsEntry = entries.find((entry) => entry.key === controlsManagerKey);
   const deliveryEntry = entries.find((entry) => entry.key === deliveryManagerKey);
   const schedulingEntry = entries.find((entry) => entry.key === schedulingManagerKey);
+  const collaborationEntry = entries.find((entry) => entry.key === collaborationManagerKey);
   const boundaryEntry = entries.find((entry) => entry.key === boundaryManagerKey);
   const boundaryReport = boundaryEntry?.assignments.find(
     (assignment) => assignment.report !== null,
@@ -703,6 +710,13 @@ export function FactorySidebar({
                           >
                             Work queue
                           </Button>
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            onClick={() => setCollaborationManagerKey(key)}
+                          >
+                            Project collaboration
+                          </Button>
                           {manager.boundaryId ? (
                             <>
                               <Button
@@ -768,6 +782,30 @@ export function FactorySidebar({
         </div>
       ) : null}
       <Suspense fallback={null}>
+        {collaborationEntry ? (
+          <FactoryCollaborationDialog
+            key={collaborationEntry.key}
+            environment={collaborationEntry.environment}
+            manager={collaborationEntry.manager}
+            onClose={() => setCollaborationManagerKey(null)}
+            canOpenThread={(threadId) =>
+              threadUnavailableReason(
+                "created",
+                threadsByKey.get(
+                  scopedThreadKey(
+                    scopeThreadRef(collaborationEntry.environment.environmentId, threadId),
+                  ),
+                ),
+              ) === null
+            }
+            onOpenThread={(threadId) => {
+              setCollaborationManagerKey(null);
+              onThreadActivate(
+                scopeThreadRef(collaborationEntry.environment.environmentId, threadId),
+              );
+            }}
+          />
+        ) : null}
         {schedulingEntry ? (
           <FactoryScheduleCandidates
             key={schedulingEntry.key}

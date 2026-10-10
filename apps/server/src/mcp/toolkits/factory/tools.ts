@@ -9,6 +9,7 @@ import {
   FactoryDispatchInput,
   FactoryError,
   FactorySnapshot,
+  FactoryCollaborationDirectoryEntry,
   OrchestratorMcpFailure,
   FactoryPreviewActionInput,
   FactoryPreviewActionResult,
@@ -53,6 +54,18 @@ export const FactoryPreviewSnapshotTool = Tool.make("factory_preview_snapshot", 
 export const FactoryPreviewSnapshotToolkit = Toolkit.make(FactoryPreviewSnapshotTool);
 
 export const FactoryToolkit = Toolkit.make(
+  Tool.make("factory_collaboration_directory", {
+    description:
+      "List a bounded page of peer manager identities for a cross-project work request. Managers only. Returns names, project identities and status, never their assignments, files, grants or transcripts. Use factory_dispatch collaboration.request.create for an owned assignment or system investigation. This directory grants no cross-project tool access.",
+    parameters: Schema.Struct({ cursor: Schema.optionalKey(NonNegativeInt) }),
+    success: Schema.Struct({
+      entries: Schema.Array(FactoryCollaborationDirectoryEntry),
+      nextCursor: Schema.NullOr(NonNegativeInt),
+    }),
+    failure,
+    failureMode: "return",
+    dependencies,
+  }).annotate(Tool.Readonly, true),
   Tool.make("factory_improvement_record", {
     description:
       "Recover the complete durable text of a named investigation, exact proposal revision or decision, usefulness feedback, or recurrence. System-manager only. Bounded pages preserve a digest; use nextCursor until complete. This reads the shared improvement record, never its source threads or files.",
@@ -124,6 +137,7 @@ export const FactoryToolkit = Toolkit.make(
   }).annotate(Tool.Readonly, true),
   Tool.make("factory_dispatch", {
     description:
+      "Cross-project support uses collaboration.request.create/respond/withdraw. System managers request application work from the application manager using an owned assignment or investigation. Current participating leads coordinate through collaboration.message.send and collaboration.plan.propose/acknowledge; generic peer thread tools stay denied. Escalate scope, compatibility, permission, resource and priority changes via collaboration.decision.raise; only the human decides its exact revision. incident.restrict/release target concrete conflicting assignments within the owning project. " +
       "Submit a factory command as this authenticated managed thread. Project managers commission scoped assignments against a human request or host-verified scheduling authority. System managers use shared.work.propose for an exact plan against an accepted proposal revision, then shared.work.commission after human authorization; enabled bounded investigations may use experiment.commission. Shared work stays in registered owned repositories, never application projects. Skill work must use writing-for-agents and its references. Leads mutate/verify only their assignment and declare required PRs with assignment.completion.plan. Experiments cannot publish PRs, merge, create tracker tickets or change adoption. After host-confirmed conclusion, the independent retro submits retro.team.submit and its manager submits retro.manager.submit. System managers record available outcomes using improvement.validation.record and can recommend standing model preferences with workflow.models.recommend. Adoption, live trials, settings and standing model application remain human-only. Report evidenced problems with finding.report; escalate shared causes with finding.escalate. followup.request creates project triage tickets without starting implementation.",
     parameters: FactoryDispatchInput,
     success: FactoryCommandResult,

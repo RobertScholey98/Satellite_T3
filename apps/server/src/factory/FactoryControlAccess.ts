@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
+import { factoryRequestParticipants } from "./FactoryCollaboration.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import {
   factoryDirectionBlocked,
@@ -175,6 +176,53 @@ const make = Effect.gen(function* () {
         code: "permission-denied",
         detail: "Independent diagnosis can report findings but cannot direct implementation work.",
       });
+    if (direction && senderThreadId != null && member.assignmentId !== undefined) {
+      const source = state.assignments.find(
+        (entry) =>
+          entry.threadId === senderThreadId ||
+          entry.previousLeadThreadIds?.includes(senderThreadId),
+      );
+      if (source && source.projectId !== member.projectId) {
+        const authorized =
+          source.threadId === senderThreadId &&
+          source.outcome === undefined &&
+          source.status !== "complete" &&
+          (source.completion === undefined || source.completion.phase === "collecting") &&
+          source.wait?.kind !== "authority" &&
+          factoryDirectionBlocked(
+            state,
+            {
+              assignmentId: source.id,
+              managerId: source.managerId,
+              projectId: source.projectId,
+              threadId: source.threadId,
+              ancestorThreadIds: [],
+            },
+            null,
+          ) === undefined &&
+          !state.controls.some(
+            (control) =>
+              control.kind === "takeover" &&
+              control.status === "active" &&
+              lineage.has(control.threadId),
+          ) &&
+          state.crossProjectRequests.some((request) => {
+            const participants = factoryRequestParticipants(state, request);
+            return (
+              participants.some((entry) => entry.id === source.id) &&
+              participants.some(
+                (entry) => entry.id === member.assignmentId && entry.threadId === threadId,
+              )
+            );
+          });
+        if (!authorized)
+          return yield* new FactoryError({
+            code: "permission-denied",
+            detail:
+              "This peer message no longer belongs to an accepted request between the current leads.",
+          });
+      }
+    }
     const reason = direction
       ? factoryDirectionBlocked(state, member, senderThreadId)
       : factoryExecutionBlocked(state, member);

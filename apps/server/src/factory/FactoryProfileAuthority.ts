@@ -35,6 +35,15 @@ export const assertFactoryProfileActive = Effect.fn("assertFactoryProfileActive"
         detail:
           "This assignment's execution grant was withdrawn. A new execution grant is required before it can resume.",
       });
+    const incidentDirectory = path.join(path.dirname(workspace.revocationPath), "incidents");
+    if (
+      (yield* fs.exists(incidentDirectory)) &&
+      (yield* fs.readDirectory(incidentDirectory)).length > 0
+    )
+      return yield* new FactoryError({
+        code: "execution-unavailable",
+        detail: "An incident restriction holds this assignment.",
+      });
     const suspensionPath = path.join(path.dirname(workspace.revocationPath), "suspension.json");
     if (yield* fs.exists(suspensionPath)) {
       const suspension = yield* fs

@@ -54,6 +54,7 @@ import { FactoryCandidateArtifact } from "./FactoryCandidate.ts";
 import * as FactoryPublication from "./FactoryPublication.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 import { factorySharedAssignmentEnabled } from "./FactoryWorkflowOwnership.ts";
+import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 
 const CapturedFile = Schema.Struct({
   path: Schema.String,
@@ -66,6 +67,11 @@ const CapturedSource = Schema.Struct({ files: Schema.Array(CapturedFile), digest
 export class FactoryBoundaryExecution extends Context.Service<
   FactoryBoundaryExecution,
   {
+    readonly setIncidentHold: (input: {
+      readonly assignmentId: FactoryAssignmentId;
+      readonly restrictionId: string;
+      readonly held: boolean;
+    }) => Effect.Effect<void, FactoryError>;
     readonly setDeliveryHold: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly threadId: ThreadId;
@@ -576,6 +582,7 @@ const make = Effect.gen(function* () {
     expectedEpoch?: number,
     resuming = false,
     preparing = false,
+    releasingSuspension = false,
   ) {
     const state = yield* store.snapshot;
     const assignment = state.assignments.find((entry) => entry.id === assignmentId);
@@ -586,6 +593,8 @@ const make = Effect.gen(function* () {
       (expectedEpoch !== undefined && assignment.grant.epoch !== expectedEpoch)
     )
       return yield* denied();
+    const incident = factoryIncidentBlocked(state, assignmentId, "execution");
+    if (incident !== undefined && !releasingSuspension) return yield* unavailable(incident);
     const migration = state.workflowMigrations.find(
       (entry) => entry.assignmentId === assignmentId && entry.lifecycle.phase !== "ready",
     );
@@ -1634,7 +1643,7 @@ const make = Effect.gen(function* () {
               "/usr/local/bin/node",
               profile.imageId,
               "-e",
-              `const fs=require('node:fs');const {spawn}=require('node:child_process');const stopped=()=>{try{return fs.existsSync('/authority/revoked.json')||(fs.existsSync('/authority/suspension.json')&&JSON.parse(fs.readFileSync('/authority/suspension.json','utf8')).state!=='resumed')||(fs.existsSync('/authority/delivery-hold.json')&&JSON.parse(fs.readFileSync('/authority/delivery-hold.json','utf8')).state==='held')}catch{return true}};if(stopped())process.exit(143);const child=spawn(${json(gate.executable)},${json(gate.args)},{stdio:'inherit'});const timer=setInterval(()=>{if(stopped()){child.kill('SIGKILL');process.exit(143)}},25);child.on('error',()=>{clearInterval(timer);process.exit(1)});child.on('exit',code=>{clearInterval(timer);process.exit(code??1)});`,
+              `const fs=require('node:fs');const {spawn}=require('node:child_process');const stopped=()=>{try{return fs.existsSync('/authority/revoked.json')||(fs.existsSync('/authority/incidents')&&fs.readdirSync('/authority/incidents').length>0)||(fs.existsSync('/authority/suspension.json')&&JSON.parse(fs.readFileSync('/authority/suspension.json','utf8')).state!=='resumed')||(fs.existsSync('/authority/delivery-hold.json')&&JSON.parse(fs.readFileSync('/authority/delivery-hold.json','utf8')).state==='held')}catch{return true}};if(stopped())process.exit(143);const child=spawn(${json(gate.executable)},${json(gate.args)},{stdio:'inherit'});const timer=setInterval(()=>{if(stopped()){child.kill('SIGKILL');process.exit(143)}},25);child.on('error',()=>{clearInterval(timer);process.exit(1)});child.on('exit',code=>{clearInterval(timer);process.exit(code??1)});`,
             ],
             timeout: gate.timeoutMs,
             maxOutputBytes: 128 * 1024,
@@ -1768,6 +1777,52 @@ const make = Effect.gen(function* () {
         ? yield* fs.readFileString(target).pipe(Effect.flatMap(decodeSuspension))
         : undefined;
     });
+  const setIncidentHold = Effect.fn("FactoryBoundaryExecution.setIncidentHold")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["setIncidentHold"]>[0]) {
+      const state = yield* store.snapshot;
+      const restriction = state.incidentRestrictions.find(
+        (entry) => entry.id === input.restrictionId,
+      );
+      if (
+        !restriction ||
+        restriction.activity !== "execution" ||
+        !restriction.assignmentIds.includes(input.assignmentId) ||
+        (input.held
+          ? restriction.phase !== "active"
+          : restriction.phase !== "releasing" || restriction.stop.phase !== "confirmed")
+      )
+        return yield* denied();
+      const profile = yield* assignmentProfile(input.assignmentId);
+      if (profile === undefined) {
+        const assignment = state.assignments.find((entry) => entry.id === input.assignmentId);
+        const boundary = state.boundaries.find(
+          (entry) => entry.id === assignment?.grant?.boundaryId,
+        );
+        if (boundary !== undefined)
+          yield* drain(yield* readProfile(boundary.profileId), input.assignmentId);
+        else yield* mutex.withPermit(Effect.void);
+        return;
+      }
+      const directory = path.join(
+        path.dirname(profile.assignmentWorkspace!.revocationPath),
+        "incidents",
+      );
+      const name = yield* crypto
+        .digest("SHA-256", new TextEncoder().encode(input.restrictionId))
+        .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("hex")));
+      const target = path.join(directory, `${name}.json`);
+      if (input.held) {
+        yield* fs.makeDirectory(directory, { recursive: true });
+        yield* fs.writeFileString(target, json({ restrictionId: input.restrictionId }));
+        yield* drain(profile);
+      } else {
+        yield* drain(profile);
+        if (yield* fs.exists(target)) yield* fs.remove(target);
+      }
+    },
+    controlMutex.withPermit,
+    Effect.mapError(preserve),
+  );
   const suspend = Effect.fn("FactoryBoundaryExecution.suspend")(
     function* (input: Parameters<FactoryBoundaryExecution["Service"]["suspend"]>[0]) {
       if (!Number.isSafeInteger(input.generation) || input.generation < 0) return yield* denied();
@@ -1803,7 +1858,7 @@ const make = Effect.gen(function* () {
       if (!Number.isSafeInteger(input.generation) || input.generation < 0) return yield* denied();
       const profile = yield* assignmentProfile(input.assignmentId);
       if (profile === undefined) return;
-      const { grant } = yield* current(input.assignmentId, undefined, true);
+      const { grant } = yield* current(input.assignmentId, undefined, true, false, true);
       if (
         profile.assignmentWorkspace!.grantEpoch !== grant.epoch ||
         profile.assignmentWorkspace!.boundaryId !== grant.boundaryId
@@ -1819,7 +1874,7 @@ const make = Effect.gen(function* () {
       if (previous.state === "resumed") return;
       yield* drain(profile);
       yield* docker(profile, ["volume", "inspect", profile.assignmentWorkspace!.volumeName]);
-      yield* current(input.assignmentId, grant.epoch, true);
+      yield* current(input.assignmentId, grant.epoch, true, false, true);
       if (yield* fs.exists(profile.assignmentWorkspace!.revocationPath)) return yield* denied();
       yield* writeSuspension(profile, { generation: input.generation, state: "resumed" });
     },
@@ -1997,6 +2052,7 @@ const make = Effect.gen(function* () {
     yield* drain(profile);
   }, Effect.mapError(preserve));
   return FactoryBoundaryExecution.of({
+    setIncidentHold,
     setDeliveryHold,
     captureCandidate,
     captureMigration,

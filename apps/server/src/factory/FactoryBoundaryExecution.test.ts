@@ -504,6 +504,80 @@ live(
             "paused",
           );
           yield* restarted.resume({ assignmentId: assignment.id, generation: 2 });
+          const incidentContainer = yield* docker([
+            "run",
+            "--detach",
+            "--label",
+            `satellite.factory.assignment=${assignment.id}`,
+            imageId,
+            "node",
+            "-e",
+            "setInterval(()=>{},1000)",
+          ]);
+          assert.equal(incidentContainer.code, 0, incidentContainer.stderr);
+          const incidentContainerId = incidentContainer.stdout.trim();
+          yield* Effect.addFinalizer(() =>
+            docker(["rm", "--force", incidentContainerId]).pipe(Effect.ignore),
+          );
+          state = {
+            ...state,
+            incidentRestrictions: ["live-incident-a", "live-incident-b"].map((id) => ({
+              id,
+              managerId: assignment.managerId,
+              projectId: assignment.projectId,
+              assignmentIds: [assignment.id],
+              activity: "execution" as const,
+              reason: "Production outage",
+              resumeCondition: {
+                kind: "assignment-concluded" as const,
+                assignmentId: assignment.id,
+              },
+              phase: "active" as const,
+              stop: { phase: "confirmed" as const },
+              resume: null,
+              createdAt: assignment.createdAt,
+              updatedAt: assignment.updatedAt,
+            })),
+          };
+          for (const restriction of state.incidentRestrictions)
+            yield* restarted.setIncidentHold({
+              assignmentId: assignment.id,
+              restrictionId: restriction.id,
+              held: true,
+            });
+          assert.notEqual((yield* docker(["inspect", incidentContainerId])).code, 0);
+          assert.equal(
+            (yield* docker([
+              "inspect",
+              "--format",
+              "{{.State.Running}}",
+              unaffectedId,
+            ])).stdout.trim(),
+            "true",
+          );
+          state = {
+            ...state,
+            incidentRestrictions: state.incidentRestrictions.map((entry) => ({
+              ...entry,
+              phase: "releasing" as const,
+            })),
+          };
+          yield* restarted.setIncidentHold({
+            assignmentId: assignment.id,
+            restrictionId: "live-incident-a",
+            held: false,
+          });
+          assert.include(
+            (yield* assertFactoryProfileActive(prepared).pipe(Effect.flip)).detail!,
+            "incident",
+          );
+          yield* restarted.setIncidentHold({
+            assignmentId: assignment.id,
+            restrictionId: "live-incident-b",
+            held: false,
+          });
+          yield* assertFactoryProfileActive(prepared);
+          state = { ...state, incidentRestrictions: [] };
           const preserved = yield* restarted.verify({
             assignmentId: assignment.id,
             expectedEpoch: 0,

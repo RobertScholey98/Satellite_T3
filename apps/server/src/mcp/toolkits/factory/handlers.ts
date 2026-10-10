@@ -11,6 +11,15 @@ import { FactoryToolkit, FactoryPreviewSnapshotToolkit } from "./tools.ts";
 const decodePreviewSnapshot = Schema.decodeUnknownEffect(PreviewAutomationSnapshot);
 
 export const layer = McpToolAccess.toLayer(FactoryToolkit, {
+  factory_collaboration_directory: McpToolAccess.readsAsCaller(({ cursor }) =>
+    Effect.gen(function* () {
+      const invocation = yield* McpInvocationContext.McpInvocationContext;
+      return yield* (yield* FactoryMcpGuard.FactoryMcpGuard).collaborationDirectory(
+        invocation,
+        cursor,
+      );
+    }),
+  ),
   factory_improvement_record: McpToolAccess.readsAsCaller((input) =>
     Effect.gen(function* () {
       const invocation = yield* McpInvocationContext.McpInvocationContext;

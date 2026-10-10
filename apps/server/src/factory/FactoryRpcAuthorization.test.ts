@@ -27,6 +27,38 @@ const group = WsRpcGroup.omit(
 const managerId = ThreadId.make("manager-web");
 const settingsCommands: ReadonlyArray<FactoryCommand> = [
   {
+    type: "collaboration.decision.decide",
+    commandId: CommandId.make("collaboration-decision"),
+    decisionId: "decision",
+    revision: "decision-revision",
+    optionId: "prioritize-request",
+    reason: "Prioritize this dependency",
+  },
+  {
+    type: "collaboration.request.respond",
+    commandId: CommandId.make("collaboration-rule-change"),
+    requestId: "request",
+    response: {
+      kind: "accept",
+      support: {
+        kind: "commission",
+        work: {
+          title: "Review an explicit project rule change",
+          kind: "rule-change",
+          complexity: "standard",
+          sourcePaths: [],
+          creatableDirectories: [],
+          controlPaths: ["AGENTS.md"],
+          scope: {
+            description: "The exact separately authorized rule change",
+            completionCondition: "Human-reviewed PR merged",
+            requiresPullRequest: true,
+          },
+        },
+      },
+    },
+  },
+  {
     type: "shared.repository.register",
     commandId: CommandId.make("shared-register"),
     projectId: ProjectId.make("skills"),
@@ -283,6 +315,8 @@ describe("factory RPC authority", () => {
           assert.deepStrictEqual(yield* client[method]({ command }), { revision: index + 1 });
         }
         assert.deepStrictEqual(handled, [
+          "collaboration.decision.decide",
+          "collaboration.request.respond",
           "shared.repository.register",
           "shared.repository.configure",
           "shared.work.authorize",

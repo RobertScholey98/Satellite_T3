@@ -93,6 +93,27 @@ exhausted, the human decision includes the failure, attempts, options, and a
 recommendation. Expected review, dependency, and human-decision waits do not
 consume recovery cycles. Observation and recovery receipts survive restart.
 
+### Coordinate work across projects
+
+Open **Project collaboration** beside a manager to request another managed
+project's help. Name the originating assignment, expected outcome, acceptance
+conditions, and compatibility commitments. The receiving manager decides whether
+to commission its own team or attach existing work within that team's scope.
+Managers can defer or decline with a concrete reason and an alternative or a
+recorded condition for reconsideration. Requests currently stay within one
+environment.
+
+The participating leads communicate directly through the request and record
+their agreed technical plan. Each team keeps its existing source permissions and
+PR ownership. Changes to priorities or agreed boundaries become one shared
+decision for the owning managers and you. Your decision records the direction;
+it does not silently expand file access or merge permission.
+
+During an incident, restrict only the conflicting assignments and activity.
+Releasing a restriction leaves other pauses and permissions in place. Canceling
+an assignment withdraws its requests and stops support commissioned solely for
+those requests. Supporting work with another active dependent continues.
+
 ### Review and deliver managed work
 
 The implementation team owns its PR, independent review, required checks, and

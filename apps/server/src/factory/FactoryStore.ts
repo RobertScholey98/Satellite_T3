@@ -277,6 +277,24 @@ const make = Effect.gen(function* () {
               const failed = command.type.endsWith(".failed");
               const matches = (() => {
                 switch (intent.type) {
+                  case "collaboration.message.deliver":
+                    return (
+                      (command.type === "collaboration.message.recorded" ||
+                        command.type === "collaboration.message.failed") &&
+                      command.messageId === intent.messageId
+                    );
+                  case "incident.stop":
+                    return (
+                      (command.type === "incident.stopped" ||
+                        (command.type === "incident.failed" && command.step === "stop")) &&
+                      command.restrictionId === intent.restrictionId
+                    );
+                  case "incident.resume":
+                    return (
+                      (command.type === "incident.resumed" ||
+                        (command.type === "incident.failed" && command.step === "resume")) &&
+                      command.restrictionId === intent.restrictionId
+                    );
                   case "workflow.work.notify":
                     return (
                       (command.type === "workflow.work.notified" ||

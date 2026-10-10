@@ -21,6 +21,7 @@ import { PullRequestService } from "../pullRequest/PullRequestService.ts";
 import type { ProviderMergeEvidence } from "../pullRequest/pullRequestMergeEvidence.ts";
 import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
 import { FactoryControlAccess } from "./FactoryControlAccess.ts";
+import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 import { factoryDeliveryReadiness } from "./FactoryDelivery.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
@@ -196,13 +197,15 @@ const make = Effect.gen(function* () {
             flow.status !== (intent.held ? "stopping" : "releasing")))
       )
         return yield* new DeliveryStopped({ disposition: "superseded" });
-      const blocked = factoryExecutionBlocked(state, {
-        threadId: assignment.threadId,
-        managerId: assignment.managerId,
-        projectId: assignment.projectId,
-        assignmentId: assignment.id,
-        ancestorThreadIds: [],
-      });
+      const blocked =
+        factoryIncidentBlocked(state, assignment.id, "delivery") ??
+        factoryExecutionBlocked(state, {
+          threadId: assignment.threadId,
+          managerId: assignment.managerId,
+          projectId: assignment.projectId,
+          assignmentId: assignment.id,
+          ancestorThreadIds: [],
+        });
       const ownsFlowWait =
         assignment.wait?.kind === "flow-review" &&
         (intent.type === "delivery.flow.capture" || intent.type === "delivery.flow.hold") &&

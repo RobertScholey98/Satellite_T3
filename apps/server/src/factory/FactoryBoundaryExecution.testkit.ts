@@ -6,6 +6,7 @@ import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
 const unexpected = () => Effect.die("This fixture cannot run managed delivery operations.");
 
 export const layerUnavailable = Layer.succeed(FactoryBoundaryExecution, {
+  setIncidentHold: unexpected,
   setDeliveryHold: unexpected,
   captureCandidate: unexpected,
   captureMigration: unexpected,

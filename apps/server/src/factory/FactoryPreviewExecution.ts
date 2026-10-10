@@ -27,6 +27,7 @@ import { ServerConfig } from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
 import { factoryRelativePath } from "./FactoryBoundaryPaths.ts";
+import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { FactoryStore } from "./FactoryStore.ts";
@@ -240,13 +241,15 @@ const make = Effect.gen(function* () {
         detail:
           "This preview no longer matches the current candidate, reviewer and approved runtime.",
       });
-    const blocked = factoryExecutionBlocked(state, {
-      assignmentId: assignment.id,
-      managerId: assignment.managerId,
-      projectId: assignment.projectId,
-      threadId: input.reviewThreadId,
-      ancestorThreadIds: [],
-    });
+    const blocked =
+      factoryIncidentBlocked(state, assignment.id, "preview") ??
+      factoryExecutionBlocked(state, {
+        assignmentId: assignment.id,
+        managerId: assignment.managerId,
+        projectId: assignment.projectId,
+        threadId: input.reviewThreadId,
+        ancestorThreadIds: [],
+      });
     if (blocked) return yield* new FactoryError({ code: "permission-denied", detail: blocked });
     return { assignment, revision, approved };
   });
