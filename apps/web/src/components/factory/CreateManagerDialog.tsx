@@ -18,7 +18,7 @@ import { factoryEnvironment, type FactoryEnvironmentView } from "../../state/fac
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
-import { factoryCanCreateManager } from "./FactorySidebarReadModel";
+import { factoryCanCreateManager, factoryManagerProviders } from "./FactorySidebarReadModel";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -184,9 +184,13 @@ function ManagerForm({
 }) {
   const formId = useId();
   const settings = useEnvironmentSettings(project.environmentId);
-  const providers =
+  const environmentProviders =
     useAtomValue(serverEnvironment.providersValueAtom(project.environmentId)) ??
     EMPTY_SERVER_PROVIDERS;
+  const providers = useMemo(
+    () => factoryManagerProviders(environmentProviders),
+    [environmentProviders],
+  );
   const entries = useMemo(
     () =>
       sortProviderInstanceEntries(
@@ -332,6 +336,9 @@ function ManagerForm({
           ) : null}
           <div className="grid gap-1.5">
             <Label>Manager and onboarding model</Label>
+            <p className="text-xs text-muted-foreground">
+              Engineering managers and their teams run on Codex.
+            </p>
             {activeSelection ? (
               <ProviderModelPicker
                 activeInstanceId={activeSelection.instanceId}
@@ -348,7 +355,7 @@ function ManagerForm({
               />
             ) : (
               <p role="status" className="text-sm text-muted-foreground">
-                Configure an available provider on {environment.label} first.
+                Enable and sign in to a Codex provider on {environment.label} first.
               </p>
             )}
           </div>

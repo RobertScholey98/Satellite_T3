@@ -22,10 +22,14 @@ import {
   UsersIcon,
 } from "lucide-react";
 import * as Schema from "effect/Schema";
-import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useId, useMemo, useRef, useState } from "react";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
-import { factoryEnvironment, type FactoryEnvironmentView } from "../../state/factory";
+import {
+  factoryEnvironment,
+  useFactoryEnvironments,
+  type FactoryEnvironmentView,
+} from "../../state/factory";
 import { randomUUID } from "../../lib/utils";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
@@ -38,7 +42,12 @@ import {
   factoryProjectPause,
 } from "./FactoryControlsReadModel";
 import { factoryEscalationAwaitsHuman, factoryOversightSummary } from "./FactoryOversightReadModel";
-import { factoryCanCreateManager, factorySidebarVisible } from "./FactorySidebarReadModel";
+import {
+  createFactoryManagedThreadKeysSelector,
+  factoryCanCreateManager,
+  factorySidebarVisible,
+  factoryVisibleThreadKeys,
+} from "./FactorySidebarReadModel";
 import { FactorySystemManagerRow } from "./FactorySystemManagerRow";
 import {
   SidebarGroup,
@@ -118,29 +127,73 @@ function threadUnavailableReason(
   return null;
 }
 
-export function FactorySidebar({
-  environments,
-  projects,
-  threads,
-  scopedProjectKeys,
-  activeThreadKey,
-  onThreadActivate,
-  onVisibleThreadsChange,
-}: {
-  readonly environments: readonly FactoryEnvironmentView[];
-  readonly projects: readonly EnvironmentProject[];
-  readonly threads: readonly EnvironmentThreadShell[];
-  readonly scopedProjectKeys: ReadonlySet<string> | null;
-  readonly activeThreadKey: string | null;
-  readonly onThreadActivate: (thread: ScopedThreadRef) => unknown;
-  readonly onVisibleThreadsChange: (keys: readonly string[]) => void;
-}) {
+/**
+ * Factory section state, owned by the sidebar so it can leave managed threads out of the
+ * ordinary list and fold the shown ones into its keyboard order.
+ */
+export function useFactorySidebarState(
+  projects: readonly EnvironmentProject[],
+  scopedProjectKeys: ReadonlySet<string> | null,
+) {
+  const environments = useFactoryEnvironments();
   const [expanded, setExpanded] = useLocalStorage(
     FACTORY_SECTION_EXPANDED_KEY,
     true,
     Schema.Boolean,
   );
   const [collapsedManagers, setCollapsedManagers] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleManager = useCallback(
+    (key: string) =>
+      setCollapsedManagers((previous) => {
+        const next = new Set(previous);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      }),
+    [],
+  );
+  const [selectManagedThreadKeys] = useState(createFactoryManagedThreadKeysSelector);
+  const managedThreadKeys = useMemo(
+    () => selectManagedThreadKeys(environments),
+    [environments, selectManagedThreadKeys],
+  );
+  const visibleThreadKeys = useMemo(
+    () =>
+      factoryVisibleThreadKeys({
+        environments,
+        projects,
+        scopedProjectKeys,
+        expanded,
+        collapsedManagers,
+      }),
+    [collapsedManagers, environments, expanded, projects, scopedProjectKeys],
+  );
+  return {
+    environments,
+    expanded,
+    setExpanded,
+    collapsedManagers,
+    toggleManager,
+    managedThreadKeys,
+    visibleThreadKeys,
+  };
+}
+
+export function FactorySidebar({
+  state: { environments, expanded, setExpanded, collapsedManagers, toggleManager },
+  projects,
+  threads,
+  scopedProjectKeys,
+  activeThreadKey,
+  onThreadActivate,
+}: {
+  readonly state: ReturnType<typeof useFactorySidebarState>;
+  readonly projects: readonly EnvironmentProject[];
+  readonly threads: readonly EnvironmentThreadShell[];
+  readonly scopedProjectKeys: ReadonlySet<string> | null;
+  readonly activeThreadKey: string | null;
+  readonly onThreadActivate: (thread: ScopedThreadRef) => unknown;
+}) {
   const [creating, setCreating] = useState(false);
   const [report, setReport] = useState<FactoryOnboardingReport | null>(null);
   const [setupManagerKey, setSetupManagerKey] = useState<string | null>(null);
@@ -215,89 +268,6 @@ export function FactorySidebar({
       ),
     [environments, projects, scopedProjectKeys],
   );
-  const visibleKeys = useMemo(
-    () =>
-      expanded
-        ? entries
-            .flatMap(({ environment, manager, key, assignments }) => [
-              ...(manager.threadStatus === "created" ? [key] : []),
-              ...(collapsedManagers.has(key)
-                ? []
-                : assignments
-                    .filter((assignment) => assignment.threadStatus === "created")
-                    .map((assignment) =>
-                      scopedThreadKey(
-                        scopeThreadRef(environment.environmentId, assignment.threadId),
-                      ),
-                    )),
-              ...(collapsedManagers.has(key)
-                ? []
-                : (environment.data?.retros ?? [])
-                    .filter((retro) =>
-                      assignments.some((assignment) => assignment.id === retro.assignmentId),
-                    )
-                    .map((retro) =>
-                      scopedThreadKey(scopeThreadRef(environment.environmentId, retro.threadId)),
-                    )),
-            ])
-            .concat(
-              environments.flatMap((environment) =>
-                scopedProjects.some(
-                  (project) => project.environmentId === environment.environmentId,
-                )
-                  ? (environment.data?.managers ?? [])
-                      .filter(
-                        (manager) =>
-                          manager.role === "system" && manager.threadStatus === "created",
-                      )
-                      .flatMap((manager) => {
-                        const key = scopedThreadKey(
-                          scopeThreadRef(environment.environmentId, manager.threadId),
-                        );
-                        const assignments =
-                          environment.data?.assignments.filter(
-                            (assignment) => assignment.managerId === manager.id,
-                          ) ?? [];
-                        return [
-                          key,
-                          ...(collapsedManagers.has(key)
-                            ? []
-                            : [
-                                ...assignments
-                                  .filter((assignment) => assignment.threadStatus === "created")
-                                  .map((assignment) =>
-                                    scopedThreadKey(
-                                      scopeThreadRef(
-                                        environment.environmentId,
-                                        assignment.threadId,
-                                      ),
-                                    ),
-                                  ),
-                                ...(environment.data?.retros ?? [])
-                                  .filter((retro) =>
-                                    assignments.some(
-                                      (assignment) => assignment.id === retro.assignmentId,
-                                    ),
-                                  )
-                                  .map((retro) =>
-                                    scopedThreadKey(
-                                      scopeThreadRef(environment.environmentId, retro.threadId),
-                                    ),
-                                  ),
-                              ]),
-                        ];
-                      })
-                  : [],
-              ),
-            )
-            .filter((key) => threadUnavailableReason("created", threadsByKey.get(key)) === null)
-        : [],
-    [collapsedManagers, entries, expanded, threadsByKey, environments, scopedProjects],
-  );
-  useEffect(() => {
-    onVisibleThreadsChange(visibleKeys);
-  }, [onVisibleThreadsChange, visibleKeys]);
-  useEffect(() => () => onVisibleThreadsChange([]), [onVisibleThreadsChange]);
 
   const canCreate = scopedProjects.some((project) =>
     factoryCanCreateManager(environments, project),
@@ -414,15 +384,9 @@ export function FactorySidebar({
               onToggleTeams={() => {
                 const manager = environment.data?.managers.find((entry) => entry.role === "system");
                 if (!manager) return;
-                const key = scopedThreadKey(
-                  scopeThreadRef(environment.environmentId, manager.threadId),
+                toggleManager(
+                  scopedThreadKey(scopeThreadRef(environment.environmentId, manager.threadId)),
                 );
-                setCollapsedManagers((previous) => {
-                  const next = new Set(previous);
-                  if (next.has(key)) next.delete(key);
-                  else next.add(key);
-                  return next;
-                });
               }}
               onAssignmentDetails={(assignmentId) =>
                 setAssignmentDetails({ environmentId: environment.environmentId, assignmentId })
@@ -455,14 +419,7 @@ export function FactorySidebar({
                       variant="ghost"
                       aria-label={`${childrenExpanded ? "Collapse" : "Expand"} ${manager.name} assignments`}
                       aria-expanded={childrenExpanded}
-                      onClick={() =>
-                        setCollapsedManagers((current) => {
-                          const next = new Set(current);
-                          if (next.has(key)) next.delete(key);
-                          else next.add(key);
-                          return next;
-                        })
-                      }
+                      onClick={() => toggleManager(key)}
                     >
                       {childrenExpanded ? (
                         <ChevronDownIcon aria-hidden />

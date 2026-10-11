@@ -1,5 +1,11 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, FactorySnapshot, ProjectId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  FactoryManager,
+  FactorySnapshot,
+  ProjectId,
+  ServerProvider,
+} from "@t3tools/contracts";
 
 interface FactoryEnvironmentState {
   readonly environmentId: EnvironmentId;
@@ -8,17 +14,22 @@ interface FactoryEnvironmentState {
   readonly data: FactorySnapshot | null;
 }
 
+type FactoryEnvironmentData = Pick<FactoryEnvironmentState, "environmentId" | "data">;
+
 interface FactoryProjectRef {
   readonly environmentId: EnvironmentId;
   readonly id: ProjectId;
 }
+
+const NO_MANAGED_THREADS: ReadonlySet<string> = new Set();
+const NO_VISIBLE_THREADS: readonly string[] = [];
 
 /**
  * The sidebar section appears once an environment holding one of the shown projects has a
  * manager. Until then, project settings is the way to create the first one.
  */
 export function factorySidebarVisible(
-  environments: readonly FactoryEnvironmentState[],
+  environments: readonly FactoryEnvironmentData[],
   projects: readonly FactoryProjectRef[],
 ): boolean {
   return environments.some(
@@ -49,13 +60,32 @@ export function factoryCanCreateManager(
 }
 
 /**
- * Threads the factory section lists, which the ordinary thread list leaves out. Sorted and
- * joined so callers can memoise on content: factory views re-derive on unrelated presentation
- * and session changes.
+ * Managers and their teams run only on Codex (`FactoryExecution.qualify`), so manager setup
+ * offers Codex instances alone.
  */
-export function factoryManagedThreadKeys(
-  environments: readonly Pick<FactoryEnvironmentState, "environmentId" | "data">[],
-): string {
+export function factoryManagerProviders(
+  providers: readonly ServerProvider[],
+): readonly ServerProvider[] {
+  return providers.filter((provider) => provider.driver === "codex");
+}
+
+/**
+ * Selects the threads the factory section lists, which the ordinary thread list leaves out.
+ * The selector returns its previous set while the keys are unchanged: the environment list
+ * changes identity on unrelated presentation and session updates, and the sidebar's thread
+ * classification memoises on this set.
+ */
+export function createFactoryManagedThreadKeysSelector() {
+  let previous = NO_MANAGED_THREADS;
+  return (environments: readonly FactoryEnvironmentData[]): ReadonlySet<string> => {
+    const keys = factoryManagedThreadKeys(environments);
+    if (keys.size !== previous.size) return (previous = keys);
+    for (const key of keys) if (!previous.has(key)) return (previous = keys);
+    return previous;
+  };
+}
+
+function factoryManagedThreadKeys(environments: readonly FactoryEnvironmentData[]) {
   const keys = new Set<string>();
   for (const { environmentId, data } of environments) {
     if (data === null) continue;
@@ -73,5 +103,67 @@ export function factoryManagedThreadKeys(
       keys.add(scopedThreadKey(scopeThreadRef(environmentId, retro.threadId)));
     }
   }
-  return [...keys].toSorted().join("\n");
+  return keys;
+}
+
+/**
+ * Thread keys the factory section shows, in render order: each environment's system manager
+ * first, then the project managers, each followed by its assignments and their retros. The
+ * sidebar folds these into its keyboard and range-select order.
+ */
+export function factoryVisibleThreadKeys({
+  environments,
+  projects,
+  scopedProjectKeys,
+  expanded,
+  collapsedManagers,
+}: {
+  readonly environments: readonly FactoryEnvironmentData[];
+  readonly projects: readonly FactoryProjectRef[];
+  readonly scopedProjectKeys: ReadonlySet<string> | null;
+  readonly expanded: boolean;
+  readonly collapsedManagers: ReadonlySet<string>;
+}): readonly string[] {
+  const shownProjects =
+    scopedProjectKeys === null
+      ? projects
+      : projects.filter((project) =>
+          scopedProjectKeys.has(`${project.environmentId}:${project.id}`),
+        );
+  if (!expanded || !factorySidebarVisible(environments, shownProjects)) return NO_VISIBLE_THREADS;
+  const keys: string[] = [];
+  const addTeam = (
+    environmentId: EnvironmentId,
+    data: FactorySnapshot,
+    manager: FactoryManager,
+  ) => {
+    const managerKey = scopedThreadKey(scopeThreadRef(environmentId, manager.threadId));
+    if (manager.threadStatus === "created") keys.push(managerKey);
+    if (collapsedManagers.has(managerKey)) return;
+    for (const assignment of data.assignments) {
+      if (assignment.managerId !== manager.id) continue;
+      if (assignment.threadStatus === "created") {
+        keys.push(scopedThreadKey(scopeThreadRef(environmentId, assignment.threadId)));
+      }
+      const retro = data.retros.find((entry) => entry.assignmentId === assignment.id);
+      if (retro) keys.push(scopedThreadKey(scopeThreadRef(environmentId, retro.threadId)));
+    }
+  };
+  for (const { environmentId, data } of environments) {
+    const manager = data?.managers.find((entry) => entry.role === "system");
+    if (data && manager && shownProjects.some((project) => project.environmentId === environmentId))
+      addTeam(environmentId, data, manager);
+  }
+  for (const { environmentId, data } of environments) {
+    if (data === null) continue;
+    for (const manager of data.managers) {
+      if (
+        manager.role === "project" &&
+        (scopedProjectKeys === null ||
+          scopedProjectKeys.has(`${environmentId}:${manager.projectId}`))
+      )
+        addTeam(environmentId, data, manager);
+    }
+  }
+  return keys.length === 0 ? NO_VISIBLE_THREADS : keys;
 }
