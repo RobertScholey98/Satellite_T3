@@ -16,31 +16,6 @@ Install [Vite+](../../README.md#install-vp) to use the `vp` commands below direc
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
 
-## Managed discovery runtime
-
-Project onboarding requires an authenticated Codex provider and a local Docker
-Linux engine on the project's owning environment. Build its pinned runner from the
-checkout root before starting onboarding:
-
-```powershell
-docker build -t satellite-factory-codex:0.161.0 apps/server/src/factory/runner
-```
-
-Select a committed project and an exact commit from an owned workflow repository
-containing a `skills` directory. Qualification exports tracked files and runs a
-filesystem probe in the same image used for the agent. Failed qualification leaves
-an actionable wait; it never falls back to host execution. The container receives
-the selected model account's credentials, but no host Git credentials or Docker socket.
-Codex accounts stored only in a native keyring currently require file-backed Codex
-authentication before this runner can launch.
-
-Writable assignments use an environment-owned Linux volume with a non-root worker.
-Existing file permissions are granted individually; directory changes go through
-the controlled file service. Required checks run against a captured candidate with
-the approved controls restored at their original paths. The initial verifier accepts
-direct `/usr/local/bin/node` runners, optionally with `--test`, and explicit protected
-inputs. It does not install dependencies or infer an arbitrary project toolchain.
-
 ## Choosing a dev process
 
 Use `pnpm run dev:satellite` for the Satellite desktop configuration.
@@ -142,6 +117,31 @@ Use `vp run lint:mobile` for native mobile changes. SatelliteT3's
 [CI](../../.github/workflows/ci.yml) covers Windows desktop builds and focused Satellite tests.
 The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
 Windows investigation beyond those default checks.
+
+### Factory boundary live tests
+
+The tests that prove factory confinement through a real Docker boundary are skipped unless
+enabled, and CI does not run them. Before merging changes under `apps/server/src/factory`, run
+them on a machine with a local Docker Linux engine:
+
+```sh
+SATELLITE_FACTORY_LIVE_TEST=1 SATELLITE_FACTORY_INTEGRATION_LIVE_TEST=1 vp test run \
+  apps/server/src/factory/FactoryBoundaryExecution.test.ts \
+  apps/server/src/factory/FactoryCandidateExecution.test.ts \
+  apps/server/src/factory/FactoryExecutionQualification.test.ts \
+  apps/server/src/factory/FactoryIntegrationExecution.test.ts \
+  apps/server/src/factory/FactoryPreviewExecution.test.ts \
+  apps/server/src/factory/FactoryRecoveryExecution.test.ts \
+  apps/server/src/factory/FactoryRetroExecution.test.ts
+```
+
+They need the pinned runner image. Qualifying any project builds it, or build it directly:
+
+```sh
+node -e "import('./apps/server/src/factory/FactoryExecutionProfile.ts').then((m) => process.stdout.write(m.FACTORY_CODEX_DOCKERFILE))" | docker build -t satellite-factory-codex:0.161.0 -
+```
+
+The tests remove the containers and volumes they create.
 
 ### Unused code
 
