@@ -139,6 +139,20 @@ const scenario = (live: boolean) =>
           },
         });
       let stdout = "";
+      // An owned container that exits on its own while it is being stopped.
+      if (input.args.includes("ps")) stdout = "0123456789ab";
+      if (input.args.includes("rm") && input.args.includes("0123456789ab"))
+        return {
+          stdout: "",
+          stderr:
+            "Error response from daemon: removal of container 0123456789ab is already in progress",
+          code: ChildProcessSpawner.ExitCode(1),
+          timedOut: false,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          stdoutInvalidUtf8: false,
+          stderrInvalidUtf8: false,
+        };
       const mount = input.args.find((arg) => arg.startsWith("type=volume,source="));
       const volume = mount?.split(",")[1]!.slice("source=".length);
       if (input.stdin && volume) {

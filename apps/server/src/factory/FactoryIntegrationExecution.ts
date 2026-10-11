@@ -237,7 +237,15 @@ const make = Effect.gen(function* () {
     for (const id of ids.split(/\s+/).filter(Boolean)) {
       if (!/^[a-f0-9]{12,64}$/.test(id))
         return yield* integrationError("Docker returned an invalid owned container identity.");
-      yield* docker(profile, ["rm", "--force", id]);
+      const removed = yield* dockerResult(profile, ["rm", "--force", id]);
+      // A `--rm` container that exits on its own races this removal; gone is the goal.
+      if (
+        removed.code !== 0 &&
+        !/No such container|removal of container \w+ is already in progress/.test(removed.stderr)
+      )
+        return yield* integrationError(
+          `The isolated integration process failed: ${(removed.stderr || removed.stdout).slice(0, 2000)}`,
+        );
     }
   });
   const filesTo = Effect.fn(function* (directory: string, files: readonly FactorySourceFile[]) {
