@@ -1110,3 +1110,42 @@ describe("loginAvatarUrl", () => {
     }
   });
 });
+
+it.effect("preserves confirmed merge evidence through GitHub provider detail", () =>
+  Effect.gen(function* () {
+    for (const mergeCommit of [{ oid: "squashed-result" }, null]) {
+      const snapshot = Result.getOrThrow(
+        decodePullRequestDetailJson(
+          JSON.stringify({
+            number: 7,
+            title: "Merged",
+            url: "https://github.com/acme/web/pull/7",
+            headRefName: "feature",
+            baseRefName: "main",
+            headRefOid: "original-head",
+            state: "MERGED",
+            createdAt: "2026-07-01T00:00:00Z",
+            updatedAt: "2026-07-02T00:00:00Z",
+            mergedAt: "2026-07-02T00:00:00Z",
+            mergeCommit,
+          }),
+        ),
+      );
+      const provider = yield* make.pipe(
+        Effect.provide(
+          Layer.mock(GitHubPullRequestCli.GitHubPullRequestCli)({
+            getPullRequestDetail: () => Effect.succeed({ ...snapshot, ...coreFields }),
+          }),
+        ),
+      );
+      const detail = yield* provider.getChangeRequest({
+        cwd: "/w",
+        repository: "acme/web",
+        host: "github.com",
+        number: 7,
+      });
+      expect(detail.mergeCommitSha).toBe(mergeCommit?.oid);
+      expect(detail.headSha).toBe("original-head");
+    }
+  }),
+);

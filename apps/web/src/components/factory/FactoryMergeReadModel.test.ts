@@ -2,11 +2,15 @@ import {
   FactoryAssignmentId,
   ProjectId,
   ThreadId,
+  CommandId,
+  type FactoryMergeOperation,
   type FactoryMergeGroupRead,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   factoryMergeDecisionIdentity,
+  factoryMergeOperationActions,
+  factoryMergeReviewLocked,
   factoryMergeEvidenceUrl,
   factoryMergePullRequestUrl,
 } from "./FactoryMergeReadModel";
@@ -51,6 +55,18 @@ const fixture = (): FactoryMergeGroupRead => ({
     canRequestMerge: false,
   },
   integrationLeadThreadId: ThreadId.make("lead"),
+  operation: null,
+  operationReadiness: {
+    status: "idle",
+    confirmedCount: 0,
+    memberCount: 2,
+    reasons: [],
+    recommendation: null,
+    canStart: true,
+    canReconcile: false,
+    canRetry: false,
+    canStop: false,
+  },
 });
 
 describe("combined review decisions", () => {
@@ -99,5 +115,98 @@ describe("combined review decisions", () => {
     );
     expect(factoryMergeEvidenceUrl("javascript:alert(1)")).toBeNull();
     expect(factoryMergeEvidenceUrl("file:///C:/private/screenshot.png")).toBeNull();
+  });
+});
+
+describe("shared merge operation controls", () => {
+  const operation = (): FactoryMergeOperation => ({
+    id: "operation",
+    groupId: "group",
+    integrationId: "integration",
+    integrationAssignmentId: FactoryAssignmentId.make("integration"),
+    reviewId: "review",
+    reviewDigest: "digest",
+    authorizingCommandId: CommandId.make("start"),
+    members: [],
+    lifecycle: {
+      phase: "attention",
+      frozen: null,
+      reason: "Host response lost",
+      recommendation: "Reconcile first",
+      retry: "reconcile",
+    },
+    createdAt: now,
+    updatedAt: now,
+  });
+  it("requires the exact current review and write scope to start", () => {
+    const read = fixture();
+    expect(factoryMergeOperationActions(read, { operate: true, write: true }).start).toEqual({
+      groupId: "group",
+      reviewId: "review",
+      expectedDigest: "digest",
+    });
+    expect(factoryMergeOperationActions(read, { operate: true, write: false }).start).toBeNull();
+    expect(factoryMergeOperationActions(read, { operate: false, write: true }).start).toBeNull();
+    expect(
+      factoryMergeOperationActions(
+        { ...read, operationReadiness: { ...read.operationReadiness, canStart: false } },
+        { operate: true, write: true },
+      ).start,
+    ).toBeNull();
+    expect(
+      factoryMergeOperationActions(
+        { ...read, readiness: { ...read.readiness, reviewDigest: "changed" } },
+        { operate: true, write: true },
+      ).start,
+    ).toBeNull();
+  });
+  it("keeps read-only reconciliation and stopping separate from retries and refuses stale operations", () => {
+    const read = fixture();
+    const current = {
+      ...read,
+      operation: operation(),
+      operationReadiness: {
+        ...read.operationReadiness,
+        canStart: false,
+        canRetry: true,
+        canReconcile: true,
+        canStop: true,
+      },
+    };
+    expect(factoryMergeOperationActions(current, { operate: true, write: false })).toEqual({
+      start: null,
+      retry: null,
+      reconcile: "operation",
+      stop: "operation",
+    });
+    expect(factoryMergeOperationActions(current, { operate: true, write: true }).retry).toBe(
+      "operation",
+    );
+    expect(factoryMergeOperationActions(current, { operate: false, write: true })).toEqual({
+      start: null,
+      retry: null,
+      reconcile: null,
+      stop: null,
+    });
+    expect(
+      factoryMergeOperationActions(
+        { ...current, operation: { ...current.operation, groupId: "other-group" } },
+        { operate: true, write: true },
+      ),
+    ).toEqual({ start: null, retry: null, reconcile: null, stop: null });
+  });
+  it("holds review changes during shared execution and permits a stopped untouched operation to be reviewed again", () => {
+    const read = { ...fixture(), operation: operation() };
+    expect(factoryMergeReviewLocked(read)).toBe(true);
+    expect(
+      factoryMergeReviewLocked({
+        ...read,
+        operation: {
+          ...operation(),
+          lifecycle: { phase: "stopped", frozen: null, reason: "Correct evidence", stoppedAt: now },
+        },
+      }),
+    ).toBe(false);
+    expect(factoryMergeReviewLocked(fixture())).toBe(false);
   });
 });

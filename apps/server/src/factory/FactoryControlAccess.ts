@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
+import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
 import {
   factoryIntegrationAccessBlocked,
   factoryIntegrationManifestReasons,
@@ -146,6 +147,19 @@ const make = Effect.gen(function* () {
     if (member === undefined) return;
     const state = yield* store.snapshot;
     const lineage = new Set([...member.ancestorThreadIds, member.threadId]);
+    const owner = state.assignments.find((entry) => entry.id === member.assignmentId);
+    const auxiliary = state.auxiliaryThreads.find(
+      (entry) => entry.threadId === member.auxiliaryThreadId,
+    );
+    if (
+      owner?.integrationId &&
+      auxiliary?.kind !== "retrospective" &&
+      currentFactoryMergeOperation(state, owner.integrationId)
+    )
+      return yield* new FactoryError({
+        code: "permission-denied",
+        detail: "The shared merge operation has frozen this integration team.",
+      });
     if (
       state.assignments.some((entry) => entry.previousLeadThreadIds?.some((id) => lineage.has(id)))
     )
@@ -200,6 +214,7 @@ const make = Effect.gen(function* () {
           source.status !== "complete" &&
           (source.completion === undefined || source.completion.phase === "collecting") &&
           source.wait?.kind !== "authority" &&
+          (!source.integrationId || !currentFactoryMergeOperation(state, source.integrationId)) &&
           factoryDirectionBlocked(
             state,
             {

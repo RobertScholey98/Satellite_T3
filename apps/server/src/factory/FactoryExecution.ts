@@ -37,6 +37,7 @@ import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 import { FactorySource } from "./FactorySource.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 import { IntegrationAdmissionArtifact, integrationDigest } from "./FactoryIntegrationRuntime.ts";
+import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
 import {
   factoryIntegrationAccessBlocked,
   factoryIntegrationManifestReasons,
@@ -399,6 +400,11 @@ const make = Effect.gen(function* () {
       )
         return yield* new FactoryError({ code: "execution-unavailable" });
       if (assignment?.integrationId !== undefined && auxiliary?.kind !== "retrospective") {
+        if (currentFactoryMergeOperation(state, assignment.integrationId))
+          return yield* new FactoryError({
+            code: "permission-denied",
+            detail: "The shared merge operation has frozen this integration team.",
+          });
         const integration = state.integrations.find(
           (entry) => entry.id === assignment.integrationId,
         );

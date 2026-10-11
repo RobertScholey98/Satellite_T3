@@ -1,6 +1,7 @@
 import {
   FactoryMergeGroup,
   FactoryMergeGroupReview,
+  FactoryMergeOperation,
   FactoryMergeCommand,
   FactoryMergeHostCommand,
   FactoryMergeEffectIntent,
@@ -309,6 +310,9 @@ export type FactoryAssignment = typeof FactoryAssignment.Type;
 
 export const FactorySnapshot = Schema.Struct({
   mergeGroups: Schema.Array(FactoryMergeGroup).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  mergeOperations: Schema.Array(FactoryMergeOperation).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   mergeGroupReviews: Schema.Array(FactoryMergeGroupReview).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -679,6 +683,7 @@ export type FactoryEffectIntent = typeof FactoryEffectIntent.Type;
 export const FactoryCommandResult = Schema.Struct({
   mergeGroupId: Schema.optionalKey(TrimmedNonEmptyString),
   mergeGroupReviewId: Schema.optionalKey(TrimmedNonEmptyString),
+  mergeOperationId: Schema.optionalKey(TrimmedNonEmptyString),
   integrationId: Schema.optionalKey(TrimmedNonEmptyString),
   integrationCapabilityId: Schema.optionalKey(TrimmedNonEmptyString),
   integrationGrantId: Schema.optionalKey(TrimmedNonEmptyString),

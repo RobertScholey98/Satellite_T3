@@ -3,6 +3,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   AuthSettingsWriteScope,
+  AuthSourceControlWriteScope,
   CommandId,
   FACTORY_WS_METHODS,
   FactoryAssignmentId,
@@ -303,6 +304,75 @@ const create: FactoryCommand = {
 };
 
 describe("factory RPC authority", () => {
+  it.effect(
+    "requires source-control write for shared submissions but permits stopping and reconciliation",
+    () =>
+      Effect.gen(function* () {
+        const handled: string[] = [];
+        const handler = group.toLayerHandler(method, ({ command }) =>
+          Effect.sync(() => {
+            handled.push(command.type);
+            return { revision: handled.length };
+          }),
+        );
+        const operator = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(handler, RpcAuthorization.layer([AuthOrchestrationOperateScope])),
+          ),
+        );
+        const writes: readonly FactoryCommand[] = [
+          {
+            type: "merge.group.start",
+            commandId: CommandId.make("start"),
+            groupId: "group",
+            reviewId: "review",
+            expectedDigest: "digest",
+          },
+          {
+            type: "merge.operation.retry",
+            commandId: CommandId.make("retry"),
+            operationId: "operation",
+          },
+        ];
+        for (const command of writes) {
+          const error = yield* operator[method]({ command }).pipe(Effect.flip);
+          assert.equal(error._tag, "EnvironmentAuthorizationError");
+          if (error._tag === "EnvironmentAuthorizationError")
+            assert.equal(error.requiredPermission, AuthSourceControlWriteScope);
+        }
+        assert.isEmpty(handled);
+        yield* operator[method]({
+          command: {
+            type: "merge.operation.reconcile",
+            commandId: CommandId.make("observe"),
+            operationId: "operation",
+          },
+        });
+        yield* operator[method]({
+          command: {
+            type: "merge.operation.stop",
+            commandId: CommandId.make("stop"),
+            operationId: "operation",
+            reason: "Investigate the partial outcome",
+          },
+        });
+        const writer = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              handler,
+              RpcAuthorization.layer([AuthOrchestrationOperateScope, AuthSourceControlWriteScope]),
+            ),
+          ),
+        );
+        for (const command of writes) yield* writer[method]({ command });
+        assert.deepEqual(handled, [
+          "merge.operation.reconcile",
+          "merge.operation.stop",
+          "merge.group.start",
+          "merge.operation.retry",
+        ]);
+      }).pipe(Effect.scoped),
+  );
   it.effect(
     "requires read authority for a consolidated merge review without requiring write authority",
     () =>

@@ -24,6 +24,7 @@ import * as Result from "effect/Result";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 import { isFactoryModelApproved } from "./FactoryModelPolicy.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
+import { factoryMergeReceiptDigest } from "./FactoryMergeOperation.ts";
 
 export interface FactoryRetroContext {
   readonly qualifiedTracker?: QualifiedIssueDestination;
@@ -77,6 +78,20 @@ export function factoryCompletionEligibility(
   if (assignment.kind === "onboarding")
     return wait("Onboarding is concluded through its boundary report.");
   if (
+    state.mergeOperations.some(
+      (operation) =>
+        (operation.integrationAssignmentId === assignment.id &&
+          operation.members.some((member) => member.outcome.phase === "unknown")) ||
+        operation.members.some(
+          (member) =>
+            member.reviewed.assignmentId === assignment.id && member.outcome.phase === "unknown",
+        ),
+    )
+  )
+    return wait(
+      "A shared merge has an unknown host outcome. Reconcile it before concluding or cancelling this work.",
+    );
+  if (
     assignment.delivery?.revisions.some(
       (revision) =>
         (!assignment.outcome && revision.status === "capturing") ||
@@ -100,8 +115,28 @@ export function factoryCompletionEligibility(
       },
     };
   }
-  if (assignment.integrationId)
-    return wait("Integration completion requires a confirmed shared merge operation.");
+  if (assignment.integrationId) {
+    const operation = state.mergeOperations.findLast(
+      (entry) =>
+        entry.integrationAssignmentId === assignment.id &&
+        entry.integrationId === assignment.integrationId,
+    );
+    if (
+      operation?.lifecycle.phase !== "completed" ||
+      !operation.members.every((entry) => entry.outcome.phase === "confirmed") ||
+      operation.lifecycle.receiptDigest !== factoryMergeReceiptDigest(operation)
+    )
+      return wait("Integration completion requires a confirmed shared merge operation.");
+    return {
+      eligible: true,
+      disposition: {
+        kind: "shared-group-delivered",
+        operationId: operation.id,
+        groupId: operation.groupId,
+        receiptDigest: operation.lifecycle.receiptDigest,
+      },
+    };
+  }
   const completion = assignment.completion;
   if (!completion) return wait("Declare the assignment's complete delivery requirements first.");
   const plan = completion.plan;

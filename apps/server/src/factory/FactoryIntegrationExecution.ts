@@ -33,6 +33,7 @@ import {
   factoryIntegrationPlanIds,
 } from "./FactoryIntegration.ts";
 import { factoryVolumeHelper } from "./FactoryVolumeHelper.ts";
+import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
 import {
   IntegrationCapabilityArtifact,
   assertIntegrationRuntimeIdentity,
@@ -174,6 +175,10 @@ const make = Effect.gen(function* () {
       (entry) => entry.id === input.preparationId,
     );
     const assignment = state.assignments.find((entry) => entry.id === integration?.assignmentId);
+    if (currentFactoryMergeOperation(state, input.integrationId))
+      return yield* integrationError(
+        "The shared merge operation has frozen this integration runtime.",
+      );
     if (
       !integration ||
       !preparation ||

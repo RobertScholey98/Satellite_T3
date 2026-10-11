@@ -8129,3 +8129,31 @@ it.effect.each([
       assert.deepStrictEqual(calls, [expected]);
     }),
 );
+
+it.effect("carries actual merge commit evidence through detail without inventing a fallback", () =>
+  Effect.gen(function* () {
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakeProvider("github", {
+          getChangeRequest: ({ number }) =>
+            Effect.succeed({
+              ...hostedChangeRequest("Merged feature"),
+              number,
+              state: "merged" as const,
+              mergedAt: "2026-07-02T00:00:00Z",
+              headSha: "original-head",
+              ...(number === 1 ? { mergeCommitSha: "squashed-result" } : {}),
+            }),
+        }),
+      ],
+    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    const confirmed = yield* service.detail(ref);
+    assert.equal(confirmed.mergeCommitSha, "squashed-result");
+    assert.equal(confirmed.headSha, "original-head");
+    const missing = yield* service.detail({ ...ref, number: 2 });
+    assert.isUndefined(missing.mergeCommitSha);
+    assert.equal(missing.headSha, "original-head");
+  }),
+);

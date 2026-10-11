@@ -21,7 +21,9 @@ import {
   factoryMergeEvidenceUrl,
   factoryMergeMemberRevision,
   factoryMergePullRequestUrl,
+  factoryMergeReviewLocked,
 } from "./FactoryMergeReadModel";
+import { FactoryMergeOperation } from "./FactoryMergeOperation";
 import { useFactoryCommand } from "./useFactoryCommand";
 import { useFactoryMergeGroup } from "./useFactoryMergeGroup";
 
@@ -114,8 +116,9 @@ function ReviewContent({
 }) {
   const prefix = useId();
   const settings = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
-  const reviewCommand = useFactoryCommand(environment, !refreshing);
-  const decisionCommand = useFactoryCommand(environment, settings && !refreshing);
+  const reviewLocked = factoryMergeReviewLocked(read);
+  const reviewCommand = useFactoryCommand(environment, !refreshing && !reviewLocked);
+  const decisionCommand = useFactoryCommand(environment, settings && !refreshing && !reviewLocked);
   const [reason, setReason] = useState("");
   const [acknowledged, setAcknowledged] = useState<string | null>(null);
   const identity = factoryMergeDecisionIdentity(read);
@@ -133,12 +136,13 @@ function ReviewContent({
   );
   return (
     <div className="space-y-4">
+      <FactoryMergeOperation environment={environment} read={read} refreshing={refreshing} />
       <div className="flex flex-wrap items-center gap-2">
         <Badge
           variant={read.readiness.status === "changes-requested" ? "warning" : "secondary"}
           size="sm"
         >
-          {statuses[read.readiness.status]}
+          {reviewLocked ? "Review recorded for shared merge" : statuses[read.readiness.status]}
         </Badge>
         <span className="text-xs text-muted-foreground">
           {read.readiness.members.length} linked PRs · one shared delivery
@@ -148,7 +152,7 @@ function ReviewContent({
         Review the combined feature here. Discuss corrections directly with each owning lead. Every
         member keeps its own project safeguards and independent team review.
       </p>
-      {read.readiness.reasons.length ? (
+      {!reviewLocked && read.readiness.reasons.length ? (
         <ul className="list-inside list-disc space-y-1 text-sm">
           {[...new Set(read.readiness.reasons)].map((reason) => (
             <li key={reason}>{reason}</li>
@@ -253,7 +257,7 @@ function ReviewContent({
           </p>
         </div>
       ) : null}
-      {identity ? (
+      {identity && !reviewLocked ? (
         <section className="space-y-3 border-t border-border pt-3">
           <h4 className="text-sm font-medium">Decision for this exact review</h4>
           {!settings ? (
@@ -296,7 +300,7 @@ function ReviewContent({
           <Button
             size="sm"
             variant="outline"
-            disabled={decisionCommand.disabled || !reason.trim()}
+            disabled={decisionCommand.disabled || !read.readiness.canApprove || !reason.trim()}
             onClick={() =>
               void decisionCommand.submit({
                 type: "merge.group.reject",
@@ -308,7 +312,7 @@ function ReviewContent({
             Request changes to this review
           </Button>
         </section>
-      ) : sealed ? (
+      ) : sealed && !reviewLocked ? (
         <p className="text-sm text-muted-foreground">
           The sealed review no longer matches current readiness. Refresh the combined review before
           deciding.
@@ -319,15 +323,6 @@ function ReviewContent({
           {reviewCommand.error ?? decisionCommand.error}
         </p>
       ) : null}
-      <div className="space-y-2 border-t border-border pt-3">
-        <Button disabled size="sm">
-          Merge all linked PRs together
-        </Button>
-        <p className="text-xs text-muted-foreground">
-          Coordinated merge execution is not available in this environment yet. Member PRs remain
-          protected from individual merges.
-        </p>
-      </div>
     </div>
   );
 }

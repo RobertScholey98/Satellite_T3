@@ -40,6 +40,9 @@ import * as FactorySource from "./FactorySource.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import { decide } from "./FactoryState.ts";
+import { completedMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
+import { integrated } from "./FactoryIntegration.testkit.ts";
+import { IntegrationRuntimeArtifact, integrationDigest } from "./FactoryIntegrationRuntime.ts";
 import {
   deliveryFixture,
   deliveryIds,
@@ -51,6 +54,7 @@ const retroThread = ThreadId.make("retro-thread");
 const profileId = "a4556207-a1c8-4b22-861c-4f835a64b713";
 const encodeProfile = Schema.encodeEffect(Schema.fromJsonString(FactoryExecutionProfile));
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
+const encodeRuntime = Schema.encodeEffect(Schema.fromJsonString(IntegrationRuntimeArtifact));
 const input = {
   assignmentId: deliveryIds.assignment,
   retroId: "retro",
@@ -601,4 +605,287 @@ it.effect(
       );
     }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
   60_000,
+);
+
+const integrationRetroFixture = Effect.fn(function* () {
+  const f = yield* fixture();
+  const seed = completedMergeOperationFixture();
+  const crypto = yield* Crypto.Crypto;
+  const originalCompletion = f.getState().assignments[0]!.completion!;
+  const requestBase = {
+    ...f.request,
+    assignmentId: integrated.assignment,
+    retroId: "integration-retro",
+    conclusionId: "integration-conclusion",
+  };
+  const sealed = yield* FactoryRetroEvidence.FactoryRetroEvidence.pipe(
+    Effect.flatMap((evidence) =>
+      evidence.seal({
+        ...requestBase,
+        documents: [
+          { name: "assignment.json", content: "{}" },
+          { name: "team.json", content: "[]" },
+          { name: "feedback.json", content: "[]" },
+        ],
+      }),
+    ),
+    Effect.provide(f.dependencies),
+  );
+  const request = { ...requestBase, evidenceDigest: sealed.evidenceDigest };
+  const { inputDigest: _digest, ...manifestFields } = seed.manifest;
+  const manifest = { ...manifestFields, inputDigest: yield* integrationDigest(manifestFields) };
+  const profile: FactoryExecutionProfile = {
+    ...f.original,
+    profileId,
+    assignmentWorkspace: {
+      ...f.original.assignmentWorkspace!,
+      assignmentId: integrated.assignment,
+    },
+    integration: {
+      integrationId: seed.integrationId,
+      preparationId: seed.preparationId,
+      inputDigest: manifest.inputDigest,
+      grantIds: manifest.inputs.map((entry) => entry.integrationGrantId),
+      manifestPath: f.path.join(f.config.stateDir, "immutable-manifest.json"),
+      stopPath: f.path.join(f.config.stateDir, "stopped-integration.json"),
+    },
+  };
+  const projects: IntegrationRuntimeArtifact["projects"][number][] = [];
+  for (const [index, entry] of manifest.inputs.entries()) {
+    const grant = seed.state.integrationGrants.find(
+      (item) => item.id === entry.integrationGrantId,
+    )!;
+    const capability = seed.state.integrationCapabilities.find(
+      (item) => item.id === entry.capabilityId,
+    )!;
+    const bytes = Buffer.from(`preserved participant ${entry.projectId}\n`);
+    const files = [
+      {
+        path: "src/feature.ts",
+        content: bytes.toString("base64"),
+        digest: Buffer.from(yield* crypto.digest("SHA-256", bytes)).toString("hex"),
+        mode: "100644" as const,
+      },
+    ];
+    projects.push({
+      alias: `project-${String(index).padStart(16, "0")}`,
+      grant,
+      files,
+      capability: {
+        capability,
+        boundary: seed.state.boundaries.find((item) => item.id === capability.boundaryId)!,
+        profile,
+        files: [],
+        configurationDigest: "configuration",
+        coordinatorDigest: null,
+      },
+    });
+  }
+  const runtime: IntegrationRuntimeArtifact = {
+    integrationId: seed.integrationId,
+    preparationId: seed.preparationId,
+    profile,
+    manifest,
+    projects,
+    initialTestArtifact: seed.artifact,
+  };
+  const runtimePath = f.path.join(
+    f.config.stateDir,
+    "factory",
+    "integration",
+    "preparations",
+    yield* integrationDigest(seed.preparationId),
+    "runtime.json",
+  );
+  yield* f.fs.makeDirectory(f.path.dirname(runtimePath), { recursive: true });
+  yield* f.fs.writeFileString(runtimePath, yield* encodeRuntime(runtime));
+  yield* f.fs.writeFileString(
+    f.path.join(f.config.stateDir, "factory", "execution", profileId, "profile.json"),
+    yield* encodeProfile(profile),
+  );
+  const operation = seed.state.mergeOperations.find((entry) => entry.id === seed.operationId)!;
+  if (operation.lifecycle.phase !== "completed")
+    return yield* Effect.die("Expected completed merge fixture");
+  const receiptDigest = operation.lifecycle.receiptDigest;
+  f.setState({
+    ...seed.state,
+    integrations: seed.state.integrations.map((entry) => ({
+      ...entry,
+      currentPreparationId: "later-unrelated-preparation",
+    })),
+    mergeOperations: seed.state.mergeOperations.map((entry) =>
+      entry.lifecycle.phase === "completed"
+        ? {
+            ...entry,
+            lifecycle: {
+              ...entry.lifecycle,
+              frozen: { ...entry.lifecycle.frozen, inputDigest: manifest.inputDigest },
+            },
+          }
+        : entry,
+    ),
+    assignments: seed.state.assignments.map((assignment) =>
+      assignment.id !== integrated.assignment
+        ? assignment
+        : {
+            ...assignment,
+            qualification: { status: "qualified", profileId, checkedAt: deliveryNow },
+            completion: {
+              ...originalCompletion,
+              conclusion: {
+                kind: "shared-group-delivered",
+                id: request.conclusionId,
+                evidenceDigest: request.evidenceDigest,
+                concludedAt: deliveryNow,
+                operationId: seed.operationId,
+                groupId: seed.groupId,
+                receiptDigest,
+              },
+            },
+          },
+    ),
+    retros: [
+      {
+        ...f.getState().retros[0]!,
+        id: request.retroId,
+        assignmentId: integrated.assignment,
+        conclusionId: request.conclusionId,
+        evidenceDigest: request.evidenceDigest,
+      },
+    ],
+  });
+  assert.isUndefined(
+    f.getState().assignments.find((entry) => entry.id === integrated.assignment)!.startingSource,
+  );
+  const invocations: ProcessRunner.ProcessRunInput[] = [];
+  const executionLayer = FactoryRetroExecution.layer.pipe(
+    Layer.provide(f.dependencies),
+    Layer.provide(
+      Layer.mock(ProcessRunner.ProcessRunner)({
+        run: (invocation) =>
+          Effect.sync(() => {
+            invocations.push(invocation);
+            assert.equal(invocation.command, "docker");
+            assert.isTrue(invocation.args.includes("--entrypoint"));
+            assert.isFalse(invocation.args.some((arg) => arg.includes("old-revoked-volume")));
+            return {
+              stdout: "factory-boundary-ok",
+              stderr: "",
+              code: ChildProcessSpawner.ExitCode(0),
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      }),
+    ),
+  );
+  const prepare = FactoryRetroExecution.FactoryRetroExecution.pipe(
+    Effect.flatMap((execution) => execution.prepare(request)),
+    Effect.provide(executionLayer),
+  );
+  return { ...f, request, runtime, runtimePath, invocations, prepare };
+});
+
+it.effect(
+  "qualifies completed integration retros from frozen participant files without reviving implementation volumes",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* integrationRetroFixture();
+      const prepared = yield* f.prepare;
+      const profile = yield* f.fs
+        .readFileString(
+          f.path.join(
+            f.config.stateDir,
+            "factory",
+            "execution",
+            prepared.qualification.profileId,
+            "profile.json",
+          ),
+        )
+        .pipe(Effect.flatMap(decodeProfile));
+      assert.equal(profile.retro?.sourceBasis, "integration-inputs");
+      assert.isUndefined(profile.startingSourceId);
+      assert.isUndefined(profile.assignmentWorkspace);
+      assert.isUndefined(profile.integration);
+      for (const project of f.runtime.projects) {
+        assert.equal(
+          yield* f.fs.readFileString(
+            f.path.join(
+              profile.projectSnapshotPath,
+              "participants",
+              project.alias,
+              "src",
+              "feature.ts",
+            ),
+          ),
+          `preserved participant ${project.grant.projectId}\n`,
+        );
+      }
+      const mounts = factoryDockerArguments(profile);
+      assert.include(
+        mounts,
+        `type=bind,source=${profile.projectSnapshotPath},target=/workspace,readonly`,
+      );
+      assert.isFalse(
+        mounts.some((arg) => arg.includes("type=volume") || arg.includes("old-revoked-volume")),
+      );
+      assert.equal(
+        (yield* assertFactoryProfileActive(f.original).pipe(Effect.flip)).code,
+        "execution-unavailable",
+      );
+      const repeated = yield* f.prepare;
+      assert.equal(repeated.qualification.profileId, prepared.qualification.profileId);
+      assert.equal(repeated.sourceDigest, prepared.sourceDigest);
+      assert.lengthOf(f.invocations, 1);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    ),
+);
+
+it.effect(
+  "rejects tampered preserved integration files before probing retrospective execution",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* integrationRetroFixture();
+      const tampered = {
+        ...f.runtime,
+        projects: f.runtime.projects.map((project) => ({
+          ...project,
+          files: project.files.map((file) => ({
+            ...file,
+            content: Buffer.from("tampered").toString("base64"),
+          })),
+        })),
+      };
+      yield* f.fs.writeFileString(f.runtimePath, yield* encodeRuntime(tampered));
+      assert.propertyVal(yield* f.prepare.pipe(Effect.flip), "code", "execution-unavailable");
+      assert.lengthOf(f.invocations, 0);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    ),
+);
+
+it.effect("refuses a delivered integration retro whose completed operation is missing", () =>
+  Effect.gen(function* () {
+    const f = yield* integrationRetroFixture();
+    const state = f.getState();
+    f.setState({
+      ...state,
+      mergeOperations: [],
+      integrations: state.integrations.map((entry) => ({
+        ...entry,
+        currentPreparationId: f.runtime.preparationId,
+      })),
+    });
+    assert.propertyVal(yield* f.prepare.pipe(Effect.flip), "code", "execution-unavailable");
+    assert.lengthOf(f.invocations, 0);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+  ),
 );

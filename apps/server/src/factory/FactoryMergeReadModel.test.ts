@@ -28,14 +28,18 @@ describe("merge group read scope", () => {
       const scoped = scopeFactoryMerge(withForeignGroup, { kind: "project", projectId });
       expect(scoped.mergeGroups.map((entry) => entry.id)).toEqual([groupId]);
       expect(scoped.mergeGroupReviews.map((entry) => entry.id)).toEqual([reviewId]);
-      expect(Object.keys(scoped).sort()).toEqual(["mergeGroupReviews", "mergeGroups"]);
+      expect(Object.keys(scoped).sort()).toEqual([
+        "mergeGroupReviews",
+        "mergeGroups",
+        "mergeOperations",
+      ]);
     }
     expect(
       scopeFactoryMerge(withForeignGroup, {
         kind: "project",
         projectId: ProjectId.make("unrelated"),
       }),
-    ).toEqual({ mergeGroups: [], mergeGroupReviews: [] });
+    ).toEqual({ mergeGroups: [], mergeGroupReviews: [], mergeOperations: [] });
   });
 
   it("binds manager and assignment scopes to durable ownership", () => {

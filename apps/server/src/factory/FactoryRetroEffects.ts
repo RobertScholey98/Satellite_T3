@@ -39,6 +39,7 @@ import {
   type FactoryRetroContext,
 } from "./FactoryRetros.ts";
 import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import { factoryMergeFrozenProof } from "./FactoryMergeOperation.ts";
 import type { FactoryActor } from "./FactoryState.ts";
 
 export class FactoryRetroEffects extends Context.Service<
@@ -384,6 +385,20 @@ const make = Effect.gen(function* () {
             guidance: state.guidance.filter((entry) => entry.assignmentId === current.id),
             findings: state.findings.filter((entry) => entry.assignmentId === current.id),
             deliveryFindings: current.delivery?.retroFindings ?? [],
+            sharedDelivery: state.mergeOperations
+              .filter(
+                (operation) =>
+                  operation.integrationAssignmentId === current.id ||
+                  operation.members.some((member) => member.reviewed.assignmentId === current.id),
+              )
+              .map((operation) => ({
+                operation,
+                review: state.mergeGroupReviews.find((entry) => entry.id === operation.reviewId),
+                verification: state.integrationVerifications.find(
+                  (entry) =>
+                    entry.id === factoryMergeFrozenProof(operation)?.integrationVerificationId,
+                ),
+              })),
           }),
         },
       ],

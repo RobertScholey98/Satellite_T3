@@ -60,6 +60,11 @@ import * as FactoryCollaborationEffects from "./FactoryCollaborationEffects.ts";
 import { scopeFactoryCollaboration } from "./FactoryCollaborationReadModel.ts";
 import * as FactoryIntegrationEffects from "./FactoryIntegrationEffects.ts";
 import * as FactoryMergeEffects from "./FactoryMergeEffects.ts";
+import * as FactoryMergeOperationEffects from "./FactoryMergeOperationEffects.ts";
+import {
+  factoryMergeOperationReadiness,
+  latestFactoryMergeOperation,
+} from "./FactoryMergeOperation.ts";
 import { factoryMergeGroupReadiness } from "./FactoryMerge.ts";
 import { scopeFactoryMerge } from "./FactoryMergeReadModel.ts";
 import { scopeFactoryIntegration } from "./FactoryIntegrationReadModel.ts";
@@ -263,6 +268,9 @@ export const layer = Layer.effect(
       FactoryIntegrationEffects.FactoryIntegrationEffects,
     );
     const merges = yield* Effect.serviceOption(FactoryMergeEffects.FactoryMergeEffects);
+    const mergeOperations = yield* Effect.serviceOption(
+      FactoryMergeOperationEffects.FactoryMergeOperationEffects,
+    );
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -1105,19 +1113,27 @@ export const layer = Layer.effect(
     );
     const mergeWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
-        if (Option.isNone(merges)) return;
+        if (Option.isNone(merges) && Option.isNone(mergeOperations)) return;
         const visited = new Set<string>();
         for (;;) {
           const pending = (yield* store.pending).filter(
-            (entry) => !visited.has(entry.id) && entry.intent.type.startsWith("merge.group."),
+            (entry) =>
+              !visited.has(entry.id) &&
+              ((Option.isSome(merges) && entry.intent.type.startsWith("merge.group.")) ||
+                (Option.isSome(mergeOperations) &&
+                  entry.intent.type.startsWith("merge.operation."))),
           );
           if (!pending.length) return;
           for (const entry of pending) {
             visited.add(entry.id);
             const revision = (yield* store.snapshot).revision;
-            yield* merges.value.handle(entry).pipe(
+            const executor = entry.intent.type.startsWith("merge.operation.")
+              ? mergeOperations
+              : merges;
+            if (Option.isNone(executor)) continue;
+            yield* executor.value.handle(entry).pipe(
               Effect.catch((cause) =>
-                Effect.logError("Factory shared review remains pending", {
+                Effect.logError("Factory shared delivery remains pending", {
                   effectId: entry.id,
                   cause,
                 }),
@@ -1175,7 +1191,7 @@ export const layer = Layer.effect(
           ),
         ),
       );
-    if (Option.isSome(merges))
+    if (Option.isSome(merges) || Option.isSome(mergeOperations))
       yield* forkParked(
         store.changes.pipe(
           Stream.changesWith((left, right) => left.revision === right.revision),
@@ -1236,12 +1252,31 @@ export const layer = Layer.effect(
             code: "invalid-state",
             detail: "This merge group is unavailable in the current environment.",
           });
+        const operationReadiness = factoryMergeOperationReadiness(state, group.id);
+        const runtimeAvailable = Option.isSome(mergeOperations);
         return {
           group,
-          readiness: factoryMergeGroupReadiness(state, group.id),
+          readiness: {
+            ...factoryMergeGroupReadiness(state, group.id),
+            canRequestMerge: runtimeAvailable && operationReadiness.canStart,
+          },
           currentReview:
             state.mergeGroupReviews.find((entry) => entry.id === group.currentReviewId) ?? null,
           integrationLeadThreadId: assignment.threadId,
+          operation: latestFactoryMergeOperation(state, group.id) ?? null,
+          operationReadiness: runtimeAvailable
+            ? operationReadiness
+            : {
+                ...operationReadiness,
+                canStart: false,
+                canRetry: false,
+                canReconcile: false,
+                canStop: false,
+                reasons: [
+                  ...operationReadiness.reasons,
+                  "Coordinated merge execution is unavailable in this environment.",
+                ],
+              },
         };
       }),
       changes: (query) => store.changes.pipe(Stream.map(scopedSnapshot(query))),
@@ -1488,6 +1523,14 @@ export const layer = Layer.effect(
         let improvementContext: FactoryImprovementContext = {};
         let workflowContext: FactoryWorkflowContext = {};
         let integrationContext: FactoryIntegrationContext = {};
+        if (
+          (command.type === "merge.group.start" || command.type.startsWith("merge.operation.")) &&
+          Option.isNone(mergeOperations)
+        )
+          return yield* new FactoryError({
+            code: "execution-unavailable",
+            detail: "This environment has no coordinated merge runtime.",
+          });
         if (command.type.startsWith("merge.group.") && Option.isNone(merges))
           return yield* new FactoryError({
             code: "execution-unavailable",

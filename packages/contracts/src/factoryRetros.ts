@@ -82,6 +82,13 @@ const ConclusionFields = {
 export const FactoryConclusion = Schema.Union([
   Schema.Struct({
     ...ConclusionFields,
+    kind: Schema.Literal("shared-group-delivered"),
+    operationId: Id,
+    groupId: Id,
+    receiptDigest: Id,
+  }),
+  Schema.Struct({
+    ...ConclusionFields,
     kind: Schema.Literal("delivered"),
     planVersion: NonNegativeInt,
     deliveryIds: Ids.check(Schema.isMinLength(1)),

@@ -27,6 +27,11 @@ import { factoryExecutionProbe } from "./FactoryExecutionProbe.ts";
 import * as FactoryRetroEvidence from "./FactoryRetroEvidence.ts";
 import * as FactorySource from "./FactorySource.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import {
+  IntegrationRuntimeArtifact,
+  assertIntegrationRuntimeIdentity,
+  integrationDigest,
+} from "./FactoryIntegrationRuntime.ts";
 
 export class FactoryRetroExecution extends Context.Service<
   FactoryRetroExecution,
@@ -47,6 +52,9 @@ export class FactoryRetroExecution extends Context.Service<
 
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
 const encodeProfile = Schema.encodeEffect(Schema.fromJsonString(FactoryExecutionProfile));
+const decodeIntegration = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(IntegrationRuntimeArtifact),
+);
 const isFactoryError = Schema.is(FactoryError);
 const unavailable = () =>
   new FactoryError({
@@ -69,6 +77,8 @@ const make = Effect.gen(function* () {
   const root = path.join(config.stateDir, "factory", "execution");
   const digest = (bytes: Uint8Array) =>
     crypto.digest("SHA-256", bytes).pipe(Effect.map((value) => Buffer.from(value).toString("hex")));
+  const digestIntegration = (value: unknown) =>
+    integrationDigest(value).pipe(Effect.provideService(Crypto.Crypto, crypto));
   const profileIdFor = (retroId: string) =>
     digest(new TextEncoder().encode(stableStringify({ kind: "retrospective", retroId }))).pipe(
       Effect.map(
@@ -166,38 +176,108 @@ const make = Effect.gen(function* () {
       } else {
         if (
           assignment.qualification?.status !== "qualified" ||
-          !/^[a-f0-9-]{36}$/.test(assignment.qualification.profileId) ||
-          !assignment.startingSource
+          !/^[a-f0-9-]{36}$/.test(assignment.qualification.profileId)
         )
           return yield* unavailable();
+        const originalProfileId = assignment.qualification.profileId;
         const original = yield* fs
-          .readFileString(path.join(root, assignment.qualification.profileId, "profile.json"))
+          .readFileString(path.join(root, originalProfileId, "profile.json"))
           .pipe(Effect.flatMap(decodeProfile));
-        const starting = yield* sources.read(assignment.startingSource.id);
-        if (starting.source.sourceDigest !== assignment.startingSource.sourceDigest)
-          return yield* unavailable();
-        const revision = assignment.delivery?.revisions.find(
-          (entry) => entry.id === assignment.delivery?.currentRevisionId,
-        );
-        const candidate =
-          revision?.candidateId !== undefined
-            ? yield* boundaries.readCandidate(revision.candidateId)
-            : undefined;
-        if (
-          candidate &&
-          (candidate.assignmentId !== assignment.id ||
-            candidate.finalized?.sourceDigest !== revision?.candidateDigest)
-        )
-          return yield* unavailable();
-        const final = candidate?.finalized;
-        const sourceDigest = final?.sourceDigest ?? starting.source.sourceDigest;
-        // A cancelled grant cannot be revived to capture its old writable volume.
-        const sourceBasis = final ? "final-candidate" : "starting-snapshot";
+        const source = yield* Effect.gen(function* () {
+          if (assignment.integrationId) {
+            const state = yield* store.snapshot;
+            const integration = state.integrations.find(
+              (entry) => entry.id === assignment.integrationId,
+            );
+            const conclusion = assignment.completion?.conclusion;
+            const operation =
+              conclusion?.kind === "shared-group-delivered"
+                ? state.mergeOperations.find((entry) => entry.id === conclusion.operationId)
+                : undefined;
+            if (
+              conclusion?.kind === "shared-group-delivered" &&
+              (operation?.lifecycle.phase !== "completed" ||
+                operation.integrationId !== assignment.integrationId ||
+                operation.integrationAssignmentId !== assignment.id ||
+                operation.groupId !== conclusion.groupId ||
+                operation.lifecycle.receiptDigest !== conclusion.receiptDigest)
+            )
+              return yield* unavailable();
+            const preparationId =
+              operation?.lifecycle.phase === "completed"
+                ? operation.lifecycle.frozen.integrationPreparationId
+                : integration?.currentPreparationId;
+            if (!preparationId || integration?.assignmentId !== assignment.id)
+              return yield* unavailable();
+            const location = yield* digestIntegration(preparationId);
+            const runtime = yield* fs
+              .readFileString(
+                path.join(
+                  config.stateDir,
+                  "factory",
+                  "integration",
+                  "preparations",
+                  location,
+                  "runtime.json",
+                ),
+              )
+              .pipe(Effect.flatMap(decodeIntegration));
+            yield* assertIntegrationRuntimeIdentity(runtime).pipe(
+              Effect.provideService(Crypto.Crypto, crypto),
+            );
+            if (
+              runtime.integrationId !== assignment.integrationId ||
+              runtime.preparationId !== preparationId ||
+              runtime.profile.profileId !== originalProfileId ||
+              runtime.profile.assignmentWorkspace?.assignmentId !== assignment.id ||
+              (operation?.lifecycle.phase === "completed" &&
+                (runtime.manifest.inputDigest !== operation.lifecycle.frozen.inputDigest ||
+                  conclusion?.kind !== "shared-group-delivered" ||
+                  operation.lifecycle.receiptDigest !== conclusion.receiptDigest))
+            )
+              return yield* unavailable();
+            const files = runtime.projects.flatMap((project) =>
+              project.files.map((file) => ({
+                ...file,
+                path: `participants/${project.alias}/${file.path}`,
+              })),
+            );
+            return {
+              files,
+              sourceDigest: yield* digestIntegration(files),
+              sourceBasis: "integration-inputs" as const,
+            };
+          }
+          if (!assignment.startingSource) return yield* unavailable();
+          const starting = yield* sources.read(assignment.startingSource.id);
+          if (starting.source.sourceDigest !== assignment.startingSource.sourceDigest)
+            return yield* unavailable();
+          const revision = assignment.delivery?.revisions.find(
+            (entry) => entry.id === assignment.delivery?.currentRevisionId,
+          );
+          const candidate =
+            revision?.candidateId !== undefined
+              ? yield* boundaries.readCandidate(revision.candidateId)
+              : undefined;
+          if (
+            candidate &&
+            (candidate.assignmentId !== assignment.id ||
+              candidate.finalized?.sourceDigest !== revision?.candidateDigest)
+          )
+            return yield* unavailable();
+          const final = candidate?.finalized;
+          // A cancelled grant cannot be revived to capture its old writable volume.
+          return {
+            files: final?.files ?? starting.files,
+            sourceDigest: final?.sourceDigest ?? starting.source.sourceDigest,
+            sourceBasis: final ? ("final-candidate" as const) : ("starting-snapshot" as const),
+          };
+        });
         const staging = path.join(directory, `snapshot-${yield* crypto.randomUUIDv4}`);
         const projectSnapshotPath = path.join(staging, "project");
         const workflowSnapshotPath =
           original.workflow?.snapshotPath ?? path.join(staging, "workflow");
-        yield* writeFiles(projectSnapshotPath, final?.files ?? starting.files);
+        yield* writeFiles(projectSnapshotPath, source.files);
         if (original.workflow === undefined)
           yield* copyWorkflow(original.workflowSnapshotPath, workflowSnapshotPath);
         profile = FactoryExecutionProfile.make({
@@ -212,10 +292,14 @@ const make = Effect.gen(function* () {
             ? {}
             : { requiresSkillAuthoring: original.requiresSkillAuthoring }),
           runtimePath: path.join(directory, "sessions"),
-          startingSourceId: assignment.startingSource.id,
-          startingSourceDigest: assignment.startingSource.sourceDigest,
-          inspection: { sourceDigest, evidencePath: sealed.directory },
-          retro: { ...input, sourceBasis, stopPath },
+          ...(assignment.startingSource
+            ? {
+                startingSourceId: assignment.startingSource.id,
+                startingSourceDigest: assignment.startingSource.sourceDigest,
+              }
+            : {}),
+          inspection: { sourceDigest: source.sourceDigest, evidencePath: sealed.directory },
+          retro: { ...input, sourceBasis: source.sourceBasis, stopPath },
         });
         yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
         const proof = yield* runner.run({

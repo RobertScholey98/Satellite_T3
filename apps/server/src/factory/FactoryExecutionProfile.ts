@@ -41,7 +41,7 @@ export const FactoryExecutionProfile = Schema.Struct({
       assignmentId: Schema.String,
       conclusionId: Schema.String,
       evidenceDigest: Schema.String,
-      sourceBasis: Schema.Literals(["final-candidate", "starting-snapshot"]),
+      sourceBasis: Schema.Literals(["final-candidate", "starting-snapshot", "integration-inputs"]),
       stopPath: Schema.String,
     }),
   ),

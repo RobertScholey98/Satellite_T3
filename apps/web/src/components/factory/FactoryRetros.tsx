@@ -149,6 +149,7 @@ export function FactoryRetros({
     environment.data?.followups.filter((entry) => entry.assignmentId === assignment.id) ?? [];
   const plan = completion?.plan;
   const noPrAcceptance =
+    !assignment.integrationId &&
     assignment.scope?.requiresPullRequest === false &&
     !assignment.outcome &&
     !completion?.conclusion &&
@@ -169,6 +170,12 @@ export function FactoryRetros({
         The team reviews its work after delivery or confirmed cancellation. Its engineering manager
         then reviews the lessons and assigns follow-ups. No process change is a valid outcome.
       </p>
+      {assignment.integrationId && !completion?.conclusion ? (
+        <p className="text-sm text-muted-foreground">
+          This integration completes when every linked PR has a confirmed merge. Its team and
+          manager retros follow that shared outcome.
+        </p>
+      ) : null}
       {completion?.waitReason ? (
         <div className="space-y-2">
           <p role="status" className="text-sm text-muted-foreground">

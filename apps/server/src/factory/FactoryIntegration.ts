@@ -507,6 +507,26 @@ export function decideFactoryIntegration(
       ? state.integrations.find((entry) => entry.id === command.integrationId)
       : undefined;
   const assignment = state.assignments.find((entry) => entry.id === integration?.assignmentId);
+  if (
+    integration &&
+    state.mergeOperations.some(
+      (entry) =>
+        entry.integrationId === integration.id &&
+        (entry.lifecycle.phase !== "stopped" ||
+          entry.members.some((member) => member.outcome.phase !== "pending")),
+    ) &&
+    [
+      "integration.refresh",
+      "integration.file.mutate",
+      "integration.verify",
+      "integration.thread.retry",
+      "integration.operation.resumed",
+    ].includes(command.type)
+  )
+    return fail(
+      "The shared merge operation has frozen this integration workspace. Resolve or safely stop that operation before changing its tested inputs.",
+      "permission-denied",
+    );
   const leadOwns = (entry: FactoryAssignment | undefined) =>
     human || (active(entry) && actor.kind === "thread" && actor.threadId === entry.threadId);
   const teamOwns = () =>

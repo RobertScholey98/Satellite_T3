@@ -861,6 +861,7 @@ export const PullRequestDetail = Schema.Struct({
   /** Server epoch milliseconds when the provider read started; preserved on cache hits. */
   observedAt: Schema.optional(Schema.Finite),
   mergedAt: Schema.NullOr(IsoDateTime),
+  mergeCommitSha: Schema.optional(TrimmedNonEmptyString),
   closedAt: Schema.NullOr(IsoDateTime),
   reviewers: Schema.Array(PullRequestActor),
   labels: Schema.Array(PullRequestLabel),

@@ -269,7 +269,7 @@ describe("merge groups", () => {
     const result = approve(fixture);
     const after = factoryMergeGroupReadiness(result.state, fixture.groupId);
     assert.equal(after.status, "ready");
-    assert.isFalse(after.canRequestMerge);
+    assert.isTrue(after.canRequestMerge);
     assert.isTrue(after.members.every((entry) => entry.humanApproved));
     assert.deepEqual(after.reasons, []);
     for (const assignment of result.state.assignments.filter((entry) => !entry.integrationId)) {

@@ -52,3 +52,28 @@ export function factoryMergeEvidenceUrl(value: string) {
     return null;
   }
 }
+
+export function factoryMergeOperationActions(
+  read: FactoryMergeGroupRead,
+  permissions: { operate: boolean; write: boolean },
+) {
+  const operationId =
+    read.operation?.groupId === read.group.id ? (read.operation?.id ?? null) : null;
+  const decision = factoryMergeDecisionIdentity(read);
+  const readiness = read.operationReadiness;
+  return {
+    start: permissions.operate && permissions.write && readiness.canStart ? decision : null,
+    retry: permissions.operate && permissions.write && readiness.canRetry ? operationId : null,
+    reconcile: permissions.operate && readiness.canReconcile ? operationId : null,
+    stop: permissions.operate && readiness.canStop ? operationId : null,
+  };
+}
+
+export function factoryMergeReviewLocked(read: FactoryMergeGroupRead) {
+  const operation = read.operation;
+  return (
+    operation !== null &&
+    (operation.lifecycle.phase !== "stopped" ||
+      operation.members.some((member) => member.outcome.phase !== "pending"))
+  );
+}

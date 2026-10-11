@@ -3,6 +3,7 @@ import {
   factoryMergeEnrollmentConflict,
   reconcileFactoryMergeGroups,
 } from "./FactoryMerge.ts";
+import { decideFactoryMergeOperation } from "./FactoryMergeOperation.ts";
 import {
   decideFactoryIntegration,
   reconcileFactoryIntegrations,
@@ -96,6 +97,7 @@ export interface FactoryDecision {
 export const initialFactorySnapshot = (): FactorySnapshot => ({
   revision: 0,
   mergeGroups: [],
+  mergeOperations: [],
   mergeGroupReviews: [],
   integrationCapabilities: [],
   integrations: [],
@@ -361,6 +363,8 @@ function decideCore(
       }),
     );
   }
+  const mergeOperationDecision = decideFactoryMergeOperation(input);
+  if (mergeOperationDecision !== undefined) return mergeOperationDecision;
   const mergeDecision = decideFactoryMerge(input);
   if (mergeDecision !== undefined) return mergeDecision;
   const integrationDecision = decideFactoryIntegration(input);

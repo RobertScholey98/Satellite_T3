@@ -8,7 +8,7 @@ export type FactoryMergeReadScope =
 export function scopeFactoryMerge(
   state: FactorySnapshot,
   scope: FactoryMergeReadScope,
-): Pick<FactorySnapshot, "mergeGroups" | "mergeGroupReviews"> {
+): Pick<FactorySnapshot, "mergeGroups" | "mergeGroupReviews" | "mergeOperations"> {
   const ownedAssignments = new Set(
     state.assignments
       .filter((entry) =>
@@ -29,5 +29,6 @@ export function scopeFactoryMerge(
   return {
     mergeGroups: groups,
     mergeGroupReviews: state.mergeGroupReviews.filter((entry) => ids.has(entry.groupId)),
+    mergeOperations: state.mergeOperations.filter((entry) => ids.has(entry.groupId)),
   };
 }

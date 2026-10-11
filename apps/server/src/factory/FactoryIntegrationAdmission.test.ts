@@ -31,6 +31,7 @@ import { deliveryIds, deliveryNow, deliverySelection } from "./FactoryDelivery.t
 import { FactorySource } from "./FactorySource.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import { FactoryControlAccess } from "./FactoryControlAccess.ts";
+import { startedMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
 
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -168,6 +169,28 @@ it.effect(
           ),
         };
         const approved = state;
+        const operation = startedMergeOperationFixture().state.mergeOperations[0]!;
+        state = {
+          ...approved,
+          mergeOperations: [
+            {
+              ...operation,
+              integrationId: seed.integrationId,
+              integrationAssignmentId: assignment.id,
+            },
+          ],
+        };
+        assert.equal(
+          (yield* runtime.runtimePolicyFor(child).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.equal(
+          (yield* runtime
+            .runtimePolicyFor(ThreadId.make("pending-merge-worker"), integrated.lead)
+            .pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        state = approved;
         state = {
           ...approved,
           controls: [

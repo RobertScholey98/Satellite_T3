@@ -8,6 +8,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { FactoryAssignmentId } from "./factoryControls.ts";
+import { FactoryBoundaryId } from "./factoryBoundaries.ts";
 import { FactoryRevisionHostEvidence } from "./factoryDelivery.ts";
 import { FactoryEvidence } from "./factoryOversight.ts";
 import { PullRequestRef } from "./pullRequest.ts";
@@ -122,15 +123,152 @@ export const FactoryMergeGroupReadiness = Schema.Struct({
   canRequestMerge: Schema.Boolean,
 });
 export type FactoryMergeGroupReadiness = typeof FactoryMergeGroupReadiness.Type;
+export const FactoryMergeMemberReceipt = Schema.Struct({
+  id: Id,
+  operationId: Id,
+  assignmentId: FactoryAssignmentId,
+  revisionId: Id,
+  ref: PullRequestRef,
+  headSha: Id,
+  targetBranch: Id,
+  mergeCommitSha: Id,
+  mergedAt: IsoDateTime,
+  observedAt: IsoDateTime,
+});
+export type FactoryMergeMemberReceipt = typeof FactoryMergeMemberReceipt.Type;
+export const FactoryMergeMemberOutcome = Schema.Union([
+  Schema.Struct({ phase: Schema.Literal("pending") }),
+  Schema.Struct({
+    phase: Schema.Literal("unknown"),
+    attemptId: Id,
+    submittedAt: IsoDateTime,
+    reason: Schema.NullOr(Text),
+  }),
+  Schema.Struct({ phase: Schema.Literal("confirmed"), receipt: FactoryMergeMemberReceipt }),
+]);
+export type FactoryMergeMemberOutcome = typeof FactoryMergeMemberOutcome.Type;
+export const FactoryMergeOperationMember = Schema.Struct({
+  reviewed: FactoryMergeReviewMember,
+  authority: Schema.Struct({
+    boundaryId: FactoryBoundaryId,
+    grantEpoch: NonNegativeInt,
+    integrationGrantId: Id,
+    capabilityId: Id,
+    targetBranch: Id,
+  }),
+  attempts: NonNegativeInt.check(Schema.isLessThanOrEqualTo(3)),
+  outcome: FactoryMergeMemberOutcome,
+});
+export type FactoryMergeOperationMember = typeof FactoryMergeOperationMember.Type;
+export const FactoryMergeFrozenProof = Schema.Struct({
+  integrationPreparationId: Id,
+  integrationVerificationId: Id,
+  inputDigest: Id,
+  testArtifactDigest: Id,
+  captureArtifactId: Id,
+  captureDigest: Id,
+  coordinatorCapabilityId: Id,
+  coordinatorDigest: Id,
+  integrationLeadThreadId: ThreadId,
+  integrationGrantEpoch: NonNegativeInt,
+  planIds: Schema.Array(Id),
+  stoppedAt: IsoDateTime,
+  digest: Id,
+});
+export type FactoryMergeFrozenProof = typeof FactoryMergeFrozenProof.Type;
+const Recovery = Schema.Literals(["reconcile", "same-vector", "new-review", "none"]);
+export const FactoryMergeOperation = Schema.Struct({
+  id: Id,
+  groupId: Id,
+  integrationId: Id,
+  integrationAssignmentId: FactoryAssignmentId,
+  reviewId: Id,
+  reviewDigest: Id,
+  authorizingCommandId: CommandId,
+  members: Schema.Array(FactoryMergeOperationMember).check(
+    Schema.isMinLength(2),
+    Schema.isMaxLength(30),
+  ),
+  lifecycle: Schema.Union([
+    Schema.Struct({ phase: Schema.Literal("preparing") }),
+    Schema.Struct({ phase: Schema.Literal("running"), frozen: FactoryMergeFrozenProof }),
+    Schema.Struct({
+      phase: Schema.Literal("attention"),
+      frozen: Schema.NullOr(FactoryMergeFrozenProof),
+      reason: Text,
+      recommendation: Text,
+      retry: Recovery,
+    }),
+    Schema.Struct({
+      phase: Schema.Literal("stopped"),
+      frozen: Schema.NullOr(FactoryMergeFrozenProof),
+      reason: Text,
+      stoppedAt: IsoDateTime,
+    }),
+    Schema.Struct({
+      phase: Schema.Literal("completed"),
+      frozen: FactoryMergeFrozenProof,
+      receiptDigest: Id,
+      completedAt: IsoDateTime,
+    }),
+  ]),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type FactoryMergeOperation = typeof FactoryMergeOperation.Type;
+export const FactoryMergeOperationReadiness = Schema.Struct({
+  status: Schema.Literals([
+    "idle",
+    "preparing",
+    "merging",
+    "partial",
+    "attention",
+    "stopped",
+    "completed",
+  ]),
+  confirmedCount: NonNegativeInt,
+  memberCount: NonNegativeInt,
+  reasons: Reasons,
+  recommendation: Schema.NullOr(Text),
+  canStart: Schema.Boolean,
+  canReconcile: Schema.Boolean,
+  canRetry: Schema.Boolean,
+  canStop: Schema.Boolean,
+});
+export type FactoryMergeOperationReadiness = typeof FactoryMergeOperationReadiness.Type;
 export const FactoryMergeGroupRead = Schema.Struct({
   group: FactoryMergeGroup,
   readiness: FactoryMergeGroupReadiness,
   currentReview: Schema.NullOr(FactoryMergeGroupReview),
   integrationLeadThreadId: ThreadId,
+  operation: Schema.NullOr(FactoryMergeOperation),
+  operationReadiness: FactoryMergeOperationReadiness,
 });
 export type FactoryMergeGroupRead = typeof FactoryMergeGroupRead.Type;
 const Fields = { commandId: CommandId, groupId: Id };
 export const FactoryMergeCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("merge.group.start"),
+    ...Fields,
+    reviewId: Id,
+    expectedDigest: Id,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.reconcile"),
+    commandId: CommandId,
+    operationId: Id,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.retry"),
+    commandId: CommandId,
+    operationId: Id,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.stop"),
+    commandId: CommandId,
+    operationId: Id,
+    reason: Text,
+  }),
   Schema.Struct({ type: Schema.Literal("merge.group.review"), ...Fields }),
   Schema.Struct({
     type: Schema.Literal("merge.group.approve"),
@@ -148,6 +286,63 @@ export const FactoryMergeCommand = Schema.Union([
 ]);
 export type FactoryMergeCommand = typeof FactoryMergeCommand.Type;
 export const FactoryMergeHostCommand = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.frozen"),
+    commandId: CommandId,
+    operationId: Id,
+    expectedStateRevision: NonNegativeInt,
+    frozen: FactoryMergeFrozenProof,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.submitting"),
+    commandId: CommandId,
+    operationId: Id,
+    assignmentId: FactoryAssignmentId,
+    attemptId: Id,
+    expectedAttempt: NonNegativeInt,
+    expectedStateRevision: NonNegativeInt,
+    evidenceDigest: Id,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.observed"),
+    commandId: CommandId,
+    operationId: Id,
+    assignmentId: FactoryAssignmentId,
+    attemptId: Schema.optionalKey(Id),
+    observation: Schema.Union([
+      Schema.Struct({ phase: Schema.Literal("confirmed"), receipt: FactoryMergeMemberReceipt }),
+      Schema.Struct({
+        phase: Schema.Literal("open"),
+        headSha: Id,
+        targetBranch: Id,
+        queued: Schema.Literal(false),
+        observedAt: IsoDateTime,
+      }),
+      Schema.Struct({
+        phase: Schema.Literal("rejected"),
+        classification: Schema.Literals(["transient", "permanent"]),
+        reason: Text,
+        headSha: Id,
+        targetBranch: Id,
+        observedAt: IsoDateTime,
+      }),
+      Schema.Struct({ phase: Schema.Literal("unresolved"), reason: Text, observedAt: IsoDateTime }),
+    ]),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.held"),
+    commandId: CommandId,
+    operationId: Id,
+    reason: Text,
+    recommendation: Text,
+    retry: Recovery,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.completed"),
+    commandId: CommandId,
+    operationId: Id,
+    receiptDigest: Id,
+  }),
   Schema.Struct({
     type: Schema.Literal("merge.group.inspected"),
     ...Fields,
@@ -168,6 +363,10 @@ export const FactoryMergeHostCommand = Schema.Union([
   }),
 ]);
 export const FactoryMergeEffectIntent = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("merge.operation.prepare"), operationId: Id }),
+  Schema.Struct({ type: Schema.Literal("merge.operation.advance"), operationId: Id }),
+  Schema.Struct({ type: Schema.Literal("merge.operation.reconcile"), operationId: Id }),
+  Schema.Struct({ type: Schema.Literal("merge.operation.resume"), operationId: Id }),
   Schema.Struct({ type: Schema.Literal("merge.group.inspect"), groupId: Id, reviewId: Id }),
   Schema.Struct({
     type: Schema.Literal("merge.group.notify"),

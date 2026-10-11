@@ -14,6 +14,7 @@ import * as FactoryStore from "./FactoryStore.ts";
 import { isFactoryModelApproved, resolveFactoryModelPolicy } from "./FactoryModelPolicy.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
+import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
 
 export class FactoryModelAdmission extends Context.Service<
   FactoryModelAdmission,
@@ -79,6 +80,15 @@ const make = Effect.gen(function* () {
           return yield* new FactoryError({
             code: "permission-denied",
             detail: "The replaced lead cannot restart or delegate work.",
+          });
+        if (
+          assignment?.integrationId &&
+          auxiliary?.kind !== "retrospective" &&
+          currentFactoryMergeOperation(state, assignment.integrationId)
+        )
+          return yield* new FactoryError({
+            code: "permission-denied",
+            detail: "The shared merge operation has frozen this integration team.",
           });
         if (
           auxiliary !== undefined &&

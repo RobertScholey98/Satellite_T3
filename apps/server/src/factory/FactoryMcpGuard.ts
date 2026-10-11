@@ -128,6 +128,14 @@ const isIntegrationRefresh = Schema.is(
     }),
   }),
 );
+const isMergeOperationRequest = Schema.is(
+  Schema.Struct({
+    command: Schema.Struct({
+      type: Schema.Literals(["merge.operation.reconcile", "merge.operation.retry"]),
+      operationId: Schema.String,
+    }),
+  }),
+);
 
 const make = Effect.gen(function* () {
   const store = yield* FactoryStore.FactoryStore;
@@ -221,6 +229,17 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const member = yield* membership(invocation);
         if (member === undefined) return;
+        const integrationLead =
+          member.auxiliary === undefined &&
+          member.assignment?.integrationId !== undefined &&
+          member.assignment.threadId === invocation.thread?.threadId;
+        if (
+          integrationLead &&
+          (toolName === "factory_merge_group_get" ||
+            toolName === "factory_merge_operation_action" ||
+            (toolName === "factory_dispatch" && isMergeOperationRequest(payload)))
+        )
+          return;
         if (invocation.thread !== undefined)
           yield* controls
             .assertExecution(invocation.thread.threadId)
@@ -265,10 +284,6 @@ const make = Effect.gen(function* () {
           ["orchestrator_capabilities", "delegate_task", "task_status", "task_cancel"].includes(
             toolName,
           );
-        const integrationLead =
-          member.auxiliary === undefined &&
-          member.assignment?.integrationId !== undefined &&
-          member.assignment.threadId === invocation.thread?.threadId;
         let scopedCommunication = false;
         if (
           ["t3_thread_read", "t3_thread_send", "t3_thread_wait", "t3_thread_interrupt"].includes(
@@ -338,7 +353,11 @@ const make = Effect.gen(function* () {
           toolName !== "factory_dispatch" &&
           !(
             integrationLead &&
-            ["factory_merge_group_get", "factory_merge_group_review"].includes(toolName)
+            [
+              "factory_merge_group_get",
+              "factory_merge_group_review",
+              "factory_merge_group_start",
+            ].includes(toolName)
           ) &&
           ![
             "factory_integration_get",
@@ -524,9 +543,6 @@ const make = Effect.gen(function* () {
           invocation.thread.threadId !== member.assignment.threadId
         )
           return yield* denied();
-        yield* controls
-          .assertExecution(invocation.thread.threadId)
-          .pipe(Effect.mapError(unavailable));
         const state = yield* store.snapshot;
         const group = state.mergeGroups.find((entry) => entry.id === groupId);
         if (
@@ -824,10 +840,36 @@ const make = Effect.gen(function* () {
           command.type === "integration.capability.configure" ||
           command.type === "integration.capability.retry" ||
           command.type === "merge.group.approve" ||
-          command.type === "merge.group.reject"
+          command.type === "merge.group.reject" ||
+          command.type === "merge.operation.stop"
         )
           return yield* denied();
         if (invocation.thread === undefined) return yield* denied();
+        if (
+          command.type === "merge.operation.reconcile" ||
+          command.type === "merge.operation.retry"
+        ) {
+          const member = yield* managedCaller(invocation);
+          const operation = (yield* store.snapshot).mergeOperations.find(
+            (entry) => entry.id === command.operationId,
+          );
+          if (
+            member.auxiliary ||
+            !operation ||
+            !member.assignment?.integrationId ||
+            member.assignment.id !== operation.integrationAssignmentId ||
+            invocation.thread.threadId !== member.assignment.threadId
+          )
+            return yield* denied();
+          return yield* factory.dispatch(
+            {
+              kind: "thread",
+              threadId: invocation.thread.threadId,
+              assignmentId: member.assignment.id,
+            },
+            command,
+          );
+        }
         yield* controls
           .assertExecution(invocation.thread.threadId)
           .pipe(Effect.mapError(unavailable));

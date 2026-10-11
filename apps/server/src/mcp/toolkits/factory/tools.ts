@@ -71,10 +71,37 @@ export const FactoryToolkit = Toolkit.make(
   }).annotate(Tool.Readonly, true),
   Tool.make("factory_merge_group_review", {
     description:
-      "As the current integration lead, request fresh host inspection and a sealed combined review for all linked PRs. The human reviews the combined feature in this integration conversation and sends corrections to owning leads. Agents cannot approve or reject the human decision. All member merges remain blocked until a supported shared merge executor can act; this tool does not merge anything.",
+      "As the current integration lead, request fresh host inspection and a sealed combined review for all linked PRs. The human reviews the combined feature in this integration conversation and sends corrections to owning leads. Agents cannot approve or reject the human decision. This tool does not merge anything; use the shared start action only after every review gate passes.",
     parameters: Schema.Struct({
       commandId: CommandId,
       groupId: FactoryMergeGroupQuery.fields.groupId,
+    }),
+    success: FactoryCommandResult,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }),
+  Tool.make("factory_merge_group_start", {
+    description:
+      "As the exact integration lead, start one durable shared merge for the current sealed review. Requires every existing human or project-rule approval. Freezes integration work, conditionally merges each exact PR, and records actual outcomes. Cross-repository writes are sequential: partial success remains visible and cannot be rolled back automatically. Read factory_merge_group_get before starting.",
+    parameters: Schema.Struct({
+      commandId: CommandId,
+      groupId: FactoryMergeGroupQuery.fields.groupId,
+      reviewId: TrimmedNonEmptyString,
+      expectedDigest: TrimmedNonEmptyString,
+    }),
+    success: FactoryCommandResult,
+    failure,
+    failureMode: "return",
+    dependencies,
+  }),
+  Tool.make("factory_merge_operation_action", {
+    description:
+      "As the exact integration lead, reconcile actual host outcomes or retry the same reviewed merge operation when its current gates and remaining attempt allowance permit. Reconcile is read-only at the host and never grants another submission. Retry preserves confirmed members and attempt counts. Unknown outcomes, changed revisions, and revoked authority cannot be bypassed. Read factory_merge_group_get for the operation and recommendation first.",
+    parameters: Schema.Struct({
+      commandId: CommandId,
+      operationId: TrimmedNonEmptyString,
+      action: Schema.Literals(["reconcile", "retry"]),
     }),
     success: FactoryCommandResult,
     failure,

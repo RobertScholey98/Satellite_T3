@@ -22,6 +22,7 @@ import {
   factoryMergeGroupsForPullRequest,
 } from "./FactoryMergeOwnership.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
+import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
 
 const active = (assignment: FactoryAssignment | undefined): assignment is FactoryAssignment =>
   assignment !== undefined &&
@@ -312,8 +313,14 @@ export function factoryMergeGroupReadiness(
     reviewDigest: review?.lifecycle.phase === "sealed" ? review.lifecycle.digest : null,
     members,
     integrationVerificationId: evidence.ready ? evidence.integrationVerificationId : null,
-    canApprove: currentSeal && evidence.ready,
-    canRequestMerge: false,
+    canApprove:
+      currentSeal &&
+      evidence.ready &&
+      !currentFactoryMergeOperation(state, group?.integrationId ?? ""),
+    canRequestMerge:
+      currentSeal &&
+      reasons.length === 0 &&
+      !currentFactoryMergeOperation(state, group?.integrationId ?? ""),
   };
 }
 
@@ -396,6 +403,11 @@ export function decideFactoryMerge(input: {
   if (!("groupId" in command)) return fail("Select the merge group.", "invalid-state");
   const group = findGroup(state, command.groupId);
   if (!group) return fail("The merge group is unavailable.", "invalid-state");
+  if (currentFactoryMergeOperation(state, group.integrationId))
+    return fail(
+      "The shared merge operation owns this exact review. Stop it safely before replacing or changing the review.",
+      "invalid-state",
+    );
   const assignment = state.assignments.find((entry) => entry.id === group.integrationAssignmentId);
   const host = actor.kind === "system";
   const human = actor.kind === "human";

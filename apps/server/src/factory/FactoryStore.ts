@@ -337,6 +337,25 @@ const make = Effect.gen(function* () {
                       command.groupId === intent.groupId &&
                       command.reviewId === intent.reviewId
                     );
+                  case "merge.operation.prepare":
+                    return (
+                      (command.type === "merge.operation.frozen" ||
+                        command.type === "merge.operation.held") &&
+                      command.operationId === intent.operationId
+                    );
+                  case "merge.operation.advance":
+                    return (
+                      (command.type === "merge.operation.submitting" ||
+                        command.type === "merge.operation.held" ||
+                        command.type === "merge.operation.completed") &&
+                      command.operationId === intent.operationId
+                    );
+                  case "merge.operation.reconcile":
+                    return (
+                      (command.type === "merge.operation.held" ||
+                        command.type === "merge.operation.completed") &&
+                      command.operationId === intent.operationId
+                    );
                   case "collaboration.message.deliver":
                     return (
                       (command.type === "collaboration.message.recorded" ||

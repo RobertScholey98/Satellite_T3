@@ -31,6 +31,7 @@ import { FactorySource, type FactorySourceFile } from "./FactorySource.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import * as Workflow from "./FactoryWorkflowExecution.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
+import { startedMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const helperInput = Schema.Union([
@@ -350,6 +351,44 @@ const scenario = (live: boolean) =>
       yield* execution.release({ integrationId, preparationId, holdId: verificationId });
       yield* assertFactoryProfileActive(profile);
       assert.deepEqual(yield* execution.verify({ verificationId }), verified);
+      const beforeMergeHold = state;
+      const mergeOperation = startedMergeOperationFixture().state.mergeOperations[0]!;
+      state = {
+        ...state,
+        mergeOperations: [
+          { ...mergeOperation, integrationId, integrationAssignmentId: integrated.assignment },
+        ],
+      };
+      yield* execution.stop({ integrationId, preparationId, holdId: mergeOperation.id });
+      assert.equal(
+        (yield* assertFactoryProfileActive(profile).pipe(Effect.flip)).code,
+        "execution-unavailable",
+      );
+      assert.equal(
+        (yield* execution.capture({ integrationId, preparationId })).digest,
+        verified.testArtifact.digest,
+      );
+      assert.equal(
+        (yield* execution
+          .release({ integrationId, preparationId, holdId: mergeOperation.id })
+          .pipe(Effect.flip)).code,
+        "execution-unavailable",
+      );
+      assert.equal(
+        (yield* execution
+          .mutate({
+            integrationId,
+            preparationId,
+            grantId: grant.id,
+            operationId: "merge-held-write",
+            operation: { kind: "write", path: "fixtures/input.json", content: "{}" },
+          })
+          .pipe(Effect.flip)).code,
+        "execution-unavailable",
+      );
+      state = beforeMergeHold;
+      yield* execution.release({ integrationId, preparationId, holdId: mergeOperation.id });
+      yield* assertFactoryProfileActive(profile);
       const beforePause = state;
       state = {
         ...state,

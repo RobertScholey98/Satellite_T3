@@ -8,12 +8,23 @@ import {
   factoryMergeGroupsForPullRequest,
 } from "./FactoryMergeOwnership.ts";
 import { factoryDeliveryReadiness } from "./FactoryDelivery.ts";
+import { factoryMergeOperationWriteReadiness } from "./FactoryMergeOperation.ts";
 
 export const FactoryDeliveryPermit = Context.Reference<{
   readonly assignmentId: FactoryAssignmentId;
   readonly revisionId: string;
   readonly operationId: string;
 } | null>("t3/factory/FactoryDeliveryPermit", { defaultValue: () => null });
+
+export const FactoryMergeGroupPermit = Context.Reference<{
+  readonly groupId: string;
+  readonly operationId: string;
+  readonly assignmentId: FactoryAssignmentId;
+  readonly revisionId: string;
+  readonly attemptId: string;
+  readonly expectedHeadSha: string;
+  readonly frozenDigest: string;
+} | null>("t3/factory/FactoryMergeGroupPermit", { defaultValue: () => null });
 
 interface MutationTarget {
   readonly ref: PullRequestRef;
@@ -72,6 +83,7 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           const state = yield* store.snapshot;
           const permit = yield* FactoryDeliveryPermit;
+          const groupPermit = yield* FactoryMergeGroupPermit;
           let managed = false;
           for (const target of input.targets) {
             const owners = state.assignments.flatMap((assignment) =>
@@ -97,11 +109,56 @@ export const layer = Layer.effect(
                 return group ? [group] : [];
               }),
             ];
-            if (groups.length > 0)
-              return yield* new FactoryError({
-                code: "permission-denied",
-                detail: `This pull request belongs to merge group ${groups[0]!.id}. Review the combined feature in its integration thread; individual merge, auto-merge, and stack actions are held.`,
-              });
+            if (groups.length > 0) {
+              const refuse = () =>
+                new FactoryError({
+                  code: "permission-denied",
+                  detail: `This pull request belongs to merge group ${groups[0]!.id}. Review the combined feature in its integration thread; individual merge, auto-merge, and stack actions are held.`,
+                });
+              const operation = state.mergeOperations.find(
+                (entry) => entry.id === groupPermit?.operationId,
+              );
+              const member = operation?.members.find(
+                (entry) => entry.reviewed.assignmentId === groupPermit?.assignmentId,
+              );
+              if (
+                !groupPermit ||
+                !operation ||
+                !member ||
+                input.action !== "merge" ||
+                input.stack ||
+                input.targets.length !== 1 ||
+                new Set(groups.map((entry) => entry.id)).size !== 1 ||
+                groups[0]!.id !== groupPermit.groupId ||
+                operation.groupId !== groupPermit.groupId ||
+                operation.lifecycle.phase !== "running" ||
+                operation.lifecycle.frozen.digest !== groupPermit.frozenDigest ||
+                member.outcome.phase !== "unknown" ||
+                member.outcome.attemptId !== groupPermit.attemptId ||
+                member.reviewed.revisionId !== groupPermit.revisionId ||
+                member.reviewed.headSha !== groupPermit.expectedHeadSha ||
+                input.expectedHeadSha !== groupPermit.expectedHeadSha ||
+                target.headSha !== groupPermit.expectedHeadSha ||
+                member.reviewed.ref.number !== target.ref.number ||
+                canonicalHost(member.reviewed.ref.host ?? "github.com") !==
+                  canonicalHost(target.ref.host ?? "github.com") ||
+                canonicalRepository(member.reviewed.ref.repository) !==
+                  canonicalRepository(target.ref.repository)
+              )
+                return yield* refuse();
+              const readiness = factoryMergeOperationWriteReadiness(
+                state,
+                operation.id,
+                member.reviewed.assignmentId,
+              );
+              if (!readiness.allowed)
+                return yield* new FactoryError({
+                  code: "permission-denied",
+                  detail: readiness.reasons.join(" "),
+                });
+              managed = true;
+              continue;
+            }
             if (owners.length === 0) continue;
             managed = true;
             const current = owners.find(

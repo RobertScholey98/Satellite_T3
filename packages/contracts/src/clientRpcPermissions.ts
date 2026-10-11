@@ -54,6 +54,11 @@ export function clientRpcRequiredScopes(
 ): readonly AuthEnvironmentScope[] {
   if (method === FACTORY_WS_METHODS.dispatchCommand && input !== undefined) {
     const payload = decodeFactoryDispatch(input);
+    if (
+      payload.command.type === "merge.group.start" ||
+      payload.command.type === "merge.operation.retry"
+    )
+      return [AuthOrchestrationOperateScope, AuthSourceControlWriteScope];
     return payload.command.type === "manager.configure" ||
       payload.command.type === "policy.defaults.configure" ||
       payload.command.type === "models.defaults.configure" ||

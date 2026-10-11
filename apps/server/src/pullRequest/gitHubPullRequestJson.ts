@@ -421,6 +421,7 @@ const RawCommitSchema = Schema.Struct({
 });
 
 const RawDetailSchema = Schema.Struct({
+  mergeCommit: Schema.optional(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
   ...RawListItemSchema.fields,
   /** GitHub's explicit distinction between a fork head and a branch in the base repository. */
   isCrossRepository: Schema.optional(Schema.Boolean),
@@ -827,6 +828,7 @@ export const pullRequestCoreGraphQlQuery = (host: string) => {
     pullRequest(number: $number) {
       number title url body state isDraft mergeable reviewDecision
       additions deletions changedFiles createdAt updatedAt mergedAt closedAt
+      mergeCommit { oid }
       headRefName baseRefName headRefOid isCrossRepository
       headRepositoryOwner { login }
       author { login avatarUrl ... on User { id name } }
@@ -1343,6 +1345,7 @@ export interface GitHubPullRequestDetail extends GitHubPullRequestListItem {
   readonly body: string;
   readonly changedFiles: number;
   readonly mergedAt: string | null;
+  readonly mergeCommitSha?: string;
   readonly closedAt: string | null;
   readonly checks: ReadonlyArray<PullRequestCheck>;
   /** Absent where `gh` did not answer for auto-merge at all, which is not the same as off. */
@@ -1748,6 +1751,7 @@ function toListItem(raw: Schema.Schema.Type<typeof RawListItemSchema>): GitHubPu
 
 function toDetail(raw: Schema.Schema.Type<typeof RawDetailSchema>): GitHubPullRequestDetail {
   const autoMergeMethod = toMergeMethod(raw.autoMergeRequest?.mergeMethod);
+  const mergeCommitSha = toState(raw) === "merged" ? trimmed(raw.mergeCommit?.oid) : null;
   return {
     ...toListItem(raw),
     ...(typeof raw.isCrossRepository === "boolean"
@@ -1758,6 +1762,7 @@ function toDetail(raw: Schema.Schema.Type<typeof RawDetailSchema>): GitHubPullRe
     body: raw.body ?? "",
     changedFiles: raw.changedFiles ?? 0,
     mergedAt: trimmed(raw.mergedAt),
+    ...(mergeCommitSha === null ? {} : { mergeCommitSha }),
     closedAt: trimmed(raw.closedAt),
     checks: toChecks(raw.statusCheckRollup),
     // A JSON null is GitHub saying "nobody armed this"; a missing key is GitHub not saying, and
