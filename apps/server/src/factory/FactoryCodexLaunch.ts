@@ -81,6 +81,11 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
       "features.browser_use=false",
       "features.computer_use=false",
       "features.codex_hooks=false",
+      // Native subagents would share this container, but Codex lets `spawn_agent`
+      // pick any catalog model and reasoning effort (by argument or agent role),
+      // even with the overrides hidden from its schema. Those choices never reach
+      // FactoryModelAdmission, so managed teams delegate through `delegate_task`.
+      // Codex 0.161 needs all three flags: the model catalog can turn on V2 by itself.
       "agents.enabled=false",
       "features.multi_agent=false",
       "features.multi_agent_v2=false",

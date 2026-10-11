@@ -188,7 +188,7 @@ export interface CodexRuntimeInfo {
   readonly factoryManaged?: boolean;
 }
 
-const FACTORY_ORCHESTRATION_INSTRUCTIONS = `Managed engineering work uses Satellite's app-owned delegation. Native Codex subagent tools are disabled in this execution profile. Implementation leads own technical execution, internal review, verification, and the PR lifecycle. Engineering managers coordinate assignments through factory_dispatch.
+const FACTORY_ORCHESTRATION_INSTRUCTIONS = `Managed engineering work uses Satellite's app-owned delegation. Native Codex subagent tools are disabled in this execution profile because their model choices bypass the approved model policy; build every team member with delegate_task. Implementation leads own technical execution, internal review, verification, and the PR lifecycle. Engineering managers coordinate assignments through factory_dispatch.
 
 Use factory_snapshot to inspect the assignment's approved model policy and permissions. Model approval includes the provider instance and options, including reasoning effort. Use orchestrator_capabilities to check provider availability, then delegate_task to start an approved worker or reviewer. Its catalog does not grant permission to use every listed model. Retain taskId and use task_status or task_cancel. Start each new review round with a new delegate_task call and a distinct clientRequestId; reuse that ID only for retries of the same request.
 

@@ -128,6 +128,7 @@ them on a machine with a local Docker Linux engine:
 SATELLITE_FACTORY_LIVE_TEST=1 SATELLITE_FACTORY_INTEGRATION_LIVE_TEST=1 vp test run \
   apps/server/src/factory/FactoryBoundaryExecution.test.ts \
   apps/server/src/factory/FactoryCandidateExecution.test.ts \
+  apps/server/src/factory/FactoryCodexLaunch.test.ts \
   apps/server/src/factory/FactoryExecutionQualification.test.ts \
   apps/server/src/factory/FactoryIntegrationExecution.test.ts \
   apps/server/src/factory/FactoryPreviewExecution.test.ts \

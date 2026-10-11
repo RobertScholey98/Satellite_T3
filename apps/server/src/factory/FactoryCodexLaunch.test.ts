@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- the live probe runs the pinned Codex image against a capture server.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeHttp from "node:http";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { CodexSettings } from "@t3tools/contracts";
@@ -9,11 +12,28 @@ import * as Schema from "effect/Schema";
 import { prepareFactoryCodexLaunch } from "./FactoryCodexLaunch.ts";
 import {
   admissibleFactorySourcePath,
+  FACTORY_CODEX_IMAGE,
   factoryContainerEndpoint,
 } from "./FactoryExecutionProfile.ts";
 
 const settings = Schema.decodeUnknownSync(CodexSettings);
 const readJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+/** Names of every tool a model request offers, including namespaced and deferred tools. */
+const offeredTools = (value: unknown): Array<string> =>
+  Array.isArray(value)
+    ? value.flatMap(offeredTools)
+    : typeof value === "object" && value !== null
+      ? [
+          ...("type" in value &&
+          "name" in value &&
+          typeof value.name === "string" &&
+          ["function", "custom", "namespace"].includes(String(value.type))
+            ? [value.name]
+            : []),
+          ...Object.values(value).flatMap(offeredTools),
+        ]
+      : [];
+const live = process.env.SATELLITE_FACTORY_LIVE_TEST === "1" ? it.effect : it.effect.skip;
 
 it.effect(
   "copies only model credentials and never inherits host connectors or privileged environment",
@@ -189,4 +209,109 @@ it.effect(
       yield* fs.writeFileString(profile.assignmentWorkspace.revocationPath, "{}");
       assert.include((yield* launch().pipe(Effect.flip)).detail, "withdrawn");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+live(
+  "the pinned Codex image offers a managed session no native subagent tools",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const launch = yield* prepareFactoryCodexLaunch({
+        profile: {
+          boundaryId: "native-subagent-probe",
+          dockerContext: "local",
+          imageId: FACTORY_CODEX_IMAGE,
+          projectSnapshotPath: root,
+          workflowSnapshotPath: root,
+          runtimePath: path.join(root, "runtime"),
+        },
+        settings: settings({ homePath: path.join(root, "empty") }),
+        environment: { OPENAI_API_KEY: "unused" },
+        containerName: "factory-native-subagent-probe",
+      });
+      const managedConfig = launch.args.flatMap((value, index) =>
+        launch.args[index - 1] === "-c" ? ["-c", value] : [],
+      );
+      // A capture server stands in for the model, so the probe records the
+      // tools Codex would offer without spending on a real model request.
+      const requests: Array<string> = [];
+      const server = yield* Effect.acquireRelease(
+        Effect.callback<NodeHttp.Server>((resume) => {
+          const server = NodeHttp.createServer((request, response) => {
+            let body = "";
+            request.on("data", (chunk) => (body += chunk));
+            request.on("end", () => {
+              requests.push(body);
+              response.writeHead(400, { "content-type": "application/json" });
+              response.end('{"error":{"message":"probe","type":"invalid_request_error"}}');
+            });
+          });
+          server.listen(0, "0.0.0.0", () => resume(Effect.succeed(server)));
+        }),
+        (server) =>
+          Effect.callback<void>((resume) => {
+            server.close(() => resume(Effect.void));
+          }),
+      );
+      const address = server.address();
+      assert.isObject(address);
+      const port = typeof address === "object" && address !== null ? address.port : 0;
+      yield* Effect.promise(
+        () =>
+          new Promise<void>((resolve) =>
+            NodeChildProcess.execFile(
+              "docker",
+              [
+                "run",
+                "--rm",
+                "--add-host",
+                "host.docker.internal:host-gateway",
+                "--tmpfs",
+                "/runtime/codex",
+                "--tmpfs",
+                "/workspace",
+                "--workdir",
+                "/workspace",
+                "--env",
+                "PROBE_KEY=unused",
+                "--entrypoint",
+                "codex",
+                FACTORY_CODEX_IMAGE,
+                "exec",
+                "--skip-git-repo-check",
+                ...managedConfig,
+                "-c",
+                'model_provider="probe"',
+                "-c",
+                'model_providers.probe.name="probe"',
+                "-c",
+                `model_providers.probe.base_url="http://host.docker.internal:${port}/v1"`,
+                "-c",
+                'model_providers.probe.env_key="PROBE_KEY"',
+                "-c",
+                'model_providers.probe.wire_api="responses"',
+                "-c",
+                "model_providers.probe.request_max_retries=0",
+                "-c",
+                "model_providers.probe.stream_max_retries=0",
+                "-c",
+                "model_providers.probe.supports_websockets=false",
+                "-c",
+                // The bundled catalog turns on native subagents (multi-agent V2) for this model.
+                'model="gpt-6-sol"',
+                "Start the assignment.",
+              ],
+              () => resolve(),
+            ),
+          ),
+      );
+      assert.isNotEmpty(requests);
+      const tools = offeredTools(yield* readJson(requests[0] ?? ""));
+      assert.include(tools, "exec");
+      assert.notInclude(tools, "collaboration");
+      assert.notInclude(tools, "spawn_agent");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  120_000,
 );
