@@ -60,6 +60,12 @@ export function FactoryMergeOperation({
         PRs merge one at a time. A stopped or interrupted action keeps its confirmed merges. Nothing
         is reverted automatically.
       </p>
+      <p className="text-xs text-muted-foreground">
+        {readiness.deploymentGate.detail}
+        {readiness.deploymentGate.supported && operation?.signal
+          ? ` Published status: ${operation.signal.state}.`
+          : null}
+      </p>
       {lifecycle?.phase === "stopped" ? (
         <p className="whitespace-pre-wrap text-sm">Stopped: {lifecycle.reason}</p>
       ) : null}

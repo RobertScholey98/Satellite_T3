@@ -1,4 +1,6 @@
 import {
+  FACTORY_MERGE_GROUP_LABEL,
+  FACTORY_MERGE_GROUP_STATUS_CONTEXT,
   FactoryError,
   type FactoryAssignment,
   type FactoryAssignmentId,
@@ -86,6 +88,59 @@ export const factoryMergeReceiptDigest = (operation: FactoryMergeOperation) =>
       entry.outcome.phase === "confirmed" ? entry.outcome.receipt : null,
     ),
   });
+
+/**
+ * The Group deployment readiness status every confirmed member's merge commit should carry. Only a
+ * completed operation, which requires every exact receipt, is `success`; a stopped one is
+ * `failure`; partial, held and reconciling operations stay `pending`. Null until a merge exists.
+ */
+export function factoryMergeSignal(operation: FactoryMergeOperation) {
+  const receipts = operation.members.flatMap((entry) =>
+    entry.outcome.phase === "confirmed" ? [entry.outcome.receipt] : [],
+  );
+  if (!receipts.length) return null;
+  const state =
+    operation.lifecycle.phase === "completed"
+      ? ("success" as const)
+      : operation.lifecycle.phase === "stopped"
+        ? ("failure" as const)
+        : ("pending" as const);
+  const count = `${receipts.length} of ${operation.members.length}`;
+  const text =
+    state === "success"
+      ? `Group ${operation.groupId} merged: ${receipts.map((entry) => `${entry.ref.repository}@${entry.mergeCommitSha.slice(0, 7)}`).join(", ")}`
+      : state === "failure"
+        ? `Group ${operation.groupId} stopped after ${count} merges. Do not deploy.`
+        : `Group ${operation.groupId}: ${count} merges confirmed. Waiting for the rest.`;
+  // GitHub rejects status descriptions over 140 characters.
+  const description = text.length > 140 ? `${text.slice(0, 139)}…` : text;
+  const targets = receipts.map((entry) => ({ ref: entry.ref, sha: entry.mergeCommitSha }));
+  return { state, description, targets, digest: hash({ state, description, targets }) };
+}
+
+/**
+ * Whether merged members publish Group deployment readiness. Managed publication only targets
+ * GitHub, so a member is supported once its current revision has a published pull request.
+ */
+export function factoryMergeDeploymentGate(state: FactorySnapshot, groupId: string) {
+  const group = state.mergeGroups.find((entry) => entry.id === groupId);
+  const missing = (group?.memberAssignmentIds ?? []).flatMap((id) => {
+    const assignment = state.assignments.find((entry) => entry.id === id);
+    const revision = assignment?.delivery?.revisions.find(
+      (entry) => entry.id === assignment.delivery?.currentRevisionId,
+    );
+    return revision?.publication?.ref?.host ? [] : [assignment?.projectId ?? id];
+  });
+  return missing.length
+    ? {
+        supported: false,
+        detail: `Deployment gate unsupported for ${missing.join(", ")}: only GitHub pull requests publish the ${FACTORY_MERGE_GROUP_STATUS_CONTEXT} status.`,
+      }
+    : {
+        supported: true,
+        detail: `Deployment gate: GitHub status ${FACTORY_MERGE_GROUP_STATUS_CONTEXT} on each merge commit.`,
+      };
+}
 
 function attemptedReviewVector(state: FactorySnapshot, groupId: string, reviewId: string) {
   const review = state.mergeGroupReviews.find((entry) => entry.id === reviewId);
@@ -391,6 +446,7 @@ export function factoryMergeOperationReadiness(
         .allowed,
     canStop:
       operation !== undefined && !["stopped", "completed"].includes(operation.lifecycle.phase),
+    deploymentGate: factoryMergeDeploymentGate(state, groupId),
   };
 }
 
@@ -409,8 +465,16 @@ export function decideFactoryMergeOperation(input: {
     operation: FactoryMergeOperation,
     effects: readonly FactoryEffectIntent[] = [],
     assignments = state.assignments,
-  ): Result.Result<FactoryDecision, FactoryError> =>
-    Result.succeed({
+  ): Result.Result<FactoryDecision, FactoryError> => {
+    // Publish readiness whenever it changes; reconcile republishes one not yet confirmed.
+    const signal = factoryMergeSignal(operation);
+    const previous = state.mergeOperations.find((entry) => entry.id === operation.id);
+    const publish =
+      signal !== null &&
+      operation.signal?.digest !== signal.digest &&
+      (command.type === "merge.operation.reconcile" ||
+        (previous ? factoryMergeSignal(previous)?.digest : undefined) !== signal.digest);
+    return Result.succeed({
       state: {
         ...state,
         revision: state.revision + 1,
@@ -426,8 +490,11 @@ export function decideFactoryMergeOperation(input: {
         mergeOperationId: operation.id,
         mergeGroupId: operation.groupId,
       },
-      effects,
+      effects: publish
+        ? [...effects, { type: "merge.operation.signal", operationId: operation.id }]
+        : effects,
     });
+  };
   const host = actor.kind === "system";
   if (command.type === "merge.group.start") {
     const group = state.mergeGroups.find((entry) => entry.id === command.groupId);
@@ -685,6 +752,12 @@ export function decideFactoryMergeOperation(input: {
           "This submission no longer matches the current member attempt.",
           "stale-revision",
         );
+      // Deployment pipelines tell grouped merge commits apart by this label.
+      if (member.labeled !== true)
+        return fail(
+          `Confirm the ${FACTORY_MERGE_GROUP_LABEL} label on this member PR before merging it.`,
+          "permission-denied",
+        );
       const readiness = factoryMergeOperationWriteReadiness(
         state,
         operation.id,
@@ -711,6 +784,30 @@ export function decideFactoryMergeOperation(input: {
         },
         [effect("merge.operation.reconcile")],
       );
+    }
+    case "merge.operation.labeled": {
+      if (!host) return fail("Only the host confirms a merge group label.", "permission-denied");
+      const member = operation.members.find(
+        (entry) => entry.reviewed.assignmentId === command.assignmentId,
+      );
+      if (!member) return fail("This label confirmation names a foreign member.");
+      return save({
+        ...operation,
+        members: operation.members.map((entry) =>
+          entry === member ? { ...entry, labeled: true } : entry,
+        ),
+      });
+    }
+    case "merge.operation.signaled": {
+      if (!host)
+        return fail("Only the host confirms published deployment readiness.", "permission-denied");
+      const signal = factoryMergeSignal(operation);
+      // A receipt for an older state changes nothing; the newer state has its own pending effect.
+      if (signal?.digest !== command.digest) return save(operation);
+      return save({
+        ...operation,
+        signal: { state: signal.state, digest: signal.digest, publishedAt: now },
+      });
     }
     case "merge.operation.held":
       if (!host)

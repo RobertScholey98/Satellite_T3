@@ -164,6 +164,12 @@ it.effect.each(["lost-ack", "unknown", "transient"] as const)(
             3,
           );
           assert.equal(harness.writes.filter((entry) => entry.endsWith("#20")).length, 3);
+          assert.equal(
+            harness.github.writes.filter(
+              (entry) => entry.startsWith("add-label") && entry.endsWith("#20"),
+            ).length,
+            1,
+          );
           const retry = yield* harness
             .commit({
               type: "merge.operation.retry",

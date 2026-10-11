@@ -23,6 +23,7 @@ import * as OperationEffects from "./FactoryMergeOperationEffects.ts";
 import { mergeFixture, deliveryNow } from "./FactoryMerge.testkit.ts";
 import { mergeHostEvidence, seedMergeEffects } from "./FactoryMergeEffects.testkit.ts";
 import { canonicalFactoryPullRequest } from "./FactoryMergeOwnership.ts";
+import { makeFakeGitHub } from "./FactoryMergeSignal.testkit.ts";
 
 export type MergeHostBehavior = "merge" | "lost-ack" | "unknown" | "transient";
 export const makeMergeOperationHarness = Effect.fn(function* (
@@ -40,6 +41,7 @@ export const makeMergeOperationHarness = Effect.fn(function* (
   const fs = yield* FileSystem.FileSystem;
   const root = yield* fs.makeTempDirectoryScoped();
   const merged = new Set<string>();
+  const github = makeFakeGitHub();
   const writes: string[] = [];
   const stages: string[] = [];
   const attempts = new Map<string, number>();
@@ -97,6 +99,7 @@ export const makeMergeOperationHarness = Effect.fn(function* (
   };
   const adapters = Layer.mergeAll(
     Config.layerTest(root, root),
+    github.layer,
     Layer.mock(PullRequests.PullRequestService)({
       invalidate: () => Effect.void,
       detail: (ref) =>
@@ -161,7 +164,10 @@ export const makeMergeOperationHarness = Effect.fn(function* (
           const attempt = (attempts.get(key) ?? 0) + 1;
           attempts.set(key, attempt);
           const behavior = options.behavior?.(input, attempt) ?? "merge";
-          if (behavior === "merge" || behavior === "lost-ack") merged.add(key);
+          if (behavior === "merge" || behavior === "lost-ack") {
+            merged.add(key);
+            github.associate(input.repository, `merge-${input.number}`, input.number);
+          }
           if (behavior === "lost-ack" || behavior === "unknown")
             return yield* new PullRequestOperationError({
               operation: "merge",
@@ -252,5 +258,5 @@ export const makeMergeOperationHarness = Effect.fn(function* (
   const current: Effect.Effect<FactoryMergeOperation, FactoryError> = store.snapshot.pipe(
     Effect.map((state) => state.mergeOperations[0]!),
   );
-  return { fixture, store, layer, start, drain, current, writes, stages, merged, commit };
+  return { fixture, store, layer, start, drain, current, writes, stages, merged, commit, github };
 });

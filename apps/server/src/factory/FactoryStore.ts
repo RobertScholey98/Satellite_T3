@@ -386,6 +386,11 @@ const make = Effect.gen(function* () {
                         command.type === "merge.operation.completed") &&
                       command.operationId === intent.operationId
                     );
+                  case "merge.operation.signal":
+                    return (
+                      command.type === "merge.operation.signaled" &&
+                      command.operationId === intent.operationId
+                    );
                   case "collaboration.message.deliver":
                     return (
                       (command.type === "collaboration.message.recorded" ||

@@ -91,8 +91,20 @@ export function submitMergeMember(
       : entry.outcome.phase !== "confirmed",
   )!;
   const attemptId = `${operationId}:${member.reviewed.assignmentId}:${member.attempts + 1}`;
+  const labeled = member.labeled
+    ? state
+    : applyMerge(
+        state,
+        {
+          type: "merge.operation.labeled",
+          commandId: mergeCommandId(),
+          operationId,
+          assignmentId: member.reviewed.assignmentId,
+        },
+        { kind: "system" },
+      ).state;
   const result = applyMerge(
-    state,
+    labeled,
     {
       type: "merge.operation.submitting",
       commandId: mergeCommandId(),
@@ -100,7 +112,7 @@ export function submitMergeMember(
       assignmentId: member.reviewed.assignmentId,
       attemptId,
       expectedAttempt: member.attempts,
-      expectedStateRevision: state.revision,
+      expectedStateRevision: labeled.revision,
       evidenceDigest: factoryMergeFrozenProof(operation)!.digest,
     },
     { kind: "system" },

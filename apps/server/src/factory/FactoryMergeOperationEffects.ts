@@ -28,11 +28,13 @@ import { GitHubApiRateLimitError, GitHubApiResponseError } from "../sourceContro
 import { SourceControlRateLimitPausedError } from "../sourceControl/SourceControlRateLimit.ts";
 import * as Access from "./FactoryControlAccess.ts";
 import * as Inspection from "./FactoryDeliveryInspection.ts";
+import * as MergeSignal from "./FactoryMergeSignal.ts";
 import * as Handover from "./FactoryHandover.ts";
 import * as Integration from "./FactoryIntegrationExecution.ts";
 import { factoryMergeGroupEvidence } from "./FactoryMerge.ts";
 import {
   factoryMergeFrozenDigest,
+  factoryMergeSignal,
   factoryMergeFrozenProof,
   factoryMergeOperationWriteReadiness,
   factoryMergeReceiptDigest,
@@ -95,6 +97,7 @@ const make = Effect.gen(function* () {
   const inspection = yield* Inspection.FactoryDeliveryInspection;
   const integration = yield* Integration.FactoryIntegrationExecution;
   const pullRequests = yield* PullRequests.PullRequestService;
+  const signals = yield* MergeSignal.FactoryMergeSignal;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const config = yield* ServerConfig;
@@ -492,6 +495,17 @@ const make = Effect.gen(function* () {
       );
       return;
     }
+    let revision = state.revision;
+    if (member.labeled !== true) {
+      yield* signals.label(member.reviewed.ref);
+      yield* commit({
+        type: "merge.operation.labeled",
+        operationId: fresh.id,
+        assignmentId: member.reviewed.assignmentId,
+        commandId: CommandId.make(`${pending.id}:labeled:${member.reviewed.assignmentId}`),
+      });
+      revision = (yield* store.snapshot).revision;
+    }
     const attemptId = `${fresh.id}:${member.reviewed.assignmentId}:${member.attempts + 1}`;
     yield* finish(pending, {
       type: "merge.operation.submitting",
@@ -500,7 +514,7 @@ const make = Effect.gen(function* () {
       assignmentId: member.reviewed.assignmentId,
       attemptId,
       expectedAttempt: member.attempts,
-      expectedStateRevision: state.revision,
+      expectedStateRevision: revision,
       evidenceDigest: fresh.lifecycle.frozen.digest,
     });
     const mutation = yield* pullRequests
@@ -632,6 +646,31 @@ const make = Effect.gen(function* () {
     if (!held) yield* retire(pending.id);
   });
 
+  /** Publishes the operation's current readiness, never an older state the effect was queued for. */
+  const signal = Effect.fn(function* (
+    pending: Store.PendingFactoryEffect,
+    current: FactoryMergeOperation,
+  ) {
+    const desired = factoryMergeSignal(current);
+    if (!desired || current.signal?.digest === desired.digest) {
+      yield* retire(pending.id);
+      return;
+    }
+    for (const target of desired.targets)
+      yield* signals.publish({
+        ref: target.ref,
+        sha: target.sha,
+        state: desired.state,
+        description: desired.description,
+      });
+    yield* finish(pending, {
+      type: "merge.operation.signaled",
+      commandId: CommandId.make(`${pending.id}:signaled`),
+      operationId: current.id,
+      digest: desired.digest,
+    });
+  });
+
   const handle = Effect.fn("FactoryMergeOperationEffects.handle")(function* (
     pending: Store.PendingFactoryEffect,
   ) {
@@ -657,10 +696,18 @@ const make = Effect.gen(function* () {
               return yield* reconcile(pending, current);
             case "merge.operation.resume":
               return yield* resume(pending, current);
+            case "merge.operation.signal":
+              return yield* signal(pending, current);
           }
         }).pipe(Effect.result);
         if (Result.isFailure(result)) {
           if (pending.intent.type === "merge.operation.resume") return;
+          // Readiness stays pending at the host; the effect retries without holding the merges.
+          if (pending.intent.type === "merge.operation.signal")
+            return yield* Effect.logWarning("Group deployment readiness remains unpublished", {
+              effectId: pending.id,
+              cause: result.failure,
+            });
           const latest = yield* operation(id);
           const error = failure(result.failure);
           yield* hold(
@@ -682,4 +729,5 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(FactoryMergeOperationEffects, make).pipe(
   Layer.provide(Inspection.layer),
+  Layer.provide(MergeSignal.layer),
 );

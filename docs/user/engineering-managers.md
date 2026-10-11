@@ -92,6 +92,40 @@ Member PRs then form a merge group: they wait for one combined review and merge
 together. If a shared merge only partly succeeds, the integration lead
 reconciles and retries within its limits, and escalates to you when it cannot.
 
+### Hold deployment until the whole group merges
+
+Satellite labels each grouped PR `satellite-merge-group` and sets a
+`satellite/merge-group` status on its merge commit. The status stays `pending`
+while any member is unmerged, becomes `success` once every merge is confirmed,
+and becomes `failure` if you stop the shared merge. Only GitHub projects get
+this signal; the merge group review says when a project is unsupported.
+
+To make a GitHub Actions deployment wait, copy
+[`merge-group-gate.mjs`](../../scripts/factory/merge-group-gate.mjs) to
+`.github/scripts/` in your repository and run it as its own job. The deploy job keeps its own environment,
+approvals and credentials:
+
+```yaml
+jobs:
+  merge-group-gate:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, pull-requests: read, statuses: read }
+    steps:
+      - uses: actions/checkout@v4
+      - run: node .github/scripts/merge-group-gate.mjs --timeout 1800
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+  deploy:
+    needs: merge-group-gate
+    environment: production
+    # your existing deploy steps
+```
+
+Ungrouped commits pass straight through. If the gate times out, the job fails
+with a message; re-run it once the group has merged. To see why a group is
+waiting, check the `satellite/merge-group` status on the commit in GitHub and
+the shared merge in the merge group review.
+
 ## Retrospectives and shared improvements
 
 When work concludes, the team and then its manager write retrospectives. Read

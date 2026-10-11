@@ -16,6 +16,10 @@ import { PullRequestRef } from "./pullRequest.ts";
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
 const Text = TrimmedNonEmptyString.check(Schema.isMaxLength(6000));
 const Reasons = Schema.Array(Text).check(Schema.isMaxLength(100));
+/** Each member PR carries this label before its shared merge, so pipelines can tell grouped commits. */
+export const FACTORY_MERGE_GROUP_LABEL = "satellite-merge-group";
+/** The GitHub commit status context holding Group deployment readiness on each merge commit. */
+export const FACTORY_MERGE_GROUP_STATUS_CONTEXT = "satellite/merge-group";
 export const FactoryMergeGroup = Schema.Struct({
   id: Id,
   integrationId: Id,
@@ -158,6 +162,8 @@ export const FactoryMergeOperationMember = Schema.Struct({
   }),
   attempts: NonNegativeInt.check(Schema.isLessThanOrEqualTo(3)),
   outcome: FactoryMergeMemberOutcome,
+  /** The host confirmed this member PR carries `FACTORY_MERGE_GROUP_LABEL`. */
+  labeled: Schema.optionalKey(Schema.Boolean),
 });
 export type FactoryMergeOperationMember = typeof FactoryMergeOperationMember.Type;
 export const FactoryMergeFrozenProof = Schema.Struct({
@@ -212,6 +218,14 @@ export const FactoryMergeOperation = Schema.Struct({
       completedAt: IsoDateTime,
     }),
   ]),
+  /** The readiness status last confirmed on every confirmed member's merge commit. */
+  signal: Schema.optionalKey(
+    Schema.Struct({
+      state: Schema.Literals(["pending", "success", "failure"]),
+      digest: Id,
+      publishedAt: IsoDateTime,
+    }),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -234,6 +248,7 @@ export const FactoryMergeOperationReadiness = Schema.Struct({
   canReconcile: Schema.Boolean,
   canRetry: Schema.Boolean,
   canStop: Schema.Boolean,
+  deploymentGate: Schema.Struct({ supported: Schema.Boolean, detail: Text }),
 });
 export type FactoryMergeOperationReadiness = typeof FactoryMergeOperationReadiness.Type;
 export const FactoryMergeGroupRead = Schema.Struct({
@@ -337,6 +352,18 @@ export const FactoryMergeHostCommand = Schema.Union([
     ]),
   }),
   Schema.Struct({
+    type: Schema.Literal("merge.operation.labeled"),
+    commandId: CommandId,
+    operationId: Id,
+    assignmentId: FactoryAssignmentId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.signaled"),
+    commandId: CommandId,
+    operationId: Id,
+    digest: Id,
+  }),
+  Schema.Struct({
     type: Schema.Literal("merge.operation.held"),
     commandId: CommandId,
     operationId: Id,
@@ -374,6 +401,7 @@ export const FactoryMergeEffectIntent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("merge.operation.advance"), operationId: Id }),
   Schema.Struct({ type: Schema.Literal("merge.operation.reconcile"), operationId: Id }),
   Schema.Struct({ type: Schema.Literal("merge.operation.resume"), operationId: Id }),
+  Schema.Struct({ type: Schema.Literal("merge.operation.signal"), operationId: Id }),
   Schema.Struct({ type: Schema.Literal("merge.group.inspect"), groupId: Id, reviewId: Id }),
   Schema.Struct({
     type: Schema.Literal("merge.group.notify"),

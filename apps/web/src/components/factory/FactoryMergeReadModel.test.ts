@@ -67,6 +67,7 @@ const fixture = (): FactoryMergeGroupRead => ({
     canReconcile: false,
     canRetry: false,
     canStop: false,
+    deploymentGate: { supported: true, detail: "Deployment gate: GitHub status" },
   },
 });
 
