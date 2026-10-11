@@ -150,9 +150,10 @@ const make = Effect.gen(function* () {
     if (stableStringify(fresh.revision.publication?.ref) !== stableStringify(ref))
       return yield* new FactoryError({ code: "stale-revision" });
     const evidence = hostEvidence(raw, yield* nowIso);
-    // Host observation time changes on every read; evidence identity must not.
-    const { observedAt: _observedAt, ...host } = evidence;
     const revision = fresh.revision;
+    // The bundle names what the human reviewed: the exact head and the outcome of its checks and
+    // reviews. Base movement and merge state stay out, so an approval survives other merges;
+    // the merge effect re-inspects and refuses unless the host permits merge at that moment.
     const bundleDigest = yield* hash({
       assignmentId: fresh.assignment.id,
       revisionId: revision.id,
@@ -168,11 +169,12 @@ const make = Effect.gen(function* () {
       flow: fresh.assignment.delivery?.flow,
       ux: revision.uxEvidence,
       publishedUx: revision.publishedUxEvidence,
-      host,
-      detailedHost: {
-        ...raw,
-        checks: [...raw.checks].sort((a, b) => a.id.localeCompare(b.id)),
-        reviews: [...raw.reviews].sort((a, b) => a.id.localeCompare(b.id)),
+      host: {
+        headSha: evidence.headSha,
+        baseBranch: raw.baseBranch,
+        complete: evidence.complete,
+        checks: evidence.checks,
+        reviews: evidence.reviews,
       },
     });
     const sealed = yield* readRevision(input);

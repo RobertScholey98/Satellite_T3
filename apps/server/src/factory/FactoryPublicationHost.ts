@@ -45,7 +45,6 @@ const ReservationRecord = Schema.Struct({
 const PublishRecord = Schema.Struct({
   title: Schema.String,
   body: Schema.String,
-  createAttempted: Schema.Boolean,
   ref: Schema.optionalKey(PullRequestRef),
 });
 const Repository = Schema.Struct({
@@ -175,6 +174,7 @@ const make = Effect.gen(function* () {
     input: GitHubApi.GitHubRestInput,
     expectedFingerprint?: string,
     beforeWrite?: Effect.Effect<void, FactoryError>,
+    onAdmitted: Effect.Effect<void> = Effect.void,
   ) {
     const credential = yield* credentials.get(input.host);
     if (
@@ -190,6 +190,8 @@ const make = Effect.gen(function* () {
       Effect.provideService(
         GitHubApi.BeforeGitHubMutation,
         beforeWrite?.pipe(
+          // The hook runs after the rate-limit lease, immediately before the request is sent.
+          Effect.andThen(onAdmitted),
           Effect.mapError(
             (cause) =>
               new GitHubApi.GitHubApiRequestError({
@@ -475,9 +477,8 @@ const make = Effect.gen(function* () {
         request(
           input,
           target.credentialFingerprint,
-          input.method === "POST" || input.method === "PATCH"
-            ? requireLiveWrite.pipe(Effect.andThen(onAdmitted))
-            : undefined,
+          input.method === "POST" || input.method === "PATCH" ? requireLiveWrite : undefined,
+          onAdmitted,
         );
       if (
         reservation.id !== revision.id ||
@@ -508,7 +509,7 @@ const make = Effect.gen(function* () {
       const body = `${input.body}${screenshotMarkdown}\n\n${marker}`;
       const directory = yield* directoryFor(revision.id);
       const recordPath = path.join(directory, "publish.json");
-      let record: typeof PublishRecord.Type = { title: input.title, body, createAttempted: false };
+      let record: typeof PublishRecord.Type = { title: input.title, body };
       if (yield* fs.exists(recordPath)) {
         record = yield* fs.readFileString(recordPath).pipe(Effect.flatMap(decodePublish));
         if (record.title !== input.title || record.body !== body)
@@ -558,7 +559,9 @@ const make = Effect.gen(function* () {
         const response = yield* hostRequest({
           host: target.host,
           operation: "FactoryPublicationHost.reconcile",
-          path: `${target.endpoint}/pulls?state=all&head=${encodeURIComponent(`${target.owner}:${reservation.branch}`)}&base=${encodeURIComponent(reservation.baseBranch)}&per_page=100`,
+          // Only an open PR is adopted. One the human closed stays closed, and the next revision
+          // gets a fresh PR from the same branch.
+          path: `${target.endpoint}/pulls?state=open&head=${encodeURIComponent(`${target.owner}:${reservation.branch}`)}&base=${encodeURIComponent(reservation.baseBranch)}&per_page=100`,
         });
         const matches = yield* decodePullRequests(response.body);
         if (matches.length > 1 || response.headers.link?.includes('rel="next"'))
@@ -576,14 +579,8 @@ const make = Effect.gen(function* () {
           detail: "The previously recorded pull request identity could not be reconciled.",
         });
       if (!observed) {
-        if (record.createAttempted)
-          return yield* new FactoryError({
-            code: "execution-unavailable",
-            detail:
-              "A pull request creation attempt is unresolved. Reconcile its result before authorizing another creation.",
-          });
-        record = { ...record, createAttempted: true };
-        yield* write(recordPath, yield* encodePublish(record));
+        // Creating again after an unobserved create is safe: GitHub refuses a second open PR for
+        // the same head and base, so a create that did land is found by the lookup below.
         let admitted = false;
         const created = yield* hostRequest(
           {
@@ -606,17 +603,13 @@ const make = Effect.gen(function* () {
           Effect.flatMap((response) => decodePullRequest(response.body)),
           Effect.result,
         );
-        if (!admitted && Result.isFailure(created)) {
-          record = { ...record, createAttempted: false };
-          yield* write(recordPath, yield* encodePublish(record));
-          return yield* preserve(created.failure);
-        }
+        if (!admitted && Result.isFailure(created)) return yield* preserve(created.failure);
         observed = yield* find();
         if (!observed)
           return yield* new FactoryError({
             code: "execution-unavailable",
             detail:
-              "The pull request creation result is not yet observable. Its reservation is retained for reconciliation.",
+              "The pull request creation result is not yet observable. Retrying looks it up again before creating.",
             ...(Result.isFailure(created) ? { cause: created.failure } : {}),
           });
       }

@@ -81,12 +81,19 @@ export const layer = Layer.effect(
       });
     const reconcile = Effect.gen(function* () {
       const state = yield* store.snapshot;
+      let firstFailure: FactoryError | undefined;
       for (const assignment of state.assignments) {
         for (const revision of assignment.delivery?.revisions ?? []) {
           const preview = revision.preview;
-          if (!preview || !["starting", "ready", "stopping"].includes(preview.status)) continue;
+          // A failed start may have left containers behind when its own cleanup failed too.
+          if (!preview || !["starting", "ready", "stopping", "failed"].includes(preview.status))
+            continue;
           if (previewIsCurrent(state, assignment, revision)) continue;
-          yield* stop(preview.instanceId);
+          const stopped = yield* stop(preview.instanceId).pipe(Effect.result);
+          if (Result.isFailure(stopped)) {
+            firstFailure ??= stopped.failure;
+            continue;
+          }
           yield* store.commit({
             actor: { kind: "system" },
             now: DateTime.formatIso(yield* DateTime.now),
@@ -101,6 +108,7 @@ export const layer = Layer.effect(
           });
         }
       }
+      if (firstFailure) return yield* firstFailure;
     });
     return FactoryPreviewService.of({
       reconcile,
@@ -163,17 +171,18 @@ export const layer = Layer.effect(
           assignment.outcome !== undefined ||
           assignment.status === "complete" ||
           assignment.delivery?.currentRevisionId !== revision.id;
+        // Only a live start waits out a block; stopping and retiring obsolete work always proceed.
         if (
-          (intent.type === "delivery.preview.start" &&
-            !obsolete &&
-            factoryIncidentBlocked(state, assignment.id, "preview")) ||
-          factoryExecutionBlocked(state, {
-            threadId: preview.threadId,
-            assignmentId: assignment.id,
-            managerId: assignment.managerId,
-            projectId: assignment.projectId,
-            ancestorThreadIds: [],
-          })
+          intent.type === "delivery.preview.start" &&
+          !obsolete &&
+          (factoryIncidentBlocked(state, assignment.id, "preview") ??
+            factoryExecutionBlocked(state, {
+              threadId: preview.threadId,
+              assignmentId: assignment.id,
+              managerId: assignment.managerId,
+              projectId: assignment.projectId,
+              ancestorThreadIds: [],
+            }))
         )
           return;
         yield* store.beginEffect(pending.id);

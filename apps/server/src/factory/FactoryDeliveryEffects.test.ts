@@ -570,6 +570,35 @@ it.effect("parks an unconfirmed merge and retries only after an explicit retry c
   }),
 );
 
+it.effect(
+  "closes a requested merge the host merged at another head so the lead can recapture",
+  () =>
+    scenario(
+      Effect.gen(function* () {
+        const effects = yield* FactoryDeliveryEffects.FactoryDeliveryEffects;
+        const pending = yield* beginMerge;
+        yield* effects.handle(pending);
+        const result = yield* revision;
+        assert.equal(result.merge?.status, "failed");
+        assert.isUndefined(result.error);
+        assert.isFalse(
+          (yield* (yield* FactoryStore.FactoryStore).pending).some(
+            (entry) => entry.id === pending.id,
+          ),
+        );
+        yield* request({
+          ...deliveryCommand,
+          commandId: CommandId.make("recapture"),
+          type: "delivery.capture",
+          expectedEpoch: 1,
+          selectedPaths: ["src/feature.ts"],
+          commitMessage: "feat: corrected feature",
+        });
+      }),
+      { pr: () => ({ detail: () => Effect.succeed({ ...detail(true), headSha: "pushed" }) }) },
+    ),
+);
+
 it.effect("holds an approved merge when fresh host checks or evidence change", () =>
   Effect.gen(function* () {
     let reads = 0;

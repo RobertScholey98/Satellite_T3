@@ -543,6 +543,23 @@ const make = Effect.gen(function* () {
               });
           }
           current = yield* readMergeOperation;
+          // Someone pushed and merged on the host: the approved revision was never delivered.
+          // Close this operation so the lead can capture a new revision or conclude.
+          if (
+            detail.number === ref.number &&
+            detail.headSha &&
+            detail.headSha !== current.revision.publication?.headSha
+          )
+            return yield* finish({
+              type: "delivery.merge.recorded",
+              commandId: receiptId,
+              assignmentId: intent.assignmentId,
+              revisionId: intent.revisionId,
+              operationId: intent.operationId,
+              status: "failed",
+              reason:
+                "The pull request was merged on the host at a different head than the approved revision.",
+            });
           if (
             !detail.headSha ||
             detail.headSha !== current.revision.publication?.headSha ||

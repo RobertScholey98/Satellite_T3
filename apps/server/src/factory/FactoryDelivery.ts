@@ -204,7 +204,10 @@ export function factoryDeliveryReadiness(
     approval.expectedHeadSha === revision.publication?.headSha &&
     approval.bundleDigest === revision.bundleDigest;
   const needsHuman =
-    !ruleEligible || impact?.classification === "major-ui" || impact?.classification === "unclear";
+    revision.routedToHuman === true ||
+    !ruleEligible ||
+    impact?.classification === "major-ui" ||
+    impact?.classification === "unclear";
   return {
     reasons: [...new Set(reasons)],
     needsHuman,
@@ -653,7 +656,12 @@ export function decideFactoryDelivery(
         )
       )
         return fail("This project needs a human-approved app preview configuration.");
-      if (revision.preview && ["starting", "ready", "stopping"].includes(revision.preview.status))
+      // A failed preview may still own containers until it is stopped, and a new start would
+      // replace the only record of it.
+      if (
+        revision.preview &&
+        ["starting", "ready", "stopping", "failed"].includes(revision.preview.status)
+      )
         return fail("Stop the current candidate preview before starting another.");
       const instanceId = `preview:${command.commandId}`;
       return updateRevision(
@@ -1026,16 +1034,19 @@ export function decideFactoryDelivery(
         : readiness.needsHuman && !readiness.humanApproved
           ? ["Human approval is required for this exact revision."]
           : [];
+      // Wake the lead when a bundle is first sealed or its readiness changed, not on every new
+      // host observation.
       const changed =
-        revision.bundleDigest !== next.bundleDigest ||
+        revision.bundleDigest === undefined ||
         stableStringify(delivery.readiness) !== stableStringify(reasons) ||
         stableStringify(oldApproval) !== stableStringify(next.approval);
       const ambiguity =
         delivery.impact?.classification === "unclear"
           ? "Merge-rule eligibility was unclear; the verified revision was routed to the human."
           : undefined;
+      const routed = readiness.reasons.length === 0 && readiness.needsHuman;
       return updateRevision(
-        next,
+        routed ? { ...next, routedToHuman: true } : next,
         changed
           ? [
               notice(
@@ -1050,8 +1061,7 @@ export function decideFactoryDelivery(
           : [],
         {
           readiness: reasons,
-          directionHeld:
-            delivery.directionHeld || (readiness.reasons.length === 0 && readiness.needsHuman),
+          directionHeld: delivery.directionHeld || routed,
           retroFindings: ambiguity
             ? [...new Set([...delivery.retroFindings, ambiguity])]
             : delivery.retroFindings,

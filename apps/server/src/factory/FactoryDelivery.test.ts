@@ -107,7 +107,14 @@ describe("factory delivery", () => {
       assignments: state.assignments.map((entry) => ({
         ...entry,
         grantedPolicy: { ...entry.grantedPolicy, delivery: "project-rule" },
-        delivery: { ...entry.delivery!, directionHeld: false },
+        // Granted the rule from the start, so the revision was never handed to the human.
+        delivery: {
+          ...entry.delivery!,
+          directionHeld: false,
+          revisions: entry.delivery!.revisions.map(
+            ({ routedToHuman: _routed, ...revision }) => revision,
+          ),
+        },
       })),
     };
     state = applyDelivery(
@@ -134,6 +141,49 @@ describe("factory delivery", () => {
       defaults: { ...state.defaults, delivery: "human-approval" as const },
     };
     rejected(revoked, { ...deliveryRevisionCommand, type: "delivery.merge" });
+  });
+  it("keeps a revision already routed to the human waiting after its grant is extended", () => {
+    let state = reviewedDeliveryFixture();
+    assert.isTrue(state.assignments[0]!.delivery!.revisions[0]!.routedToHuman);
+    state = { ...state, defaults: { ...state.defaults, delivery: "project-rule" } };
+    state = applyDelivery(
+      state,
+      {
+        type: "assignments.extend-grant",
+        commandId: CommandId.make("extend"),
+        assignmentIds: [deliveryIds.assignment],
+      },
+      deliveryActors.human,
+    ).state;
+    assert.equal(state.assignments[0]!.grantedPolicy.delivery, "project-rule");
+    state = applyDelivery(
+      state,
+      {
+        type: "delivery.rules.configure",
+        commandId: CommandId.make("rule"),
+        projectId: deliveryIds.project,
+        enabled: true,
+        kinds: ["implementation"],
+        allowedPaths: ["src"],
+        excludedPaths: [],
+        allowEstablishedPatterns: false,
+      },
+      deliveryActors.human,
+    ).state;
+    const assignment = state.assignments[0]!;
+    const readiness = factoryDeliveryReadiness(
+      state,
+      assignment,
+      assignment.delivery!.revisions[0]!,
+    );
+    assert.isTrue(readiness.ruleEligible);
+    assert.isTrue(readiness.needsHuman);
+    rejected(state, { ...deliveryRevisionCommand, type: "delivery.merge" });
+    assert.equal(
+      applyDelivery(approve(state), { ...deliveryRevisionCommand, type: "delivery.merge" })
+        .effects[0]?.type,
+      "delivery.merge",
+    );
   });
   it("invalidates human approval after a changed head, changed candidate, or changed grant", () => {
     const approved = approve(reviewedDeliveryFixture());

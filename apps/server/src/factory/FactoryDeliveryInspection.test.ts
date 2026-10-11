@@ -25,6 +25,7 @@ import * as FactoryStore from "./FactoryStore.ts";
 import {
   deliveryIds,
   deliveryNow,
+  deliveryRevisionCommand,
   deliverySelection,
   reviewedDeliveryFixture,
 } from "./FactoryDelivery.testkit.ts";
@@ -223,6 +224,50 @@ it.effect(
           yield* factory.drain;
           assert.equal(yield* Ref.get(inspections), 6);
           assert.equal((yield* leadMessages).length, 3);
+        }).pipe(Effect.provide(Layer.fresh(runtime))),
+      );
+
+      const passing: ProviderMergeEvidence = {
+        ...evidence,
+        checks: evidence.checks.map((check) => ({ ...check, status: "success" as const })),
+      };
+      yield* Ref.set(remote, passing);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const factory = yield* FactoryService.FactoryService;
+          const current = store.snapshot.pipe(
+            Effect.map((state) => state.assignments[0]!.delivery!.revisions[0]!),
+          );
+          yield* factory.recover;
+          yield* factory.drain;
+          const sealed = yield* current;
+          yield* store.commit({
+            actor: { kind: "human" },
+            now: deliveryNow,
+            command: {
+              ...deliveryRevisionCommand,
+              type: "delivery.approve",
+              commandId: CommandId.make("approve"),
+              expectedHeadSha: "head",
+              bundleDigest: sealed.bundleDigest!,
+            },
+          });
+          // Recovery delivers the approval notice and re-inspects unchanged evidence.
+          yield* factory.recover;
+          yield* factory.drain;
+          const messagesAfterApproval = (yield* leadMessages).length;
+          // Another team merges into main: the base moves and checks re-run with the same outcome.
+          yield* Ref.set(remote, {
+            ...passing,
+            baseSha: "moved-base",
+            checks: passing.checks.map((check) => ({ ...check, id: "check-rerun" })),
+          });
+          yield* factory.recover;
+          yield* factory.drain;
+          const moved = yield* current;
+          assert.equal(moved.bundleDigest, sealed.bundleDigest);
+          assert.equal(moved.approval?.commandId, "approve");
+          assert.equal((yield* leadMessages).length, messagesAfterApproval);
         }).pipe(Effect.provide(Layer.fresh(runtime))),
       );
     }).pipe(Effect.provide(base), Effect.scoped),

@@ -115,12 +115,13 @@ const candidate = FactoryPublication.FactoryPublicationCandidate.make({
 const Metadata = Schema.Struct({ title: Schema.String, body: Schema.String });
 const decodeMetadata = Schema.decodeUnknownEffect(Metadata);
 const isRequestError = Schema.is(GitHubApi.GitHubApiRequestError);
+const isResponseError = Schema.is(GitHubApi.GitHubApiResponseError);
 const HostPullRequest = Schema.Struct({
   number: Schema.Int,
   html_url: Schema.String,
   title: Schema.String,
   body: Schema.String,
-  state: Schema.Literal("open"),
+  state: Schema.Literals(["open", "closed"]),
   merged_at: Schema.Null,
   head: Schema.Struct({
     ref: Schema.String,
@@ -138,8 +139,11 @@ const fixture = Effect.fn(function* () {
   let createCount = 0;
   let prepareCount = 0;
   let pushCount = 0;
+  let closedPullRequests: Array<typeof HostPullRequest.Type> = [];
+  let nextNumber = 17;
   let lostCreateAck = false;
   let invisibleCreate = false;
+  let pausedBeforeSend = false;
   let rejectLink = false;
   let remoteConflict = false;
   let configuredEmail: string | null = "factory@example.invalid";
@@ -270,24 +274,45 @@ const fixture = Effect.fn(function* () {
               default_branch: "main",
               permissions: { push: true },
             });
+          if (input.method === "POST" || input.method === "PATCH") {
+            // Like the real client: a paused rate limit refuses before the mutation hook runs.
+            if (pausedBeforeSend) {
+              pausedBeforeSend = false;
+              return yield* new GitHubApi.GitHubApiRequestError({
+                host: input.host,
+                operation: input.operation,
+                cause: "rate limit paused",
+              });
+            }
+            const admit = yield* GitHubApi.BeforeGitHubMutation;
+            if (admit) yield* admit;
+          }
           if (input.method === "POST") {
-            createCount += 1;
             if (revokeAfterCreate) revoke();
             const metadata = yield* decodeMetadata(input.body);
-            if (!invisibleCreate)
-              pullRequest = {
-                number: 17,
-                html_url: "https://github.example.invalid/Example/Factory/pull/17",
-                ...metadata,
-                state: "open",
-                merged_at: null,
-                head: {
-                  ref: prepared!.reservation.branch,
-                  sha: prepared!.prepared.commitOid,
-                  repo: { full_name: "Example/Factory" },
-                },
-                base: { ref: "main", repo: { full_name: "Example/Factory" } },
-              };
+            // GitHub allows one open PR per head and base.
+            if (pullRequest)
+              return yield* new GitHubApi.GitHubApiResponseError({
+                host: input.host,
+                operation: input.operation,
+                status: 422,
+                githubErrors: ["A pull request already exists."],
+              });
+            createCount += 1;
+            pullRequest = {
+              number: nextNumber,
+              html_url: `https://github.example.invalid/Example/Factory/pull/${nextNumber}`,
+              ...metadata,
+              state: "open",
+              merged_at: null,
+              head: {
+                ref: prepared!.reservation.branch,
+                sha: prepared!.prepared.commitOid,
+                repo: { full_name: "Example/Factory" },
+              },
+              base: { ref: "main", repo: { full_name: "Example/Factory" } },
+            };
+            nextNumber += 1;
             if (lostCreateAck || invisibleCreate)
               return yield* new GitHubApi.GitHubApiRequestError({
                 host: input.host,
@@ -301,11 +326,15 @@ const fixture = Effect.fn(function* () {
             if (pullRequest) pullRequest = { ...pullRequest, ...metadata };
             return reply(pullRequest);
           }
-          if (input.path.includes("?")) return reply(pullRequest ? [pullRequest] : []);
+          if (input.path.includes("?"))
+            return reply([
+              ...(input.path.includes("state=open") ? [] : closedPullRequests),
+              ...(pullRequest && !invisibleCreate ? [pullRequest] : []),
+            ]);
           return reply(pullRequest);
         }).pipe(
           Effect.mapError((cause) =>
-            isRequestError(cause)
+            isRequestError(cause) || isResponseError(cause)
               ? cause
               : new GitHubApi.GitHubApiRequestError({
                   host: input.host,
@@ -439,6 +468,31 @@ const fixture = Effect.fn(function* () {
     },
     hideCreation: () => {
       invisibleCreate = true;
+    },
+    revealCreation: () => {
+      invisibleCreate = false;
+    },
+    pauseBeforeSend: () => {
+      pausedBeforeSend = true;
+    },
+    /** An earlier revision's PR on the same branch, closed by the human. */
+    closeEarlier: () => {
+      closedPullRequests = [
+        {
+          number: 16,
+          html_url: "https://github.example.invalid/Example/Factory/pull/16",
+          title: "Earlier",
+          body: "Earlier",
+          state: "closed",
+          merged_at: null,
+          head: {
+            ref: prepared!.reservation.branch,
+            sha: "9".repeat(40),
+            repo: { full_name: "Example/Factory" },
+          },
+          base: { ref: "main", repo: { full_name: "Example/Factory" } },
+        },
+      ];
     },
     failLink: (value: boolean) => {
       rejectLink = value;
@@ -636,7 +690,7 @@ it.effect(
 );
 
 it.effect(
-  "keeps an unobservable create attempt unresolved rather than creating again",
+  "retries an unobservable create without opening a second PR and adopts it once visible",
   () =>
     run((f) =>
       Effect.gen(function* () {
@@ -648,9 +702,56 @@ it.effect(
           (yield* host.publish(input).pipe(Effect.flip)).detail!,
           "not yet observable",
         );
-        assert.include((yield* host.publish(input).pipe(Effect.flip)).detail!, "unresolved");
+        assert.include(
+          (yield* host.publish(input).pipe(Effect.flip)).detail!,
+          "not yet observable",
+        );
         assert.equal(f.counts().createCount, 1);
         assert.equal(f.links.length, 0);
+        f.revealCreation();
+        assert.equal((yield* host.publish(input)).number, 17);
+        assert.equal(f.counts().createCount, 1);
+        assert.equal(f.links.length, 1);
+      }).pipe(Effect.provide(f.layer)),
+    ),
+  10_000,
+);
+
+it.effect(
+  "creates the PR on retry when an earlier create was refused before it was sent",
+  () =>
+    run((f) =>
+      Effect.gen(function* () {
+        const captured = yield* f.capture;
+        const host = yield* FactoryPublicationHost.FactoryPublicationHost;
+        const input = { assignment, revision: captured, title: "Feature", body: "Ready" };
+        f.pauseBeforeSend();
+        yield* host.publish(input).pipe(Effect.flip);
+        assert.equal(f.counts().createCount, 0);
+        assert.equal((yield* host.publish(input)).number, 17);
+        assert.equal(f.counts().createCount, 1);
+        assert.equal(f.links.length, 1);
+      }).pipe(Effect.provide(f.layer)),
+    ),
+  10_000,
+);
+
+it.effect(
+  "opens a new PR instead of adopting one the human closed on the same branch",
+  () =>
+    run((f) =>
+      Effect.gen(function* () {
+        const captured = yield* f.capture;
+        const host = yield* FactoryPublicationHost.FactoryPublicationHost;
+        f.closeEarlier();
+        const ref = yield* host.publish({
+          assignment,
+          revision: captured,
+          title: "Feature",
+          body: "Ready",
+        });
+        assert.equal(ref.number, 17);
+        assert.equal(f.counts().createCount, 1);
       }).pipe(Effect.provide(f.layer)),
     ),
   10_000,

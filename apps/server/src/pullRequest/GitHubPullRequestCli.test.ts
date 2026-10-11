@@ -2387,7 +2387,7 @@ layer("GitHubPullRequestCli.layer", (it) => {
               pullRequestId: "PR_7",
               mergeMethod: "SQUASH",
               // Pinned to the head the message was read from, so it cannot describe other commits.
-              ...(action === "merge" ? { expectedHeadOid: "abc123" } : {}),
+              expectedHeadOid: "abc123",
               commitBody: "Details\n\nCo-authored-by: Alice <alice@example.com>",
             },
           },

@@ -2753,7 +2753,7 @@ export const make = Effect.gen(function* () {
             input: {
               pullRequestId: state.id,
               mergeMethod: GRAPHQL_MERGE_METHODS[input.mergeMethod ?? "merge"],
-              ...(expectedHead === undefined || auto ? {} : { expectedHeadOid: expectedHead }),
+              ...(expectedHead === undefined ? {} : { expectedHeadOid: expectedHead }),
               ...(body === undefined ? {} : { commitBody: body }),
             },
           },

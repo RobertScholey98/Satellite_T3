@@ -157,6 +157,8 @@ export const FactoryDeliveryRevision = Schema.Struct({
     }),
   ),
   bundleDigest: Schema.optionalKey(TrimmedNonEmptyString),
+  /** Set once the revision is handed to the human; a later policy increase does not release it. */
+  routedToHuman: Schema.optionalKey(Schema.Literal(true)),
   approval: Schema.optionalKey(
     Schema.Struct({
       expectedHeadSha: TrimmedNonEmptyString,
