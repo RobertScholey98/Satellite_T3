@@ -889,3 +889,98 @@ it.effect("refuses a delivered integration retro whose completed operation is mi
     Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   ),
 );
+
+const probeRunner = Layer.mock(ProcessRunner.ProcessRunner)({
+  run: () =>
+    Effect.succeed({
+      stdout: "factory-boundary-ok",
+      stderr: "",
+      code: ChildProcessSpawner.ExitCode(0),
+      timedOut: false,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutInvalidUtf8: false,
+      stderrInvalidUtf8: false,
+    }),
+});
+
+it.effect("inspects a cancelled restart with the profile the team last ran in", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    const state = f.getState();
+    const assignment = state.assignments[0]!;
+    f.setState({
+      ...state,
+      assignments: [
+        {
+          ...assignment,
+          qualification: { status: "unavailable", reason: "Preparing the selected profile." },
+        },
+      ],
+      workflowMigrations: [
+        {
+          id: "restart",
+          assignmentId: assignment.id,
+          releaseId: null,
+          previousVersion: assignment.workflow,
+          previousEpoch: 1,
+          previousProfileId: profileId,
+          preparedEpoch: 2,
+          retainedAuthorityReason: null,
+          previousState: { status: "running", wait: null },
+          kind: "restore",
+          reason: "Restart the team",
+          commandId: CommandId.make("restart"),
+          createdAt: deliveryNow,
+          lifecycle: {
+            phase: "failed",
+            step: "prepare",
+            reason: "Docker unavailable",
+            startingSource: null,
+          },
+        },
+      ],
+    });
+    const prepared = yield* FactoryRetroExecution.FactoryRetroExecution.pipe(
+      Effect.flatMap((service) => service.prepare(f.request)),
+      Effect.provide(
+        FactoryRetroExecution.layer.pipe(Layer.provide(f.dependencies), Layer.provide(probeRunner)),
+      ),
+    );
+    const profile = yield* f.fs
+      .readFileString(
+        f.path.join(
+          f.config.stateDir,
+          "factory",
+          "execution",
+          prepared.qualification.profileId,
+          "profile.json",
+        ),
+      )
+      .pipe(Effect.flatMap(decodeProfile));
+    assert.equal(profile.imageId, f.original.imageId);
+    assert.equal(profile.retro?.sourceBasis, "starting-snapshot");
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+  ),
+);
+
+it.effect("inspects a cancelled integration whose re-preparation withdrew its qualification", () =>
+  Effect.gen(function* () {
+    const f = yield* integrationRetroFixture();
+    const state = f.getState();
+    f.setState({
+      ...state,
+      assignments: state.assignments.map((entry) => ({
+        ...entry,
+        qualification: { status: "unavailable" as const, reason: "Preparing the inputs." },
+      })),
+    });
+    const prepared = yield* f.prepare;
+    assert.match(prepared.qualification.profileId, /^[a-f0-9-]{36}$/);
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+  ),
+);

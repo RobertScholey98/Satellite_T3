@@ -129,7 +129,7 @@ function Proposal({
   const [reason, setReason] = useState("");
   const [usefulness, setUsefulness] = useState<"useful" | "noisy" | "unclear" | null>(null);
   const [feedbackReason, setFeedbackReason] = useState("");
-  const decision = environment.data?.improvementDecisions.find(
+  const decision = environment.data?.improvementDecisions.findLast(
     (entry) => entry.proposalId === proposal.id && entry.revision === proposal.revision,
   );
   const feedback =
@@ -238,12 +238,12 @@ function Proposal({
           You {decision.outcome} this revision. {decision.reason}
         </p>
       ) : null}
-      {proposal.phase === "human-review" && !decision ? (
+      {(proposal.phase === "human-review" && !decision) || decision?.outcome === "deferred" ? (
         <div className="space-y-3 border-l border-border pl-3">
           <p className="text-sm text-muted-foreground">
-            Decide from the evidence available. No test, benchmark or cross-project trial is
-            required. Acceptance records this proposal decision; implementation and rollout remain
-            separate.
+            {decision ? "Record a new decision when you are ready. " : ""}Decide from the evidence
+            available. No test, benchmark or cross-project trial is required. Acceptance records
+            this proposal decision; implementation and rollout remain separate.
           </p>
           <div className="space-y-2">
             <Label htmlFor={`${prefix}-outcome`}>Your decision for this revision</Label>
@@ -376,6 +376,75 @@ function Proposal({
   );
 }
 
+function AttachRetainedFinding({
+  environment,
+  findingId,
+}: {
+  environment: FactoryEnvironmentView;
+  findingId: string;
+}) {
+  const prefix = useId();
+  const settingsScope = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
+  const command = useFactoryCommand(environment, settingsScope);
+  const [investigationId, setInvestigationId] = useState<string | null>(null);
+  const investigations =
+    environment.data?.improvementInvestigations.filter(
+      (entry) => entry.lifecycle.phase !== "closed" && !entry.findingIds.includes(findingId),
+    ) ?? [];
+  const target = investigations.find((entry) => entry.id === investigationId);
+  if (!investigations.length) return null;
+  return (
+    <div className="space-y-2 border-l border-border pl-3">
+      <Label htmlFor={`${prefix}-investigation`}>Attach this retained finding</Label>
+      <Select
+        value={investigationId}
+        disabled={command.disabled}
+        items={investigations.map((entry) => ({ value: entry.id, label: entry.title }))}
+        onValueChange={setInvestigationId}
+      >
+        <SelectTrigger id={`${prefix}-investigation`}>
+          <SelectValue placeholder="Choose an open investigation" />
+        </SelectTrigger>
+        <SelectPopup>
+          {investigations.map((entry) => (
+            <SelectItem key={entry.id} value={entry.id}>
+              {entry.title}
+            </SelectItem>
+          ))}
+        </SelectPopup>
+      </Select>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={command.disabled || !target}
+        onClick={() => {
+          if (target)
+            void command
+              .submit({
+                type: "investigation.update",
+                investigationId: target.id,
+                findingIds: [...target.findingIds, findingId],
+                relatedInvestigationIds: target.relatedInvestigationIds,
+                uncertainty: target.uncertainty,
+                assessment: target.assessment,
+                lifecycle: target.lifecycle,
+              })
+              .then((saved) => {
+                if (saved) setInvestigationId(null);
+              });
+        }}
+      >
+        Attach to investigation
+      </Button>
+      {command.error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {command.error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function FactoryImprovementsDialog({
   environment,
   projects,
@@ -392,6 +461,7 @@ export function FactoryImprovementsDialog({
   >("proposals");
   const [limit, setLimit] = useState(50);
   const [flushed, setFlushed] = useState(false);
+  const [escalationsReviewed, setEscalationsReviewed] = useState(false);
   const [retryingBatchId, setRetryingBatchId] = useState<string | null>(null);
   const data = environment.data;
   if (!data) return null;
@@ -417,6 +487,12 @@ export function FactoryImprovementsDialog({
     (entry) => entry.kind === "urgent" && entry.budgetDay === today,
   ).length;
   const config = data.improvementConfigurations.at(-1);
+  const urgentAllowance = config?.urgentBatchesPerDay ?? 4;
+  const heldEscalations =
+    urgentSpent >= urgentAllowance
+      ? queued.filter((entry) => entry.origin === "explicit-escalation").length
+      : 0;
+  const routineQueued = queued.filter((entry) => entry.origin === "retro").length;
   const evidenceProps = { environment, projects, canOpenThread, onOpenThread };
   const viewItems = [
     { value: "proposals", label: "Proposals and decisions" },
@@ -448,9 +524,43 @@ export function FactoryImprovementsDialog({
                 Routine budget used today: {spent} / {config?.routineBatchesPerDay ?? 2}
               </span>
               <span>
-                Escalation reviews today: {urgentSpent} / {config?.urgentBatchesPerDay ?? 4}
+                Escalation reviews today: {urgentSpent} / {urgentAllowance}
               </span>
             </div>
+            {heldEscalations > 0 ? (
+              <div role="status" className="space-y-2">
+                <p className="text-sm">
+                  {heldEscalations} {heldEscalations === 1 ? "escalation is" : "escalations are"}{" "}
+                  waiting for your review.{" "}
+                  {urgentAllowance === 0
+                    ? "Automatic escalation reviews are off."
+                    : "Today's escalation allowance is spent."}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    command.disabled || manager.status !== "active" || config?.enabled === false
+                  }
+                  onClick={() =>
+                    void command
+                      .submit({ type: "improvement.flush", kind: "urgent" })
+                      .then((saved) => setEscalationsReviewed(saved))
+                  }
+                >
+                  Review escalations now
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  This sends waiting escalations to the system manager without using the daily
+                  allowance.
+                </p>
+              </div>
+            ) : null}
+            {escalationsReviewed ? (
+              <p role="status" className="text-sm text-muted-foreground">
+                Escalation review requested.
+              </p>
+            ) : null}
             <p className="text-xs text-muted-foreground">
               Recorded feedback:{" "}
               {data.improvementFeedback.filter((entry) => entry.usefulness === "useful").length}{" "}
@@ -651,7 +761,7 @@ export function FactoryImprovementsDialog({
                   variant="outline"
                   disabled={
                     command.disabled ||
-                    !queued.length ||
+                    !routineQueued ||
                     manager.status !== "active" ||
                     config?.enabled === false
                   }
@@ -703,7 +813,7 @@ export function FactoryImprovementsDialog({
                           </Badge>
                         </div>
                         <p className="whitespace-pre-wrap text-sm">{entry.summary}</p>
-                        {entry.sampling.kind === "local" ? (
+                        {entry.sampling.kind === "local" && entry.origin === "retro" ? (
                           <p className="text-xs text-muted-foreground">
                             Local sample {entry.sampling.ordinal} ·{" "}
                             {entry.sampling.selected
@@ -718,6 +828,12 @@ export function FactoryImprovementsDialog({
                             Source finding {entry.findingId}
                           </p>
                         )}
+                        {entry.delivery.phase === "skipped" ? (
+                          <AttachRetainedFinding
+                            environment={environment}
+                            findingId={entry.findingId}
+                          />
+                        ) : null}
                         <p className="break-all text-xs text-muted-foreground">
                           Intake {entry.id}
                           {batch ? ` · batch ${batch.id}` : ""}

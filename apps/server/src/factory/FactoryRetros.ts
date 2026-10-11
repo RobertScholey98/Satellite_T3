@@ -10,6 +10,7 @@ import {
   type FactoryDecisionCommand,
   type FactoryEffectIntent,
   type FactoryFinding,
+  type FactoryFindingDisposition,
   type FactoryFindingOwner,
   type FactoryFollowup,
   type FactoryRetro,
@@ -226,6 +227,24 @@ export function factoryCompletionEligibility(
   };
 }
 
+const followupFiled = (followup: FactoryFollowup) =>
+  followup.waiver !== undefined ||
+  followup.publication.status === "linked" ||
+  (followup.publication.status === "recorded" &&
+    followup.publication.receipt.progress.status === "triaged");
+// A ticket disposition completes the assignment only once its ticket is in triage or the human
+// waived it.
+const unfiledTickets = (
+  followups: readonly FactoryFollowup[],
+  dispositions: readonly FactoryFindingDisposition[],
+) =>
+  dispositions.flatMap((entry) =>
+    entry.kind === "ticket" &&
+    !followups.some((followup) => followup.id === entry.followupId && followupFiled(followup))
+      ? [entry.followupId]
+      : [],
+  );
+
 export function decideFactoryRetros(
   input: FactoryRetroContext & {
     readonly state: FactorySnapshot;
@@ -279,18 +298,36 @@ export function decideFactoryRetros(
       effects,
       { retroId: retro.id, assignmentId: retro.assignmentId },
     );
-  const saveFollowup = (followup: FactoryFollowup, effects: readonly FactoryEffectIntent[] = []) =>
-    accept(
+  const saveFollowup = (
+    followup: FactoryFollowup,
+    effects: readonly FactoryEffectIntent[] = [],
+  ) => {
+    const followups = state.followups.some((entry) => entry.id === followup.id)
+      ? state.followups.map((entry) =>
+          entry.id === followup.id ? { ...followup, updatedAt: now } : entry,
+        )
+      : [...state.followups, followup];
+    const retro = state.retros.find((entry) => entry.assignmentId === followup.assignmentId);
+    const settled =
+      retro?.reports.phase === "complete" &&
+      unfiledTickets(followups, retro.reports.manager.dispositions).length === 0;
+    return accept(
       {
-        followups: state.followups.some((entry) => entry.id === followup.id)
-          ? state.followups.map((entry) =>
-              entry.id === followup.id ? { ...followup, updatedAt: now } : entry,
-            )
-          : [...state.followups, followup],
+        followups,
+        ...(settled
+          ? {
+              assignments: state.assignments.map((entry) =>
+                entry.id === followup.assignmentId && entry.status !== "complete"
+                  ? { ...entry, status: "complete" as const, wait: null, updatedAt: now }
+                  : entry,
+              ),
+            }
+          : {}),
       },
       effects,
       { followupId: followup.id, assignmentId: followup.assignmentId },
     );
+  };
   const canManage = (assignment: FactoryAssignment) =>
     actor.kind === "human" || (actor.kind === "thread" && actor.threadId === assignment.managerId);
   const canLead = (assignment: FactoryAssignment) =>
@@ -329,19 +366,18 @@ export function decideFactoryRetros(
         managerAvailable(assignment)));
   const activeTracker = (projectId: FactoryAssignment["projectId"]) =>
     state.projectTrackers.findLast((entry) => entry.projectId === projectId);
-  // The read-only retro session needs the assignment's qualified environment and preserved source.
-  // Work cancelled before those existed has nothing for a team to review, so the host writes the
-  // team report and the manager retro proceeds directly.
-  const cancelledBeforeWork = (assignment: FactoryAssignment) => {
-    if (assignment.completion?.conclusion?.kind !== "cancelled") return false;
-    if (assignment.qualification.status !== "qualified") return true;
-    if (!assignment.integrationId) return assignment.startingSource === undefined;
-    const integration = state.integrations.find((entry) => entry.id === assignment.integrationId);
-    return integration?.assignmentId !== assignment.id || !integration.currentPreparationId;
-  };
+  // Work cancelled before any lead ran has nothing for a team to review, so the host writes the
+  // team report and the manager retro proceeds directly. Qualification is no signal: a workflow
+  // restart or integration re-preparation withdraws it from a team that already worked.
+  const cancelledBeforeWork = (assignment: FactoryAssignment) =>
+    assignment.completion?.conclusion?.kind === "cancelled" &&
+    assignment.launchStatus !== "delivered" &&
+    assignment.startingSource?.origin !== "handover" &&
+    !assignment.previousLeadThreadIds?.length &&
+    !assignment.delivery?.revisions.length;
   const skipTeamRetro = (retro: FactoryRetro, commandId: CommandId) => {
     const report = {
-      outcome: "Cancelled before the team's execution environment was ready. No team work started.",
+      outcome: "Cancelled before the team's lead started. No team work started.",
       helped: "",
       hindered: "",
       contributions: [],
@@ -981,14 +1017,25 @@ export function decideFactoryRetros(
         submittedAt: now,
         teamReportDigest: command.teamReportDigest,
       };
+      const unfiled = unfiledTickets(state.followups, command.report.dispositions);
       return saveRetro(
         { ...retro, reports: { phase: "complete", team: retro.reports.team, manager: report } },
         [{ type: "retro.stop", retroId: retro.id }],
         {
           assignments: state.assignments.map((entry) =>
-            entry.id === assignment.id
-              ? { ...entry, status: "complete", wait: null, updatedAt: now }
-              : entry,
+            entry.id !== assignment.id
+              ? entry
+              : unfiled.length
+                ? {
+                    ...entry,
+                    status: "waiting",
+                    wait: {
+                      kind: "delivered",
+                      reason: `Retrospectives are complete. Follow-up ${unfiled.join(", ")} must reach the tracker's triage state, or be waived by the human, before the assignment completes.`,
+                    },
+                    updatedAt: now,
+                  }
+                : { ...entry, status: "complete", wait: null, updatedAt: now },
           ),
         },
       );
@@ -1085,6 +1132,17 @@ export function decideFactoryRetros(
         tracker ? [{ type: "followup.publish", followupId: followup.id }] : [],
       );
     }
+    case "followup.waive": {
+      if (actor.kind !== "human")
+        return fail("Only the human can waive a follow-up ticket.", "permission-denied");
+      const followup = state.followups.find((entry) => entry.id === command.followupId);
+      if (!followup) return fail("Follow-up not found.");
+      if (followupFiled(followup)) return accept({}, [], { followupId: followup.id });
+      return saveFollowup({
+        ...followup,
+        waiver: { reason: command.reason, commandId: command.commandId, waivedAt: now },
+      });
+    }
     case "followup.retry":
     case "followup.link-existing": {
       const followup = state.followups.find((entry) => entry.id === command.followupId);
@@ -1142,12 +1200,14 @@ export function decideFactoryRetros(
         followup.existingIssue === null
           ? { type: "followup.publish", followupId: followup.id }
           : { type: "followup.link", followupId: followup.id, issue: followup.existingIssue };
+      // Retrying withdraws a waiver: the human wants the ticket filed after all.
+      const { waiver: _waiver, ...retried } = followup;
       if (followup.publication.status === "configuration-required") {
         const tracker = activeTracker(assignment.projectId);
         if (!tracker) return fail("Configure this project's tracker first.");
         return saveFollowup(
           {
-            ...followup,
+            ...retried,
             error: null,
             publication: {
               status: "requested",
@@ -1158,7 +1218,7 @@ export function decideFactoryRetros(
           [effect],
         );
       }
-      return saveFollowup({ ...followup, error: null }, [effect]);
+      return saveFollowup({ ...retried, error: null }, [effect]);
     }
     case "followup.failed": {
       if (actor.kind !== "system")

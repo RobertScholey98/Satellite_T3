@@ -13,7 +13,9 @@ import * as Access from "./FactoryControlAccess.ts";
 import * as Inspection from "./FactoryDeliveryInspection.ts";
 import * as Integration from "./FactoryIntegrationExecution.ts";
 import { factoryMergeGroupEvidence } from "./FactoryMerge.ts";
+import { factoryMergeGroupHeads } from "./FactoryMergeOperation.ts";
 import { canonicalFactoryPullRequest } from "./FactoryMergeOwnership.ts";
+import * as MergeSignal from "./FactoryMergeSignal.ts";
 
 export class FactoryMergeEffects extends Context.Service<
   FactoryMergeEffects,
@@ -31,6 +33,7 @@ const make = Effect.gen(function* () {
   const access = yield* Access.FactoryControlAccess;
   const inspection = yield* Inspection.FactoryDeliveryInspection;
   const integration = yield* Integration.FactoryIntegrationExecution;
+  const signals = yield* MergeSignal.FactoryMergeSignal;
   const crypto = yield* Crypto.Crypto;
   const retire = (id: string) =>
     store.pending.pipe(
@@ -104,7 +107,10 @@ const make = Effect.gen(function* () {
     const active = Effect.gen(function* () {
       const state = yield* store.snapshot;
       const group = state.mergeGroups.find(
-        (entry) => entry.id === intent.groupId && entry.currentReviewId === intent.reviewId,
+        (entry) =>
+          entry.id === intent.groupId &&
+          entry.currentReviewId === intent.reviewId &&
+          entry.released === undefined,
       );
       const review = state.mergeGroupReviews.find(
         (entry) =>
@@ -237,13 +243,44 @@ const make = Effect.gen(function* () {
       },
     });
   });
+  /**
+   * Shows the group's current hold on the host: the label on member PRs while it holds them and
+   * the head statuses from `factoryMergeGroupHeads`. Every write reads first, so replays are cheap.
+   */
+  const hold = Effect.fn(function* (pending: Store.PendingFactoryEffect) {
+    if (pending.intent.type !== "merge.group.hold") return;
+    const groupId = pending.intent.groupId;
+    const queued = yield* store.pending;
+    const state = yield* store.snapshot;
+    const group = state.mergeGroups.find((entry) => entry.id === groupId);
+    // A later hold for the same group writes the same current state.
+    const superseded = queued
+      .slice(queued.findIndex((entry) => entry.id === pending.id) + 1)
+      .some(
+        (entry) => entry.intent.type === "merge.group.hold" && entry.intent.groupId === groupId,
+      );
+    if (!group || superseded) {
+      yield* retire(pending.id);
+      return;
+    }
+    yield* store.beginEffect(pending.id);
+    const heads = factoryMergeGroupHeads(state, group.id);
+    if (group.released) for (const head of heads) yield* signals.unlabel(head.ref);
+    else for (const known of group.knownPullRequests) yield* signals.label(known.ref);
+    for (const head of heads) yield* signals.publish(head);
+    yield* retire(pending.id);
+  });
   const handle = Effect.fn("FactoryMergeEffects.handle")(function* (
     pending: Store.PendingFactoryEffect,
   ) {
     if (!(yield* store.pending).some((entry) => entry.id === pending.id)) return;
     if (pending.intent.type === "merge.group.inspect") yield* inspect(pending);
     else if (pending.intent.type === "merge.group.notify") yield* notify(pending);
+    else if (pending.intent.type === "merge.group.hold") yield* hold(pending);
   }, Effect.mapError(failure));
   return FactoryMergeEffects.of({ handle });
 });
-export const layer = Layer.effect(FactoryMergeEffects, make).pipe(Layer.provide(Inspection.layer));
+export const layer = Layer.effect(FactoryMergeEffects, make).pipe(
+  Layer.provide(Inspection.layer),
+  Layer.provide(MergeSignal.layer),
+);

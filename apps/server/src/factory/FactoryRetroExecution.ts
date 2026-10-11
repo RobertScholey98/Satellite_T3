@@ -174,18 +174,15 @@ const make = Effect.gen(function* () {
         )
           return yield* unavailable();
       } else {
-        if (
-          assignment.qualification?.status !== "qualified" ||
-          !/^[a-f0-9-]{36}$/.test(assignment.qualification.profileId)
-        )
-          return yield* unavailable();
-        const originalProfileId = assignment.qualification.profileId;
-        const original = yield* fs
-          .readFileString(path.join(root, originalProfileId, "profile.json"))
-          .pipe(Effect.flatMap(decodeProfile));
+        const state = yield* store.snapshot;
+        // A workflow restart or integration re-preparation withdraws the current qualification,
+        // so the retro inspects with the profile the team last ran in.
+        const qualifiedProfileId =
+          assignment.qualification.status === "qualified"
+            ? assignment.qualification.profileId
+            : undefined;
         const source = yield* Effect.gen(function* () {
           if (assignment.integrationId) {
-            const state = yield* store.snapshot;
             const integration = state.integrations.find(
               (entry) => entry.id === assignment.integrationId,
             );
@@ -228,7 +225,8 @@ const make = Effect.gen(function* () {
             if (
               runtime.integrationId !== assignment.integrationId ||
               runtime.preparationId !== preparationId ||
-              runtime.profile.profileId !== originalProfileId ||
+              (qualifiedProfileId !== undefined &&
+                runtime.profile.profileId !== qualifiedProfileId) ||
               runtime.profile.assignmentWorkspace?.assignmentId !== assignment.id ||
               (operation?.lifecycle.phase === "completed" &&
                 (runtime.manifest.inputDigest !== operation.lifecycle.frozen.inputDigest ||
@@ -246,6 +244,7 @@ const make = Effect.gen(function* () {
               files,
               sourceDigest: yield* digestIntegration(files),
               sourceBasis: "integration-inputs" as const,
+              profileId: runtime.profile.profileId,
             };
           }
           if (!assignment.startingSource) return yield* unavailable();
@@ -271,8 +270,17 @@ const make = Effect.gen(function* () {
             files: final?.files ?? starting.files,
             sourceDigest: final?.sourceDigest ?? starting.source.sourceDigest,
             sourceBasis: final ? ("final-candidate" as const) : ("starting-snapshot" as const),
+            profileId:
+              qualifiedProfileId ??
+              state.workflowMigrations.findLast((entry) => entry.assignmentId === assignment.id)
+                ?.previousProfileId,
           };
         });
+        if (!source.profileId || !/^[a-f0-9-]{36}$/.test(source.profileId))
+          return yield* unavailable();
+        const original = yield* fs
+          .readFileString(path.join(root, source.profileId, "profile.json"))
+          .pipe(Effect.flatMap(decodeProfile));
         const staging = path.join(directory, `snapshot-${yield* crypto.randomUUIDv4}`);
         const projectSnapshotPath = path.join(staging, "project");
         const workflowSnapshotPath =

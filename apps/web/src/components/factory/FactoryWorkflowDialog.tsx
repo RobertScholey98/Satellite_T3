@@ -2,6 +2,7 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import {
   AuthSettingsWriteScope,
   type FactoryManager,
+  type FactoryModelRecommendation,
   type FactorySharedWork,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -296,6 +297,134 @@ function ExperimentSettings({ environment }: Pick<Props, "environment">) {
       </Button>
       {command.error ? (
         <p role="alert" className="text-sm text-destructive">
+          {command.error}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+function ModelRecommendation({
+  environment,
+  recommendation,
+}: Pick<Props, "environment"> & { recommendation: FactoryModelRecommendation }) {
+  const prefix = useId();
+  const permission = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
+  const command = useFactoryCommand(environment, permission);
+  const [reason, setReason] = useState("");
+  const data = environment.data;
+  const target = recommendation.target;
+  const policy = target.kind === "default" ? target.policy : target.overrides;
+  const accepted = data?.improvementDecisions.some(
+    (entry) =>
+      entry.proposalId === recommendation.proposalId &&
+      entry.revision === recommendation.proposalRevision &&
+      entry.outcome === "accepted",
+  );
+  return (
+    <section className="space-y-3 border-b border-border pb-4 text-sm">
+      <h3 className="font-medium">
+        {target.kind === "default"
+          ? "Environment model defaults"
+          : (data?.managers.find((entry) => entry.id === target.managerId)?.name ??
+            target.managerId)}
+      </h3>
+      <p className="whitespace-pre-wrap">{recommendation.rationale}</p>
+      <p className="break-all text-xs text-muted-foreground">
+        Proposal {recommendation.proposalId} · revision {recommendation.proposalRevision}
+      </p>
+      <div>
+        <p className="font-medium">Approved models</p>
+        {policy.approvedModels ? (
+          policy.approvedModels.length ? (
+            <ul>
+              {policy.approvedModels.map((model) => (
+                <li key={JSON.stringify(model)}>{factoryModelLabel(model)}</li>
+              ))}
+            </ul>
+          ) : (
+            <p>Empty pool: no model is approved.</p>
+          )
+        ) : (
+          <p className="text-muted-foreground">Inherit approved model pool.</p>
+        )}
+      </div>
+      <div>
+        <p className="font-medium">Preferences</p>
+        {policy.preferences ? (
+          policy.preferences.length ? (
+            <ul>
+              {policy.preferences.map((preference) => (
+                <li key={`${preference.role}:${preference.complexity}`}>
+                  {preference.role} · {preference.complexity}:{" "}
+                  {factoryModelLabel(preference.selection)}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No standing preferences.</p>
+          )
+        ) : (
+          <p className="text-muted-foreground">Inherit preferences.</p>
+        )}
+      </div>
+      {recommendation.applied ? (
+        <p role="status" className="text-muted-foreground">
+          Applied {recommendation.applied.appliedAt}.
+        </p>
+      ) : recommendation.declined ? (
+        <p role="status" className="whitespace-pre-wrap text-muted-foreground">
+          Declined {recommendation.declined.declinedAt}. {recommendation.declined.reason}
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {accepted ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={command.disabled}
+              onClick={() =>
+                void command.submit({
+                  type: "workflow.models.apply",
+                  recommendationId: recommendation.id,
+                })
+              }
+            >
+              Approve and apply these standing preferences
+            </Button>
+          ) : (
+            <p className="text-muted-foreground">
+              Accept proposal revision {recommendation.proposalRevision} before applying these
+              preferences.
+            </p>
+          )}
+          <Label htmlFor={`${prefix}-decline`}>Reason for declining</Label>
+          <Textarea
+            id={`${prefix}-decline`}
+            rows={2}
+            maxLength={6000}
+            value={reason}
+            disabled={command.disabled}
+            onChange={(event) => setReason(event.target.value)}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={command.disabled || !reason.trim()}
+            onClick={() =>
+              void command.submit({
+                type: "workflow.models.decline",
+                recommendationId: recommendation.id,
+                reason: reason.trim(),
+              })
+            }
+          >
+            Decline recommendation
+          </Button>
+        </div>
+      )}
+      {command.error ? (
+        <p role="alert" className="text-destructive">
           {command.error}
         </p>
       ) : null}
@@ -628,82 +757,13 @@ export function FactoryWorkflowDialog({
                 {data.modelRecommendations
                   .toReversed()
                   .slice(0, limit)
-                  .map((recommendation) => {
-                    const target = recommendation.target;
-                    const policy = target.kind === "default" ? target.policy : target.overrides;
-                    return (
-                      <section
-                        key={recommendation.id}
-                        className="space-y-3 border-b border-border pb-4 text-sm"
-                      >
-                        <h3 className="font-medium">
-                          {target.kind === "default"
-                            ? "Environment model defaults"
-                            : (data.managers.find((entry) => entry.id === target.managerId)?.name ??
-                              target.managerId)}
-                        </h3>
-                        <p className="whitespace-pre-wrap">{recommendation.rationale}</p>
-                        <p className="break-all text-xs text-muted-foreground">
-                          Proposal {recommendation.proposalId} · revision{" "}
-                          {recommendation.proposalRevision}
-                        </p>
-                        <div>
-                          <p className="font-medium">Approved models</p>
-                          {policy.approvedModels ? (
-                            policy.approvedModels.length ? (
-                              <ul>
-                                {policy.approvedModels.map((model) => (
-                                  <li key={JSON.stringify(model)}>{factoryModelLabel(model)}</li>
-                                ))}
-                              </ul>
-                            ) : (
-                              <p>Empty pool: no model is approved.</p>
-                            )
-                          ) : (
-                            <p className="text-muted-foreground">Inherit approved model pool.</p>
-                          )}
-                        </div>
-                        <div>
-                          <p className="font-medium">Preferences</p>
-                          {policy.preferences ? (
-                            policy.preferences.length ? (
-                              <ul>
-                                {policy.preferences.map((preference) => (
-                                  <li key={`${preference.role}:${preference.complexity}`}>
-                                    {preference.role} · {preference.complexity}:{" "}
-                                    {factoryModelLabel(preference.selection)}
-                                  </li>
-                                ))}
-                              </ul>
-                            ) : (
-                              <p>No standing preferences.</p>
-                            )
-                          ) : (
-                            <p className="text-muted-foreground">Inherit preferences.</p>
-                          )}
-                        </div>
-                        {recommendation.applied ? (
-                          <p role="status" className="text-muted-foreground">
-                            Applied {recommendation.applied.appliedAt}.
-                          </p>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={command.disabled}
-                            onClick={() =>
-                              void command.submit({
-                                type: "workflow.models.apply",
-                                recommendationId: recommendation.id,
-                              })
-                            }
-                          >
-                            Approve and apply these standing preferences
-                          </Button>
-                        )}
-                      </section>
-                    );
-                  })}
+                  .map((recommendation) => (
+                    <ModelRecommendation
+                      key={recommendation.id}
+                      environment={environment}
+                      recommendation={recommendation}
+                    />
+                  ))}
                 {!data.modelRecommendations.length ? (
                   <p className="text-sm text-muted-foreground">
                     No standing model recommendation awaiting review.

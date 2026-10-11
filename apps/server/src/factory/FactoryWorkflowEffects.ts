@@ -2,6 +2,7 @@ import {
   CommandId,
   FactoryError,
   MessageId,
+  factorySystemManager,
   type FactoryAssignment,
   type FactoryCommand,
   type FactorySnapshot,
@@ -76,7 +77,7 @@ const make = Effect.gen(function* () {
     )
       return {};
     const state = yield* store.snapshot;
-    const manager = state.managers.find((entry) => entry.role === "system");
+    const manager = factorySystemManager(state.managers);
     if (
       !manager ||
       (actor.kind !== "human" && (actor.kind !== "thread" || actor.threadId !== manager.threadId))
@@ -204,6 +205,7 @@ const make = Effect.gen(function* () {
       if (
         !work ||
         manager?.role !== "system" ||
+        manager.status === "retired" ||
         work.notification?.phase !== "pending" ||
         work.lifecycle.phase !== "authorized"
       ) {

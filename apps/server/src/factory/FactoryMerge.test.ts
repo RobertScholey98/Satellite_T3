@@ -1,19 +1,25 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   FactoryAssignmentId,
+  FactoryControlId,
   ThreadId,
   type FactoryDecisionCommand,
   type FactorySnapshot,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
 import { decide, type FactoryActor } from "./FactoryState.ts";
-import { factoryMergeGroupEvidence, factoryMergeGroupReadiness } from "./FactoryMerge.ts";
+import {
+  factoryMergeGroupEvidence,
+  factoryMergeGroupReadiness,
+  reconcileFactoryMergeGroups,
+} from "./FactoryMerge.ts";
 import {
   canonicalFactoryPullRequest,
   factoryMergeGroupForAssignment,
   factoryMergeGroupsForPullRequest,
 } from "./FactoryMergeOwnership.ts";
-import { commissioned } from "./FactoryIntegration.testkit.ts";
+import { commissioned, verified } from "./FactoryIntegration.testkit.ts";
+import { frozenMergeOperationFixture, submitMergeMember } from "./FactoryMergeOperation.testkit.ts";
 import {
   applyMerge,
   api,
@@ -582,5 +588,124 @@ describe("merge groups", () => {
     assert.isFalse(evidence.ready);
     if (!evidence.ready)
       assert.isTrue(evidence.reasons.some((reason) => reason.includes("owner/historical#42")));
+  });
+});
+
+describe("leaving a merge group", () => {
+  const releaseCommand = (groupId: string): FactoryDecisionCommand => ({
+    type: "merge.group.release",
+    commandId: mergeCommandId(),
+    groupId,
+    reason: "Ship the API change on its own",
+  });
+  const cancelLead = (state: FactorySnapshot): FactorySnapshot => ({
+    ...state,
+    assignments: state.assignments.map((entry) =>
+      entry.id === integrated.assignment
+        ? { ...entry, outcome: { kind: "cancelled", controlId: FactoryControlId.make("cancel") } }
+        : entry,
+    ),
+  });
+  const reconciled = (state: FactorySnapshot, previous: FactorySnapshot) =>
+    reconcileFactoryMergeGroups(
+      { state, result: { revision: state.revision }, effects: [] },
+      deliveryNow,
+      previous,
+    );
+
+  it("lets the human release a group so members merge on their own approval, then group them again", () => {
+    const fixture = reviewedMergeFixture();
+    const approved = autonomous(approve(fixture).state);
+    assert.isTrue(
+      Result.isFailure(
+        run(approved, releaseCommand(fixture.groupId), {
+          kind: "thread",
+          threadId: integrated.lead,
+        }),
+      ),
+    );
+    const released = applyMerge(approved, releaseCommand(fixture.groupId));
+    const group = released.state.mergeGroups.find((entry) => entry.id === fixture.groupId)!;
+    assert.equal(group.released?.reason, "Ship the API change on its own");
+    assert.isUndefined(factoryMergeGroupForAssignment(released.state, api.assignment));
+    assert.isTrue(released.effects.some((entry) => entry.type === "merge.group.hold"));
+    const member = released.state.assignments.find((entry) => entry.id === api.assignment)!;
+    const revision = member.delivery!.revisions.find(
+      (entry) => entry.id === member.delivery!.currentRevisionId,
+    )!;
+    assert.isUndefined(revision.approval, "the combined approval does not carry over");
+    const individual = run(
+      released.state,
+      {
+        type: "delivery.merge",
+        commandId: mergeCommandId(),
+        assignmentId: member.id,
+        revisionId: revision.id,
+      },
+      { kind: "thread", threadId: api.lead },
+    );
+    assert.isTrue(Result.isSuccess(individual), "the member merges through its own delivery");
+    assert.isTrue(
+      Result.isFailure(
+        run(
+          released.state,
+          { type: "merge.group.review", commandId: mergeCommandId(), groupId: fixture.groupId },
+          { kind: "thread", threadId: integrated.lead },
+        ),
+      ),
+    );
+
+    const restored = applyMerge(released.state, {
+      type: "merge.group.restore",
+      commandId: mergeCommandId(),
+      groupId: fixture.groupId,
+    });
+    const regrouped = restored.state.mergeGroups.find((entry) => entry.id === fixture.groupId)!;
+    assert.isUndefined(regrouped.released);
+    assert.isNull(regrouped.currentReviewId, "a fresh combined review is required");
+    assert.equal(factoryMergeGroupForAssignment(restored.state, api.assignment)?.id, group.id);
+  });
+
+  it("refuses to release a group while its shared merge runs or an outcome is uncertain", () => {
+    const frozen = frozenMergeOperationFixture();
+    const running = run(frozen.state, releaseCommand(frozen.groupId));
+    assert.isTrue(Result.isFailure(running));
+    if (Result.isFailure(running)) assert.include(running.failure.detail!, "Stop the shared merge");
+    const submitted = submitMergeMember(frozen.state, frozen.operationId);
+    const stopped = applyMerge(submitted.state, {
+      type: "merge.operation.stop",
+      commandId: mergeCommandId(),
+      operationId: frozen.operationId,
+      reason: "Stop further merges",
+    });
+    const uncertain = run(stopped.state, releaseCommand(frozen.groupId));
+    assert.isTrue(Result.isFailure(uncertain));
+    if (Result.isFailure(uncertain)) assert.include(uncertain.failure.detail!, "Reconcile");
+  });
+
+  it("releases the group when its integration is cancelled, but not before an uncertain merge is reconciled", () => {
+    const fixture = reviewedMergeFixture();
+    const cancelled = reconciled(cancelLead(fixture.state), fixture.state);
+    const group = cancelled.state.mergeGroups.find((entry) => entry.id === fixture.groupId)!;
+    assert.equal(group.released?.reason, "The integration assignment was cancelled.");
+    assert.isUndefined(factoryMergeGroupForAssignment(cancelled.state, api.assignment));
+    assert.isTrue(cancelled.effects.some((entry) => entry.type === "merge.group.hold"));
+
+    const frozen = frozenMergeOperationFixture();
+    const submitted = submitMergeMember(frozen.state, frozen.operationId).state;
+    const uncertain = reconciled(cancelLead(submitted), submitted);
+    assert.isUndefined(
+      uncertain.state.mergeGroups.find((entry) => entry.id === frozen.groupId)!.released,
+    );
+  });
+
+  it("asks the host to label and hold member PRs when the group first knows them", () => {
+    const { state, groupId } = mergeFixture();
+    const published = reconciled(state, verified().state);
+    assert.deepEqual(
+      published.effects.filter((entry) => entry.type === "merge.group.hold"),
+      [{ type: "merge.group.hold", groupId }],
+    );
+    assert.deepEqual(reconciled(published.state, published.state).effects, []);
   });
 });

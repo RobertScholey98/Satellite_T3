@@ -782,6 +782,40 @@ describe("Factory oversight", () => {
     assert.strictEqual(original(resolved.state).oversight?.recovery.cyclesUsed, 1);
   });
 
+  it("lets the manager replace the host's generic exhausted-recovery escalation", () => {
+    const continued = apply(
+      diagnosis().state,
+      {
+        type: "assignment.recovery.replan",
+        commandId,
+        assignmentId,
+        incidentId: "incident",
+        plan: "Apply the scoped remedy",
+      },
+      manager,
+    );
+    const exhausted = outstanding(continued.state, "second-incident");
+    const incidentId = original(exhausted.state).oversight!.recovery.incident!.id;
+    const escalation = {
+      failure: "The scoped remedy failed twice on the same migration",
+      attempts: ["Apply the scoped remedy"],
+      options: ["Split the migration into a separate assignment", "Cancel the assignment"],
+      recommendation: "Split the migration so the original work can continue",
+    };
+    const replaced = apply(
+      exhausted.state,
+      { type: "assignment.recovery.escalate", commandId, assignmentId, incidentId, escalation },
+      manager,
+    );
+    const assignment = original(replaced.state);
+    assert.deepStrictEqual(assignment.oversight?.recovery.incident?.escalation, escalation);
+    assert.deepStrictEqual(assignment.wait, {
+      kind: "human-decision",
+      reason: escalation.failure,
+    });
+    assert.strictEqual(assignment.oversight?.recovery.cyclesUsed, 1);
+  });
+
   it("blocks ambiguous external outcomes without retrying an action or spending a cycle", () => {
     const result = apply(
       fixture(),

@@ -9,16 +9,22 @@ import {
 } from "./baseSchemas.ts";
 import { FactoryAssignmentId } from "./factoryControls.ts";
 import { FactoryBoundaryId } from "./factoryBoundaries.ts";
-import { FactoryRevisionHostEvidence } from "./factoryDelivery.ts";
+import { type FactoryAssignmentDelivery, FactoryRevisionHostEvidence } from "./factoryDelivery.ts";
 import { FactoryEvidence } from "./factoryOversight.ts";
 import { PullRequestRef } from "./pullRequest.ts";
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
 const Text = TrimmedNonEmptyString.check(Schema.isMaxLength(6000));
 const Reasons = Schema.Array(Text).check(Schema.isMaxLength(100));
-/** Each member PR carries this label before its shared merge, so pipelines can tell grouped commits. */
+/**
+ * Each member PR carries this label while its group holds it, so pipelines can tell grouped
+ * commits. Deleting the label disarms the deployment gate for that PR.
+ */
 export const FACTORY_MERGE_GROUP_LABEL = "satellite-merge-group";
-/** The GitHub commit status context holding Group deployment readiness on each merge commit. */
+/**
+ * The GitHub commit status context holding Group deployment readiness on each merge commit. Member
+ * PR heads carry it too: `pending` while the group holds them, so branch protection can require it.
+ */
 export const FACTORY_MERGE_GROUP_STATUS_CONTEXT = "satellite/merge-group";
 export const FactoryMergeGroup = Schema.Struct({
   id: Id,
@@ -32,10 +38,43 @@ export const FactoryMergeGroup = Schema.Struct({
     Schema.Struct({ assignmentId: FactoryAssignmentId, ref: PullRequestRef }),
   ),
   currentReviewId: Schema.NullOr(Id),
+  /** Set when the group stops holding its members: the human released it or its integration ended. */
+  released: Schema.optionalKey(Schema.Struct({ reason: Text, releasedAt: IsoDateTime })),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
 export type FactoryMergeGroup = typeof FactoryMergeGroup.Type;
+
+/**
+ * Whether Group deployment readiness can reach every member's pipeline. Satellite publishes it only
+ * on GitHub pull requests, so a member stays unsupported until it has published one. Supported
+ * still means only that the status is published: a pipeline enforces it by running the gate job.
+ */
+export function factoryMergeDeploymentGate(
+  memberAssignmentIds: readonly string[],
+  assignments: ReadonlyArray<{
+    readonly id: string;
+    readonly projectId: string;
+    readonly delivery?: FactoryAssignmentDelivery;
+  }>,
+) {
+  const missing = memberAssignmentIds.flatMap((id) => {
+    const assignment = assignments.find((entry) => entry.id === id);
+    const revision = assignment?.delivery?.revisions.find(
+      (entry) => entry.id === assignment.delivery?.currentRevisionId,
+    );
+    return revision?.publication?.ref ? [] : [assignment?.projectId ?? id];
+  });
+  return missing.length
+    ? {
+        supported: false,
+        detail: `Deployment gate unavailable for ${missing.join(", ")}: Satellite publishes ${FACTORY_MERGE_GROUP_STATUS_CONTEXT} only for GitHub pull requests, and none is published yet.`,
+      }
+    : {
+        supported: true,
+        detail: `Deployment gate: Satellite publishes ${FACTORY_MERGE_GROUP_STATUS_CONTEXT} on every member. It holds a deployment only where the project's pipeline runs the merge group gate.`,
+      };
+}
 export const FactoryMergeReviewMember = Schema.Struct({
   assignmentId: FactoryAssignmentId,
   projectId: ProjectId,
@@ -248,6 +287,8 @@ export const FactoryMergeOperationReadiness = Schema.Struct({
   canReconcile: Schema.Boolean,
   canRetry: Schema.Boolean,
   canStop: Schema.Boolean,
+  canRelease: Schema.Boolean,
+  canRestore: Schema.Boolean,
   deploymentGate: Schema.Struct({ supported: Schema.Boolean, detail: Text }),
 });
 export type FactoryMergeOperationReadiness = typeof FactoryMergeOperationReadiness.Type;
@@ -292,6 +333,8 @@ export const FactoryMergeCommand = Schema.Union([
     recommendation: Text,
   }),
   Schema.Struct({ type: Schema.Literal("merge.group.review"), ...Fields }),
+  Schema.Struct({ type: Schema.Literal("merge.group.release"), ...Fields, reason: Text }),
+  Schema.Struct({ type: Schema.Literal("merge.group.restore"), ...Fields }),
   Schema.Struct({
     type: Schema.Literal("merge.group.approve"),
     ...Fields,
@@ -403,6 +446,8 @@ export const FactoryMergeEffectIntent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("merge.operation.resume"), operationId: Id }),
   Schema.Struct({ type: Schema.Literal("merge.operation.signal"), operationId: Id }),
   Schema.Struct({ type: Schema.Literal("merge.group.inspect"), groupId: Id, reviewId: Id }),
+  /** Brings the group's labels and member head statuses on the host up to date. */
+  Schema.Struct({ type: Schema.Literal("merge.group.hold"), groupId: Id }),
   Schema.Struct({
     type: Schema.Literal("merge.group.notify"),
     groupId: Id,

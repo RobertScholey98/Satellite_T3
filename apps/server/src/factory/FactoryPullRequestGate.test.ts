@@ -51,7 +51,7 @@ it.effect(
         headSha: "head",
         headBranch: "different-branch",
       };
-      for (const action of ["merge", "enable-auto-merge", "close", "close-as-delivered"]) {
+      for (const action of ["merge", "enable-auto-merge", "close-as-delivered"]) {
         const error = yield* gate
           .authorizeMutation({ action, targets: [target], expectedHeadSha: "head" })
           .pipe(
@@ -65,6 +65,13 @@ it.effect(
         assert.equal(error.code, "permission-denied");
         assert.include(error.detail!, "merge group");
       }
+      // Closing, reopening or withdrawing auto-merge merges nothing, and hosts accept a head
+      // condition only on merges.
+      for (const action of ["close", "reopen", "disable-auto-merge"])
+        assert.deepEqual(
+          yield* gate.authorizeMutation({ action, targets: [target], expectedHeadSha: "head" }),
+          { managed: true, requireConditionalMerge: false },
+        );
       assert.equal(
         (yield* gate
           .authorizeMutation({ action: "merge", targets: [target], stack: true })

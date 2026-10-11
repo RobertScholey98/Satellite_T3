@@ -323,12 +323,28 @@ export class GitHubWorkflowApprovalHeadChangedError extends Schema.TaggedError<G
   }
 }
 
+const CONDITIONAL_MERGE_REFUSALS = {
+  "unsupported-request":
+    "A conditional merge requires one direct pull request merge and its approved head revision.",
+  "head-changed": "The pull request head changed after merge approval.",
+  "indirect-merge":
+    "Conditional merging requires a direct merge with no merge queue or standing auto-merge instruction.",
+  "changed-while-preparing": "The pull request changed while preparing its merge message.",
+} as const;
+
 export class GitHubConditionalMergeError extends Schema.TaggedError<GitHubConditionalMergeError>()(
   "GitHubConditionalMergeError",
-  { detail: Schema.String },
+  {
+    reason: Schema.Literals([
+      "unsupported-request",
+      "head-changed",
+      "indirect-merge",
+      "changed-while-preparing",
+    ]),
+  },
 ) {
   override get message(): string {
-    return this.detail;
+    return CONDITIONAL_MERGE_REFUSALS[this.reason];
   }
 }
 
@@ -2535,12 +2551,7 @@ export const make = Effect.gen(function* () {
           input.stackNumber !== undefined ||
           !input.expectedHeadSha?.trim())
       ) {
-        return Effect.fail(
-          new GitHubConditionalMergeError({
-            detail:
-              "A conditional merge requires one direct pull request merge and its approved head revision.",
-          }),
-        );
+        return Effect.fail(new GitHubConditionalMergeError({ reason: "unsupported-request" }));
       }
       if (input.stackNumber !== undefined)
         return runGitHubStackAction({ ...input, stackNumber: input.stackNumber }).pipe(
@@ -2689,19 +2700,14 @@ export const make = Effect.gen(function* () {
           });
         }
         if (input.expectedHeadSha !== undefined && state.headRefOid !== input.expectedHeadSha) {
-          return yield* new GitHubConditionalMergeError({
-            detail: "The pull request head changed after merge approval.",
-          });
+          return yield* new GitHubConditionalMergeError({ reason: "head-changed" });
         }
         if (
           input.expectedHeadSha !== undefined &&
           (state.isMergeQueueEnabled !== false ||
             (input.requireConditionalMerge === true && state.autoMergeRequest !== null))
         ) {
-          return yield* new GitHubConditionalMergeError({
-            detail:
-              "Conditional merging requires a direct merge with no merge queue or standing auto-merge instruction.",
-          });
+          return yield* new GitHubConditionalMergeError({ reason: "indirect-merge" });
         }
         let body: string | undefined;
         let expectedHead: string | undefined = input.expectedHeadSha;
@@ -2724,9 +2730,7 @@ export const make = Effect.gen(function* () {
             input.expectedHeadSha !== undefined &&
             (message.headRefOid !== input.expectedHeadSha || message.isMergeQueueEnabled)
           ) {
-            return yield* new GitHubConditionalMergeError({
-              detail: "The pull request changed while preparing its merge message.",
-            });
+            return yield* new GitHubConditionalMergeError({ reason: "changed-while-preparing" });
           }
           // GitHub's merge queue chooses its own message and ignores custom text.
           if (!message.isMergeQueueEnabled) {

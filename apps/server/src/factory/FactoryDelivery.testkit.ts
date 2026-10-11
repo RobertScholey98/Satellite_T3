@@ -8,6 +8,7 @@ import {
   ThreadId,
   type FactoryAssignment,
   type FactoryDecisionCommand,
+  type FactoryDeliveryImpact,
   type FactorySnapshot,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
@@ -123,12 +124,14 @@ export const deliveryCommand = {
 export const deliveryRevisionId = "revision:command";
 export const deliveryRevisionCommand = { ...deliveryCommand, revisionId: deliveryRevisionId };
 
-export function reviewedDeliveryFixture() {
+export function reviewedDeliveryFixture(
+  classification: FactoryDeliveryImpact["classification"] = "none",
+) {
   let state = applyDelivery(deliveryFixture(), {
     ...deliveryCommand,
     type: "delivery.impact.declare",
     impact: {
-      classification: "none",
+      classification,
       changedFlows: false,
       journeys: "",
       navigation: "",

@@ -1,6 +1,7 @@
 import type {
   FactoryAssignmentId,
   FactoryCollaborationCondition as Condition,
+  FactoryCollaborationPlan,
   FactoryCrossProjectRequest,
   FactoryManager,
   ThreadId,
@@ -37,7 +38,7 @@ export function FactoryCollaborationRequest({
   const prefix = useId();
   const command = useFactoryCommand(environment);
   const [action, setAction] = useState<
-    "new" | "existing" | "defer" | "decline" | "withdraw" | null
+    "new" | "existing" | "defer" | "decline" | "withdraw" | "amend" | null
   >(null);
   const [reason, setReason] = useState("");
   const [alternative, setAlternative] = useState("");
@@ -195,8 +196,7 @@ export function FactoryCollaborationRequest({
               ))}
             </>
           ) : null}
-          {inbound &&
-          (request.lifecycle.phase === "deferred" || request.lifecycle.phase === "declined") ? (
+          {request.lifecycle.phase === "deferred" || request.lifecycle.phase === "declined" ? (
             <Button
               size="xs"
               variant="outline"
@@ -205,7 +205,17 @@ export function FactoryCollaborationRequest({
                 submit({ type: "collaboration.request.reconsider", requestId: request.id })
               }
             >
-              Reconsider now
+              {inbound ? "Reconsider now" : "Ask again"}
+            </Button>
+          ) : null}
+          {request.lifecycle.phase === "accepted" ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={command.disabled}
+              onClick={() => setAction("amend")}
+            >
+              Amend commitments
             </Button>
           ) : null}
           {!inbound && request.lifecycle.phase !== "withdrawn" ? (
@@ -367,6 +377,20 @@ export function FactoryCollaborationRequest({
             </Button>
           </div>
         ) : null}
+        {action === "amend" ? (
+          <AmendForm
+            request={request}
+            disabled={command.disabled}
+            onSubmit={(amendment, why) =>
+              submit({
+                type: "collaboration.plan.propose",
+                requestIds: [request.id],
+                text: `Amend the recorded commitments of request ${request.id}.`,
+                changes: { kind: "boundary", reason: why, amendments: [amendment] },
+              })
+            }
+          />
+        ) : null}
         {action ? (
           <Button
             size="xs"
@@ -462,36 +486,34 @@ export function FactoryCollaborationRequest({
             >
               Send to peer lead
             </Button>
-            {plans.map((plan) => (
-              <div key={plan.id} className="space-y-2 border-t border-border pt-3 text-sm">
-                <p className="font-medium">
-                  Shared plan · {factoryCollaborationPlanStatus(state, plan)}
-                </p>
-                {factoryCollaborationPlanStatus(state, plan) === "stale" ? (
-                  <p className="text-muted-foreground">
-                    A participating lead, scope or permission grant changed. Record a new shared
-                    plan before treating this agreement as current.
-                  </p>
-                ) : factoryCollaborationPlanStatus(state, plan) === "unverified" ? (
-                  <p className="text-muted-foreground">
-                    Some participant details are unavailable in this view. Current agreement cannot
-                    be confirmed here.
-                  </p>
-                ) : null}
-                <p className="whitespace-pre-wrap">{plan.text}</p>
-                {plan.changes.kind === "boundary" ? (
-                  <p className="text-muted-foreground">
-                    Manager decision needed · {plan.changes.reason}
-                  </p>
-                ) : null}
-                <p className="text-xs text-muted-foreground">
-                  {plan.acknowledgements.length} of {plan.participants.length} teams acknowledged ·{" "}
-                  {plan.id}
-                </p>
-              </div>
-            ))}
           </details>
         ) : null}
+        {plans.map((plan) => (
+          <div key={plan.id} className="space-y-2 border-t border-border pt-3 text-sm">
+            <p className="font-medium">
+              Shared plan · {factoryCollaborationPlanStatus(state, plan)}
+            </p>
+            {factoryCollaborationPlanStatus(state, plan) === "stale" ? (
+              <p className="text-muted-foreground">
+                A participating lead, scope or permission grant changed. Record a new shared plan
+                before treating this agreement as current.
+              </p>
+            ) : factoryCollaborationPlanStatus(state, plan) === "unverified" ? (
+              <p className="text-muted-foreground">
+                Some participant details are unavailable in this view. Current agreement cannot be
+                confirmed here.
+              </p>
+            ) : null}
+            <p className="whitespace-pre-wrap">{plan.text}</p>
+            {plan.changes.kind === "boundary" ? (
+              <PlanDecision environment={environment} plan={plan} request={request} />
+            ) : null}
+            <p className="text-xs text-muted-foreground">
+              {plan.acknowledgements.length} of {plan.participants.length} teams acknowledged ·{" "}
+              {plan.id}
+            </p>
+          </div>
+        ))}
         {command.pending ? (
           <p role="status" className="text-sm text-muted-foreground">
             Saving collaboration update…
@@ -504,5 +526,174 @@ export function FactoryCollaborationRequest({
         ) : null}
       </div>
     </details>
+  );
+}
+
+function AmendForm({
+  request,
+  disabled,
+  onSubmit,
+}: {
+  request: FactoryCrossProjectRequest;
+  disabled: boolean;
+  onSubmit: (
+    amendment: {
+      requestId: string;
+      outcome: string;
+      acceptanceConditions: string;
+      compatibility: string;
+    },
+    reason: string,
+  ) => void;
+}) {
+  const prefix = useId();
+  const [outcome, setOutcome] = useState(request.outcome);
+  const [acceptance, setAcceptance] = useState(request.acceptanceConditions);
+  const [compatibility, setCompatibility] = useState(request.compatibility);
+  const [reason, setReason] = useState("");
+  const fields = [
+    ["outcome", "Requested outcome", outcome, setOutcome],
+    ["acceptance", "Acceptance conditions", acceptance, setAcceptance],
+    ["compatibility", "Compatibility commitments", compatibility, setCompatibility],
+    ["reason", "Why the commitments change (required)", reason, setReason],
+  ] as const;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-muted-foreground">
+        Both owning managers, or you, approve the amendment before it replaces the recorded
+        commitments. The supporting work continues.
+      </p>
+      {fields.map(([key, label, value, set]) => (
+        <div key={key} className="space-y-1">
+          <Label htmlFor={`${prefix}-${key}`}>{label}</Label>
+          <Textarea
+            id={`${prefix}-${key}`}
+            value={value}
+            disabled={disabled}
+            maxLength={6000}
+            onChange={(event) => set(event.target.value)}
+          />
+        </div>
+      ))}
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={
+          disabled ||
+          !outcome.trim() ||
+          !acceptance.trim() ||
+          !compatibility.trim() ||
+          !reason.trim()
+        }
+        onClick={() =>
+          onSubmit(
+            {
+              requestId: request.id,
+              outcome: outcome.trim(),
+              acceptanceConditions: acceptance.trim(),
+              compatibility: compatibility.trim(),
+            },
+            reason.trim(),
+          )
+        }
+      >
+        Propose amendment
+      </Button>
+    </div>
+  );
+}
+
+function PlanDecision({
+  environment,
+  plan,
+  request,
+}: {
+  environment: FactoryEnvironmentView;
+  plan: FactoryCollaborationPlan;
+  request: FactoryCrossProjectRequest;
+}) {
+  const prefix = useId();
+  const command = useFactoryCommand(environment);
+  const [reason, setReason] = useState("");
+  const state = environment.data;
+  if (plan.changes.kind !== "boundary") return null;
+  const name = (id: ThreadId | null) =>
+    id === null ? "You" : (state?.managers.find((entry) => entry.id === id)?.name ?? id);
+  const amendment = plan.changes.amendments?.find((entry) => entry.requestId === request.id);
+  return (
+    <div className="space-y-2">
+      <p className="text-muted-foreground">Owner decision · {plan.changes.reason}</p>
+      {amendment ? (
+        <dl className="space-y-1 text-muted-foreground">
+          <div>
+            <dt className="font-medium">Amended outcome</dt>
+            <dd className="whitespace-pre-wrap">{amendment.outcome}</dd>
+          </div>
+          <div>
+            <dt className="font-medium">Amended acceptance</dt>
+            <dd className="whitespace-pre-wrap">{amendment.acceptanceConditions}</dd>
+          </div>
+          <div>
+            <dt className="font-medium">Amended compatibility</dt>
+            <dd className="whitespace-pre-wrap">{amendment.compatibility}</dd>
+          </div>
+        </dl>
+      ) : null}
+      {plan.approvals?.length ? (
+        <p className="text-xs text-muted-foreground">
+          Approved by {plan.approvals.map((entry) => name(entry.managerId)).join(", ")}
+        </p>
+      ) : null}
+      {plan.declined ? (
+        <p className="text-muted-foreground">
+          Declined by {name(plan.declined.managerId)} · {plan.declined.reason}
+        </p>
+      ) : null}
+      {plan.phase === "escalated" ? (
+        <>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={command.disabled}
+            onClick={() =>
+              void command.submit({
+                type: "collaboration.plan.decide",
+                planId: plan.id,
+                decision: { kind: "approve" },
+              })
+            }
+          >
+            Approve plan
+          </Button>
+          <Label htmlFor={`${prefix}-decline`}>Reason to decline</Label>
+          <Textarea
+            id={`${prefix}-decline`}
+            value={reason}
+            disabled={command.disabled}
+            maxLength={6000}
+            onChange={(event) => setReason(event.target.value)}
+          />
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={command.disabled || !reason.trim()}
+            onClick={() =>
+              void command.submit({
+                type: "collaboration.plan.decide",
+                planId: plan.id,
+                decision: { kind: "decline", reason: reason.trim() },
+              })
+            }
+          >
+            Decline plan
+          </Button>
+        </>
+      ) : null}
+      {command.error ? (
+        <p role="alert" className="text-destructive">
+          {command.error}
+        </p>
+      ) : null}
+    </div>
   );
 }

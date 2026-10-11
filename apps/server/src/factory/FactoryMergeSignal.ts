@@ -32,13 +32,15 @@ const failure = (cause: unknown) =>
 
 /**
  * Writes Group deployment readiness to GitHub: the merge group label on member PRs and the
- * `satellite/merge-group` commit status on merge commits. Both read GitHub first, so replaying a
- * write after a crash or restart never repeats it.
+ * `satellite/merge-group` commit status on member heads and merge commits. Every write reads
+ * GitHub first, so replaying one after a crash or restart never repeats it.
  */
 export class FactoryMergeSignal extends Context.Service<
   FactoryMergeSignal,
   {
     readonly label: (ref: PullRequestRef) => Effect.Effect<void, FactoryError>;
+    /** Removes the label from a PR that left its group, so its own deployment passes the gate. */
+    readonly unlabel: (ref: PullRequestRef) => Effect.Effect<void, FactoryError>;
     readonly publish: (input: {
       readonly ref: PullRequestRef;
       readonly sha: string;
@@ -64,12 +66,19 @@ const make = Effect.gen(function* () {
           }),
         );
   };
-  const request = (host: string, operation: string, path: string, body?: Record<string, unknown>) =>
+  const request = (
+    host: string,
+    operation: string,
+    path: string,
+    body?: Record<string, unknown>,
+    method: "GET" | "POST" | "DELETE" = body ? "POST" : "GET",
+  ) =>
     api.rest({
       host,
       operation: `FactoryMergeSignal.${operation}`,
       path,
-      ...(body ? { method: "POST" as const, body } : {}),
+      method,
+      ...(body ? { body } : {}),
     });
   const labeled = (host: string, path: string) =>
     request(host, "labels", path).pipe(
@@ -109,6 +118,22 @@ const make = Effect.gen(function* () {
       });
   }, Effect.mapError(failure));
 
+  const unlabel = Effect.fn("FactoryMergeSignal.unlabel")(function* (ref: PullRequestRef) {
+    const { host, repo } = yield* target(ref);
+    const issue = `${repo}/issues/${ref.number}/labels`;
+    if (!(yield* labeled(host, issue))) return;
+    yield* request(
+      host,
+      "removeLabel",
+      `${issue}/${encodeURIComponent(FACTORY_MERGE_GROUP_LABEL)}`,
+      undefined,
+      "DELETE",
+    ).pipe(
+      // Someone removed it first.
+      Effect.catchTags({ GitHubApiNotFoundError: () => Effect.void }),
+    );
+  }, Effect.mapError(failure));
+
   const publish = Effect.fn("FactoryMergeSignal.publish")(function* (input: {
     readonly ref: PullRequestRef;
     readonly sha: string;
@@ -136,7 +161,7 @@ const make = Effect.gen(function* () {
     });
   }, Effect.mapError(failure));
 
-  return FactoryMergeSignal.of({ label, publish });
+  return FactoryMergeSignal.of({ label, unlabel, publish });
 });
 
 export const layer = Layer.effect(FactoryMergeSignal, make);

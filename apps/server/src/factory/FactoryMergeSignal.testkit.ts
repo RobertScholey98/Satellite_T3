@@ -14,6 +14,9 @@ export function makeFakeGitHub() {
   const repositoryLabels = new Map<string, Set<string>>();
   const pullLabels = new Map<string, string[]>();
   const commitPulls = new Map<string, number[]>();
+  const lagging = new Map<string, number>();
+  /** Requests the deployment gate sent, as `METHOD path`. */
+  const served: string[] = [];
   const statuses: Array<{
     repository: string;
     sha: string;
@@ -31,7 +34,20 @@ export function makeFakeGitHub() {
   ): { status: number; json: unknown } => {
     const path = decodeURIComponent(rawPath.split("?")[0]!.replace(/^\/+/, ""));
     const fields = (body ?? {}) as Record<string, unknown>;
-    let match = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/labels$/.exec(path);
+    let match = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/labels\/(.+)$/.exec(path);
+    if (match && method === "DELETE") {
+      const [, repository = "", number = "", name = ""] = match;
+      const key = `${repository}#${number}`;
+      const labels = pullLabels.get(key) ?? [];
+      if (!labels.includes(name)) return { status: 404, json: { message: "Not Found" } };
+      pullLabels.set(
+        key,
+        labels.filter((entry) => entry !== name),
+      );
+      writes.push(`remove-label ${key}`);
+      return { status: 200, json: labelsOf(repository, Number(number)) };
+    }
+    match = /^repos\/([^/]+\/[^/]+)\/issues\/(\d+)\/labels$/.exec(path);
     if (match) {
       const [, repository = "", number = ""] = match;
       const key = `${repository}#${number}`;
@@ -74,6 +90,11 @@ export function makeFakeGitHub() {
     match = /^repos\/([^/]+\/[^/]+)\/commits\/([^/]+)\/(status|pulls)$/.exec(path);
     if (match) {
       const [, repository = "", sha = "", kind] = match;
+      const key = `${repository}@${sha}`;
+      if (kind === "pulls" && (lagging.get(key) ?? 0) > 0) {
+        lagging.set(key, lagging.get(key)! - 1);
+        return { status: 200, json: [] };
+      }
       if (kind === "pulls")
         return {
           status: 200,
@@ -114,10 +135,20 @@ export function makeFakeGitHub() {
     layer,
     statuses,
     writes,
+    served,
+    /** The latest `context` status on `sha`, as GitHub's combined status reports it. */
+    status: (sha: string, context: string) =>
+      statuses.findLast((entry) => entry.sha === sha && entry.context === context),
+    labels: (repository: string, number: number) =>
+      labelsOf(repository, number).map((entry) => entry.name),
     /** Records that `sha` is the merge commit of pull request `number`, as a host merge does. */
     associate: (repository: string, sha: string, number: number) => {
       const key = `${repository}@${sha}`;
       commitPulls.set(key, [...new Set([...(commitPulls.get(key) ?? []), number])]);
+    },
+    /** Answers the next `reads` lookups of `sha`'s pull requests with none, as GitHub can. */
+    lagAssociation: (repository: string, sha: string, reads: number) => {
+      lagging.set(`${repository}@${sha}`, reads);
     },
   };
 }
@@ -129,6 +160,7 @@ export const serveFakeGitHub = (github: ReturnType<typeof makeFakeGitHub>) =>
       () =>
         new Promise<{ url: string; close: () => Promise<void> }>((resolve) => {
           const server = NodeHttp.createServer((request, response) => {
+            github.served.push(`${request.method ?? "GET"} ${request.url ?? "/"}`);
             let raw = "";
             request.on("data", (chunk: Buffer) => (raw += chunk.toString()));
             request.on("end", () => {

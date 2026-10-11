@@ -22,6 +22,7 @@ import {
   factoryManagerPause,
   factoryPauseStatus,
 } from "./FactoryControlsReadModel";
+import { factorySystemManagerTeam } from "./FactorySidebarReadModel";
 
 const Setup = lazy(() =>
   import("./FactorySystemManagerSetup").then((module) => ({
@@ -65,10 +66,11 @@ export function FactorySystemManagerRow({
     "setup" | "improvements" | "workflow" | "collaboration" | null
   >(null);
   const settingsScope = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
-  const manager = environment.data?.managers.find((entry) => entry.role === "system");
+  const { manager, assignments } = environment.data
+    ? factorySystemManagerTeam(environment.data)
+    : { manager: undefined, assignments: [] };
+  const retired = manager?.status === "retired";
   const pause = manager ? factoryManagerPause(environment.data, manager.id) : undefined;
-  const assignments =
-    environment.data?.assignments.filter((entry) => entry.managerId === manager?.id) ?? [];
   const canSetup = environment.connected && environment.canOperate && settingsScope;
   const pendingReviews = [
     ...new Map(environment.data?.improvementProposals.map((entry) => [entry.id, entry])).values(),
@@ -110,15 +112,17 @@ export function FactorySystemManagerRow({
                 Shared workflow · {environment.label}
               </span>
               <Badge size="sm" variant={manager.wait ? "warning" : "secondary"}>
-                {pause
-                  ? factoryPauseStatus(pause)
-                  : manager.status === "active"
-                    ? "Ready"
-                    : manager.status === "blocked"
-                      ? "Needs setup"
-                      : manager.status === "onboarding"
-                        ? "Preparing"
-                        : "Paused"}
+                {retired
+                  ? "Retired"
+                  : pause
+                    ? factoryPauseStatus(pause)
+                    : manager.status === "active"
+                      ? "Ready"
+                      : manager.status === "blocked"
+                        ? "Needs setup"
+                        : manager.status === "onboarding"
+                          ? "Preparing"
+                          : "Paused"}
               </Badge>
               <Button size="xs" variant="ghost" onClick={() => setDialog("improvements")}>
                 Shared improvements{pendingReviews ? ` (${pendingReviews})` : ""}
@@ -137,6 +141,16 @@ export function FactorySystemManagerRow({
                   onClick={() => setDialog("setup")}
                 >
                   Edit setup and retry
+                </Button>
+              ) : null}
+              {retired ? (
+                <Button
+                  size="xs"
+                  variant="ghost"
+                  disabled={!canSetup}
+                  onClick={() => setDialog("setup")}
+                >
+                  Create system manager
                 </Button>
               ) : null}
               {!environment.connected ? (
@@ -243,7 +257,7 @@ export function FactorySystemManagerRow({
           <Setup
             environment={environment}
             projects={projects}
-            {...(manager ? { manager } : {})}
+            {...(manager && !retired ? { manager } : {})}
             onClose={() => setDialog(null)}
           />
         ) : null}

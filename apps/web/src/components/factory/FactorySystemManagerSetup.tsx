@@ -95,7 +95,10 @@ export function FactorySystemManagerSetup({
   const [revision, setRevision] = useState(previous?.revision ?? "");
   const validRevision = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(revision.trim());
   const alreadyCreated =
-    !manager && environment.data?.managers.some((entry) => entry.role === "system");
+    !manager &&
+    environment.data?.managers.some(
+      (entry) => entry.role === "system" && entry.status !== "retired",
+    );
   const pinned = manager?.threadStatus === "created";
   const disabled =
     command.disabled ||

@@ -1,4 +1,8 @@
-import type { FactoryAssignment, ScopedThreadRef } from "@t3tools/contracts";
+import {
+  factoryMergeDeploymentGate,
+  type FactoryAssignment,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import { useState } from "react";
 import { useFactoryEnvironments, type FactoryEnvironmentView } from "../../state/factory";
 import { Button } from "../ui/button";
@@ -54,11 +58,25 @@ function ThreadReview({
       {alert}
     </Badge>
   ) : null;
+  const gate = factoryMergeDeploymentGate(
+    group.memberAssignmentIds,
+    environment.data?.assignments ?? [],
+  );
+  const gateBadge = group.released ? null : (
+    <Badge size="sm" variant={gate.supported ? "secondary" : "warning"} title={gate.detail}>
+      {gate.supported ? "Deployment gate available" : "Deployment gate unavailable"}
+    </Badge>
+  );
   if (group.integrationAssignmentId !== assignment.id)
     return (
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2">
-        <span className="text-xs text-muted-foreground">This PR is part of a shared delivery.</span>
+        <span className="text-xs text-muted-foreground">
+          {group.released
+            ? `This PR left its shared delivery: ${group.released.reason}`
+            : "This PR is part of a shared delivery."}
+        </span>
         {alertBadge}
+        {gateBadge}
         <FactoryMergeThreadLink environment={environment} threadId={integrationLead.threadId}>
           Open combined review conversation
         </FactoryMergeThreadLink>
@@ -69,7 +87,9 @@ function ThreadReview({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
         <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           Integration review · {group.memberAssignmentIds.length} linked implementations
+          {group.released ? " · group released" : null}
           {alertBadge}
+          {gateBadge}
         </span>
         <Button size="xs" variant="outline" onClick={() => setOpen(true)}>
           Review combined feature

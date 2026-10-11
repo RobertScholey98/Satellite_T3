@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   FactoryAssignmentId,
+  MessageId,
   FactoryControlId,
   FactorySnapshot,
   ProjectId,
@@ -15,6 +16,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   factoryAssignmentCancellation,
   factoryAssignmentStatus,
+  factoryLatestThreadGuidance,
   factoryManagerPause,
   factoryPauseStatus,
   factoryProjectPause,
@@ -288,5 +290,26 @@ describe("factory thread controls", () => {
     expect(factoryManagerPause(projectResumed, managerId)?.id).toBe(managerPause.id);
     expect(factoryAssignmentStatus(projectResumed, assignment)).toBe("Working");
     expect(snapshot.assignments[0]?.wait).toEqual(assignment.wait);
+  });
+
+  it("offers the human's latest guidance in this thread for escalation", () => {
+    const guidance = (thread: string, message: string, observedAt: string) => ({
+      threadId: ThreadId.make(thread),
+      messageId: MessageId.make(message),
+      assignmentId: assignment.id,
+      observedAt,
+    });
+    const snapshot = {
+      ...initial,
+      guidance: [
+        guidance("worker", "earlier", "2026-10-10T12:00:00.000Z"),
+        guidance("worker", "latest", "2026-10-10T12:05:00.000Z"),
+        guidance("lead", "other-thread", "2026-10-10T12:10:00.000Z"),
+      ],
+    };
+    expect(factoryLatestThreadGuidance(snapshot, ThreadId.make("worker"))?.messageId).toBe(
+      "latest",
+    );
+    expect(factoryLatestThreadGuidance(snapshot, ThreadId.make("reviewer"))).toBeUndefined();
   });
 });

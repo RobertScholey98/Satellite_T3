@@ -4,6 +4,7 @@ import {
   isOrchestrationV2WorkActive,
   CommandId,
   type EventId,
+  type FactoryError,
   type ModelSelection,
   type NodeId,
   type OrchestrationV2AppThread,
@@ -514,7 +515,14 @@ export interface RunExecutionServiceV2StartRootRunInput {
   >;
   readonly relatedThreadIds?: ReadonlyArray<ThreadId>;
   readonly relatedProviderThreadIds?: ReadonlyArray<ProviderThreadId>;
-  readonly shouldStartProviderTurn?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
+  // A failed read or engineering-control check fails the start instead of skipping it.
+  readonly shouldStartProviderTurn?: () => Effect.Effect<
+    boolean,
+    | ProjectionStoreV2Error
+    | FactoryError
+    | EventSink.EventSinkV2Error
+    | IdAllocator.IdAllocatorV2Error
+  >;
   readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly message: ProviderAdapterV2TurnMessage;

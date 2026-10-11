@@ -5,7 +5,9 @@ import {
   type FactoryDecisionCommand,
   type FactoryEffectIntent,
   type FactoryScheduleCandidate,
+  type FactoryScheduleObservation,
   type FactorySchedulePreparation,
+  type FactoryScheduleSource,
   type FactoryScheduleAuthority,
   type FactorySchedulingAdmission,
   type FactorySnapshot,
@@ -25,6 +27,14 @@ import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 export interface FactorySchedulingContext {
   readonly schedulingAdmission?: FactorySchedulingAdmission;
   readonly schedulingBoardVerified?: { readonly projectId: ProjectId; readonly boardId: string };
+  /** The host's fresh board read for `schedule.track`. */
+  readonly schedulingObservation?: {
+    readonly projectId: ProjectId;
+    readonly configurationId: string;
+    readonly issue: IssueRef;
+    readonly source: FactoryScheduleSource;
+    readonly observation: FactoryScheduleObservation;
+  };
 }
 const hash = (value: unknown) =>
   Hex.encode(sha256(new TextEncoder().encode(stableStringify(value))));
@@ -449,6 +459,56 @@ export function decideFactoryScheduling(
         projectId: candidate.projectId,
         ancestorThreadIds: [],
       }) === undefined);
+  // Records a board observation as the ticket's current candidate. A consumed generation stays.
+  const recordObservation = (
+    observed: NonNullable<FactorySchedulingContext["schedulingObservation"]>,
+    consumed: Result.Result<FactoryDecision, FactoryError>,
+  ) => {
+    const config = factorySchedulingConfiguration(state, observed.projectId);
+    const manager = state.managers.find(
+      (entry) =>
+        entry.role === "project" &&
+        entry.projectId === observed.projectId &&
+        entry.status !== "retired",
+    );
+    if (!config || config.id !== observed.configurationId || !manager)
+      return fail("The tracker observation is no longer current.", "stale-revision");
+    const canonicalIssueKey = factoryScheduleIssueKey(observed.issue);
+    const previous = state.scheduleCandidates
+      .filter((entry) => entry.canonicalIssueKey === canonicalIssueKey)
+      .sort((a, b) => b.generation - a.generation)[0];
+    if (previous && previous.projectId !== observed.projectId)
+      return fail("Another project already owns this canonical ticket.");
+    if (previous?.lifecycle.phase === "commissioned" || previous?.lifecycle.phase === "dismissed")
+      return consumed;
+    const source =
+      previous?.source.kind === "project-improvement" ? previous.source : observed.source;
+    const candidate: FactoryScheduleCandidate = previous
+      ? {
+          ...previous,
+          configurationId: config.id,
+          observation: observed.observation,
+          source,
+          updatedAt: now,
+        }
+      : {
+          id: factoryScheduleCandidateId(canonicalIssueKey, 0),
+          projectId: observed.projectId,
+          managerId: manager.id,
+          issue: observed.issue,
+          canonicalIssueKey,
+          generation: 0,
+          configurationId: config.id,
+          source,
+          observation: observed.observation,
+          lifecycle: { phase: "observed" },
+          notifiedDigest: null,
+          notificationDigest: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+    return save(candidate);
+  };
   switch (command.type) {
     case "project.scheduling.configure": {
       if (actor.kind !== "human") return fail("Only the human can configure scheduling authority.");
@@ -493,54 +553,43 @@ export function decideFactoryScheduling(
     }
     case "schedule.observed": {
       if (actor.kind !== "system") return fail("Only the host can record tracker observations.");
-      const config = factorySchedulingConfiguration(state, command.projectId);
+      if (factoryScheduleIssueKey(command.issue) !== command.canonicalIssueKey)
+        return fail("The tracker observation is no longer current.", "stale-revision");
+      return recordObservation(command, accept());
+    }
+    case "schedule.track": {
       const manager = state.managers.find(
         (entry) =>
           entry.role === "project" &&
           entry.projectId === command.projectId &&
-          entry.status !== "retired",
+          entry.status === "active",
       );
       if (
-        !config ||
-        config.id !== command.configurationId ||
         !manager ||
-        factoryScheduleIssueKey(command.issue) !== command.canonicalIssueKey
+        (actor.kind !== "human" &&
+          (actor.kind !== "thread" ||
+            actor.threadId !== manager.id ||
+            factoryExecutionBlocked(state, {
+              threadId: actor.threadId,
+              managerId: manager.id,
+              projectId: command.projectId,
+              ancestorThreadIds: [],
+            }) !== undefined))
       )
-        return fail("The tracker observation is no longer current.", "stale-revision");
-      const previous = state.scheduleCandidates
-        .filter((entry) => entry.canonicalIssueKey === command.canonicalIssueKey)
-        .sort((a, b) => b.generation - a.generation)[0];
-      if (previous && previous.projectId !== command.projectId)
-        return fail("Another project already owns this canonical ticket.");
-      if (previous?.lifecycle.phase === "commissioned" || previous?.lifecycle.phase === "dismissed")
-        return accept();
-      const source =
-        previous?.source.kind === "project-improvement" ? previous.source : command.source;
-      const candidate: FactoryScheduleCandidate = previous
-        ? {
-            ...previous,
-            configurationId: config.id,
-            observation: command.observation,
-            source,
-            updatedAt: now,
-          }
-        : {
-            id: factoryScheduleCandidateId(command.canonicalIssueKey, 0),
-            projectId: command.projectId,
-            managerId: manager.id,
-            issue: command.issue,
-            canonicalIssueKey: command.canonicalIssueKey,
-            generation: 0,
-            configurationId: config.id,
-            source,
-            observation: command.observation,
-            lifecycle: { phase: "observed" },
-            notifiedDigest: null,
-            notificationDigest: null,
-            createdAt: now,
-            updatedAt: now,
-          };
-      return save(candidate);
+        return fail("Only the project's manager or the human can bring a ticket into its queue.");
+      const observed = input.schedulingObservation;
+      if (
+        observed?.projectId !== command.projectId ||
+        observed.issue.number !== command.issueNumber
+      )
+        return fail("Read the ticket from the project's configured board first.", "stale-revision");
+      return recordObservation(
+        observed,
+        fail(
+          "This ticket was already commissioned or dismissed. Ask the human to reopen it.",
+          "invalid-state",
+        ),
+      );
     }
     case "schedule.notifications.requested":
     case "schedule.notified": {

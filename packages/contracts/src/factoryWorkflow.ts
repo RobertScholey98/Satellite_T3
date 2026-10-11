@@ -159,6 +159,8 @@ export const FactoryWorkflowMigration = Schema.Struct({
   releaseId: Schema.NullOr(Id),
   previousVersion: FactoryWorkflowVersion,
   previousEpoch: NonNegativeInt,
+  /** The profile the team last ran in. A cancelled restart's retro inspects with it. */
+  previousProfileId: Schema.optionalKey(TrimmedNonEmptyString),
   preparedEpoch: Schema.NullOr(NonNegativeInt),
   retainedAuthorityReason: Schema.NullOr(Text),
   previousState: Schema.Struct({
@@ -221,6 +223,9 @@ export const FactoryModelRecommendation = Schema.Struct({
   rationale: Text,
   createdAt: IsoDateTime,
   applied: Schema.NullOr(Schema.Struct({ commandId: CommandId, appliedAt: IsoDateTime })),
+  declined: Schema.optionalKey(
+    Schema.Struct({ commandId: CommandId, reason: Text, declinedAt: IsoDateTime }),
+  ),
 });
 export type FactoryModelRecommendation = typeof FactoryModelRecommendation.Type;
 
@@ -341,6 +346,12 @@ export const FactoryWorkflowCommand = Schema.Union([
     type: Schema.Literal("workflow.models.apply"),
     commandId: CommandId,
     recommendationId: Id,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("workflow.models.decline"),
+    commandId: CommandId,
+    recommendationId: Id,
+    reason: Text,
   }),
 ]);
 export type FactoryWorkflowCommand = typeof FactoryWorkflowCommand.Type;

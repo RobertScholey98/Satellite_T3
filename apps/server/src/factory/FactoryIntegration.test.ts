@@ -330,7 +330,9 @@ describe("integration assignments", () => {
     assert.equal(team.integrationId, result.integrationId);
     assert.deepEqual(team.grant?.sourcePaths, []);
     assert.deepEqual(
-      result.effects.filter((entry) => entry.type !== "integration.notify"),
+      result.effects.filter(
+        (entry) => entry.type !== "integration.notify" && entry.type !== "merge.group.hold",
+      ),
       [{ type: "integration.thread.create", integrationId: result.integrationId }],
     );
     assert.equal(result.state.integrations[0]!.phase, "awaiting-grants");
@@ -740,5 +742,107 @@ describe("integration assignments", () => {
     };
     const assignment = concluded.assignments.find((entry) => entry.id === integrated.assignment)!;
     assert.isTrue(factoryCompletionEligibility(concluded, assignment).eligible);
+  });
+  it("records a grant beyond the owner's capability for the human to approve or decline", () => {
+    const base = configured();
+    const narrowed = apply(base.state, {
+      type: "integration.capability.configure",
+      commandId: id(),
+      projectId: api.project,
+      boundaryId: api.boundary,
+      paths: { ...paths, fixtureDirectories: [] },
+      coordinator: null,
+    });
+    const capabilityId = narrowed.result.integrationCapabilityId!;
+    let state = apply(
+      narrowed.state,
+      {
+        type: "integration.capability.qualified",
+        commandId: id(),
+        capabilityId,
+        profileId: "integration-profile-api",
+        configurationDigest: "configuration-api",
+        coordinatorDigest: null,
+      },
+      host,
+    ).state;
+    const frontend = state.integrationCapabilities.find(
+      (entry) => entry.projectId === deliveryIds.project && entry.supersededBy === null,
+    )!;
+    state = apply(
+      state,
+      {
+        type: "integration.grant",
+        commandId: id(),
+        integrationId: base.integrationId,
+        projectId: deliveryIds.project,
+        capabilityId: frontend.id,
+        paths,
+      },
+      actor(deliveryIds.manager),
+    ).state;
+    const ask = (current: typeof state) =>
+      apply(
+        current,
+        {
+          type: "integration.grant",
+          commandId: id(),
+          integrationId: base.integrationId,
+          projectId: api.project,
+          capabilityId,
+          paths,
+        },
+        actor(api.manager),
+      );
+    const asked = ask(state);
+    const grantId = asked.result.integrationGrantId!;
+    assert.equal(
+      asked.state.integrationGrants.find((entry) => entry.id === grantId)?.lifecycle.phase,
+      "requested",
+    );
+    assert.equal(asked.state.integrations[0]!.phase, "awaiting-grants");
+    assert.isTrue(asked.effects.some((entry) => entry.type === "integration.notify"));
+    const approve = { type: "integration.grant.approve", commandId: id(), grantId } as const;
+    assert.isTrue(Result.isFailure(run(asked.state, approve, actor(api.manager))));
+    const approved = apply(asked.state, approve);
+    assert.equal(
+      approved.state.integrationGrants.find((entry) => entry.id === grantId)?.lifecycle.phase,
+      "active",
+    );
+    assert.equal(approved.state.integrations[0]!.phase, "preparing");
+    const again = ask(state);
+    const declined = apply(again.state, {
+      type: "integration.grant.revoke",
+      commandId: id(),
+      grantId: again.result.integrationGrantId!,
+      reason: "Fixture directories stay closed",
+    });
+    assert.equal(
+      declined.state.integrationGrants.find((entry) => entry.id === again.result.integrationGrantId)
+        ?.lifecycle.phase,
+      "revoked",
+    );
+    assert.isTrue(declined.effects.some((entry) => entry.type === "integration.notify"));
+  });
+  it("cancels the integration team when its originating assignment is cancelled", () => {
+    const { state } = commissioned();
+    const cancelled = apply(state, {
+      type: "assignment.cancel",
+      commandId: id(),
+      assignmentId: deliveryIds.assignment,
+    });
+    assert.equal(cancelled.state.crossProjectRequests[0]?.lifecycle.phase, "withdrawn");
+    assert.equal(
+      cancelled.state.assignments.find((entry) => entry.id === integrated.assignment)?.outcome
+        ?.kind,
+      "cancelled",
+    );
+    assert.isTrue(
+      cancelled.effects.some(
+        (entry) =>
+          entry.type === "control.stop" &&
+          entry.controlId === `cancellation:${integrated.assignment}`,
+      ),
+    );
   });
 });

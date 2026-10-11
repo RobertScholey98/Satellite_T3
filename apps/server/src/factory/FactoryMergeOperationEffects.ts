@@ -34,11 +34,13 @@ import * as Integration from "./FactoryIntegrationExecution.ts";
 import { factoryMergeGroupEvidence } from "./FactoryMerge.ts";
 import {
   factoryMergeFrozenDigest,
+  factoryMergeGroupHeads,
   factoryMergeSignal,
   factoryMergeFrozenProof,
   factoryMergeOperationWriteReadiness,
   factoryMergeReceiptDigest,
 } from "./FactoryMergeOperation.ts";
+import { canonicalFactoryPullRequest } from "./FactoryMergeOwnership.ts";
 import { FactoryMergeGroupPermit } from "./FactoryPullRequestGate.ts";
 import * as Store from "./FactoryStore.ts";
 
@@ -401,7 +403,9 @@ const make = Effect.gen(function* () {
         reason:
           detail.state === "merged"
             ? "The host's merge fact lacks the exact reviewed head, target, timestamp or merge commit."
-            : "The host PR changed identity or is no longer open; its merge outcome cannot be confirmed.",
+            : detail.state === "closed" && member.outcome.phase === "pending"
+              ? `${ref.repository}#${ref.number} was closed without merging. Reopen it and reconcile, or stop the shared merge and release the group.`
+              : "The host PR changed identity or is no longer open; its merge outcome cannot be confirmed.",
         observedAt: yield* nowIso,
       };
     }
@@ -506,6 +510,12 @@ const make = Effect.gen(function* () {
       });
       revision = (yield* store.snapshot).revision;
     }
+    // A required head status would otherwise refuse the shared merge it exists to allow.
+    const head = factoryMergeGroupHeads(state, fresh.groupId).find(
+      (entry) =>
+        canonicalFactoryPullRequest(entry.ref) === canonicalFactoryPullRequest(member.reviewed.ref),
+    );
+    if (head) yield* signals.publish(head);
     const attemptId = `${fresh.id}:${member.reviewed.assignmentId}:${member.attempts + 1}`;
     yield* finish(pending, {
       type: "merge.operation.submitting",

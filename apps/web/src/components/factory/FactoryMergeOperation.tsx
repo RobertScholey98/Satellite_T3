@@ -29,7 +29,9 @@ export function FactoryMergeOperation({
   refreshing: boolean;
 }) {
   const reasonId = useId();
+  const releaseId = useId();
   const [stopReason, setStopReason] = useState("");
+  const [releaseReason, setReleaseReason] = useState("");
   const write = useEnvironmentScope(environment.environmentId, AuthSourceControlWriteScope);
   const command = useFactoryCommand(environment, !refreshing);
   const actions = factoryMergeOperationActions(read, { operate: environment.canOperate, write });
@@ -48,9 +50,11 @@ export function FactoryMergeOperation({
               : "secondary"
           }
         >
-          {readiness.status === "idle" && !readiness.canStart
-            ? "Waiting for merge gates"
-            : statuses[readiness.status]}
+          {read.group.released
+            ? "Group released"
+            : readiness.status === "idle" && !readiness.canStart
+              ? "Waiting for merge gates"
+              : statuses[readiness.status]}
         </Badge>
         <span className="text-xs text-muted-foreground">
           {readiness.confirmedCount} of {readiness.memberCount} merges confirmed
@@ -66,6 +70,12 @@ export function FactoryMergeOperation({
           ? ` Published status: ${operation.signal.state}.`
           : null}
       </p>
+      {read.group.released ? (
+        <p className="whitespace-pre-wrap text-sm">
+          Released: {read.group.released.reason}. Each PR now merges through its own delivery
+          approval.
+        </p>
+      ) : null}
       {lifecycle?.phase === "stopped" ? (
         <p className="whitespace-pre-wrap text-sm">Stopped: {lifecycle.reason}</p>
       ) : null}
@@ -209,6 +219,53 @@ export function FactoryMergeOperation({
             </p>
           </div>
         </details>
+      ) : null}
+      {readiness.canRelease ? (
+        <details className="space-y-2">
+          <summary className="cursor-pointer text-sm">Release this merge group</summary>
+          <div className="space-y-2">
+            <Label htmlFor={releaseId}>Reason for releasing the group</Label>
+            <Textarea
+              id={releaseId}
+              value={releaseReason}
+              maxLength={6000}
+              disabled={command.disabled || !actions.release}
+              onChange={(event) => setReleaseReason(event.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={command.disabled || !actions.release || !releaseReason.trim()}
+              onClick={() => {
+                if (actions.release)
+                  void command.submit({
+                    type: "merge.group.release",
+                    groupId: actions.release,
+                    reason: releaseReason.trim(),
+                  });
+              }}
+            >
+              Release merge group
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Member PRs stop waiting for the shared merge and need their own approval to merge.
+              Confirmed merges stay.
+            </p>
+          </div>
+        </details>
+      ) : null}
+      {readiness.canRestore ? (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={command.disabled || !actions.restore}
+          onClick={() => {
+            if (actions.restore)
+              void command.submit({ type: "merge.group.restore", groupId: actions.restore });
+          }}
+        >
+          Group these PRs again
+        </Button>
       ) : null}
       {command.pending ? (
         <p role="status" className="text-sm text-muted-foreground">

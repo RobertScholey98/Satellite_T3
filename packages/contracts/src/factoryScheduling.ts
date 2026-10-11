@@ -4,6 +4,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -153,6 +154,13 @@ export const FactorySchedulingCommand = Schema.Union([
     commandId: CommandId,
     candidateId: Id,
     preparation: FactorySchedulePreparation,
+  }),
+  /** Brings a board ticket that is not Ready into the queue to prepare. It authorizes nothing. */
+  Schema.Struct({
+    type: Schema.Literal("schedule.track"),
+    commandId: CommandId,
+    projectId: ProjectId,
+    issueNumber: PositiveInt,
   }),
   Schema.Struct({ type: Schema.Literal("schedule.retry"), commandId: CommandId, candidateId: Id }),
   Schema.Struct({

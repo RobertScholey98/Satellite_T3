@@ -223,6 +223,7 @@ const FactoryManagerFields = {
   overrides: FactoryPolicyOverrides,
   boundaryId: Schema.optionalKey(FactoryBoundaryId),
   status: Schema.Literals(["onboarding", "blocked", "active", "paused", "retired"]),
+  retiredReason: Schema.optionalKey(TrimmedNonEmptyString),
   threadStatus: Schema.Literals(["pending", "created"]),
   launchStatus: Schema.Literals(["pending", "delivered"]),
   wait: Schema.NullOr(FactoryWait),
@@ -245,6 +246,15 @@ export const FactoryManager = Schema.Union([
   }),
 ]);
 export type FactoryManager = typeof FactoryManager.Type;
+
+/**
+ * The environment's current system manager. A retired one stays current until the human creates
+ * its replacement, so at most one system manager is ever not retired.
+ */
+export const factorySystemManager = (managers: ReadonlyArray<FactoryManager>) =>
+  managers.findLast(
+    (entry): entry is Extract<FactoryManager, { role: "system" }> => entry.role === "system",
+  );
 
 const FactoryWorkRequestFields = {
   ...FactorySupportingWork.fields,

@@ -183,6 +183,125 @@ const reportFinding = (state: FactorySnapshot, findingId: string) =>
     { evidenceValidated: true },
   ).state;
 
+const trackerDestination = {
+  projectId: deliveryIds.project,
+  environmentId: EnvironmentId.make("environment"),
+  credentialNamespace: "namespace",
+  destination: {
+    kind: "github" as const,
+    host: "github.com",
+    repository: "owner/repo",
+    triage: { kind: "labels" as const, labels: ["triage"] },
+  },
+  board: null,
+  validatedAt: deliveryNow,
+};
+const ticketIssue = {
+  hostKind: "github" as const,
+  host: "github.com",
+  repository: "owner/repo",
+  id: "12",
+  number: 12,
+  url: "https://github.com/owner/repo/issues/12",
+};
+// Both retros done, with the manager disposing of one finding as a requested ticket.
+const retroWithTicket = () => {
+  let state: FactorySnapshot = {
+    ...reportFinding(complete(), "lint"),
+    projectTrackers: [
+      {
+        id: "tracker",
+        projectId: deliveryIds.project,
+        destination: trackerDestination,
+        approvedBy: id,
+        approvedAt: deliveryNow,
+      },
+    ],
+  };
+  state = apply(
+    state,
+    {
+      type: "followup.request",
+      commandId: id,
+      assignmentId: deliveryIds.assignment,
+      followupId: "lint-followup",
+      findingIds: ["lint"],
+      draft: {
+        title: "Enforce import convention",
+        problem: "Missing rule",
+        impact: "Inconsistent imports",
+        proposedOutcome: "Rule catches violations",
+        acceptanceCriteria: ["Invalid import rejected"],
+        evidence: [],
+        owner: "Project manager",
+        requiredAuthority: "Separate rule-change task",
+        suspectedCause: "Project safeguard gap",
+        origin: { assignmentId: deliveryIds.assignment, findingIds: ["lint"] },
+        containmentOf: null,
+      },
+    },
+    { kind: "thread", threadId: deliveryIds.lead },
+  ).state;
+  state = apply(state, {
+    type: "assignment.completion.begin",
+    commandId: id,
+    assignmentId: deliveryIds.assignment,
+    expectedStateRevision: state.revision,
+  }).state;
+  state = apply(state, {
+    type: "assignment.concluded",
+    expectedProjectThreadFence: "pure-state-test",
+    commandId: id,
+    assignmentId: deliveryIds.assignment,
+    expectedStateRevision: state.revision,
+    conclusion: {
+      kind: "delivered",
+      id: "conclusion",
+      evidenceDigest: "evidence",
+      concludedAt: deliveryNow,
+      planVersion: 1,
+      deliveryIds: ["delivery-one", "delivery-two"],
+    },
+    retroThreadId: ThreadId.make("retro-thread"),
+    modelSelection: deliverySelection,
+  }).state;
+  state = apply(
+    state,
+    {
+      type: "retro.team.submit",
+      commandId: id,
+      retroId: state.retros[0]!.id,
+      conclusionId: "conclusion",
+      report: {
+        outcome: "Delivered",
+        helped: "Checks",
+        hindered: "Imports",
+        contributions: [],
+        learning: { kind: "findings", findingIds: ["lint"] },
+      },
+    },
+    { kind: "human" },
+    { evidenceValidated: true },
+  ).state;
+  const reports = state.retros[0]!.reports;
+  if (reports.phase !== "manager-pending") throw new Error("Team retro was not accepted.");
+  return apply(
+    state,
+    {
+      type: "retro.manager.submit",
+      commandId: id,
+      retroId: state.retros[0]!.id,
+      teamReportDigest: reports.team.digest,
+      report: {
+        summary: "File the lint rule",
+        learning: { kind: "findings", findingIds: ["lint"] },
+        dispositions: [{ findingId: "lint", kind: "ticket", followupId: "lint-followup" }],
+      },
+    },
+    { kind: "thread", threadId: deliveryIds.manager },
+  ).state;
+};
+
 describe("factory assignment conclusions", () => {
   it("keeps implementation frozen when stopping fails and retries the same conclusion", () => {
     const state = complete();
@@ -777,8 +896,9 @@ describe("factory assignment conclusions", () => {
     ).state;
     assert.equal(finished.retros[0]!.reports.phase, "complete");
   });
-  it("concludes work cancelled before it qualified with a manager retro only", () => {
+  it("concludes work cancelled before its lead ran with a manager retro only", () => {
     const unqualified = cancelled({
+      launchStatus: "pending",
       qualification: { status: "unavailable", reason: "Preparing" },
     });
     const concluded = conclude(unqualified);
@@ -814,12 +934,28 @@ describe("factory assignment conclusions", () => {
     assert.equal(finished.retros[0]!.reports.phase, "complete");
     assert.equal(finished.assignments[0]!.status, "complete");
   });
+  it("runs the team retro for cancelled work whose restart withdrew its qualification", () => {
+    const restarted = cancelled({
+      qualification: { status: "unavailable", reason: "Preparing the selected workflow profile." },
+    });
+    const concluded = conclude(restarted);
+    const retro = concluded.state.retros[0]!;
+    assert.equal(retro.reports.phase, "team-pending");
+    assert.deepEqual(concluded.effects, [{ type: "retro.launch", retroId: retro.id }]);
+    assert.equal(
+      concluded.state.auxiliaryThreads.find((entry) => entry.threadId === retro.threadId)?.kind,
+      "retrospective",
+    );
+  });
   it("lets a failed retro for unstarted cancelled work move on when retried", () => {
     const concluded = conclude(cancelled()).state;
     // Retros recorded for unstarted work by older builds failed to prepare; retry must move on.
     const failed = {
       ...concluded,
-      assignments: concluded.assignments.map(({ startingSource: _source, ...entry }) => entry),
+      assignments: concluded.assignments.map((entry) => ({
+        ...entry,
+        launchStatus: "pending" as const,
+      })),
       retros: concluded.retros.map((entry) => ({
         ...entry,
         execution: { status: "failed" as const, reason: "Could not prepare" },
@@ -863,6 +999,76 @@ describe("factory assignment conclusions", () => {
     const acknowledged = apply(escalated, acknowledge, { kind: "human" }).state;
     assert.equal(acknowledged.findings[0]!.escalation?.acknowledgedAt, deliveryNow);
     assert.equal(acknowledged.findings[0]!.escalation?.summary, "Blocked on host");
+  });
+  it("completes a ticket disposition only once the ticket reaches triage", () => {
+    const held = retroWithTicket();
+    assert.equal(held.retros[0]!.reports.phase, "complete");
+    assert.equal(held.assignments[0]!.status, "waiting");
+    const created = apply(held, {
+      type: "followup.publication.recorded",
+      commandId: id,
+      followupId: "lint-followup",
+      receipt: {
+        requestId: "factory-followup:lint-followup",
+        requestDigest: "digest",
+        destination: trackerDestination,
+        marker: "marker",
+        progress: { status: "placement-pending", issue: ticketIssue, reason: "Board lagging" },
+        createdAt: deliveryNow,
+        updatedAt: deliveryNow,
+      },
+    }).state;
+    assert.equal(created.assignments[0]!.status, "waiting");
+    const triaged = apply(created, {
+      type: "followup.publication.recorded",
+      commandId: id,
+      followupId: "lint-followup",
+      receipt: {
+        requestId: "factory-followup:lint-followup",
+        requestDigest: "digest",
+        destination: trackerDestination,
+        marker: "marker",
+        progress: {
+          status: "triaged",
+          issue: ticketIssue,
+          placement: { kind: "labels", labels: ["triage"] },
+          verifiedAt: deliveryNow,
+        },
+        createdAt: deliveryNow,
+        updatedAt: deliveryNow,
+      },
+    }).state;
+    assert.equal(triaged.assignments[0]!.status, "complete");
+    assert.isNull(triaged.assignments[0]!.wait);
+  });
+  it("lets only the human waive an unfiled ticket, and a retry withdraws the waiver", () => {
+    const held = retroWithTicket();
+    const waive = {
+      type: "followup.waive" as const,
+      commandId: id,
+      followupId: "lint-followup",
+      reason: "Tracker is being migrated",
+    };
+    assert.isTrue(
+      Result.isFailure(
+        decideFactoryRetros({
+          state: held,
+          command: waive,
+          actor: { kind: "thread", threadId: deliveryIds.manager },
+          now: deliveryNow,
+        })!,
+      ),
+    );
+    const waived = apply(held, waive, { kind: "human" }).state;
+    assert.equal(waived.assignments[0]!.status, "complete");
+    assert.equal(waived.followups[0]!.waiver?.reason, "Tracker is being migrated");
+    const retried = apply(
+      waived,
+      { type: "followup.retry", commandId: id, followupId: "lint-followup" },
+      { kind: "human" },
+    );
+    assert.isUndefined(retried.state.followups[0]!.waiver);
+    assert.deepEqual(retried.effects, [{ type: "followup.publish", followupId: "lint-followup" }]);
   });
   it("caps findings at the number a manager retro can dispose of", () => {
     let state = fixture();

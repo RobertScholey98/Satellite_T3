@@ -6,6 +6,7 @@ import type {
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   CommandId,
+  factorySystemManager,
   type FactoryAssignmentId,
   type FactoryManager,
   type FactoryOnboardingReport,
@@ -115,6 +116,12 @@ const managerStatusLabels = {
   paused: "Paused",
   retired: "Retired",
 } satisfies Record<FactoryManager["status"], string>;
+
+/** The collapse key of the environment's current system manager, which the system row toggles. */
+function systemManagerKey(environment: FactoryEnvironmentView) {
+  const manager = factorySystemManager(environment.data?.managers ?? []);
+  return manager && scopedThreadKey(scopeThreadRef(environment.environmentId, manager.threadId));
+}
 
 function threadUnavailableReason(
   status: FactoryManager["threadStatus"],
@@ -372,21 +379,10 @@ export function FactorySidebar({
                   ? (threadsByKey.get(activeThreadKey)?.id ?? null)
                   : null
               }
-              teamsExpanded={
-                !environment.data?.managers.some(
-                  (manager) =>
-                    manager.role === "system" &&
-                    collapsedManagers.has(
-                      scopedThreadKey(scopeThreadRef(environment.environmentId, manager.threadId)),
-                    ),
-                )
-              }
+              teamsExpanded={!collapsedManagers.has(systemManagerKey(environment) ?? "")}
               onToggleTeams={() => {
-                const manager = environment.data?.managers.find((entry) => entry.role === "system");
-                if (!manager) return;
-                toggleManager(
-                  scopedThreadKey(scopeThreadRef(environment.environmentId, manager.threadId)),
-                );
+                const key = systemManagerKey(environment);
+                if (key) toggleManager(key);
               }}
               onAssignmentDetails={(assignmentId) =>
                 setAssignmentDetails({ environmentId: environment.environmentId, assignmentId })

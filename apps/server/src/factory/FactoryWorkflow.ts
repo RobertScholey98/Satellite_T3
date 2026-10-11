@@ -1,5 +1,6 @@
 import {
   FactoryError,
+  factorySystemManager,
   type FactoryAssignment,
   type FactoryBoundary,
   type FactoryCommandResult,
@@ -20,6 +21,7 @@ import * as Result from "effect/Result";
 import { commissionFactoryAssignment } from "./FactoryAssignmentCommission.ts";
 import {
   factoryPathWithin,
+  factoryPathsChangeSkills,
   factoryProtectedPath,
   factoryRelativePath,
 } from "./FactoryBoundaryPaths.ts";
@@ -73,12 +75,12 @@ export function factoryWorkChangesSkills(
   boundary: FactoryBoundary,
   work: FactorySupportingWork,
 ): boolean {
-  return [...work.sourcePaths, ...work.creatableDirectories, ...(work.controlPaths ?? [])].some(
-    (file) =>
-      /(^|\/)(?:SKILL|AGENTS|CLAUDE)\.md$/i.test(file) ||
-      boundary.skillRoots?.some(
-        (root) => root === "." || root === file || factoryPathWithin(file, root),
-      ),
+  return factoryPathsChangeSkills(
+    {
+      files: [...work.sourcePaths, ...(work.controlPaths ?? [])],
+      creatableDirectories: work.creatableDirectories,
+    },
+    boundary,
   );
 }
 
@@ -141,7 +143,7 @@ export function decideFactoryWorkflow(
     });
   const human = actor.kind === "human";
   const host = actor.kind === "system";
-  const manager = state.managers.find((entry) => entry.role === "system");
+  const manager = factorySystemManager(state.managers);
   const managerAvailable =
     manager?.status === "active" &&
     manager.launchStatus === "delivered" &&
@@ -770,6 +772,9 @@ export function decideFactoryWorkflow(
         releaseId: release?.id ?? null,
         previousVersion: entry!.workflow,
         previousEpoch: entry!.grant!.epoch,
+        ...(entry!.qualification.status === "qualified"
+          ? { previousProfileId: entry!.qualification.profileId }
+          : {}),
         preparedEpoch: null,
         retainedAuthorityReason: entry!.wait?.kind === "authority" ? entry!.wait.reason : null,
         previousState: { status: entry!.status, wait: entry!.wait },
@@ -1139,8 +1144,8 @@ export function decideFactoryWorkflow(
       );
     }
     case "improvement.validation.record": {
-      if (!canCoordinate || !proposal(command.proposalId, command.proposalRevision))
-        return fail("Validation needs its exact shared proposal and authorized reviewer.");
+      if (!canCoordinate || !acceptedProposal(command.proposalId, command.proposalRevision))
+        return fail("Validation needs its exact accepted shared proposal and authorized reviewer.");
       if (
         command.assignmentId !== undefined &&
         !state.assignments.some(
@@ -1219,6 +1224,32 @@ export function decideFactoryWorkflow(
       };
       return accepted(
         { modelRecommendations: [...state.modelRecommendations, recommendation] },
+        { recommendationId: recommendation.id },
+      );
+    }
+    case "workflow.models.decline": {
+      const recommendation = state.modelRecommendations.find(
+        (entry) => entry.id === command.recommendationId,
+      );
+      if (!human || !recommendation)
+        return fail("Only the human can decline a standing model recommendation.");
+      if (recommendation.applied !== null || recommendation.declined !== undefined)
+        return fail("This recommendation was already resolved.", "invalid-state");
+      return accepted(
+        {
+          modelRecommendations: state.modelRecommendations.map((entry) =>
+            entry.id !== recommendation.id
+              ? entry
+              : {
+                  ...entry,
+                  declined: {
+                    commandId: command.commandId,
+                    reason: command.reason,
+                    declinedAt: now,
+                  },
+                },
+          ),
+        },
         { recommendationId: recommendation.id },
       );
     }

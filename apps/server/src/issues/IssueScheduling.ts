@@ -43,7 +43,10 @@ export class IssueScheduling extends Context.Service<
   {
     readonly qualify: (input: BoardInput) => Effect.Effect<void, IssueOperationError>;
     readonly observe: (
-      input: BoardInput & { readonly includeIssues?: ReadonlyArray<IssueRef> },
+      input: BoardInput & {
+        readonly includeIssues?: ReadonlyArray<IssueRef>;
+        readonly includeNumbers?: ReadonlyArray<number>;
+      },
     ) => Effect.Effect<
       {
         readonly board: IssueBoardSummary;
@@ -281,7 +284,8 @@ const make = Effect.gen(function* () {
           item.columnId !== null &&
           issueReadyColumnIds(current.saved.mapping!).includes(item.columnId);
         const key = IssueHost.canonicalIssueKey(item.issue.ref);
-        if (!ready && !included.has(key)) continue;
+        if (!ready && !included.has(key) && !input.includeNumbers?.includes(item.issue.ref.number))
+          continue;
         const version = digest(item.issue);
         const cached = cachedDetails.get(key);
         const detail =

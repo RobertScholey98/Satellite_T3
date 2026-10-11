@@ -328,7 +328,7 @@ export function decideFactoryOversight(
         notify(
           assignment,
           `escalated:${incident.id}`,
-          `${details.failure}\nAttempted remedies: ${details.attempts.join("; ") || "No automatic remedy was applied."}\nOptions: ${details.options.join(" ")}\nRecommendation: ${details.recommendation}`,
+          `${details.failure}\nAttempted remedies: ${details.attempts.join("; ") || "No automatic remedy was applied."}\nOptions: ${details.options.join(" ")}\nRecommendation: ${details.recommendation}\nReplace these generic options with concrete ones and your recommendation for the human using assignment.recovery.escalate for incident ${incident.id}.`,
         ),
       ],
     );
@@ -1233,11 +1233,20 @@ export function decideFactoryOversight(
       if (!assignment) return fail("assignment-not-found");
       if (!managerAuthorized(assignment)) return fail("permission-denied");
       const incident = assignment.oversight?.recovery.incident;
+      // While its human decision is open, the manager may replace an escalation, including the
+      // host's generic options and recommendation for exhausted recovery.
+      const pendingEscalation =
+        incident?.phase === "escalated" &&
+        assignment.wait?.kind === "human-decision" &&
+        assignment.wait.reason === incident.escalation?.failure;
       if (
         !activeAssignment(assignment) ||
         !incident ||
         incident.id !== command.incidentId ||
-        factoryRecoveryBlocked(state, assignment) !== undefined ||
+        factoryRecoveryBlocked(
+          state,
+          pendingEscalation ? { ...assignment, wait: null } : assignment,
+        ) !== undefined ||
         command.escalation.options.length === 0
       )
         return fail("invalid-state");

@@ -4,16 +4,21 @@ import * as NodeURL from "node:url";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  FACTORY_MERGE_GROUP_LABEL,
   FACTORY_MERGE_GROUP_STATUS_CONTEXT,
   FactoryError,
+  factoryMergeDeploymentGate,
   type FactoryMergeOperation,
+  type PullRequestRef,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Access from "./FactoryControlAccess.ts";
 import { mergeFixture } from "./FactoryMerge.testkit.ts";
+import { verified } from "./FactoryIntegration.testkit.ts";
+import * as MergeEffects from "./FactoryMergeEffects.ts";
 import { mergeEffectsBase } from "./FactoryMergeEffects.testkit.ts";
-import { factoryMergeDeploymentGate, factoryMergeSignal } from "./FactoryMergeOperation.ts";
+import { factoryMergeSignal } from "./FactoryMergeOperation.ts";
 import * as Effects from "./FactoryMergeOperationEffects.ts";
 import { makeMergeOperationHarness } from "./FactoryMergeOperationEffects.testkit.ts";
 import * as MergeSignal from "./FactoryMergeSignal.ts";
@@ -27,13 +32,13 @@ const script = NodeURL.fileURLToPath(
 );
 
 /** Runs the shipped deployment gate script against the fake GitHub, as a workflow job would. */
-const runGate = (api: string, repository: string, sha: string) =>
+const runGate = (api: string, repository: string, sha: string, timeout = "0.3") =>
   Effect.promise(
     () =>
       new Promise<{ code: number; output: string }>((resolve) => {
         NodeChildProcess.execFile(
           process.execPath,
-          [script, "--timeout", "0.3", "--interval", "0.05"],
+          [script, "--timeout", timeout, "--interval", "0.05"],
           {
             env: {
               ...process.env,
@@ -48,9 +53,6 @@ const runGate = (api: string, repository: string, sha: string) =>
         );
       }),
   );
-
-/** A deploy job that `needs:` the gate and keeps its own environment approval. */
-const deploys = (gate: { code: number }, approved: boolean) => gate.code === 0 && approved;
 
 const receipt = (operation: FactoryMergeOperation, index: number) => {
   const outcome = operation.members[index]!.outcome;
@@ -69,6 +71,18 @@ const handleFirst = (type: string) =>
 const handleSignals = Effect.gen(function* () {
   while (yield* handleFirst("merge.operation.signal"));
 });
+const handleHolds = Effect.gen(function* () {
+  const store = yield* Store.FactoryStore;
+  const effects = yield* MergeEffects.FactoryMergeEffects;
+  for (const pending of (yield* store.pending).filter(
+    (entry) => entry.intent.type === "merge.group.hold",
+  ))
+    yield* effects.handle(pending);
+});
+/** Merge commits only; member heads carry the same context while the group holds them. */
+const mergeCommitStatuses = <T extends { readonly sha: string }>(github: {
+  readonly statuses: ReadonlyArray<T>;
+}) => github.statuses.filter((entry) => entry.sha.startsWith("merge-"));
 
 it.effect(
   "keeps one merged member from deploying, releases both projects once the group completes, and leaves approval in charge",
@@ -92,7 +106,6 @@ it.effect(
         assert.equal(waiting.code, 1);
         assert.include(waiting.output, "1 of 2 merges confirmed");
         assert.include(waiting.output, "Re-run this job");
-        assert.isFalse(deploys(waiting, true));
 
         yield* harness.drain;
         const completed = yield* harness.current;
@@ -103,9 +116,14 @@ it.effect(
           const released = yield* runGate(api, merged.ref.repository, merged.mergeCommitSha);
           assert.equal(released.code, 0, released.output);
           assert.include(released.output, completed.groupId);
-          assert.isFalse(deploys(released, false), "the project's own approval still blocks");
-          assert.isTrue(deploys(released, true));
         }
+        // The gate only reads, so it cannot grant a deployment, approve an environment or post a
+        // status. The deploy job's own `environment:` approval stays in charge.
+        assert.isNotEmpty(harness.github.served);
+        assert.deepEqual(
+          harness.github.served.filter((entry) => !entry.startsWith("GET ")),
+          [],
+        );
 
         harness.github.associate(first.ref.repository, "ordinary-commit", 99);
         const ordinary = yield* runGate(api, first.ref.repository, "ordinary-commit");
@@ -124,7 +142,7 @@ it.effect(
         );
         assert.isTrue(completed.members.every((entry) => entry.labeled === true));
         // Each write moved the state on; none repeats the one before it on the same commit.
-        const posted = harness.github.statuses.map(
+        const posted = mergeCommitStatuses(harness.github).map(
           (entry) => `${entry.repository}@${entry.sha} ${entry.state} ${entry.description}`,
         );
         assert.equal(new Set(posted).size, posted.length);
@@ -209,7 +227,7 @@ it.effect(
         for (const pending of signals) yield* effects.handle(pending);
         assert.equal((yield* harness.current).lifecycle.phase, "completed");
         assert.isUndefined((yield* harness.current).signal);
-        const statuses = harness.github.statuses.length;
+        const statuses = mergeCommitStatuses(harness.github).length;
         assert.equal(statuses, 2);
         assert.equal(
           (yield* harness.store.pending).filter(
@@ -234,7 +252,7 @@ it.effect(
           yield* harness.drain;
           const recovered = yield* harness.current;
           assert.equal(recovered.signal?.state, "success");
-          assert.equal(harness.github.statuses.length, statuses);
+          assert.equal(mergeCommitStatuses(harness.github).length, statuses);
           const labels = harness.github.writes.filter((entry) => !entry.startsWith("status"));
           yield* MergeSignal.FactoryMergeSignal.use((host) =>
             host.label(receipt(recovered, 0).ref),
@@ -252,26 +270,126 @@ it.effect(
     }).pipe(Effect.provide(base), Effect.scoped),
 );
 
-it("shows the deployment gate as unsupported when a member has no GitHub pull request", () => {
+it("shows the deployment gate as unavailable from setup until every member publishes a GitHub PR", () => {
+  // A freshly commissioned integration: its members have not published pull requests yet, which
+  // stays true for a project whose remote Satellite cannot publish to.
+  const setup = verified().state;
+  const group = setup.mergeGroups[0]!;
+  const unavailable = factoryMergeDeploymentGate(group.memberAssignmentIds, setup.assignments);
+  assert.isFalse(unavailable.supported);
+  for (const id of group.memberAssignmentIds)
+    assert.include(
+      unavailable.detail,
+      setup.assignments.find((entry) => entry.id === id)!.projectId,
+    );
   const { state, groupId } = mergeFixture();
-  assert.isTrue(factoryMergeDeploymentGate(state, groupId).supported);
-  const withoutHost = {
-    ...state,
-    assignments: state.assignments.map((assignment, index) =>
-      index === 0 || !assignment.delivery
-        ? assignment
-        : {
-            ...assignment,
-            delivery: {
-              ...assignment.delivery,
-              revisions: assignment.delivery.revisions.map(
-                ({ publication: _publication, ...revision }) => revision,
-              ),
-            },
-          },
-    ),
-  };
-  const gate = factoryMergeDeploymentGate(withoutHost, groupId);
-  assert.isFalse(gate.supported);
-  assert.include(gate.detail, "unsupported");
+  const published = state.mergeGroups.find((entry) => entry.id === groupId)!;
+  const available = factoryMergeDeploymentGate(published.memberAssignmentIds, state.assignments);
+  assert.isTrue(available.supported);
+  // Available is not enforced: only a pipeline running the gate job holds its deployment.
+  assert.include(available.detail, "pipeline runs the merge group gate");
 });
+
+it.effect(
+  "labels member PRs and holds their heads pending as soon as the group forms, until the shared merge runs",
+  () =>
+    Effect.gen(function* () {
+      let headStatus: (ref: PullRequestRef) => string | undefined = () => undefined;
+      const harness = yield* makeMergeOperationHarness({
+        newGroup: true,
+        // GitHub refuses a merge while a required head status is pending.
+        beforeWrite: (ref) =>
+          headStatus(ref) === "success"
+            ? Effect.void
+            : Effect.fail(
+                new FactoryError({ code: "permission-denied", detail: "Required status" }),
+              ),
+      });
+      headStatus = (ref) =>
+        harness.github.status(
+          harness.fixture.state.assignments
+            .flatMap((entry) => entry.delivery?.revisions ?? [])
+            .find((revision) => revision.publication?.ref?.number === ref.number)!.publication!
+            .headSha,
+          FACTORY_MERGE_GROUP_STATUS_CONTEXT,
+        )?.state;
+      yield* Effect.gen(function* () {
+        const operation = yield* harness.start;
+        yield* handleHolds;
+        const members = operation.members.map((entry) => entry.reviewed);
+        assert.lengthOf(harness.writes, 0);
+        for (const member of members) {
+          assert.include(
+            harness.github.labels(member.ref.repository, member.ref.number),
+            FACTORY_MERGE_GROUP_LABEL,
+          );
+          assert.equal(
+            harness.github.status(member.headSha, FACTORY_MERGE_GROUP_STATUS_CONTEXT)?.state,
+            "pending",
+          );
+        }
+        yield* harness.drain;
+        assert.equal((yield* harness.current).lifecycle.phase, "completed");
+        assert.lengthOf(harness.writes, 2);
+      }).pipe(Effect.provide(harness.layer));
+    }).pipe(Effect.provide(base), Effect.scoped),
+);
+
+it.effect(
+  "keeps waiting while GitHub has not yet associated a grouped merge commit with its PR",
+  () =>
+    Effect.gen(function* () {
+      const harness = yield* makeMergeOperationHarness();
+      const api = yield* serveFakeGitHub(harness.github);
+      yield* Effect.gen(function* () {
+        yield* harness.start;
+        yield* handleFirst("merge.operation.prepare");
+        yield* handleFirst("merge.operation.advance");
+        const first = receipt(yield* harness.current, 0);
+        harness.github.lagAssociation(first.ref.repository, first.mergeCommitSha, 2);
+        const gate = yield* runGate(api, first.ref.repository, first.mergeCommitSha);
+        assert.equal(gate.code, 1);
+        assert.notInclude(gate.output, "not part of a Satellite merge group");
+      }).pipe(Effect.provide(harness.layer));
+    }).pipe(Effect.provide(base), Effect.scoped),
+);
+
+it.effect("returns released members to their own merge and deployment on GitHub", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeMergeOperationHarness();
+    yield* Effect.gen(function* () {
+      const operation = yield* harness.start;
+      yield* handleFirst("merge.operation.prepare");
+      yield* handleFirst("merge.operation.advance");
+      yield* harness.commit({
+        type: "merge.operation.stop",
+        operationId: operation.id,
+        commandId: CommandId.make("stop-before-release"),
+        reason: "Ship the API change on its own",
+      });
+      yield* handleHolds;
+      const unmerged = (yield* harness.current).members.find(
+        (entry) => entry.outcome.phase === "pending",
+      )!.reviewed;
+      assert.equal(
+        harness.github.status(unmerged.headSha, FACTORY_MERGE_GROUP_STATUS_CONTEXT)?.state,
+        "pending",
+      );
+      yield* harness.commit({
+        type: "merge.group.release",
+        groupId: operation.groupId,
+        commandId: CommandId.make("release-group"),
+        reason: "Ship the API change on its own",
+      });
+      yield* handleHolds;
+      assert.notInclude(
+        harness.github.labels(unmerged.ref.repository, unmerged.ref.number),
+        FACTORY_MERGE_GROUP_LABEL,
+      );
+      assert.equal(
+        harness.github.status(unmerged.headSha, FACTORY_MERGE_GROUP_STATUS_CONTEXT)?.state,
+        "success",
+      );
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.provide(base), Effect.scoped),
+);

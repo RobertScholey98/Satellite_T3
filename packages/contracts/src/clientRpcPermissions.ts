@@ -93,9 +93,11 @@ export function clientRpcRequiredScopes(
       payload.command.type === "workflow.restart.retry" ||
       payload.command.type === "workflow.restart.continue" ||
       payload.command.type === "workflow.models.apply" ||
+      payload.command.type === "workflow.models.decline" ||
       payload.command.type === "collaboration.decision.decide" ||
       payload.command.type === "integration.capability.configure" ||
       payload.command.type === "integration.capability.retry" ||
+      payload.command.type === "integration.grant.approve" ||
       payload.command.type === "merge.group.approve" ||
       payload.command.type === "merge.group.reject" ||
       (payload.command.type === "collaboration.request.respond" &&

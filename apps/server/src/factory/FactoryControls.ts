@@ -294,11 +294,12 @@ export function decideFactoryControls(
       if (actor.kind !== "human") return fail("permission-denied");
       const manager = state.managers.find((entry) => entry.id === command.managerId);
       if (!manager) return fail("manager-not-found");
-      if (manager.role !== "project")
-        return fail("invalid-state", "Only a project engineering manager can be retired.");
       if (manager.status === "retired") return accept({}, { managerId: manager.id });
+      if (manager.role === "system" && command.reason === undefined)
+        return fail("invalid-state", "Give a reason for retiring the system manager.");
       // The manager's pause stops its own thread and each cancellation stops one team. Threads,
-      // evidence and history stay; the released project can be onboarded again.
+      // evidence and history stay; the released project, or the environment's system-manager
+      // role, can be filled again by a new manager.
       const pauseId = FactoryControlId.make(`manager-pause:${manager.id}`);
       const existing = state.controls.find((entry) => entry.id === pauseId);
       const pause: FactoryControl | undefined =
@@ -345,7 +346,13 @@ export function decideFactoryControls(
         {
           managers: state.managers.map((entry) =>
             entry.id === manager.id
-              ? { ...entry, status: "retired", wait: null, updatedAt: now }
+              ? {
+                  ...entry,
+                  status: "retired",
+                  wait: null,
+                  ...(command.reason === undefined ? {} : { retiredReason: command.reason }),
+                  updatedAt: now,
+                }
               : entry,
           ),
           assignments: state.assignments.map((entry) =>
@@ -437,27 +444,8 @@ export function decideFactoryControls(
           "invalid-state",
           "This implementation has already concluded. Pause the project or take over its retrospective to control the remaining review.",
         );
-      if (
-        actor.kind !== "human" &&
-        (actor.kind !== "thread" || actor.threadId !== assignment.managerId)
-      )
-        return fail("permission-denied");
-      if (
-        actor.kind === "thread" &&
-        (factoryExecutionBlocked(state, {
-          threadId: actor.threadId,
-          managerId: assignment.managerId,
-          projectId: assignment.projectId,
-          ancestorThreadIds: [],
-        }) !== undefined ||
-          state.controls.some(
-            (entry) =>
-              entry.kind === "takeover" &&
-              entry.status === "active" &&
-              entry.assignmentId === assignment.id,
-          ))
-      )
-        return fail("permission-denied");
+      // Specification 1 stories 25-26: the user cancels and supplies the reason the retro waits for.
+      if (actor.kind !== "human") return fail("permission-denied");
       const existing = state.controls.find(
         (entry) => entry.kind === "cancellation" && entry.assignmentId === assignment.id,
       );
@@ -649,6 +637,8 @@ export function decideFactoryControls(
           ? { escalation: { summary: command.summary, escalatedAt: now } }
           : {}),
       };
+      // Both relays carry the human's message, so the host sends them without a sender thread.
+      // An independent review or diagnosis thread may never direct work as a sender.
       const effects: FactoryEffectIntent[] = [];
       if (!existing && command.threadId !== assignment.threadId)
         effects.push({
@@ -656,9 +646,8 @@ export function decideFactoryControls(
           kind: "guidance",
           threadId: assignment.threadId,
           messageId: MessageId.make(`factory-guidance:${command.threadId}:${command.messageId}`),
-          sourceThreadId: command.threadId,
           sourceMessageId: command.messageId,
-          text: `The user gave guidance in worker thread ${command.threadId}, message ${command.messageId}. Read it and coordinate the existing assignment. Guidance does not expand scope or transfer ownership.`,
+          text: `The user gave guidance in thread ${command.threadId}, message ${command.messageId}. Read it and coordinate the existing assignment. Guidance does not expand scope or transfer ownership. If it changes scope or priority, send it to your manager with factory_dispatch guidance.escalate using that thread and message ID and a one-line summary.`,
         });
       if (command.type === "guidance.escalate")
         effects.push({
@@ -668,7 +657,6 @@ export function decideFactoryControls(
           messageId: MessageId.make(
             `factory-guidance-escalation:${command.threadId}:${command.messageId}`,
           ),
-          sourceThreadId: command.threadId,
           sourceMessageId: command.messageId,
           text: `Review a requested scope or priority decision for assignment ${assignment.id}. Source human message ${command.messageId} in ${command.threadId}. ${command.summary}`,
         });

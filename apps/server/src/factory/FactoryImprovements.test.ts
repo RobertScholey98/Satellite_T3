@@ -894,3 +894,298 @@ describe("proposal review", () => {
     );
   });
 });
+
+describe("human control of retained evidence and escalations", () => {
+  const escalate = (item: FactoryFinding, summary = "Shared failure"): FactoryFinding => ({
+    ...item,
+    escalation: { summary, commandId: id(), escalatedAt: deliveryNow },
+  });
+
+  it("promotes a queued or unsampled intake when its finding is escalated instead of queueing it twice", () => {
+    const items = [finding(1), finding(2, true)];
+    let state = withRetro(fixture(), items);
+    for (const item of items) state = intake(state, item).state;
+    assert.deepStrictEqual(
+      state.improvementIntakes.map((entry) => entry.delivery.phase),
+      ["queued", "skipped"],
+    );
+    const escalated = items.map((item) => escalate(item));
+    state = { ...state, findings: escalated };
+    for (const item of escalated) state = intake(state, item, "explicit-escalation").state;
+    assert.equal(state.improvementIntakes.length, 2);
+    assert.deepStrictEqual(
+      state.improvementIntakes.map((entry) => [entry.origin, entry.delivery.phase]),
+      [
+        ["explicit-escalation", "queued"],
+        ["explicit-escalation", "queued"],
+      ],
+    );
+    assert.equal(
+      factoryImprovementBatchPlan(state, deliveryNow, { kind: "urgent" })?.intakeIds.length,
+      2,
+    );
+    assert.isUndefined(
+      factoryImprovementBatchPlan(state, deliveryNow, { kind: "routine", force: true }),
+    );
+  });
+
+  it("keeps containment and uncertainty in a batch summary even when the problem text is long", () => {
+    const item: FactoryFinding = {
+      ...escalate(finding(1)),
+      problem: "x".repeat(6_000),
+      containmentOf: "finding-source",
+      route: { ...finding(1).route, uncertainty: "Only seen on Windows" },
+    };
+    let state = intake({ ...fixture(), findings: [item] }, item, "explicit-escalation").state;
+    state = apply(
+      state,
+      {
+        type: "improvement.configure",
+        commandId: id(),
+        ...factoryImprovementDefaults,
+        maxSummaryChars: 1_000,
+      },
+      human,
+    ).state;
+    const summary = factoryImprovementBatchPlan(state, deliveryNow, { kind: "urgent" })!.summary;
+    assert.include(summary, "Containment of: finding-source");
+    assert.include(summary, "Uncertainty: Only seen on Windows");
+  });
+
+  it("lets the human attach an unsampled finding, which then stays usable by the system manager", () => {
+    const local = finding(1, true);
+    const sampled = { ...escalate(finding(2)) };
+    let state = withRetro(fixture(), [local, sampled]);
+    state = intake(state, local).state;
+    state = intake(state, sampled, "explicit-escalation").state;
+    assert.equal(state.improvementIntakes[0]!.delivery.phase, "skipped");
+    const open = (actor: FactoryActor, findingIds: string[]) =>
+      decide({
+        state,
+        actor,
+        now: deliveryNow,
+        command: {
+          type: "investigation.open",
+          commandId: id(),
+          title: "Review friction",
+          findingIds,
+          relatedInvestigationIds: [],
+          uncertainty: "",
+        },
+      });
+    assert.isTrue(Result.isFailure(open(manager, [local.id])));
+    const opened = Result.getOrThrow(open(manager, [sampled.id]));
+    const investigationId = opened.result.investigationId!;
+    const update = (actor: FactoryActor, current: FactorySnapshot, findingIds: string[]) =>
+      apply(
+        current,
+        {
+          type: "investigation.update",
+          commandId: id(),
+          investigationId,
+          findingIds,
+          relatedInvestigationIds: [],
+          uncertainty: "Local or shared",
+          assessment: "",
+          lifecycle: { phase: "open" },
+        },
+        actor,
+      ).state;
+    state = update(human, opened.state, [sampled.id, local.id]);
+    state = update(manager, state, [sampled.id, local.id]);
+    assert.deepStrictEqual(state.improvementInvestigations[0]!.findingIds, [sampled.id, local.id]);
+    assert.equal(
+      apply(state, {
+        type: "improvement.evidence.read",
+        commandId: id(),
+        managerId,
+        investigationId,
+        findingId: local.id,
+        evidenceRef: { kind: "thread", threadId: deliveryIds.lead },
+        cursor: { afterPosition: -1, offset: 0, digest: null },
+        limit: 1000,
+        characters: 10,
+        digest: "read",
+      }).state.improvementEvidenceReads[0]!.findingId,
+      local.id,
+    );
+  });
+
+  it("lets the human review escalations held by a zero allowance without spending it", () => {
+    const item = escalate(finding(1));
+    let state = apply(
+      { ...fixture(), findings: [item] },
+      {
+        type: "improvement.configure",
+        commandId: id(),
+        ...factoryImprovementDefaults,
+        urgentBatchesPerDay: 0,
+      },
+      human,
+    ).state;
+    state = intake(state, item, "explicit-escalation").state;
+    assert.isUndefined(factoryImprovementBatchPlan(state, deliveryNow, { kind: "urgent" }));
+    assert.equal(factoryImprovementNextDueAt(state, deliveryNow), null);
+    const flush = { type: "improvement.flush", commandId: id(), kind: "urgent" } as const;
+    assert.isTrue(
+      Result.isFailure(decide({ state, actor: manager, now: deliveryNow, command: flush })),
+    );
+    const reviewed = apply(state, flush, human);
+    const batch = reviewed.state.improvementBatches[0]!;
+    assert.equal(batch.kind, "urgent");
+    assert.equal(batch.budgetDay, null);
+    assert.deepStrictEqual(
+      reviewed.effects.map((effect) => effect.type),
+      ["improvement.notify"],
+    );
+    assert.isTrue(
+      Result.isFailure(
+        decide({
+          state: reviewed.state,
+          actor: human,
+          now: deliveryNow,
+          command: { ...flush, commandId: id() },
+        }),
+      ),
+    );
+  });
+
+  it("lets the human decide a deferred revision later", () => {
+    const investigation = investigated();
+    let result = apply(
+      investigation.state,
+      {
+        type: "proposal.write",
+        commandId: id(),
+        investigationId: investigation.result.investigationId!,
+        content,
+      },
+      manager,
+    );
+    const proposalId = result.result.proposalId!;
+    const revision = result.result.proposalRevision!;
+    result = apply(
+      result.state,
+      { type: "proposal.submit", commandId: id(), proposalId, revision },
+      manager,
+    );
+    const decideAs = (state: FactorySnapshot, outcome: "accepted" | "rejected" | "deferred") =>
+      decide({
+        state,
+        actor: human,
+        now: deliveryNow,
+        command: {
+          type: "proposal.decide",
+          commandId: id(),
+          proposalId,
+          revision,
+          outcome,
+          reason: "Timing",
+        },
+      });
+    const deferred = Result.getOrThrow(decideAs(result.state, "deferred")).state;
+    const accepted = Result.getOrThrow(decideAs(deferred, "accepted")).state;
+    assert.deepStrictEqual(
+      accepted.improvementDecisions.map((entry) => entry.outcome),
+      ["deferred", "accepted"],
+    );
+    assert.isTrue(Result.isFailure(decideAs(accepted, "rejected")));
+  });
+});
+
+describe("system manager replacement", () => {
+  it("creates a replacement only after retirement and hands it the evidence still waiting", () => {
+    const [first, second] = [finding(1), finding(2)];
+    let state = intake(withRetro(fixture(), [first, second]), first).state;
+    state = apply(state, { type: "improvement.flush", commandId: id() }, human).state;
+    const batch = state.improvementBatches[0]!;
+    state = apply(state, {
+      type: "improvement.batch.failed",
+      commandId: id(),
+      batchId: batch.id,
+      digest: batch.digest,
+      reason: "Provider unavailable",
+    }).state;
+    const replacementId = ThreadId.make("system-manager-2");
+    const replacement = {
+      threadId: replacementId,
+      qualification: { ...creation.qualification, profileId: "replacement-profile" },
+    };
+    const recreate = { ...create, commandId: id() };
+    assert.isTrue(
+      Result.isFailure(
+        decide({
+          state,
+          command: recreate,
+          actor: human,
+          now: deliveryNow,
+          systemManagerCreation: replacement,
+        }),
+      ),
+    );
+    state = apply(
+      state,
+      { type: "manager.retire", commandId: id(), managerId, reason: "Use the new workflow" },
+      human,
+    ).state;
+    state = intake(state, second).state;
+    assert.equal(state.improvementIntakes.at(-1)?.delivery.phase, "queued");
+
+    const created = apply(state, recreate, human, { systemManagerCreation: replacement });
+    assert.deepStrictEqual(
+      created.state.managers.flatMap((entry) =>
+        entry.role === "system" ? [[entry.id, entry.status]] : [],
+      ),
+      [
+        [managerId, "retired"],
+        [replacementId, "onboarding"],
+      ],
+    );
+    assert.deepStrictEqual(created.state.improvementBatches, [
+      { ...batch, managerId: replacementId, delivery: { status: "pending" } },
+    ]);
+    assert.deepStrictEqual(created.effects, [
+      { type: "system.launch", managerId: replacementId, profileId: "replacement-profile" },
+      {
+        type: "improvement.notify",
+        batchId: batch.id,
+        managerId: replacementId,
+        digest: batch.digest,
+      },
+    ]);
+    state = apply(created.state, {
+      type: "system.launch.recorded",
+      commandId: id(),
+      managerId: replacementId,
+      profileId: "replacement-profile",
+    }).state;
+    state = apply(state, {
+      type: "improvement.batch.delivered",
+      commandId: id(),
+      batchId: batch.id,
+      digest: batch.digest,
+      messageId: MessageId.make("replacement-delivery"),
+    }).state;
+
+    const open = {
+      type: "investigation.open",
+      commandId: id(),
+      title: "Review consistency",
+      findingIds: [first.id],
+      relatedInvestigationIds: [],
+      uncertainty: "Scope unknown",
+    } as const;
+    assert.isTrue(
+      Result.isFailure(decide({ state, command: open, actor: manager, now: deliveryNow })),
+    );
+    apply(state, open, { kind: "thread", threadId: replacementId });
+    const flushed = apply(state, { type: "improvement.flush", commandId: id() }, human);
+    assert.deepStrictEqual(
+      flushed.effects.map((effect) =>
+        effect.type === "improvement.notify" ? effect.managerId : null,
+      ),
+      [replacementId],
+    );
+    assert.equal(flushed.state.improvementIntakes.at(-1)?.delivery.phase, "batched");
+  });
+});

@@ -7,8 +7,12 @@ import {
   type FactoryAssignment,
   type FactoryCommand,
   type FactoryScheduleAuthority,
+  type FactoryScheduleObservation,
+  type FactorySchedulingConfiguration,
+  type FactorySnapshot,
   type ThreadId,
   type IssueDetail,
+  type IssueRef,
   type ProjectId,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
@@ -82,6 +86,64 @@ const error = (cause: unknown) =>
         cause,
       });
 
+// Verified project follow-up tickets, which schedule under the improvement rule rather than Ready.
+const projectFollowups = (
+  state: FactorySnapshot,
+  projectId: ProjectId,
+  configuration: FactorySchedulingConfiguration,
+) =>
+  state.followups
+    .filter((entry) => entry.projectId === projectId)
+    .flatMap((entry) => {
+      const publication = entry.publication;
+      const issue =
+        publication.status === "linked"
+          ? publication.issue
+          : publication.status === "recorded" && publication.receipt.progress.status === "triaged"
+            ? publication.receipt.progress.issue
+            : undefined;
+      const trackerId = "trackerId" in publication ? publication.trackerId : undefined;
+      const destination = (
+        state.projectTrackers.find((tracker) => tracker.id === trackerId) ??
+        state.projectTrackers.findLast((tracker) => tracker.projectId === projectId)
+      )?.destination.destination;
+      // Agent-filed tickets count as Ready only after a human takes them out of triage,
+      // even when a board rule or mapping places the triage column or labels in Ready.
+      const inTriage = (labels: ReadonlyArray<string>, columnId: string | null) => {
+        if (!destination) return false;
+        if (destination.kind === "azure")
+          return destination.boardId === configuration.boardId && columnId === destination.columnId;
+        if (destination.triage.kind === "board")
+          return (
+            destination.triage.boardId === configuration.boardId &&
+            columnId === destination.triage.columnId
+          );
+        const present = new Set(labels.map((label) => label.toLowerCase()));
+        return destination.triage.labels.some((label) => present.has(label.toLowerCase()));
+      };
+      return issue ? [{ issue, followupId: entry.id, inTriage }] : [];
+    });
+const observedSource = (
+  followups: ReturnType<typeof projectFollowups>,
+  item: {
+    readonly issue: IssueRef;
+    readonly labels: ReadonlyArray<string>;
+    readonly observation: FactoryScheduleObservation;
+  },
+) => {
+  const followup = followups.find(
+    (entry) => factoryScheduleIssueKey(entry.issue) === factoryScheduleIssueKey(item.issue),
+  );
+  return {
+    source: followup
+      ? { kind: "project-improvement" as const, followupId: followup.followupId }
+      : { kind: "tracker-ready" as const },
+    observation: followup?.inTriage(item.labels, item.observation.columnId)
+      ? { ...item.observation, ready: false }
+      : item.observation,
+  };
+};
+
 const make = Effect.gen(function* () {
   const store = yield* FactoryStore;
   const tracker = yield* IssueScheduling.IssueScheduling;
@@ -143,40 +205,7 @@ const make = Effect.gen(function* () {
           entry.lifecycle.phase !== "dismissed" &&
           entry.lifecycle.phase !== "commissioned",
       );
-      const followups = state.followups
-        .filter((entry) => entry.projectId === projectId)
-        .flatMap((entry) => {
-          const publication = entry.publication;
-          const issue =
-            publication.status === "linked"
-              ? publication.issue
-              : publication.status === "recorded" &&
-                  publication.receipt.progress.status === "triaged"
-                ? publication.receipt.progress.issue
-                : undefined;
-          const trackerId = "trackerId" in publication ? publication.trackerId : undefined;
-          const destination = (
-            state.projectTrackers.find((tracker) => tracker.id === trackerId) ??
-            state.projectTrackers.findLast((tracker) => tracker.projectId === projectId)
-          )?.destination.destination;
-          // Agent-filed tickets count as Ready only after a human takes them out of triage,
-          // even when a board rule or mapping places the triage column or labels in Ready.
-          const inTriage = (labels: ReadonlyArray<string>, columnId: string | null) => {
-            if (!destination) return false;
-            if (destination.kind === "azure")
-              return (
-                destination.boardId === configuration.boardId && columnId === destination.columnId
-              );
-            if (destination.triage.kind === "board")
-              return (
-                destination.triage.boardId === configuration.boardId &&
-                columnId === destination.triage.columnId
-              );
-            const present = new Set(labels.map((label) => label.toLowerCase()));
-            return destination.triage.labels.some((label) => present.has(label.toLowerCase()));
-          };
-          return issue ? [{ issue, followupId: entry.id, inTriage }] : [];
-        });
+      const followups = projectFollowups(state, projectId, configuration);
       const result = yield* tracker
         .observe({
           projectId,
@@ -205,15 +234,7 @@ const make = Effect.gen(function* () {
             previous.lifecycle.phase === "dismissed")
         )
           continue;
-        const followup = followups.find(
-          (entry) => factoryScheduleIssueKey(entry.issue) === canonicalIssueKey,
-        );
-        const source = followup
-          ? { kind: "project-improvement" as const, followupId: followup.followupId }
-          : { kind: "tracker-ready" as const };
-        const observation = followup?.inTriage(item.labels, item.observation.columnId)
-          ? { ...item.observation, ready: false }
-          : item.observation;
+        const { source, observation } = observedSource(followups, item);
         const material = { ...observation, observedAt: undefined, boardRevision: undefined };
         if (previous?.lifecycle.phase === "held" && previous.lifecycle.origin === "tracker") {
           yield* store.commit({
@@ -326,6 +347,39 @@ const make = Effect.gen(function* () {
       if (command.enabled || previous?.boardId !== command.boardId) yield* tracker.qualify(command);
       return {
         schedulingBoardVerified: { projectId: command.projectId, boardId: command.boardId },
+      };
+    }
+    if (command.type === "schedule.track") {
+      const state = yield* store.snapshot;
+      const configuration = factorySchedulingConfiguration(state, command.projectId);
+      const manager = state.managers.find(
+        (entry) => entry.role === "project" && entry.projectId === command.projectId,
+      );
+      if (actor.kind !== "human" && (actor.kind !== "thread" || actor.threadId !== manager?.id))
+        return yield* new FactoryError({ code: "permission-denied" });
+      if (!configuration?.enabled)
+        return yield* new FactoryError({
+          code: "invalid-state",
+          detail: "Enable scheduling for this project before bringing tickets into its queue.",
+        });
+      const result = yield* tracker.observe({
+        projectId: command.projectId,
+        boardId: configuration.boardId,
+        includeNumbers: [command.issueNumber],
+      });
+      const item = result.items.find((entry) => entry.issue.number === command.issueNumber);
+      if (!item)
+        return yield* new FactoryError({
+          code: "invalid-state",
+          detail: `Ticket #${command.issueNumber} is not on this project's configured board.`,
+        });
+      return {
+        schedulingObservation: {
+          projectId: command.projectId,
+          configurationId: configuration.id,
+          issue: item.issue,
+          ...observedSource(projectFollowups(state, command.projectId, configuration), item),
+        },
       };
     }
     if (command.type !== "assignment.commission" || !command.candidateId) return {};
@@ -531,7 +585,7 @@ const make = Effect.gen(function* () {
               const eligibility = factoryScheduleEligibility(state, candidate);
               return `${candidate.observation.title} (${candidate.issue.url}). Candidate ${candidate.id}; source ${candidate.source.kind}. ${candidate.lifecycle.phase === "held" ? candidate.lifecycle.reason : eligibility.eligible ? "Eligible for live admission." : eligibility.reasons.join(" ")}`;
             }),
-            "Read the exact tickets with factory_ticket_read, then use schedule.prepare with each detail digest, scoped work, priority, dependency IDs and rationale. Preparation and recommendations do not authorize work.",
+            "Read the exact tickets with factory_ticket_read, then use schedule.prepare with each detail digest, scoped work, priority, dependency IDs and rationale. Preparation and recommendations do not authorize work. To prepare a board ticket that is not Ready, bring it into the queue with schedule.track and its issue number, then recommend readiness to the human in its preparation.",
             "If currently authorized, commission the exact prepared work with assignment.commission and candidateId. The host rechecks tracker readiness or the approved project rule, capacity, dependencies, permissions and exclusive ownership. Choose the implementation model from the approved pool according to task complexity. When the human directly asks for one of these tickets, commission it with candidateId and authorizationMessageId set to that human message so the ticket is reserved; never commission a candidate ticket without its candidateId. Do not use an unrelated earlier human message as authorization. If held, prepare or recommend a concrete next decision without repeatedly retrying unchanged conditions. Protected-rule changes always require a separately authorized task. Existing delivery and human PR-review requirements still apply.",
           ].join("\n\n"),
         })

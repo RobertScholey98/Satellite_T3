@@ -635,6 +635,7 @@ describe("owned workflow authority", () => {
     });
     const migrationId = restarted.result.migrationIds![0]!;
     assert.equal(restarted.state.workflowMigrations[0]?.lifecycle.phase, "stopping");
+    assert.equal(restarted.state.workflowMigrations[0]?.previousProfileId, "profile");
     assert.deepEqual(restarted.state.assignments[0]?.workflow, old.workflow);
     const stopped = apply(
       restarted.state,
@@ -966,6 +967,59 @@ describe("owned workflow authority", () => {
     );
   });
 
+  it("lets the human decline a standing model recommendation, which then cannot be applied", () => {
+    const recommended = apply(
+      fixture(),
+      {
+        type: "workflow.models.recommend",
+        commandId: commandId(),
+        proposalId: "proposal",
+        proposalRevision: "proposal-v1",
+        target: {
+          kind: "default",
+          policy: { approvedModels: [deliverySelection], preferences: [] },
+        },
+        rationale: "Observed routing quality",
+      },
+      manager,
+    );
+    const recommendationId = recommended.result.recommendationId!;
+    const decline = {
+      type: "workflow.models.decline",
+      commandId: commandId(),
+      recommendationId,
+      reason: "Current defaults are adequate",
+    } as const;
+    assert.isTrue(
+      Result.isFailure(
+        decide({ state: recommended.state, command: decline, actor: manager, now: deliveryNow }),
+      ),
+    );
+    const declined = apply(recommended.state, decline);
+    assert.equal(
+      declined.state.modelRecommendations[0]?.declined?.reason,
+      "Current defaults are adequate",
+    );
+    const applyDeclined = decide({
+      state: declined.state,
+      command: { type: "workflow.models.apply", commandId: commandId(), recommendationId },
+      actor: human,
+      now: deliveryNow,
+    });
+    assert.isTrue(Result.isFailure(applyDeclined));
+    assert.equal(declined.state.modelDefaults, undefined);
+    assert.isTrue(
+      Result.isFailure(
+        decide({
+          state: declined.state,
+          command: { ...decline, commandId: commandId() },
+          actor: human,
+          now: deliveryNow,
+        }),
+      ),
+    );
+  });
+
   it("records post-implementation uncertainty without reopening delivery or requiring tests", () => {
     const created = commission();
     const assignment = created.state.assignments.at(-1)!;
@@ -993,6 +1047,41 @@ describe("owned workflow authority", () => {
     assert.equal(assessed.state.assignments.at(-1)?.status, "complete");
     assert.equal(assessed.state.improvementValidations[0]?.outcome, "insufficient-evidence");
     assert.deepEqual(assessed.effects, []);
+  });
+
+  it("records validation only against an accepted proposal revision", () => {
+    const validate = {
+      type: "improvement.validation.record",
+      commandId: commandId(),
+      proposalId: "proposal",
+      proposalRevision: "proposal-v1",
+      outcome: "success",
+      evidence: [],
+      assessment: "Fewer corrections observed",
+      recommendedNextStep: "Keep the change",
+    } as const;
+    for (const outcome of ["rejected", "deferred"] as const) {
+      const state = {
+        ...fixture(),
+        improvementDecisions: fixture().improvementDecisions.map((entry) => ({
+          ...entry,
+          outcome,
+        })),
+      };
+      assert.isTrue(
+        Result.isFailure(decide({ state, command: validate, actor: manager, now: deliveryNow })),
+      );
+    }
+    const undecided = { ...fixture(), improvementDecisions: [] };
+    assert.isTrue(
+      Result.isFailure(
+        decide({ state: undecided, command: validate, actor: manager, now: deliveryNow }),
+      ),
+    );
+    assert.equal(
+      apply(fixture(), validate, manager).state.improvementValidations[0]?.outcome,
+      "success",
+    );
   });
 
   it("registers a release only from the merged commit the human approved for that proposal", () => {
@@ -1221,5 +1310,93 @@ describe("owned workflow authority", () => {
   it("marks every protected-control plan as able to weaken rules", () => {
     const proposed = propose(fixture());
     assert.isTrue(proposed.state.sharedWorks[0]!.plan.weakensRules);
+  });
+});
+
+describe("system manager replacement", () => {
+  it("hands shared repositories and unstarted plans to the replacement, which can commission on them", () => {
+    let state = commission().state;
+    const retiredTeam = implementation(state)!;
+    const proposed = propose(state);
+    const workId = proposed.result.workId!;
+    state = apply(proposed.state, {
+      type: "shared.work.authorize",
+      commandId: commandId(),
+      workId,
+    }).state;
+    state = apply(state, {
+      type: "manager.retire",
+      commandId: commandId(),
+      managerId,
+      reason: "Replace with a manager on the new workflow",
+    }).state;
+    assert.equal(
+      state.assignments.find((entry) => entry.id === retiredTeam.id)?.outcome?.kind,
+      "cancelled",
+    );
+
+    const replacementId = ThreadId.make("system-manager-2");
+    const created = Result.getOrThrow(
+      decide({
+        state,
+        actor: human,
+        now: deliveryNow,
+        command: {
+          type: "system.create",
+          commandId: commandId(),
+          workspaceProjectId: projectId,
+          modelSelection: deliverySelection,
+          workflow: boundary.workflow,
+        },
+        systemManagerCreation: {
+          threadId: replacementId,
+          qualification: {
+            status: "qualified",
+            profileId: "replacement-profile",
+            checkedAt: deliveryNow,
+          },
+        },
+      }),
+    );
+    assert.deepEqual(
+      created.state.sharedRepositories.map((entry) => entry.managerId),
+      [replacementId],
+    );
+    assert.deepEqual(
+      created.effects.filter((effect) => effect.type === "workflow.work.notify"),
+      [{ type: "workflow.work.notify", workId, managerId: replacementId }],
+    );
+    state = apply(
+      created.state,
+      {
+        type: "system.launch.recorded",
+        commandId: commandId(),
+        managerId: replacementId,
+        profileId: "replacement-profile",
+      },
+      host,
+    ).state;
+    const commissioned = apply(
+      state,
+      { type: "shared.work.commission", commandId: commandId(), workId },
+      { kind: "thread", threadId: replacementId },
+      {
+        allocation: {
+          managerThreadId: replacementId,
+          leadThreadId: ThreadId.make("replacement-lead"),
+          assignmentId: FactoryAssignmentId.make("replacement-assignment"),
+        },
+      },
+    );
+    const team = commissioned.state.assignments.at(-1)!;
+    assert.equal(team.managerId, replacementId);
+    assert.isTrue(factorySharedAssignmentEnabled(commissioned.state, team));
+    const disabled = apply(commissioned.state, {
+      type: "shared.repository.configure",
+      commandId: commandId(),
+      repositoryId: state.sharedRepositories[0]!.id,
+      enabled: false,
+    });
+    assert.isFalse(factorySharedAssignmentEnabled(disabled.state, team));
   });
 });

@@ -136,6 +136,42 @@ describe("Factory controls", () => {
     assert.isUndefined(factoryDirectionBlocked(paused.state, worker, leadId));
   });
 
+  it("lets only the human retire the system manager with a reason, stopping it and its shared teams", () => {
+    const shared = sharedAccessFixture(fixture());
+    const retire = {
+      type: "manager.retire",
+      commandId: CommandId.make("retire-system"),
+      managerId,
+    } as const;
+    const reason = "Replace it with a manager on the new workflow";
+    assert.strictEqual(
+      failure(shared, { ...retire, reason }, { kind: "thread", threadId: managerId }),
+      "permission-denied",
+    );
+    assert.strictEqual(failure(shared, retire), "invalid-state");
+    const retired = apply(shared, { ...retire, reason });
+    const manager = retired.state.managers.find((entry) => entry.id === managerId);
+    assert.strictEqual(manager?.status, "retired");
+    assert.strictEqual(manager?.retiredReason, reason);
+    assert.deepStrictEqual(
+      retired.state.assignments.map((entry) => [entry.id, entry.outcome?.kind]),
+      [[assignmentId, "cancelled"]],
+    );
+    assert.deepStrictEqual(
+      retired.effects.map((effect) => (effect.type === "control.stop" ? effect.controlId : null)),
+      [
+        FactoryControlId.make(`manager-pause:${managerId}`),
+        FactoryControlId.make(`cancellation:${assignmentId}`),
+      ],
+    );
+    assert.include(
+      factoryExecutionBlocked(retired.state, { ...managerMember, managerRole: "system" }),
+      "retired",
+    );
+    assert.deepStrictEqual(retired.state.sharedWorks, shared.sharedWorks);
+    assert.deepStrictEqual(decodeSnapshot(encodeSnapshot(retired.state)), retired.state);
+  });
+
   it("retires a manager for good, stopping its teams and releasing its project", () => {
     const managerThread = { kind: "thread", threadId: managerId } as const;
     const retire = { type: "manager.retire", commandId, managerId } as const;
@@ -491,25 +527,21 @@ describe("Factory controls", () => {
     assert.strictEqual(control(state, "cancellation").id, cancellation.id);
   });
 
-  it("permits cancellation only by the human or the owning manager", () => {
+  it("permits cancellation only by the human, who then supplies the reason", () => {
     const command = { type: "assignment.cancel", commandId, assignmentId } as const;
-    assert.strictEqual(
-      failure(fixture(), command, { kind: "thread", threadId: leadId }),
-      "permission-denied",
-    );
-    assert.strictEqual(
-      failure(fixture(), command, { kind: "thread", threadId: ThreadId.make("other-manager") }),
-      "permission-denied",
-    );
-    const cancelled = apply(fixture(), command, { kind: "thread", threadId: managerId });
+    for (const threadId of [leadId, managerId, ThreadId.make("other-manager")])
+      assert.strictEqual(
+        failure(fixture(), command, { kind: "thread", threadId }),
+        "permission-denied",
+      );
+    const cancelled = apply(fixture(), command, human);
     assert.strictEqual(cancelled.effects[0]?.type, "control.stop");
     const repeated = apply(cancelled.state, command, human);
     assert.deepStrictEqual(repeated.effects, []);
     assert.strictEqual(repeated.state.controls.length, 1);
   });
 
-  it("prevents manager cancellation across takeover or pause while retaining human cancellation", () => {
-    const actor = { kind: "thread", threadId: managerId } as const;
+  it("retains human cancellation across takeover or pause", () => {
     const cancel = { type: "assignment.cancel", commandId, assignmentId } as const;
     const states = [
       apply(fixture(), { type: "thread.takeover", commandId, threadId: workerId }, human, {
@@ -519,7 +551,6 @@ describe("Factory controls", () => {
       apply(fixture(), { type: "project.pause", commandId, projectId }).state,
     ];
     for (const state of states) {
-      assert.strictEqual(failure(state, cancel, actor), "permission-denied");
       const cancelled = apply(state, cancel);
       assert.strictEqual(cancelled.state.assignments[0]?.outcome?.kind, "cancelled");
       assert.strictEqual(cancelled.effects[0]?.type, "control.stop");

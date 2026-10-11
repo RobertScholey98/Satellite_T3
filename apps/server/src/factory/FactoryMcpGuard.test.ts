@@ -788,6 +788,22 @@ describe("FactoryMcpGuard", () => {
           assert.isFalse((yield* call("factory_merge_group_get", { groupId })).isError);
           assert.isTrue((yield* call("factory_integration_get", { integrationId })).isError);
           assert.isTrue((yield* call("factory_merge_group_get", { groupId }, childId)).isError);
+          const escalation = {
+            type: "merge.operation.escalate",
+            commandId: "lead-escalation",
+            operationId: operation.id,
+            reason: "A member PR merged with an unexpected head",
+            recommendation: "Revert the merged member in a separate task",
+          };
+          const incomplete = yield* Effect.flip(
+            call("factory_merge_operation_action", {
+              command: { ...escalation, recommendation: undefined },
+            }),
+          );
+          assert.equal(incomplete._tag, "InvalidParams");
+          // This harness has no merge runtime, so its refusal shows the escalation reached the service.
+          const escalated = yield* call("factory_merge_operation_action", { command: escalation });
+          assert.include(JSON.stringify(escalated.content), "no coordinated merge runtime");
           yield* write({
             ...frozen,
             controls: [
@@ -806,9 +822,11 @@ describe("FactoryMcpGuard", () => {
           assert.isTrue((yield* call("factory_merge_group_get", { groupId })).isError);
           assert.isTrue(
             (yield* call("factory_merge_operation_action", {
-              commandId: "paused-retry",
-              operationId: operation.id,
-              action: "retry",
+              command: {
+                type: "merge.operation.retry",
+                commandId: "paused-retry",
+                operationId: operation.id,
+              },
             })).isError,
           );
         }),
@@ -1115,14 +1133,37 @@ describe("FactoryMcpGuard", () => {
           const budgetDay = DateTime.formatIso(yield* DateTime.now).slice(0, 10);
           const projected = yield* encodeSnapshot({
             ...state,
-            improvementDecisions: Array.from({ length: 7 }, (_, index) => ({
-              proposalId: "proposal",
-              revision: `revision-${index}`,
-              outcome: "deferred" as const,
-              reason: "Keep this decision rationale ".repeat(80),
-              commandId: CommandId.make(`decision-${index}`),
-              decidedAt: now,
-            })),
+            improvementDecisions: [
+              ...Array.from({ length: 7 }, (_, index) => ({
+                proposalId: "proposal",
+                revision: `revision-${index}`,
+                outcome: "deferred" as const,
+                reason: "Keep this decision rationale ".repeat(80),
+                commandId: CommandId.make(`decision-${index}`),
+                decidedAt: now,
+              })),
+              {
+                proposalId: "proposal",
+                revision: "revision-6",
+                outcome: "accepted" as const,
+                reason: "Accepted after deferral ".repeat(80),
+                commandId: CommandId.make("decision-redecided"),
+                decidedAt: now,
+              },
+            ],
+            improvementInvestigations: [
+              {
+                id: "investigation",
+                title: "Shared review slowdown",
+                findingIds: ["attached-unsampled"],
+                relatedInvestigationIds: [],
+                uncertainty: "",
+                assessment: "",
+                lifecycle: { phase: "open" },
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
             improvementFeedback: [
               {
                 id: "feedback",
@@ -1155,6 +1196,77 @@ describe("FactoryMcpGuard", () => {
                 delivery: { status: "pending" },
               },
             ],
+            findings: [
+              ...state.findings,
+              {
+                id: "contained",
+                assignmentId,
+                reporterThreadId: leadId,
+                problem: "Long problem ".repeat(100),
+                impact: "Slower reviews",
+                evidence: [{ kind: "thread", threadId: leadId }],
+                activeBlocker: false,
+                route: {
+                  suspectedCause: "shared-system",
+                  uncertainty: "Only seen once",
+                  owner: { kind: "system-remit" },
+                  requiredAuthority: "Human review",
+                  rationale: "Shared instructions",
+                },
+                containmentOf: "source-finding",
+                history: [],
+                escalation: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+              ...["attached-unsampled", "hidden-unsampled"].map((id) => ({
+                id,
+                assignmentId,
+                reporterThreadId: leadId,
+                problem: "Local slowdown",
+                impact: "Slower reviews",
+                evidence: [{ kind: "thread" as const, threadId: leadId }],
+                activeBlocker: false,
+                route: {
+                  suspectedCause: "project" as const,
+                  uncertainty: "Seen in one project",
+                  owner: { kind: "system-remit" as const },
+                  requiredAuthority: "Human review",
+                  rationale: "Local habit",
+                },
+                containmentOf: null,
+                history: [],
+                escalation: null,
+                createdAt: now,
+                updatedAt: now,
+              })),
+            ],
+            improvementIntakes: [
+              {
+                id: "contained-intake",
+                findingId: "contained",
+                sourceDigest: "digest",
+                projectId: ProjectId.make("web"),
+                assignmentId,
+                origin: "retro",
+                sampling: { kind: "all" },
+                summary: "Contained finding",
+                queuedAt: now,
+                delivery: { phase: "queued" },
+              },
+              ...["attached-unsampled", "hidden-unsampled"].map((findingId) => ({
+                id: `${findingId}-intake`,
+                findingId,
+                sourceDigest: `${findingId}-digest`,
+                projectId: ProjectId.make("web"),
+                assignmentId,
+                origin: "retro" as const,
+                sampling: { kind: "all" as const },
+                summary: "Unsampled local finding",
+                queuedAt: now,
+                delivery: { phase: "skipped" as const },
+              })),
+            ],
           });
           yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json=${projected} WHERE id=1`;
           const response = yield* call("factory_improvement_snapshot", {}, systemId);
@@ -1163,6 +1275,14 @@ describe("FactoryMcpGuard", () => {
           assert.equal(compact.decisions[0]?.reason.length, 1000);
           assert.equal(compact.feedback[0]?.usefulness, "noisy");
           assert.equal(compact.recurrences[0]?.findingId, "finding");
+          // Unsampled findings appear once attached to an investigation, and not before.
+          assert.deepEqual(compact.findings.map((entry) => entry.id).toSorted(), [
+            "attached-unsampled",
+            "contained",
+          ]);
+          const contained = compact.findings.find((entry) => entry.id === "contained");
+          assert.equal(contained?.containmentOf, "source-finding");
+          assert.equal(contained?.uncertainty, "Only seen once");
           assert.equal(compact.budget.used, 1);
           assert.equal(compact.budget.remaining, compact.settings.routineBatchesPerDay - 1);
           assert.equal(compact.nextCursor, 5);
@@ -1170,7 +1290,7 @@ describe("FactoryMcpGuard", () => {
             (yield* call("factory_improvement_snapshot", { cursor: compact.nextCursor }, systemId))
               .structuredContent,
           );
-          assert.equal(next.decisions.length, 2);
+          assert.equal(next.decisions.length, 3);
           assert.equal(next.nextCursor, null);
           const project = yield* decodeFactorySnapshot(
             (yield* call("factory_snapshot", {}, managerId)).structuredContent,
@@ -1192,7 +1312,8 @@ describe("FactoryMcpGuard", () => {
             complete += page.text;
           }
           const fullRecord = yield* decodeRecordReason(complete);
-          assert.equal(fullRecord.reason, "Keep this decision rationale ".repeat(80).trim());
+          // A revision decided again after deferral reads as its latest decision.
+          assert.equal(fullRecord.reason, "Accepted after deferral ".repeat(80).trim());
           assert.isTrue(
             (yield* call("factory_improvement_record", { record: namedRecord }, managerId)).isError,
           );
@@ -1235,6 +1356,12 @@ describe("FactoryMcpGuard", () => {
             { type: "manager.pause", commandId: "system-pause-other", managerId },
             { type: "project.pause", commandId: "system-pause-project", projectId: "web" },
             {
+              type: "manager.retire",
+              commandId: "system-self-retire",
+              managerId: systemId,
+              reason: "Self retirement",
+            },
+            {
               type: "proposal.decide",
               commandId: "system-self-approve",
               proposalId: "proposal",
@@ -1244,6 +1371,10 @@ describe("FactoryMcpGuard", () => {
             },
           ])
             assert.isTrue((yield* call("factory_dispatch", { command }, systemId)).isError);
+          assert.equal(
+            (yield* store.snapshot).managers.find((entry) => entry.id === systemId)?.status,
+            "active",
+          );
           assert.isTrue((yield* call("factory_improvement_snapshot", {}, managerId)).isError);
           const descendant = ThreadId.make("system-descendant");
           shells.set(descendant, {

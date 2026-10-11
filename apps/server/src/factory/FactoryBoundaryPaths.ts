@@ -45,21 +45,45 @@ export function factoryPathWithin(value: string, directory: string): boolean {
   return value.startsWith(`${directory}/`);
 }
 
+const instructionFile = /(?:^|\/)(?:SKILL|SKILL-MECHANICS|AGENTS|CLAUDE)\.md$/i;
+const parentDirectory = (value: string) => value.split("/").slice(0, -1).join("/") || ".";
+const within = (value: string, directory: string) =>
+  directory === "." || value === directory || factoryPathWithin(value, directory);
+
+// Skill content is found by location: configured skill roots, any directory holding a known or
+// approved SKILL.md (so its references count), and new directories beside existing skills.
+export function factoryPathsChangeSkills(
+  paths: { readonly files: readonly string[]; readonly creatableDirectories: readonly string[] },
+  configuration: FactoryBoundaryConfiguration,
+): boolean {
+  const skillDirectories = [
+    ...configuration.protectedPaths,
+    ...(configuration.protectedCreatablePaths ?? []),
+  ]
+    .filter((value) => /(?:^|\/)SKILL\.md$/i.test(value))
+    .map(parentDirectory);
+  const skillsRoots = skillDirectories.filter((value) => value !== ".").map(parentDirectory);
+  const skillContent = (value: string) =>
+    instructionFile.test(value) ||
+    [...(configuration.skillRoots ?? []), ...skillDirectories].some((root) => within(value, root));
+  return (
+    paths.files.some(skillContent) ||
+    paths.creatableDirectories.some(
+      (directory) => skillContent(directory) || skillsRoots.some((root) => within(directory, root)),
+    )
+  );
+}
+
 export function factoryGrantChangesSkills(
   grant: FactoryAssignmentGrant,
   configuration: FactoryBoundaryConfiguration,
 ): boolean {
-  const paths = [
-    ...grant.sourcePaths,
-    ...grant.creatableDirectories,
-    ...(grant.controlChange?.paths ?? []),
-  ];
-  return paths.some(
-    (value) =>
-      /(?:^|\/)(?:SKILL|SKILL-MECHANICS|AGENTS|CLAUDE)\.md$/i.test(value) ||
-      configuration.skillRoots?.some(
-        (root) => root === "." || value === root || factoryPathWithin(value, root),
-      ),
+  return factoryPathsChangeSkills(
+    {
+      files: [...grant.sourcePaths, ...(grant.controlChange?.paths ?? [])],
+      creatableDirectories: grant.creatableDirectories,
+    },
+    configuration,
   );
 }
 

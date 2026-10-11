@@ -219,15 +219,7 @@ export const layer: Layer.Layer<
         shouldStartProviderTurn: () =>
           Effect.gen(function* () {
             if (!(yield* isCurrentAttemptInStatus("running"))) return false;
-            return yield* input.factoryStartGuard("running").pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProjectionStore.ProjectionStoreReadError({
-                    threadId: input.threadId,
-                    cause,
-                  }),
-              ),
-            );
+            return yield* input.factoryStartGuard("running");
           }),
         shouldFinalizeRun: () =>
           projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(

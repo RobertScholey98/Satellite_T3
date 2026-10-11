@@ -64,6 +64,20 @@ export function factoryDeliveryWaitReason(assignment: FactoryAssignment): string
     return "The human is reviewing the verified revision with its implementation lead.";
 }
 
+const uiImpact = (assignment: FactoryAssignment) =>
+  ["substantial-ui", "major-ui"].includes(assignment.delivery?.impact?.classification ?? "");
+
+/**
+ * Actual-app verification needs a human-approved preview runtime, and the preview only runs Node
+ * entry points. Without one, UI work goes to the human with this explanation instead of waiting
+ * for evidence that can never be recorded.
+ */
+const uxVerificationUnavailable = (state: FactorySnapshot, assignment: FactoryAssignment) =>
+  uiImpact(assignment) &&
+  !state.previewConfigurations.some((entry) => entry.projectId === assignment.projectId)
+    ? "UX verification unavailable: this project has no approved app preview runtime (previews run Node entry points only). Check the UI change yourself before approving."
+    : undefined;
+
 export const currentFactoryMergeRule = (state: FactorySnapshot, assignment: FactoryAssignment) =>
   state.mergeRules
     .filter((entry) => entry.projectId === assignment.projectId)
@@ -150,7 +164,8 @@ export function factoryDeliveryReadiness(
     );
   if (latestReview?.status === "changes-requested")
     reasons.push("Resolve the team's requested changes and obtain a fresh review.");
-  if (impact && ["substantial-ui", "major-ui"].includes(impact.classification)) {
+  const uxUnavailable = uxVerificationUnavailable(state, assignment);
+  if (uiImpact(assignment) && !uxUnavailable) {
     const ux = revision.uxEvidence;
     if (
       !ux ||
@@ -206,6 +221,7 @@ export function factoryDeliveryReadiness(
   const needsHuman =
     revision.routedToHuman === true ||
     !ruleEligible ||
+    uxUnavailable !== undefined ||
     impact?.classification === "major-ui" ||
     impact?.classification === "unclear";
   return {
@@ -214,6 +230,7 @@ export function factoryDeliveryReadiness(
     humanApproved,
     ruleEligible,
     ruleVersion: rule?.version ?? null,
+    uxUnavailable,
   };
 }
 
@@ -777,8 +794,8 @@ export function decideFactoryDelivery(
       if (revision.status !== "captured" || !revision.publication)
         return fail("Prepare the candidate before publication.");
       if (
-        delivery.impact &&
-        ["substantial-ui", "major-ui"].includes(delivery.impact.classification) &&
+        uiImpact(assignment) &&
+        !uxVerificationUnavailable(state, assignment) &&
         (!revision.uxEvidence ||
           revision.uxEvidence.candidateDigest !== revision.candidateDigest ||
           revision.uxEvidence.screenshots.length === 0 ||
@@ -1029,10 +1046,23 @@ export function decideFactoryDelivery(
           : {}),
       };
       const readiness = factoryDeliveryReadiness(state, assignment, next);
+      const ambiguity =
+        delivery.impact?.classification === "unclear"
+          ? "Merge-rule eligibility was unclear; the verified revision was routed to the human."
+          : undefined;
+      // One line, so the human sees why this revision came to them next to what it needs.
       const reasons = readiness.reasons.length
         ? readiness.reasons
         : readiness.needsHuman && !readiness.humanApproved
-          ? ["Human approval is required for this exact revision."]
+          ? [
+              [
+                "Human approval is required for this exact revision.",
+                ambiguity,
+                readiness.uxUnavailable,
+              ]
+                .filter((entry) => entry !== undefined)
+                .join(" "),
+            ]
           : [];
       // Wake the lead when a bundle is first sealed or its readiness changed, not on every new
       // host observation.
@@ -1040,10 +1070,6 @@ export function decideFactoryDelivery(
         revision.bundleDigest === undefined ||
         stableStringify(delivery.readiness) !== stableStringify(reasons) ||
         stableStringify(oldApproval) !== stableStringify(next.approval);
-      const ambiguity =
-        delivery.impact?.classification === "unclear"
-          ? "Merge-rule eligibility was unclear; the verified revision was routed to the human."
-          : undefined;
       const routed = readiness.reasons.length === 0 && readiness.needsHuman;
       return updateRevision(
         routed ? { ...next, routedToHuman: true } : next,
@@ -1061,7 +1087,9 @@ export function decideFactoryDelivery(
           : [],
         {
           readiness: reasons,
-          directionHeld: delivery.directionHeld || routed,
+          // Only the first routing opens human review. Later reconciles must not undo a handback
+          // or reopen review after the merge.
+          directionHeld: delivery.directionHeld || (routed && revision.routedToHuman !== true),
           retroFindings: ambiguity
             ? [...new Set([...delivery.retroFindings, ambiguity])]
             : delivery.retroFindings,
@@ -1180,15 +1208,20 @@ export function decideFactoryDelivery(
         (command.status === "merged" && command.mergedAt === undefined)
       )
         return fail("Merge receipt does not match the requested operation.");
-      return updateRevision({
-        ...revision,
-        merge: {
-          ...revision.merge,
-          status: command.status,
-          ...(command.mergedAt ? { mergedAt: command.mergedAt } : {}),
-          ...(command.reason ? { reason: command.reason } : {}),
+      return updateRevision(
+        {
+          ...revision,
+          merge: {
+            ...revision.merge,
+            status: command.status,
+            ...(command.mergedAt ? { mergedAt: command.mergedAt } : {}),
+            ...(command.reason ? { reason: command.reason } : {}),
+          },
         },
-      });
+        [],
+        // A confirmed merge ends human review, so the manager directs the assignment again.
+        command.status === "merged" ? { directionHeld: false } : {},
+      );
     case "delivery.retry": {
       if (revision.merge && factoryMergeGroupForAssignment(state, assignment.id))
         return fail(

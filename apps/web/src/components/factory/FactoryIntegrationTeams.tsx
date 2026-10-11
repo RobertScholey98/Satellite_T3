@@ -1,6 +1,7 @@
 import type {
   FactoryIntegration,
   FactoryIntegrationCapability,
+  FactoryIntegrationGrant,
   FactoryManager,
   ThreadId,
 } from "@t3tools/contracts";
@@ -205,6 +206,11 @@ function IntegrationTeam({
           );
         })}
       </ul>
+      {grants
+        .filter((entry) => entry.lifecycle.phase === "requested")
+        .map((entry) => (
+          <GrantRequest key={entry.id} environment={environment} grant={entry} />
+        ))}
       {ownParticipant ? (
         <details className="rounded-md border p-3">
           <summary className="cursor-pointer text-sm font-medium">
@@ -502,6 +508,63 @@ function GrantForm({
       >
         {command.pending ? "Granting…" : "Grant selected access"}
       </Button>
+    </div>
+  );
+}
+
+// An owner asked for more than its qualified capability; only the human grants or declines it.
+function GrantRequest({
+  environment,
+  grant,
+}: {
+  environment: FactoryEnvironmentView;
+  grant: FactoryIntegrationGrant;
+}) {
+  const prefix = useId();
+  const command = useFactoryCommand(environment);
+  const [reason, setReason] = useState("");
+  const owner = environment.data?.managers.find((entry) => entry.id === grant.ownerManagerId);
+  return (
+    <div className="space-y-3 rounded-md border p-3">
+      <p className="text-sm font-medium">
+        {owner?.name ?? grant.projectId} asks to grant access beyond its qualified capability
+      </p>
+      <FactoryIntegrationPathsSummary paths={grant.paths} />
+      <Button
+        size="sm"
+        disabled={command.disabled}
+        onClick={() =>
+          void command.submit({ type: "integration.grant.approve", grantId: grant.id })
+        }
+      >
+        Approve this grant
+      </Button>
+      <Label htmlFor={`${prefix}-decline`}>Reason to decline</Label>
+      <Textarea
+        id={`${prefix}-decline`}
+        value={reason}
+        disabled={command.disabled}
+        onChange={(event) => setReason(event.target.value)}
+      />
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={command.disabled || !reason.trim()}
+        onClick={() =>
+          void command.submit({
+            type: "integration.grant.revoke",
+            grantId: grant.id,
+            reason: reason.trim(),
+          })
+        }
+      >
+        Decline this grant
+      </Button>
+      {command.error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {command.error}
+        </p>
+      ) : null}
     </div>
   );
 }

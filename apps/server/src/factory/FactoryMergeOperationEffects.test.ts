@@ -140,30 +140,32 @@ it.effect.each(["lost-ack", "unknown", "transient"] as const)(
         yield* harness.start;
         yield* harness.drain;
         const current = yield* harness.current;
+        const failing = () =>
+          harness.current.pipe(
+            Effect.map((operation) =>
+              operation.members.find((entry) => entry.reviewed.ref.number === 20)!,
+            ),
+          );
         if (behavior === "lost-ack") {
           assert.equal(current.lifecycle.phase, "completed");
           assert.equal(harness.writes.length, 2);
-        } else if (behavior === "unknown") {
-          assert.equal(current.lifecycle.phase, "attention");
-          assert.equal(
-            current.members.filter((entry) => entry.outcome.phase === "unknown").length,
-            1,
-          );
-          const before = harness.writes.length;
-          yield* harness.commit({
-            type: "merge.operation.reconcile",
-            commandId: CommandId.make("restart-reconcile"),
-            operationId: current.id,
-          });
-          yield* harness.drain.pipe(Effect.provide(Layer.fresh(harness.layer)));
-          assert.equal(harness.writes.length, before);
         } else {
-          assert.equal(current.lifecycle.phase, "attention");
-          assert.equal(
-            current.members.find((entry) => entry.reviewed.ref.number === 20)!.attempts,
-            3,
-          );
-          assert.equal(harness.writes.filter((entry) => entry.endsWith("#20")).length, 3);
+          // Each failed submission is reconciled to an open PR and then waits for a deliberate
+          // retry; nothing spends the remaining attempts on its own.
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            const held = yield* harness.current;
+            assert.equal(held.lifecycle.phase, "attention");
+            assert.equal((yield* failing()).outcome.phase, "pending");
+            assert.equal((yield* failing()).attempts, attempt);
+            assert.equal(harness.writes.filter((entry) => entry.endsWith("#20")).length, attempt);
+            if (attempt === 3) break;
+            yield* harness.commit({
+              type: "merge.operation.retry",
+              commandId: CommandId.make(`retry-${behavior}-${attempt}`),
+              operationId: held.id,
+            });
+            yield* harness.drain.pipe(Effect.provide(Layer.fresh(harness.layer)));
+          }
           assert.equal(
             harness.github.writes.filter(
               (entry) => entry.startsWith("add-label") && entry.endsWith("#20"),
@@ -275,48 +277,56 @@ it.effect(
     }).pipe(Effect.provide(base), Effect.scoped),
 );
 
-it.effect(
-  "preserves a durable unknown when the submission receipt acknowledgement is lost before the host call",
-  () =>
-    Effect.gen(function* () {
-      const harness = yield* makeMergeOperationHarness();
-      let loseAck = true;
-      const facade = Layer.succeed(Store.FactoryStore, {
-        ...harness.store,
-        finishEffect: (input) =>
-          harness.store.finishEffect(input).pipe(
-            Effect.flatMap((receipt) => {
-              if (input.command.type === "merge.operation.submitting" && loseAck) {
-                loseAck = false;
-                return Effect.fail(
-                  new FactoryError({
-                    code: "persistence",
-                    detail: "The submission receipt acknowledgement was lost",
-                  }),
-                );
-              }
-              return Effect.succeed(receipt);
-            }),
-          ),
+it.effect("reconciles a submission that never reached the host back to a bounded retry", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeMergeOperationHarness();
+    let loseAck = true;
+    const facade = Layer.succeed(Store.FactoryStore, {
+      ...harness.store,
+      finishEffect: (input) =>
+        harness.store.finishEffect(input).pipe(
+          Effect.flatMap((receipt) => {
+            if (input.command.type === "merge.operation.submitting" && loseAck) {
+              loseAck = false;
+              return Effect.fail(
+                new FactoryError({
+                  code: "persistence",
+                  detail: "The submission receipt acknowledgement was lost",
+                }),
+              );
+            }
+            return Effect.succeed(receipt);
+          }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      yield* harness.start;
+      yield* harness.drain;
+      const current = yield* harness.current;
+      assert.equal(current.lifecycle.phase, "attention");
+      assert.equal(current.members[0]!.outcome.phase, "pending");
+      assert.equal(current.members[0]!.attempts, 1);
+      assert.equal(harness.writes.length, 0);
+      const lead = (yield* harness.store.snapshot).assignments.find(
+        (entry) => entry.id === current.integrationAssignmentId,
+      )!;
+      const eligibility = factoryCompletionEligibility(yield* harness.store.snapshot, lead);
+      assert.notInclude(eligibility.eligible ? "" : eligibility.reasons.join(" "), "unknown host");
+      yield* harness.commit({
+        type: "merge.operation.retry",
+        operationId: current.id,
+        commandId: CommandId.make("retry-unsent-submission"),
       });
-      yield* Effect.gen(function* () {
-        yield* harness.start;
-        yield* harness.drain;
-        const current = yield* harness.current;
-        assert.equal(current.lifecycle.phase, "attention");
-        assert.equal(current.members[0]!.outcome.phase, "unknown");
-        assert.equal(current.members[0]!.attempts, 1);
-        assert.equal(harness.writes.length, 0);
-        yield* harness.commit({
-          type: "merge.operation.reconcile",
-          operationId: current.id,
-          commandId: CommandId.make("unknown-receipt-reconcile"),
-        });
-        yield* harness.drain.pipe(Effect.provide(Layer.fresh(harness.layer)));
-        assert.equal(harness.writes.length, 0);
-        assert.equal((yield* harness.current).members[0]!.outcome.phase, "unknown");
-      }).pipe(Effect.provide(harness.layer.pipe(Layer.provide(facade))));
-    }).pipe(Effect.provide(base), Effect.scoped),
+      yield* harness.drain.pipe(Effect.provide(Layer.fresh(harness.layer)));
+      const completed = yield* harness.current;
+      assert.equal(completed.lifecycle.phase, "completed");
+      assert.deepEqual(
+        completed.members.map((entry) => entry.attempts),
+        [2, 1],
+      );
+      assert.equal(harness.writes.length, 2);
+    }).pipe(Effect.provide(harness.layer.pipe(Layer.provide(facade))));
+  }).pipe(Effect.provide(base), Effect.scoped),
 );
 
 it.effect(

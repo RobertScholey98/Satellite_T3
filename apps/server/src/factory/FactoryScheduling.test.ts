@@ -798,6 +798,77 @@ describe("factory scheduling authority", () => {
     assert.equal(factoryScheduleEligibility(held, held.scheduleCandidates[0]!).eligible, false);
     assert.isTrue(Result.isFailure(commission(held)));
   });
+  it("brings a backlog ticket in for a readiness recommendation without authorizing it", () => {
+    const state = fixture();
+    const backlog = {
+      ...issue,
+      id: "I_2",
+      number: 2,
+      url: "https://github.com/owner/repo/issues/2",
+    };
+    const track = {
+      type: "schedule.track" as const,
+      commandId: id(),
+      projectId: deliveryIds.project,
+      issueNumber: 2,
+    };
+    const observed: FactorySchedulingContext = {
+      schedulingObservation: {
+        projectId: deliveryIds.project,
+        configurationId: state.schedulingConfigurations[0]!.id,
+        issue: backlog,
+        source: { kind: "tracker-ready" },
+        observation: {
+          title: "Backlog idea",
+          boardRevision: 1,
+          itemId: "item-2",
+          columnId: "backlog",
+          ready: false,
+          detailDigest: "backlog",
+          observedAt: deliveryNow,
+        },
+      },
+    };
+    const lead = { kind: "thread" as const, threadId: deliveryIds.lead };
+    assert.isTrue(
+      Result.isFailure(
+        decide({ state, command: track, actor: lead, ...observed, now: deliveryNow }),
+      ),
+    );
+    assert.isTrue(
+      Result.isFailure(decide({ state, command: track, actor: manager, now: deliveryNow })),
+    );
+    const tracked = apply(state, track, manager, observed);
+    const candidate = tracked.state.scheduleCandidates.find((entry) => entry.issue.number === 2)!;
+    assert.equal(tracked.result.candidateId, candidate.id);
+    assert.equal(candidate.lifecycle.phase, "observed");
+    const prepared = apply(
+      tracked.state,
+      {
+        type: "schedule.prepare",
+        commandId: id(),
+        candidateId: candidate.id,
+        preparation: {
+          work,
+          detailDigest: "backlog",
+          priority: 90,
+          dependencyIds: [],
+          recommendation: "Small and well specified; move it to Ready.",
+        },
+      },
+      manager,
+    ).state;
+    assert.deepEqual(
+      factoryScheduleEligibility(
+        prepared,
+        prepared.scheduleCandidates.find((entry) => entry.id === candidate.id)!,
+      ),
+      { eligible: false, reasons: ["The ticket is not in a configured Ready column."] },
+    );
+    // A recommended backlog ticket does not outrank Ready work.
+    assert.isTrue(factoryScheduleEligibility(prepared, prepared.scheduleCandidates[0]!).eligible);
+    assert.equal(prepared.assignments.length, 0);
+  });
   it("rechecks the exact scope, configuration and capacity at the assignment decision", () => {
     const state = fixture();
     assert.isTrue(

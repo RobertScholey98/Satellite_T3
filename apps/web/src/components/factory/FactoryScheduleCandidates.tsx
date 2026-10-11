@@ -20,6 +20,7 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
+import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Textarea } from "../ui/textarea";
 import { useFactoryCommand } from "./useFactoryCommand";
@@ -339,6 +340,57 @@ function Candidate({
   );
 }
 
+// Brings a board ticket that is not Ready into the queue so the manager can prepare and
+// recommend it. Starting it still needs Ready placement, a project rule or a direct request.
+function TrackTicket({
+  environment,
+  projectId,
+}: {
+  environment: FactoryEnvironmentView;
+  projectId: FactoryScheduleCandidate["projectId"];
+}) {
+  const prefix = useId();
+  const settingsScope = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
+  const command = useFactoryCommand(environment, settingsScope);
+  const [value, setValue] = useState("");
+  const issueNumber = Number(value);
+  const valid = Number.isSafeInteger(issueNumber) && issueNumber > 0;
+  return (
+    <div className="mt-3 space-y-2">
+      <Label htmlFor={`${prefix}-ticket`}>Bring in a board ticket</Label>
+      <p className="text-xs text-muted-foreground">
+        The manager prepares its scope and recommends whether it is ready. This does not start it.
+      </p>
+      <div className="flex gap-2">
+        <Input
+          id={`${prefix}-ticket`}
+          inputMode="numeric"
+          placeholder="Ticket number"
+          value={value}
+          disabled={command.disabled}
+          onChange={(event) => setValue(event.target.value)}
+        />
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={command.disabled || !valid}
+          onClick={async () => {
+            if (await command.submit({ type: "schedule.track", projectId, issueNumber }))
+              setValue("");
+          }}
+        >
+          {command.pending ? "Reading ticket…" : "Bring into queue"}
+        </Button>
+      </div>
+      {command.error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {command.error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function FactoryScheduleCandidates({
   environment,
   manager,
@@ -390,6 +442,9 @@ export function FactoryScheduleCandidates({
               You can inspect this queue. Settings and operate permission are required to make
               scheduling decisions.
             </p>
+          ) : null}
+          {configuration?.enabled && manager.projectId ? (
+            <TrackTicket environment={environment} projectId={manager.projectId} />
           ) : null}
           {candidates.length ? (
             <ul>

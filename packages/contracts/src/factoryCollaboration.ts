@@ -92,9 +92,23 @@ export const FactoryCollaborationMessage = Schema.Struct({
   ]),
 });
 export type FactoryCollaborationMessage = typeof FactoryCollaborationMessage.Type;
+// Replacement commitments for an accepted request. They apply only once the plan is approved.
+export const FactoryRequestAmendment = Schema.Struct({
+  requestId: Id,
+  outcome: Text,
+  acceptanceConditions: Text,
+  compatibility: Text,
+});
+export type FactoryRequestAmendment = typeof FactoryRequestAmendment.Type;
 const PlanChanges = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("technical") }),
-  Schema.Struct({ kind: Schema.Literal("boundary"), reason: Text }),
+  Schema.Struct({
+    kind: Schema.Literal("boundary"),
+    reason: Text,
+    amendments: Schema.optionalKey(
+      Schema.Array(FactoryRequestAmendment).check(Schema.isMaxLength(30)),
+    ),
+  }),
 ]);
 export const FactoryCollaborationPlan = Schema.Struct({
   id: Id,
@@ -116,7 +130,14 @@ export const FactoryCollaborationPlan = Schema.Struct({
       acknowledgedAt: IsoDateTime,
     }),
   ),
-  phase: Schema.Literals(["proposed", "agreed", "escalated", "superseded"]),
+  // An escalated plan is agreed once every owning manager approves it, or the human does.
+  approvals: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ managerId: Schema.NullOr(ThreadId), approvedAt: IsoDateTime })),
+  ),
+  declined: Schema.optionalKey(
+    Schema.Struct({ managerId: Schema.NullOr(ThreadId), reason: Text, declinedAt: IsoDateTime }),
+  ),
+  phase: Schema.Literals(["proposed", "agreed", "escalated", "declined", "superseded"]),
   createdAt: IsoDateTime,
 });
 export type FactoryCollaborationPlan = typeof FactoryCollaborationPlan.Type;
@@ -257,6 +278,15 @@ export const FactoryCollaborationCommand = Schema.Union([
     ...Fields,
     planId: Id,
     assignmentId: FactoryAssignmentId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("collaboration.plan.decide"),
+    ...Fields,
+    planId: Id,
+    decision: Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("approve") }),
+      Schema.Struct({ kind: Schema.Literal("decline"), reason: Text }),
+    ]),
   }),
   Schema.Struct({
     type: Schema.Literal("collaboration.decision.raise"),

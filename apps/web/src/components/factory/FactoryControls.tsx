@@ -1,6 +1,7 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
+  AuthSettingsWriteScope,
   CommandId,
   type FactoryAssignment,
   type FactoryControl,
@@ -18,6 +19,7 @@ import {
   useFactoryEnvironments,
   type FactoryEnvironmentView,
 } from "../../state/factory";
+import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -35,6 +37,7 @@ import { Textarea } from "../ui/textarea";
 import {
   factoryAssignmentCancellation,
   factoryAssignmentStatus,
+  factoryLatestThreadGuidance,
   factoryManagerPause,
   factoryPauseStatus,
   factoryProjectPause,
@@ -128,16 +131,21 @@ export function FactoryManagerControls({
   manager: FactoryManager;
 }) {
   const command = useFactoryControlCommand(environment);
+  const canRetire = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
+  const reasonId = useId();
   const [confirmRetire, setConfirmRetire] = useState(false);
+  const [retireReason, setRetireReason] = useState("");
   const controls = environment.data?.controls;
   if (!controls) return null;
   const managerPause = factoryManagerPause(environment.data, manager.id);
   const projectPause = factoryProjectPause(environment.data, manager.projectId);
+  const system = manager.role === "system";
+  const reasonMissing = system && !retireReason.trim();
   if (manager.status === "retired")
     return (
       <div className="space-y-2" aria-busy={command.pending}>
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="text-sm font-medium">Manager</h3>
+          <h3 className="text-sm font-medium">{system ? "System manager" : "Manager"}</h3>
           <Badge variant="secondary">Retired</Badge>
           {managerPause?.stop.status === "failed" ? (
             <Button
@@ -157,9 +165,13 @@ export function FactoryManagerControls({
           ) : null}
         </div>
         <p className="text-xs text-muted-foreground">
-          This manager and its teams are stopped. Their threads and evidence stay readable. Create a
-          new manager in project settings to manage this project again.
+          {system
+            ? "This system manager and its shared teams are stopped. Investigations, proposals and decisions stay readable. Create a new system manager from the sidebar; it takes over shared repositories and pending evidence."
+            : "This manager and its teams are stopped. Their threads and evidence stay readable. Create a new manager in project settings to manage this project again."}
         </p>
+        {manager.retiredReason ? (
+          <p className="whitespace-pre-wrap text-sm">Reason: {manager.retiredReason}</p>
+        ) : null}
         <ControlFeedback environment={environment} command={command} />
       </div>
     );
@@ -216,43 +228,62 @@ export function FactoryManagerControls({
         Resuming one control keeps other pauses, takeovers, approval waits, and current permissions
         in force.
       </p>
-      {manager.role === "project" ? (
-        <section className="space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-medium">Retire</h3>
-            {confirmRetire ? (
-              <>
-                <Button
-                  size="xs"
-                  variant="destructive"
-                  disabled={command.disabled}
-                  onClick={() =>
-                    void command.submit({ type: "manager.retire", managerId: manager.id })
-                  }
-                >
-                  Retire manager
-                </Button>
-                <Button size="xs" variant="ghost" onClick={() => setConfirmRetire(false)}>
-                  Keep manager
-                </Button>
-              </>
-            ) : (
+      <section className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-sm font-medium">Retire</h3>
+          {confirmRetire ? (
+            <>
               <Button
                 size="xs"
-                variant="destructive-outline"
-                disabled={command.disabled}
-                onClick={() => setConfirmRetire(true)}
+                variant="destructive"
+                disabled={command.disabled || !canRetire || reasonMissing}
+                onClick={() =>
+                  void command.submit({
+                    type: "manager.retire",
+                    managerId: manager.id,
+                    ...(system ? { reason: retireReason.trim() } : {}),
+                  })
+                }
               >
-                Retire manager…
+                {system ? "Retire system manager" : "Retire manager"}
               </Button>
-            )}
+              <Button size="xs" variant="ghost" onClick={() => setConfirmRetire(false)}>
+                Keep manager
+              </Button>
+            </>
+          ) : (
+            <Button
+              size="xs"
+              variant="destructive-outline"
+              disabled={command.disabled || !canRetire}
+              onClick={() => setConfirmRetire(true)}
+            >
+              {system ? "Retire system manager…" : "Retire manager…"}
+            </Button>
+          )}
+        </div>
+        {confirmRetire && system ? (
+          <div className="space-y-1">
+            <Label htmlFor={reasonId}>Reason (required)</Label>
+            <Textarea
+              id={reasonId}
+              value={retireReason}
+              onChange={(event) => setRetireReason(event.target.value)}
+              disabled={command.disabled}
+            />
           </div>
+        ) : null}
+        <p className="text-xs text-muted-foreground">
+          {system
+            ? "Stops the system manager and cancels its unfinished shared teams. Investigations, proposals and decisions stay readable. A new system manager takes over shared repositories and pending evidence. A retired manager cannot be resumed."
+            : "Stops this manager and cancels its unfinished teams. Threads and evidence stay readable, and the project can get a new manager. A retired manager cannot be resumed."}
+        </p>
+        {!canRetire ? (
           <p className="text-xs text-muted-foreground">
-            Stops this manager and cancels its unfinished teams. Threads and evidence stay readable,
-            and the project can get a new manager. A retired manager cannot be resumed.
+            Retiring a manager needs permission to change settings.
           </p>
-        </section>
-      ) : null}
+        ) : null}
+      </section>
       <ControlFeedback environment={environment} command={command} />
     </div>
   );
@@ -647,6 +678,13 @@ function ManagedThreadControls({
           threadId={thread.id}
         />
       ) : null}
+      {assignment &&
+      auxiliary?.kind !== "retrospective" &&
+      assignment.outcome === undefined &&
+      assignment.status !== "complete" &&
+      (assignment.completion === undefined || assignment.completion.phase === "collecting") ? (
+        <GuidanceEscalation environment={environment} threadId={thread.id} />
+      ) : null}
       {ancestorTakeover ? (
         <p className="text-xs text-muted-foreground">
           An ancestor thread is under your direction; its takeover also remains in force.
@@ -661,5 +699,85 @@ function ManagedThreadControls({
         </div>
       </details>
     </div>
+  );
+}
+
+/** Sends the human's latest message in this thread to the manager as a scope or priority decision. */
+function GuidanceEscalation({
+  environment,
+  threadId,
+}: {
+  environment: FactoryEnvironmentView;
+  threadId: ThreadId;
+}) {
+  const fieldId = useId();
+  const command = useFactoryControlCommand(environment);
+  const [summary, setSummary] = useState<string | null>(null);
+  const guidance = factoryLatestThreadGuidance(environment.data, threadId);
+  if (!guidance) return null;
+  if (guidance.escalation)
+    return (
+      <p role="status" className="text-xs text-muted-foreground">
+        Sent to manager: {guidance.escalation.summary}
+      </p>
+    );
+  const send = async () => {
+    const text = summary?.trim();
+    if (!text) return;
+    if (
+      await command.submit({
+        type: "guidance.escalate",
+        threadId,
+        messageId: guidance.messageId,
+        summary: text,
+      })
+    )
+      setSummary(null);
+  };
+  return (
+    <section className="space-y-2" aria-label="Send guidance to manager">
+      {summary === null ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={command.disabled}
+            onClick={() => setSummary("")}
+          >
+            Send to manager…
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            Use this when your latest message changes scope or priority.
+          </span>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <Label htmlFor={fieldId}>What should the manager decide?</Label>
+          <Textarea
+            id={fieldId}
+            value={summary}
+            onChange={(event) => setSummary(event.target.value)}
+            disabled={command.disabled}
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button
+              size="xs"
+              disabled={command.disabled || !summary.trim()}
+              onClick={() => void send()}
+            >
+              Send to manager
+            </Button>
+            <Button size="xs" variant="ghost" onClick={() => setSummary(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {command.error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {command.error}
+        </p>
+      ) : null}
+    </section>
   );
 }

@@ -4,6 +4,7 @@ import {
   FactoryError,
   MessageId,
   ThreadId,
+  factorySystemManager,
   type FactoryCommand,
   type FactoryCommandResult,
   type FactoryThreadLaunchIntent,
@@ -435,8 +436,8 @@ export const layer = Layer.effect(
                           ]
                         : []),
                       `Approved exact models: ${renderJson(assignment.modelPolicy)}. Your selected model: ${renderJson(assignment.modelChoice)}. Choose approved models according to task complexity. Native subagent tools are disabled; use delegate_task for your internal team. Every descendant remains inside this assignment's boundary.`,
-                      "Raise an out-of-scope dependency or structural problem when discovered. Do not change protected controls without a separately authorized rule-change assignment. The manager coordinates priorities; it does not review your PR.",
-                      "For an accepted cross-project request, coordinate directly with its current peer lead through collaboration.message.send. Record shared technical changes with collaboration.plan.propose and acknowledge the same plan within each team's existing scope. Changes to outcomes, compatibility, grants or resource limits require a collaboration.decision.raise for the owning managers and human. Peer coordination does not grant access to unrelated threads or source files.",
+                      "Raise an out-of-scope dependency or structural problem when discovered. Do not change protected controls without a separately authorized rule-change assignment. The manager coordinates priorities; it does not review your PR. When the human changes this assignment's scope or priority in any of its threads, send that message to the manager with guidance.escalate (threadId, messageId, summary).",
+                      "For an accepted cross-project request, coordinate directly with its current peer lead through collaboration.message.send. Record shared technical changes with collaboration.plan.propose and acknowledge the same plan within each team's existing scope. Changes to outcomes, compatibility, grants or resource limits need a boundary plan (collaboration.plan.propose with changes.kind boundary, plus amendments for new request commitments) that the owning managers or the human approve with collaboration.plan.decide. Peer coordination does not grant access to unrelated threads or source files.",
                       "Before implementation, declare concrete UI impact with delivery.impact.declare: journeys, navigation, layout, shared components, classification, and evidence. Changed user flows physically hold implementation. While held, use the read-only planning context to submit a concrete markdown or HTML flow via delivery.flow.submit; wait for the human's digest-bound decision and host release before coding. Flow submission records its own approval wait; do not add an assignment.wait for that same decision. The host resumes you automatically after approval and physical release, or after requested changes so you can revise the proposal.",
                       "For PR work use the host-owned delivery process: delivery.capture with exact selected paths, commit message, and grant epoch freezes the full publication tree and runs protected checks. delivery.review.request starts an independent ordinary review thread against that immutable tree. Follow its findings; changed work needs a new capture and review. For substantial or major UI, the reviewer must exercise the isolated candidate app and record real journeys and screenshots. The project needs a human-approved preview configuration and screenshot-publication permission.",
                       "After candidate checks and independent review pass, delivery.publish creates or updates and links the exact PR. delivery.ready reconciles hosting checks and seals the evidence. Wait for the human when requested; discuss corrections directly with them. delivery.merge requests an exact-head conditional merge only when authorized. A queued or unknown hosting response is not a confirmed merge. Use delivery.retry for a visible delivery failure, preserving its reserved operation. Never use generic PR tools to bypass these gates.",
@@ -1444,7 +1445,7 @@ export const layer = Layer.effect(
         const snapshot = yield* store.snapshot;
         const sharedManager =
           command.type === "shared.work.commission" || command.type === "experiment.commission"
-            ? snapshot.managers.find((entry) => entry.role === "system")
+            ? factorySystemManager(snapshot.managers)
             : undefined;
         const receiverManager =
           command.type === "collaboration.request.respond" &&

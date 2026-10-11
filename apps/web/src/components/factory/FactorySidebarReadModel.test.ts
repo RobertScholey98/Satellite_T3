@@ -232,6 +232,27 @@ describe("factory visible thread keys", () => {
   it("leaves out project managers outside the project scope", () => {
     expect(keys({ scopedProjectKeys: new Set(["owner:api"]) })).toEqual(["owner:system"]);
   });
+
+  it("shows the replacement system manager with its retired predecessor's shared teams", () => {
+    const retired = { ...team.managers[0]!, status: "retired" };
+    const replaced = decodeSnapshot({
+      ...team,
+      managers: [retired, { ...retired, id: "system-2", threadId: "system-2", status: "active" }],
+      assignments: [
+        { ...team.assignments[0]!, id: "shared", managerId: "system", threadId: "shared-lead" },
+      ],
+      retros: [],
+    });
+    expect(
+      factoryVisibleThreadKeys({
+        environments: [environment(owner, replaced)],
+        projects: [{ environmentId: owner, id: api }],
+        scopedProjectKeys: null,
+        expanded: true,
+        collapsedManagers: new Set(),
+      }),
+    ).toEqual(["owner:system-2", "owner:shared-lead"]);
+  });
 });
 
 describe("factory manager providers", () => {

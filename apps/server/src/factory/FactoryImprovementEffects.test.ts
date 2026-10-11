@@ -349,6 +349,59 @@ describe("FactoryImprovementEffects", () => {
   );
 
   it.effect(
+    "delivers a retired manager's undelivered batch to its replacement on a fresh thread",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture();
+        yield* f.create;
+        yield* f.effects.reconcile;
+        f.failSend(true);
+        yield* f.notify;
+        const batch = (yield* f.store.snapshot).improvementBatches[0]!;
+        yield* f.store.commit({
+          actor: { kind: "human" },
+          now: deliveryNow,
+          command: {
+            type: "manager.retire",
+            commandId: CommandId.make("retire-system"),
+            managerId: systemId,
+            reason: "Use a different model",
+          },
+        });
+        yield* f.notify;
+        assert.isFalse(
+          (yield* f.store.pending).some((entry) => entry.intent.type === "improvement.notify"),
+        );
+        const command = {
+          type: "system.create" as const,
+          commandId: CommandId.make("replace-system"),
+          workspaceProjectId: deliveryIds.project,
+          modelSelection: deliverySelection,
+          workflow: deliveryFixture().managers[0]!.workflow,
+        };
+        const context = yield* f.effects.context({ kind: "human" }, command);
+        const replacementId = context.systemManagerCreation!.threadId;
+        assert.notEqual(replacementId, systemId);
+        yield* f.store.commit({ actor: { kind: "human" }, now: deliveryNow, command, ...context });
+        f.failSend(false);
+        for (const entry of yield* f.store.pending)
+          if (entry.intent.type === "system.launch") yield* f.effects.handle(entry);
+        yield* f.notify;
+        const state = yield* f.store.snapshot;
+        assert.deepStrictEqual(
+          state.improvementBatches.map((entry) => [
+            entry.id,
+            entry.managerId,
+            entry.delivery.status,
+          ]),
+          [[batch.id, replacementId, "delivered"]],
+        );
+        const delivered = yield* f.threads.getThreadRecords(replacementId, ["messages"]);
+        assert.include(JSON.stringify(delivered.messages), batch.id);
+      }).pipe(Effect.provide(base), Effect.scoped),
+  );
+
+  it.effect(
     "rejects a mismatched outbox receipt and repeated reconciliation does not spend twice",
     () =>
       Effect.gen(function* () {

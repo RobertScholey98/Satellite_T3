@@ -3,6 +3,7 @@ import {
   FactoryError,
   MessageId,
   ThreadId,
+  factorySystemManager,
   type FactoryCommand,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -56,16 +57,15 @@ const make = Effect.gen(function* () {
     if (command.type !== "system.create" && command.type !== "system.retry") return {};
     if (actor.kind !== "human") return yield* new FactoryError({ code: "permission-denied" });
     const state = yield* store.snapshot;
-    const manager = state.managers.find((entry) => entry.role === "system");
-    if (command.type === "system.create" && manager)
+    const current = factorySystemManager(state.managers);
+    if (command.type === "system.create" && current && current.status !== "retired")
       return yield* new FactoryError({
         code: "invalid-state",
         detail: "This environment already has a system manager.",
       });
-    if (
-      command.type === "system.retry" &&
-      (manager?.role !== "system" || manager.id !== command.managerId)
-    )
+    // A replacement for a retired manager gets a fresh identity; only a retry reuses one.
+    const manager = command.type === "system.retry" ? current : undefined;
+    if (command.type === "system.retry" && manager?.id !== command.managerId)
       return yield* new FactoryError({ code: "invalid-state" });
     const threadId = manager?.threadId ?? ThreadId.make(yield* randomUuidV4);
     const qualification =
@@ -146,7 +146,8 @@ const make = Effect.gen(function* () {
     if (intent.type !== "system.launch" && intent.type !== "improvement.notify") return;
     const state = yield* store.snapshot;
     const manager = state.managers.find((entry) => entry.id === intent.managerId);
-    if (manager?.role !== "system") {
+    // A retired manager's undelivered batches move to its replacement with fresh notifications.
+    if (manager?.role !== "system" || manager.status === "retired") {
       yield* store.retireEffect(pending.id);
       return;
     }

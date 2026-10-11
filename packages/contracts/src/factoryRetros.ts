@@ -305,6 +305,10 @@ export const FactoryFollowup = Schema.Struct({
   draft: IssuePublicationDraft,
   error: Schema.NullOr(Text),
   existingIssue: Schema.NullOr(IssueRef),
+  /** The human let the assignment complete without this ticket being filed. */
+  waiver: Schema.optionalKey(
+    Schema.Struct({ reason: Text, commandId: CommandId, waivedAt: IsoDateTime }),
+  ),
   publication: Schema.Union([
     Schema.Struct({ status: Schema.Literal("configuration-required"), reason: Text }),
     Schema.Struct({
@@ -392,6 +396,12 @@ export const FactoryRetroCommand = Schema.Union([
     draft: IssuePublicationDraft,
   }),
   Schema.Struct({ type: Schema.Literal("followup.retry"), commandId: CommandId, followupId: Id }),
+  Schema.Struct({
+    type: Schema.Literal("followup.waive"),
+    commandId: CommandId,
+    followupId: Id,
+    reason: Text,
+  }),
   Schema.Struct({
     type: Schema.Literal("followup.link-existing"),
     commandId: CommandId,

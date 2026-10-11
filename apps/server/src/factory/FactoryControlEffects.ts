@@ -353,6 +353,12 @@ export const layer = Layer.effect(
         yield* store.retireEffect(pending.id);
         return;
       }
+      // A replaced lead can never be directed again. The human's message stays in its thread and
+      // in the guidance record, so the relay retires instead of waiting forever.
+      if (intent.kind === "guidance" && assignment?.threadId !== intent.threadId) {
+        yield* store.retireEffect(pending.id);
+        return;
+      }
       let permitsWait = retrospective;
       if (intent.purpose !== undefined) {
         const purpose = intent.purpose;

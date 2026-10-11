@@ -60,7 +60,7 @@ it.effect(
         )).code,
         "permission-denied",
       );
-      for (const action of ["enable-auto-merge", "close", "revert"])
+      for (const action of ["enable-auto-merge", "revert"])
         assert.equal(
           (yield* gate
             .authorizeMutation({ ...input, action })

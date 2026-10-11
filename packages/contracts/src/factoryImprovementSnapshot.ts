@@ -37,6 +37,8 @@ export const FactoryImprovementSnapshot = Schema.Struct({
       projectId: ProjectId,
       assignmentId: FactoryAssignmentId,
       summary: Schema.String,
+      containmentOf: Schema.NullOr(Id),
+      uncertainty: Schema.String,
       evidence: Schema.Array(FactoryRetroEvidenceRef),
     }),
   ),

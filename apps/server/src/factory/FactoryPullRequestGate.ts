@@ -1,4 +1,11 @@
-import { FactoryError, type FactoryAssignmentId, type PullRequestRef } from "@t3tools/contracts";
+import {
+  FactoryError,
+  type FactoryAssignmentId,
+  type PullRequestActionInput,
+  type PullRequestDetail,
+  type PullRequestRef,
+  type PullRequestStack,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -52,6 +59,7 @@ export class FactoryPullRequestGate extends Context.Service<
 
 const canonicalHost = (host: string) => host.toLowerCase();
 const canonicalRepository = (repository: string) => repository.toLowerCase();
+const groupReversibleActions = new Set(["close", "reopen", "disable-auto-merge"]);
 export const layer = Layer.effect(
   FactoryPullRequestGate,
   Effect.gen(function* () {
@@ -110,6 +118,11 @@ export const layer = Layer.effect(
               }),
             ];
             if (groups.length > 0) {
+              // These never merge anything, and the shared action rereads the PR before each write.
+              if (!input.stack && groupReversibleActions.has(input.action)) {
+                managed = true;
+                continue;
+              }
               const refuse = () =>
                 new FactoryError({
                   code: "permission-denied",
@@ -196,8 +209,109 @@ export const layer = Layer.effect(
             )
               return yield* refuse();
           }
-          return { managed, requireConditionalMerge: managed };
+          // Hosts accept a head condition only on merges.
+          return { managed, requireConditionalMerge: managed && input.action === "merge" };
         }),
     });
   }),
 );
+
+/**
+ * Authorizes a pull-request action against managed delivery work. The pull-request service
+ * supplies its uncached host reads. `beforeMutation` repeats the decision at the host's mutation
+ * boundary, after any queueing.
+ */
+export const authorizeFactoryPullRequestAction = <E>(
+  gate: FactoryPullRequestGate["Service"],
+  input: {
+    readonly request: PullRequestActionInput;
+    readonly ref: PullRequestRef & { readonly host: string };
+    readonly readDetail: (ref: PullRequestRef) => Effect.Effect<PullRequestDetail, E>;
+    readonly readStack: (ref: PullRequestRef) => Effect.Effect<PullRequestStack | null, E>;
+  },
+) =>
+  Effect.gen(function* () {
+    const { request, ref } = input;
+    if (!(yield* gate.appliesToRepository(ref.host, ref.repository)))
+      return {
+        requireConditionalMerge: false,
+        beforeMutation: gate.appliesToRepository(ref.host, ref.repository).pipe(
+          Effect.flatMap((applies) =>
+            applies
+              ? Effect.fail(
+                  new FactoryError({
+                    code: "permission-denied",
+                    detail:
+                      "This repository acquired managed delivery work while the action was queued. Retry to inspect its current ownership before changing the pull request.",
+                  }),
+                )
+              : Effect.void,
+          ),
+        ),
+      };
+    const stack = request.stackNumber === undefined ? null : yield* input.readStack(ref);
+    const numbers = stack?.layers.map((entry) => entry.number) ?? [ref.number];
+    if (
+      request.stackNumber !== undefined &&
+      (stack === null ||
+        stack.number !== request.stackNumber ||
+        !numbers.includes(ref.number) ||
+        new Set(numbers).size !== numbers.length)
+    )
+      return yield* new FactoryError({
+        code: "invalid-state",
+        detail:
+          "The complete requested stack must be inspected before changing a managed repository.",
+      });
+    const targets = yield* Effect.forEach(numbers, (number) =>
+      Effect.gen(function* () {
+        const targetRef = { ...ref, number };
+        const detail = yield* input.readDetail(targetRef);
+        if (
+          !detail.headSha ||
+          detail.number !== number ||
+          detail.repository.toLowerCase() !== ref.repository.toLowerCase()
+        )
+          return yield* new FactoryError({
+            code: "invalid-state",
+            detail: "The current pull request identity and head could not be verified.",
+          });
+        return { ref: targetRef, headBranch: detail.headBranch, headSha: detail.headSha };
+      }),
+    );
+    if (stack !== null) {
+      const open = stack.layers.filter((entry) => entry.state === "open");
+      const expected = request.expectedStackHeads ?? [];
+      if (
+        expected.length !== open.length ||
+        new Set(expected.map((entry) => entry.number)).size !== open.length ||
+        open.some(
+          (entry) =>
+            !expected.some(
+              (head) =>
+                head.number === entry.number &&
+                targets.some(
+                  (target) => target.ref.number === entry.number && target.headSha === head.headSha,
+                ),
+            ),
+        )
+      )
+        return yield* new FactoryError({
+          code: "stale-revision",
+          detail: "The stack membership or head revisions changed before factory authorization.",
+        });
+    }
+    const authorize = gate.authorizeMutation({
+      action: request.action,
+      targets,
+      ...(request.expectedHeadSha === undefined
+        ? {}
+        : { expectedHeadSha: request.expectedHeadSha }),
+      stack: request.stackNumber !== undefined,
+    });
+    const authorization = yield* authorize;
+    return {
+      requireConditionalMerge: authorization.requireConditionalMerge,
+      beforeMutation: Effect.asVoid(authorize),
+    };
+  }).pipe(Effect.withSpan("FactoryPullRequestGate.authorizeAction"));

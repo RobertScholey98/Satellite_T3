@@ -669,6 +669,28 @@ effectIt.effect("preserves the same queued run when takeover arrives during prov
   }),
 );
 
+effectIt.effect("reports an engineering-control failure at turn start as that failure", () =>
+  Effect.gen(function* () {
+    let failing = false;
+    let failure: string | undefined;
+    const harness = makeLocalCommandHarness({
+      text: "Parent instruction",
+      senderThreadId: ThreadId.make("factory-parent"),
+      factoryDirection: () =>
+        failing ? Effect.fail(new FactoryError({ code: "persistence" })) : Effect.void,
+      startExecution: (execution) =>
+        Effect.gen(function* () {
+          failing = true;
+          const error = yield* Effect.flip(execution.shouldStartProviderTurn!());
+          failure = error._tag === "FactoryError" ? `${error._tag}:${error.code}` : error._tag;
+        }).pipe(Effect.orDie),
+    });
+    yield* harness.start;
+    expect(failure).toBe("FactoryError:persistence");
+    expect(harness.nativeStart).not.toHaveBeenCalled();
+  }),
+);
+
 effectIt.effect("checks again at provider delivery after the last run-start check", () =>
   Effect.gen(function* () {
     let blocked = false;

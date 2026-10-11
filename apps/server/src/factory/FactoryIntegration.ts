@@ -1023,14 +1023,37 @@ export function decideFactoryIntegration(
         return prepare(integration, nextState);
       return accept(nextState, { integrationId: integration.id });
     }
-    case "integration.grant": {
-      if (!integration || !active(assignment))
+    case "integration.grant":
+    case "integration.grant.approve": {
+      const requested =
+        command.type === "integration.grant.approve"
+          ? state.integrationGrants.find((entry) => entry.id === command.grantId)
+          : undefined;
+      if (command.type === "integration.grant.approve" && (!human || !requested))
+        return fail("Only the human can approve a grant beyond the owner's qualified capability.");
+      if (requested && requested.lifecycle.phase !== "requested")
+        return fail("This grant is no longer awaiting approval.", "stale-revision");
+      const target = state.integrations.find(
+        (entry) => entry.id === (requested?.integrationId ?? integration?.id),
+      );
+      const team = state.assignments.find((entry) => entry.id === target?.assignmentId);
+      if (!target || !active(team))
         return fail("The integration team is no longer active.", "invalid-state");
-      const participant = factoryIntegrationParticipants(state, integration.id).find(
-        (entry) => entry.projectId === command.projectId,
+      const ask =
+        requested ??
+        (command.type === "integration.grant"
+          ? {
+              projectId: command.projectId,
+              capabilityId: command.capabilityId,
+              paths: command.paths,
+            }
+          : undefined);
+      if (!ask) return fail("Select an integration grant.", "invalid-state");
+      const participant = factoryIntegrationParticipants(state, target.id).find(
+        (entry) => entry.projectId === ask.projectId,
       );
       const capability = state.integrationCapabilities.find(
-        (entry) => entry.id === command.capabilityId,
+        (entry) => entry.id === ask.capabilityId,
       );
       const boundary = state.boundaries.find((entry) => entry.id === capability?.boundaryId);
       const owner = state.managers.find((entry) => entry.id === participant?.managerId);
@@ -1044,56 +1067,83 @@ export function decideFactoryIntegration(
         capability.qualification.status !== "qualified" ||
         owner.boundaryId !== capability.boundaryId ||
         !boundary ||
-        !validPaths(command.paths, boundary) ||
-        !pathsWithin(command.paths, capability.paths)
+        !validPaths(ask.paths, boundary)
       )
         return fail(
-          "Only this project's owner can grant narrower access inside its current qualified test capability.",
+          "Only this project's owner can grant access inside its current qualified test capability and approved boundary.",
         );
       const grant: FactoryIntegrationGrant = {
-        id: `integration-grant:${command.commandId}`,
-        integrationId: integration.id,
+        id: requested?.id ?? `integration-grant:${command.commandId}`,
+        integrationId: target.id,
         projectId: participant.projectId,
         ownerManagerId: owner.id,
         participantAssignmentId: participant.id,
         capabilityId: capability.id,
         boundaryId: capability.boundaryId,
-        paths: command.paths,
+        paths: ask.paths,
         lifecycle: { phase: "active" },
         authorizingCommandId: command.commandId,
-        createdAt: now,
+        createdAt: requested?.createdAt ?? now,
       };
-      const replaced = currentGrants(state, integration.id).filter(
-        (entry) => entry.projectId === participant.projectId,
+      const open = state.integrationGrants.filter(
+        (entry) =>
+          entry.integrationId === target.id &&
+          entry.projectId === participant.projectId &&
+          entry.id !== grant.id &&
+          entry.lifecycle.phase !== "revoked",
       );
+      const revoke = (entries: readonly FactoryIntegrationGrant[], reason: string) =>
+        state.integrationGrants.map((entry) =>
+          entries.some((old) => old.id === entry.id)
+            ? {
+                ...entry,
+                lifecycle: {
+                  phase: "revoked" as const,
+                  reason,
+                  commandId: command.commandId,
+                  revokedAt: now,
+                },
+              }
+            : entry,
+        );
+      if (!pathsWithin(ask.paths, capability.paths) && !requested) {
+        // Beyond the owner's authority: record the ask for the human instead of refusing it.
+        const asked = { ...grant, lifecycle: { phase: "requested" as const } };
+        const pending = open.filter((entry) => entry.lifecycle.phase === "requested");
+        return accept(
+          {
+            integrationGrants: [...revoke(pending, "Replaced by a newer grant request."), asked],
+          },
+          { integrationId: target.id, integrationGrantId: asked.id },
+          [
+            notice(
+              target,
+              `grant-requested:${asked.id}`,
+              `Project ${participant.projectId} asked to grant integration access beyond its qualified capability. The human decides grant ${asked.id}; until then the current grant, if any, stays in force.`,
+              state,
+            ),
+          ],
+        );
+      }
+      const replaced = open.filter((entry) => entry.lifecycle.phase === "active");
       const nextState: FactorySnapshot = {
         ...state,
         integrationGrants: [
-          ...state.integrationGrants.map((entry) =>
-            replaced.some((old) => old.id === entry.id)
-              ? {
-                  ...entry,
-                  lifecycle: {
-                    phase: "revoked" as const,
-                    reason: "Replaced by a new owner grant.",
-                    commandId: command.commandId,
-                    revokedAt: now,
-                  },
-                }
-              : entry,
+          ...revoke(open, "Replaced by a new owner grant.").filter(
+            (entry) => entry.id !== grant.id,
           ),
           grant,
         ],
       };
-      if (replaced.length && integration.currentPreparationId !== null) {
+      if (replaced.length && target.currentPreparationId !== null) {
         const reason =
           "An owner replaced its integration grant. Refresh explicitly before resuming.";
         const held = {
-          ...integration,
+          ...target,
           phase: "blocked" as const,
           hold: {
             id: `integration-grant-hold:${command.commandId}`,
-            preparationId: integration.currentPreparationId,
+            preparationId: target.currentPreparationId,
             status: "pending" as const,
             reason,
           },
@@ -1104,10 +1154,10 @@ export function decideFactoryIntegration(
           {
             ...nextState,
             integrations: state.integrations.map((entry) =>
-              entry.id === integration.id ? held : entry,
+              entry.id === target.id ? held : entry,
             ),
             assignments: state.assignments.map((entry) =>
-              entry.id === assignment.id
+              entry.id === team.id
                 ? {
                     ...entry,
                     qualification: { status: "unavailable", reason },
@@ -1117,34 +1167,35 @@ export function decideFactoryIntegration(
                 : entry,
             ),
           },
-          { integrationId: integration.id, integrationGrantId: grant.id },
+          { integrationId: target.id, integrationGrantId: grant.id },
           [
             {
               type: "integration.stop",
-              integrationId: integration.id,
+              integrationId: target.id,
               holdId: `integration-grant-hold:${command.commandId}`,
-              preparationId: integration.currentPreparationId,
+              preparationId: target.currentPreparationId,
               reason,
             },
           ],
         );
       }
       if (
-        integration.phase === "awaiting-grants" &&
-        assignment.threadStatus === "created" &&
-        factoryIntegrationAccessBlocked(nextState, integration.id) === null
+        target.phase === "awaiting-grants" &&
+        team.threadStatus === "created" &&
+        factoryIntegrationAccessBlocked(nextState, target.id) === null
       )
-        return Result.map(prepare(integration, nextState), (value) => ({
+        return Result.map(prepare(target, nextState), (value) => ({
           ...value,
           result: { ...value.result, integrationGrantId: grant.id },
         }));
-      return accept(nextState, { integrationId: integration.id, integrationGrantId: grant.id });
+      return accept(nextState, { integrationId: target.id, integrationGrantId: grant.id });
     }
     case "integration.grant.revoke": {
       const grant = state.integrationGrants.find((entry) => entry.id === command.grantId);
       if (!grant || !managerOwns(grant.ownerManagerId))
         return fail("Only the project owner can revoke its integration grant.");
       if (grant.lifecycle.phase === "revoked") return accept({}, { integrationGrantId: grant.id });
+      const grantIntegration = state.integrations.find((entry) => entry.id === grant.integrationId);
       return accept(
         {
           integrationGrants: state.integrationGrants.map((entry) =>
@@ -1162,6 +1213,16 @@ export function decideFactoryIntegration(
           ),
         },
         { integrationId: grant.integrationId, integrationGrantId: grant.id },
+        grantIntegration && grant.lifecycle.phase === "requested"
+          ? [
+              notice(
+                grantIntegration,
+                `grant-declined:${grant.id}`,
+                `Grant request ${grant.id} for project ${grant.projectId} was not granted: ${command.reason}`,
+                state,
+              ),
+            ]
+          : [],
       );
     }
     case "integration.refresh": {

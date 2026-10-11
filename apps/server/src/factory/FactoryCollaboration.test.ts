@@ -9,6 +9,7 @@ import {
   ThreadId,
   type FactoryDecisionCommand,
   type FactoryEffectIntent,
+  type FactoryFinding,
   FactorySnapshot,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
@@ -123,6 +124,92 @@ const accept = (state: FactorySnapshot, requestId: string, assigned = allocation
     actor(receiverId),
     assigned,
   );
+
+const systemId = ThreadId.make("system-manager");
+const withSystemInvestigation = (): FactorySnapshot => {
+  const state = fixture();
+  const base = state.managers[0]!;
+  const finding: FactoryFinding = {
+    id: "finding-1",
+    assignmentId: deliveryIds.assignment,
+    reporterThreadId: deliveryIds.lead,
+    problem: "Retries are invisible",
+    impact: "Repeated review friction",
+    evidence: [{ kind: "thread", threadId: deliveryIds.lead }],
+    activeBlocker: false,
+    route: {
+      suspectedCause: "shared-system",
+      uncertainty: "Cause needs investigation",
+      owner: { kind: "system-remit" },
+      requiredAuthority: "Human review",
+      rationale: "Observed in implementation",
+    },
+    containmentOf: null,
+    history: [],
+    escalation: null,
+    createdAt: deliveryNow,
+    updatedAt: deliveryNow,
+  };
+  const withSystem: FactorySnapshot = {
+    ...state,
+    managers: [
+      ...state.managers,
+      {
+        id: systemId,
+        threadId: systemId,
+        role: "system",
+        projectId: null,
+        workspaceProjectId: deliveryIds.project,
+        name: "System",
+        overrides: {},
+        wait: null,
+        modelSelection: base.modelSelection,
+        workflow: base.workflow,
+        qualification: {
+          status: "qualified",
+          profileId: "system-profile",
+          checkedAt: deliveryNow,
+        },
+        status: "active",
+        threadStatus: "created",
+        launchStatus: "delivered",
+        createdAt: deliveryNow,
+        updatedAt: deliveryNow,
+      },
+    ],
+    improvementInvestigations: [
+      {
+        id: "workflow-investigation",
+        title: "Improve retries",
+        findingIds: [],
+        relatedInvestigationIds: [],
+        uncertainty: "",
+        assessment: "",
+        lifecycle: { phase: "open" },
+        createdAt: deliveryNow,
+        updatedAt: deliveryNow,
+      },
+    ],
+  };
+  return {
+    ...withSystem,
+    findings: [finding],
+    improvementIntakes: [
+      {
+        id: "intake-1",
+        findingId: finding.id,
+        sourceDigest: "finding-digest",
+        projectId: deliveryIds.project,
+        assignmentId: deliveryIds.assignment,
+        origin: "explicit-escalation",
+        sampling: { kind: "all" },
+        summary: "Retries are invisible",
+        queuedAt: deliveryNow,
+        delivery: { phase: "queued" },
+      },
+    ],
+  };
+};
 
 describe("cross-project collaboration", () => {
   it("does not cancel independently commissioned work when its attached request is withdrawn", () => {
@@ -1067,52 +1154,9 @@ describe("cross-project collaboration", () => {
   });
 
   it("routes system investigation requests through the application manager without a fake assignment", () => {
-    const state = fixture();
-    const systemId = ThreadId.make("system-manager");
-    const base = state.managers[0]!;
-    const withSystem: FactorySnapshot = {
-      ...state,
-      managers: [
-        ...state.managers,
-        {
-          id: systemId,
-          threadId: systemId,
-          role: "system",
-          projectId: null,
-          workspaceProjectId: deliveryIds.project,
-          name: "System",
-          overrides: {},
-          wait: null,
-          modelSelection: base.modelSelection,
-          workflow: base.workflow,
-          qualification: {
-            status: "qualified",
-            profileId: "system-profile",
-            checkedAt: deliveryNow,
-          },
-          status: "active",
-          threadStatus: "created",
-          launchStatus: "delivered",
-          createdAt: deliveryNow,
-          updatedAt: deliveryNow,
-        },
-      ],
-      improvementInvestigations: [
-        {
-          id: "workflow-investigation",
-          title: "Improve retries",
-          findingIds: [],
-          relatedInvestigationIds: [],
-          uncertainty: "",
-          assessment: "",
-          lifecycle: { phase: "open" },
-          createdAt: deliveryNow,
-          updatedAt: deliveryNow,
-        },
-      ],
-    };
+    const state = withSystemInvestigation();
     const created = apply(
-      withSystem,
+      state,
       {
         type: "collaboration.request.create",
         commandId: id(),
@@ -1133,5 +1177,251 @@ describe("cross-project collaboration", () => {
       received.state.assignments.find((entry) => entry.id === assigned.assignmentId)?.managerId,
       receiverId,
     );
+  });
+
+  it("lets every owning manager approve a boundary plan that amends commitments in place", () => {
+    const opened = request();
+    const requestId = opened.result.requestId!;
+    const assigned = allocation();
+    const accepted = accept(opened.state, requestId, assigned);
+    const proposed = apply(
+      accepted.state,
+      {
+        type: "collaboration.plan.propose",
+        commandId: id(),
+        requestIds: [requestId],
+        text: "Ship the paginated endpoint and retire the unpaged one later.",
+        changes: {
+          kind: "boundary",
+          reason: "Changes the agreed response and compatibility",
+          amendments: [
+            {
+              requestId,
+              outcome: "Expose the paginated feature API",
+              acceptanceConditions: "The frontend pages through the documented response",
+              compatibility: "Keep the unpaged endpoint for one release",
+            },
+          ],
+        },
+      },
+      actor(assigned.leadThreadId),
+    );
+    const planId = proposed.result.planId!;
+    const decide_ = (state: FactorySnapshot, by: FactoryActor, kind: "approve" | "decline") =>
+      decide({
+        state,
+        actor: by,
+        now: deliveryNow,
+        command: {
+          type: "collaboration.plan.decide",
+          commandId: id(),
+          planId,
+          decision: kind === "approve" ? { kind } : { kind, reason: "Not this release" },
+        },
+      });
+    assert.isTrue(
+      Result.isFailure(decide_(proposed.state, actor(assigned.leadThreadId), "approve")),
+    );
+    const first = Result.getOrThrow(decide_(proposed.state, actor(receiverId), "approve"));
+    assert.equal(first.state.collaborationPlans.at(-1)?.phase, "escalated");
+    assert.equal(first.state.crossProjectRequests[0]?.outcome, "Expose the feature API");
+    const approved = Result.getOrThrow(decide_(first.state, actor(deliveryIds.manager), "approve"));
+    assert.equal(approved.state.collaborationPlans.at(-1)?.phase, "agreed");
+    const amended = approved.state.crossProjectRequests[0]!;
+    assert.equal(amended.outcome, "Expose the paginated feature API");
+    assert.equal(amended.compatibility, "Keep the unpaged endpoint for one release");
+    assert.isTrue(
+      amended.lifecycle.phase === "accepted" &&
+        amended.lifecycle.support.assignmentId === assigned.assignmentId,
+    );
+    assert.isUndefined(
+      approved.state.assignments.find((entry) => entry.id === assigned.assignmentId)?.outcome,
+    );
+    assert.isFalse(approved.state.controls.some((entry) => entry.kind === "cancellation"));
+    const managerPlan = apply(
+      approved.state,
+      {
+        type: "collaboration.plan.propose",
+        commandId: id(),
+        requestIds: [requestId],
+        text: "Double the API team's resource limit.",
+        changes: { kind: "boundary", reason: "Changes a resource limit" },
+      },
+      actor(receiverId),
+    );
+    assert.deepEqual(
+      managerPlan.state.collaborationPlans.at(-1)?.approvals?.map((entry) => entry.managerId),
+      [receiverId],
+    );
+    const declined = Result.getOrThrow(
+      decide({
+        state: managerPlan.state,
+        actor: human,
+        now: deliveryNow,
+        command: {
+          type: "collaboration.plan.decide",
+          commandId: id(),
+          planId: managerPlan.result.planId!,
+          decision: { kind: "decline", reason: "Keep the current limit" },
+        },
+      }),
+    );
+    assert.equal(declined.state.collaborationPlans.at(-1)?.phase, "declined");
+    assert.deepEqual(declined.state.crossProjectRequests, managerPlan.state.crossProjectRequests);
+  });
+
+  it("withdraws a system investigation's requests when it closes and refuses to answer them", () => {
+    const state = withSystemInvestigation();
+    const created = apply(
+      state,
+      {
+        type: "collaboration.request.create",
+        commandId: id(),
+        origin: { kind: "investigation", investigationId: "workflow-investigation" },
+        receiverManagerId: receiverId,
+        outcome: "Expose workflow retry events",
+        acceptanceConditions: "The host emits durable events",
+        compatibility: "Keep current event consumers working",
+      },
+      actor(systemId),
+    );
+    const requestId = created.result.requestId!;
+    const assigned = allocation();
+    const accepted = accept(created.state, requestId, assigned);
+    const closed = apply(accepted.state, {
+      type: "investigation.update",
+      commandId: id(),
+      investigationId: "workflow-investigation",
+      findingIds: ["finding-1"],
+      relatedInvestigationIds: [],
+      uncertainty: "",
+      assessment: "Resolved without application changes",
+      lifecycle: { phase: "closed", reason: "Resolved without application changes" },
+    });
+    assert.equal(closed.state.crossProjectRequests[0]?.lifecycle.phase, "withdrawn");
+    assert.equal(
+      closed.state.assignments.find((entry) => entry.id === assigned.assignmentId)?.outcome?.kind,
+      "cancelled",
+    );
+    assert.isTrue(
+      closed.effects.some(
+        (entry) => entry.type === "collaboration.notify" && entry.subject.id === requestId,
+      ),
+    );
+    // A closure recorded before this reconciliation existed still blocks answers.
+    const stale: FactorySnapshot = {
+      ...created.state,
+      improvementInvestigations: created.state.improvementInvestigations.map((entry) => ({
+        ...entry,
+        lifecycle: { phase: "closed" as const, reason: "Done" },
+      })),
+    };
+    const respond = (by: FactoryActor, response: "accept" | "reconsider") =>
+      decide({
+        state:
+          response === "accept"
+            ? stale
+            : {
+                ...stale,
+                crossProjectRequests: stale.crossProjectRequests.map((entry) => ({
+                  ...entry,
+                  lifecycle: {
+                    phase: "deferred" as const,
+                    reason: "Later",
+                    reconsider: { kind: "human-decision" as const, decisionId: "decision" },
+                  },
+                })),
+              },
+        actor: by,
+        now: deliveryNow,
+        allocation: allocation(),
+        command:
+          response === "accept"
+            ? {
+                type: "collaboration.request.respond",
+                commandId: id(),
+                requestId,
+                response: { kind: "accept", support: { kind: "commission", work } },
+              }
+            : { type: "collaboration.request.reconsider", commandId: id(), requestId },
+      });
+    assert.isTrue(Result.isFailure(respond(actor(receiverId), "accept")));
+    assert.isTrue(Result.isFailure(respond(actor(receiverId), "reconsider")));
+  });
+
+  it("reopens a deferral whose awaited assignment is cancelled and tells both managers", () => {
+    const opened = request();
+    const requestId = opened.result.requestId!;
+    const awaited = {
+      ...opened.state.assignments[0]!,
+      id: FactoryAssignmentId.make("migration"),
+      threadId: ThreadId.make("migration-lead"),
+    };
+    const deferred = apply(
+      { ...opened.state, assignments: [...opened.state.assignments, awaited] },
+      {
+        type: "collaboration.request.respond",
+        commandId: id(),
+        requestId,
+        response: {
+          kind: "defer",
+          reason: "The migration must finish before this endpoint changes.",
+          reconsider: { kind: "assignment-concluded", assignmentId: awaited.id },
+        },
+      },
+      actor(receiverId),
+    );
+    const cancelled = apply(deferred.state, {
+      type: "assignment.cancel",
+      commandId: id(),
+      assignmentId: awaited.id,
+    });
+    assert.equal(cancelled.state.crossProjectRequests[0]?.lifecycle.phase, "requested");
+    assert.isTrue(
+      cancelled.effects.some(
+        (entry) =>
+          entry.type === "collaboration.notify" &&
+          entry.subject.id === requestId &&
+          entry.recipientManagerIds.includes(receiverId) &&
+          entry.recipientManagerIds.includes(deliveryIds.manager),
+      ),
+    );
+  });
+
+  it("lets the requester ask again after a deferral without opening a duplicate request", () => {
+    const opened = request();
+    const requestId = opened.result.requestId!;
+    const deferred = apply(
+      opened.state,
+      {
+        type: "collaboration.request.respond",
+        commandId: id(),
+        requestId,
+        response: {
+          kind: "defer",
+          reason: "Busy with the release",
+          reconsider: { kind: "assignment-concluded", assignmentId: deliveryIds.assignment },
+        },
+      },
+      actor(receiverId),
+    );
+    const askAgain = {
+      type: "collaboration.request.reconsider",
+      commandId: id(),
+      requestId,
+    } as const;
+    assert.isTrue(
+      Result.isFailure(
+        decide({
+          state: deferred.state,
+          actor: actor(deliveryIds.lead),
+          command: askAgain,
+          now: deliveryNow,
+        }),
+      ),
+    );
+    const reopened = apply(deferred.state, askAgain, actor(deliveryIds.manager));
+    assert.equal(reopened.state.crossProjectRequests[0]?.lifecycle.phase, "requested");
+    assert.lengthOf(reopened.state.crossProjectRequests, 1);
   });
 });

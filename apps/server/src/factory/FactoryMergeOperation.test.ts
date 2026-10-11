@@ -199,7 +199,7 @@ describe("durable shared merge operations", () => {
     );
   });
 
-  it("persists unknown before writing and an open host read cannot turn a lost ACK into another submission", () => {
+  it("persists unknown before writing and returns an exact open PR to a bounded retry", () => {
     const fixture = frozenMergeOperationFixture();
     const submitted = submitMergeMember(fixture.state, fixture.operationId);
     assert.deepEqual(submitted.effects, [
@@ -226,9 +226,31 @@ describe("durable shared merge operations", () => {
       },
       { kind: "system" },
     );
-    assert.equal(observed.state.mergeOperations[0]!.lifecycle.phase, "attention");
-    assert.equal(observed.state.mergeOperations[0]!.members[0]!.outcome.phase, "unknown");
-    assert.isFalse(factoryMergeOperationReadiness(observed.state, fixture.groupId).canRetry);
+    // The submission never merged, so the member is no longer uncertain: conclusion and a bounded
+    // retry both become possible, and the spent attempt stays spent.
+    const reconciled = observed.state.mergeOperations[0]!;
+    assert.equal(reconciled.lifecycle.phase, "attention");
+    if (reconciled.lifecycle.phase === "attention")
+      assert.equal(reconciled.lifecycle.retry, "same-vector");
+    assert.equal(reconciled.members[0]!.outcome.phase, "pending");
+    assert.equal(reconciled.members[0]!.attempts, 1);
+    assert.isTrue(factoryMergeOperationReadiness(observed.state, fixture.groupId).canRetry);
+    const eligibility = factoryCompletionEligibility(
+      observed.state,
+      observed.state.assignments.find((entry) => entry.id === integrated.assignment)!,
+    );
+    assert.notInclude(eligibility.eligible ? "" : eligibility.reasons.join(" "), "unknown host");
+    const retried = applyMerge(observed.state, {
+      type: "merge.operation.retry",
+      commandId: mergeCommandId(),
+      operationId: fixture.operationId,
+    });
+    assert.equal(retried.state.mergeOperations[0]!.lifecycle.phase, "running");
+    assert.equal(
+      submitMergeMember(retried.state, fixture.operationId).state.mergeOperations[0]!.members[0]!
+        .attempts,
+      2,
+    );
     const confirmed = confirmMergeMember(
       observed.state,
       fixture.operationId,
@@ -237,6 +259,56 @@ describe("durable shared merge operations", () => {
     assert.equal(confirmed.state.mergeOperations[0]!.members[0]!.outcome.phase, "confirmed");
     assert.isFalse(confirmed.effects.some((entry) => entry.type === "merge.operation.advance"));
     assert.isTrue(factoryMergeOperationReadiness(confirmed.state, fixture.groupId).canRetry);
+  });
+
+  it("holds a transient rejection for a deliberate retry instead of spending every attempt at once", () => {
+    const fixture = frozenMergeOperationFixture();
+    const submitted = submitMergeMember(fixture.state, fixture.operationId);
+    const member = submitted.state.mergeOperations[0]!.members[0]!;
+    const rejected = applyMerge(
+      submitted.state,
+      {
+        type: "merge.operation.observed",
+        commandId: mergeCommandId(),
+        operationId: fixture.operationId,
+        assignmentId: submitted.assignmentId,
+        attemptId: submitted.attemptId,
+        observation: {
+          phase: "rejected",
+          classification: "transient",
+          reason: "GitHub API rate limit exceeded.",
+          headSha: member.reviewed.headSha,
+          targetBranch: member.authority.targetBranch,
+          observedAt: deliveryNow,
+        },
+      },
+      { kind: "system" },
+    );
+    const operation = rejected.state.mergeOperations[0]!;
+    assert.equal(operation.lifecycle.phase, "attention");
+    assert.equal(operation.members[0]!.attempts, 1);
+    assert.isFalse(rejected.effects.some((entry) => entry.type === "merge.operation.advance"));
+    assert.isTrue(factoryMergeOperationReadiness(rejected.state, fixture.groupId).canRetry);
+  });
+
+  it("releases a member's held manager direction once its shared merge is confirmed", () => {
+    const fixture = frozenMergeOperationFixture();
+    const held = {
+      ...fixture.state,
+      assignments: fixture.state.assignments.map((entry) =>
+        entry.delivery ? { ...entry, delivery: { ...entry.delivery, directionHeld: true } } : entry,
+      ),
+    };
+    const submitted = submitMergeMember(held, fixture.operationId);
+    const confirmed = confirmMergeMember(
+      submitted.state,
+      fixture.operationId,
+      submitted.assignmentId,
+    );
+    const member = confirmed.state.assignments.find(
+      (entry) => entry.id === submitted.assignmentId,
+    )!;
+    assert.isFalse(member.delivery!.directionHeld);
   });
 
   it("records exactly three definitive rejected attempts and never resets the budget", () => {
@@ -265,6 +337,12 @@ describe("durable shared merge operations", () => {
         { kind: "system" },
       ).state;
       assert.equal(state.mergeOperations[0]!.members[0]!.attempts, attempt);
+      if (attempt < 3)
+        state = applyMerge(state, {
+          type: "merge.operation.retry",
+          commandId: mergeCommandId(),
+          operationId: fixture.operationId,
+        }).state;
     }
     assert.equal(state.mergeOperations[0]!.lifecycle.phase, "attention");
     assert.isFalse(factoryMergeOperationReadiness(state, fixture.groupId).canRetry);
@@ -472,9 +550,10 @@ describe("durable shared merge operations", () => {
       reason: "Correct integration tests",
     });
     assert.isUndefined(currentFactoryMergeOperation(stopped.state, fixture.integrationId));
-    assert.deepEqual(stopped.effects, [
-      { type: "merge.operation.resume", operationId: fixture.operationId },
-    ]);
+    assert.deepEqual(
+      stopped.effects.filter((entry) => entry.type.startsWith("merge.operation.")),
+      [{ type: "merge.operation.resume", operationId: fixture.operationId }],
+    );
     const submitted = submitMergeMember(fixture.state, fixture.operationId);
     const stoppedUnknown = applyMerge(submitted.state, {
       type: "merge.operation.stop",

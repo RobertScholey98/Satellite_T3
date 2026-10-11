@@ -23,7 +23,7 @@ import type {
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
 import type { ServerSettings } from "@t3tools/contracts";
 import * as ServerSettingsService from "../serverSettings.ts";
-import { FactoryControlId, PullRequestOperationError } from "@t3tools/contracts";
+import { FactoryControlId, FactoryError, PullRequestOperationError } from "@t3tools/contracts";
 import { BeforeGitHubMutation } from "../sourceControl/GitHubApi.ts";
 
 import * as ProjectService from "../project/ProjectService.ts";
@@ -643,9 +643,70 @@ it.effect(
       const error = yield* service
         .runAction({ ...factoryRef, action: "merge", expectedHeadSha: "head" })
         .pipe(Effect.flip);
-      assert.strictEqual(error._tag, "PullRequestOperationError");
+      assert.instanceOf(error, PullRequestOperationError);
+      if (error._tag !== "PullRequestOperationError") return;
+      assert.include(error.detail, "belongs to a managed team");
+      assert.instanceOf(error.cause, FactoryError);
       assert.strictEqual(mutations, 0);
     }),
+);
+
+it.effect("reports a mutation-boundary refusal with the factory's reason", () =>
+  Effect.gen(function* () {
+    let state = approvedFactoryMerge();
+    let mutations = 0;
+    const base = fakeProvider("github");
+    const service = yield* makeService({
+      factorySnapshot: () => state,
+      projects: [factoryProject()],
+      providers: [
+        {
+          ...base,
+          capabilities: { ...base.capabilities, conditionalMerge: true },
+          getChangeRequest: ({ number }) => Effect.succeed(managedDetail(number)),
+          runAction: () =>
+            Effect.gen(function* () {
+              // The assignment is cancelled while the authorized merge is queued.
+              state = {
+                ...state,
+                assignments: state.assignments.map((assignment) => ({
+                  ...assignment,
+                  outcome: {
+                    kind: "cancelled" as const,
+                    controlId: FactoryControlId.make("queued-cancel"),
+                  },
+                })),
+              };
+              const guard = yield* BeforeGitHubMutation;
+              if (guard) yield* guard;
+              mutations++;
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PullRequestProviderError({
+                    provider: "github",
+                    operation: "merge",
+                    reason: "failed",
+                    detail: "Could not reach GitHub at github.com.",
+                    cause,
+                  }),
+              ),
+            ),
+        },
+      ],
+    });
+    const error = yield* service
+      .runAction({ ...factoryRef, action: "merge", expectedHeadSha: "head" })
+      .pipe(
+        Effect.provideService(FactoryPullRequestGate.FactoryDeliveryPermit, factoryPermit),
+        Effect.flip,
+      );
+    assert.strictEqual(mutations, 0);
+    assert.instanceOf(error, PullRequestOperationError);
+    if (error._tag !== "PullRequestOperationError") return;
+    assert.include(error.detail, "belongs to a managed team");
+    assert.instanceOf(error.cause, FactoryError);
+  }),
 );
 
 it.effect(

@@ -180,7 +180,12 @@ export const FactoryImprovementCommand = Schema.Union([
     commandId: CommandId,
     ...FactoryImprovementSettings.fields,
   }),
-  Schema.Struct({ type: Schema.Literal("improvement.flush"), commandId: CommandId }),
+  Schema.Struct({
+    type: Schema.Literal("improvement.flush"),
+    commandId: CommandId,
+    /** Defaults to routine. A human escalation review ignores the daily allowance. */
+    kind: Schema.optionalKey(Schema.Literals(["urgent", "routine"])),
+  }),
   Schema.Struct({
     type: Schema.Literal("improvement.batch.retry"),
     commandId: CommandId,

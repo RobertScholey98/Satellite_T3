@@ -1403,6 +1403,104 @@ it.effect.each(deliveryCases)("$name", (test) =>
   ),
 );
 
+it.effect("relays human guidance from an independent diagnosis to the lead and manager", () =>
+  scenario(
+    Effect.gen(function* () {
+      const factory = yield* FactoryService.FactoryService;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      yield* send(diagnosisId, "Prefer the smaller fix");
+      const messageId = MessageId.make(`message:${diagnosisId}:Prefer the smaller fix`);
+      const message = (yield* projections.getThreadProjection(diagnosisId)).messages.find(
+        (entry) => entry.id === messageId,
+      )!;
+      yield* factory.observe({
+        sequence: 1_000,
+        commandId: null,
+        event: {
+          id: EventId.make("diagnosis-guidance"),
+          type: "message.updated",
+          threadId: diagnosisId,
+          occurredAt: yield* DateTime.now,
+          payload: message,
+        },
+      });
+      yield* factory.drain;
+      assert.deepEqual(
+        (yield* projections.getThreadProjection(leadId)).messages.map((entry) => entry.id),
+        [MessageId.make(`factory-guidance:${diagnosisId}:${messageId}`)],
+      );
+      yield* factory.dispatch(human, {
+        type: "guidance.escalate",
+        commandId: CommandId.make("escalate-diagnosis-guidance"),
+        threadId: diagnosisId,
+        messageId,
+        summary: "The user prefers a smaller fix",
+      });
+      yield* factory.drain;
+      assert.deepEqual(
+        (yield* projections.getThreadProjection(managerId)).messages.map((entry) => entry.id),
+        [MessageId.make(`factory-guidance-escalation:${diagnosisId}:${messageId}`)],
+      );
+      const pending = yield* sql<{ readonly effect_id: string }>`
+        SELECT effect_id FROM factory_outbox WHERE status = 'pending'`;
+      assert.deepEqual(pending, []);
+    }),
+    {
+      assignments: [
+        {
+          ...assignment,
+          oversight: {
+            recovery: {
+              cyclesUsed: 1,
+              history: [],
+              incident: {
+                id: "current-incident",
+                phase: "diagnosing",
+                reason: "The team stopped with work outstanding",
+                evidence: [],
+                diagnosisThreadId: diagnosisId,
+              },
+            },
+          },
+        },
+      ],
+      auxiliaryThreads: [auxiliary],
+    },
+  ),
+);
+
+it.effect("retires guidance relayed to a lead that was replaced", () =>
+  scenario(
+    Effect.gen(function* () {
+      const factory = yield* FactoryService.FactoryService;
+      const sql = yield* SqlClient.SqlClient;
+      yield* factory.drain;
+      const rows = yield* sql<{ readonly status: string }>`
+        SELECT status FROM factory_outbox WHERE effect_id = 'persisted-delivery:0'`;
+      assert.equal(rows[0]?.status, "superseded");
+    }),
+    {
+      assignments: [
+        {
+          ...assignment,
+          threadId: ThreadId.make("replacement-lead"),
+          previousLeadThreadIds: [leadId],
+        },
+      ],
+      effects: [
+        {
+          type: "thread.deliver",
+          kind: "guidance",
+          threadId: leadId,
+          messageId: MessageId.make("guidance-for-replaced-lead"),
+          text: "The user gave guidance in a worker thread.",
+        },
+      ],
+    },
+  ),
+);
+
 const controlCases: readonly FactoryControl[] = [
   {
     id: FactoryControlId.make("held-manager"),

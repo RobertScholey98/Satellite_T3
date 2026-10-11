@@ -8,7 +8,10 @@ import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import { FactoryPullRequestGate } from "../factory/FactoryPullRequestGate.ts";
+import {
+  authorizeFactoryPullRequestAction,
+  FactoryPullRequestGate,
+} from "../factory/FactoryPullRequestGate.ts";
 import { BeforeGitHubMutation, GitHubApiRequestError } from "../sourceControl/GitHubApi.ts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -2016,126 +2019,39 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  const factoryRefusal = (error: FactoryError) =>
+    new PullRequestOperationError({ operation: "runAction", detail: error.message, cause: error });
+
+  // Managed delivery is decided by the factory gate; this supplies the host reads it needs.
   const authorizeFactoryAction = Effect.fn("PullRequestService.authorizeFactoryAction")(
-    function* (input: PullRequestActionInput, ref: PullRequestRef) {
+    function* (input: PullRequestActionInput, project: SupportedProject) {
       if (Option.isNone(factoryGate))
         return { requireConditionalMerge: false, beforeMutation: null };
-      const gate = factoryGate.value;
-      if (!(yield* gate.appliesToRepository(ref.host ?? "github.com", ref.repository)))
-        return {
-          requireConditionalMerge: false,
-          beforeMutation: Effect.gen(function* () {
-            if (yield* gate.appliesToRepository(ref.host ?? "github.com", ref.repository))
-              return yield* new FactoryError({
-                code: "permission-denied",
-                detail:
-                  "This repository acquired managed delivery work while the action was queued. Retry to inspect its current ownership before changing the pull request.",
-              });
-          }).pipe(
-            Effect.mapError(
-              (cause) =>
-                new GitHubApiRequestError({
-                  host: ref.host ?? "github.com",
-                  operation: "factory.merge.authorize",
-                  cause,
-                }),
-            ),
-          ),
-        };
-      const inspectedStack =
-        input.stackNumber === undefined
-          ? null
-          : yield* stackUncached(ref, { includeDetails: false });
-      const numbers = inspectedStack?.layers.map((entry) => entry.number) ?? [ref.number];
-      if (
-        input.stackNumber !== undefined &&
-        (inspectedStack === null ||
-          inspectedStack.number !== input.stackNumber ||
-          !numbers.includes(ref.number) ||
-          new Set(numbers).size !== numbers.length)
-      )
-        return yield* new PullRequestOperationError({
-          operation: "runAction",
-          detail:
-            "The complete requested stack must be inspected before changing a managed repository.",
-        });
-      const targets = yield* Effect.forEach(numbers, (number) =>
-        Effect.gen(function* () {
-          const targetRef = { ...ref, number };
-          const detail = yield* detailUncached(targetRef);
-          if (
-            !detail.headSha ||
-            detail.number !== number ||
-            detail.repository.toLowerCase() !== ref.repository.toLowerCase()
-          )
-            return yield* new PullRequestOperationError({
-              operation: "runAction",
-              detail: "The current pull request identity and head could not be verified.",
-            });
-          return { ref: targetRef, headBranch: detail.headBranch, headSha: detail.headSha };
-        }),
-      );
-      if (inspectedStack !== null) {
-        const open = inspectedStack.layers.filter((entry) => entry.state === "open");
-        const expected = input.expectedStackHeads ?? [];
-        if (
-          expected.length !== open.length ||
-          new Set(expected.map((entry) => entry.number)).size !== open.length ||
-          open.some(
-            (entry) =>
-              !expected.some(
-                (head) =>
-                  head.number === entry.number &&
-                  targets.some(
-                    (target) =>
-                      target.ref.number === entry.number && target.headSha === head.headSha,
-                  ),
-              ),
-          )
-        ) {
-          return yield* new PullRequestOperationError({
-            operation: "runAction",
-            detail: "The stack membership or head revisions changed before factory authorization.",
-          });
-        }
-      }
-      const authorize = gate.authorizeMutation({
-        action: input.action,
-        targets,
-        ...(input.expectedHeadSha === undefined ? {} : { expectedHeadSha: input.expectedHeadSha }),
-        stack: input.stackNumber !== undefined,
+      return yield* authorizeFactoryPullRequestAction(factoryGate.value, {
+        request: input,
+        ref: {
+          projectId: project.project.id,
+          host: project.host,
+          repository: project.repository,
+          number: input.number,
+        },
+        readDetail: detailUncached,
+        readStack: (ref) => stackUncached(ref, { includeDetails: false }),
       });
-      const authorization = yield* authorize;
-      return {
-        requireConditionalMerge: authorization.requireConditionalMerge,
-        beforeMutation: authorize.pipe(
-          Effect.asVoid,
-          Effect.mapError(
-            (cause) =>
-              new GitHubApiRequestError({
-                host: ref.host ?? "github.com",
-                operation: "factory.merge.authorize",
-                cause,
-              }),
-          ),
-        ),
-      };
     },
     Effect.mapError((error: FactoryError | PullRequestError) =>
-      error._tag === "FactoryError"
-        ? new PullRequestOperationError({ operation: "runAction", detail: error.message })
-        : error,
+      error._tag === "FactoryError" ? factoryRefusal(error) : error,
     ),
   );
 
   const runAction = (input: PullRequestActionInput): Effect.Effect<string, PullRequestError> =>
     requireProject(input).pipe(
       Effect.flatMap((project): Effect.Effect<string, PullRequestError> => {
+        // The provider checks the shape of a conditional merge; only a provider that claims
+        // conditional merging may be handed one.
         if (
           input.expectedHeadSha !== undefined &&
-          (project.api.capabilities.conditionalMerge !== true ||
-            input.action !== "merge" ||
-            input.stackNumber !== undefined)
+          project.api.capabilities.conditionalMerge !== true
         ) {
           return Effect.fail(
             new PullRequestOperationError({
@@ -2249,14 +2165,13 @@ export const make = Effect.gen(function* () {
                 : Effect.succeed(false);
             return mergeSettings.pipe(
               Effect.flatMap((removeAgentCreditsOnMerge) =>
-                authorizeFactoryAction(input, {
-                  projectId: project.project.id,
-                  host: project.host,
-                  repository: project.repository,
-                  number: input.number,
-                }).pipe(
-                  Effect.flatMap(({ requireConditionalMerge, beforeMutation }) =>
-                    project.api
+                authorizeFactoryAction(input, project).pipe(
+                  Effect.flatMap(({ requireConditionalMerge, beforeMutation }) => {
+                    // A refusal at the mutation boundary travels through GitHub's request hook,
+                    // which only carries transport errors. Keep it so the caller sees the
+                    // factory's reason instead of "Could not reach GitHub".
+                    let refusal: FactoryError | undefined;
+                    return project.api
                       .runAction({
                         cwd: project.project.workspaceRoot,
                         repository: project.repository,
@@ -2282,7 +2197,26 @@ export const make = Effect.gen(function* () {
                           : { updateMethod: input.updateMethod }),
                       })
                       .pipe(
-                        Effect.provideService(BeforeGitHubMutation, beforeMutation),
+                        Effect.provideService(
+                          BeforeGitHubMutation,
+                          beforeMutation === null
+                            ? null
+                            : beforeMutation.pipe(
+                                Effect.tapError((error) =>
+                                  Effect.sync(() => {
+                                    refusal = error;
+                                  }),
+                                ),
+                                Effect.mapError(
+                                  (cause) =>
+                                    new GitHubApiRequestError({
+                                      host: project.host,
+                                      operation: "factory.merge.authorize",
+                                      cause,
+                                    }),
+                                ),
+                              ),
+                        ),
                         // Once the authorized provider action starts, a failure may leave partial
                         // remote updates. Validation and permission failures above changed nothing.
                         Effect.ensuring(
@@ -2290,14 +2224,18 @@ export const make = Effect.gen(function* () {
                             ? Effect.void
                             : refreshAfterTurn(project.project.id),
                         ),
-                        Effect.mapError(toPullRequestError("runAction")),
+                        Effect.mapError((error) =>
+                          refusal === undefined
+                            ? toPullRequestError("runAction")(error)
+                            : factoryRefusal(refusal),
+                        ),
                         Effect.as(
                           project.api.kind === "azure-devops"
                             ? input.repository.trim()
                             : project.repository,
                         ),
-                      ),
-                  ),
+                      );
+                  }),
                 ),
               ),
             );

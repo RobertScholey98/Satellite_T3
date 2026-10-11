@@ -66,6 +66,8 @@ export function factoryMergeOperationActions(
     retry: permissions.operate && permissions.write && readiness.canRetry ? operationId : null,
     reconcile: permissions.operate && readiness.canReconcile ? operationId : null,
     stop: permissions.operate && readiness.canStop ? operationId : null,
+    release: permissions.operate && readiness.canRelease ? read.group.id : null,
+    restore: permissions.operate && readiness.canRestore ? read.group.id : null,
   };
 }
 

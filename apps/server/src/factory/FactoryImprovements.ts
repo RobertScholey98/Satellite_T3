@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha2";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import {
   FactoryError,
+  factorySystemManager,
   type FactoryCommandResult,
   type FactoryDecisionCommand,
   type FactoryDiscoveryQualification,
@@ -61,8 +62,7 @@ export const factoryImprovementFindingDigest = (finding: FactoryFinding) =>
     containmentOf: finding.containmentOf,
     escalation: finding.escalation?.summary ?? null,
   });
-const systemManager = (state: FactorySnapshot) =>
-  state.managers.find((entry) => entry.role === "system");
+const systemManager = (state: FactorySnapshot) => factorySystemManager(state.managers);
 const availableManager = (state: FactorySnapshot) => {
   const manager = systemManager(state);
   return manager?.role === "system" &&
@@ -136,10 +136,13 @@ export function factoryImprovementBatchPlan(
     return undefined;
   const queued = pending(state, options.kind);
   if (!queued.length) return undefined;
-  const budgetDay = dayAt(now);
+  // A human escalation review is outside the daily allowance and spends none of it.
+  const humanEscalation = options.kind === "urgent" && options.force === true;
+  const budgetDay = humanEscalation ? null : dayAt(now);
   if (
-    factoryImprovementBatchesSpent(state, options.kind, budgetDay) >=
-      allowance(configuration, options.kind) ||
+    (budgetDay !== null &&
+      factoryImprovementBatchesSpent(state, options.kind, budgetDay) >=
+        allowance(configuration, options.kind)) ||
     (options.kind === "routine" &&
       !options.force &&
       queued.length < configuration.routineThreshold &&
@@ -280,13 +283,15 @@ export function decideFactoryImprovements(
   const human = actor.kind === "human";
   const host = actor.kind === "system";
   const canInvestigate = human || (systemActor && availableManager(state) !== undefined);
-  const visibleFindings = (ids: readonly string[]) =>
+  // Sampled findings open investigations. Retained but unsampled findings can join one that the
+  // human opens or that already exists.
+  const attachableFindings = (ids: readonly string[], retained: boolean) =>
     new Set(ids).size === ids.length &&
     ids.every(
       (id) =>
         state.findings.some((finding) => finding.id === id) &&
         state.improvementIntakes.some(
-          (entry) => entry.findingId === id && entry.delivery.phase !== "skipped",
+          (entry) => entry.findingId === id && (retained || entry.delivery.phase !== "skipped"),
         ),
     );
   const relatedValid = (ids: readonly string[], self?: string) =>
@@ -322,7 +327,8 @@ export function decideFactoryImprovements(
   switch (command.type) {
     case "system.create": {
       if (!human) return fail("Only the human can create the system manager.");
-      if (manager) return fail("This environment already has its system manager.", "invalid-state");
+      if (manager && manager.status !== "retired")
+        return fail("This environment already has its system manager.", "invalid-state");
       const creation = input.systemManagerCreation;
       if (
         !creation ||
@@ -360,12 +366,67 @@ export function decideFactoryImprovements(
         createdAt: now,
         updatedAt: now,
       };
+      // A replacement inherits what its retired predecessor held but had not acted on: shared
+      // repository registrations, undelivered evidence batches and uncommissioned work plans.
+      // Commissioned teams were cancelled at retirement and stay with their original manager.
+      const inherits = (entry: { readonly managerId: ThreadId }) => entry.managerId === manager?.id;
+      const batches = state.improvementBatches.filter(
+        (entry) => inherits(entry) && entry.delivery.status === "pending",
+      );
+      const works = state.sharedWorks.filter(
+        (entry) =>
+          inherits(entry) &&
+          (entry.lifecycle.phase === "proposed" || entry.lifecycle.phase === "authorized"),
+      );
       return accepted(
-        { managers: [...state.managers, created] },
+        {
+          managers: [...state.managers, created],
+          sharedRepositories: state.sharedRepositories.map((entry) =>
+            inherits(entry) ? { ...entry, managerId: created.id } : entry,
+          ),
+          improvementBatches: state.improvementBatches.map((entry) =>
+            batches.includes(entry)
+              ? { ...entry, managerId: created.id, delivery: { status: "pending" } }
+              : entry,
+          ),
+          sharedWorks: state.sharedWorks.map((entry) =>
+            !works.includes(entry)
+              ? entry
+              : {
+                  ...entry,
+                  managerId: created.id,
+                  notification:
+                    entry.lifecycle.phase === "authorized"
+                      ? { phase: "pending" }
+                      : entry.notification,
+                },
+          ),
+        },
         { managerId: created.id },
-        qualification.status === "qualified"
-          ? [{ type: "system.launch", managerId: created.id, profileId: qualification.profileId }]
-          : [],
+        [
+          ...(qualification.status === "qualified"
+            ? [
+                {
+                  type: "system.launch" as const,
+                  managerId: created.id,
+                  profileId: qualification.profileId,
+                },
+              ]
+            : []),
+          ...batches.map((entry): FactoryEffectIntent => ({
+            type: "improvement.notify",
+            batchId: entry.id,
+            managerId: created.id,
+            digest: entry.digest,
+          })),
+          ...works
+            .filter((entry) => entry.lifecycle.phase === "authorized")
+            .map((entry): FactoryEffectIntent => ({
+              type: "workflow.work.notify",
+              workId: entry.id,
+              managerId: created.id,
+            })),
+        ],
       );
     }
     case "system.retry": {
@@ -489,8 +550,8 @@ export function decideFactoryImprovements(
       );
     case "improvement.flush": {
       if (!human) return fail("Only the human can flush a review batch.");
-      if (factoryImprovementBatchPlan(state, now, { kind: "routine", force: true }))
-        return seal("routine", true);
+      const kind = command.kind ?? "routine";
+      if (factoryImprovementBatchPlan(state, now, { kind, force: true })) return seal(kind, true);
       const settings = factoryImprovementConfiguration(state);
       return fail(
         !settings.enabled
@@ -498,11 +559,11 @@ export function decideFactoryImprovements(
           : !availableManager(state)
             ? "The system manager is not available to review evidence."
             : state.improvementBatches.some(
-                  (entry) => entry.kind === "routine" && entry.delivery.status === "pending",
+                  (entry) => entry.kind === kind && entry.delivery.status === "pending",
                 )
-              ? "A routine batch is already waiting for delivery."
-              : !pending(state, "routine").length
-                ? "No routine findings are waiting."
+              ? `${kind === "urgent" ? "An escalation" : "A routine"} batch is already waiting for delivery.`
+              : !pending(state, kind).length
+                ? `No ${kind === "urgent" ? "escalations are" : "routine findings are"} waiting.`
                 : "Today's routine allowance is spent. Raise it in review settings to review now.",
         "invalid-state",
       );
@@ -564,6 +625,42 @@ export function decideFactoryImprovements(
         (previous.origin === command.origin || previous.origin === "explicit-escalation")
       )
         return accepted({}, { intakeId: previous.id });
+      // Routing facts lead the summary so batch truncation cuts the long problem text first.
+      const summary = truncate(
+        [
+          `Cause: ${finding.route.suspectedCause}. Containment of: ${finding.containmentOf ?? "none"}.`,
+          `Uncertainty: ${truncate(finding.route.uncertainty, 300)}`,
+          ...(finding.escalation ? [`Escalation: ${finding.escalation.summary}`] : []),
+          finding.problem,
+          `Impact: ${finding.impact}`,
+        ].join("\n"),
+        6_000,
+      );
+      // Escalating a finding whose intake is not yet batched promotes that intake in place, so the
+      // finding never waits in two queues and an unsampled local finding enters review. Its sampling
+      // record stays so later local ordinals do not shift.
+      if (
+        command.origin === "explicit-escalation" &&
+        previous &&
+        previous.delivery.phase !== "batched"
+      ) {
+        const promoted: FactoryImprovementIntake = {
+          ...previous,
+          sourceDigest: command.sourceDigest,
+          origin: command.origin,
+          summary,
+          delivery: { phase: "queued" },
+        };
+        return accepted(
+          {
+            improvementIntakes: state.improvementIntakes.map((entry) =>
+              entry.id === previous.id ? promoted : entry,
+            ),
+          },
+          { intakeId: previous.id },
+          [{ type: "improvement.reconcile" }],
+        );
+      }
       const local =
         command.origin === "retro" &&
         ["implementation", "project"].includes(finding.route.suspectedCause);
@@ -582,10 +679,7 @@ export function decideFactoryImprovements(
         assignmentId: assignment.id,
         origin: command.origin,
         sampling: local ? { kind: "local", ordinal, selected } : { kind: "all" },
-        summary: truncate(
-          `${finding.problem}\nImpact: ${finding.impact}\nCause: ${finding.route.suspectedCause}. Uncertainty: ${finding.route.uncertainty}\nContainment of: ${finding.containmentOf ?? "none"}\n${finding.escalation?.summary ?? ""}`,
-          6_000,
-        ),
+        summary,
         queuedAt: now,
         delivery: { phase: selected ? "queued" : "skipped" },
       };
@@ -627,9 +721,12 @@ export function decideFactoryImprovements(
     case "investigation.open": {
       if (!canInvestigate)
         return fail("Only the human or active system manager can investigate shared evidence.");
-      if (!visibleFindings(command.findingIds) || !relatedValid(command.relatedInvestigationIds))
+      if (
+        !attachableFindings(command.findingIds, human) ||
+        !relatedValid(command.relatedInvestigationIds)
+      )
         return fail(
-          "Attach visible intake findings and existing related investigations.",
+          "Attach sampled intake findings and existing related investigations.",
           "invalid-state",
         );
       const id = `investigation:${command.commandId}`;
@@ -703,11 +800,11 @@ export function decideFactoryImprovements(
       );
       if (
         !investigation ||
-        !visibleFindings(command.findingIds) ||
+        !attachableFindings(command.findingIds, true) ||
         !relatedValid(command.relatedInvestigationIds, investigation.id)
       )
         return fail(
-          "Investigation references must name existing visible evidence.",
+          "Investigation references must name existing retained evidence.",
           "invalid-state",
         );
       return accepted(
@@ -829,7 +926,13 @@ export function decideFactoryImprovements(
           { proposalId: proposal.id, proposalRevision: proposal.revision },
         );
       }
-      if (proposal.phase !== "human-review")
+      // A deferred revision stays open to a later human decision on the same exact content.
+      const deferred =
+        proposal.phase === "decided" &&
+        state.improvementDecisions.findLast(
+          (entry) => entry.proposalId === proposal.id && entry.revision === proposal.revision,
+        )?.outcome === "deferred";
+      if (proposal.phase !== "human-review" && !deferred)
         return fail("This exact revision is not awaiting human review.", "invalid-state");
       return accepted(
         {
@@ -857,9 +960,9 @@ export function decideFactoryImprovements(
       const investigation = state.improvementInvestigations.find(
         (entry) => entry.id === command.investigationId,
       );
-      if (!investigation || !visibleFindings([command.findingId]))
+      if (!investigation || !attachableFindings([command.findingId], true))
         return fail(
-          "Recurrence must reference a visible finding and existing investigation.",
+          "Recurrence must reference a retained finding and existing investigation.",
           "invalid-state",
         );
       if (

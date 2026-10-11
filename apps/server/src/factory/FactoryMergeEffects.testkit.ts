@@ -9,12 +9,14 @@ import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import type { ProviderMergeEvidence } from "../pullRequest/pullRequestMergeEvidence.ts";
 import * as Store from "./FactoryStore.ts";
 import { deliverySelection } from "./FactoryDelivery.testkit.ts";
+import { makeFakeGitHub } from "./FactoryMergeSignal.testkit.ts";
 
 const encode = Schema.encodeSync(Schema.fromJsonString(FactorySnapshot));
-export const mergeEffectsBase = Layer.mergeAll(Store.layer, Threads.layer).pipe(
-  Layer.provideMerge(Satellite.layer),
-  Layer.provideMerge(NodeServices.layer),
-);
+export const mergeEffectsBase = Layer.mergeAll(
+  Store.layer,
+  Threads.layer,
+  makeFakeGitHub().layer,
+).pipe(Layer.provideMerge(Satellite.layer), Layer.provideMerge(NodeServices.layer));
 export const seedMergeEffects = (state: FactorySnapshot) =>
   Effect.gen(function* () {
     yield* (yield* SqlClient.SqlClient)`INSERT INTO factory_state(id,revision,payload_json) VALUES(1,${state.revision},${encode(state)})`;

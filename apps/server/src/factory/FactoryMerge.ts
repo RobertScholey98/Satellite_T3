@@ -22,7 +22,13 @@ import {
   factoryMergeGroupsForPullRequest,
 } from "./FactoryMergeOwnership.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
-import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
+import {
+  currentFactoryMergeOperation,
+  factoryMergeGroupHeads,
+  factoryMergeGroupReleaseBlock,
+  factoryMergeGroupRestoreBlock,
+  latestFactoryMergeOperation,
+} from "./FactoryMergeOperation.ts";
 
 const active = (assignment: FactoryAssignment | undefined): assignment is FactoryAssignment =>
   assignment !== undefined &&
@@ -104,6 +110,8 @@ export function factoryMergeGroupEvidence(
 ): FactoryMergeGroupEvidence {
   const group = findGroup(state, groupId);
   if (!group) return { ready: false, reasons: ["The merge group is unavailable."] };
+  if (group.released)
+    return { ready: false, reasons: [`This merge group was released. ${group.released.reason}`] };
   const integration = state.integrations.find((entry) => entry.id === group.integrationId);
   const lead = state.assignments.find((entry) => entry.id === group.integrationAssignmentId);
   const reasons: string[] = [];
@@ -340,13 +348,75 @@ export function factoryMergeEnrollmentConflict(
   return null;
 }
 
+/**
+ * Withdraws the group's combined approvals from members that have not merged, so a member leaving
+ * the group needs its own approval before it merges alone.
+ */
+function withdrawGroupApprovals(
+  state: FactorySnapshot,
+  group: FactoryMergeGroup,
+  now: string,
+): FactorySnapshot["assignments"] {
+  const decisions = new Set(
+    state.mergeGroupReviews.flatMap((entry) =>
+      entry.groupId === group.id && entry.decision?.outcome === "approved"
+        ? [entry.decision.commandId]
+        : [],
+    ),
+  );
+  return state.assignments.map((assignment) => {
+    if (
+      !group.memberAssignmentIds.includes(assignment.id) ||
+      !assignment.delivery?.revisions.some(
+        (revision) =>
+          revision.merge?.status !== "merged" &&
+          revision.approval !== undefined &&
+          decisions.has(revision.approval.commandId),
+      )
+    )
+      return assignment;
+    return {
+      ...assignment,
+      delivery: {
+        ...assignment.delivery,
+        revisions: assignment.delivery.revisions.map((revision) => {
+          if (
+            revision.merge?.status === "merged" ||
+            !revision.approval ||
+            !decisions.has(revision.approval.commandId)
+          )
+            return revision;
+          const { approval: _approval, ...rest } = revision;
+          return rest;
+        }),
+      },
+      updatedAt: now,
+    };
+  });
+}
+
+const holdKey = (state: FactorySnapshot, group: FactoryMergeGroup | undefined) =>
+  group
+    ? stableStringify({
+        released: group.released !== undefined,
+        known: group.knownPullRequests.map((entry) => canonicalFactoryPullRequest(entry.ref)),
+        heads: factoryMergeGroupHeads(state, group.id),
+      })
+    : null;
+
+/**
+ * Persists every integration's merge group with its known PRs, releases groups whose integration
+ * ended, and asks the host to update labels and head statuses whenever what it shows changes.
+ */
 export function reconcileFactoryMergeGroups(
   decision: FactoryDecision,
   now: string,
+  previous: FactorySnapshot,
 ): FactoryDecision {
-  const state = decision.state;
-  const groups = new Map(state.mergeGroups.map((entry) => [entry.id, entry]));
-  for (const integration of state.integrations) {
+  const groups = new Map(decision.state.mergeGroups.map((entry) => [entry.id, entry]));
+  let assignments = decision.state.assignments;
+  for (const integration of decision.state.integrations) {
+    const state = decision.state;
     const group = factoryMergeGroupForIntegration(state, integration);
     const refs = new Map(
       group.knownPullRequests.map((entry) => [
@@ -370,14 +440,43 @@ export function reconcileFactoryMergeGroups(
           });
       }
     }
-    groups.set(
-      group.id,
+    const known =
       refs.size === group.knownPullRequests.length
         ? group
-        : { ...group, knownPullRequests: [...refs.values()], updatedAt: now },
-    );
+        : { ...group, knownPullRequests: [...refs.values()], updatedAt: now };
+    const lead = state.assignments.find((entry) => entry.id === group.integrationAssignmentId);
+    const cancelled = lead?.outcome !== undefined;
+    // An uncertain shared write keeps the group until reconciliation shows what happened.
+    if (
+      known.released === undefined &&
+      lead !== undefined &&
+      !active(lead) &&
+      !latestFactoryMergeOperation(state, group.id)?.members.some(
+        (entry) => entry.outcome.phase === "unknown",
+      )
+    ) {
+      const released = {
+        ...known,
+        released: {
+          reason: cancelled
+            ? "The integration assignment was cancelled."
+            : "The integration assignment concluded.",
+          releasedAt: now,
+        },
+        updatedAt: now,
+      };
+      assignments = withdrawGroupApprovals({ ...state, assignments }, released, now);
+      groups.set(group.id, released);
+    } else groups.set(group.id, known);
   }
-  return { ...decision, state: { ...state, mergeGroups: [...groups.values()] } };
+  const state = { ...decision.state, assignments, mergeGroups: [...groups.values()] };
+  const holds = state.mergeGroups.flatMap((group): FactoryEffectIntent[] => {
+    const before = previous.mergeGroups.find((entry) => entry.id === group.id);
+    return holdKey(state, group) === holdKey(previous, before)
+      ? []
+      : [{ type: "merge.group.hold", groupId: group.id }];
+  });
+  return { ...decision, state, effects: [...decision.effects, ...holds] };
 }
 
 export function decideFactoryMerge(input: {
@@ -403,6 +502,58 @@ export function decideFactoryMerge(input: {
   if (!("groupId" in command)) return fail("Select the merge group.", "invalid-state");
   const group = findGroup(state, command.groupId);
   if (!group) return fail("The merge group is unavailable.", "invalid-state");
+  const notifyGroup = (eventId: string, text: string): FactoryEffectIntent => ({
+    type: "merge.group.notify",
+    groupId: group.id,
+    eventId,
+    recipientAssignmentIds: [group.integrationAssignmentId, ...group.memberAssignmentIds],
+    text,
+  });
+  const replaceGroup = (next: FactoryMergeGroup) => [
+    ...state.mergeGroups.filter((entry) => entry.id !== group.id),
+    next,
+  ];
+  if (command.type === "merge.group.release" || command.type === "merge.group.restore") {
+    if (actor.kind !== "human")
+      return fail("Only the human can release a merge group or group its PRs again.");
+    if (command.type === "merge.group.release") {
+      const block = factoryMergeGroupReleaseBlock(state, group);
+      if (block) return fail(block, "invalid-state");
+      const released = {
+        ...group,
+        released: { reason: command.reason, releasedAt: now },
+        updatedAt: now,
+      };
+      return accept(
+        {
+          mergeGroups: replaceGroup(released),
+          assignments: withdrawGroupApprovals(state, released, now),
+        },
+        { mergeGroupId: group.id },
+        [
+          notifyGroup(
+            `released:${command.commandId}`,
+            `The human released this merge group: ${command.reason}\nMember PRs no longer wait for the shared merge. Each merges through its own delivery approval; the combined approval was withdrawn.`,
+          ),
+        ],
+      );
+    }
+    const block = factoryMergeGroupRestoreBlock(state, group);
+    if (block) return fail(block, "invalid-state");
+    const { released: _released, ...restored } = group;
+    return accept(
+      { mergeGroups: replaceGroup({ ...restored, currentReviewId: null, updatedAt: now }) },
+      { mergeGroupId: group.id },
+      [
+        notifyGroup(
+          `restored:${command.commandId}`,
+          "The human grouped these PRs again. Every member waits for a fresh combined review and the shared merge action.",
+        ),
+      ],
+    );
+  }
+  if (group.released)
+    return fail(`This merge group was released. ${group.released.reason}`, "invalid-state");
   if (currentFactoryMergeOperation(state, group.integrationId))
     return fail(
       "The shared merge operation owns this exact review. Stop it safely before replacing or changing the review.",
@@ -414,13 +565,6 @@ export function decideFactoryMerge(input: {
   const canReview =
     human ||
     (actor.kind === "thread" && active(assignment) && actor.threadId === assignment.threadId);
-  const notice = (eventId: string, text: string): FactoryEffectIntent => ({
-    type: "merge.group.notify",
-    groupId: group.id,
-    eventId,
-    recipientAssignmentIds: [group.integrationAssignmentId, ...group.memberAssignmentIds],
-    text,
-  });
   switch (command.type) {
     case "merge.group.review": {
       if (!canReview || !active(assignment))
@@ -442,10 +586,7 @@ export function decideFactoryMerge(input: {
       };
       return accept(
         {
-          mergeGroups: [
-            ...state.mergeGroups.filter((entry) => entry.id !== group.id),
-            { ...group, currentReviewId: review.id, updatedAt: now },
-          ],
+          mergeGroups: replaceGroup({ ...group, currentReviewId: review.id, updatedAt: now }),
           mergeGroupReviews: [...state.mergeGroupReviews, review],
         },
         { mergeGroupId: group.id, mergeGroupReviewId: review.id },
@@ -476,7 +617,12 @@ export function decideFactoryMerge(input: {
             ),
           },
           { mergeGroupId: group.id, mergeGroupReviewId: review.id },
-          [notice(`failed:${review.id}`, `Combined review could not be sealed. ${command.reason}`)],
+          [
+            notifyGroup(
+              `failed:${review.id}`,
+              `Combined review could not be sealed. ${command.reason}`,
+            ),
+          ],
         );
       const evidence = factoryMergeGroupEvidence(state, group.id);
       const priorDecision = evidence.ready
@@ -521,7 +667,7 @@ export function decideFactoryMerge(input: {
         },
         { mergeGroupId: group.id, mergeGroupReviewId: review.id },
         [
-          notice(
+          notifyGroup(
             `sealed:${review.id}`,
             "The combined feature review is ready in the integration thread. Owning implementation leads handle corrections. Every member remains held for the shared merge action.",
           ),
@@ -592,7 +738,7 @@ export function decideFactoryMerge(input: {
         },
         { mergeGroupId: group.id, mergeGroupReviewId: review.id },
         [
-          notice(
+          notifyGroup(
             `${approved ? "approved" : "rejected"}:${command.commandId}`,
             approved
               ? "The human approved this exact combined feature and its displayed member revisions. All member PRs still wait for the shared merge action."

@@ -67,6 +67,8 @@ const fixture = (): FactoryMergeGroupRead => ({
     canReconcile: false,
     canRetry: false,
     canStop: false,
+    canRelease: false,
+    canRestore: false,
     deploymentGate: { supported: true, detail: "Deployment gate: GitHub status" },
   },
 });
@@ -180,6 +182,8 @@ describe("shared merge operation controls", () => {
       retry: null,
       reconcile: "operation",
       stop: "operation",
+      release: null,
+      restore: null,
     });
     expect(factoryMergeOperationActions(current, { operate: true, write: true }).retry).toBe(
       "operation",
@@ -189,13 +193,22 @@ describe("shared merge operation controls", () => {
       retry: null,
       reconcile: null,
       stop: null,
+      release: null,
+      restore: null,
     });
     expect(
       factoryMergeOperationActions(
         { ...current, operation: { ...current.operation, groupId: "other-group" } },
         { operate: true, write: true },
       ),
-    ).toEqual({ start: null, retry: null, reconcile: null, stop: null });
+    ).toEqual({
+      start: null,
+      retry: null,
+      reconcile: null,
+      stop: null,
+      release: null,
+      restore: null,
+    });
   });
   it("holds review changes during shared execution and permits a stopped untouched operation to be reviewed again", () => {
     const read = { ...fixture(), operation: operation() };

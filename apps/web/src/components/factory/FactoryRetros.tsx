@@ -20,6 +20,7 @@ function Followup({
 }) {
   const command = useFactoryCommand(environment);
   const [existingNumber, setExistingNumber] = useState("");
+  const [waiverReason, setWaiverReason] = useState("");
   const publication = followup.publication;
   const tracker =
     "trackerId" in publication
@@ -83,6 +84,11 @@ function Followup({
         </a>
       ) : null}
       {reason ? <p className="text-sm text-muted-foreground">{reason}</p> : null}
+      {followup.waiver ? (
+        <p className="text-sm text-muted-foreground">
+          Waived by you: {followup.waiver.reason}. Retry to file it after all.
+        </p>
+      ) : null}
       {publication.status !== "linked" && progress?.status !== "triaged" ? (
         <Button
           size="xs"
@@ -118,6 +124,34 @@ function Followup({
             onClick={linkExisting}
           >
             Verify existing ticket
+          </Button>
+        </details>
+      ) : null}
+      {!followup.waiver && publication.status !== "linked" && progress?.status !== "triaged" ? (
+        <details className="space-y-2 text-sm">
+          <summary>Complete without this ticket</summary>
+          <p className="text-xs text-muted-foreground">
+            The assignment waits for this ticket to reach triage. Waive it to let the assignment
+            complete without it.
+          </p>
+          <Input
+            aria-label="Reason for waiving the ticket"
+            value={waiverReason}
+            onChange={(event) => setWaiverReason(event.target.value)}
+          />
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={command.disabled || !waiverReason.trim()}
+            onClick={() =>
+              void command.submit({
+                type: "followup.waive",
+                followupId: followup.id,
+                reason: waiverReason.trim(),
+              })
+            }
+          >
+            Waive ticket
           </Button>
         </details>
       ) : null}

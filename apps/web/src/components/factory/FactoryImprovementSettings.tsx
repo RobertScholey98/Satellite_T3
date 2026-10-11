@@ -56,7 +56,7 @@ const fields = [
     title: "Escalation reviews per UTC day",
     min: 0,
     max: 24,
-    help: "Each explicit escalation review is one manager turn. Escalations beyond this wait for the next day. Zero holds them.",
+    help: "Each explicit escalation review is one manager turn. Escalations beyond this wait for the next day or for you to review them now. Zero means every escalation waits for you.",
   },
 ] as const;
 

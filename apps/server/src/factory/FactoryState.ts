@@ -28,6 +28,7 @@ import {
   type FactoryDiscoveryQualification,
   type FactoryEffectIntent,
   FactoryError,
+  factorySystemManager,
   type FactoryManager,
   type MessageId,
   type FactoryModelPolicy,
@@ -382,6 +383,7 @@ function decideCore(
       input.actor.kind !== "human" ||
       !recommendation ||
       recommendation.applied !== null ||
+      recommendation.declined !== undefined ||
       !input.state.improvementDecisions.some(
         (entry) =>
           entry.proposalId === recommendation.proposalId &&
@@ -427,7 +429,11 @@ function decideCore(
     }));
   }
   const improvementDecision = decideFactoryImprovements(input);
-  if (improvementDecision !== undefined) return improvementDecision;
+  // Closing a system investigation withdraws the cross-project requests it raised.
+  if (improvementDecision !== undefined)
+    return Result.map(improvementDecision, (value) =>
+      reconcileFactoryRequestCancellation(value, input.now),
+    );
   if (input.command.type === "manager.resume" || input.command.type === "control.retry") {
     const retryControlId =
       input.command.type === "control.retry" ? input.command.controlId : undefined;
@@ -512,9 +518,10 @@ function decideCore(
   const pauseRevokedSystemManager = (
     decision: FactoryDecision,
   ): Result.Result<FactoryDecision, FactoryError> => {
-    const manager = decision.state.managers.find((entry) => entry.role === "system");
+    const manager = factorySystemManager(decision.state.managers);
     if (
       !manager ||
+      manager.status === "retired" ||
       isFactoryModelApproved(
         resolveFactoryModelPolicy(
           decision.state.modelDefaults,
@@ -1380,6 +1387,7 @@ export function decide(
       reconcileFactoryMergeGroups(
         reconcileFactoryIntegrations(decision, input.now, input.state),
         input.now,
+        input.state,
       ),
     );
   });

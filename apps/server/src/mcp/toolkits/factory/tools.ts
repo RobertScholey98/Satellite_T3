@@ -97,13 +97,22 @@ export const FactoryToolkit = Toolkit.make(
   }),
   Tool.make("factory_merge_operation_action", {
     description:
-      "As the exact integration lead, reconcile actual host outcomes, retry the same reviewed merge operation when its current gates and remaining attempt allowance permit, or escalate it to the human. Reconcile is read-only at the host and never grants another submission. Retry preserves confirmed members and attempt counts. Escalate holds further submissions and records your reason and recommendation for the human; use it when recovery is unsafe or exhausted, or when a merged member should be reverted. Reverting needs the human's decision and a separately authorized task. While the merge is frozen these merge tools and factory_snapshot are your only factory tools. Unknown outcomes, changed revisions, and revoked authority cannot be bypassed. Read factory_merge_group_get for the operation and recommendation first.",
+      "As the exact integration lead, reconcile actual host outcomes, retry the same reviewed merge operation when its current gates and remaining attempt allowance permit, or escalate it to the human. Reconcile is read-only at the host and never grants another submission. Retry preserves confirmed members and attempt counts. Escalate holds further submissions and records your reason and recommendation for the human; use it when recovery is unsafe or exhausted, or when a merged member should be reverted. Reverting needs the human's decision and a separately authorized task. While the merge is frozen these merge tools and factory_snapshot are your only factory tools. Unknown outcomes, changed revisions, and revoked authority cannot be bypassed. Read factory_merge_group_get for the operation and recommendation first. Set command.type to merge.operation.reconcile, merge.operation.retry, or merge.operation.escalate with a reason and recommendation.",
     parameters: Schema.Struct({
-      commandId: CommandId,
-      operationId: TrimmedNonEmptyString,
-      action: Schema.Literals(["reconcile", "retry", "escalate"]),
-      reason: Schema.optionalKey(TrimmedNonEmptyString),
-      recommendation: Schema.optionalKey(TrimmedNonEmptyString),
+      command: Schema.Union([
+        Schema.Struct({
+          type: Schema.Literals(["merge.operation.reconcile", "merge.operation.retry"]),
+          commandId: CommandId,
+          operationId: TrimmedNonEmptyString,
+        }),
+        Schema.Struct({
+          type: Schema.Literal("merge.operation.escalate"),
+          commandId: CommandId,
+          operationId: TrimmedNonEmptyString,
+          reason: TrimmedNonEmptyString,
+          recommendation: TrimmedNonEmptyString,
+        }),
+      ]),
     }),
     success: FactoryCommandResult,
     failure,
@@ -136,7 +145,7 @@ export const FactoryToolkit = Toolkit.make(
   }).annotate(Tool.Readonly, true),
   Tool.make("factory_integration_command", {
     description:
-      "Commission cross-project QA from accepted requests; each project manager grants only a subset of its human-qualified capability. The integration lead refreshes inputs, preserving tests, and its team mutates only granted test/fixture files and runs protected verification. Current leads communicate through integration.message.send; production defects route through integration.defect.report. Integration teams cannot publish, merge or declare ordinary no-PR completion. Capability setup remains human-only. Use factory_integration_get for IDs and current evidence; recorded verification never substitutes for fresh final merge checks.",
+      "Commission cross-project QA from accepted requests; each project manager grants within its human-qualified capability; a grant beyond it is recorded as requested for the human to approve or decline, and the owner can withdraw it with integration.grant.revoke. The integration lead refreshes inputs, preserving tests, and its team mutates only granted test/fixture files and runs protected verification. Current leads communicate through integration.message.send; production defects route through integration.defect.report. Integration teams cannot publish, merge or declare ordinary no-PR completion. Capability setup remains human-only. Use factory_integration_get for IDs and current evidence; recorded verification never substitutes for fresh final merge checks.",
     parameters: Schema.Struct({ command: FactoryIntegrationCommand }),
     success: FactoryCommandResult,
     failure,
@@ -226,8 +235,8 @@ export const FactoryToolkit = Toolkit.make(
   }).annotate(Tool.Readonly, true),
   Tool.make("factory_dispatch", {
     description:
-      "Cross-project support uses collaboration.request.create/respond/withdraw. System managers request application work from the application manager using an owned assignment or investigation. Current participating leads coordinate through collaboration.message.send and collaboration.plan.propose/acknowledge; generic peer thread tools stay denied. Escalate scope, compatibility, permission, resource and priority changes via collaboration.decision.raise; only the human decides its exact revision. incident.restrict/release target concrete conflicting assignments within the owning project. " +
-      "Submit a factory command as this authenticated managed thread. Project managers commission scoped assignments against a human request or host-verified scheduling authority. System managers use shared.work.propose for an exact plan against an accepted proposal revision, then shared.work.commission after human authorization; enabled bounded investigations may use experiment.commission. Shared work stays in registered owned repositories, never application projects. Skill work must use writing-for-agents and its references. Leads mutate/verify only their assignment and declare required PRs with assignment.completion.plan. Experiments cannot publish PRs, merge, create tracker tickets or change adoption. After host-confirmed conclusion, the independent retro submits retro.team.submit and its manager submits retro.manager.submit. System managers record available outcomes using improvement.validation.record and can recommend standing model preferences with workflow.models.recommend. Adoption, live trials, settings and standing model application remain human-only. Report evidenced problems with finding.report; escalate shared causes with finding.escalate. followup.request creates project triage tickets without starting implementation.",
+      "Cross-project support uses collaboration.request.create/respond/withdraw; collaboration.request.reconsider lets the requester ask again after a deferral or decline. System managers request application work from the application manager using an owned assignment or investigation. Current participating leads coordinate through collaboration.message.send and collaboration.plan.propose/acknowledge; generic peer thread tools stay denied. A boundary plan, optionally with amendments that replace a request's outcome, acceptance and compatibility in place, needs collaboration.plan.decide approval from every owning manager or the human; any owner or the human can decline it. For cross-project work, escalate scope, compatibility, permission, resource and priority changes via collaboration.decision.raise; only the human decides its exact revision. When the human changes an assignment's scope or priority in one of its threads, send that message to the manager with guidance.escalate (threadId, messageId, summary). incident.restrict/release target concrete conflicting assignments within the owning project. " +
+      "Submit a factory command as this authenticated managed thread. Project managers commission scoped assignments against a human request or host-verified scheduling authority. System managers use shared.work.propose for an exact plan against an accepted proposal revision, then shared.work.commission after human authorization; enabled bounded investigations may use experiment.commission. Shared work stays in registered owned repositories, never application projects. Skill work must use writing-for-agents and its references. Leads mutate/verify only their assignment and declare required PRs with assignment.completion.plan. Experiments cannot publish PRs, merge, create tracker tickets or change adoption. After host-confirmed conclusion, the independent retro submits retro.team.submit and its manager submits retro.manager.submit. System managers record available outcomes using improvement.validation.record and can recommend standing model preferences with workflow.models.recommend. Adoption, live trials, settings and standing model application remain human-only. Report evidenced problems with finding.report; escalate shared causes with finding.escalate. followup.request creates project triage tickets without starting implementation. schedule.track brings a board ticket that is not Ready into the project queue to prepare and recommend; it authorizes nothing.",
     parameters: FactoryDispatchInput,
     success: FactoryCommandResult,
     failure,

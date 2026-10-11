@@ -70,6 +70,8 @@ export const FactoryIntegrationGrant = Schema.Struct({
   paths: FactoryIntegrationPaths,
   lifecycle: Schema.Union([
     Schema.Struct({ phase: Schema.Literal("active") }),
+    // An owner asked for more than its qualified capability; only the human can grant it.
+    Schema.Struct({ phase: Schema.Literal("requested") }),
     Schema.Struct({
       phase: Schema.Literal("revoked"),
       reason: Text,
@@ -288,6 +290,12 @@ export const FactoryIntegrationCommand = Schema.Union([
     projectId: ProjectId,
     capabilityId: Id,
     paths: FactoryIntegrationPaths,
+  }),
+  // Human approval of a requested grant that exceeds the owner's qualified capability.
+  Schema.Struct({
+    type: Schema.Literal("integration.grant.approve"),
+    ...Fields,
+    grantId: Id,
   }),
   Schema.Struct({
     type: Schema.Literal("integration.grant.revoke"),

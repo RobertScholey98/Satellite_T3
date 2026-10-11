@@ -2,6 +2,7 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/model
 import type {
   FactoryAssignment,
   FactoryControl,
+  FactoryGuidance,
   FactorySnapshot,
   ProjectId,
   ScopedThreadRef,
@@ -70,6 +71,17 @@ export function factoryAssignmentCancellation(
   return snapshot?.controls?.find(
     (control): control is Extract<FactoryControl, { kind: "cancellation" }> =>
       control.kind === "cancellation" && control.assignmentId === assignment.id,
+  );
+}
+
+/** The human's latest message in this thread, which they can send on to the manager. */
+export function factoryLatestThreadGuidance(snapshot: FactorySnapshot | null, threadId: ThreadId) {
+  return snapshot?.guidance.reduce<FactoryGuidance | undefined>(
+    (latest, entry) =>
+      entry.threadId === threadId && (!latest || entry.observedAt > latest.observedAt)
+        ? entry
+        : latest,
+    undefined,
   );
 }
 

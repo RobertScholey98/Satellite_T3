@@ -1,12 +1,13 @@
 import {
   FACTORY_MERGE_GROUP_LABEL,
-  FACTORY_MERGE_GROUP_STATUS_CONTEXT,
   FactoryError,
+  factoryMergeDeploymentGate,
   type FactoryAssignment,
   type FactoryAssignmentId,
   type FactoryDecisionCommand,
   type FactoryEffectIntent,
   type FactoryMergeFrozenProof,
+  type FactoryMergeGroup,
   type FactoryMergeMemberReceipt,
   type FactoryMergeOperation,
   type FactoryMergeOperationMember,
@@ -18,7 +19,11 @@ import { sha256 } from "@noble/hashes/sha2";
 import * as Hex from "effect/encoding/Hex";
 import * as Result from "effect/Result";
 import { factoryMergeGroupEvidence, factoryMergeGroupReadiness } from "./FactoryMerge.ts";
-import { canonicalFactoryPullRequest } from "./FactoryMergeOwnership.ts";
+import {
+  canonicalFactoryPullRequest,
+  factoryMergeGroupForAssignment,
+  factoryMergeGroupHolds,
+} from "./FactoryMergeOwnership.ts";
 import { factoryDeliveryReadiness } from "./FactoryDelivery.ts";
 import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { initialFactoryCompletion } from "./FactoryRetros.ts";
@@ -119,27 +124,72 @@ export function factoryMergeSignal(operation: FactoryMergeOperation) {
 }
 
 /**
- * Whether merged members publish Group deployment readiness. Managed publication only targets
- * GitHub, so a member is supported once its current revision has a published pull request.
+ * The `satellite/merge-group` status each unmerged member's PR head should carry. `pending` holds
+ * the PR while its group waits; `success` lets the host merge it once the shared merge runs or the
+ * group stops holding it. Required in branch protection, this blocks merges outside Satellite.
  */
-export function factoryMergeDeploymentGate(state: FactorySnapshot, groupId: string) {
+export function factoryMergeGroupHeads(state: FactorySnapshot, groupId: string) {
   const group = state.mergeGroups.find((entry) => entry.id === groupId);
-  const missing = (group?.memberAssignmentIds ?? []).flatMap((id) => {
+  if (!group) return [];
+  const operation = latestFactoryMergeOperation(state, groupId);
+  const holds = factoryMergeGroupHolds(group);
+  const merging =
+    operation?.lifecycle.phase === "running" || operation?.lifecycle.phase === "completed";
+  const status = holds && !merging ? ("pending" as const) : ("success" as const);
+  const description = !holds
+    ? "Released from its Satellite merge group."
+    : merging
+      ? "Satellite is merging this PR with its group."
+      : "Held for its Satellite merge group's shared merge.";
+  return group.memberAssignmentIds.flatMap((id) => {
     const assignment = state.assignments.find((entry) => entry.id === id);
     const revision = assignment?.delivery?.revisions.find(
       (entry) => entry.id === assignment.delivery?.currentRevisionId,
     );
-    return revision?.publication?.ref?.host ? [] : [assignment?.projectId ?? id];
+    const publication = revision?.publication;
+    if (
+      !publication?.ref ||
+      revision?.merge?.status === "merged" ||
+      operation?.members.some(
+        (entry) => entry.reviewed.assignmentId === id && entry.outcome.phase === "confirmed",
+      )
+    )
+      return [];
+    return [
+      {
+        ref: {
+          ...publication.ref,
+          host: (publication.ref.host ?? publication.host).toLowerCase(),
+          repository: publication.ref.repository.toLowerCase(),
+        },
+        sha: publication.headSha,
+        state: status,
+        description,
+      },
+    ];
   });
-  return missing.length
-    ? {
-        supported: false,
-        detail: `Deployment gate unsupported for ${missing.join(", ")}: only GitHub pull requests publish the ${FACTORY_MERGE_GROUP_STATUS_CONTEXT} status.`,
-      }
-    : {
-        supported: true,
-        detail: `Deployment gate: GitHub status ${FACTORY_MERGE_GROUP_STATUS_CONTEXT} on each merge commit.`,
-      };
+}
+
+/** Why the human cannot release this group now, or null when its members can leave it. */
+export function factoryMergeGroupReleaseBlock(state: FactorySnapshot, group: FactoryMergeGroup) {
+  if (!factoryMergeGroupHolds(group)) return "This merge group is already released.";
+  const operation = latestFactoryMergeOperation(state, group.id);
+  if (operation?.members.some((entry) => entry.outcome.phase === "unknown"))
+    return "Reconcile the uncertain shared merge outcome before releasing the group.";
+  if (operation && !["stopped", "completed"].includes(operation.lifecycle.phase))
+    return "Stop the shared merge before releasing the group.";
+  return null;
+}
+
+/** Why a released group cannot hold its members again, or null when it can. */
+export function factoryMergeGroupRestoreBlock(state: FactorySnapshot, group: FactoryMergeGroup) {
+  if (factoryMergeGroupHolds(group)) return "This merge group already holds its members.";
+  const lead = state.assignments.find((entry) => entry.id === group.integrationAssignmentId);
+  if (!active(lead))
+    return "The integration assignment ended. Commission a new integration to group these PRs again.";
+  if (group.memberAssignmentIds.some((id) => factoryMergeGroupForAssignment(state, id)))
+    return "A member already belongs to another merge group.";
+  return null;
 }
 
 function attemptedReviewVector(state: FactorySnapshot, groupId: string, reviewId: string) {
@@ -187,6 +237,7 @@ export function factoryMergeOperationWriteReadiness(
     return { allowed: false, reasons: ["The shared merge operation is unavailable."] };
   const frozen = factoryMergeFrozenProof(operation);
   const group = state.mergeGroups.find((entry) => entry.id === operation.groupId);
+  if (group?.released) reasons.push(`This merge group was released. ${group.released.reason}`);
   const integration = state.integrations.find((entry) => entry.id === operation.integrationId);
   const lead = state.assignments.find((entry) => entry.id === operation.integrationAssignmentId);
   const review = state.mergeGroupReviews.find((entry) => entry.id === operation.reviewId);
@@ -446,7 +497,9 @@ export function factoryMergeOperationReadiness(
         .allowed,
     canStop:
       operation !== undefined && !["stopped", "completed"].includes(operation.lifecycle.phase),
-    deploymentGate: factoryMergeDeploymentGate(state, groupId),
+    canRelease: group !== undefined && factoryMergeGroupReleaseBlock(state, group) === null,
+    canRestore: group !== undefined && factoryMergeGroupRestoreBlock(state, group) === null,
+    deploymentGate: factoryMergeDeploymentGate(group?.memberAssignmentIds ?? [], state.assignments),
   };
 }
 
@@ -871,6 +924,8 @@ export function decideFactoryMergeOperation(input: {
             },
             delivery: {
               ...entry.delivery,
+              // Merged work no longer waits on direction, as for an individual merge.
+              directionHeld: false,
               revisions: entry.delivery.revisions.map((revision) =>
                 revision.id === member.reviewed.revisionId
                   ? {
@@ -943,20 +998,14 @@ export function decideFactoryMergeOperation(input: {
                 ? [effect("merge.operation.resume")]
                 : [],
             );
-          if (
-            observed.classification === "transient" &&
-            member.attempts < 3 &&
-            frozen &&
-            operation.lifecycle.phase === "running"
-          )
-            return save({ ...operation, members, lifecycle: { phase: "running", frozen } }, [
-              effect("merge.operation.advance"),
-            ]);
+          // Nothing retries on its own: a rate limit would otherwise spend every attempt at once.
           return hold(
             observed.reason,
             member.attempts >= 3
               ? "Three conditional submissions were attempted. Review the actual outcomes and authorize any further recovery as a separate task."
-              : "Resolve the rejected merge with its owning lead before deciding whether the unchanged vector is still safe.",
+              : observed.classification === "transient"
+                ? "The host refused this merge without merging it, for example under a rate limit. Retry the remaining merges once it clears; each retry uses one of three submissions."
+                : "Resolve the rejected merge with its owning lead before deciding whether the unchanged vector is still safe.",
             member.attempts >= 3 ? "none" : "same-vector",
             members,
           );
@@ -969,13 +1018,33 @@ export function decideFactoryMergeOperation(input: {
               ? { ...operation, lifecycle: { ...operation.lifecycle, retry: "same-vector" } }
               : operation,
           );
+        // The exact PR is open with no auto-merge or queue instruction left to complete it, so the
+        // submission did not merge. A retry stays conditional on the reviewed head.
+        const members = operation.members.map((entry) =>
+          entry === member ? { ...entry, outcome: { phase: "pending" as const } } : entry,
+        );
+        if (operation.lifecycle.phase === "stopped")
+          return save(
+            { ...operation, members },
+            members.every((entry) => entry.outcome.phase === "pending")
+              ? [effect("merge.operation.resume")]
+              : [],
+          );
+        return hold(
+          "The host shows this member's PR still open with no pending merge instruction, so the submitted merge did not complete.",
+          member.attempts >= 3
+            ? "Three conditional submissions were attempted. Review the actual outcomes and authorize any further recovery as a separate task."
+            : "Retry the remaining merges when ready. Each retry is conditional on the reviewed head and uses one of three submissions.",
+          member.attempts >= 3 ? "none" : "same-vector",
+          members,
+        );
       }
       if (operation.lifecycle.phase === "stopped") return save(operation);
       return hold(
-        observed.phase === "unresolved"
-          ? observed.reason
-          : "The host has not confirmed whether the submitted merge completed.",
-        "Reconcile actual host outcomes before deciding recovery. An open PR alone does not prove the previous request cannot still complete.",
+        observed.reason,
+        member.outcome.phase === "pending"
+          ? "Nothing was submitted for this member. Resolve its PR with the owning lead, then reconcile."
+          : "Reconcile actual host outcomes before deciding recovery. The host has not shown that the submitted merge can no longer complete.",
         "reconcile",
       );
     }

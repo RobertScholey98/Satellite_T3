@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  FactoryAssignmentId,
   FactoryBoundaryId,
   FactorySnapshot,
   FactorySourceId,
@@ -268,5 +269,113 @@ it.effect(
           1,
         );
       }).pipe(Effect.provide(Layer.fresh(Store.layer)));
+    }).pipe(Effect.scoped, Effect.provide(base)),
+);
+
+it.effect(
+  "stops dedicated support from a fresh worker after restart and spares shared support",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* Store.FactoryStore;
+      const sql = yield* SqlClient.SqlClient;
+      const initial = deliveryFixture();
+      const manager = initial.managers[0]!;
+      assert.equal(manager.role, "project");
+      const origin = initial.assignments[0]!;
+      const dedicated = FactoryAssignmentId.make("api-dedicated");
+      const shared = FactoryAssignmentId.make("api-shared");
+      const support = (assignmentId: FactoryAssignmentId) => ({
+        ...origin,
+        id: assignmentId,
+        managerId: apiManager,
+        projectId: apiProject,
+        threadId: ThreadId.make(`${assignmentId}-lead`),
+      });
+      const accepted = (id: string, assignmentId: FactoryAssignmentId, isDedicated: boolean) => ({
+        id,
+        origin: { kind: "assignment" as const, assignmentId: origin.id },
+        originManagerId: deliveryIds.manager,
+        originThreadId: deliveryIds.lead,
+        originalLeadThreadId: deliveryIds.lead,
+        receiverManagerId: apiManager,
+        outcome: `Outcome ${id}`,
+        acceptanceConditions: "Usable by the frontend",
+        compatibility: "Additive",
+        generation: 1,
+        lifecycle: {
+          phase: "accepted" as const,
+          support: { assignmentId, dedicated: isDedicated },
+          notifiedConclusionId: null,
+        },
+        createdAt: deliveryNow,
+        updatedAt: deliveryNow,
+      });
+      const seed: FactorySnapshot = {
+        ...initial,
+        managers: [
+          ...initial.managers,
+          {
+            ...manager,
+            role: "project",
+            id: apiManager,
+            threadId: apiManager,
+            projectId: apiProject,
+          },
+        ],
+        assignments: [...initial.assignments, support(dedicated), support(shared)],
+        crossProjectRequests: [
+          accepted("request-dedicated", dedicated, true),
+          accepted("request-shared", shared, false),
+        ],
+      };
+      yield* sql`INSERT INTO factory_state (id,revision,payload_json) VALUES(1,${seed.revision},${encode(seed)})`;
+      // The cancellation is durable before any worker runs, as if the process stopped here.
+      yield* store.commit({
+        actor: human,
+        command: {
+          type: "assignment.cancel",
+          commandId: CommandId.make("cancel-origin"),
+          assignmentId: origin.id,
+        },
+        now: deliveryNow,
+      });
+      assert.isTrue(
+        (yield* store.pending).some(
+          (entry) =>
+            entry.intent.type === "control.stop" &&
+            entry.intent.controlId === `cancellation:${dedicated}`,
+        ),
+      );
+      const stopped: FactoryAssignmentId[] = [];
+      const external = Layer.mergeAll(
+        Layer.mock(Execution.FactoryExecution)({
+          assertSelectionFor: () => Effect.void,
+        }),
+        Layer.mock(Source.FactorySource)({}),
+        Layer.mock(Boundaries.FactoryBoundaryExecution)({
+          stop: (assignmentId) => Effect.sync(() => void stopped.push(assignmentId)),
+          setIncidentHold: () => Effect.void,
+        }),
+        Layer.mock(Handover.FactoryHandover)({ stopTeam: () => Effect.void }),
+        Layer.mock(Preview.FactoryPreviewService)({ reconcile: Effect.void }),
+      );
+      const restarted = Service.layer.pipe(
+        Layer.provideMerge(Collaboration.layer.pipe(Layer.provide(Access.layer))),
+        Layer.provide(external),
+        Layer.provideMerge(Layer.fresh(Store.layer)),
+      );
+      yield* Effect.gen(function* () {
+        const factory = yield* Service.FactoryService;
+        yield* factory.drain;
+        const state = yield* (yield* Store.FactoryStore).snapshot;
+        assert.sameMembers(stopped, [origin.id, dedicated]);
+        assert.deepEqual(
+          state.crossProjectRequests.map((entry) => entry.lifecycle.phase),
+          ["withdrawn", "withdrawn"],
+        );
+        const control = state.controls.find((entry) => entry.id === `cancellation:${dedicated}`);
+        assert.equal(control?.kind === "cancellation" ? control.stop.status : null, "confirmed");
+        assert.isUndefined(state.assignments.find((entry) => entry.id === shared)?.outcome);
+      }).pipe(Effect.provide(restarted));
     }).pipe(Effect.scoped, Effect.provide(base)),
 );

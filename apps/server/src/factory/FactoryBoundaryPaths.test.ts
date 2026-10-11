@@ -65,6 +65,20 @@ describe("managed assignment paths", () => {
     );
     expect(factoryValidConfiguration({ ...skills, verification: "gates" })).toBe(false);
   });
+  it("treats skill references and new skill directories in a project boundary as skill edits", () => {
+    const project: FactoryBoundaryConfiguration = {
+      protectedPaths: ["skills/review/SKILL.md", "tests/required.cjs"],
+      writablePaths: ["skills/review/references/checklist.md", "src/value.cjs"],
+      creatableDirectories: ["skills", "skills/review/references", "src"],
+      gates: configuration.gates,
+    };
+    const changes = (sourcePaths: string[], creatableDirectories: string[] = []) =>
+      factoryGrantChangesSkills({ ...grant, sourcePaths, creatableDirectories }, project);
+    expect(changes(["skills/review/references/checklist.md"])).toBe(true);
+    expect(changes([], ["skills/review/references"])).toBe(true);
+    expect(changes([], ["skills"])).toBe(true);
+    expect(changes(["src/value.cjs"], ["src"])).toBe(false);
+  });
   it("permits source creation without granting missing nested controls or path escapes", () => {
     expect(factoryCanWrite("src/new/component.ts", grant, configuration)).toBe(true);
     for (const file of [

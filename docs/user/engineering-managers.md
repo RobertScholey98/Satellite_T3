@@ -47,13 +47,19 @@ an ordinary thread you can open and message at any time.
 To let the manager pick up tickets itself, connect a project board in **Delivery
 settings → Project work scheduling** and set a concurrency limit. Only tickets
 in the board's Ready column are eligible; agent-filed tickets wait in triage
-until you move them.
+until you move them. To have the manager prepare a ticket that isn't Ready, enter
+its number under **Bring in a board ticket** in the project work queue, or ask
+the manager. It prepares the scope and recommends whether the ticket is ready,
+but the ticket starts only once it is Ready or you assign it.
 
 ## Stay in control
 
 - **Controls** beside the manager pause the manager, or the manager and all its
   teams. Pausing preserves edited work, and **Resume** releases only that pause.
   If stopping a team fails, retry the stop or resume.
+- Messages you send to a managed thread are guidance for its lead. If a message
+  changes scope or priority, use **Send to manager** in the thread's controls so
+  the manager decides too.
 - **Take over thread** lets you work directly with any managed thread. **Hand
   back thread** returns it to its lead.
 - **Cancel assignment** stops a team. You'll be asked for a reason for its
@@ -82,7 +88,9 @@ autonomy. Both must allow the work.
 
 UI changes pause for your approval of the proposed flow, and substantial UI work
 gets an isolated preview with screenshots. Configure the preview entry point in
-**Delivery settings** first.
+**Delivery settings** first. Previews run Node entry points only. Without an
+approved preview, UI work comes to you marked "UX verification unavailable", so
+check the change yourself before approving.
 
 ## Work across projects
 
@@ -91,14 +99,28 @@ work spans projects, commission an integration team to test the combined change.
 Member PRs then form a merge group: they wait for one combined review and merge
 together. If a shared merge only partly succeeds, the integration lead
 reconciles and retries within its limits, and escalates to you when it cannot.
+A refused or rate-limited merge waits for a deliberate retry; each member gets
+three submissions.
+
+To let members merge on their own, stop the shared merge, then choose
+**Release merge group** in the combined review. Each PR then needs its own
+approval. **Group these PRs again** undoes a release while the integration is
+active. Cancelling or concluding the integration releases its group.
+
+A change to a request's agreed outcome, acceptance or compatibility is a plan
+that both managers, or you, must approve before it replaces the recorded
+commitments; the supporting work keeps running. When a manager asks to grant an
+integration team more than its project's qualified test capability, the request
+waits in the integration team's panel for you to approve or decline.
 
 ### Hold deployment until the whole group merges
 
-Satellite labels each grouped PR `satellite-merge-group` and sets a
-`satellite/merge-group` status on its merge commit. The status stays `pending`
-while any member is unmerged, becomes `success` once every merge is confirmed,
-and becomes `failure` if you stop the shared merge. Only GitHub projects get
-this signal; the merge group review says when a project is unsupported.
+Satellite labels each grouped PR `satellite-merge-group` as soon as the group
+knows it, and sets a `satellite/merge-group` status on its merge commit. The
+status stays `pending` while any member is unmerged, becomes `success` once
+every merge is confirmed, and becomes `failure` if you stop the shared merge.
+Only GitHub pull requests get this signal. The integration thread shows
+**Deployment gate unavailable** until every member has published one.
 
 To make a GitHub Actions deployment wait, copy
 [`merge-group-gate.mjs`](../../scripts/factory/merge-group-gate.mjs) to
@@ -121,22 +143,44 @@ jobs:
     # your existing deploy steps
 ```
 
-Ungrouped commits pass straight through. If the gate times out, the job fails
-with a message; re-run it once the group has merged. To see why a group is
-waiting, check the `satellite/merge-group` status on the commit in GitHub and
-the shared merge in the merge group review.
+Ungrouped commits pass straight through, so removing the label from a PR
+disarms the gate for it. Releasing a group removes the label from its unmerged
+PRs. If the gate times out, the job fails with a message; re-run it once the
+group has merged. To see why a group is waiting, check the
+`satellite/merge-group` status on the commit in GitHub and the shared merge in
+the merge group review.
+
+### Block merges outside Satellite
+
+While a group waits, each member PR's head commit carries a `pending`
+`satellite/merge-group` status, which turns `success` while Satellite runs the
+shared merge or after the group is released. To make GitHub refuse merges from
+github.com in the meantime, add `satellite/merge-group` as a required status
+check in the branch's protection rules. Required checks apply to every PR into
+that branch, including PRs Satellite never grouped, so only require it where
+that fits your workflow. Satellite never changes branch protection itself.
 
 ## Retrospectives and shared improvements
 
 When work concludes, the team and then its manager write retrospectives. Read
 them in **Assignment details → Completion and retrospective**. Follow-up tickets
-go to the triage destination you configure in **Delivery settings**.
+go to the triage destination you configure in **Delivery settings**. The
+assignment completes once each ticket the manager files reaches triage. If a
+ticket can't be filed, waive it from the follow-up with a reason; **Retry ticket
+publication** files it after all.
 
 A **System manager** reviews retrospective findings across projects and
 proposes changes to your shared skills. Escalations reach it promptly; without
-one, they come to you. You decide on every proposal and on adopting each
-workflow release. **Workflow delivery** lets you adopt a release as the default
-or for one manager, and reset that choice later.
+one, they come to you. Escalations beyond the daily allowance in **Review
+settings** wait for the next day, or until you choose **Review escalations
+now**. You decide on every
+proposal and on adopting each workflow release. A deferred proposal stays open
+until you record another decision. **Workflow delivery** lets you adopt a release as the default
+or for one manager, and reset that choice later. To replace the system manager,
+use **Retire system manager…** in **Shared improvements → Manager controls**
+and give a reason, then
+**Create system manager** in the sidebar; the new one takes over your shared
+repositories, pending evidence and unstarted work plans.
 
 ## Troubleshooting
 

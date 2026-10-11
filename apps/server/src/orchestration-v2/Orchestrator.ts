@@ -852,6 +852,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const factoryExecution = yield* Effect.serviceOption(FactoryExecution);
   const factoryControls = yield* Effect.serviceOption(FactoryControlAccess);
+  // Engineering controls decide whether a message's sender may direct its thread. Without the
+  // factory every message is admitted.
+  const assertFactoryDirection = (
+    threadId: ThreadId,
+    message: Parameters<typeof factoryDirectionSender>[0],
+    pendingParentThreadId?: ThreadId,
+  ) =>
+    Option.isNone(factoryControls)
+      ? Effect.void
+      : factoryControls.value.assertDirection({
+          threadId,
+          senderThreadId: factoryDirectionSender(message),
+          ...(pendingParentThreadId === undefined ? {} : { pendingParentThreadId }),
+        });
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
 
@@ -1207,12 +1221,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       for (const candidate of queuedRunsInDeliveryOrder(projection)) {
         const message = projection.messages.find((entry) => entry.id === candidate.userMessageId);
         if (message === undefined) return candidate;
-        const admitted = yield* factoryControls.value
-          .assertDirection({
-            threadId,
-            senderThreadId: factoryDirectionSender(message),
-          })
-          .pipe(Effect.result);
+        const admitted = yield* assertFactoryDirection(threadId, message).pipe(Effect.result);
         if (Result.isSuccess(admitted)) return candidate;
         if (admitted.failure.code !== "permission-denied")
           return yield* new OrchestratorDispatchError({
@@ -1436,22 +1445,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const commandId = CommandId.make(`command:system:start-queued:${queuedRun.id}`);
-      if (Option.isSome(factoryControls)) {
-        const admitted = yield* factoryControls.value
-          .assertDirection({
-            threadId,
-            senderThreadId: factoryDirectionSender(queuedMessage),
-          })
-          .pipe(Effect.result);
-        if (Result.isFailure(admitted)) {
-          if (admitted.failure.code !== "permission-denied")
-            return yield* new OrchestratorDispatchError({
-              commandId,
-              commandType: "message.dispatch",
-              cause: admitted.failure,
-            });
-          return;
-        }
+      const admitted = yield* assertFactoryDirection(threadId, queuedMessage).pipe(Effect.result);
+      if (Result.isFailure(admitted)) {
+        if (admitted.failure.code !== "permission-denied")
+          return yield* new OrchestratorDispatchError({
+            commandId,
+            commandType: "message.dispatch",
+            cause: admitted.failure,
+          });
+        return;
       }
       const executionBoundaryId = Option.isSome(factoryExecution)
         ? (yield* factoryExecution.value.runtimePolicyFor(threadId).pipe(
@@ -4643,14 +4645,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     delegatedFrom?: ThreadId,
   ) =>
     Effect.gen(function* () {
-      if (Option.isSome(factoryControls))
-        yield* factoryControls.value
-          .assertDirection({
-            threadId: command.threadId,
-            senderThreadId: factoryDirectionSender(command),
-            ...(delegatedFrom === undefined ? {} : { pendingParentThreadId: delegatedFrom }),
-          })
-          .pipe(mapDispatchError(command));
+      yield* assertFactoryDirection(command.threadId, command, delegatedFrom).pipe(
+        mapDispatchError(command),
+      );
       let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       if (command.manualContinuationOfRunId !== undefined) {
         const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
@@ -7623,13 +7620,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
 
-      if (Option.isSome(factoryControls))
-        yield* factoryControls.value
-          .assertDirection({
-            threadId: command.threadId,
-            senderThreadId: factoryDirectionSender(queuedMessage),
-          })
-          .pipe(mapDispatchError(command));
+      yield* assertFactoryDirection(command.threadId, queuedMessage).pipe(
+        mapDispatchError(command),
+      );
 
       const now = yield* DateTime.now;
       const emitEvent = emit(events, command);

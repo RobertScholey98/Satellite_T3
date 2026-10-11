@@ -90,6 +90,26 @@ const candidate = (number: number): FactoryScheduleCandidate => {
     updatedAt: deliveryNow,
   };
 };
+const backlog = {
+  issue: {
+    hostKind: "github" as const,
+    host: "github.com",
+    repository: "owner/repo",
+    id: "I9",
+    number: 9,
+    url: "https://github.com/owner/repo/issues/9",
+  },
+  labels: [],
+  observation: {
+    title: "Backlog idea",
+    boardRevision: 1,
+    itemId: "item9",
+    columnId: "backlog",
+    ready: false,
+    detailDigest: "backlog-detail",
+    observedAt: deliveryNow,
+  },
+};
 const fixture = Effect.fn(function* (count = 2) {
   const store = yield* FactoryStore.FactoryStore;
   const threads = yield* Threads.ThreadManagementService;
@@ -176,7 +196,7 @@ const fixture = Effect.fn(function* (count = 2) {
         Effect.sync(() => {
           qualifyCount++;
         }),
-      observe: () =>
+      observe: ({ includeIssues, includeNumbers }) =>
         Effect.gen(function* () {
           if (observeFailure)
             return yield* new IssueOperationError({
@@ -206,11 +226,18 @@ const fixture = Effect.fn(function* (count = 2) {
               },
             },
             revision: 1,
-            items: seed.scheduleCandidates.map((entry) => ({
-              issue: entry.issue,
-              labels: labels.get(entry.id) ?? [],
-              observation: entry.observation,
-            })),
+            items: [
+              ...seed.scheduleCandidates.map((entry) => ({
+                issue: entry.issue,
+                labels: labels.get(entry.id) ?? [],
+                observation: entry.observation,
+              })),
+              // A backlog ticket the board offers only when asked for by number or identity.
+              ...(includeNumbers?.includes(backlog.issue.number) ||
+              includeIssues?.some((issue) => issue.id === backlog.issue.id)
+                ? [backlog]
+                : []),
+            ],
           };
         }),
       admit: ({ candidate, configuration, workDigest, authorize }) =>
@@ -550,6 +577,34 @@ describe("FactorySchedulingEffects", () => {
     }).pipe(Effect.provide(base), Effect.scoped),
   );
 
+  it.effect("brings a backlog ticket the board does not offer as Ready into the queue", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(1);
+      const track = (issueNumber: number): FactoryCommand => ({
+        type: "schedule.track",
+        commandId: CommandId.make(`track-${issueNumber}`),
+        projectId: deliveryIds.project,
+        issueNumber,
+      });
+      const manager = { kind: "thread", threadId: deliveryIds.manager } as const;
+      const lead = { kind: "thread", threadId: deliveryIds.lead } as const;
+      assert.isTrue(Result.isFailure(yield* f.effects.context(lead, track(9)).pipe(Effect.result)));
+      assert.isTrue(
+        Result.isFailure(yield* f.effects.context(manager, track(404)).pipe(Effect.result)),
+      );
+      const context = yield* f.effects.context(manager, track(9));
+      yield* f.store.commit({ actor: manager, now: deliveryNow, command: track(9), ...context });
+      yield* f.refresh;
+      yield* f.effects.reconcile;
+      const tracked = (yield* f.store.snapshot).scheduleCandidates.find(
+        (entry) => entry.issue.number === 9,
+      );
+      assert.equal(tracked?.observation.ready, false);
+      assert.equal(tracked?.lifecycle.phase, "held");
+      if (tracked?.lifecycle.phase === "held")
+        assert.equal(tracked.lifecycle.origin, "eligibility");
+    }).pipe(Effect.provide(base), Effect.scoped),
+  );
   it.effect("reserves a ticket the manager commissions on a cited direct human request", () =>
     Effect.gen(function* () {
       const f = yield* fixture(1);

@@ -38,18 +38,22 @@ export function factoryMergeGroupForIntegration(
   };
 }
 
+/** A released group no longer holds its members: they merge through their own delivery paths. */
+export const factoryMergeGroupHolds = (group: FactoryMergeGroup) => group.released === undefined;
+
+/** The group currently holding this participant, if any. */
 export function factoryMergeGroupForAssignment(
   state: FactorySnapshot,
   assignmentId: FactoryAssignmentId,
 ): FactoryMergeGroup | undefined {
-  const persisted = state.mergeGroups.find((entry) =>
-    entry.memberAssignmentIds.includes(assignmentId),
+  const persisted = state.mergeGroups.find(
+    (entry) => factoryMergeGroupHolds(entry) && entry.memberAssignmentIds.includes(assignmentId),
   );
   if (persisted) return persisted;
-  const integration = state.integrations.find((entry) =>
-    entry.participantAssignmentIds.includes(assignmentId),
-  );
-  return integration ? factoryMergeGroupForIntegration(state, integration) : undefined;
+  return state.integrations
+    .filter((entry) => entry.participantAssignmentIds.includes(assignmentId))
+    .map((entry) => factoryMergeGroupForIntegration(state, entry))
+    .find(factoryMergeGroupHolds);
 }
 
 export function factoryMergeGroupsForPullRequest(
@@ -64,17 +68,18 @@ export function factoryMergeGroupsForPullRequest(
   }
   return [...groups.values()].filter(
     (group) =>
-      group.knownPullRequests.some(
+      factoryMergeGroupHolds(group) &&
+      (group.knownPullRequests.some(
         (entry) => canonicalFactoryPullRequest(entry.ref) === identity,
       ) ||
-      state.assignments.some(
-        (assignment) =>
-          group.memberAssignmentIds.includes(assignment.id) &&
-          assignment.delivery?.revisions.some(
-            (revision) =>
-              revision.publication?.ref &&
-              canonicalFactoryPullRequest(revision.publication.ref) === identity,
-          ),
-      ),
+        state.assignments.some(
+          (assignment) =>
+            group.memberAssignmentIds.includes(assignment.id) &&
+            assignment.delivery?.revisions.some(
+              (revision) =>
+                revision.publication?.ref &&
+                canonicalFactoryPullRequest(revision.publication.ref) === identity,
+            ),
+        )),
   );
 }

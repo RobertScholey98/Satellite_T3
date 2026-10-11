@@ -104,6 +104,8 @@ export const FactoryControlCommand = Schema.Union([
     type: Schema.Literal("manager.retire"),
     commandId: CommandId,
     managerId: ThreadId,
+    /** Required to retire the system manager. */
+    reason: Schema.optionalKey(TrimmedNonEmptyString),
   }),
   Schema.Struct({
     type: Schema.Literal("project.pause"),

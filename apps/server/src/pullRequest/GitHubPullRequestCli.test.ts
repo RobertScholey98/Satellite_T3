@@ -2216,11 +2216,14 @@ layer("GitHubPullRequestCli.layer", (it) => {
   );
 
   it.effect.each([
-    { headRefOid: "new-head", autoMergeRequest: null },
-    { isMergeQueueEnabled: true, autoMergeRequest: null },
-    { autoMergeRequest: { enabledAt: "2026-10-10T00:00:00Z" } },
-    {},
-  ])("refuses changed heads and non-conditional host merge paths %#", (state) =>
+    { state: { headRefOid: "new-head", autoMergeRequest: null }, reason: "head-changed" },
+    { state: { isMergeQueueEnabled: true, autoMergeRequest: null }, reason: "indirect-merge" },
+    {
+      state: { autoMergeRequest: { enabledAt: "2026-10-10T00:00:00Z" } },
+      reason: "indirect-merge",
+    },
+    { state: {}, reason: "indirect-merge" },
+  ])("refuses changed heads and non-conditional host merge paths %#", ({ state, reason }) =>
     Effect.gen(function* () {
       route(["query PullRequestActionState", actionState(state)]);
       const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
@@ -2235,7 +2238,7 @@ layer("GitHubPullRequestCli.layer", (it) => {
           requireConditionalMerge: true,
         })
         .pipe(Effect.flip);
-      expect(error._tag).toBe("GitHubConditionalMergeError");
+      expect(error).toMatchObject({ _tag: "GitHubConditionalMergeError", reason });
       expect(variablesOf("mergePullRequest(")).toEqual([]);
       expect(variablesOf("enablePullRequestAutoMerge(")).toEqual([]);
     }),
@@ -2258,7 +2261,10 @@ layer("GitHubPullRequestCli.layer", (it) => {
           requireConditionalMerge: true,
         })
         .pipe(Effect.flip);
-      expect(error._tag).toBe("GitHubConditionalMergeError");
+      expect(error).toMatchObject({
+        _tag: "GitHubConditionalMergeError",
+        reason: "unsupported-request",
+      });
       expect(mockedExecute).not.toHaveBeenCalled();
     }),
   );
@@ -2284,7 +2290,10 @@ layer("GitHubPullRequestCli.layer", (it) => {
           removeAgentCreditsOnMerge: true,
         })
         .pipe(Effect.flip);
-      expect(error._tag).toBe("GitHubConditionalMergeError");
+      expect(error).toMatchObject({
+        _tag: "GitHubConditionalMergeError",
+        reason: "changed-while-preparing",
+      });
       expect(variablesOf("mergePullRequest(")).toEqual([]);
     }),
   );

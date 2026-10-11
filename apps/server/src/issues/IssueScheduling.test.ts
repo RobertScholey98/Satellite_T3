@@ -347,6 +347,24 @@ describe("IssueScheduling", () => {
       }).pipe(Effect.scoped, Effect.provide(database)),
   );
 
+  it.effect("observes a ticket outside Ready only when asked for by number", () =>
+    Effect.gen(function* () {
+      const test = yield* setup;
+      test.state.column = "triage";
+      const board = test.configuration.boardId;
+      assert.lengthOf((yield* test.service.observe({ projectId, boardId: board })).items, 0);
+      const asked = yield* test.service.observe({
+        projectId,
+        boardId: board,
+        includeNumbers: [issue.number],
+      });
+      assert.deepEqual(
+        asked.items.map((item) => [item.issue.number, item.observation.ready]),
+        [[42, false]],
+      );
+    }).pipe(Effect.scoped, Effect.provide(database)),
+  );
+
   it.effect("managed first attachment cannot bypass live scheduling admission", () =>
     Effect.gen(function* () {
       const test = yield* setup;

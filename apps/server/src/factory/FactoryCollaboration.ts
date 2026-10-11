@@ -2,6 +2,7 @@ import {
   FactoryControlId,
   FactoryError,
   MessageId,
+  factorySystemManager,
   type FactoryAssignment,
   type FactoryAssignmentId,
   type FactoryCollaborationCondition,
@@ -40,6 +41,15 @@ const supportOf = (request: FactoryCrossProjectRequest) =>
     : null;
 const sameSet = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && a.every((id) => b.includes(id));
+// A request lives only as long as the assignment or system investigation that raised it.
+const originActive = (state: FactorySnapshot, request: FactoryCrossProjectRequest) => {
+  const origin = request.origin;
+  return origin.kind === "assignment"
+    ? active(state.assignments.find((entry) => entry.id === origin.assignmentId))
+    : state.improvementInvestigations.some(
+        (entry) => entry.id === origin.investigationId && entry.lifecycle.phase !== "closed",
+      );
+};
 
 export function factoryRequestParticipants(
   state: FactorySnapshot,
@@ -78,13 +88,11 @@ export function factoryRequestReconsiderable(
   request: FactoryCrossProjectRequest,
 ): boolean {
   const phase = request.lifecycle;
-  const origin = request.origin;
   return (
     (phase.phase === "deferred" || phase.phase === "declined") &&
     phase.reconsider !== null &&
     factoryCollaborationConditionSatisfied(state, phase.reconsider) &&
-    (origin.kind !== "assignment" ||
-      active(state.assignments.find((entry) => entry.id === origin.assignmentId)))
+    originActive(state, request)
   );
 }
 
@@ -155,7 +163,9 @@ export function reconcileFactoryRequestCancellation(
   );
   const withdrawn = (request: FactoryCrossProjectRequest) =>
     request.lifecycle.phase === "withdrawn" ||
-    (request.origin.kind === "assignment" && cancelled.has(request.origin.assignmentId));
+    (request.origin.kind === "assignment"
+      ? cancelled.has(request.origin.assignmentId)
+      : !originActive(state, request));
   let changed = true;
   while (changed) {
     changed = false;
@@ -174,6 +184,20 @@ export function reconcileFactoryRequestCancellation(
         );
       if (needed) continue;
       cancelled.add(assignmentId);
+      changed = true;
+    }
+    // An integration team exists only for its requests; a withdrawn one can never verify again.
+    for (const integration of state.integrations) {
+      const team = state.assignments.find((entry) => entry.id === integration.assignmentId);
+      if (!team || cancelled.has(team.id) || !active(team)) continue;
+      if (
+        !integration.requestIds.some((id) => {
+          const request = state.crossProjectRequests.find((entry) => entry.id === id);
+          return !request || withdrawn(request);
+        })
+      )
+        continue;
+      cancelled.add(team.id);
       changed = true;
     }
   }
@@ -224,17 +248,39 @@ export function reconcileFactoryRequestCancellation(
       );
       return next;
     }
-    if (
-      request.lifecycle.phase === "withdrawn" ||
-      !withdrawn(request) ||
-      request.origin.kind !== "assignment"
-    )
-      return request;
-    const originId = request.origin.assignmentId;
-    const origin = assignments.find((entry) => entry.id === originId);
-    if (!origin?.outcome) return request;
-    const reason =
-      "The originating assignment was cancelled. Preserve its work and await the human reason.";
+    const reconsider =
+      lifecycle.phase === "deferred" || lifecycle.phase === "declined"
+        ? lifecycle.reconsider
+        : null;
+    if (reconsider?.kind === "assignment-concluded" && !withdrawn(request)) {
+      const awaited = assignments.find((entry) => entry.id === reconsider.assignmentId);
+      if (!awaited?.outcome) return request;
+      // A cancelled assignment never concludes, so the promised reconsideration cannot happen.
+      const next: FactoryCrossProjectRequest = {
+        ...request,
+        generation: request.generation + 1,
+        updatedAt: now,
+        lifecycle: { phase: "requested" },
+      };
+      effects.push(
+        requestNotice(
+          next,
+          `reconsider-unmeetable:${next.generation}`,
+          `Request ${next.id} was ${lifecycle.phase} until assignment ${reconsider.assignmentId} concluded, but that assignment was cancelled. The request is open again: the receiver may accept, defer or decline it, and the requester may withdraw it.`,
+        ),
+      );
+      return next;
+    }
+    if (lifecycle.phase === "withdrawn" || !withdrawn(request)) return request;
+    const origin = request.origin;
+    const source =
+      origin.kind === "assignment"
+        ? assignments.find((entry) => entry.id === origin.assignmentId)
+        : undefined;
+    if (origin.kind === "assignment" && !source?.outcome) return request;
+    const reason = source
+      ? "The originating assignment was cancelled. Preserve its work and await the human reason."
+      : "The originating system investigation was closed.";
     const next: FactoryCrossProjectRequest = {
       ...request,
       generation: request.generation + 1,
@@ -243,7 +289,7 @@ export function reconcileFactoryRequestCancellation(
         phase: "withdrawn",
         reason,
         support: supportOf(request),
-        sourceControlId: origin.outcome.controlId,
+        sourceControlId: source?.outcome?.controlId ?? null,
       },
     };
     effects.push(requestNotice(next, `withdrawn:${next.generation}`, reason));
@@ -257,8 +303,13 @@ export function reconcileFactoryRequestCancellation(
       const causes = requests.filter(
         (request) =>
           request.lifecycle.phase === "withdrawn" &&
-          request.lifecycle.support?.dedicated &&
-          request.lifecycle.support.assignmentId === control.assignmentId,
+          ((request.lifecycle.support?.dedicated &&
+            request.lifecycle.support.assignmentId === control.assignmentId) ||
+            state.integrations.some(
+              (entry) =>
+                entry.assignmentId === control.assignmentId &&
+                entry.requestIds.includes(request.id),
+            )),
       );
       if (!causes.length) continue;
       const reasons = causes.flatMap((request) => {
@@ -377,6 +428,21 @@ export function decideFactoryCollaboration(input: {
           (ownsManager(request.originManagerId) || ownsManager(request.receiverManagerId))) ||
         factoryRequestParticipants(state, request).some(ownsLead),
     );
+  const planOwners = (requests: readonly FactoryCrossProjectRequest[]) => [
+    ...new Set(requests.flatMap((entry) => [entry.originManagerId, entry.receiverManagerId])),
+  ];
+  // A plan binds the exact leads, scopes and grants it was recorded against.
+  const planCurrent = (plan: FactoryCollaborationPlan) =>
+    findRequests(plan.requestIds).every((entry) => entry.lifecycle.phase === "accepted") &&
+    plan.participants.every((entry) => {
+      const current = state.assignments.find((assignment) => assignment.id === entry.assignmentId);
+      return (
+        active(current) &&
+        current.threadId === entry.threadId &&
+        current.grant?.epoch === entry.grantEpoch &&
+        JSON.stringify(current.scope) === JSON.stringify(entry.scope)
+      );
+    });
   const saveRequest = (
     request: FactoryCrossProjectRequest,
     effects: readonly FactoryEffectIntent[] = [],
@@ -454,7 +520,7 @@ export function decideFactoryCollaboration(input: {
       const originManager =
         origin.kind === "assignment"
           ? state.managers.find((entry) => entry.id === assignment?.managerId)
-          : state.managers.find((entry) => entry.role === "system");
+          : factorySystemManager(state.managers);
       const receiver = state.managers.find((entry) => entry.id === command.receiverManagerId);
       if (
         !originManager ||
@@ -522,11 +588,7 @@ export function decideFactoryCollaboration(input: {
       if (!request || !ownsManager(request.receiverManagerId))
         return fail("Only the receiving manager can decide this request.");
       const origin = request.origin;
-      if (
-        request.lifecycle.phase !== "requested" ||
-        (origin.kind === "assignment" &&
-          !active(state.assignments.find((entry) => entry.id === origin.assignmentId)))
-      )
+      if (request.lifecycle.phase !== "requested" || !originActive(state, request))
         return fail("This request is no longer awaiting a response.", "invalid-state");
       const response = command.response;
       const base = { ...request, generation: request.generation + 1, updatedAt: now };
@@ -692,14 +754,20 @@ export function decideFactoryCollaboration(input: {
     }
     case "collaboration.request.reconsider": {
       const request = state.crossProjectRequests.find((entry) => entry.id === command.requestId);
+      // The requester may also ask again; the receiver then answers afresh.
       if (
         !request ||
         (!ownsManager(request.receiverManagerId) &&
+          !ownsManager(request.originManagerId) &&
           !(host && factoryRequestReconsiderable(state, request)))
       )
-        return fail("Only the receiver or a satisfied recorded event can reopen the request.");
+        return fail(
+          "Only the requester, the receiver or a satisfied recorded event can reopen the request.",
+        );
       if (!["deferred", "declined"].includes(request.lifecycle.phase))
         return fail("This request has no deferred decision.", "invalid-state");
+      if (!originActive(state, request))
+        return fail("The work that raised this request has ended.", "invalid-state");
       const next: FactoryCrossProjectRequest = {
         ...request,
         generation: request.generation + 1,
@@ -810,19 +878,30 @@ export function decideFactoryCollaboration(input: {
     case "collaboration.plan.propose": {
       const requests = findRequests(command.requestIds);
       const members = participants(requests);
+      const changes = command.changes;
+      const amendments = changes.kind === "boundary" ? (changes.amendments ?? []) : [];
+      // Owning managers may propose commitment changes; technical plans stay with the leads.
       if (
         requests.length !== new Set(command.requestIds).size ||
         requests.some((entry) => entry.lifecycle.phase !== "accepted") ||
         !members.length ||
-        !participatingActor(requests, false) ||
+        !participatingActor(requests, changes.kind === "boundary") ||
         members.some((entry) => !active(entry) || !entry.scope || !entry.grant)
       )
         return fail("Only current leads can record a plan for their accepted collaboration.");
+      if (
+        amendments.some((entry) => !command.requestIds.includes(entry.requestId)) ||
+        new Set(amendments.map((entry) => entry.requestId)).size !== amendments.length
+      )
+        return fail("Amend each request in this plan at most once.", "invalid-state");
+      const owners = planOwners(requests);
+      const proposer =
+        actor.kind === "thread" && owners.includes(actor.threadId) ? actor.threadId : undefined;
       const plan: FactoryCollaborationPlan = {
         id: `collaboration-plan:${command.commandId}`,
         requestIds: [...new Set(command.requestIds)].sort(),
         text: command.text,
-        changes: command.changes,
+        changes,
         participants: members.map((entry) => ({
           assignmentId: entry.id,
           threadId: entry.threadId,
@@ -830,18 +909,19 @@ export function decideFactoryCollaboration(input: {
           grantEpoch: entry.grant!.epoch,
         })),
         acknowledgements: [],
-        phase: command.changes.kind === "technical" ? "proposed" : "escalated",
+        ...(changes.kind === "boundary"
+          ? { approvals: proposer ? [{ managerId: proposer, approvedAt: now }] : [] }
+          : {}),
+        phase: changes.kind === "technical" ? "proposed" : "escalated",
         createdAt: now,
       };
-      const managerIds = requests.flatMap((entry) => [
-        entry.originManagerId,
-        entry.receiverManagerId,
-      ]);
       return accept(
         {
           collaborationPlans: [
             ...state.collaborationPlans.map((entry) =>
-              sameSet(entry.requestIds, plan.requestIds) && entry.phase !== "superseded"
+              sameSet(entry.requestIds, plan.requestIds) &&
+              entry.phase !== "superseded" &&
+              entry.phase !== "declined"
                 ? { ...entry, phase: "superseded" as const }
                 : entry,
             ),
@@ -854,9 +934,9 @@ export function decideFactoryCollaboration(input: {
             "plan",
             plan.id,
             "proposed",
-            command.changes.kind === "boundary" ? managerIds : [],
+            changes.kind === "boundary" ? owners : [],
             members.map((entry) => entry.id),
-            `${command.changes.kind === "boundary" ? "Owner decision required. This plan does not expand any assignment boundary." : "A shared technical plan awaits each lead's acknowledgement."}\n${plan.text}`,
+            `${changes.kind === "boundary" ? `Owner decision required: each owning manager or the human approves or declines this plan with collaboration.plan.decide.${amendments.length ? " Approval replaces the named requests' outcome, acceptance and compatibility in place and keeps their supporting work." : ""} Until then the recorded commitments and every assignment boundary stand.` : "A shared technical plan awaits each lead's acknowledgement."}\n${plan.text}`,
           ),
         ],
       );
@@ -873,20 +953,7 @@ export function decideFactoryCollaboration(input: {
         !plan.participants.some((entry) => entry.assignmentId === member.id)
       )
         return fail("Only a participating lead can acknowledge the current technical plan.");
-      if (
-        findRequests(plan.requestIds).some((entry) => entry.lifecycle.phase !== "accepted") ||
-        plan.participants.some((entry) => {
-          const current = state.assignments.find(
-            (assignment) => assignment.id === entry.assignmentId,
-          );
-          return (
-            !active(current) ||
-            current.threadId !== entry.threadId ||
-            current.grant?.epoch !== entry.grantEpoch ||
-            JSON.stringify(current.scope) !== JSON.stringify(entry.scope)
-          );
-        })
-      )
+      if (!planCurrent(plan))
         return fail("A participant changed. Record a fresh shared plan.", "stale-revision");
       if (
         plan.acknowledgements.some(
@@ -918,6 +985,90 @@ export function decideFactoryCollaboration(input: {
               ),
             ]
           : [],
+      );
+    }
+    case "collaboration.plan.decide": {
+      const plan = state.collaborationPlans.find((entry) => entry.id === command.planId);
+      const requests = plan ? findRequests(plan.requestIds) : [];
+      const owners = planOwners(requests);
+      const decider = human
+        ? null
+        : owners.find((managerId) => actor.kind === "thread" && actor.threadId === managerId);
+      if (!plan || (decider !== null && (decider === undefined || !ownsManager(decider))))
+        return fail("Only an owning manager or the human can decide an escalated plan.");
+      if (plan.phase !== "escalated" || plan.changes.kind !== "boundary")
+        return fail("This plan is not awaiting an owner decision.", "invalid-state");
+      if (!planCurrent(plan))
+        return fail("A participant changed. Record a fresh shared plan.", "stale-revision");
+      const members = plan.participants.map((entry) => entry.assignmentId);
+      const save = (next: FactoryCollaborationPlan, changes: Partial<FactorySnapshot> = {}) => ({
+        ...changes,
+        collaborationPlans: state.collaborationPlans.map((entry) =>
+          entry.id === plan.id ? next : entry,
+        ),
+      });
+      if (command.decision.kind === "decline") {
+        const reason = command.decision.reason;
+        return accept(
+          save({
+            ...plan,
+            phase: "declined",
+            declined: { managerId: decider, reason, declinedAt: now },
+          }),
+          { planId: plan.id },
+          [
+            notify(
+              "plan",
+              plan.id,
+              `declined:${command.commandId}`,
+              owners,
+              members,
+              `Plan ${plan.id} was declined: ${reason}\nThe recorded commitments and assignment boundaries are unchanged.`,
+            ),
+          ],
+        );
+      }
+      const approvals = [
+        ...(plan.approvals ?? []).filter((entry) => entry.managerId !== decider),
+        { managerId: decider, approvedAt: now },
+      ];
+      if (
+        decider !== null &&
+        !owners.every((managerId) => approvals.some((entry) => entry.managerId === managerId))
+      )
+        return accept(save({ ...plan, approvals }), { planId: plan.id });
+      const amendments = plan.changes.amendments ?? [];
+      const amended = new Map(amendments.map((entry) => [entry.requestId, entry]));
+      return accept(
+        save(
+          { ...plan, approvals, phase: "agreed" },
+          {
+            crossProjectRequests: state.crossProjectRequests.map((entry) => {
+              const amendment = amended.get(entry.id);
+              return amendment
+                ? {
+                    ...entry,
+                    outcome: amendment.outcome,
+                    acceptanceConditions: amendment.acceptanceConditions,
+                    compatibility: amendment.compatibility,
+                    generation: entry.generation + 1,
+                    updatedAt: now,
+                  }
+                : entry;
+            }),
+          },
+        ),
+        { planId: plan.id },
+        [
+          notify(
+            "plan",
+            plan.id,
+            `approved:${command.commandId}`,
+            owners,
+            members,
+            `Plan ${plan.id} was approved.${amendments.length ? " The amended requests now record the new outcome, acceptance and compatibility; their supporting work continues." : ""} Permissions and resource limits change only through each owner's own authorized actions.`,
+          ),
+        ],
       );
     }
     case "collaboration.decision.raise": {

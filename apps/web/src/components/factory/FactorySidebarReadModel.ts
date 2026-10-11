@@ -1,10 +1,11 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type {
-  EnvironmentId,
-  FactoryManager,
-  FactorySnapshot,
-  ProjectId,
-  ServerProvider,
+import {
+  factorySystemManager,
+  type EnvironmentId,
+  type FactoryManager,
+  type FactorySnapshot,
+  type ProjectId,
+  type ServerProvider,
 } from "@t3tools/contracts";
 
 interface FactoryEnvironmentState {
@@ -107,6 +108,21 @@ function factoryManagedThreadKeys(environments: readonly FactoryEnvironmentData[
 }
 
 /**
+ * The environment's system-manager row: the current manager, which may be retired until the human
+ * creates its replacement, and the shared teams of every system manager, so a retired
+ * predecessor's teams stay reachable after the replacement takes over the row.
+ */
+export function factorySystemManagerTeam(data: FactorySnapshot) {
+  const ids = new Set(
+    data.managers.flatMap((entry) => (entry.role === "system" ? [entry.id] : [])),
+  );
+  return {
+    manager: factorySystemManager(data.managers),
+    assignments: data.assignments.filter((entry) => ids.has(entry.managerId)),
+  };
+}
+
+/**
  * Thread keys the factory section shows, in render order: each environment's system manager
  * first, then the project managers, each followed by its assignments and their retros. The
  * sidebar folds these into its keyboard and range-select order.
@@ -136,12 +152,12 @@ export function factoryVisibleThreadKeys({
     environmentId: EnvironmentId,
     data: FactorySnapshot,
     manager: FactoryManager,
+    assignments = data.assignments.filter((entry) => entry.managerId === manager.id),
   ) => {
     const managerKey = scopedThreadKey(scopeThreadRef(environmentId, manager.threadId));
     if (manager.threadStatus === "created") keys.push(managerKey);
     if (collapsedManagers.has(managerKey)) return;
-    for (const assignment of data.assignments) {
-      if (assignment.managerId !== manager.id) continue;
+    for (const assignment of assignments) {
       if (assignment.threadStatus === "created") {
         keys.push(scopedThreadKey(scopeThreadRef(environmentId, assignment.threadId)));
       }
@@ -150,9 +166,10 @@ export function factoryVisibleThreadKeys({
     }
   };
   for (const { environmentId, data } of environments) {
-    const manager = data?.managers.find((entry) => entry.role === "system");
-    if (data && manager && shownProjects.some((project) => project.environmentId === environmentId))
-      addTeam(environmentId, data, manager);
+    if (data === null || !shownProjects.some((project) => project.environmentId === environmentId))
+      continue;
+    const { manager, assignments } = factorySystemManagerTeam(data);
+    if (manager) addTeam(environmentId, data, manager, assignments);
   }
   for (const { environmentId, data } of environments) {
     if (data === null) continue;

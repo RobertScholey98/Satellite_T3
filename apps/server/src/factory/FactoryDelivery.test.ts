@@ -37,6 +37,23 @@ const approve = (state: FactorySnapshot) =>
     },
     deliveryActors.human,
   ).state;
+const withPreviewRuntime = (state: FactorySnapshot) =>
+  applyDelivery(
+    state,
+    {
+      type: "delivery.preview.configure",
+      commandId: CommandId.make("preview-runtime"),
+      projectId: deliveryIds.project,
+      configuration: {
+        imageId: `sha256:${"a".repeat(64)}`,
+        executable: "/usr/local/bin/node",
+        args: ["/workspace/server.js"],
+        port: 3000,
+        data: "ephemeral",
+      },
+    },
+    deliveryActors.human,
+  ).state;
 const member = {
   threadId: deliveryIds.lead,
   assignmentId: deliveryIds.assignment,
@@ -426,7 +443,7 @@ describe("factory delivery", () => {
     assert.deepEqual(independent.assignments[0]!.wait, independentWait);
     const assignment = released.assignments[0]!;
     const readiness = factoryDeliveryReadiness(
-      released,
+      withPreviewRuntime(released),
       assignment,
       assignment.delivery!.revisions[0]!,
     );
@@ -619,6 +636,85 @@ describe("factory delivery", () => {
       deliveryActors.host,
     ).state;
     assert.equal(routed.assignments[0]!.delivery!.retroFindings.length, 1);
+    assert.deepEqual(routed.assignments[0]!.delivery!.readiness, [
+      "Human approval is required for this exact revision. Merge-rule eligibility was unclear; the verified revision was routed to the human.",
+    ]);
     rejected(routed, { ...deliveryRevisionCommand, type: "delivery.merge" });
+  });
+  it("ends human review on a confirmed merge and keeps a handback through later reconciles", () => {
+    const reconcile = (state: FactorySnapshot) =>
+      applyDelivery(
+        state,
+        {
+          ...deliveryRevisionCommand,
+          type: "delivery.inspected",
+          expectedStateRevision: state.revision,
+          bundleDigest: "bundle",
+          evidence: state.assignments[0]!.delivery!.revisions[0]!.hostEvidence!,
+        },
+        deliveryActors.host,
+      ).state;
+    const ready = reviewedDeliveryFixture();
+    const handedBack = applyDelivery(
+      ready,
+      { ...deliveryCommand, type: "delivery.review.handback" },
+      deliveryActors.human,
+    ).state;
+    assert.isFalse(reconcile(handedBack).assignments[0]!.delivery!.directionHeld);
+
+    const requested = applyDelivery(approve(ready), {
+      ...deliveryRevisionCommand,
+      type: "delivery.merge",
+    }).state;
+    assert.isTrue(requested.assignments[0]!.delivery!.directionHeld);
+    const merged = applyDelivery(
+      requested,
+      {
+        ...deliveryRevisionCommand,
+        type: "delivery.merge.recorded",
+        operationId: "merge:command",
+        status: "merged",
+        mergedAt: deliveryNow,
+      },
+      deliveryActors.host,
+    ).state;
+    assert.isFalse(merged.assignments[0]!.delivery!.directionHeld);
+    assert.isUndefined(factoryDirectionBlocked(merged, member, deliveryIds.manager));
+    assert.isFalse(reconcile(merged).assignments[0]!.delivery!.directionHeld);
+  });
+  it("routes UI work to the human with an explanation when no app preview runtime exists", () => {
+    const routed = reviewedDeliveryFixture("substantial-ui");
+    const delivery = routed.assignments[0]!.delivery!;
+    assert.equal(delivery.revisions[0]!.status, "published");
+    assert.isUndefined(delivery.revisions[0]!.uxEvidence);
+    assert.deepEqual(delivery.readiness, [
+      "Human approval is required for this exact revision. UX verification unavailable: this project has no approved app preview runtime (previews run Node entry points only). Check the UI change yourself before approving.",
+    ]);
+    assert.isTrue(delivery.directionHeld);
+    rejected(routed, { ...deliveryRevisionCommand, type: "delivery.merge" });
+    assert.equal(
+      applyDelivery(approve(routed), { ...deliveryRevisionCommand, type: "delivery.merge" })
+        .effects[0]?.type,
+      "delivery.merge",
+    );
+
+    // Once the human approves a runtime, the same revision needs actual-app evidence again.
+    const configured = withPreviewRuntime(routed);
+    const readiness = factoryDeliveryReadiness(
+      configured,
+      configured.assignments[0]!,
+      configured.assignments[0]!.delivery!.revisions[0]!,
+    );
+    assert.isTrue(readiness.reasons.some((reason) => reason.includes("actual app")));
+    rejected(
+      configured,
+      {
+        ...deliveryRevisionCommand,
+        type: "delivery.approve",
+        expectedHeadSha: "head",
+        bundleDigest: "bundle",
+      },
+      deliveryActors.human,
+    );
   });
 });

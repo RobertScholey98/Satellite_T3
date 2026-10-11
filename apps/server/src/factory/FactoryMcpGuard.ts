@@ -631,9 +631,13 @@ const make = Effect.gen(function* () {
           return yield* denied();
         yield* controls.assertExecution(member.manager.threadId);
         const state = yield* store.snapshot;
+        // Unsampled findings stay hidden until someone attaches them to an investigation.
+        const attached = new Set(
+          state.improvementInvestigations.flatMap((entry) => entry.findingIds),
+        );
         const visible = new Set(
           state.improvementIntakes
-            .filter((entry) => entry.delivery.phase !== "skipped")
+            .filter((entry) => entry.delivery.phase !== "skipped" || attached.has(entry.findingId))
             .map((entry) => entry.findingId),
         );
         const findings = state.findings.filter((entry) => visible.has(entry.id)).toReversed();
@@ -693,6 +697,8 @@ const make = Effect.gen(function* () {
                     assignmentId: entry.assignmentId,
                     projectId: assignment.projectId,
                     summary: entry.problem.slice(0, 700),
+                    containmentOf: entry.containmentOf,
+                    uncertainty: entry.route.uncertainty.slice(0, 300),
                     evidence: entry.evidence,
                   },
                 ]
@@ -742,7 +748,8 @@ const make = Effect.gen(function* () {
                 (entry) => entry.id === ref.id && entry.revision === ref.revision,
               )
             : ref.kind === "decision"
-              ? state.improvementDecisions.find(
+              ? // A deferred revision can be decided again; the latest decision stands.
+                state.improvementDecisions.findLast(
                   (entry) => entry.proposalId === ref.id && entry.revision === ref.revision,
                 )
               : ref.kind === "investigation"
@@ -847,6 +854,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         if (
           command.type === "integration.capability.configure" ||
+          command.type === "integration.grant.approve" ||
           command.type === "integration.capability.retry" ||
           command.type === "merge.group.approve" ||
           command.type === "merge.group.reject" ||
@@ -886,6 +894,8 @@ const make = Effect.gen(function* () {
             "finding.escalate",
             "collaboration.request.create",
             "collaboration.request.withdraw",
+            "collaboration.request.reconsider",
+            "collaboration.plan.decide",
             "collaboration.decision.raise",
           ].includes(command.type)
         )

@@ -32,10 +32,12 @@ export const makeMergeOperationHarness = Effect.fn(function* (
     readonly beforeWrite?: (ref: PullRequestRef) => Effect.Effect<void, FactoryError>;
     readonly changedCapture?: boolean;
     readonly failFirstMergedRead?: boolean;
+    /** Seeds the integration before its merge group is persisted, as when the group first forms. */
+    readonly newGroup?: boolean;
   } = {},
 ) {
   const fixture = mergeFixture();
-  yield* seedMergeEffects(fixture.state);
+  yield* seedMergeEffects(options.newGroup ? { ...fixture.state, mergeGroups: [] } : fixture.state);
   const store = yield* Store.FactoryStore;
   const gate = yield* Gate.FactoryPullRequestGate;
   const fs = yield* FileSystem.FileSystem;

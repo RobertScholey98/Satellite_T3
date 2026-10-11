@@ -4,8 +4,11 @@
 // keeps its own environment approvals, checks, credentials and order.
 //
 // Usage: node merge-group-gate.mjs [--timeout <seconds>] [--interval <seconds>]
+//   [--association-wait <seconds>]
 // Reads GITHUB_TOKEN, GITHUB_REPOSITORY and GITHUB_SHA, and GITHUB_API_URL when set.
 // Exit 0: the commit is not grouped, or its whole group merged. Exit 1: anything else.
+// A commit is grouped when a PR it belongs to carries the merge group label; deleting the label
+// from a PR disarms this gate for it.
 
 // Matches FACTORY_MERGE_GROUP_LABEL and FACTORY_MERGE_GROUP_STATUS_CONTEXT in Satellite.
 const LABEL = "satellite-merge-group";
@@ -21,6 +24,8 @@ const option = (name, fallback) => {
 async function main() {
   const timeout = option("timeout", 1800);
   const interval = option("interval", 30);
+  // GitHub can take a moment to associate a fresh merge commit with its pull request.
+  const association = Math.min(timeout, option("association-wait", 60));
   const { GITHUB_TOKEN: token, GITHUB_REPOSITORY: repository, GITHUB_SHA: sha } = process.env;
   if (!token || !repository || !sha)
     throw new Error("Set GITHUB_TOKEN, GITHUB_REPOSITORY and GITHUB_SHA.");
@@ -38,7 +43,13 @@ async function main() {
     return response.json();
   };
 
-  const pulls = await get(`commits/${sha}/pulls`);
+  const sleep = () => new Promise((resolve) => setTimeout(resolve, interval));
+  const associated = Date.now() + association;
+  let pulls = await get(`commits/${sha}/pulls`);
+  while (pulls.length === 0 && Date.now() + interval <= associated) {
+    await sleep();
+    pulls = await get(`commits/${sha}/pulls`);
+  }
   const grouped = pulls.filter((pull) => pull.labels?.some((label) => label.name === LABEL));
   if (grouped.length === 0) {
     console.log(`${sha} is not part of a Satellite merge group. Deployment may continue.`);
@@ -66,7 +77,7 @@ async function main() {
       return 1;
     }
     console.log(`Waiting for merge group: ${waiting}`);
-    await new Promise((resolve) => setTimeout(resolve, interval));
+    await sleep();
   }
 }
 
