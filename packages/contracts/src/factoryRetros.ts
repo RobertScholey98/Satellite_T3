@@ -186,6 +186,8 @@ export const FactoryFinding = Schema.Struct({
       summary: Text,
       commandId: CommandId,
       escalatedAt: IsoDateTime,
+      // Set when the human has reviewed an escalation that had no system manager to receive it.
+      acknowledgedAt: Schema.optionalKey(IsoDateTime),
     }),
   ),
   createdAt: IsoDateTime,
@@ -363,6 +365,11 @@ export const FactoryRetroCommand = Schema.Union([
     commandId: CommandId,
     findingId: Id,
     summary: Text,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("finding.escalation.acknowledge"),
+    commandId: CommandId,
+    findingId: Id,
   }),
   Schema.Struct({
     ...RetroFields,

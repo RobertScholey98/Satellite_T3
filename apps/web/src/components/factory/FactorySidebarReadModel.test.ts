@@ -103,6 +103,16 @@ describe("factory sidebar gating", () => {
       factoryCanCreateManager([environment(owner, null)], { environmentId: owner, id: api }),
     ).toBe(false);
   });
+
+  it("offers creation again once the project's manager is retired", () => {
+    const retired = {
+      ...managed,
+      managers: managed.managers.map((manager) => ({ ...manager, status: "retired" as const })),
+    };
+    expect(
+      factoryCanCreateManager([environment(owner, retired)], { environmentId: owner, id: web }),
+    ).toBe(true);
+  });
 });
 
 describe("factory managed thread keys", () => {

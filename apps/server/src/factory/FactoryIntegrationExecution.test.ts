@@ -360,10 +360,8 @@ const scenario = (live: boolean) =>
         ],
       };
       yield* execution.stop({ integrationId, preparationId, holdId: mergeOperation.id });
-      assert.equal(
-        (yield* assertFactoryProfileActive(profile).pipe(Effect.flip)).code,
-        "execution-unavailable",
-      );
+      // State admission keeps the frozen team stopped; only its lead may run to recover the merge.
+      yield* assertFactoryProfileActive(profile);
       assert.equal(
         (yield* execution.capture({ integrationId, preparationId })).digest,
         verified.testArtifact.digest,

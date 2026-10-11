@@ -94,6 +94,31 @@ describe("managed assignment paths", () => {
     ).toBe(true);
   });
 
+  it("keeps files that runners and interpreters load implicitly out of creatable directories", () => {
+    for (const file of [
+      "src/conftest.py",
+      "src/tests/conftest.py",
+      "src/sitecustomize.py",
+      "src/usercustomize.py",
+      "src/hooks.pth",
+      "src/__pycache__/value.cpython-312.pyc",
+      "src/node_modules/zod/index.d.ts",
+      "src/node_modules/chai/index.js",
+      "src/vendor/autoload.php",
+      "src/__mocks__/fs.js",
+      "src/setupTests.ts",
+      "src/vitest.setup.ts",
+      "src/jest.setup.js",
+      "src/karma.conf.js",
+      "src/.npmrc",
+      "src/tsconfig.json",
+      "src/build.rs",
+    ])
+      expect([file, factoryCanWrite(file, grant, configuration)]).toEqual([file, false]);
+    for (const file of ["src/conftest_helpers.py", "src/mocks/fs.ts", "src/setup.ts"])
+      expect([file, factoryCanWrite(file, grant, configuration)]).toEqual([file, true]);
+  });
+
   it("accepts only direct approved Node runners and rejects branch script selection", () => {
     expect(factoryValidConfiguration(configuration)).toBe(true);
     for (const gate of [

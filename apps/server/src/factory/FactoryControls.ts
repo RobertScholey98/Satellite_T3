@@ -45,6 +45,8 @@ export const factoryExecutionBlocked = (
   state: FactorySnapshot,
   member: FactoryControlMembership,
 ): string | undefined => {
+  if (state.managers.some((entry) => entry.id === member.managerId && entry.status === "retired"))
+    return "This engineering manager was retired. Its threads and evidence remain readable.";
   const auxiliary = state.auxiliaryThreads.find(
     (entry) => entry.threadId === member.auxiliaryThreadId,
   );
@@ -150,7 +152,12 @@ export const preserveFactoryManagerPauses = (
         entry.status === "active" &&
         entry.managerId === manager.id,
     );
-    if (pause?.kind !== "manager-pause" || manager.status === "paused") return manager;
+    if (
+      pause?.kind !== "manager-pause" ||
+      manager.status === "paused" ||
+      manager.status === "retired"
+    )
+      return manager;
     const priorStatus = manager.status;
     controls = controls.map((entry) => (entry.id === pause.id ? { ...pause, priorStatus } : entry));
     return { ...manager, status: "paused" as const };
@@ -206,6 +213,9 @@ export function decideFactoryControls(
     controlId: control.id,
     generation: control.generation,
   });
+  const retired = (control: FactoryControl) =>
+    control.kind === "manager-pause" &&
+    state.managers.some((entry) => entry.id === control.managerId && entry.status === "retired");
 
   switch (command.type) {
     case "manager.pause":
@@ -245,7 +255,8 @@ export function decideFactoryControls(
         };
         return save(control, [stopIntent(control)]);
       }
-      if (!manager || manager.status === "paused") return fail("invalid-state");
+      if (!manager || manager.status === "paused" || manager.status === "retired")
+        return fail("invalid-state");
       const control: FactoryControl = {
         ...shared,
         kind: "manager-pause",
@@ -268,13 +279,102 @@ export function decideFactoryControls(
       );
       if (!control || (control.kind !== "manager-pause" && control.kind !== "project-pause"))
         return fail("invalid-state");
+      if (retired(control))
+        return fail("invalid-state", "A retired manager stays stopped. Create a new manager.");
       if (control.status === "released" || control.resume?.status === "pending")
         return accept({}, { controlId: control.id });
-      if (control.stop.status !== "confirmed")
-        return fail("invalid-state", "Wait for the stop to be confirmed before resuming.");
+      // Releasing is always safe, so a stop that failed does not trap the pause.
+      if (control.stop.status === "pending")
+        return fail("invalid-state", "Wait for the stop to finish before resuming.");
       return save({ ...control, resume: { status: "pending" }, updatedAt: now }, [
         resumeIntent(control),
       ]);
+    }
+    case "manager.retire": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      if (!manager) return fail("manager-not-found");
+      if (manager.role !== "project")
+        return fail("invalid-state", "Only a project engineering manager can be retired.");
+      if (manager.status === "retired") return accept({}, { managerId: manager.id });
+      // The manager's pause stops its own thread and each cancellation stops one team. Threads,
+      // evidence and history stay; the released project can be onboarded again.
+      const pauseId = FactoryControlId.make(`manager-pause:${manager.id}`);
+      const existing = state.controls.find((entry) => entry.id === pauseId);
+      const pause: FactoryControl | undefined =
+        existing?.kind === "manager-pause" && existing.status === "active"
+          ? undefined
+          : {
+              id: pauseId,
+              kind: "manager-pause",
+              managerId: manager.id,
+              priorStatus: manager.status === "paused" ? "active" : manager.status,
+              generation: (existing?.generation ?? 0) + 1,
+              status: "active",
+              stop: { status: "pending" },
+              requestedAt: now,
+              updatedAt: now,
+            };
+      const cancelled = state.assignments.filter(
+        (entry) =>
+          entry.managerId === manager.id &&
+          entry.outcome === undefined &&
+          entry.status !== "complete" &&
+          entry.completion?.phase !== "concluded",
+      );
+      const cancellations = cancelled.map((assignment): FactoryControl => ({
+        kind: "cancellation",
+        id: FactoryControlId.make(`cancellation:${assignment.id}`),
+        generation: 1,
+        assignmentId: assignment.id,
+        managerId: manager.id,
+        stop: { status: "pending" },
+        requestedAt: now,
+        updatedAt: now,
+      }));
+      const retros = state.retros.filter(
+        (retro) =>
+          retro.reports.phase !== "complete" &&
+          retro.execution.status !== "stopped" &&
+          state.assignments.some(
+            (entry) => entry.id === retro.assignmentId && entry.managerId === manager.id,
+          ),
+      );
+      const added = [...(pause ? [pause] : []), ...cancellations];
+      return accept(
+        {
+          managers: state.managers.map((entry) =>
+            entry.id === manager.id
+              ? { ...entry, status: "retired", wait: null, updatedAt: now }
+              : entry,
+          ),
+          assignments: state.assignments.map((entry) =>
+            cancelled.includes(entry)
+              ? {
+                  ...entry,
+                  status: "waiting",
+                  outcome: {
+                    kind: "cancelled",
+                    controlId: FactoryControlId.make(`cancellation:${entry.id}`),
+                  },
+                  updatedAt: now,
+                }
+              : entry,
+          ),
+          controls: [
+            ...state.controls.filter((entry) => !added.some((control) => control.id === entry.id)),
+            ...added,
+          ],
+        },
+        { managerId: manager.id },
+        [
+          ...added.map(stopIntent),
+          ...retros.map((retro): FactoryEffectIntent => ({
+            type: "retro.stop",
+            retroId: retro.id,
+          })),
+        ],
+      );
     }
     case "thread.takeover": {
       if (actor.kind !== "human") return fail("permission-denied");
@@ -418,10 +518,13 @@ export function decideFactoryControls(
         return fail("invalid-state");
       if (control.kind !== "cancellation" && control.status === "released")
         return fail("invalid-state");
-      if (control.kind !== "cancellation" && control.resume?.status === "failed")
+      if (control.kind !== "cancellation" && control.resume?.status === "failed") {
+        if (retired(control))
+          return fail("invalid-state", "A retired manager stays stopped. Create a new manager.");
         return save({ ...control, resume: { status: "pending" }, updatedAt: now }, [
           resumeIntent(control),
         ]);
+      }
       if (control.stop.status !== "failed") return fail("invalid-state");
       return save({ ...control, stop: { status: "pending" }, updatedAt: now }, [
         stopIntent(control),
@@ -463,7 +566,7 @@ export function decideFactoryControls(
       }
       if (
         control.kind === "cancellation" ||
-        control.stop.status !== "confirmed" ||
+        control.stop.status === "pending" ||
         control.resume === undefined
       )
         return fail("invalid-state");
@@ -499,7 +602,7 @@ export function decideFactoryControls(
         control.kind === "manager-pause"
           ? {
               managers: state.managers.map((entry) =>
-                entry.id === control.managerId
+                entry.id === control.managerId && entry.status !== "retired"
                   ? { ...entry, status: control.priorStatus, updatedAt: now }
                   : entry,
               ),

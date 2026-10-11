@@ -679,6 +679,28 @@ function decideCore(
             !schedulingCandidate))
       )
         return fail("permission-denied");
+      // One direct human request authorizes one commission; more work needs another request.
+      const authorizingMessageId =
+        actor.kind === "thread" && !dependencyAuthorized && !schedulingCandidate
+          ? input.humanMessageId
+          : undefined;
+      if (
+        authorizingMessageId !== undefined &&
+        state.assignments.some(
+          (entry) =>
+            (entry.authorization?.kind === "manager" &&
+              entry.authorization.messageId === authorizingMessageId) ||
+            (entry.scheduling?.authority.kind === "human" &&
+              entry.scheduling.authority.messageId === authorizingMessageId),
+        )
+      )
+        return Result.fail(
+          new FactoryError({
+            code: "permission-denied",
+            detail:
+              "That human request already authorized a commission. Ask the human before commissioning more work.",
+          }),
+        );
       if (
         command.type === "assignment.handover" &&
         (actor.kind !== "human" || !input.handoverVerified)
@@ -746,9 +768,7 @@ function decideCore(
                 kind: "manager",
                 commandId: command.commandId,
                 threadId: manager.threadId,
-                ...(schedulingCandidate || input.humanMessageId === undefined
-                  ? {}
-                  : { messageId: input.humanMessageId }),
+                ...(authorizingMessageId === undefined ? {} : { messageId: authorizingMessageId }),
               },
       });
       if (Result.isFailure(constructed)) return Result.fail(constructed.failure);
@@ -1021,6 +1041,60 @@ function decideCore(
         [...state.boundaries, boundary],
       );
     }
+    case "manager.refresh-boundary": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      if (manager === undefined) return fail("manager-not-found");
+      const previous = state.boundaries.find((entry) => entry.id === manager.boundaryId);
+      const boundary = input.boundary;
+      if (
+        manager.role !== "project" ||
+        previous === undefined ||
+        boundary === undefined ||
+        boundary.projectId !== manager.projectId ||
+        boundary.workflow.repositoryRoot !== previous.workflow.repositoryRoot ||
+        boundary.workflow.revision !== previous.workflow.revision ||
+        state.boundaries.some((entry) => entry.id === boundary.id)
+      )
+        return fail("invalid-state");
+      // Work that could not start against the old baseline is rebound and prepared again.
+      const blocked = new Set(
+        state.assignments
+          .filter(
+            (entry) =>
+              entry.managerId === manager.id &&
+              entry.kind !== "onboarding" &&
+              entry.integrationId === undefined &&
+              entry.outcome === undefined &&
+              entry.status === "waiting" &&
+              entry.wait?.kind === "execution-boundary" &&
+              entry.preparation !== "ready" &&
+              entry.grant?.boundaryId === previous.id,
+          )
+          .map((entry) => entry.id),
+      );
+      const assignments = state.assignments.map((entry) =>
+        blocked.has(entry.id) && entry.grant
+          ? {
+              ...entry,
+              grant: { ...entry.grant, boundaryId: boundary.id },
+              status: "pending" as const,
+              wait: null,
+              updatedAt: now,
+            }
+          : entry,
+      );
+      return accepted(
+        state.managers.map((entry) =>
+          entry.id === manager.id ? { ...entry, boundaryId: boundary.id, updatedAt: now } : entry,
+        ),
+        assignments,
+        { managerId: manager.id },
+        assignments.filter((entry) => blocked.has(entry.id)).map(preparationIntent),
+        state.defaults,
+        [...state.boundaries, boundary],
+      );
+    }
     case "manager.create": {
       if (actor.kind !== "human") return fail("permission-denied");
       if (
@@ -1034,7 +1108,10 @@ function decideCore(
         return fail("project-already-managed");
       if (
         state.managers.some(
-          (manager) => manager.role === "project" && manager.projectId === command.projectId,
+          (manager) =>
+            manager.role === "project" &&
+            manager.projectId === command.projectId &&
+            manager.status !== "retired",
         )
       ) {
         return fail("project-already-managed");

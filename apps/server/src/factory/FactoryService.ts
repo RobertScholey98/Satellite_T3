@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { ProjectService } from "../project/ProjectService.ts";
@@ -304,6 +305,7 @@ export const layer = Layer.effect(
       if (
         assignment === undefined ||
         manager === undefined ||
+        manager.status === "retired" ||
         assignment.qualification.status !== "qualified" ||
         assignment.qualification.profileId !== intent.profileId
       ) {
@@ -411,7 +413,7 @@ export const layer = Layer.effect(
                     "Send production defects with integration.defect.report to the owning implementation lead. Use integration.message.send for direct coordination with current participant leads. Request missing scope from the owning managers. Do not patch production files or direct unrelated threads.",
                     "Return test patch artifacts to their owning leads through factory_integration_read_patch. They incorporate those changes into their PR candidates before final combined verification. A temporary passing test overlay does not prove that the published change includes those tests.",
                     "Read your merge group from factory_snapshot and use factory_merge_group_get for the current combined review and blockers. Once the published candidates pass combined verification, refresh the review through factory_merge_group_review. The human reviews the exact combined evidence here and gives corrections directly to owning leads. You cannot approve your own review or bypass a member's required approval.",
-                    "Your team owns combined QA and the consolidated review point. Individual project checks, reviews and human approvals still apply. Do not publish an independent integration PR, merge a member separately, or conclude through a generic report. Completion waits for the confirmed shared merge operation, followed by your internal retro and the requesting-manager retro.",
+                    "Your team owns combined QA and the consolidated review point. Individual project checks, reviews and human approvals still apply. Do not publish an independent integration PR, merge a member separately, or conclude through a generic report. Completion waits for the confirmed shared merge operation, followed by your internal retro and the requesting-manager retro. Starting the shared merge stops your team; you can still reconcile, retry within its bounds, or escalate it to the human with factory_merge_operation_action.",
                     `Approved model policy: ${renderJson(assignment.modelPolicy)}. Use delegate_task for your internal team, selecting approved models for task complexity. Read current factory controls before continuing after an interruption.`,
                   ].join("\n\n")
                 : intent.purpose === "implementation"
@@ -451,7 +453,7 @@ export const layer = Layer.effect(
                       "Use factory_collaboration_directory to find a peer manager, then collaboration.request.create to request another project's work against an existing assignment. The receiving manager owns acceptance and commissions its own team with collaboration.request.respond. Defer or decline only with a concrete reason and alternative or reconsideration condition. Raise a single collaboration.decision.raise when existing priorities or authority cannot settle a trade-off. An incident does not stop unrelated work; use incident.restrict only for concrete conflicting assignments and activity, with a reason and resume condition, then incident.release when resolved.",
                       "For accepted cross-project work, the requesting manager can use integration.commission to create an integration lead. Each participating manager grants only its project's qualified test/fixture access with integration.grant. Capability setup or expansion requires the human; routine narrower grants do not. The integration team owns combined verification and routes production defects to the implementation leads. You do not review their PRs or override another manager's grants.",
                       "Currently onboarding is in progress. Acknowledge the assignment briefly, then wait for an actionable event or the human. Do not poll, start implementation, or attempt to broaden execution permissions. Unresolved permissions and project decisions must remain visible.",
-                      "When factory_snapshot shows an active manager with an approved boundary and the human requests work, use assignment.commission to create a scoped implementation lead. Choose exact source paths and creation directories within that boundary, a completion condition, and task complexity. Omit modelSelection for the configured lead preference. authorizationMessageId may reference the direct human request, or omit it to use the latest direct human message. Discuss gaps with the human before commissioning unclear work.",
+                      "When factory_snapshot shows an active manager with an approved boundary and the human requests work, use assignment.commission to create a scoped implementation lead. Choose exact source paths and creation directories within that boundary, a completion condition, and task complexity. Omit modelSelection for the configured lead preference. authorizationMessageId may reference the direct human request, or omit it to use the latest direct human message. Each human request authorizes one commission; ask again before commissioning more work from it. If the requested work is a ticket in factory_snapshot scheduleCandidates, prepare it and pass its candidateId with authorizationMessageId so the ticket is reserved. Discuss gaps with the human before commissioning unclear work.",
                       "For no-PR work, set scope.noPrTarget explicitly: report-received at the agreed recipient when receipt satisfies the task, otherwise human-acceptance. After confirmed delivery or cancellation with the human's reason, the host starts a read-only team retrospective and sends you its accepted report. Review the causes and owners through retro.manager.submit; you do not review the PR. Project follow-ups become triage tickets, while workflow-wide decisions stay with the human. No process change is a normal result.",
                       "On a dependency request, decide whether separate work is authorized within your remit. Use dependency.approve with the exact supporting work, then assignment.commission with that dependencyId and the same approved scope. Wait for actual host-confirmed delivery and the original lead's usability check. For a recovery incident, read the recorded evidence, use assignment.recovery.begin within the remaining allowance, then use its independent diagnosis to replan. Use replaceLead only when warranted; work and limits are preserved. If recovery cannot proceed, assignment.recovery.escalate must state the failure, attempts, options, and recommendation for the human.",
                     ].join("\n\n"),
@@ -1773,7 +1775,9 @@ export const layer = Layer.effect(
                 managerId: command.managerId,
                 configuration: command.configuration,
               })
-            : undefined;
+            : command.type === "manager.refresh-boundary" && actor.kind === "human"
+              ? yield* boundaries.refresh(command)
+              : undefined;
         if (command.type === "assignment.file.mutate") yield* boundaries.mutate(command);
         const verification =
           command.type === "assignment.verify" ? yield* boundaries.verify(command) : undefined;
@@ -1909,7 +1913,7 @@ export const layer = Layer.effect(
 ).pipe(
   Layer.provide(FactoryControlEffects.layer),
   Layer.provide(FactoryRecoveryEffects.layer),
-  Layer.provide(FactoryReconciliation.layer),
+  Layer.provide(FactoryReconciliation.layer.pipe(Layer.provide(EffectOutbox.layer))),
   Layer.provide(FactoryRecoveryReconciliation.layer),
   Layer.provide(FactoryControlAccess.layer),
 );

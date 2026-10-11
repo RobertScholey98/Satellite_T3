@@ -34,6 +34,30 @@ export function factoryDependencyStatus(dependency: FactoryDependency) {
   }[dependency.state];
 }
 
+export function factorySystemManagerActive(snapshot: FactorySnapshot | null) {
+  return (
+    snapshot?.managers.some((entry) => entry.role === "system" && entry.status === "active") ??
+    false
+  );
+}
+
+/** Escalations reach the system manager when one is active; otherwise they wait for the human. */
+export function factoryEscalationAwaitsHuman(
+  snapshot: FactorySnapshot | null,
+  assignmentId: string,
+) {
+  return (
+    !factorySystemManagerActive(snapshot) &&
+    (snapshot?.findings.some(
+      (finding) =>
+        finding.assignmentId === assignmentId &&
+        finding.escalation !== null &&
+        !finding.escalation.acknowledgedAt,
+    ) ??
+      false)
+  );
+}
+
 export function factoryOversightSummary(assignment: FactoryAssignment) {
   const incident = assignment.oversight?.recovery.incident;
   if (incident?.phase === "escalated") return "Recovery needs your decision";

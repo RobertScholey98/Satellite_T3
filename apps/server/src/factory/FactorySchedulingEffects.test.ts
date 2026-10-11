@@ -5,6 +5,7 @@ import {
   EnvironmentId,
   FactorySnapshot,
   IssueOperationError,
+  MessageId,
   type FactoryCommand,
   type FactoryScheduleCandidate,
 } from "@t3tools/contracts";
@@ -136,6 +137,7 @@ const fixture = Effect.fn(function* (count = 2) {
   let observeFailure = false;
   let qualifyCount = 0;
   const released: string[] = [];
+  const labels = new Map<string, readonly string[]>();
   const dependencies = Layer.mergeAll(
     FactoryControlAccess.layer,
     Layer.succeed(Threads.ThreadManagementService, {
@@ -206,10 +208,34 @@ const fixture = Effect.fn(function* (count = 2) {
             revision: 1,
             items: seed.scheduleCandidates.map((entry) => ({
               issue: entry.issue,
+              labels: labels.get(entry.id) ?? [],
               observation: entry.observation,
             })),
           };
         }),
+      admit: ({ candidate, configuration, workDigest, authorize }) =>
+        authorize.pipe(
+          Effect.map((authority) => ({
+            candidateId: candidate.id,
+            configurationId: configuration.id,
+            canonicalIssueKey: candidate.canonicalIssueKey,
+            workDigest,
+            detailDigest: candidate.observation.detailDigest,
+            boardId: configuration.boardId,
+            boardFence: "fence",
+            authority,
+            issueAttempt: {
+              attemptId: "attempt",
+              reservationId: "reservation",
+              sourceEnvironmentId: EnvironmentId.make("environment"),
+              destinationEnvironmentId: EnvironmentId.make("environment"),
+              sourceProjectId: candidate.projectId,
+              boardId: configuration.boardId,
+              issue: candidate.issue,
+              sourceGeneration: 0,
+            },
+          })),
+        ),
       release: ({ candidateId, authorizeUnstarted }) =>
         Effect.gen(function* () {
           if (authorizeUnstarted) yield* authorizeUnstarted;
@@ -261,6 +287,7 @@ const fixture = Effect.fn(function* (count = 2) {
     released,
     refresh,
     getQualifyCount: () => qualifyCount,
+    labels,
     loseAcknowledgement: () => {
       loseAcknowledgement = true;
     },
@@ -454,6 +481,114 @@ describe("FactorySchedulingEffects", () => {
       const result = yield* f.effects.release(selected.id).pipe(Effect.result);
       assert.isTrue(Result.isFailure(result));
       assert.deepStrictEqual(f.released, []);
+    }).pipe(Effect.provide(base), Effect.scoped),
+  );
+  it.effect("keeps an agent-filed ticket out of Ready while it carries its triage labels", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(1);
+      const selected = f.seed.scheduleCandidates[0]!;
+      const origin = deliveryFixture().assignments[0]!;
+      yield* f.write({
+        ...f.seed,
+        projectTrackers: [
+          {
+            id: "tracker",
+            projectId: deliveryIds.project,
+            destination: {
+              projectId: deliveryIds.project,
+              environmentId: EnvironmentId.make("environment"),
+              credentialNamespace: "github",
+              destination: {
+                kind: "github",
+                host: "github.com",
+                repository: "owner/repo",
+                triage: { kind: "labels", labels: ["Triage"] },
+              },
+              board: null,
+              validatedAt: deliveryNow,
+            },
+            approvedBy: CommandId.make("tracker"),
+            approvedAt: deliveryNow,
+          },
+        ],
+        followups: [
+          {
+            id: "followup",
+            assignmentId: origin.id,
+            projectId: deliveryIds.project,
+            findingIds: ["finding"],
+            draft: {
+              title: "Fix formatting",
+              problem: "Repeated formatting error",
+              impact: "Review rework",
+              proposedOutcome: "Consistent formatting",
+              acceptanceCriteria: ["Checks enforce convention"],
+              evidence: [],
+              owner: "Manager",
+              requiredAuthority: "Project rule",
+              suspectedCause: "project",
+              origin: { assignmentId: origin.id, findingIds: ["finding"] },
+              containmentOf: null,
+            },
+            error: null,
+            existingIssue: null,
+            publication: { status: "linked", issue: selected.issue, verifiedAt: deliveryNow },
+            createdAt: deliveryNow,
+            updatedAt: deliveryNow,
+          },
+        ],
+      });
+      f.labels.set(selected.id, ["triage"]);
+      yield* f.refresh;
+      let current = (yield* f.store.snapshot).scheduleCandidates[0]!;
+      assert.equal(current.source.kind, "project-improvement");
+      assert.isFalse(current.observation.ready);
+      f.labels.set(selected.id, []);
+      yield* f.refresh;
+      current = (yield* f.store.snapshot).scheduleCandidates[0]!;
+      assert.isTrue(current.observation.ready);
+    }).pipe(Effect.provide(base), Effect.scoped),
+  );
+
+  it.effect("reserves a ticket the manager commissions on a cited direct human request", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(1);
+      const selected = f.seed.scheduleCandidates[0]!;
+      if (selected.lifecycle.phase !== "prepared") return assert.fail("Expected prepared work");
+      yield* f.write({
+        ...f.seed,
+        scheduleCandidates: [
+          { ...selected, observation: { ...selected.observation, ready: false, columnId: null } },
+        ],
+      });
+      const messageId = MessageId.make("human-request");
+      const command: FactoryCommand = {
+        type: "assignment.commission",
+        commandId: CommandId.make("commission"),
+        managerId: deliveryIds.manager,
+        candidateId: selected.id,
+        authorizationMessageId: messageId,
+        ...selected.lifecycle.preparation.work,
+      };
+      const actor = { kind: "thread", threadId: deliveryIds.manager } as const;
+      assert.isTrue(Result.isFailure(yield* f.effects.context(actor, command).pipe(Effect.result)));
+      yield* f.threads.sendToThread({
+        projectId: deliveryIds.project,
+        threadId: deliveryIds.manager,
+        commandId: CommandId.make("request"),
+        messageId,
+        text: "Please take ticket 1 now.",
+        attachments: [],
+        mode: "queue",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const context = yield* f.effects.context(actor, command);
+      assert.deepStrictEqual(context.schedulingAdmission?.authority, {
+        kind: "human",
+        commandId: CommandId.make("commission"),
+        messageId,
+      });
     }).pipe(Effect.provide(base), Effect.scoped),
   );
 });

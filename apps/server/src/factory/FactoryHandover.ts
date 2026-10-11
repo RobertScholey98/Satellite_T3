@@ -56,8 +56,10 @@ const make = Effect.gen(function* () {
     if (Exit.isFailure(projectThreads)) stops.push(projectThreads);
     else
       for (const thread of projectThreads.value) {
+        // Forks are independent human threads; only subagents belong to the team.
         const parent = thread.lineage.parentThreadId;
-        if (parent !== null) children.set(parent, [...(children.get(parent) ?? []), thread.id]);
+        if (parent !== null && thread.lineage.relationshipToParent === "subagent")
+          children.set(parent, [...(children.get(parent) ?? []), thread.id]);
       }
     const detachments: Array<{ threadId: ThreadId; providerSessionId: ProviderSessionId }> = [];
     while (remaining.length > 0) {

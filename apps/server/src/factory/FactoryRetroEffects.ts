@@ -93,6 +93,7 @@ const make = Effect.gen(function* () {
       changed = false;
       for (const shell of shells)
         if (
+          shell.lineage.relationshipToParent === "subagent" &&
           shell.lineage.parentThreadId !== null &&
           ids.has(shell.lineage.parentThreadId) &&
           !ids.has(shell.id)
@@ -137,7 +138,11 @@ const make = Effect.gen(function* () {
     );
     let invalidReason: string | undefined;
     if (discover && !current.outcome && discovered.length)
-      invalidReason = "Additional linked pull requests need to be included in the completion plan.";
+      // No-PR work has no manifest to extend, so the only way forward is removing the links.
+      invalidReason =
+        plan.kind === "no-pr"
+          ? "This work was commissioned without a PR, but pull requests are linked to its team threads. Unlink them before retrying, or have the manager commission PR delivery separately."
+          : "Additional linked pull requests need to be included in the completion plan.";
     if (!current.outcome && plan.kind === "pull-requests")
       for (const requirement of plan.requirements) {
         if (completion.waivers.some((waiver) => waiver.requirementId === requirement.id)) continue;
@@ -302,6 +307,27 @@ const make = Effect.gen(function* () {
     }
     let state = yield* store.snapshot;
     if (projectPaused(state, assignment)) return;
+    // A conclusion waiting on a delivery effect stays pending and runs on every wake, so check
+    // the cheap conditions before stopping shells and reading the PR host.
+    const deliveryPending = (current: FactoryAssignment) =>
+      store.pending.pipe(
+        Effect.map((pendingEffects) =>
+          pendingEffects.some(
+            (entry) =>
+              entry.id !== pending.id &&
+              "assignmentId" in entry.intent &&
+              entry.intent.assignmentId === current.id &&
+              ["delivery.publish", "delivery.merge", "delivery.capture"].includes(
+                entry.intent.type,
+              ),
+          ),
+        ),
+      );
+    if (
+      (yield* deliveryPending(assignment)) ||
+      !factoryCompletionEligibility(state, assignment).eligible
+    )
+      return;
     const expectedProjectThreadFence = yield* store.completionFence(assignment.projectId);
     const shells = yield* team(assignment);
     for (const shell of shells)
@@ -330,16 +356,7 @@ const make = Effect.gen(function* () {
       });
       return;
     }
-    if (
-      (yield* store.pending).some(
-        (entry) =>
-          entry.id !== pending.id &&
-          "assignmentId" in entry.intent &&
-          entry.intent.assignmentId === current.id &&
-          ["delivery.publish", "delivery.merge", "delivery.capture"].includes(entry.intent.type),
-      )
-    )
-      return;
+    if (yield* deliveryPending(current)) return;
     const eligible = factoryCompletionEligibility(state, current);
     if (!eligible.eligible) return;
     const retroId = factoryRetroId(current.id);
@@ -622,7 +639,7 @@ const make = Effect.gen(function* () {
         modelSelection: manager.modelSelection,
         messageId: MessageId.make(`factory:${retro.id}:team:${intent.teamReportDigest}`),
         text: [
-          `The implementation team completed its retrospective for ${assignment.title ?? assignment.id}.`,
+          `The ${assignment.integrationId ? "integration" : "implementation"} team completed its retrospective for ${assignment.title ?? assignment.id}.`,
           `Retro ${retro.id}; conversation ${retro.threadId}; accepted team report digest ${intent.teamReportDigest}.`,
           stableStringify(retro.reports.team),
           "Review the team's evidence and causal classification. Route project findings to configured triage tickets; escalate shared or uncertain causes without requiring a local patch first. Workflow-wide decisions require human review. Do not implement follow-ups or start new assignments from this invitation.",
@@ -681,7 +698,9 @@ const make = Effect.gen(function* () {
         messageId: MessageId.make(`${pending.id}:initial`),
         text: [
           `Lead the team retrospective for assignment ${assignment.id}. Retro ${retro.id}; conclusion ${retro.conclusionId}; evidence digest ${retro.evidenceDigest}.`,
-          "Implementation is over and its authority stays withdrawn. This is a fresh read-only evidence environment. Read its preserved team conversations and feedback, including cancellation reasons and human guidance. The source is a preserved candidate when available, otherwise the immutable starting snapshot; do not treat starting source as proof of final work.",
+          assignment.integrationId
+            ? "Integration is over and its authority stays withdrawn. This is a fresh read-only evidence environment. Read the preserved team conversations and feedback, including the shared merge operation, combined review and verification. The source is the frozen integration input: each participant's reviewed files, one folder per project under participants/. Your team delivered combined verification rather than its own PR; the confirmed shared merge is the delivered result."
+            : "Implementation is over and its authority stays withdrawn. This is a fresh read-only evidence environment. Read its preserved team conversations and feedback, including cancellation reasons and human guidance. The source is a preserved candidate when available, otherwise the immutable starting snapshot; do not treat starting source as proof of final work.",
           "Gather ground-level context from the existing team evidence. State what helped, what hindered and where each suspected cause belongs. Preserve uncertainty. Cancellation does not imply a process failure; no-process-change is a valid outcome.",
           "Report findings using finding.report with concrete evidence references. Raise active shared/system issues immediately through finding.escalate; do not require a project workaround first. Project-scoped followups may use followup.request to create triage tickets, without implementing them.",
           "Submit retro.team.submit with this retroId and exact conclusionId. Your commissioning manager will review the report and own disposition. Do not mutate source, weaken rules, publish PRs, merge, use generic issue tools, or spawn implementation agents.",

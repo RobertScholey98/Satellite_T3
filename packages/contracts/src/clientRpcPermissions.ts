@@ -56,7 +56,10 @@ export function clientRpcRequiredScopes(
     const payload = decodeFactoryDispatch(input);
     if (
       payload.command.type === "merge.group.start" ||
-      payload.command.type === "merge.operation.retry"
+      payload.command.type === "merge.operation.retry" ||
+      payload.command.type === "delivery.approve" ||
+      payload.command.type === "delivery.merge" ||
+      payload.command.type === "delivery.publish"
     )
       return [AuthOrchestrationOperateScope, AuthSourceControlWriteScope];
     return payload.command.type === "manager.configure" ||
@@ -65,6 +68,8 @@ export function clientRpcRequiredScopes(
       payload.command.type === "manager.models.configure" ||
       payload.command.type === "assignments.extend-grant" ||
       payload.command.type === "manager.approve-onboarding" ||
+      payload.command.type === "manager.retire" ||
+      payload.command.type === "manager.refresh-boundary" ||
       payload.command.type === "delivery.rules.configure" ||
       payload.command.type === "delivery.preview.configure" ||
       payload.command.type === "delivery.preview.publication.configure" ||

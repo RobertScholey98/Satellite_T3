@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
@@ -22,11 +23,13 @@ import * as Stream from "effect/Stream";
 import * as Result from "effect/Result";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ServerConfig from "../config.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { ProcessRunner } from "../processRunner.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { makeProviderAdapter } from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
@@ -36,9 +39,10 @@ import migrateFactory from "../persistence/Migrations/067_EngineeringFactory.ts"
 import * as FactoryModelAdmission from "./FactoryModelAdmission.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
+import { FactoryExecution, layer as factoryExecutionLayer } from "./FactoryExecution.ts";
 import type { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
+import * as FactorySourceTestkit from "./FactorySource.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("web");
@@ -393,10 +397,8 @@ describe("factory model admission", () => {
             .assertSelectionFor(childId, outsideModel, leadId)
             .pipe(Effect.flip);
           assert.equal(unapproved.code, "permission-denied");
-          const missing = yield* admission
-            .assertSelectionFor(childId, workerModel)
-            .pipe(Effect.flip);
-          assert.equal(missing.code, "execution-unavailable");
+          // Without its parent hint, nothing links an unpersisted thread to the factory.
+          yield* admission.assertSelectionFor(childId, outsideModel);
           const unauthorizedParent = yield* admission
             .assertSelectionFor(childId, managerModel, managerId)
             .pipe(Effect.flip);
@@ -738,7 +740,14 @@ describe("factory model admission", () => {
             { rootThreadId: leadId, parentThreadId: leadId, relationshipToParent: "subagent" },
             ProjectId.make("foreign"),
           );
-          for (const threadId of [childId, grandchildId, ThreadId.make("missing")]) {
+          // A deleted ancestor inside a managed project could hide a team member.
+          const orphanId = ThreadId.make("orphan");
+          yield* createThread(orphanId, {
+            rootThreadId: orphanId,
+            parentThreadId: ThreadId.make("deleted-parent"),
+            relationshipToParent: "subagent",
+          });
+          for (const threadId of [childId, grandchildId, orphanId]) {
             const denied = yield* admission
               .assertSelectionFor(threadId, leadModel)
               .pipe(Effect.flip);
@@ -747,5 +756,95 @@ describe("factory model admission", () => {
         }),
       );
     },
+  );
+
+  it.effect("admits a human fork of a managed lead as an ordinary thread", () =>
+    scenario(
+      snapshot,
+      Effect.gen(function* () {
+        const admission = yield* FactoryModelAdmission.FactoryModelAdmission;
+        const forkId = ThreadId.make("fork");
+        yield* createThread(forkId, {
+          rootThreadId: leadId,
+          parentThreadId: leadId,
+          relationshipToParent: "fork",
+        });
+        yield* admission.assertSelectionFor(forkId, outsideModel);
+        yield* admission.assertDelegationFor(forkId, outsideModel);
+      }),
+    ),
+  );
+});
+
+// The production factory services wrap every ordinary dispatch and turn start, so ordinary
+// threads must keep working with them present and no manager configured.
+const productionFactoryLayer = factoryExecutionLayer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      ServerConfig.layerTest(process.cwd(), { prefix: "factory-lineage-" }),
+      Layer.mock(ProjectStore.ProjectStoreV2)({}),
+      Layer.mock(ProcessRunner)({}),
+      Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+      FactorySourceTestkit.layerUnused,
+    ),
+  ),
+  Layer.provide(persistedStores),
+  Layer.provide(NodeServices.layer),
+);
+const unmanagedOrchestrationLayer = Layer.merge(
+  ProviderReplayHarness.layerWithRegistry(
+    { name: "factory-unmanaged-lineage" },
+    ProviderAdapterRegistry.layerFromAdapters([makeProviderAdapter(leadModel.instanceId)]),
+    { databaseLayer: SqlitePersistence.layerMemory, runEffectWorker: false },
+  ).pipe(Layer.provide(productionFactoryLayer)),
+  RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(productionFactoryLayer),
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: () => Effect.succeed(runtimeProvider),
+        }),
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: () => Effect.die("Unexpected checkout access"),
+        }),
+      ),
+    ),
+  ),
+).pipe(Layer.provideMerge(persistedStores));
+
+describe("ordinary threads with factory services and no manager", () => {
+  it.effect("lets a subagent of a deleted thread send and start a turn", () =>
+    Effect.gen(function* () {
+      const orphanId = ThreadId.make("orphan-worker");
+      const deletedParent = ThreadId.make("deleted-parent");
+      yield* createThread(orphanId, {
+        rootThreadId: deletedParent,
+        parentThreadId: deletedParent,
+        relationshipToParent: "subagent",
+      });
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("orphan:turn"),
+        threadId: orphanId,
+        messageId: MessageId.make("orphan:message"),
+        text: "Continue the delegated work",
+        attachments: [],
+        modelSelection: leadModel,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      assert.lengthOf((yield* projections.getThreadProjection(orphanId)).runs, 1);
+      const runtime = yield* RuntimePolicy.RuntimePolicyV2;
+      const orphan = yield* projections.getThread(orphanId);
+      const policy = yield* runtime.resolve({
+        thread: { ...orphan, worktreePath: "/ordinary-worktree" },
+        modelSelection: leadModel,
+      });
+      assert.equal(policy.cwd, "/ordinary-worktree");
+      assert.isUndefined(policy.factoryExecution);
+    }).pipe(Effect.provide(unmanagedOrchestrationLayer)),
   );
 });

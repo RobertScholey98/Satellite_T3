@@ -10,12 +10,15 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import observationMigration from "../persistence/Migrations/069_FactoryObservation.ts";
@@ -104,6 +107,35 @@ describe("FactoryStore", () => {
           assert.deepEqual(yield* reopened.snapshot, saved);
         }),
       ),
+  );
+
+  it.effect("publishes each revision to subscribers once, not again for a replayed command", () =>
+    run(
+      Effect.gen(function* () {
+        const store = yield* setup;
+        const subscribed = yield* Deferred.make<void>();
+        const revisions = yield* store.changes.pipe(
+          Stream.tap(() => Deferred.succeed(subscribed, undefined)),
+          Stream.map((snapshot) => snapshot.revision),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* Deferred.await(subscribed);
+        yield* store.commit(createInput);
+        yield* store.commit(createInput);
+        yield* store.observe({
+          sequence: 1,
+          command: {
+            type: "thread.launch.started",
+            commandId: CommandId.make("observed-after-replay"),
+            threadId: managerId,
+          },
+          now,
+        });
+        assert.deepEqual(yield* Fiber.join(revisions), [0, 1, 2]);
+      }),
+    ),
   );
 
   it.effect("replays a command without changing identities, revision, or launch intent", () =>

@@ -113,11 +113,13 @@ export const layerExecutor: Layer.Layer<
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
             return Effect.gen(function* () {
+              // Factory reconciliation decides whether a managed lead resumes. A
+              // managed delegated child is not continued and owes its parent a result.
               if (
                 Option.isSome(factory) &&
                 (yield* factory.value.membership(effect.threadId)) !== undefined
               )
-                return;
+                return yield* threads.recoverDelegatedTask(effect.threadId, sourceRunId);
               yield* continueRestartedRun({ threadId: effect.threadId, sourceRunId });
             }).pipe(
               Effect.provideService(ThreadManagementService.ThreadManagementService, threads),

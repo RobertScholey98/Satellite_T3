@@ -546,6 +546,34 @@ it.effect("a failed stop stays visible and retry confirms the same control gener
   }),
 );
 
+it.effect("a pause whose stop failed can still be resumed", () =>
+  scenario(
+    Effect.gen(function* () {
+      const factory = yield* FactoryService.FactoryService;
+      yield* factory.dispatch(human, {
+        type: "project.pause",
+        commandId: CommandId.make("pause"),
+        projectId,
+      });
+      yield* factory.drain;
+      const paused = (yield* factory.snapshot({})).controls[0]!;
+      assert.equal(paused.kind === "project-pause" ? paused.stop.status : null, "failed");
+      yield* factory.dispatch(human, {
+        type: "project.resume",
+        commandId: CommandId.make("resume"),
+        projectId,
+      });
+      yield* factory.drain;
+      const released = (yield* factory.snapshot({})).controls[0]!;
+      assert.equal(released.kind === "project-pause" ? released.status : null, "released");
+    }),
+    {
+      suspend: () =>
+        Effect.fail(new FactoryError({ code: "execution-unavailable", detail: "Docker down" })),
+    },
+  ),
+);
+
 it.effect(
   "project resume restores active work and waiting volumes without reviving an old interruption",
   () =>
@@ -1097,7 +1125,6 @@ const usabilityIntent: FactoryEffectIntent = {
   threadId: leadId,
   messageId: MessageId.make("check-current-delivery"),
   kind: "continuation",
-  sourceThreadId: managerId,
   purpose: { kind: "dependency-usability", dependencyId, deliveryId: "current-delivery" },
   text: "Check whether the host-confirmed supporting delivery is usable.",
 };
@@ -1119,6 +1146,7 @@ const recoveringAssignment: FactoryAssignment = {
 const recoveryIntent: FactoryEffectIntent = {
   ...usabilityIntent,
   messageId: MessageId.make("continue-current-recovery"),
+  sourceThreadId: managerId,
   purpose: { kind: "recovery", incidentId: "current-incident" },
   text: "Continue within the retained grant and recovery allowance.",
 };
@@ -1427,8 +1455,14 @@ it.effect.each(controlCases)("purpose-specific delivery respects $kind", (contro
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const store = yield* FactoryStore.FactoryStore;
       yield* factory.drain;
-      assert.equal((yield* projections.getThreadProjection(leadId)).messages.length, 0);
-      assert.equal((yield* store.pending).length, 2);
+      // A manager pause holds only the manager's own direction. The host-confirmed
+      // dependency check still reaches the team.
+      const managerOnly = control.kind === "manager-pause";
+      assert.deepEqual(
+        (yield* projections.getThreadProjection(leadId)).messages.map((message) => message.id),
+        managerOnly ? ["check-current-delivery"] : [],
+      );
+      assert.equal((yield* store.pending).length, managerOnly ? 1 : 2);
     }),
     {
       assignments: [recoveringAssignment],
@@ -1614,6 +1648,22 @@ const retroId = ThreadId.make("cancelled-assignment-retro");
 const retroCancelId = FactoryControlId.make("retro-cancellation");
 const retroAssignment: FactoryAssignment = {
   ...assignment,
+  // The team started work, so its cancellation still gets a team retro.
+  startingSource: {
+    id: FactorySourceId.make("retro-source"),
+    projectId,
+    revision: "base",
+    sourceDigest: "source",
+    branch: "main",
+    origin: "project",
+    capturedAt: now,
+    fileCount: 1,
+    stagedPaths: [],
+    unstagedPaths: [],
+    untrackedPaths: [],
+    deletedPaths: [],
+    excludedPaths: [],
+  },
   outcome: { kind: "cancelled", controlId: retroCancelId },
   status: "complete",
   wait: { kind: "delivered", reason: "Implementation concluded" },

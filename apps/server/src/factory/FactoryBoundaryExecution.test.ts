@@ -164,6 +164,7 @@ live(
       };
       const volumes: Array<string> = [];
       const sources = new Map<FactorySourceId, FactorySourceArtifact>();
+      let head: FactorySourceArtifact | undefined;
       yield* Effect.addFinalizer(() =>
         Effect.forEach(
           volumes,
@@ -623,7 +624,13 @@ live(
           ] as ReadonlyArray<readonly [string, string]>,
           ([name, initialContent]) =>
             Effect.gen(function* () {
-              const content = name === "src/value.cjs" ? "module.exports = 2;" : initialContent;
+              // Read-only files outside the controls may move on without blocking new work.
+              const content =
+                name === "src/value.cjs"
+                  ? "module.exports = 2;"
+                  : name === "src/unapproved.cjs"
+                    ? "module.exports = 'changed outside the assignment';"
+                    : initialContent;
               return {
                 path: name,
                 content: Buffer.from(content).toString("base64"),
@@ -697,6 +704,128 @@ live(
         assert.include(
           (yield* execution.prepare(freshInput).pipe(Effect.flip)).detail!,
           "protected control package.json",
+        );
+        // A committed control change blocks work until a human refreshes the baseline. The
+        // refreshed baseline then admits that work and its checks run the new controls.
+        const headChanges = new Map([
+          ["src/value.cjs", "module.exports = 3;"],
+          [
+            "tests/required.cjs",
+            "require('node:assert/strict').equal(require('../src/value.cjs'), 3);",
+          ],
+          ["package.json", "{}"],
+        ]);
+        const headFiles = yield* Effect.forEach(freshFiles, (file) =>
+          Effect.gen(function* () {
+            const content = headChanges.get(file.path);
+            if (content === undefined) return file;
+            const bytes = Buffer.from(content);
+            return {
+              ...file,
+              content: bytes.toString("base64"),
+              digest: Buffer.from(yield* crypto.digest("SHA-256", bytes)).toString("hex"),
+            };
+          }),
+        );
+        const headId = FactorySourceId.make(yield* crypto.randomUUIDv4);
+        head = {
+          ...freshArtifact,
+          source: {
+            ...freshArtifact.source,
+            id: headId,
+            revision: "d".repeat(40),
+            sourceDigest: "head-source-digest",
+          },
+          files: headFiles,
+          indexFiles: headFiles,
+        };
+        sources.set(headId, head);
+        const blockedAssignment: FactoryAssignment = {
+          ...assignment,
+          id: FactoryAssignmentId.make(`refresh-${profileId}`),
+          threadId: ThreadId.make("refresh-lead"),
+          startingSource: head.source,
+        };
+        state = {
+          ...state,
+          managers: state.managers.map((entry) => ({
+            ...entry,
+            boundaryId: boundary.id,
+            status: "active" as const,
+          })),
+          assignments: [...state.assignments, blockedAssignment],
+        };
+        const blockedInput = {
+          assignmentId: blockedAssignment.id,
+          threadId: blockedAssignment.threadId,
+          boundaryId: boundary.id,
+          grant: blockedAssignment.grant!,
+          startingSourceId: headId,
+        };
+        assert.include(
+          (yield* execution.prepare(blockedInput).pipe(Effect.flip)).detail!,
+          "refresh the control baseline",
+        );
+        const refreshCommand = { managerId, commandId: CommandId.make("refresh-baseline") };
+        const refreshed = yield* execution.refresh(refreshCommand);
+        assert.notEqual(refreshed.id, boundary.id);
+        assert.equal(refreshed.sourceRevision, "d".repeat(40));
+        assert.deepEqual(refreshed.controlPaths, [
+          "AGENTS.md",
+          "package.json",
+          "tests/required.cjs",
+        ]);
+        const refreshedControls = path.join(
+          config.stateDir,
+          "factory",
+          "boundaries",
+          refreshed.id,
+          "controls",
+        );
+        assert.equal(yield* fs.readFileString(path.join(refreshedControls, "package.json")), "{}");
+        assert.isFalse(yield* fs.exists(path.join(refreshedControls, "src", "unapproved.cjs")));
+        assert.deepEqual(yield* execution.refresh(refreshCommand), refreshed);
+        const rebound = { ...blockedAssignment.grant!, boundaryId: refreshed.id };
+        state = {
+          ...state,
+          managers: state.managers.map((entry) => ({ ...entry, boundaryId: refreshed.id })),
+          boundaries: [boundary, refreshed],
+          assignments: state.assignments.map((entry) =>
+            entry.id === blockedAssignment.id ? { ...entry, grant: rebound } : entry,
+          ),
+        };
+        const reboundQualification = yield* execution.prepare({
+          ...blockedInput,
+          boundaryId: refreshed.id,
+          grant: rebound,
+        });
+        if (reboundQualification.status !== "qualified")
+          return assert.fail(reboundQualification.reason);
+        volumes.push(
+          (yield* fs
+            .readFileString(
+              path.join(
+                config.stateDir,
+                "factory",
+                "execution",
+                reboundQualification.profileId,
+                "profile.json",
+              ),
+            )
+            .pipe(Effect.flatMap(decodeProfile))).assignmentWorkspace!.volumeName,
+        );
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === blockedAssignment.id
+              ? { ...entry, qualification: reboundQualification }
+              : entry,
+          ),
+        };
+        assert.equal(
+          (yield* execution.verify({ assignmentId: blockedAssignment.id, expectedEpoch: 0 }))
+            .gates[0]?.status,
+          "passed",
         );
         sources.set(freshId, freshArtifact);
         const freshQualification = yield* execution.prepare(freshInput);
@@ -998,10 +1127,11 @@ live(
           },
         };
         yield* execution.mutate(weaken);
+        // A rule change is verified with the controls it is authorized to change.
         assert.equal(
           (yield* execution.verify({ assignmentId: ruleAssignment.id, expectedEpoch: 0 })).gates[0]
             ?.status,
-          "failed",
+          "passed",
         );
         assert.equal(
           (yield* execution.verify({ assignmentId: assignment.id, expectedEpoch: 0 })).gates[0]
@@ -1109,8 +1239,14 @@ live(
                 Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
                 Layer.succeed(ProcessRunner.ProcessRunner, executionRunner),
                 Layer.mock(FactorySource)({
-                  readRevision: () =>
+                  capture: () =>
+                    head === undefined
+                      ? Effect.die("Missing head fixture")
+                      : Effect.succeed(head.source),
+                  readRevision: (repositoryRoot) =>
                     Effect.gen(function* () {
+                      if (head !== undefined && repositoryRoot === head.workspaceRoot)
+                        return { files: head.files, excludedPaths: [] };
                       const files = [];
                       for (const [name, text] of [
                         ["skills/SKILL.md", "Owned immutable skill"],

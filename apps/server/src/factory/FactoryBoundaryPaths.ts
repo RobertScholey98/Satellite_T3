@@ -23,13 +23,21 @@ export function factoryRelativePath(value: string): boolean {
   return factorySafeRelativePath(value) && admissibleFactorySourcePath(value);
 }
 
+// Names that tools load without an explicit import: test-runner hooks, interpreter startup files,
+// and dependency directories that resolve before the root ones. An agent that could create one of
+// these anywhere in the tree could silently disarm protected checks.
+const autoLoadedName =
+  /^(?:node_modules|bower_components|jspm_packages|vendor|site-packages|__pycache__|__mocks__|conftest\.py|sitecustomize\.py|usercustomize\.py|setup\.py|[\w.-]+\.pth|[\w.-]+\.pyc|setupTests\.\w+|[\w.-]+\.conf\.\w+|deno\.jsonc?|Gemfile|Rakefile|build\.rs)$/i;
+
 export function factoryProtectedPath(value: string): boolean {
   return value
     .split("/")
-    .some((part) =>
-      /^(?:\..*|AGENTS\.md|CLAUDE\.md|GEMINI\.md|SKILL\.md|package(?:-lock)?\.json|[\w.-]*lock(?:\.[\w.-]+)?|(?:ts|js)config(?:\.[\w.-]+)?\.json|(?:eslint|prettier|biome|oxlint|oxfmt|vite|vitest|webpack|rollup|babel|jest|playwright|cypress|turbo|nx|next|nuxt|svelte|astro|tailwind|postcss|commitlint|lint-staged)(?:\.[\w.-]+)?|[\w.-]+\.config\.[\w.-]+|Dockerfile(?:\..*)?|Makefile|[\w.-]+\.(?:ya?ml|toml|ini|cfg)|SATELLITE_DISCOVERY\.md)$/i.test(
-        part,
-      ),
+    .some(
+      (part) =>
+        autoLoadedName.test(part) ||
+        /^(?:\..*|AGENTS\.md|CLAUDE\.md|GEMINI\.md|SKILL\.md|package(?:-lock)?\.json|[\w.-]*lock(?:\.[\w.-]+)?|(?:ts|js)config(?:\.[\w.-]+)?\.json|(?:eslint|prettier|biome|oxlint|oxfmt|vite|vitest|webpack|rollup|babel|jest|playwright|cypress|turbo|nx|next|nuxt|svelte|astro|tailwind|postcss|commitlint|lint-staged)(?:\.[\w.-]+)?|[\w.-]+\.config\.[\w.-]+|Dockerfile(?:\..*)?|Makefile|[\w.-]+\.(?:ya?ml|toml|ini|cfg)|SATELLITE_DISCOVERY\.md)$/i.test(
+          part,
+        ),
     );
 }
 

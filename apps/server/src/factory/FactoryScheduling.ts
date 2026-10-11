@@ -61,7 +61,7 @@ export const factorySchedulingConfiguration = (state: FactorySnapshot, projectId
 const fail = (detail: string, code: FactoryError["code"] = "permission-denied") =>
   Result.fail(new FactoryError({ code, detail }));
 
-interface AuthorityOptions {
+export interface AuthorityOptions {
   readonly existingAssignmentId?: FactoryAssignmentId;
   readonly requiredAuthority?: FactoryScheduleAuthority;
 }
@@ -87,6 +87,9 @@ function eligibilityReasons(
     candidate.lifecycle.phase === "dismissed"
   )
     return ["This issue generation has already been consumed."];
+  // A ticket the tracker no longer offers must not keep outranking the rest of the queue.
+  if (candidate.lifecycle.phase === "held" && candidate.lifecycle.origin === "tracker")
+    return [candidate.lifecycle.reason];
   if (
     options.existingAssignmentId &&
     !state.assignments.some(
@@ -156,6 +159,8 @@ function eligibilityReasons(
     )
   )
     return ["This ticket generation already has an assignment."];
+  // Direct human assignment replaces readiness; commission checks still apply to the work itself.
+  if (options.requiredAuthority?.kind === "human") return [];
   const controls = preparation.work.controlPaths ?? [];
   if (
     (candidate.observation.ready &&
@@ -176,7 +181,7 @@ function eligibilityReasons(
   const rule = config.improvementRule;
   if (policy.projectImprovements !== "project-rule" || !rule)
     return [
-      "Project feedback remains in triage until a human authorizes it or an approved project rule applies.",
+      "Project feedback remains in triage until a human moves it out of triage into Ready, assigns it directly, or an approved project rule applies.",
     ];
   const followupId = candidate.source.followupId;
   const followup = state.followups.find(
@@ -239,6 +244,7 @@ export function factoryScheduleAuthority(
 ): Result.Result<FactoryScheduleAuthority, FactoryError> {
   const reasons = eligibilityReasons(state, candidate, options);
   if (reasons.length) return fail(reasons.join(" "));
+  if (options.requiredAuthority?.kind === "human") return Result.succeed(options.requiredAuthority);
   const config = factorySchedulingConfiguration(state, candidate.projectId)!;
   const work = factorySchedulePreparation(candidate)!.work;
   const authority: FactoryScheduleAuthority =
@@ -273,11 +279,14 @@ export function factoryScheduleAuthority(
 export function factoryScheduleEligibility(
   state: FactorySnapshot,
   candidate: FactoryScheduleCandidate,
+  options: AuthorityOptions = {},
 ): { readonly eligible: true } | { readonly eligible: false; readonly reasons: readonly string[] } {
-  const reasons = eligibilityReasons(state, candidate);
+  const reasons = eligibilityReasons(state, candidate, options);
   if (reasons.length) return { eligible: false, reasons };
   const priority = factorySchedulePreparation(candidate)!.priority;
+  // Priorities are the manager's ordering; a direct human assignment overrides them.
   if (
+    options.requiredAuthority?.kind !== "human" &&
     state.scheduleCandidates.some(
       (other) =>
         other.id !== candidate.id &&
@@ -298,10 +307,12 @@ export function validateFactorySchedulingCommission(
   command: Extract<FactoryDecisionCommand, { type: "assignment.commission" }>,
   admission: FactorySchedulingAdmission | undefined,
 ): Result.Result<FactoryScheduleCandidate, FactoryError> {
+  const human = admission?.authority.kind === "human" ? admission.authority : undefined;
   if (
     !command.candidateId ||
     command.dependencyId ||
-    command.authorizationMessageId ||
+    (command.authorizationMessageId ?? null) !== (human?.messageId ?? null) ||
+    (human && human.commandId !== command.commandId) ||
     !admission ||
     admission.candidateId !== command.candidateId
   )
@@ -311,7 +322,24 @@ export function validateFactorySchedulingCommission(
   const candidate = state.scheduleCandidates.find((entry) => entry.id === command.candidateId);
   if (!candidate || candidate.managerId !== command.managerId)
     return fail("The selected ticket does not belong to this manager.");
-  const eligibility = factoryScheduleEligibility(state, candidate);
+  const messageId = human?.messageId;
+  if (
+    messageId &&
+    state.assignments.some(
+      (entry) =>
+        (entry.authorization?.kind === "manager" && entry.authorization.messageId === messageId) ||
+        (entry.scheduling?.authority.kind === "human" &&
+          entry.scheduling.authority.messageId === messageId),
+    )
+  )
+    return fail(
+      "That human request already authorized a commission. Ask the human before commissioning more work.",
+    );
+  const eligibility = factoryScheduleEligibility(
+    state,
+    candidate,
+    human ? { requiredAuthority: human } : {},
+  );
   if (!eligibility.eligible) return fail(eligibility.reasons.join(" "));
   const config = factorySchedulingConfiguration(state, candidate.projectId)!;
   if (
@@ -338,9 +366,10 @@ export function validateFactorySchedulingCommission(
     )
       return fail("Fresh tracker readiness proof is required.");
   } else if (
-    candidate.source.kind !== "project-improvement" ||
-    admission.authority.ruleId !== config.improvementRule?.id ||
-    admission.authority.followupId !== candidate.source.followupId
+    admission.authority.kind === "project-improvement" &&
+    (candidate.source.kind !== "project-improvement" ||
+      admission.authority.ruleId !== config.improvementRule?.id ||
+      admission.authority.followupId !== candidate.source.followupId)
   )
     return fail("The project's current improvement rule must supply the authority.");
   const authority = factoryScheduleAuthority(state, candidate, {
@@ -466,7 +495,10 @@ export function decideFactoryScheduling(
       if (actor.kind !== "system") return fail("Only the host can record tracker observations.");
       const config = factorySchedulingConfiguration(state, command.projectId);
       const manager = state.managers.find(
-        (entry) => entry.role === "project" && entry.projectId === command.projectId,
+        (entry) =>
+          entry.role === "project" &&
+          entry.projectId === command.projectId &&
+          entry.status !== "retired",
       );
       if (
         !config ||

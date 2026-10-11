@@ -15,6 +15,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
+import * as Struct from "effect/Struct";
 
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
@@ -415,7 +416,19 @@ it.effect(
         }
         const managed = yield* guard.snapshot(invocation(managerId));
         assert.deepStrictEqual(managed.guidance, snapshot.guidance);
-        assert.deepStrictEqual(managed.controls, snapshot.controls);
+        // Managers see their own pauses, without the host's internal resume targets.
+        assert.deepStrictEqual(
+          managed.controls,
+          snapshot.controls.flatMap((entry): FactorySnapshot["controls"] => {
+            if (entry.kind === "manager-pause")
+              return entry.managerId === managerId
+                ? [Struct.omit(entry, ["resumeThreadIds", "resumeQueues"])]
+                : [];
+            if (entry.kind === "project-pause")
+              return [Struct.omit(entry, ["resumeThreadIds", "resumeQueues"])];
+            return [entry];
+          }),
+        );
         assert.deepStrictEqual(managed.dependencies, snapshot.dependencies);
         assert.deepStrictEqual(managed.assignments, snapshot.assignments);
       }),

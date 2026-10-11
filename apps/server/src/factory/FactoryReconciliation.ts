@@ -5,6 +5,7 @@ import {
   type FactoryDeliveryEvidence,
   type FactoryReconciliationObservation,
   type PullRequestRef,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import { factoryDeliveryWaitReason } from "./FactoryDelivery.ts";
@@ -14,6 +15,14 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 
+import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import { EffectOutboxV2 } from "../orchestration-v2/EffectOutbox.ts";
+import {
+  continueRestartedRun,
+  restartContinuationEffectId,
+  restartContinuationMessageId,
+  restartPrepareCommandId,
+} from "../orchestration-v2/RestartContinuation.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { PullRequestService } from "../pullRequest/PullRequestService.ts";
@@ -43,7 +52,49 @@ export const layer = Layer.effect(
     const threads = yield* ThreadManagementService;
     const access = yield* FactoryControlAccess;
     const events = yield* EventSinkV2;
+    const outbox = yield* EffectOutboxV2;
     const pullRequests = yield* Effect.serviceOption(PullRequestService);
+    /**
+     * Resumes a lead whose turn a server restart cut, as restart continuation
+     * does for opted-in threads. A resumed turn cut again by a crash is not
+     * resumed: that may be a crash loop, so it goes through bounded recovery.
+     */
+    const resumeAfterRestart = Effect.fn("FactoryReconciliation.resumeAfterRestart")(function* (
+      threadId: ThreadId,
+    ) {
+      const { runs } = yield* threads.getThreadRecords(threadId, ["runs"]);
+      const run = runs.reduce<(typeof runs)[number] | undefined>(
+        (latest, candidate) =>
+          candidate.status !== "queued" && (!latest || runRanAfter(candidate, latest))
+            ? candidate
+            : latest,
+        undefined,
+      );
+      if (run?.status !== "cancelled") return false;
+      const intent = yield* outbox.get(restartContinuationEffectId(run.id));
+      if (
+        Option.isNone(intent) ||
+        (run.restartContinuationOfRunId !== undefined &&
+          intent.value.commandId !== restartPrepareCommandId(run.id))
+      )
+        return false;
+      const resumed = yield* continueRestartedRun({
+        threadId,
+        sourceRunId: run.id,
+        managed: true,
+      }).pipe(Effect.provideService(ThreadManagementService, threads), Effect.result);
+      if (Result.isFailure(resumed)) {
+        yield* Effect.logWarning("Could not resume a lead after a server restart", {
+          threadId,
+          cause: resumed.failure,
+        });
+        return false;
+      }
+      const records = yield* threads.getThreadRecords(threadId, ["messages"], {
+        messageIds: [restartContinuationMessageId(run.id)],
+      });
+      return records.messages.length > 0;
+    }, Effect.mapError(failure));
     const linked = Effect.fn("FactoryReconciliation.linked")(function* (
       assignment: FactoryAssignment,
       ref: PullRequestRef,
@@ -70,6 +121,7 @@ export const layer = Layer.effect(
         added = false;
         for (const child of projectThreads) {
           if (
+            child.lineage.relationshipToParent === "subagent" &&
             child.lineage.parentThreadId !== null &&
             team.has(child.lineage.parentThreadId) &&
             !team.has(child.id)
@@ -396,6 +448,7 @@ export const layer = Layer.effect(
           changed = false;
           for (const thread of projectThreads)
             if (
+              thread.lineage.relationshipToParent === "subagent" &&
               thread.lineage.parentThreadId !== null &&
               team.has(thread.lineage.parentThreadId) &&
               !team.has(thread.id)
@@ -455,6 +508,13 @@ export const layer = Layer.effect(
           (yield* events.latestSequence().pipe(Effect.mapError(failure))) !== observedSequence
         )
           return;
+        if (yield* resumeAfterRestart(assignment.threadId)) {
+          yield* finish({
+            kind: "active",
+            reason: "The lead resumed the turn a server restart interrupted.",
+          });
+          return;
+        }
         yield* finish({
           kind: "outstanding",
           reason:

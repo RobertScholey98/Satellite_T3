@@ -108,6 +108,80 @@ const apply = (
 ) =>
   Result.getOrThrow(decideFactoryRetros({ state, command, actor, now: deliveryNow, ...context })!);
 const id = CommandId.make("retro-command");
+const cancelled = (patch: Partial<FactoryAssignment> = {}): FactorySnapshot => {
+  const state = fixture();
+  const controlId = FactoryControlId.make("cancel");
+  return {
+    ...state,
+    assignments: [
+      { ...state.assignments[0]!, ...patch, outcome: { kind: "cancelled", controlId } },
+    ],
+    controls: [
+      {
+        kind: "cancellation",
+        id: controlId,
+        generation: 1,
+        assignmentId: deliveryIds.assignment,
+        managerId: deliveryIds.manager,
+        requestedAt: deliveryNow,
+        updatedAt: deliveryNow,
+        stop: { status: "confirmed", stoppedAt: deliveryNow },
+        reason: { text: "Priority changed", recordedAt: deliveryNow },
+      },
+    ],
+  };
+};
+const conclude = (state: FactorySnapshot) => {
+  const frozen = apply(state, {
+    type: "assignment.completion.begin",
+    commandId: id,
+    assignmentId: deliveryIds.assignment,
+    expectedStateRevision: state.revision,
+  }).state;
+  return apply(frozen, {
+    type: "assignment.concluded",
+    expectedProjectThreadFence: "pure-state-test",
+    commandId: id,
+    assignmentId: deliveryIds.assignment,
+    expectedStateRevision: frozen.revision,
+    conclusion: {
+      kind: "cancelled",
+      id: "cancelled-conclusion",
+      evidenceDigest: "cancelled-evidence",
+      concludedAt: deliveryNow,
+      controlId: FactoryControlId.make("cancel"),
+      reasonRecordedAt: deliveryNow,
+    },
+    retroThreadId: ThreadId.make("cancelled-retro"),
+    modelSelection: deliverySelection,
+  });
+};
+const reportFinding = (state: FactorySnapshot, findingId: string) =>
+  apply(
+    state,
+    {
+      type: "finding.report",
+      commandId: id,
+      assignmentId: deliveryIds.assignment,
+      findingId,
+      finding: {
+        problem: `Problem ${findingId}`,
+        impact: "Rework",
+        evidence: [{ kind: "thread", threadId: deliveryIds.lead }],
+        activeBlocker: false,
+        route: {
+          suspectedCause: "project",
+          uncertainty: "Confirmed",
+          owner: { kind: "project-manager", projectId: deliveryIds.project },
+          requiredAuthority: "Project manager",
+          rationale: "Local gap",
+        },
+        containmentOf: null,
+      },
+    },
+    { kind: "thread", threadId: deliveryIds.lead },
+    { evidenceValidated: true },
+  ).state;
 
 describe("factory assignment conclusions", () => {
   it("keeps implementation frozen when stopping fails and retries the same conclusion", () => {
@@ -702,5 +776,129 @@ describe("factory assignment conclusions", () => {
       { kind: "human" },
     ).state;
     assert.equal(finished.retros[0]!.reports.phase, "complete");
+  });
+  it("concludes work cancelled before it qualified with a manager retro only", () => {
+    const unqualified = cancelled({
+      qualification: { status: "unavailable", reason: "Preparing" },
+    });
+    const concluded = conclude(unqualified);
+    const retro = concluded.state.retros[0]!;
+    assert.equal(retro.execution.status, "stopped");
+    assert.equal(retro.reports.phase, "manager-pending");
+    if (retro.reports.phase !== "manager-pending") return;
+    assert.deepEqual(concluded.effects, [
+      {
+        type: "retro.manager-notify",
+        retroId: retro.id,
+        teamReportDigest: retro.reports.team.digest,
+      },
+    ]);
+    assert.isFalse(
+      concluded.state.auxiliaryThreads.some((entry) => entry.threadId === retro.threadId),
+    );
+    const finished = apply(
+      concluded.state,
+      {
+        type: "retro.manager.submit",
+        commandId: id,
+        retroId: retro.id,
+        teamReportDigest: retro.reports.team.digest,
+        report: {
+          summary: "Cancelled before work started",
+          learning: { kind: "no-process-change", reason: "Priority change" },
+          dispositions: [],
+        },
+      },
+      { kind: "human" },
+    ).state;
+    assert.equal(finished.retros[0]!.reports.phase, "complete");
+    assert.equal(finished.assignments[0]!.status, "complete");
+  });
+  it("lets a failed retro for unstarted cancelled work move on when retried", () => {
+    const concluded = conclude(cancelled()).state;
+    // Retros recorded for unstarted work by older builds failed to prepare; retry must move on.
+    const failed = {
+      ...concluded,
+      assignments: concluded.assignments.map(({ startingSource: _source, ...entry }) => entry),
+      retros: concluded.retros.map((entry) => ({
+        ...entry,
+        execution: { status: "failed" as const, reason: "Could not prepare" },
+      })),
+    };
+    const retried = apply(
+      failed,
+      { type: "retro.retry", commandId: id, retroId: failed.retros[0]!.id },
+      { kind: "human" },
+    );
+    assert.equal(retried.state.retros[0]!.reports.phase, "manager-pending");
+    assert.equal(retried.effects[0]?.type, "retro.manager-notify");
+    assert.equal(
+      retried.state.auxiliaryThreads.find((entry) => entry.threadId === failed.retros[0]!.threadId)
+        ?.status,
+      "complete",
+    );
+  });
+  it("lets the human acknowledge an escalation", () => {
+    const recorded = reportFinding(fixture(), "active");
+    const escalated = apply(
+      recorded,
+      { type: "finding.escalate", commandId: id, findingId: "active", summary: "Blocked on host" },
+      { kind: "thread", threadId: deliveryIds.lead },
+    ).state;
+    const acknowledge = {
+      type: "finding.escalation.acknowledge" as const,
+      commandId: id,
+      findingId: "active",
+    };
+    assert.isTrue(
+      Result.isFailure(
+        decideFactoryRetros({
+          state: escalated,
+          command: acknowledge,
+          actor: { kind: "thread", threadId: deliveryIds.manager },
+          now: deliveryNow,
+        })!,
+      ),
+    );
+    const acknowledged = apply(escalated, acknowledge, { kind: "human" }).state;
+    assert.equal(acknowledged.findings[0]!.escalation?.acknowledgedAt, deliveryNow);
+    assert.equal(acknowledged.findings[0]!.escalation?.summary, "Blocked on host");
+  });
+  it("caps findings at the number a manager retro can dispose of", () => {
+    let state = fixture();
+    for (let index = 0; index < 30; index++) state = reportFinding(state, `finding-${index}`);
+    assert.throws(() => reportFinding(state, "finding-30"));
+  });
+  it("files one follow-up ticket per finding", () => {
+    const state = reportFinding(fixture(), "lint");
+    const request = (followupId: string) => ({
+      type: "followup.request" as const,
+      commandId: id,
+      assignmentId: deliveryIds.assignment,
+      followupId,
+      findingIds: ["lint"],
+      draft: {
+        title: "Enforce import convention",
+        problem: "Missing rule",
+        impact: "Inconsistent imports",
+        proposedOutcome: "Rule catches violations",
+        acceptanceCriteria: ["Invalid import rejected"],
+        evidence: [],
+        owner: "Project manager",
+        requiredAuthority: "Separate rule-change task",
+        suspectedCause: "Project safeguard gap",
+        origin: { assignmentId: deliveryIds.assignment, findingIds: ["lint"] },
+        containmentOf: null,
+      },
+    });
+    const filed = apply(state, request("team"), { kind: "thread", threadId: deliveryIds.lead });
+    assert.equal(filed.state.followups.length, 1);
+    const duplicate = decideFactoryRetros({
+      state: filed.state,
+      command: request("manager"),
+      actor: { kind: "thread", threadId: deliveryIds.manager },
+      now: deliveryNow,
+    })!;
+    assert.isTrue(Result.isFailure(duplicate));
   });
 });

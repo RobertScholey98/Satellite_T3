@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  FactoryError,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -259,6 +260,8 @@ it.effect.each([
   [false, true, false],
   [true, false, false],
   [true, undefined, true],
+  [false, undefined, true],
+  [true, false, true],
 ] as const)(
   "records restart intent for opt-in %s, project override %s, factory ownership %s",
   ([enabled, projectOverride, managed]) =>
@@ -316,8 +319,10 @@ it.effect.each([
           (event) => event.type === "run.updated" && event.payload.status === "cancelled",
         ),
       );
-      assert.lengthOf(committed!.effects, !managed && (projectOverride ?? enabled) ? 1 : 0);
-      if (!managed && (projectOverride ?? enabled))
+      // Managed work records its intent regardless of the opt-in; the factory decides.
+      const recorded = managed || (projectOverride ?? enabled);
+      assert.lengthOf(committed!.effects, recorded ? 1 : 0);
+      if (recorded)
         assert.deepEqual(committed!.effects[0]?.request, {
           type: "provider-runtime.continue",
           sourceRunId: runId,
@@ -383,6 +388,62 @@ it.effect("does not duplicate delivery and yields to newer user work or opt-out"
       ),
     );
     assert.lengthOf(commands, 1);
+    // The factory resumes managed work under its own controls, not the opt-in.
+    yield* continueRestartedRun({ threadId, sourceRunId: runId, managed: true }).pipe(
+      Effect.provide(
+        Layer.merge(
+          layerThreads,
+          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
+        ),
+      ),
+    );
+    assert.lengthOf(commands, 2);
+  }),
+);
+
+it.effect("one failing thread does not stop startup recovery for the others", () =>
+  Effect.gen(function* () {
+    const unreadable = ThreadId.make("thread:restart-unreadable");
+    const unresolved = ThreadId.make("thread:restart-unresolved");
+    const committed: Array<Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]> = [];
+    const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.mock(FactoryControlAccess)({
+            membership: (id) =>
+              id === unresolved
+                ? Effect.fail(new FactoryError({ code: "execution-unavailable" }))
+                : Effect.succeed(undefined),
+          }),
+          ServerSettings.layerTest({}),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([unreadable, unresolved, threadId]),
+            getRuntimeRecoveryProjection: (id) =>
+              id === unreadable
+                ? Effect.die("unreadable projection")
+                : Effect.succeed(makeProjection()),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            commitCommand: (input) => {
+              committed.push(input);
+              return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
+            },
+          }),
+          IdAllocator.layer,
+          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+            runRecoveryOnce: Effect.succeed(false),
+          }),
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          }),
+        ),
+      ),
+    );
+    const summary = yield* recovery.reconcile("startup");
+    // The thread whose membership lookup failed is still cut, as an unmanaged thread.
+    assert.lengthOf(committed, 2);
+    assert.equal(summary.terminalizedRuns, 2);
+    assert.isTrue(committed.every((input) => input.effects.length === 0));
   }),
 );
 

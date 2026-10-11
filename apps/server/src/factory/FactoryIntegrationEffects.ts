@@ -100,6 +100,7 @@ const make = Effect.gen(function* () {
       changed = false;
       for (const thread of listed)
         if (
+          thread.lineage.relationshipToParent === "subagent" &&
           thread.lineage.parentThreadId &&
           descendants.has(thread.lineage.parentThreadId) &&
           !descendants.has(thread.id)

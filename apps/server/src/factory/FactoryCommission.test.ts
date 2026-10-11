@@ -355,6 +355,51 @@ it.effect("accepts manager commissioning only against an actual direct human req
   ),
 );
 
+it.effect("consumes a direct human request on its first commission", () =>
+  scenario(
+    Effect.gen(function* () {
+      const { factory, manager } = yield* start;
+      const actor = { kind: "thread", threadId: manager.id } as const;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const ask = (key: string) =>
+        threads.sendToThread({
+          projectId,
+          threadId: manager.id,
+          commandId: CommandId.make(`ask-${key}`),
+          messageId: MessageId.make(`request-${key}`),
+          text: "Improve the app module.",
+          attachments: [],
+          mode: "queue",
+          createdBy: "user",
+          creationSource: "web",
+        });
+      yield* ask("first");
+      yield* factory.dispatch(actor, work(manager.id, "first"));
+      const repeated = yield* factory.dispatch(actor, work(manager.id, "second")).pipe(Effect.flip);
+      assert.equal(repeated.code, "permission-denied");
+      const named = yield* factory
+        .dispatch(actor, {
+          ...work(manager.id, "named"),
+          authorizationMessageId: MessageId.make("request-first"),
+        })
+        .pipe(Effect.flip);
+      assert.equal(named.code, "permission-denied");
+      yield* ask("second");
+      const accepted = yield* factory.dispatch(actor, work(manager.id, "second"));
+      yield* factory.drain;
+      const assignment = (yield* factory.snapshot({})).assignments.find(
+        (entry) => entry.id === accepted.assignmentId,
+      );
+      assert.deepEqual(
+        assignment?.authorization?.kind === "manager"
+          ? assignment.authorization.messageId
+          : undefined,
+        MessageId.make("request-second"),
+      );
+    }),
+  ),
+);
+
 it.effect("keeps a policy-reduction wait when a late preparation failure arrives", () =>
   Effect.gen(function* () {
     const preparing = yield* Deferred.make<void>();

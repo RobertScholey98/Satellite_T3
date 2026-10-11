@@ -182,6 +182,7 @@ const settingsCommands: ReadonlyArray<FactoryCommand> = [
     maxBatchItems: 20,
     maxSummaryChars: 16000,
     routineBatchesPerDay: 2,
+    urgentBatchesPerDay: 4,
   },
   { type: "improvement.flush", commandId: CommandId.make("improvement-flush") },
   {
@@ -256,6 +257,7 @@ const settingsCommands: ReadonlyArray<FactoryCommand> = [
     managerId,
     overrides: { delivery: "project-rule" },
   },
+  { type: "manager.retire", commandId: CommandId.make("retire"), managerId },
   {
     type: "manager.approve-onboarding",
     commandId: CommandId.make("approve"),
@@ -267,6 +269,7 @@ const settingsCommands: ReadonlyArray<FactoryCommand> = [
       gates: [],
     },
   },
+  { type: "manager.refresh-boundary", commandId: CommandId.make("refresh"), managerId },
   {
     type: "models.defaults.configure",
     commandId: CommandId.make("models"),
@@ -333,6 +336,20 @@ describe("factory RPC authority", () => {
             commandId: CommandId.make("retry"),
             operationId: "operation",
           },
+          ...(["delivery.approve", "delivery.merge", "delivery.publish"] as const).map(
+            (type): FactoryCommand => {
+              const revision = {
+                commandId: CommandId.make(type),
+                assignmentId: FactoryAssignmentId.make("assignment"),
+                revisionId: "revision",
+              };
+              return type === "delivery.approve"
+                ? { ...revision, type, expectedHeadSha: "head", bundleDigest: "bundle" }
+                : type === "delivery.publish"
+                  ? { ...revision, type, title: "Feature", body: "Ready" }
+                  : { ...revision, type };
+            },
+          ),
         ];
         for (const command of writes) {
           const error = yield* operator[method]({ command }).pipe(Effect.flip);
@@ -370,6 +387,9 @@ describe("factory RPC authority", () => {
           "merge.operation.stop",
           "merge.group.start",
           "merge.operation.retry",
+          "delivery.approve",
+          "delivery.merge",
+          "delivery.publish",
         ]);
       }).pipe(Effect.scoped),
   );
@@ -498,7 +518,9 @@ describe("factory RPC authority", () => {
           "policy.defaults.configure",
           "assignments.extend-grant",
           "manager.configure",
+          "manager.retire",
           "manager.approve-onboarding",
+          "manager.refresh-boundary",
           "models.defaults.configure",
           "manager.models.configure",
           "assignment.commission",

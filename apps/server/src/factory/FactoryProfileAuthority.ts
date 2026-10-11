@@ -1,6 +1,7 @@
 import { FactoryError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
@@ -14,20 +15,29 @@ const isFactoryError = Schema.is(FactoryError);
 const decodeDeliveryHold = Schema.decodeUnknownEffect(
   Schema.fromJsonString(FactoryDeliveryExecutionHold),
 );
+const decodeIntegrationHold = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ holdId: Schema.String })),
+);
 
 export const assertFactoryProfileActive = Effect.fn("assertFactoryProfileActive")(
   function* (profile: FactoryExecutionProfile | undefined) {
     if (profile?.integration !== undefined) {
       const fs = yield* FileSystem.FileSystem;
-      if (
-        (yield* fs.exists(profile.integration.stopPath)) &&
-        (yield* fs.readDirectory(profile.integration.stopPath)).length > 0
-      )
+      const path = yield* Path.Path;
+      const stopPath = profile.integration.stopPath;
+      for (const marker of (yield* fs.exists(stopPath)) ? yield* fs.readDirectory(stopPath) : []) {
+        // A shared merge freeze stops the team through state admission, so its frozen lead can
+        // still recover the operation. Volume helpers and checks refuse every marker.
+        const hold = yield* fs
+          .readFileString(path.join(stopPath, marker))
+          .pipe(Effect.flatMap(decodeIntegrationHold), Effect.option);
+        if (Option.isSome(hold) && hold.value.holdId.startsWith("merge-operation:")) continue;
         return yield* new FactoryError({
           code: "execution-unavailable",
           detail:
             "This integration preparation is held. Refresh its approved inputs before continuing.",
         });
+      }
     }
     if (profile?.retro !== undefined) {
       const fs = yield* FileSystem.FileSystem;

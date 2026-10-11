@@ -36,9 +36,11 @@ import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
+import { resolveFactoryLineage } from "./FactoryLineage.ts";
 import { scopeFactoryCollaboration } from "./FactoryCollaborationReadModel.ts";
 import { scopeFactoryIntegration } from "./FactoryIntegrationReadModel.ts";
 import { scopeFactoryMerge } from "./FactoryMergeReadModel.ts";
+import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
 import { factoryIntegrationVerificationReadiness } from "./FactoryIntegration.ts";
 import { FactoryIntegrationExecution } from "./FactoryIntegrationExecution.ts";
 
@@ -131,7 +133,11 @@ const isIntegrationRefresh = Schema.is(
 const isMergeOperationRequest = Schema.is(
   Schema.Struct({
     command: Schema.Struct({
-      type: Schema.Literals(["merge.operation.reconcile", "merge.operation.retry"]),
+      type: Schema.Literals([
+        "merge.operation.reconcile",
+        "merge.operation.retry",
+        "merge.operation.escalate",
+      ]),
       operationId: Schema.String,
     }),
   }),
@@ -153,37 +159,23 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       if (invocation.thread === undefined) return undefined;
       const state = yield* store.snapshot.pipe(Effect.mapError(unavailable));
-      const visited = new Set<ThreadId>();
-      let threadId = invocation.thread.threadId;
-      for (;;) {
-        if (visited.has(threadId) || visited.size >= 64) return yield* unavailable();
-        visited.add(threadId);
-        const manager = state.managers.find((entry) => entry.threadId === threadId);
-        const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === threadId);
-        const assignment = state.assignments.find(
-          (entry) =>
-            entry.threadId === threadId ||
-            entry.previousLeadThreadIds?.includes(threadId) ||
-            entry.id === auxiliary?.assignmentId,
-        );
-        if (manager !== undefined) {
-          return { ownerThreadId: threadId, manager, assignment: undefined, auxiliary: undefined };
-        }
-        if (assignment !== undefined) {
-          const owner = state.managers.find((entry) => entry.id === assignment.managerId);
-          if (owner === undefined) return yield* unavailable();
-          if (owner.role === "system" && !factorySharedAssignmentOwned(state, assignment))
-            return yield* unavailable();
-          return { ownerThreadId: threadId, manager: owner, assignment, auxiliary };
-        }
-        const thread = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
-        if (thread === null || thread.deletedAt !== null) return yield* unavailable();
-        if (thread.lineage.parentThreadId === null) {
-          if (thread.lineage.relationshipToParent === "subagent") return yield* unavailable();
-          return undefined;
-        }
-        threadId = thread.lineage.parentThreadId;
-      }
+      const match = yield* resolveFactoryLineage({
+        state,
+        threadId: invocation.thread.threadId,
+        getThreadShell: (threadId) => threads.getThreadShell(threadId),
+      }).pipe(Effect.mapError(unavailable));
+      if (match === undefined) return undefined;
+      const { threadId: ownerThreadId, manager, assignment, auxiliary } = match;
+      if (manager !== undefined)
+        return { ownerThreadId, manager, assignment: undefined, auxiliary: undefined };
+      const owner = state.managers.find((entry) => entry.id === assignment?.managerId);
+      if (
+        assignment === undefined ||
+        owner === undefined ||
+        (owner.role === "system" && !factorySharedAssignmentOwned(state, assignment))
+      )
+        return yield* unavailable();
+      return { ownerThreadId, manager: owner, assignment, auxiliary };
     });
 
   const managedCaller = (invocation: McpInvocationScope) =>
@@ -233,17 +225,26 @@ const make = Effect.gen(function* () {
           member.auxiliary === undefined &&
           member.assignment?.integrationId !== undefined &&
           member.assignment.threadId === invocation.thread?.threadId;
-        if (
-          integrationLead &&
-          (toolName === "factory_merge_group_get" ||
-            toolName === "factory_merge_operation_action" ||
-            (toolName === "factory_dispatch" && isMergeOperationRequest(payload)))
-        )
-          return;
+        const mergeOperationTool =
+          toolName === "factory_merge_group_get" ||
+          toolName === "factory_merge_operation_action" ||
+          (toolName === "factory_dispatch" && isMergeOperationRequest(payload));
         if (invocation.thread !== undefined)
           yield* controls
             .assertExecution(invocation.thread.threadId)
             .pipe(Effect.mapError(unavailable));
+        // Execution admits a frozen lead only so it can inspect and recover its shared merge.
+        if (
+          integrationLead &&
+          member.assignment?.integrationId !== undefined &&
+          currentFactoryMergeOperation(
+            yield* store.snapshot.pipe(Effect.mapError(unavailable)),
+            member.assignment.integrationId,
+          ) &&
+          !mergeOperationTool &&
+          toolName !== "factory_snapshot"
+        )
+          return yield* denied();
         if (member.manager.role === "system" && member.assignment === undefined) {
           if (
             invocation.thread?.threadId !== member.manager.threadId ||
@@ -357,6 +358,7 @@ const make = Effect.gen(function* () {
               "factory_merge_group_get",
               "factory_merge_group_review",
               "factory_merge_group_start",
+              "factory_merge_operation_action",
             ].includes(toolName)
           ) &&
           ![
@@ -376,7 +378,7 @@ const make = Effect.gen(function* () {
           !scopedCommunication
         )
           return yield* denied();
-        if (toolName === "factory_merge_group_get" && integrationLead) return;
+        if (integrationLead && mergeOperationTool) return;
         if (
           ["factory_integration_get", "factory_integration_read_patch"].includes(toolName) &&
           member.auxiliary === undefined &&
@@ -543,6 +545,9 @@ const make = Effect.gen(function* () {
           invocation.thread.threadId !== member.assignment.threadId
         )
           return yield* denied();
+        yield* controls
+          .assertExecution(invocation.thread.threadId)
+          .pipe(Effect.mapError(unavailable));
         const state = yield* store.snapshot;
         const group = state.mergeGroups.find((entry) => entry.id === groupId);
         if (
@@ -786,15 +791,19 @@ const make = Effect.gen(function* () {
         )
           return yield* denied();
         yield* controls.assertExecution(member.manager.threadId).pipe(Effect.mapError(unavailable));
-        const entries = (yield* store.snapshot).managers
-          .filter((entry) => entry.id !== member.manager.id)
-          .map((entry) => ({
-            managerId: entry.id,
-            name: entry.name,
-            role: entry.role,
-            projectId: entry.projectId,
-            status: entry.status,
-          }));
+        const entries = (yield* store.snapshot).managers.flatMap((entry) =>
+          entry.id === member.manager.id || entry.status === "retired"
+            ? []
+            : [
+                {
+                  managerId: entry.id,
+                  name: entry.name,
+                  role: entry.role,
+                  projectId: entry.projectId,
+                  status: entry.status,
+                },
+              ],
+        );
         const page = entries.slice(cursor, cursor + 30);
         return {
           entries: page,
@@ -845,31 +854,6 @@ const make = Effect.gen(function* () {
         )
           return yield* denied();
         if (invocation.thread === undefined) return yield* denied();
-        if (
-          command.type === "merge.operation.reconcile" ||
-          command.type === "merge.operation.retry"
-        ) {
-          const member = yield* managedCaller(invocation);
-          const operation = (yield* store.snapshot).mergeOperations.find(
-            (entry) => entry.id === command.operationId,
-          );
-          if (
-            member.auxiliary ||
-            !operation ||
-            !member.assignment?.integrationId ||
-            member.assignment.id !== operation.integrationAssignmentId ||
-            invocation.thread.threadId !== member.assignment.threadId
-          )
-            return yield* denied();
-          return yield* factory.dispatch(
-            {
-              kind: "thread",
-              threadId: invocation.thread.threadId,
-              assignmentId: member.assignment.id,
-            },
-            command,
-          );
-        }
         yield* controls
           .assertExecution(invocation.thread.threadId)
           .pipe(Effect.mapError(unavailable));

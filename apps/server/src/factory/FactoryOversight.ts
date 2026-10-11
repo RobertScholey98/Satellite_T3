@@ -238,11 +238,14 @@ export function decideFactoryOversight(
     kind: "coordination",
     text,
   });
+  // Only manager-authored continuations name the manager as sender, so a manager
+  // pause holds them. Human and host continuations still reach the team.
   const continuation = (
     assignment: FactoryAssignment,
     incidentId: string,
     text: string,
     recoveryIncidentId?: string,
+    sourceThreadId?: ThreadId,
   ): FactoryEffectIntent => ({
     type: "thread.deliver",
     threadId: assignment.threadId,
@@ -253,7 +256,7 @@ export function decideFactoryOversight(
     ...(recoveryIncidentId === undefined
       ? {}
       : { purpose: { kind: "recovery" as const, incidentId: recoveryIncidentId } }),
-    sourceThreadId: assignment.managerId,
+    ...(sourceThreadId === undefined ? {} : { sourceThreadId }),
     text,
   });
   const reconcile = (assignment: FactoryAssignment, triggerId: string): FactoryEffectIntent => ({
@@ -354,7 +357,6 @@ export function decideFactoryOversight(
       threadId: assignment.threadId,
       messageId: MessageId.make(`factory:${dependency.id}:usability:${delivery.id}`),
       kind: "continuation",
-      sourceThreadId: assignment.managerId,
       purpose: {
         kind: "dependency-usability",
         dependencyId: dependency.id,
@@ -1221,6 +1223,7 @@ export function decideFactoryOversight(
                 incident.id,
                 `Independent diagnosis is available in ${incident.diagnosisThreadId ?? "the recorded escalation evidence"}. Continue within the unchanged assignment scope and grants using this plan:\n${command.plan}`,
                 incident.id,
+                actor.kind === "human" ? undefined : assignment.managerId,
               ),
             ],
       );

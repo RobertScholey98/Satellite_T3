@@ -168,6 +168,7 @@ const make = Effect.gen(function* () {
           changed = false;
           for (const shell of shells) {
             if (
+              shell.lineage.relationshipToParent === "subagent" &&
               shell.lineage.parentThreadId !== null &&
               team.has(shell.lineage.parentThreadId) &&
               !team.has(shell.id)

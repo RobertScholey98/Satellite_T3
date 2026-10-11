@@ -1,10 +1,8 @@
 import {
   FactoryError,
   type FactoryDiscoveryQualification,
-  type FactoryManager,
   type FactoryWorkflowVersion,
   type ModelSelection,
-  type OrchestrationV2AppThread,
   type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -28,6 +26,7 @@ import { FactoryStore } from "./FactoryStore.ts";
 import * as FactoryModelAdmission from "./FactoryModelAdmission.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import {
+  FACTORY_CODEX_DOCKERFILE,
   FACTORY_CODEX_IMAGE,
   factoryDockerArguments,
   FactoryExecutionProfile,
@@ -37,12 +36,13 @@ import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 import { FactorySource } from "./FactorySource.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 import { IntegrationAdmissionArtifact, integrationDigest } from "./FactoryIntegrationRuntime.ts";
-import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
+import { factoryMergeFreezeBlocks } from "./FactoryMergeOperation.ts";
 import {
   factoryIntegrationAccessBlocked,
   factoryIntegrationManifestReasons,
 } from "./FactoryIntegration.ts";
 import { factoryGrantChangesSkills } from "./FactoryBoundaryPaths.ts";
+import { resolveFactoryLineage } from "./FactoryLineage.ts";
 
 export { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 
@@ -182,7 +182,7 @@ const make = Effect.gen(function* () {
         return yield* new QualificationError({
           detail: "Discovery requires Docker Linux containers.",
         });
-      const imageId = yield* run(
+      const inspectImage = run(
         "docker",
         [
           "--context",
@@ -193,8 +193,34 @@ const make = Effect.gen(function* () {
           "--format",
           "{{.Id}}",
         ],
-        `Build the ${FACTORY_CODEX_IMAGE} discovery image on this environment before retrying.`,
+        `The ${FACTORY_CODEX_IMAGE} discovery image could not be built on this environment.`,
       );
+      // Qualification is human-started, so building the pinned image here is expected.
+      const buildImage = Effect.gen(function* () {
+        const output = yield* runner
+          .run({
+            command: "docker",
+            args: ["--context", dockerContext, "build", "--tag", FACTORY_CODEX_IMAGE, "-"],
+            stdin: FACTORY_CODEX_DOCKERFILE,
+            timeout: "20 minutes",
+          })
+          .pipe(
+            Effect.mapError(
+              () =>
+                new QualificationError({
+                  detail: `The ${FACTORY_CODEX_IMAGE} discovery image could not be built.`,
+                }),
+            ),
+          );
+        if (output.code !== 0) {
+          const reason = output.stderr.trim().split("\n").at(-1) ?? "unknown error";
+          return yield* new QualificationError({
+            detail: `Building the ${FACTORY_CODEX_IMAGE} discovery image failed: ${reason}`,
+          });
+        }
+        return yield* inspectImage;
+      });
+      const imageId = yield* inspectImage.pipe(Effect.catch(() => buildImage));
       if (!/^sha256:[a-f0-9]{64}$/.test(imageId))
         return yield* new QualificationError({
           detail: "The discovery image identity is invalid.",
@@ -289,43 +315,23 @@ const make = Effect.gen(function* () {
     function* (threadId: ThreadId, pendingParentThreadId?: ThreadId) {
       yield* controls.assertExecution(threadId, pendingParentThreadId);
       const state = yield* store.snapshot;
-      let current: ThreadId | null = threadId;
-      const visited = new Set<ThreadId>();
-      let systemManager: Extract<FactoryManager, { role: "system" }> | undefined;
-      let assignment: (typeof state.assignments)[number] | undefined;
-      let auxiliary: (typeof state.auxiliaryThreads)[number] | undefined;
-      while (current !== null) {
-        if (visited.has(current)) return yield* new FactoryError({ code: "execution-unavailable" });
-        visited.add(current);
-        const manager = state.managers.find((entry) => entry.threadId === current);
-        if (manager?.role === "system") systemManager = manager;
-        auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === current);
-        assignment = state.assignments.find(
-          (entry) =>
-            entry.threadId === current ||
-            entry.previousLeadThreadIds?.includes(current!) ||
-            entry.id === auxiliary?.assignmentId ||
-            (entry.managerId === manager?.id && entry.kind === "onboarding"),
+      const match = yield* resolveFactoryLineage({
+        state,
+        threadId,
+        pendingParentThreadId,
+        getThreadShell: (id) =>
+          projections
+            .getThreadShell(id)
+            .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause }))),
+      });
+      if (match === undefined) return undefined;
+      const { manager, auxiliary } = match;
+      const systemManager = manager?.role === "system" ? manager : undefined;
+      const assignment =
+        match.assignment ??
+        state.assignments.find(
+          (entry) => entry.managerId === manager?.id && entry.kind === "onboarding",
         );
-        if (assignment !== undefined || manager !== undefined) break;
-        const thread: OrchestrationV2AppThread | undefined = yield* projections
-          .getThread(current)
-          .pipe(
-            Effect.catchTags({
-              ProjectionStoreThreadNotFoundError: (cause) =>
-                visited.size === 1 ? Effect.succeed(undefined) : Effect.fail(cause),
-            }),
-          );
-        if (thread === undefined) {
-          if (visited.size === 1 && pendingParentThreadId !== undefined) {
-            current = pendingParentThreadId;
-            continue;
-          }
-          return undefined;
-        }
-        current = thread.lineage?.parentThreadId ?? null;
-      }
-      if (current === null) return undefined;
       if (systemManager !== undefined)
         yield* models.assertSelectionFor(threadId, systemManager.modelSelection);
       const flow = assignment?.delivery?.flow;
@@ -400,7 +406,7 @@ const make = Effect.gen(function* () {
       )
         return yield* new FactoryError({ code: "execution-unavailable" });
       if (assignment?.integrationId !== undefined && auxiliary?.kind !== "retrospective") {
-        if (currentFactoryMergeOperation(state, assignment.integrationId))
+        if (factoryMergeFreezeBlocks(state, assignment, threadId))
           return yield* new FactoryError({
             code: "permission-denied",
             detail: "The shared merge operation has frozen this integration team.",

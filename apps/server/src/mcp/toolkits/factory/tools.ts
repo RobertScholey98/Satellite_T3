@@ -97,11 +97,13 @@ export const FactoryToolkit = Toolkit.make(
   }),
   Tool.make("factory_merge_operation_action", {
     description:
-      "As the exact integration lead, reconcile actual host outcomes or retry the same reviewed merge operation when its current gates and remaining attempt allowance permit. Reconcile is read-only at the host and never grants another submission. Retry preserves confirmed members and attempt counts. Unknown outcomes, changed revisions, and revoked authority cannot be bypassed. Read factory_merge_group_get for the operation and recommendation first.",
+      "As the exact integration lead, reconcile actual host outcomes, retry the same reviewed merge operation when its current gates and remaining attempt allowance permit, or escalate it to the human. Reconcile is read-only at the host and never grants another submission. Retry preserves confirmed members and attempt counts. Escalate holds further submissions and records your reason and recommendation for the human; use it when recovery is unsafe or exhausted, or when a merged member should be reverted. Reverting needs the human's decision and a separately authorized task. While the merge is frozen these merge tools and factory_snapshot are your only factory tools. Unknown outcomes, changed revisions, and revoked authority cannot be bypassed. Read factory_merge_group_get for the operation and recommendation first.",
     parameters: Schema.Struct({
       commandId: CommandId,
       operationId: TrimmedNonEmptyString,
-      action: Schema.Literals(["reconcile", "retry"]),
+      action: Schema.Literals(["reconcile", "retry", "escalate"]),
+      reason: Schema.optionalKey(TrimmedNonEmptyString),
+      recommendation: Schema.optionalKey(TrimmedNonEmptyString),
     }),
     success: FactoryCommandResult,
     failure,

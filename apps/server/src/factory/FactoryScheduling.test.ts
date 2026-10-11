@@ -590,6 +590,107 @@ describe("factory scheduling authority", () => {
       }).eligible,
     );
   });
+  it("does not let a ticket that left the board hold back lower-priority work", () => {
+    const state = fixture();
+    const candidate = state.scheduleCandidates[0]!;
+    const lifecycle = candidate.lifecycle;
+    if (lifecycle.phase !== "prepared") return assert.fail("Expected prepared work");
+    const removed = {
+      ...candidate,
+      id: "removed",
+      canonicalIssueKey: "other-ticket",
+      lifecycle: {
+        phase: "held" as const,
+        origin: "tracker" as const,
+        reason: "The ticket is no longer available on the configured board.",
+        preparation: { ...lifecycle.preparation, priority: 100 },
+      },
+    };
+    const queue = { ...state, scheduleCandidates: [candidate, removed] };
+    assert.deepEqual(factoryScheduleEligibility(queue, removed), {
+      eligible: false,
+      reasons: ["The ticket is no longer available on the configured board."],
+    });
+    assert.deepEqual(factoryScheduleEligibility(queue, candidate), { eligible: true });
+  });
+  it("lets a direct human assignment reserve a ticket that is not Ready", () => {
+    const base = fixture();
+    const c = base.scheduleCandidates[0]!;
+    const lifecycle = c.lifecycle;
+    if (lifecycle.phase !== "prepared") return assert.fail("Expected prepared work");
+    const urgent = {
+      ...c,
+      id: "urgent",
+      canonicalIssueKey: "other-ticket",
+      lifecycle: { ...lifecycle, preparation: { ...lifecycle.preparation, priority: 100 } },
+    };
+    const state = {
+      ...base,
+      scheduleCandidates: [
+        urgent,
+        { ...c, observation: { ...c.observation, ready: false, columnId: "backlog" } },
+      ],
+    };
+    const messageId = MessageId.make("human-request");
+    const commandId = id();
+    const human = { kind: "human" as const, commandId, messageId };
+    const run = (
+      authority: FactorySchedulingAdmission["authority"],
+      authorizationMessageId?: MessageId,
+    ) =>
+      decide({
+        state,
+        actor: manager,
+        command: {
+          type: "assignment.commission",
+          commandId,
+          managerId: deliveryIds.manager,
+          candidateId: c.id,
+          ...(authorizationMessageId ? { authorizationMessageId } : {}),
+          ...work,
+        },
+        allocation: {
+          managerThreadId: deliveryIds.manager,
+          leadThreadId: ThreadId.make("new-lead"),
+          assignmentId: FactoryAssignmentId.make("human-assignment"),
+        },
+        schedulingAdmission: { ...admission(state), authority },
+        now: deliveryNow,
+      });
+    // Without the human's authority the ticket is not Ready, so it stays unscheduled.
+    assert.isTrue(Result.isFailure(run(admission(state).authority)));
+    // The cited message must be the one the host verified.
+    assert.isTrue(Result.isFailure(run(human, MessageId.make("other-message"))));
+    const committed = Result.getOrThrow(run(human, messageId)).state;
+    assert.deepEqual(committed.assignments[0]!.scheduling?.authority, human);
+    const selected = committed.scheduleCandidates.find((entry) => entry.id === c.id)!;
+    assert.equal(selected.lifecycle.phase, "commissioned");
+    // The ticket is now reserved, so scheduling cannot start a second team on it.
+    assert.isTrue(Result.isFailure(commission(committed)));
+    // The same human request cannot authorize another ticket.
+    const reused = decide({
+      state: committed,
+      actor: manager,
+      command: {
+        type: "assignment.commission",
+        commandId: CommandId.make("reuse"),
+        managerId: deliveryIds.manager,
+        candidateId: urgent.id,
+        authorizationMessageId: messageId,
+        ...work,
+      },
+      schedulingAdmission: {
+        ...admission(committed),
+        candidateId: urgent.id,
+        authority: { ...human, commandId: CommandId.make("reuse") },
+      },
+      now: deliveryNow,
+    });
+    assert.include(
+      Result.isFailure(reused) ? (reused.failure.detail ?? "") : "",
+      "already authorized",
+    );
+  });
   it("retains the issue tombstone across repeated host observations and new configuration", () => {
     const state = Result.getOrThrow(commission(fixture())).state;
     const candidate = state.scheduleCandidates[0]!;

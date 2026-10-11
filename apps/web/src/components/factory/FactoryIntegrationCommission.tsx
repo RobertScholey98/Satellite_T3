@@ -43,7 +43,7 @@ export function FactoryIntegrationCommission({
   const projectIds = [...new Set(participants.map((entry) => entry.projectId))];
   const options = projectIds.map((id) => ({
     value: id,
-    label: state?.managers.find((entry) => entry.projectId === id)?.name ?? id,
+    label: state?.managers.findLast((entry) => entry.projectId === id)?.name ?? id,
   }));
   const complexities = [
     { value: "small", label: "Small" },

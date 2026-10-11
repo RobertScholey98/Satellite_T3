@@ -231,7 +231,10 @@ function ManagerForm({
       .get(activeSelection.instanceId)
       ?.some((model) => model.slug === activeSelection.model && !model.isUnavailable);
   const alreadyManaged = environment.data?.managers.some(
-    (manager) => manager.role === "project" && manager.projectId === project.id,
+    (manager) =>
+      manager.role === "project" &&
+      manager.projectId === project.id &&
+      manager.status !== "retired",
   );
   const canEditSetup =
     manager !== undefined &&

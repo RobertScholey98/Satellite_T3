@@ -1,4 +1,5 @@
 import {
+  CommandId,
   FactoryAssignment,
   FactoryDependency,
   FactorySnapshot,
@@ -11,6 +12,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   factoryDependencyStatus,
+  factoryEscalationAwaitsHuman,
   factoryOversightSummary,
   factoryRecoveryAllowance,
   factoryThreadOversightTarget,
@@ -207,5 +209,63 @@ describe("factory thread oversight target", () => {
         other,
       ),
     ).toEqual({ kind: "direct", assignment: { ...assignment, previousLeadThreadIds: [previous] } });
+  });
+});
+
+describe("factory escalations awaiting the human", () => {
+  const finding = {
+    id: "finding",
+    assignmentId: assignment.id,
+    reporterThreadId: null,
+    problem: "Shared host drops messages",
+    impact: "Team blocked",
+    evidence: [{ kind: "thread" as const, threadId: assignment.threadId }],
+    activeBlocker: true,
+    route: {
+      suspectedCause: "shared-system" as const,
+      uncertainty: "Unknown",
+      owner: { kind: "system-remit" as const },
+      requiredAuthority: "Human",
+      rationale: "Reproduced",
+    },
+    containmentOf: null,
+    history: [],
+    escalation: { summary: "Blocked", commandId: CommandId.make("escalate"), escalatedAt: now },
+    createdAt: now,
+    updatedAt: now,
+  };
+  const escalated = { ...snapshot, findings: [finding] };
+
+  it("waits for the human when no system manager is active, until acknowledged", () => {
+    expect(factoryEscalationAwaitsHuman(escalated, assignment.id)).toBe(true);
+    expect(
+      factoryEscalationAwaitsHuman(
+        {
+          ...escalated,
+          findings: [{ ...finding, escalation: { ...finding.escalation, acknowledgedAt: now } }],
+        },
+        assignment.id,
+      ),
+    ).toBe(false);
+  });
+
+  it("leaves escalations to an active system manager", () => {
+    const project = snapshot.managers[0]!;
+    const system = {
+      ...escalated,
+      managers: [
+        ...escalated.managers,
+        {
+          ...project,
+          id: ThreadId.make("system"),
+          threadId: ThreadId.make("system"),
+          role: "system" as const,
+          projectId: null,
+          workspaceProjectId: ProjectId.make("project"),
+          qualification: { status: "qualified" as const, profileId: "profile", checkedAt: now },
+        },
+      ],
+    };
+    expect(factoryEscalationAwaitsHuman(system, assignment.id)).toBe(false);
   });
 });

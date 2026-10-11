@@ -23,7 +23,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
-import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
+import { FACTORY_CODEX_DOCKERFILE, FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import * as FactorySource from "./FactorySource.ts";
 
@@ -139,6 +139,9 @@ it.effect(
         "uncommitted workflow",
       );
       const successfulProcess = yield* git(["--version"]);
+      const failedProcess = yield* git(["rev-parse", "--verify", "--quiet", "missing-ref"]);
+      let imageBuilt = false;
+      const imageBuilds: Array<string | undefined> = [];
       let probeCount = 0;
       let acceptProbe = true;
       const executionRunner = ProcessRunner.ProcessRunner.of({
@@ -151,8 +154,14 @@ it.effect(
           else if (args.includes("context") && args.includes("inspect"))
             stdout = "unix:///var/run/docker.sock";
           else if (args.includes("info")) stdout = "linux";
-          else if (args.includes("image")) stdout = `sha256:${"a".repeat(64)}`;
-          else {
+          else if (args.includes("build")) {
+            imageBuilds.push(input.stdin);
+            imageBuilt = true;
+            stdout = "";
+          } else if (args.includes("image")) {
+            if (!imageBuilt) return Effect.succeed({ ...failedProcess, stdout: "" });
+            stdout = `sha256:${"a".repeat(64)}`;
+          } else {
             probeCount++;
             stdout = acceptProbe ? "factory-boundary-ok" : "";
           }
@@ -243,10 +252,13 @@ it.effect(
         );
         if (process.env.SATELLITE_FACTORY_LIVE_TEST !== "1") {
           assert.equal(probeCount, 1);
+          // A missing runner image is built from the bundled recipe, once.
+          assert.deepStrictEqual(imageBuilds, [FACTORY_CODEX_DOCKERFILE]);
           acceptProbe = false;
           const rejected = yield* execution.qualify(input);
           assert.equal(rejected.status, "unavailable");
           assert.equal(probeCount, 2);
+          assert.equal(imageBuilds.length, 1);
         }
       }).pipe(
         Effect.provide(

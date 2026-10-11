@@ -127,6 +127,10 @@ export class FactoryBoundaryExecution extends Context.Service<
       readonly managerId: ThreadId;
       readonly configuration: FactoryBoundaryConfiguration;
     }) => Effect.Effect<FactoryBoundary, FactoryError>;
+    readonly refresh: (input: {
+      readonly managerId: ThreadId;
+      readonly commandId: CommandId;
+    }) => Effect.Effect<FactoryBoundary, FactoryError>;
     readonly approveShared: (input: {
       readonly managerId: ThreadId;
       readonly projectId: ProjectId;
@@ -410,6 +414,195 @@ const make = Effect.gen(function* () {
       );
   });
 
+  // Stores a baseline (source, controls, boundary record) and proves the confined write boundary
+  // against it. Callers hold the operation permit.
+  const establish = Effect.fn("FactoryBoundaryExecution.establish")(function* (input: {
+    readonly identity: unknown;
+    readonly configuration: FactoryBoundaryConfiguration;
+    readonly files: ReadonlyArray<typeof CapturedFile.Type>;
+    readonly profile: FactoryExecutionProfile;
+    readonly projectId: ProjectId;
+    readonly workflow: FactoryWorkflowVersion;
+    readonly profileId: string;
+    readonly sourceRevision: string;
+  }) {
+    const { configuration, files, profile } = input;
+    const existing = new Set(files.map((file) => file.path));
+    if (configuration.protectedCreatablePaths?.some((file) => existing.has(file)))
+      return yield* unavailable(
+        "Protected creation paths must name absent files; use an exact protected edit for existing files.",
+      );
+    if (
+      [...configuration.writablePaths, ...configuration.protectedPaths].some(
+        (file) => !existing.has(file),
+      )
+    )
+      return yield* unavailable(
+        "Every approved source and protected input must identify an existing regular file in the baseline snapshot.",
+      );
+    const protectedPaths = [
+      ...new Set([
+        ...configuration.protectedPaths,
+        ...files
+          .filter(
+            (file) =>
+              factoryProtectedPath(file.path) || !configuration.writablePaths.includes(file.path),
+          )
+          .map((file) => file.path),
+      ]),
+    ].sort();
+    const controlPaths = [
+      ...new Set([
+        ...configuration.protectedPaths,
+        ...files.filter((file) => factoryProtectedPath(file.path)).map((file) => file.path),
+      ]),
+    ].sort();
+    if (configuration.writablePaths.some((file) => protectedPaths.includes(file)))
+      return yield* denied();
+    const id = FactoryBoundaryId.make(yield* identity(input.identity));
+    const directory = path.join(root, "boundaries", id);
+    const existingBoundary = yield* fs.exists(path.join(directory, "boundary.json"));
+    const boundary = existingBoundary
+      ? yield* readBoundary(id)
+      : FactoryBoundary.make({
+          ...configuration,
+          protectedPaths,
+          controlPaths,
+          id,
+          projectId: input.projectId,
+          sourceRevision: input.sourceRevision,
+          workflow: input.workflow,
+          profileId: input.profileId,
+          approvedAt: DateTime.formatIso(yield* DateTime.now),
+        });
+    if (!existingBoundary) {
+      yield* writeFiles(path.join(directory, "source"), files);
+      yield* writeFiles(
+        path.join(directory, "controls"),
+        files.filter((file) => controlPaths.includes(file.path)),
+      );
+    }
+    const proofFiles = existingBoundary ? yield* filesAt(path.join(directory, "source")) : files;
+    const proofSource = boundary.writablePaths[0] ?? "SATELLITE_FACTORY_WRITE_PROBE.txt";
+    if (boundary.protectedPaths.length === 0)
+      return yield* unavailable("Boundary qualification requires an existing protected file.");
+    const proofId = yield* crypto.randomUUIDv4;
+    const proofDirectory = path.join(directory, "qualification", proofId);
+    const proofProfile = FactoryExecutionProfile.make({
+      ...profile,
+      runtimePath: path.join(proofDirectory, "runtime"),
+      assignmentWorkspace: {
+        assignmentId: `approval-${proofId}`,
+        volumeName: `satellite-factory-proof-${proofId}`,
+        grantEpoch: 0,
+        boundaryId: boundary.id,
+        controlsPath: path.join(directory, "controls"),
+        revocationPath: path.join(proofDirectory, "authority", "revoked.json"),
+        workerUid: Math.max(process.getuid?.() ?? 10001, 1),
+        workerGid: Math.max(process.getgid?.() ?? 10001, 1),
+      },
+    });
+    yield* fs.makeDirectory(path.join(proofProfile.runtimePath, "codex"), { recursive: true });
+    yield* fs.makeDirectory(path.dirname(proofProfile.assignmentWorkspace!.revocationPath), {
+      recursive: true,
+    });
+    yield* docker(proofProfile, ["volume", "create", proofProfile.assignmentWorkspace!.volumeName]);
+    yield* Effect.gen(function* () {
+      yield* helper(proofProfile, {
+        kind: "initialize",
+        files: proofFiles
+          .map((file) => ({
+            ...file,
+            writable: boundary.writablePaths.includes(file.path),
+          }))
+          .concat(
+            boundary.writablePaths.length
+              ? []
+              : [{ path: proofSource, content: "Cg==", digest: "", writable: true }],
+          ),
+      });
+      yield* proveWorkspace(proofProfile, proofSource, boundary.protectedPaths[0]!);
+    }).pipe(
+      Effect.ensuring(
+        docker(proofProfile, ["volume", "rm", proofProfile.assignmentWorkspace!.volumeName]).pipe(
+          Effect.ignore,
+        ),
+      ),
+    );
+    yield* fs.writeFileString(path.join(directory, "boundary.json"), json(boundary));
+    return boundary;
+  });
+
+  // Re-derives a project manager's baseline from the project's current commit, keeping the
+  // approved configuration. This is how merged rule changes and dependency updates are adopted.
+  const refresh = Effect.fn("FactoryBoundaryExecution.refresh")(
+    function* (input: Parameters<FactoryBoundaryExecution["Service"]["refresh"]>[0]) {
+      const state = yield* store.snapshot;
+      const manager = state.managers.find((entry) => entry.id === input.managerId);
+      const previous = state.boundaries.find((entry) => entry.id === manager?.boundaryId);
+      if (manager?.role !== "project" || previous?.projectId !== manager.projectId)
+        return yield* denied();
+      const captured = yield* sources.capture({
+        requestId: CommandId.make(`factory-boundary-refresh:${input.commandId}`),
+        projectId: manager.projectId,
+      });
+      const { workspaceRoot } = yield* sources.read(captured.id);
+      const { files } = yield* sources.readRevision(workspaceRoot, captured.revision);
+      const present = new Set(files.map((file) => file.path));
+      const missing = previous.gates
+        .flatMap((gate) => gate.protectedInputs)
+        .find((file) => !present.has(file));
+      if (missing !== undefined)
+        return yield* unavailable(
+          `Required check input ${missing} is missing at commit ${captured.revision}. Restore it before refreshing the control baseline.`,
+        );
+      const configuration: FactoryBoundaryConfiguration = {
+        protectedPaths: [
+          ...new Set([
+            ...(previous.controlPaths ?? previous.protectedPaths),
+            ...(previous.protectedCreatablePaths ?? []),
+          ]),
+        ]
+          .filter((file) => present.has(file))
+          .sort(),
+        writablePaths: previous.writablePaths.filter((file) => present.has(file)),
+        creatableDirectories: previous.creatableDirectories,
+        gates: previous.gates,
+        ...(previous.protectedCreatablePaths === undefined
+          ? {}
+          : {
+              protectedCreatablePaths: previous.protectedCreatablePaths.filter(
+                (file) => !present.has(file),
+              ),
+            }),
+        ...(previous.skillRoots === undefined ? {} : { skillRoots: previous.skillRoots }),
+        ...(previous.verification === undefined ? {} : { verification: previous.verification }),
+      };
+      if (!factoryValidConfiguration(configuration))
+        return yield* unavailable(
+          `The approved editable files or checks no longer exist at commit ${captured.revision}. Restore them before refreshing the control baseline.`,
+        );
+      const original = yield* readProfile(previous.profileId);
+      const workflow = yield* workflows.resolve({
+        profile: original,
+        expectedVersion: previous.workflow,
+      });
+      return yield* establish({
+        // Keyed by the command so a replayed refresh reuses its stored baseline.
+        identity: { kind: "refresh", managerId: manager.id, commandId: input.commandId },
+        configuration,
+        files,
+        profile: { ...original, workflow, workflowSnapshotPath: workflow.snapshotPath },
+        projectId: previous.projectId,
+        workflow: previous.workflow,
+        profileId: previous.profileId,
+        sourceRevision: captured.revision,
+      });
+    },
+    mutex.withPermit,
+    Effect.mapError(preserve),
+  );
+
   const approve = Effect.fn("FactoryBoundaryExecution.approve")(
     function* (
       input:
@@ -464,114 +657,19 @@ const make = Effect.gen(function* () {
         return yield* unavailable(
           "The discovery snapshot does not identify its committed source revision.",
         );
-      const files = yield* filesAt(profile.projectSnapshotPath);
-      const existing = new Set(files.map((file) => file.path));
-      if (input.configuration.protectedCreatablePaths?.some((file) => existing.has(file)))
-        return yield* unavailable(
-          "Protected creation paths must name absent files; use an exact protected edit for existing files.",
-        );
-      if (
-        [...input.configuration.writablePaths, ...input.configuration.protectedPaths].some(
-          (file) => !existing.has(file),
-        )
-      )
-        return yield* unavailable(
-          "Every approved source and protected input must identify an existing regular file in the discovery snapshot.",
-        );
-      const protectedPaths = [
-        ...new Set([
-          ...input.configuration.protectedPaths,
-          ...files
-            .filter(
-              (file) =>
-                factoryProtectedPath(file.path) ||
-                !input.configuration.writablePaths.includes(file.path),
-            )
-            .map((file) => file.path),
-        ]),
-      ].sort();
-      if (input.configuration.writablePaths.some((file) => protectedPaths.includes(file)))
-        return yield* denied();
-      const id = FactoryBoundaryId.make(
-        yield* identity({
+      return yield* establish({
+        identity: {
           profileId: discovery.qualification.profileId,
           configuration: input.configuration,
-        }),
-      );
-      const directory = path.join(root, "boundaries", id);
-      const existingBoundary = yield* fs.exists(path.join(directory, "boundary.json"));
-      const boundary = existingBoundary
-        ? yield* readBoundary(id)
-        : FactoryBoundary.make({
-            ...input.configuration,
-            protectedPaths,
-            id,
-            projectId: discovery.projectId,
-            sourceRevision,
-            workflow: discovery.workflow,
-            profileId: discovery.qualification.profileId,
-            approvedAt: DateTime.formatIso(yield* DateTime.now),
-          });
-      if (!existingBoundary) {
-        yield* writeFiles(path.join(directory, "source"), files);
-        yield* writeFiles(
-          path.join(directory, "controls"),
-          files.filter((file) => protectedPaths.includes(file.path)),
-        );
-      }
-      const proofFiles = existingBoundary ? yield* filesAt(path.join(directory, "source")) : files;
-      const proofSource = boundary.writablePaths[0] ?? "SATELLITE_FACTORY_WRITE_PROBE.txt";
-      if (boundary.protectedPaths.length === 0)
-        return yield* unavailable("Boundary qualification requires an existing protected file.");
-      const proofId = yield* crypto.randomUUIDv4;
-      const proofDirectory = path.join(directory, "qualification", proofId);
-      const proofProfile = FactoryExecutionProfile.make({
-        ...profile,
-        runtimePath: path.join(proofDirectory, "runtime"),
-        assignmentWorkspace: {
-          assignmentId: `approval-${proofId}`,
-          volumeName: `satellite-factory-proof-${proofId}`,
-          grantEpoch: 0,
-          boundaryId: boundary.id,
-          controlsPath: path.join(directory, "controls"),
-          revocationPath: path.join(proofDirectory, "authority", "revoked.json"),
-          workerUid: Math.max(process.getuid?.() ?? 10001, 1),
-          workerGid: Math.max(process.getgid?.() ?? 10001, 1),
         },
+        configuration: input.configuration,
+        files: yield* filesAt(profile.projectSnapshotPath),
+        profile,
+        projectId: discovery.projectId,
+        workflow: discovery.workflow,
+        profileId: discovery.qualification.profileId,
+        sourceRevision,
       });
-      yield* fs.makeDirectory(path.join(proofProfile.runtimePath, "codex"), { recursive: true });
-      yield* fs.makeDirectory(path.dirname(proofProfile.assignmentWorkspace!.revocationPath), {
-        recursive: true,
-      });
-      yield* docker(proofProfile, [
-        "volume",
-        "create",
-        proofProfile.assignmentWorkspace!.volumeName,
-      ]);
-      yield* Effect.gen(function* () {
-        yield* helper(proofProfile, {
-          kind: "initialize",
-          files: proofFiles
-            .map((file) => ({
-              ...file,
-              writable: boundary.writablePaths.includes(file.path),
-            }))
-            .concat(
-              boundary.writablePaths.length
-                ? []
-                : [{ path: proofSource, content: "Cg==", digest: "", writable: true }],
-            ),
-        });
-        yield* proveWorkspace(proofProfile, proofSource, boundary.protectedPaths[0]!);
-      }).pipe(
-        Effect.ensuring(
-          docker(proofProfile, ["volume", "rm", proofProfile.assignmentWorkspace!.volumeName]).pipe(
-            Effect.ignore,
-          ),
-        ),
-      );
-      yield* fs.writeFileString(path.join(directory, "boundary.json"), json(boundary));
-      return boundary;
     },
     mutex.withPermit,
     Effect.mapError(preserve),
@@ -1300,7 +1398,7 @@ const make = Effect.gen(function* () {
           const byPath = new Map(candidate.map((file) => [file.path, file]));
           return [
             ...new Set([
-              ...boundary.protectedPaths,
+              ...(boundary.controlPaths ?? boundary.protectedPaths),
               ...candidate
                 .filter((file) => factoryProtectedPath(file.path))
                 .map((file) => file.path),
@@ -1327,7 +1425,7 @@ const make = Effect.gen(function* () {
         const changed = checkControls(starting.files) ?? checkControls(starting.indexFiles);
         if (changed !== undefined)
           return yield* unavailable(
-            `The starting source changes protected control ${changed}. Adopt the control change through a separately authorized rule-change task before ordinary delivery.`,
+            `The starting source changes protected control ${changed} from the approved control baseline. If that change is committed and intended, refresh the control baseline, then retry. Otherwise restore the file.`,
           );
         const metadata = baselineByPath.get("SATELLITE_DISCOVERY.md");
         if (metadata !== undefined && !files.some((file) => file.path === metadata.path))
@@ -1559,9 +1657,12 @@ const make = Effect.gen(function* () {
       const directory = path.join(root, "execution", profile.boundaryId, "artifacts", artifactId);
       yield* writeFiles(path.join(directory, "source"), source.files);
       yield* writeFiles(path.join(directory, "checks"), source.files);
+      // Checks run the adopted controls, except the ones a rule change is authorized to edit.
       yield* writeFiles(
         path.join(directory, "checks"),
-        yield* filesAt(profile.assignmentWorkspace!.controlsPath),
+        (yield* filesAt(profile.assignmentWorkspace!.controlsPath)).filter(
+          (file) => !grant.controlChange?.paths.includes(file.path),
+        ),
       );
       const gates: Array<FactoryVerification["gates"][number]> = [];
       if (boundary.verification === "protected-integrity") {
@@ -2062,6 +2163,7 @@ const make = Effect.gen(function* () {
     inspectCandidate,
     approve,
     approveShared: approve,
+    refresh,
     prepare,
     inspect,
     rebind,

@@ -126,12 +126,18 @@ function Candidate({
             ? "The manager needs to prepare an exact scope and recommendation before this work can start."
             : lifecycle.phase === "prepared"
               ? "Scope prepared. Scheduling still checks current authority, capacity, dependencies and issue ownership."
-              : "Selected and commissioned. The implementation team now owns this work."}
+              : `Commissioned ${
+                  lifecycle.authority.kind === "human"
+                    ? "on your direct request"
+                    : lifecycle.authority.kind === "tracker-ready"
+                      ? "from the board's Ready column"
+                      : "under the project improvement rule"
+                }. The implementation team now owns this work.`}
       </p>
       {candidate.source.kind === "project-improvement" ? (
         <p className="text-xs text-muted-foreground">
-          Starting from triage requires a matching project improvement rule. Ready tickets follow
-          the board's ordinary scheduling authority.
+          Starting from triage requires a matching project improvement rule or your direct request.
+          Moving it out of triage into Ready follows the board's ordinary scheduling authority.
         </p>
       ) : null}
       {candidate.reopenedFrom ? (

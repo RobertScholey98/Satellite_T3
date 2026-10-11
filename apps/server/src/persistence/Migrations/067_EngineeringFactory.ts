@@ -29,10 +29,4 @@ export default Effect.gen(function* () {
     )
   `;
   yield* sql`CREATE INDEX factory_outbox_pending ON factory_outbox(status, created_at)`;
-  yield* sql`
-    CREATE TABLE factory_cursors (
-      source TEXT PRIMARY KEY,
-      sequence INTEGER NOT NULL
-    )
-  `;
 });

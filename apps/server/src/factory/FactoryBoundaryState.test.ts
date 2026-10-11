@@ -3,7 +3,9 @@ import {
   CommandId,
   FactoryAssignmentId,
   FactoryBoundaryId,
+  type FactoryAssignment,
   type FactoryBoundary,
+  type FactorySnapshot,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -16,6 +18,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 
 import migrateFactory from "../persistence/Migrations/067_EngineeringFactory.ts";
 import migrateBoundaries from "../persistence/Migrations/068_FactoryBoundaries.ts";
+import { decide } from "./FactoryState.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
@@ -242,6 +245,140 @@ describe("factory boundary adoption", () => {
         assert.equal(after.revision, before.revision);
         assert.equal(after.managers[0]!.status, "blocked");
         assert.equal(after.boundaries.length, 0);
+      }),
+    ),
+  );
+});
+
+describe("factory control baseline refresh", () => {
+  const refreshed = {
+    ...boundary,
+    id: FactoryBoundaryId.make("boundary-web-v2"),
+    sourceRevision: "project-commit-2",
+    controlPaths: ["AGENTS.md", "package.json", "eslint.config.js"],
+  } satisfies FactoryBoundary;
+  const refresh = {
+    type: "manager.refresh-boundary" as const,
+    commandId: CommandId.make("refresh-web"),
+    managerId,
+  };
+  const approvedStore = Effect.gen(function* () {
+    const store = yield* reportedStore;
+    yield* store.commit({ actor: human, command: approve, now, boundary });
+    return store;
+  });
+  const withAssignments = (state: FactorySnapshot) => {
+    const onboarding = state.assignments[0]!;
+    const work = (id: string, preparation: "preparing" | "ready", waiting: boolean) =>
+      ({
+        ...onboarding,
+        id: FactoryAssignmentId.make(id),
+        threadId: ThreadId.make(`${id}-lead`),
+        kind: "implementation",
+        status: waiting ? "waiting" : "running",
+        preparation,
+        wait: waiting
+          ? { kind: "execution-boundary", reason: "The starting source changes protected control" }
+          : null,
+        grant: {
+          boundaryId: boundary.id,
+          epoch: 0,
+          sourcePaths: ["src/app.ts"],
+          creatableDirectories: [],
+          controlChange: null,
+        },
+      }) satisfies FactoryAssignment;
+    return {
+      ...state,
+      assignments: [
+        onboarding,
+        work("blocked", "preparing", true),
+        work("running", "ready", false),
+      ],
+    };
+  };
+
+  it.effect(
+    "lets only a human adopt a new baseline and re-prepares work blocked on the old one",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const state = withAssignments(yield* (yield* approvedStore).snapshot);
+          for (const actor of [
+            { kind: "thread", threadId: managerId },
+            { kind: "system" },
+          ] as const) {
+            const denied = decide({ state, actor, command: refresh, now, boundary: refreshed });
+            assert.isTrue(Result.isFailure(denied));
+            if (Result.isFailure(denied)) assert.equal(denied.failure.code, "permission-denied");
+          }
+          for (const candidate of [
+            undefined,
+            boundary,
+            { ...refreshed, projectId: ProjectId.make("api") },
+            { ...refreshed, workflow: { ...workflow, revision: "other-workflow" } },
+          ]) {
+            const rejected = decide({
+              state,
+              actor: human,
+              command: refresh,
+              now,
+              ...(candidate === undefined ? {} : { boundary: candidate }),
+            });
+            assert.isTrue(Result.isFailure(rejected));
+            if (Result.isFailure(rejected)) assert.equal(rejected.failure.code, "invalid-state");
+          }
+          const decision = decide({
+            state,
+            actor: human,
+            command: refresh,
+            now,
+            boundary: refreshed,
+          });
+          assert.isTrue(Result.isSuccess(decision));
+          if (!Result.isSuccess(decision)) return;
+          const next = decision.success.state;
+          assert.equal(next.managers[0]!.boundaryId, refreshed.id);
+          assert.deepStrictEqual(
+            next.boundaries.map((entry) => entry.id),
+            [boundary.id, refreshed.id],
+          );
+          const blocked = next.assignments.find((entry) => entry.id === "blocked")!;
+          assert.equal(blocked.status, "pending");
+          assert.equal(blocked.wait, null);
+          assert.equal(blocked.grant?.boundaryId, refreshed.id);
+          assert.equal(
+            next.assignments.find((entry) => entry.id === "running")!.grant?.boundaryId,
+            boundary.id,
+          );
+          assert.deepStrictEqual(
+            decision.success.effects.map((effect) =>
+              effect.type === "assignment.prepare" ? effect.assignmentId : effect.type,
+            ),
+            ["blocked"],
+          );
+        }),
+      ),
+  );
+
+  it.effect("persists the refreshed baseline and replays the same refresh command", () =>
+    run(
+      Effect.gen(function* () {
+        const store = yield* approvedStore;
+        const receipt = yield* store.commit({
+          actor: human,
+          command: refresh,
+          now,
+          boundary: refreshed,
+        });
+        const reopened = yield* openStore;
+        const state = yield* reopened.snapshot;
+        assert.equal(state.managers[0]!.boundaryId, refreshed.id);
+        assert.deepStrictEqual(state.boundaries, [boundary, refreshed]);
+        assert.deepStrictEqual(
+          yield* reopened.commit({ actor: human, command: refresh, now, boundary: refreshed }),
+          receipt,
+        );
       }),
     ),
   );

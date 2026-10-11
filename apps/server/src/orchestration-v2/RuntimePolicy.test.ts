@@ -308,3 +308,48 @@ it.effect("uses the owned idea workspace and preserves its selected permissions"
     assert.deepStrictEqual(calls, [thread.id]);
   }).pipe(Effect.provide(isolatedLayer));
 });
+
+it.effect("passes the parent to factory policy only for subagents, never for forks", () =>
+  Effect.gen(function* () {
+    const parents: Array<ThreadId | undefined> = [];
+    const layer = RuntimePolicy.layerFromProjectStore.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(FactoryExecution.FactoryExecution)({
+            runtimePolicyFor: (_threadId, pendingParentThreadId) =>
+              Effect.sync(() => {
+                parents.push(pendingParentThreadId);
+                return discoveryProfile;
+              }),
+            assertSelectionFor: () => Effect.void,
+          }),
+          Layer.mock(ProjectStore.ProjectStoreV2)({
+            get: () => Effect.die("managed execution must not read the writable checkout"),
+          }),
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getInstance: (instanceId) =>
+              Effect.succeed({
+                ...providerInstanceFor(instanceId),
+                driverKind: ProviderDriverKind.make("codex"),
+              }),
+          }),
+        ),
+      ),
+    );
+    const now = yield* DateTime.now;
+    const parentThreadId = ThreadId.make("thread:managed-lead");
+    const child = (relationshipToParent: "fork" | "subagent") => {
+      const thread = makeThread({ now, worktreePath: null });
+      return {
+        ...thread,
+        lineage: { parentThreadId, relationshipToParent, rootThreadId: parentThreadId },
+      };
+    };
+    yield* Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      yield* policy.resolve({ thread: child("fork"), modelSelection });
+      yield* policy.resolve({ thread: child("subagent"), modelSelection });
+    }).pipe(Effect.provide(layer));
+    assert.deepStrictEqual(parents, [undefined, parentThreadId]);
+  }),
+);

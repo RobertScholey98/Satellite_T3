@@ -5,6 +5,7 @@ import { decide, type FactoryActor } from "./FactoryState.ts";
 import { factoryCompletionEligibility } from "./FactoryRetros.ts";
 import {
   currentFactoryMergeOperation,
+  factoryMergeFreezeBlocks,
   factoryMergeOperationReadiness,
   factoryMergeOperationWriteReadiness,
   factoryMergeReceiptDigest,
@@ -121,6 +122,58 @@ describe("durable shared merge operations", () => {
           { ...command, commandId: mergeCommandId(), expectedDigest: "old" },
           { kind: "human" },
         ),
+      ),
+    );
+  });
+
+  it("lets only the frozen lead thread recover its operation and escalate it to the human", () => {
+    const started = startedMergeOperationFixture();
+    const lead = started.state.assignments.find((entry) => entry.threadId === integrated.lead)!;
+    assert.isTrue(factoryMergeFreezeBlocks(started.state, lead, integrated.lead));
+    const frozen = frozenMergeOperationFixture();
+    const frozenLead = frozen.state.assignments.find((entry) => entry.id === lead.id)!;
+    assert.isFalse(factoryMergeFreezeBlocks(frozen.state, frozenLead, integrated.lead));
+    assert.isTrue(factoryMergeFreezeBlocks(frozen.state, frozenLead, "lead-subagent"));
+    assert.isTrue(factoryMergeFreezeBlocks(frozen.state, frozenLead));
+    const escalate = {
+      type: "merge.operation.escalate" as const,
+      commandId: mergeCommandId(),
+      operationId: frozen.operationId,
+      reason: "The API member merged but the web member is blocked by a failing check.",
+      recommendation: "Revert the API merge through a separately authorized task.",
+    };
+    assert.isTrue(
+      Result.isFailure(
+        run(frozen.state, escalate, { kind: "thread", threadId: deliveryIds.manager }),
+      ),
+    );
+    const escalated = applyMerge(frozen.state, escalate, {
+      kind: "thread",
+      threadId: integrated.lead,
+    });
+    const lifecycle = escalated.state.mergeOperations[0]!.lifecycle;
+    assert.equal(lifecycle.phase, "attention");
+    if (lifecycle.phase === "attention") {
+      assert.equal(lifecycle.reason, escalate.reason);
+      assert.equal(lifecycle.recommendation, escalate.recommendation);
+      assert.equal(lifecycle.retry, "same-vector");
+    }
+    assert.isFalse(escalated.effects.some((entry) => entry.type === "merge.operation.advance"));
+    const completed = completedMergeOperationFixture();
+    assert.isTrue(
+      Result.isFailure(
+        run(
+          completed.state,
+          { ...escalate, commandId: mergeCommandId(), operationId: completed.operationId },
+          { kind: "thread", threadId: integrated.lead },
+        ),
+      ),
+    );
+    assert.isTrue(
+      factoryMergeFreezeBlocks(
+        completed.state,
+        completed.state.assignments.find((entry) => entry.id === lead.id)!,
+        integrated.lead,
       ),
     );
   });

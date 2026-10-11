@@ -462,6 +462,7 @@ export function decideFactoryCollaboration(input: {
         !managerAvailable(originManager) ||
         !receiver ||
         receiver.role !== "project" ||
+        receiver.status === "retired" ||
         receiver.id === originManager.id
       )
         return fail("Only the source owner can request work from a peer project manager.");

@@ -44,12 +44,21 @@ const attemptId = RunAttemptId.make("run-attempt:effect-worker-restart");
 const runId = RunId.make("run:effect-worker-restart");
 
 it.effect(
-  "retires a persisted ordinary restart continuation when the factory owns its thread",
+  "leaves a managed restart continuation to the factory and settles a delegated parent",
   () =>
     Effect.gen(function* () {
       const timestamp = DateTime.formatIso(yield* DateTime.now);
       const events = yield* Ref.make<ReadonlyArray<string>>([]);
-      const layer = layerExecutorFor({ events, continueAfterRestart: true }).pipe(
+      const recovered = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+      const layer = layerExecutorFor({
+        events,
+        continueAfterRestart: true,
+        threads: {
+          dispatch: () => Effect.die("A managed thread must not be continued here"),
+          recoverDelegatedTask: (childThreadId) =>
+            Ref.update(recovered, (ids) => [...ids, childThreadId]),
+        },
+      }).pipe(
         Layer.provide(
           Layer.mock(FactoryControlAccess)({
             membership: (id) =>
@@ -81,6 +90,7 @@ it.effect(
         lastError: null,
       });
       assert.deepStrictEqual(yield* Ref.get(events), []);
+      assert.deepStrictEqual(yield* Ref.get(recovered), [threadId]);
     }),
 );
 

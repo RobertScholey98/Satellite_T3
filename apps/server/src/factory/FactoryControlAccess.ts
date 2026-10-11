@@ -1,7 +1,7 @@
 import {
   FactoryError,
+  type FactorySnapshot,
   type OrchestrationV2ConversationMessage,
-  type ProjectId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -11,13 +11,14 @@ import * as Layer from "effect/Layer";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
-import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
+import { currentFactoryMergeOperation, factoryMergeFreezeBlocks } from "./FactoryMergeOperation.ts";
 import {
   factoryIntegrationAccessBlocked,
   factoryIntegrationManifestReasons,
 } from "./FactoryIntegration.ts";
 import { factoryRequestParticipants } from "./FactoryCollaboration.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { resolveFactoryLineage } from "./FactoryLineage.ts";
 import {
   factoryDirectionBlocked,
   factoryExecutionBlocked,
@@ -59,83 +60,59 @@ export class FactoryControlAccess extends Context.Service<
 const make = Effect.gen(function* () {
   const store = yield* FactoryStore.FactoryStore;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const membership = Effect.fn("FactoryControlAccess.membership")(function* (
+  const resolve = (
+    state: FactorySnapshot,
     requestedThreadId: ThreadId,
     pendingParentThreadId?: ThreadId,
-  ) {
-    const state = yield* store.snapshot;
-    const visited = new Set<ThreadId>();
-    const ancestors: ThreadId[] = [];
-    let threadId = requestedThreadId;
-    let projectId: ProjectId | undefined;
-    for (;;) {
-      if (visited.has(threadId) || visited.size >= 64)
-        return yield* new FactoryError({ code: "execution-unavailable" });
-      visited.add(threadId);
-      const manager = state.managers.find((entry) => entry.threadId === threadId);
-      const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === threadId);
-      const assignment = state.assignments.find(
-        (entry) =>
-          entry.threadId === threadId ||
-          entry.previousLeadThreadIds?.includes(threadId) ||
-          entry.id === auxiliary?.assignmentId,
-      );
-      if (manager !== undefined || assignment !== undefined) {
-        const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
-        if (
-          owner === undefined ||
-          (owner.role === "system" &&
-            assignment === undefined &&
-            requestedThreadId !== owner.threadId) ||
-          (projectId !== undefined &&
-            projectId !==
-              (assignment?.projectId ??
-                (owner.role === "system" ? owner.workspaceProjectId : owner.projectId))) ||
-          (assignment !== undefined &&
-            (owner.role === "system"
-              ? !factorySharedAssignmentOwned(state, assignment)
-              : assignment.projectId !== owner.projectId))
-        )
-          return yield* new FactoryError({ code: "execution-unavailable" });
-        return {
-          threadId: requestedThreadId,
-          managerId: owner.id,
-          projectId:
-            assignment?.projectId ??
-            (owner.role === "system" ? owner.workspaceProjectId : owner.projectId),
-          managerRole: owner.role,
-          ...(assignment === undefined ? {} : { assignmentId: assignment.id }),
-          ...(auxiliary === undefined ? {} : { auxiliaryThreadId: auxiliary.threadId }),
-          ancestorThreadIds:
-            auxiliary?.kind === "delivery-review" && assignment !== undefined
-              ? [assignment.threadId, ...ancestors.toReversed()]
-              : ancestors.toReversed(),
-        } satisfies FactoryControlMembership;
-      }
-      const thread = yield* projections
-        .getThreadShell(threadId)
-        .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause })));
-      if (thread === null && visited.size === 1) {
-        if (pendingParentThreadId === undefined) return undefined;
-        threadId = pendingParentThreadId;
-        ancestors.push(threadId);
-        continue;
-      }
+  ) =>
+    Effect.gen(function* () {
+      const match = yield* resolveFactoryLineage({
+        state,
+        threadId: requestedThreadId,
+        pendingParentThreadId,
+        getThreadShell: (threadId) =>
+          projections
+            .getThreadShell(threadId)
+            .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause }))),
+      });
+      if (match === undefined) return undefined;
+      const { manager, assignment, auxiliary, projectId } = match;
+      const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
       if (
-        thread === null ||
-        thread.deletedAt !== null ||
-        (projectId !== undefined && projectId !== thread.projectId)
+        owner === undefined ||
+        (owner.role === "system" &&
+          assignment === undefined &&
+          requestedThreadId !== owner.threadId) ||
+        (projectId !== undefined &&
+          projectId !==
+            (assignment?.projectId ??
+              (owner.role === "system" ? owner.workspaceProjectId : owner.projectId))) ||
+        (assignment !== undefined &&
+          (owner.role === "system"
+            ? !factorySharedAssignmentOwned(state, assignment)
+            : assignment.projectId !== owner.projectId))
       )
         return yield* new FactoryError({ code: "execution-unavailable" });
-      projectId = thread.projectId;
-      if (thread.lineage.parentThreadId === null) {
-        if (thread.lineage.relationshipToParent === "subagent")
-          return yield* new FactoryError({ code: "execution-unavailable" });
-        return undefined;
-      }
-      threadId = thread.lineage.parentThreadId;
-      ancestors.push(threadId);
-    }
+      return {
+        threadId: requestedThreadId,
+        managerId: owner.id,
+        projectId:
+          assignment?.projectId ??
+          (owner.role === "system" ? owner.workspaceProjectId : owner.projectId),
+        managerRole: owner.role,
+        ...(assignment === undefined ? {} : { assignmentId: assignment.id }),
+        ...(auxiliary === undefined ? {} : { auxiliaryThreadId: auxiliary.threadId }),
+        ancestorThreadIds:
+          auxiliary?.kind === "delivery-review" && assignment !== undefined
+            ? [assignment.threadId, ...match.ancestorThreadIds.toReversed()]
+            : match.ancestorThreadIds.toReversed(),
+      } satisfies FactoryControlMembership;
+    });
+  const membership = Effect.fn("FactoryControlAccess.membership")(function* (
+    threadId: ThreadId,
+    pendingParentThreadId?: ThreadId,
+  ) {
+    return yield* resolve(yield* store.snapshot, threadId, pendingParentThreadId);
   });
   const check = Effect.fn("FactoryControlAccess.check")(function* (
     threadId: ThreadId,
@@ -143,18 +120,18 @@ const make = Effect.gen(function* () {
     senderThreadId?: ThreadId | null,
     pendingParentThreadId?: ThreadId,
   ) {
-    const member = yield* membership(threadId, pendingParentThreadId);
-    if (member === undefined) return;
     const state = yield* store.snapshot;
+    const member = yield* resolve(state, threadId, pendingParentThreadId);
+    if (member === undefined) return;
     const lineage = new Set([...member.ancestorThreadIds, member.threadId]);
     const owner = state.assignments.find((entry) => entry.id === member.assignmentId);
     const auxiliary = state.auxiliaryThreads.find(
       (entry) => entry.threadId === member.auxiliaryThreadId,
     );
     if (
-      owner?.integrationId &&
+      owner &&
       auxiliary?.kind !== "retrospective" &&
-      currentFactoryMergeOperation(state, owner.integrationId)
+      factoryMergeFreezeBlocks(state, owner, member.threadId)
     )
       return yield* new FactoryError({
         code: "permission-denied",

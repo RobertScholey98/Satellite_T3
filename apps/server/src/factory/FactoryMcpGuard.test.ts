@@ -3,6 +3,7 @@ import {
   CommandId,
   EnvironmentId,
   FactoryAssignmentId,
+  FactoryControlId,
   FactoryDependencyId,
   FactoryError,
   FactorySnapshot,
@@ -50,6 +51,7 @@ import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecut
 import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
 import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
 import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
+import { frozenMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const managerId = ThreadId.make("manager-web");
@@ -544,6 +546,13 @@ const scenario = <E, R>(
         failure: OrchestratorMcpFailure,
         failureMode: "return",
       }),
+      Tool.make("t3_thread_fork", {
+        description: "Probe forking, which only humans may do.",
+        parameters: Schema.Struct({ threadId: ThreadId }),
+        success: Schema.Struct({ ran: Schema.Boolean }),
+        failure: OrchestratorMcpFailure,
+        failureMode: "return",
+      }),
       Tool.make("host_effect", {
         description: "A host operation that managed agents cannot run.",
         parameters: Tool.EmptyParams,
@@ -576,6 +585,12 @@ const scenario = <E, R>(
             }),
           ),
           t3_thread_wait: McpToolAccess.reads(() =>
+            Effect.sync(() => {
+              flags.hostCalls += 1;
+              return { ran: true };
+            }),
+          ),
+          t3_thread_fork: McpToolAccess.reads(() =>
             Effect.sync(() => {
               flags.hostCalls += 1;
               return { ran: true };
@@ -726,6 +741,76 @@ describe("FactoryMcpGuard", () => {
             (yield* call("t3_thread_read", { threadId: ThreadId.make("lead-api") })).isError,
           );
           assert.equal(flags.hostCalls, 0);
+        }),
+      ),
+  );
+  it.effect(
+    "limits a frozen integration lead to its merge recovery and still applies project pauses",
+    () =>
+      scenario(({ call, store }) =>
+        Effect.gen(function* () {
+          const state = yield* store.snapshot;
+          const integrationId = "frozen-feature";
+          const groupId = "frozen-group";
+          const operation = frozenMergeOperationFixture().state.mergeOperations[0]!;
+          const write = (snapshot: FactorySnapshot) =>
+            encodeSnapshot(snapshot).pipe(
+              Effect.flatMap((payload) =>
+                SqlClient.SqlClient.pipe(
+                  Effect.flatMap(
+                    (sql) => sql`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`,
+                  ),
+                ),
+              ),
+            );
+          const frozen: FactorySnapshot = {
+            ...state,
+            assignments: state.assignments.map((entry) =>
+              entry.id === assignmentId ? { ...entry, integrationId } : entry,
+            ),
+            mergeGroups: [
+              {
+                id: groupId,
+                integrationId,
+                integrationAssignmentId: assignmentId,
+                memberAssignmentIds: [otherAssignmentId, FactoryAssignmentId.make("web-member")],
+                knownPullRequests: [],
+                currentReviewId: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            ],
+            mergeOperations: [
+              { ...operation, groupId, integrationId, integrationAssignmentId: assignmentId },
+            ],
+          };
+          yield* write(frozen);
+          assert.isFalse((yield* call("factory_merge_group_get", { groupId })).isError);
+          assert.isTrue((yield* call("factory_integration_get", { integrationId })).isError);
+          assert.isTrue((yield* call("factory_merge_group_get", { groupId }, childId)).isError);
+          yield* write({
+            ...frozen,
+            controls: [
+              {
+                id: FactoryControlId.make("frozen-pause"),
+                generation: 1,
+                kind: "project-pause",
+                status: "active",
+                projectId: state.assignments.find((entry) => entry.id === assignmentId)!.projectId,
+                stop: { status: "pending" },
+                requestedAt: now,
+                updatedAt: now,
+              },
+            ],
+          });
+          assert.isTrue((yield* call("factory_merge_group_get", { groupId })).isError);
+          assert.isTrue(
+            (yield* call("factory_merge_operation_action", {
+              commandId: "paused-retry",
+              operationId: operation.id,
+              action: "retry",
+            })).isError,
+          );
         }),
       ),
   );
@@ -1641,25 +1726,34 @@ describe("FactoryMcpGuard", () => {
     ),
   );
 
-  it.effect("keeps a fork of a completed managed lead confined", () =>
-    scenario(({ call, store, flags }) =>
+  // Forks are human-only: managed callers cannot fork, and a fork starts an ordinary host
+  // session because native context cannot cross the managed execution boundary.
+  it.effect("refuses forks from managed callers and treats a human fork as ordinary", () =>
+    scenario(({ call, flags }) =>
       Effect.gen(function* () {
-        assert.isFalse(
-          (yield* call("factory_dispatch", {
-            command: {
-              type: "onboarding.report",
-              commandId: "complete-before-fork",
-              assignmentId,
-              report,
-            },
-          })).isError,
-        );
-        assert.equal(
-          (yield* store.snapshot).assignments.find((entry) => entry.id === assignmentId)?.status,
-          "complete",
-        );
-        assert.isTrue((yield* call("host_effect", {}, forkId)).isError);
+        for (const caller of [managerId, leadId, childId])
+          assert.isTrue((yield* call("t3_thread_fork", { threadId: leadId }, caller)).isError);
+        assert.isTrue((yield* call("host_effect", {}, leadId)).isError);
         assert.equal(flags.hostCalls, 0);
+        assert.isTrue((yield* call("factory_snapshot", {}, forkId)).isError);
+        assert.isTrue(
+          (yield* call(
+            "factory_dispatch",
+            {
+              command: {
+                type: "onboarding.report",
+                commandId: "report-from-fork",
+                assignmentId,
+                report,
+              },
+            },
+            forkId,
+          )).isError,
+        );
+        assert.deepEqual((yield* call("host_effect", {}, forkId)).structuredContent, {
+          ran: true,
+        });
+        assert.equal(flags.hostCalls, 1);
       }),
     ),
   );

@@ -101,6 +101,11 @@ export const FactoryControlCommand = Schema.Union([
     managerId: ThreadId,
   }),
   Schema.Struct({
+    type: Schema.Literal("manager.retire"),
+    commandId: CommandId,
+    managerId: ThreadId,
+  }),
+  Schema.Struct({
     type: Schema.Literal("project.pause"),
     commandId: CommandId,
     projectId: ProjectId,

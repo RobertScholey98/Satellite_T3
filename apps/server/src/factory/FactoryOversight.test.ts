@@ -523,12 +523,15 @@ describe("Factory oversight", () => {
       ),
       "permission-denied",
     );
-    assert.strictEqual(
-      original(
-        apply(decision.state, { type: "assignment.wait.resolve", commandId, assignmentId }).state,
-      ).wait,
-      null,
-    );
+    const resolved = apply(decision.state, {
+      type: "assignment.wait.resolve",
+      commandId,
+      assignmentId,
+    });
+    assert.strictEqual(original(resolved.state).wait, null);
+    // The human's decision is not manager direction, so a manager pause does not hold it.
+    const resume = resolved.effects.find((effect) => effect.type === "thread.deliver");
+    assert.isTrue(resume?.type === "thread.deliver" && resume.sourceThreadId === undefined);
   });
 
   it("cannot overwrite dependency waits or silently drop one blocking dependency", () => {
@@ -757,7 +760,9 @@ describe("Factory oversight", () => {
       },
       manager,
     );
-    assert.strictEqual(continued.effects[0]?.type, "thread.deliver");
+    const replan = continued.effects[0];
+    // The manager's own plan waits while that manager is paused.
+    assert.isTrue(replan?.type === "thread.deliver" && replan.sourceThreadId === managerId);
     const exhausted = outstanding(continued.state, "second-incident");
     const assignment = original(exhausted.state);
     assert.strictEqual(assignment.wait?.kind, "human-decision");
@@ -820,7 +825,11 @@ describe("Factory oversight", () => {
         recommendation: "Keep the prerequisite until it is independently satisfied",
       },
     } as const;
-    assert.strictEqual(failure(state, command, manager), "invalid-state");
+    // A revoked grant refuses the manager before the wait is considered.
+    assert.strictEqual(
+      failure(state, command, manager),
+      heldWait.kind === "authority" ? "permission-denied" : "invalid-state",
+    );
     assert.strictEqual(failure(state, command, human), "invalid-state");
   });
 

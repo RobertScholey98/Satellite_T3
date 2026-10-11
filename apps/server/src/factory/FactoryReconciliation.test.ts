@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type FactoryAssignment,
+  type OrchestrationV2Run,
   type PullRequestDetail,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -20,7 +21,13 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import {
+  restartContinuationEffectId,
+  restartContinuationMessageId,
+  restartPrepareCommandId,
+} from "../orchestration-v2/RestartContinuation.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import {
   layer as SatelliteLayer,
@@ -100,7 +107,10 @@ const initial = (item: FactoryAssignment): FactorySnapshot => ({
 const runtime = Layer.mergeAll(FactoryStore.layer, ThreadManagement.layer).pipe(
   Layer.provideMerge(SatelliteLayer),
 );
-const layer = FactoryReconciliation.layer.pipe(Layer.provide(FactoryControlAccess.layer));
+const layer = FactoryReconciliation.layer.pipe(
+  Layer.provide(FactoryControlAccess.layer),
+  Layer.provide(EffectOutbox.layer),
+);
 const scenario = <A, E, R>(
   body: Effect.Effect<A, E, R>,
   item = assignment,
@@ -635,5 +645,93 @@ it.effect("a real report must reach its agreed recipient with team provenance an
         noPrTarget: { kind: "report-received", recipientThreadId: managerId },
       },
     },
+  ),
+);
+
+// Startup recovery cuts the lead's turn and records its continuation intent in one commit.
+const cutByRestart = (run: OrchestrationV2Run, commandId: CommandId) =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    yield* sink.writeWithEffects({
+      commandId,
+      events: [
+        {
+          id: EventId.make(`cut:${run.id}`),
+          type: "run.updated",
+          threadId: leadId,
+          occurredAt: DateTime.makeUnsafe(now),
+          payload: {
+            ...run,
+            status: "cancelled",
+            queuePosition: null,
+            completedAt: DateTime.makeUnsafe(now),
+          },
+        },
+      ],
+      effects: [
+        {
+          id: restartContinuationEffectId(run.id),
+          commandId,
+          threadId: leadId,
+          request: { type: "provider-runtime.continue", sourceRunId: run.id },
+        },
+      ],
+    });
+  });
+
+it.effect("a server restart resumes the lead without an incident or recovery allowance", () =>
+  scenario(
+    Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const run = yield* send();
+      yield* cutByRestart(run, restartPrepareCommandId(run.id));
+      const resumed = yield* reconcile("graceful-restart");
+      assert.equal(resumed.assignments[0]!.oversight?.recovery.incident, undefined);
+      assert.equal(resumed.assignments[0]!.wait, null);
+      const projection = yield* threads.getThreadProjection(leadId);
+      assert.isTrue(
+        projection.messages.some((message) => message.id === restartContinuationMessageId(run.id)),
+      );
+      const continuation = projection.runs.at(-1)!;
+      assert.equal(continuation.restartContinuationOfRunId, run.id);
+
+      // A crash that cuts the resumed turn again may be a crash loop: bounded recovery owns it.
+      yield* cutByRestart(continuation, CommandId.make("command:runtime-reconcile:startup:crash"));
+      const crashed = yield* reconcile("crash-loop");
+      assert.equal(crashed.assignments[0]!.oversight?.recovery.incident?.phase, "reconciling");
+      assert.equal(crashed.assignments[0]!.wait?.kind, "recovery");
+      assert.isFalse(
+        (yield* threads.getThreadProjection(leadId)).messages.some(
+          (message) => message.id === restartContinuationMessageId(continuation.id),
+        ),
+      );
+    }),
+  ),
+);
+
+it.effect("a cancelled turn without restart intent still opens a recovery incident", () =>
+  scenario(
+    Effect.gen(function* () {
+      const run = yield* send();
+      const sink = yield* EventSink.EventSinkV2;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("cancelled-without-restart"),
+            type: "run.updated",
+            threadId: leadId,
+            occurredAt: DateTime.makeUnsafe(now),
+            payload: { ...run, status: "cancelled", completedAt: DateTime.makeUnsafe(now) },
+          },
+        ],
+      });
+      const state = yield* reconcile("plain-cancel");
+      assert.equal(state.assignments[0]!.oversight?.recovery.incident?.phase, "reconciling");
+      assert.isFalse(
+        (yield* (yield* ThreadManagement.ThreadManagementService).getThreadProjection(
+          leadId,
+        )).messages.some((message) => message.id === restartContinuationMessageId(run.id)),
+      );
+    }),
   ),
 );

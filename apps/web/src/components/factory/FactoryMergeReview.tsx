@@ -339,7 +339,7 @@ function MemberEvidence({
   const revision = environment.data ? factoryMergeMemberRevision(environment.data, member) : null;
   const url = factoryMergePullRequestUrl(member.ref);
   const project =
-    environment.data?.managers.find((entry) => entry.projectId === member.projectId)?.name ??
+    environment.data?.managers.findLast((entry) => entry.projectId === member.projectId)?.name ??
     member.projectId;
   return (
     <section className="space-y-3 py-3">

@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import {
   CommandId,
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   ProjectId,
   ThreadId,
@@ -73,6 +74,12 @@ export const FactoryScheduleAuthority = Schema.Union([
     observedAt: IsoDateTime,
   }),
   Schema.Struct({ kind: Schema.Literal("project-improvement"), ruleId: Id, followupId: Id }),
+  // Direct human assignment: the human commissions the ticket, or the manager cites their message.
+  Schema.Struct({
+    kind: Schema.Literal("human"),
+    commandId: CommandId,
+    messageId: Schema.NullOr(MessageId),
+  }),
 ]);
 export type FactoryScheduleAuthority = typeof FactoryScheduleAuthority.Type;
 

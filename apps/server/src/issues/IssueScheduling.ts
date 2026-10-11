@@ -50,6 +50,7 @@ export class IssueScheduling extends Context.Service<
         readonly revision: number;
         readonly items: ReadonlyArray<{
           readonly issue: IssueRef;
+          readonly labels: ReadonlyArray<string>;
           readonly observation: FactoryScheduleObservation;
         }>;
       },
@@ -243,6 +244,7 @@ const make = Effect.gen(function* () {
     boardId: string,
     itemId: string,
   ) => {
+    if (authority.kind === "human") return true;
     if (authority.kind === "tracker-ready")
       return authority.boardId === boardId && authority.itemId === itemId;
     return (
@@ -290,6 +292,7 @@ const make = Effect.gen(function* () {
         cachedDetails.set(key, { version, detail });
         items.push({
           issue: detail.ref,
+          labels: detail.labels,
           observation: {
             boardRevision: stored.sync?.revision ?? 0,
             itemId: item.itemId,
@@ -351,7 +354,7 @@ const make = Effect.gen(function* () {
       .pipe(
         Effect.provideService(IssueService.ScheduledIssueReservation, {
           requestId,
-          allowUnready: authority.kind === "project-improvement",
+          allowUnready: authority.kind !== "tracker-ready",
           reserve: Effect.fnUntraced(function* (link: IssueAttemptLink) {
             const latest = yield* input.authorize;
             if (stableStringify(latest) !== stableStringify(authority))
@@ -448,9 +451,9 @@ const make = Effect.gen(function* () {
         authority,
         {
           source:
-            admission.authority.kind === "tracker-ready"
-              ? { kind: "tracker-ready" }
-              : { kind: "project-improvement", followupId: admission.authority.followupId },
+            admission.authority.kind === "project-improvement"
+              ? { kind: "project-improvement", followupId: admission.authority.followupId }
+              : { kind: "tracker-ready" },
         },
         admission.boardId,
         item.itemId,

@@ -128,10 +128,41 @@ export function FactoryManagerControls({
   manager: FactoryManager;
 }) {
   const command = useFactoryControlCommand(environment);
+  const [confirmRetire, setConfirmRetire] = useState(false);
   const controls = environment.data?.controls;
   if (!controls) return null;
   const managerPause = factoryManagerPause(environment.data, manager.id);
   const projectPause = factoryProjectPause(environment.data, manager.projectId);
+  if (manager.status === "retired")
+    return (
+      <div className="space-y-2" aria-busy={command.pending}>
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-sm font-medium">Manager</h3>
+          <Badge variant="secondary">Retired</Badge>
+          {managerPause?.stop.status === "failed" ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={command.disabled}
+              onClick={() =>
+                void command.submit({
+                  type: "control.retry",
+                  controlId: managerPause.id,
+                  generation: managerPause.generation,
+                })
+              }
+            >
+              Retry stop
+            </Button>
+          ) : null}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          This manager and its teams are stopped. Their threads and evidence stay readable. Create a
+          new manager in project settings to manage this project again.
+        </p>
+        <ControlFeedback environment={environment} command={command} />
+      </div>
+    );
   return (
     <div className="space-y-4" aria-busy={command.pending}>
       <PauseControl
@@ -185,6 +216,43 @@ export function FactoryManagerControls({
         Resuming one control keeps other pauses, takeovers, approval waits, and current permissions
         in force.
       </p>
+      {manager.role === "project" ? (
+        <section className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-medium">Retire</h3>
+            {confirmRetire ? (
+              <>
+                <Button
+                  size="xs"
+                  variant="destructive"
+                  disabled={command.disabled}
+                  onClick={() =>
+                    void command.submit({ type: "manager.retire", managerId: manager.id })
+                  }
+                >
+                  Retire manager
+                </Button>
+                <Button size="xs" variant="ghost" onClick={() => setConfirmRetire(false)}>
+                  Keep manager
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="xs"
+                variant="destructive-outline"
+                disabled={command.disabled}
+                onClick={() => setConfirmRetire(true)}
+              >
+                Retire manager…
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Stops this manager and cancels its unfinished teams. Threads and evidence stay readable,
+            and the project can get a new manager. A retired manager cannot be resumed.
+          </p>
+        </section>
+      ) : null}
       <ControlFeedback environment={environment} command={command} />
     </div>
   );
@@ -226,23 +294,34 @@ function PauseControl({
           <Button size="xs" variant="outline" disabled={disabled} onClick={onPause}>
             Pause {label.toLowerCase()}
           </Button>
-        ) : failure ? (
-          <Button size="xs" variant="outline" disabled={disabled} onClick={() => onRetry(control)}>
-            Retry {control.resume ? "resume" : "stop"}
-          </Button>
         ) : (
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={
-              disabled ||
-              control.stop.status !== "confirmed" ||
-              control.resume?.status === "pending"
-            }
-            onClick={onResume}
-          >
-            Resume {label.toLowerCase()}
-          </Button>
+          <>
+            {failure ? (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={disabled}
+                onClick={() => onRetry(control)}
+              >
+                Retry {control.resume ? "resume" : "stop"}
+              </Button>
+            ) : null}
+            {/* A failed stop can still be released; a failed resume is retried instead. */}
+            {control.resume?.status === "failed" ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={
+                  disabled ||
+                  control.stop.status === "pending" ||
+                  control.resume?.status === "pending"
+                }
+                onClick={onResume}
+              >
+                Resume {label.toLowerCase()}
+              </Button>
+            )}
+          </>
         )}
       </div>
       <p className="text-xs text-muted-foreground">{description}</p>

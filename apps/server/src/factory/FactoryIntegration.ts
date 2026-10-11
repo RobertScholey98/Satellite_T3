@@ -744,7 +744,10 @@ export function decideFactoryIntegration(
         (entry) => entry.id === command.boundaryId && entry.projectId === command.projectId,
       );
       const manager = state.managers.find(
-        (entry) => entry.role === "project" && entry.projectId === command.projectId,
+        (entry) =>
+          entry.role === "project" &&
+          entry.projectId === command.projectId &&
+          entry.status !== "retired",
       );
       if (
         !human ||

@@ -29,6 +29,7 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { NumberField, NumberFieldGroup, NumberFieldInput } from "../ui/number-field";
 import { Textarea } from "../ui/textarea";
+import { FactoryBaselineRefresh } from "./FactoryBaselineRefresh";
 
 function lines(value: string) {
   return value
@@ -97,7 +98,9 @@ export function FactoryBoundaryDialog({
   const dispatch = useAtomCommand(factoryEnvironment.dispatch, { reportFailure: false });
   const boundary = environment.data?.boundaries.find((entry) => entry.id === manager.boundaryId);
   const initial = boundary ?? report.proposedBoundary;
-  const [protectedPaths, setProtectedPaths] = useState(initial?.protectedPaths.join("\n") ?? "");
+  const [protectedPaths, setProtectedPaths] = useState(
+    (boundary?.controlPaths ?? initial?.protectedPaths)?.join("\n") ?? "",
+  );
   const [writablePaths, setWritablePaths] = useState(initial?.writablePaths.join("\n") ?? "");
   const [creatableDirectories, setCreatableDirectories] = useState(
     initial?.creatableDirectories.join("\n") ?? "",
@@ -267,7 +270,7 @@ export function FactoryBoundaryDialog({
             <PathList
               id={`${prefix}-protected`}
               label="Protected control files"
-              description="Include check runners and all inputs that define acceptance. Standard instruction, configuration, lock, CI, and permission-control filenames are also protected automatically. Shared skills remain outside assignment write access."
+              description="Include check runners and all inputs that define acceptance. Standard instruction, configuration, lock, CI, permission-control, and test-runner hook filenames are also protected automatically. Shared skills remain outside assignment write access."
               value={protectedPaths}
               disabled={disabled}
               onChange={setProtectedPaths}
@@ -432,6 +435,11 @@ export function FactoryBoundaryDialog({
                     shown above.
                   </Label>
                 </div>
+              </div>
+            ) : null}
+            {approved ? (
+              <div className="border-t border-border pt-4">
+                <FactoryBaselineRefresh environment={environment} manager={manager} />
               </div>
             ) : null}
             {error ? (

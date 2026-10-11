@@ -1,5 +1,6 @@
 import {
   FactoryError,
+  type CommandId,
   type FactoryAssignment,
   type FactoryAssignmentCompletion,
   type FactoryAssignmentId,
@@ -328,6 +329,43 @@ export function decideFactoryRetros(
         managerAvailable(assignment)));
   const activeTracker = (projectId: FactoryAssignment["projectId"]) =>
     state.projectTrackers.findLast((entry) => entry.projectId === projectId);
+  // The read-only retro session needs the assignment's qualified environment and preserved source.
+  // Work cancelled before those existed has nothing for a team to review, so the host writes the
+  // team report and the manager retro proceeds directly.
+  const cancelledBeforeWork = (assignment: FactoryAssignment) => {
+    if (assignment.completion?.conclusion?.kind !== "cancelled") return false;
+    if (assignment.qualification.status !== "qualified") return true;
+    if (!assignment.integrationId) return assignment.startingSource === undefined;
+    const integration = state.integrations.find((entry) => entry.id === assignment.integrationId);
+    return integration?.assignmentId !== assignment.id || !integration.currentPreparationId;
+  };
+  const skipTeamRetro = (retro: FactoryRetro, commandId: CommandId) => {
+    const report = {
+      outcome: "Cancelled before the team's execution environment was ready. No team work started.",
+      helped: "",
+      hindered: "",
+      contributions: [],
+      learning: {
+        kind: "no-process-change" as const,
+        reason: "No team work started before cancellation.",
+      },
+    };
+    const digest = hash({ conclusionId: retro.conclusionId, report, actor: { kind: "system" } });
+    const skipped: FactoryRetro = {
+      ...retro,
+      execution: { status: "stopped" },
+      reports: {
+        phase: "manager-pending",
+        team: { ...report, digest, commandId, submittedBy: null, submittedAt: now },
+      },
+    };
+    const notify: FactoryEffectIntent = {
+      type: "retro.manager-notify",
+      retroId: retro.id,
+      teamReportDigest: digest,
+    };
+    return { retro: skipped, notify };
+  };
   const validLearning = (
     assignmentId: FactoryAssignmentId,
     learning: { kind: string; findingIds?: readonly string[] },
@@ -589,43 +627,46 @@ export function decideFactoryRetros(
         createdAt: now,
         updatedAt: now,
       };
-      return saveAssignment(
-        {
-          ...assignment,
-          completion: {
-            ...assignment.completion,
-            phase: "concluded",
-            conclusion: command.conclusion,
-          },
-          status: assignment.outcome ? assignment.status : "waiting",
-          wait: assignment.outcome
-            ? assignment.wait
-            : {
-                kind: "delivered",
-                reason: "Delivery concluded. Team and manager retrospectives remain pending.",
-              },
+      const concluded: FactoryAssignment = {
+        ...assignment,
+        completion: {
+          ...assignment.completion,
+          phase: "concluded",
+          conclusion: command.conclusion,
         },
-        [{ type: "retro.launch", retroId: retro.id }],
-        {
-          retros: [...state.retros, retro],
-          auxiliaryThreads: [
-            ...state.auxiliaryThreads,
-            {
-              threadId: retro.threadId,
-              assignmentId: assignment.id,
-              managerId: assignment.managerId,
-              projectId: assignment.projectId,
-              kind: "retrospective",
-              incidentId: retro.id,
-              cycle: 0,
-              status: "pending",
-              modelSelection: retro.modelSelection,
-              createdAt: now,
-              updatedAt: now,
+        status: assignment.outcome ? assignment.status : "waiting",
+        wait: assignment.outcome
+          ? assignment.wait
+          : {
+              kind: "delivered",
+              reason: "Delivery concluded. Team and manager retrospectives remain pending.",
             },
-          ],
-        },
-      );
+      };
+      if (cancelledBeforeWork(concluded)) {
+        const skipped = skipTeamRetro(retro, command.commandId);
+        return saveAssignment(concluded, [skipped.notify], {
+          retros: [...state.retros, skipped.retro],
+        });
+      }
+      return saveAssignment(concluded, [{ type: "retro.launch", retroId: retro.id }], {
+        retros: [...state.retros, retro],
+        auxiliaryThreads: [
+          ...state.auxiliaryThreads,
+          {
+            threadId: retro.threadId,
+            assignmentId: assignment.id,
+            managerId: assignment.managerId,
+            projectId: assignment.projectId,
+            kind: "retrospective",
+            incidentId: retro.id,
+            cycle: 0,
+            status: "pending",
+            modelSelection: retro.modelSelection,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      });
     }
     case "finding.report": {
       const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
@@ -638,6 +679,11 @@ export function decideFactoryRetros(
         return fail("The finding needs verified scoped evidence and an accountable owner.");
       if (state.findings.some((entry) => entry.id === command.findingId))
         return fail("This finding already exists.", "command-conflict");
+      // The manager retro disposes of every finding and accepts at most 30 dispositions.
+      if (state.findings.filter((entry) => entry.assignmentId === assignment.id).length >= 30)
+        return fail(
+          "This assignment already has 30 findings. Add evidence to a related finding instead.",
+        );
       if (
         command.finding.containmentOf !== null &&
         !state.findings.some(
@@ -693,6 +739,23 @@ export function decideFactoryRetros(
               },
               updatedAt: now,
             };
+      return accept(
+        { findings: state.findings.map((entry) => (entry.id === finding.id ? updated : entry)) },
+        [],
+        { findingId: finding.id },
+      );
+    }
+    case "finding.escalation.acknowledge": {
+      if (actor.kind !== "human")
+        return fail("Only the human can acknowledge an escalation.", "permission-denied");
+      const finding = state.findings.find((entry) => entry.id === command.findingId);
+      if (!finding?.escalation) return fail("This finding has no escalation.");
+      if (finding.escalation.acknowledgedAt) return accept({}, [], { findingId: finding.id });
+      const updated: FactoryFinding = {
+        ...finding,
+        escalation: { ...finding.escalation, acknowledgedAt: now },
+        updatedAt: now,
+      };
       return accept(
         { findings: state.findings.map((entry) => (entry.id === finding.id ? updated : entry)) },
         [],
@@ -773,6 +836,16 @@ export function decideFactoryRetros(
             teamReportDigest: retro.reports.team.digest,
           },
         ]);
+      if (cancelledBeforeWork(assignment)) {
+        const skipped = skipTeamRetro(retro, command.commandId);
+        return saveRetro(skipped.retro, [skipped.notify], {
+          auxiliaryThreads: state.auxiliaryThreads.map((entry) =>
+            entry.threadId === retro.threadId
+              ? { ...entry, status: "complete", updatedAt: now }
+              : entry,
+          ),
+        });
+      }
       return saveRetro(
         { ...retro, execution: { status: "preparing" } },
         [{ type: "retro.launch", retroId: retro.id }],
@@ -975,6 +1048,15 @@ export function decideFactoryRetros(
       )
         return fail(
           "Project tickets need local findings or explicit local containment and matching origin evidence.",
+        );
+      // One ticket per finding: the team and the manager may both try to file the same problem.
+      const existing = state.followups.find((entry) =>
+        entry.findingIds.some((id) => command.findingIds.includes(id)),
+      );
+      if (existing)
+        return fail(
+          `Follow-up ${existing.id} already covers these findings. Use it in the disposition, or retry or link that follow-up.`,
+          "command-conflict",
         );
       const tracker = activeTracker(assignment.projectId);
       const followup: FactoryFollowup = {

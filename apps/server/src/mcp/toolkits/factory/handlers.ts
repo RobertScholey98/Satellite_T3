@@ -19,16 +19,30 @@ export const layer = McpToolAccess.toLayer(FactoryToolkit, {
       );
     }),
   ),
-  factory_merge_operation_action: McpToolAccess.actsAsCaller(({ action, ...input }) =>
-    Effect.gen(function* () {
-      return yield* (yield* FactoryMcpGuard.FactoryMcpGuard).dispatch(
-        yield* McpInvocationContext.McpInvocationContext,
-        {
-          type: action === "retry" ? "merge.operation.retry" : "merge.operation.reconcile",
-          ...input,
-        },
-      );
-    }),
+  factory_merge_operation_action: McpToolAccess.actsAsCaller(
+    ({ action, commandId, operationId, reason, recommendation }) =>
+      Effect.gen(function* () {
+        const guard = yield* FactoryMcpGuard.FactoryMcpGuard;
+        const invocation = yield* McpInvocationContext.McpInvocationContext;
+        if (action !== "escalate")
+          return yield* guard.dispatch(invocation, {
+            type: action === "retry" ? "merge.operation.retry" : "merge.operation.reconcile",
+            commandId,
+            operationId,
+          });
+        if (reason === undefined || recommendation === undefined)
+          return yield* new FactoryError({
+            code: "invalid-state",
+            detail: "Escalation needs a reason and a recommendation for the human.",
+          });
+        return yield* guard.dispatch(invocation, {
+          type: "merge.operation.escalate",
+          commandId,
+          operationId,
+          reason,
+          recommendation,
+        });
+      }),
   ),
   factory_merge_group_get: McpToolAccess.readsAsCaller(({ groupId }) =>
     Effect.gen(function* () {

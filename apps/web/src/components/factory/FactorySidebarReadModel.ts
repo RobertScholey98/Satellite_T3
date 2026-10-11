@@ -40,7 +40,10 @@ export function factoryCanCreateManager(
     environment.canOperate &&
     environment.data !== null &&
     !environment.data.managers.some(
-      (manager) => manager.role === "project" && manager.projectId === project.id,
+      (manager) =>
+        manager.role === "project" &&
+        manager.projectId === project.id &&
+        manager.status !== "retired",
     )
   );
 }

@@ -11,7 +11,9 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
+import { Badge } from "../ui/badge";
 import { FactoryMergeReview, FactoryMergeThreadLink } from "./FactoryMergeReview";
+import { factoryMergeOperationAlert } from "./FactoryMergeReadModel";
 
 export function FactoryThreadMergeReview({ threadRef }: { threadRef: ScopedThreadRef }) {
   const environments = useFactoryEnvironments();
@@ -46,10 +48,17 @@ function ThreadReview({
     (entry) => entry.id === group?.integrationAssignmentId,
   );
   if (!group || !integrationLead) return null;
+  const alert = environment.data ? factoryMergeOperationAlert(environment.data, group.id) : null;
+  const alertBadge = alert ? (
+    <Badge size="sm" variant="warning">
+      {alert}
+    </Badge>
+  ) : null;
   if (group.integrationAssignmentId !== assignment.id)
     return (
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2">
         <span className="text-xs text-muted-foreground">This PR is part of a shared delivery.</span>
+        {alertBadge}
         <FactoryMergeThreadLink environment={environment} threadId={integrationLead.threadId}>
           Open combined review conversation
         </FactoryMergeThreadLink>
@@ -58,8 +67,9 @@ function ThreadReview({
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2">
-        <span className="text-xs text-muted-foreground">
+        <span className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           Integration review · {group.memberAssignmentIds.length} linked implementations
+          {alertBadge}
         </span>
         <Button size="xs" variant="outline" onClick={() => setOpen(true)}>
           Review combined feature

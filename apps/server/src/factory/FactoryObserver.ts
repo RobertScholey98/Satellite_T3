@@ -33,7 +33,13 @@ const make = Effect.gen(function* () {
   const store = yield* FactoryStore.FactoryStore;
   const factory = yield* FactoryService.FactoryService;
   const pullRequests = yield* Effect.serviceOption(PullRequestService);
-  const afterSequence = yield* store.observationCursor;
+  // Without managers nothing needs observing, and a missing cursor means the history predates
+  // the factory. Either way start at the current high-water mark rather than replaying it.
+  const cursor = yield* store.observationCursor;
+  const afterSequence =
+    cursor === 0 || (yield* store.latest).managers.length === 0
+      ? yield* events.latestSequence()
+      : cursor;
   const progress = yield* SubscriptionRef.make<{
     readonly sequence: number;
     readonly recovered: boolean;
@@ -66,7 +72,19 @@ const make = Effect.gen(function* () {
   // must keep every event, including the events the factory merely checkpoints.
   yield* events.stream({ afterSequence, bounded: false }).pipe(
     Stream.runForEach((event) =>
-      factory.observe(event).pipe(
+      store.latest.pipe(
+        Effect.flatMap((state) =>
+          state.managers.length === 0 ? Effect.void : factory.observe(event),
+        ),
+        // One unprocessable event must not stop observation for the rest of the session.
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logError("Factory could not observe an orchestration event", {
+              sequence: event.sequence,
+              cause,
+            }),
+        ),
         Effect.andThen(
           SubscriptionRef.set(progress, {
             sequence: event.sequence,

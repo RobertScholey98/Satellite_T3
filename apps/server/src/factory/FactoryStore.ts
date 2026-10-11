@@ -34,12 +34,15 @@ export class FactoryStore extends Context.Service<
   FactoryStore,
   {
     readonly snapshot: Effect.Effect<FactorySnapshot, FactoryError>;
+    /** The last published snapshot, held in memory. For cheap gating off the hot path. */
+    readonly latest: Effect.Effect<FactorySnapshot>;
     readonly changes: Stream.Stream<FactorySnapshot>;
     readonly completionFence: (projectId: ProjectId) => Effect.Effect<string, FactoryError>;
     readonly findReceipt: (
       input: Pick<DecisionInput, "actor" | "command">,
     ) => Effect.Effect<FactoryCommandResult | undefined, FactoryError>;
     readonly commit: (input: DecisionInput) => Effect.Effect<FactoryCommandResult, FactoryError>;
+    /** Highest sequence observed: persisted, or seen by this process. */
     readonly observationCursor: Effect.Effect<number, FactoryError>;
     readonly observe: (input: {
       readonly sequence: number;
@@ -78,6 +81,7 @@ const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(FactorySnapshot
 const encodeResult = Schema.encodeEffect(Schema.fromJsonString(FactoryCommandResult));
 const encodeIntent = Schema.encodeEffect(Schema.fromJsonString(FactoryEffectIntent));
 const isFactoryError = Schema.is(FactoryError);
+const OBSERVATION_CURSOR_BATCH = 256;
 const storageError = (cause: unknown) => new FactoryError({ code: "persistence", cause });
 const preserveDomainError = (cause: unknown) =>
   isFactoryError(cause) ? cause : storageError(cause);
@@ -85,13 +89,16 @@ const preserveDomainError = (cause: unknown) =>
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const mutex = yield* Semaphore.make(1);
+  // Access checks read the state several times per turn; decode only when the row changes.
+  let decoded: { readonly json: string; readonly state: FactorySnapshot } | undefined;
   const snapshot = Effect.gen(function* () {
     const rows = yield* sql<{ readonly payload_json: string }>`
       SELECT payload_json FROM factory_state WHERE id = 1
     `;
-    return rows[0] === undefined
-      ? initialFactorySnapshot()
-      : yield* decodeSnapshot(rows[0].payload_json);
+    const json = rows[0]?.payload_json;
+    if (json === undefined) return initialFactorySnapshot();
+    if (decoded?.json !== json) decoded = { json, state: yield* decodeSnapshot(json) };
+    return decoded.state;
   }).pipe(Effect.mapError(storageError));
   const current = yield* SubscriptionRef.make(yield* snapshot);
   // Thread links and lineage commit independently of factory observations. Compare their
@@ -187,41 +194,64 @@ const make = Effect.gen(function* () {
   });
 
   const publish = snapshot.pipe(Effect.flatMap((value) => SubscriptionRef.set(current, value)));
+  // Observations without a command replay idempotently, so their cursor is persisted in
+  // batches instead of one write transaction per orchestration event.
+  let observedThrough = 0;
+  let persistedThrough = 0;
   const observationCursor = Effect.gen(function* () {
     const rows = yield* sql<{ readonly sequence: number }>`
       SELECT sequence FROM factory_observers WHERE name = 'orchestration'
     `;
-    return rows[0]?.sequence ?? 0;
+    return Math.max(rows[0]?.sequence ?? 0, observedThrough);
   }).pipe(Effect.mapError(storageError));
+  const observed = (sequence: number, persisted: boolean) =>
+    Effect.sync(() => {
+      observedThrough = Math.max(observedThrough, sequence);
+      if (persisted) persistedThrough = Math.max(persistedThrough, sequence);
+    });
 
   return FactoryStore.of({
     snapshot,
+    latest: SubscriptionRef.get(current),
     completionFence,
-    changes: SubscriptionRef.changes(current),
+    // Idempotent replays republish an unchanged snapshot; subscribers only need new revisions.
+    changes: SubscriptionRef.changes(current).pipe(
+      Stream.changesWith((left, right) => left.revision === right.revision),
+    ),
     findReceipt,
     observationCursor,
     observe: (input) =>
-      mutex.withPermits(1)(
-        sql
-          .withTransaction(
-            Effect.gen(function* () {
-              if ((yield* observationCursor) >= input.sequence) return false;
-              if (input.command !== undefined)
-                yield* commitTransaction({
-                  actor: { kind: "system" },
-                  command: input.command,
-                  now: input.now,
-                });
-              yield* sql`INSERT INTO factory_observers (name, sequence)
+      Effect.suspend(() =>
+        input.command === undefined && input.sequence < persistedThrough + OBSERVATION_CURSOR_BATCH
+          ? observed(input.sequence, false)
+          : mutex.withPermits(1)(
+              sql
+                .withTransaction(
+                  Effect.gen(function* () {
+                    if ((yield* observationCursor) >= input.sequence) return undefined;
+                    if (input.command !== undefined)
+                      yield* commitTransaction({
+                        actor: { kind: "system" },
+                        command: input.command,
+                        now: input.now,
+                      });
+                    yield* sql`INSERT INTO factory_observers (name, sequence)
         VALUES ('orchestration', ${input.sequence})
         ON CONFLICT(name) DO UPDATE SET sequence = excluded.sequence`;
-              return input.command !== undefined;
-            }),
-          )
-          .pipe(
-            Effect.mapError(preserveDomainError),
-            Effect.flatMap((changed) => (changed ? publish : Effect.void)),
-          ),
+                    return input.command !== undefined;
+                  }),
+                )
+                .pipe(
+                  Effect.mapError(preserveDomainError),
+                  Effect.flatMap((changed) =>
+                    changed === undefined
+                      ? Effect.void
+                      : observed(input.sequence, true).pipe(
+                          Effect.andThen(changed ? publish : Effect.void),
+                        ),
+                  ),
+                ),
+            ),
       ),
     commit: (input) =>
       mutex.withPermits(1)(

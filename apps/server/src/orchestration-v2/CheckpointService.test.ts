@@ -20,6 +20,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
+import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
 import * as FactoryExecution from "../factory/FactoryExecution.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as IdAllocator from "./IdAllocator.ts";
@@ -199,9 +200,12 @@ it.effect("never checkpoints or restores the repository containing an owned idea
   }).pipe(Effect.provide(SatelliteTestRuntime.layer.pipe(Layer.provideMerge(NodeServices.layer))));
 });
 
-it.effect.each(["managed", "unavailable", "ordinary"] as const)(
+it.effect.each(["managed", "unavailable", "ordinary", "unresolved", "lookup-failed"] as const)(
   "protects factory snapshots from host checkpoints, boundary=%s",
   (boundary) => {
+    // `unavailable` is a paused or held factory thread; `unresolved` and
+    // `lookup-failed` are ordinary threads whose factory lookup errored.
+    const excluded = boundary === "managed" || boundary === "unavailable";
     const threadId = ThreadId.make("thread:factory-checkpoint");
     const cwd = "/repo/.t3/userdata/factory/execution/profile/project";
     const isGitRepository = vi.fn(() => Effect.succeed(true));
@@ -217,7 +221,7 @@ it.effect.each(["managed", "unavailable", "ordinary"] as const)(
           Layer.mock(FactoryExecution.FactoryExecution)({
             runtimePolicyFor: (requestedThreadId) => {
               assert.equal(requestedThreadId, threadId);
-              if (boundary === "unavailable")
+              if (boundary !== "managed" && boundary !== "ordinary")
                 return Effect.fail(new FactoryError({ code: "execution-unavailable" }));
               return Effect.succeed(
                 boundary === "ordinary"
@@ -232,6 +236,21 @@ it.effect.each(["managed", "unavailable", "ordinary"] as const)(
                     },
               );
             },
+          }),
+          Layer.mock(FactoryControlAccess)({
+            membership: (id) =>
+              boundary === "lookup-failed"
+                ? Effect.fail(new FactoryError({ code: "execution-unavailable" }))
+                : Effect.succeed(
+                    boundary === "unresolved"
+                      ? undefined
+                      : {
+                          threadId: id,
+                          managerId: ThreadId.make("thread:manager"),
+                          projectId: ProjectId.make("project:factory-checkpoint"),
+                          ancestorThreadIds: [],
+                        },
+                  ),
           }),
           Layer.mock(CheckpointStore.CheckpointStore)({
             isGitRepository,
@@ -270,14 +289,14 @@ it.effect.each(["managed", "unavailable", "ordinary"] as const)(
         appRunOrdinal: 1,
         capturedAt: now,
       });
-      assert.equal(baseline.status, boundary === "ordinary" ? "ready" : "missing");
-      assert.equal(checkpoint.status, boundary === "ordinary" ? "ready" : "missing");
+      assert.equal(baseline.status, excluded ? "missing" : "ready");
+      assert.equal(checkpoint.status, excluded ? "missing" : "ready");
       // A persisted ready checkpoint from an earlier version must not bypass the boundary.
       const restore = checkpoints.restore({
         scope,
         checkpoint: { ...checkpoint, status: "ready" },
       });
-      if (boundary === "ordinary") yield* restore;
+      if (!excluded) yield* restore;
       else assert.equal((yield* restore.pipe(Effect.flip))._tag, "CheckpointRestoreError");
       yield* checkpoints.deleteStaleRefs({ scope, checkpoints: [checkpoint] });
 
@@ -289,7 +308,7 @@ it.effect.each(["managed", "unavailable", "ordinary"] as const)(
         hasCheckpointRef,
         diffCheckpoints,
       ]) {
-        if (boundary === "ordinary") assert.isNotEmpty(operation.mock.calls);
+        if (!excluded) assert.isNotEmpty(operation.mock.calls);
         else assert.isEmpty(operation.mock.calls);
       }
     }).pipe(Effect.provide(layerTest));

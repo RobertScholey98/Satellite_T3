@@ -6,6 +6,7 @@ import {
   type FactoryAssignmentDelivery,
   type FactorySnapshot,
 } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -29,9 +30,11 @@ import {
 } from "./FactoryDelivery.testkit.ts";
 import * as Execution from "./FactoryExecution.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
+import { FactorySource } from "./FactorySource.ts";
 import * as FactorySourceTestkit from "./FactorySource.testkit.ts";
 import { decide } from "./FactoryState.ts";
 import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 
 const profileId = "e4556207-a1c8-4b22-861c-4f835a64b713";
 const planningId = "b3b85fdc-cdd0-416f-8cf2-8a4dfb204054";
@@ -196,6 +199,32 @@ it.effect(
               )
             : fs.exists(file),
       });
+      // `mutate` resolves the pinned workflow before its receipt check, so give it one.
+      const skill = Buffer.from("Owned skill");
+      yield* fs.makeDirectory(path.join(test.profile.workflowSnapshotPath, "skills"), {
+        recursive: true,
+      });
+      yield* fs.writeFile(
+        path.join(test.profile.workflowSnapshotPath, "skills", "SKILL.md"),
+        skill,
+      );
+      const skillDigest = Buffer.from(
+        yield* (yield* Crypto.Crypto).digest("SHA-256", skill),
+      ).toString("hex");
+      const workflowSource = Layer.mock(FactorySource)({
+        readRevision: () =>
+          Effect.succeed({
+            files: [
+              {
+                path: "skills/SKILL.md",
+                content: skill.toString("base64"),
+                digest: skillDigest,
+                mode: "100644" as const,
+              },
+            ],
+            excludedPaths: [],
+          }),
+      });
       assert.isTrue(
         Result.isSuccess(
           decide({
@@ -209,7 +238,20 @@ it.effect(
       yield* Effect.gen(function* () {
         const boundary = yield* Boundary.FactoryBoundaryExecution;
         const pending = yield* boundary.mutate(mutation).pipe(Effect.result, Effect.forkChild);
-        yield* Deferred.await(preparing);
+        // Fail fast if the mutation settles before reaching its receipt check.
+        yield* Deferred.await(preparing).pipe(
+          Effect.raceFirst(
+            Fiber.join(pending).pipe(
+              Effect.flatMap((early) =>
+                Effect.die(
+                  `Mutation settled before its receipt check: ${JSON.stringify(
+                    Result.isFailure(early) ? early.failure : "success",
+                  )}`,
+                ),
+              ),
+            ),
+          ),
+        );
         test.flow("stopping");
         yield* Deferred.succeed(resume, undefined);
         const result = yield* Fiber.join(pending);
@@ -218,7 +260,11 @@ it.effect(
         assert.deepEqual(test.processes, []);
       }).pipe(
         Effect.provide(
-          Boundary.layer.pipe(Layer.provide(test.dependencies), Layer.provide(delayedFiles)),
+          Boundary.layer.pipe(
+            Layer.provide(workflowSource),
+            Layer.provide(test.dependencies),
+            Layer.provide(delayedFiles),
+          ),
         ),
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
@@ -232,8 +278,31 @@ it.effect(
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const directory = path.join(path.dirname(test.directory), planningId);
+      // Current profiles carry their pinned workflow snapshot, which launch verifies on disk.
+      const crypto = yield* Crypto.Crypto;
+      const workflowBytes = Buffer.from("Approved workflow baseline");
+      const workflowFile = {
+        path: "skills/flow/SKILL.md",
+        content: workflowBytes.toString("base64"),
+        digest: Buffer.from(yield* crypto.digest("SHA-256", workflowBytes)).toString("hex"),
+        mode: "100644" as const,
+      };
+      const dependencies = Layer.mergeAll(
+        test.dependencies,
+        Layer.mock(FactorySource)({
+          readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
+        }),
+      );
+      const workflow = yield* FactoryWorkflowExecution.FactoryWorkflowExecution.pipe(
+        Effect.flatMap((service) =>
+          service.snapshot({ version: test.state().assignments[0]!.workflow }),
+        ),
+        Effect.provide(FactoryWorkflowExecution.layer.pipe(Layer.provide(dependencies))),
+      );
       const planning: FactoryExecutionProfile = {
         ...test.profile,
+        workflow,
+        workflowSnapshotPath: workflow.snapshotPath,
         boundaryId: planningId,
         projectSnapshotPath: path.join(directory, "project"),
         runtimePath: path.join(directory, "sessions"),
@@ -283,6 +352,6 @@ it.effect(
         yield* launch({ ...resolved!, profileId }).pipe(Effect.flip);
         yield* fs.writeFileString(markerPath, json({ ...marker, state: "released" }));
         yield* launch(resolved!).pipe(Effect.flip);
-      }).pipe(Effect.provide(Execution.layer.pipe(Layer.provide(test.dependencies))));
+      }).pipe(Effect.provide(Execution.layer.pipe(Layer.provide(dependencies))));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

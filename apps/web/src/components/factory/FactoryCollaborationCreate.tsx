@@ -40,7 +40,9 @@ export function FactoryCollaborationCreate({
         [])
       : [];
   const receivers =
-    state?.managers.filter((entry) => entry.role === "project" && entry.id !== manager.id) ?? [];
+    state?.managers.filter(
+      (entry) => entry.role === "project" && entry.status !== "retired" && entry.id !== manager.id,
+    ) ?? [];
   const assignment = assignments.find((entry) => entry.id === originId);
   const investigation = investigations.find((entry) => entry.id === originId);
   const origins =

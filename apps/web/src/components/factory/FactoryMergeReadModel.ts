@@ -77,3 +77,16 @@ export function factoryMergeReviewLocked(read: FactoryMergeGroupRead) {
       operation.members.some((member) => member.outcome.phase !== "pending"))
   );
 }
+
+/** Status for the thread bar while a shared merge needs the user or is only partly merged. */
+export function factoryMergeOperationAlert(
+  state: Pick<FactorySnapshot, "mergeOperations">,
+  groupId: string,
+) {
+  const operation = state.mergeOperations.findLast((entry) => entry.groupId === groupId);
+  if (!operation || operation.lifecycle.phase === "completed") return null;
+  if (operation.lifecycle.phase === "attention") return "Shared merge needs your attention";
+  return operation.members.some((member) => member.outcome.phase === "confirmed")
+    ? "Shared merge partially merged"
+    : null;
+}

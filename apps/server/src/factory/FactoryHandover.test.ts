@@ -338,7 +338,8 @@ it.effect(
     }),
 );
 
-it.effect("strict stop reaches ordinary forks even when another provider fails to detach", () =>
+// Forks are independent human threads, so stopping a team leaves them running.
+it.effect("strict stop leaves ordinary forks running while reporting a failed detach", () =>
   Effect.gen(function* () {
     const detached = yield* Ref.make<ThreadId[]>([]);
     const provider = Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
@@ -381,10 +382,10 @@ it.effect("strict stop reaches ordinary forks even when another provider fails t
         .stopTeam({ threadId, projectId, commandId: CommandId.make("cancel-forked-team") })
         .pipe(Effect.flip);
       assert.equal(failure.code, "execution-unavailable");
-      assert.deepEqual((yield* Ref.get(detached)).toSorted(), [threadId, ...children].toSorted());
+      assert.deepEqual(yield* Ref.get(detached), [threadId]);
       for (const child of children) {
         const projection = yield* projections.getThreadProjection(child);
-        assert.equal(projection.runs.at(-1)?.status, "interrupted");
+        assert.notEqual(projection.runs.at(-1)?.status, "interrupted");
         assert.equal(projection.thread.lineage.relationshipToParent, "fork");
         assert.equal(projection.messages.at(-1)?.text, "Continue scoped work");
       }

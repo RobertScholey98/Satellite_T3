@@ -8,6 +8,7 @@ import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { factoryProjectPause } from "./FactoryControlsReadModel";
+import { factorySystemManagerActive } from "./FactoryOversightReadModel";
 import { useFactoryCommand } from "./useFactoryCommand";
 
 function Followup({
@@ -147,6 +148,7 @@ export function FactoryRetros({
     environment.data?.findings.filter((entry) => entry.assignmentId === assignment.id) ?? [];
   const followups =
     environment.data?.followups.filter((entry) => entry.assignmentId === assignment.id) ?? [];
+  const systemManagerActive = factorySystemManagerActive(environment.data);
   const plan = completion?.plan;
   const noPrAcceptance =
     !assignment.integrationId &&
@@ -307,7 +309,13 @@ export function FactoryRetros({
             <Button
               size="xs"
               variant="outline"
-              disabled={!onOpenThread || retro.execution.status === "preparing"}
+              disabled={
+                !onOpenThread ||
+                retro.execution.status === "preparing" ||
+                !environment.data?.auxiliaryThreads.some(
+                  (entry) => entry.threadId === retro.threadId,
+                )
+              }
               onClick={() => onOpenThread?.(retro.threadId)}
             >
               Open team retro
@@ -386,7 +394,31 @@ export function FactoryRetros({
               </p>
               <p className="text-xs text-muted-foreground">{finding.route.uncertainty}</p>
               {finding.escalation ? (
-                <p className="text-sm">Awaiting workflow review: {finding.escalation.summary}</p>
+                <div className="space-y-1">
+                  <p className="text-sm">
+                    {finding.escalation.acknowledgedAt
+                      ? "Escalation reviewed by you"
+                      : systemManagerActive
+                        ? "Sent to the system manager for workflow review"
+                        : "Escalated to you (no active system manager)"}
+                    : {finding.escalation.summary}
+                  </p>
+                  {finding.escalation.acknowledgedAt ? null : (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={command.disabled}
+                      onClick={() =>
+                        void command.submit({
+                          type: "finding.escalation.acknowledge",
+                          findingId: finding.id,
+                        })
+                      }
+                    >
+                      Mark escalation reviewed
+                    </Button>
+                  )}
+                </div>
               ) : null}
             </li>
           ))}

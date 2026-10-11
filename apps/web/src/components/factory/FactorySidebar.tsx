@@ -37,7 +37,7 @@ import {
   factoryPauseStatus,
   factoryProjectPause,
 } from "./FactoryControlsReadModel";
-import { factoryOversightSummary } from "./FactoryOversightReadModel";
+import { factoryEscalationAwaitsHuman, factoryOversightSummary } from "./FactoryOversightReadModel";
 import { factoryCanCreateManager, factorySidebarVisible } from "./FactorySidebarReadModel";
 import { FactorySystemManagerRow } from "./FactorySystemManagerRow";
 import {
@@ -104,6 +104,7 @@ const managerStatusLabels = {
   blocked: "Needs setup",
   active: "Ready",
   paused: "Paused",
+  retired: "Retired",
 } satisfies Record<FactoryManager["status"], string>;
 
 function threadUnavailableReason(
@@ -505,7 +506,7 @@ export function FactorySidebar({
                       {environments.length > 1 ? ` · ${environment.label}` : ""}
                     </span>
                     <Badge variant={manager.wait ? "warning" : "secondary"} size="sm">
-                      {managerPause
+                      {managerPause && manager.status !== "retired"
                         ? `Manager: ${factoryPauseStatus(managerPause)}`
                         : managerStatusLabels[manager.status]}
                     </Badge>
@@ -655,6 +656,11 @@ export function FactorySidebar({
                             {assignment.oversight?.recovery.incident ? (
                               <p className="px-2 text-xs text-muted-foreground">
                                 {factoryOversightSummary(assignment)}
+                              </p>
+                            ) : null}
+                            {factoryEscalationAwaitsHuman(environment.data, assignment.id) ? (
+                              <p className="px-2 text-xs text-muted-foreground">
+                                An escalated problem needs your review in assignment details.
                               </p>
                             ) : null}
                           </SidebarMenuSubItem>

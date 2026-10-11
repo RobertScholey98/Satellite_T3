@@ -136,6 +136,68 @@ describe("Factory controls", () => {
     assert.isUndefined(factoryDirectionBlocked(paused.state, worker, leadId));
   });
 
+  it("retires a manager for good, stopping its teams and releasing its project", () => {
+    const managerThread = { kind: "thread", threadId: managerId } as const;
+    const retire = { type: "manager.retire", commandId, managerId } as const;
+    assert.strictEqual(failure(fixture(), retire, managerThread), "permission-denied");
+    const retired = apply(apply(fixture(), { type: "manager.pause", commandId, managerId }).state, {
+      ...retire,
+      commandId: CommandId.make("retire"),
+    });
+    assert.strictEqual(retired.state.managers[0]?.status, "retired");
+    assert.strictEqual(retired.state.assignments[0]?.outcome?.kind, "cancelled");
+    assert.deepStrictEqual(
+      retired.effects.map((effect) => effect.type),
+      ["control.stop"],
+    );
+    assert.include(factoryExecutionBlocked(retired.state, managerMember), "retired");
+    assert.include(factoryExecutionBlocked(retired.state, member), "retired");
+    let state = receipt(retired.state, "manager-pause", "control.stop.recorded");
+    assert.strictEqual(
+      failure(state, { type: "manager.resume", commandId, managerId }),
+      "invalid-state",
+    );
+    assert.strictEqual(
+      apply(state, { type: "manager.pause", commandId: CommandId.make("pause"), managerId }).state
+        .managers[0]?.status,
+      "retired",
+    );
+    state = apply(state, {
+      type: "policy.defaults.configure",
+      commandId: CommandId.make("defaults"),
+      defaults: state.defaults,
+    }).state;
+    assert.strictEqual(state.managers[0]?.status, "retired");
+    assert.deepStrictEqual(apply(state, retire).effects, []);
+    const recreated = Result.getOrThrow(
+      decide({
+        state,
+        actor: human,
+        now,
+        command: {
+          type: "manager.create",
+          commandId: CommandId.make("recreate"),
+          projectId,
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved" },
+          workflow: { repositoryRoot: "C:/skills", revision: "pinned" },
+        },
+        allocation: {
+          managerThreadId: ThreadId.make("manager-2"),
+          leadThreadId: ThreadId.make("lead-2"),
+          assignmentId: FactoryAssignmentId.make("assignment-2"),
+        },
+        qualification: { status: "qualified", profileId: "profile-2", checkedAt: now },
+      }),
+    );
+    assert.deepStrictEqual(
+      recreated.state.managers.map((entry) => [entry.id, entry.status]),
+      [
+        [managerId, "retired"],
+        [ThreadId.make("manager-2"), "onboarding"],
+      ],
+    );
+  });
+
   it("resuming a project retains a separate manager pause and takeover", () => {
     let state = apply(fixture(), { type: "manager.pause", commandId, managerId }).state;
     state = apply(state, { type: "thread.takeover", commandId, threadId: workerId }, human, {
@@ -157,7 +219,7 @@ describe("Factory controls", () => {
     assert.isUndefined(factoryDirectionBlocked(state, worker));
   });
 
-  it("keeps stop failures prohibited and retries the same generation", () => {
+  it("keeps stop failures prohibited, retries the same generation, and can still resume", () => {
     let state = apply(fixture(), { type: "project.pause", commandId, projectId }).state;
     const paused = control(state, "project-pause");
     state = apply(
@@ -172,10 +234,13 @@ describe("Factory controls", () => {
       system,
     ).state;
     assert.isDefined(factoryExecutionBlocked(state, worker));
-    assert.strictEqual(
-      failure(state, { type: "project.resume", commandId, projectId }),
-      "invalid-state",
+    // Releasing a pause is always safe, so a stop that never settles is not a one-way door.
+    const resumed = receipt(
+      apply(state, { type: "project.resume", commandId, projectId }).state,
+      "project-pause",
+      "control.resume.recorded",
     );
+    assert.isUndefined(factoryExecutionBlocked(resumed, worker));
     const retry = apply(state, {
       type: "control.retry",
       commandId,

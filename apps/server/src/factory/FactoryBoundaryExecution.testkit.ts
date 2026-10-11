@@ -16,6 +16,7 @@ export const layerUnavailable = Layer.succeed(FactoryBoundaryExecution, {
   inspectCandidate: unexpected,
   approve: unexpected,
   approveShared: unexpected,
+  refresh: unexpected,
   prepare: unexpected,
   inspect: unexpected,
   rebind: unexpected,

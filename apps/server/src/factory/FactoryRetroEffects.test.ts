@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import {
   CommandId,
   FactoryControlId,
+  FactoryEffectIntent,
   FactorySnapshot,
   MessageId,
   type FactoryCommand,
@@ -27,6 +28,8 @@ import * as FactoryRetroEvidence from "./FactoryRetroEvidence.ts";
 import * as FactoryRetroEffects from "./FactoryRetroEffects.ts";
 import { FactoryRetroExecution } from "./FactoryRetroExecution.ts";
 import { initialFactoryCompletion } from "./FactoryRetros.ts";
+import { integrated } from "./FactoryIntegration.testkit.ts";
+import { completedMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import {
   deliveryFixture,
@@ -624,6 +627,110 @@ it.effect(
           (yield* f.threads.getThreadRecords(retro.threadId, ["messages"])).messages.length,
           1,
         );
+      }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.provide(base), Effect.scoped),
+);
+
+it.effect(
+  "waits on a pending delivery effect without stopping the team or reading the PR host",
+  () =>
+    Effect.gen(function* () {
+      // The PR host is deliberately unavailable: any read fails the test.
+      const f = yield* fixture(prSeed());
+      const sql = yield* SqlClient.SqlClient;
+      yield* Effect.gen(function* () {
+        const effects = yield* FactoryRetroEffects.FactoryRetroEffects;
+        yield* effects.reconcile;
+        const conclude = yield* f.pending("assignment.conclude");
+        const intent = yield* Schema.encodeEffect(Schema.fromJsonString(FactoryEffectIntent))({
+          type: "delivery.capture",
+          assignmentId: deliveryIds.assignment,
+          revisionId: "revision",
+        });
+        yield* sql`INSERT INTO factory_commands (command_id,request_json,result_json)
+        VALUES('capture','{}','{"revision":0}')`;
+        yield* sql`INSERT INTO factory_outbox (effect_id,command_id,payload_json,status,created_at)
+        VALUES('capture:0','capture',${intent},'pending',${deliveryNow})`;
+        yield* effects.handle(conclude);
+        yield* effects.handle(conclude);
+        assert.deepStrictEqual(f.stopped, []);
+        assert.equal((yield* f.store.snapshot).assignments[0]!.completion?.phase, "concluding");
+        assert.isTrue((yield* f.store.pending).some((entry) => entry.id === conclude.id));
+      }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.provide(base), Effect.scoped),
+);
+
+it.effect("tells no-PR work with a linked PR to unlink it instead of extending a manifest", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    yield* Effect.gen(function* () {
+      const effects = yield* FactoryRetroEffects.FactoryRetroEffects;
+      yield* effects.reconcile;
+      yield* f.threads.dispatch({
+        type: "thread.pull-request.link",
+        commandId: CommandId.make("no-pr-link"),
+        threadId: deliveryIds.lead,
+        host: "github.com",
+        repository: prRef.repository,
+        number: 2,
+        url: "https://github.com/owner/repo/pull/2",
+        source: "agent",
+      });
+      yield* effects.handle(yield* f.pending("assignment.conclude"));
+      const completion = (yield* f.store.snapshot).assignments[0]!.completion!;
+      assert.equal(completion.phase, "collecting");
+      assert.equal(completion.plan.kind, "no-pr");
+      assert.include(completion.waitReason ?? "", "Unlink");
+    }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.provide(base), Effect.scoped),
+);
+
+it.effect(
+  "concludes an integration team from its completed shared merge and invites the requesting manager to its retro",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(completedMergeOperationFixture().state);
+      yield* Effect.gen(function* () {
+        const effects = yield* FactoryRetroEffects.FactoryRetroEffects;
+        yield* effects.reconcile;
+        const conclude = (yield* f.store.pending).find(
+          (entry) =>
+            entry.intent.type === "assignment.conclude" &&
+            entry.intent.assignmentId === integrated.assignment,
+        );
+        assert.isDefined(conclude);
+        yield* effects.handle(conclude!);
+        const concluded = yield* f.store.snapshot;
+        const lead = concluded.assignments.find((entry) => entry.id === integrated.assignment)!;
+        assert.equal(lead.completion?.conclusion?.kind, "shared-group-delivered");
+        const retro = concluded.retros.find((entry) => entry.assignmentId === lead.id)!;
+        const launch = (yield* f.store.pending).find(
+          (entry) => entry.intent.type === "retro.launch" && entry.intent.retroId === retro.id,
+        );
+        assert.isDefined(launch);
+        yield* effects.handle(launch!);
+        assert.deepStrictEqual(f.prepared, [retro.id]);
+        const actor = { kind: "thread" as const, threadId: retro.threadId, assignmentId: lead.id };
+        const report: FactoryCommand = {
+          type: "retro.team.submit",
+          commandId: CommandId.make("integration-team-report"),
+          retroId: retro.id,
+          conclusionId: retro.conclusionId,
+          report: {
+            outcome: "Both linked PRs merged after combined verification",
+            helped: "One shared review point",
+            hindered: "",
+            learning: { kind: "no-process-change", reason: "The shared merge recovered cleanly" },
+            contributions: [{ kind: "thread", threadId: retro.threadId }],
+          },
+        };
+        const context = yield* effects.context(actor, report);
+        yield* f.store.commit({ actor, command: report, now: deliveryNow, ...context });
+        yield* effects.handle(yield* f.pending("retro.manager-notify"));
+        const invitations = (yield* f.threads.getThreadRecords(lead.managerId, ["messages"]))
+          .messages;
+        assert.equal(invitations.length, 1);
+        assert.include(invitations[0]!.text, retro.id);
       }).pipe(Effect.provide(f.layer));
     }).pipe(Effect.provide(base), Effect.scoped),
 );

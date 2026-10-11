@@ -150,6 +150,7 @@ export const layer = Layer.effect(
         changed = false;
         for (const thread of projectThreads) {
           if (
+            thread.lineage.relationshipToParent === "subagent" &&
             thread.lineage.parentThreadId !== null &&
             affected.has(thread.lineage.parentThreadId) &&
             !affected.has(thread.id)
@@ -287,7 +288,7 @@ export const layer = Layer.effect(
         yield* store.retireEffect(pending.id);
         return;
       }
-      if (control.stop.status !== "confirmed" || control.resume?.status !== "pending") return;
+      if (control.stop.status === "pending" || control.resume?.status !== "pending") return;
       yield* store.beginEffect(pending.id);
       const result = yield* Effect.gen(function* () {
         if (control.kind !== "project-pause") return;
@@ -397,7 +398,7 @@ export const layer = Layer.effect(
             control.kind === "project-pause" &&
             control.projectId === assignment?.projectId &&
             control.status === "released" &&
-            control.stop.status === "confirmed" &&
+            control.stop.status !== "pending" &&
             control.resumeThreadIds?.includes(intent.threadId) &&
             intent.messageId ===
               `factory-resume:${control.id}:${control.generation}:${intent.threadId}`,
@@ -526,7 +527,7 @@ export const layer = Layer.effect(
           control.kind === "project-pause" &&
           control.projectId === assignment.projectId &&
           control.generation === intent.generation &&
-          control.stop.status === "confirmed" &&
+          control.stop.status !== "pending" &&
           intent.runIds !== undefined &&
           intent.runIds.length > 0 &&
           control.resumeQueues?.some(

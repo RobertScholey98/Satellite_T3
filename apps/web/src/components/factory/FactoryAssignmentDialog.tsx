@@ -31,6 +31,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Textarea } from "../ui/textarea";
 import { factoryModelKey, factoryModelLabel } from "./FactoryModelPolicyDialog";
 import { FactoryAssignmentControls } from "./FactoryControls";
+import { FactoryBaselineRefresh } from "./FactoryBaselineRefresh";
 import { FactoryOversight } from "./FactoryOversight";
 import { FactoryDelivery } from "./FactoryDelivery";
 import { FactoryMergeReview, FactoryMergeThreadLink } from "./FactoryMergeReview";
@@ -598,6 +599,10 @@ export function FactoryAssignmentDetailsDialog({
   const integrationLead = environment.data?.assignments.find(
     (entry) => entry.id === mergeGroup?.integrationAssignmentId,
   );
+  const baselineManager =
+    assignment.integrationId === undefined
+      ? environment.data?.managers.find((entry) => entry.id === assignment.managerId)
+      : undefined;
   return (
     <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
       <DialogPopup showCloseButton={!pending}>
@@ -653,6 +658,11 @@ export function FactoryAssignmentDetailsDialog({
               <p role="status" className="text-sm text-muted-foreground">
                 {assignment.wait.reason}
               </p>
+            ) : null}
+            {assignment.wait?.kind === "execution-boundary" &&
+            baselineManager &&
+            baselineManager.boundaryId === assignment.grant?.boundaryId ? (
+              <FactoryBaselineRefresh environment={environment} manager={baselineManager} />
             ) : null}
             {assignment.scope ? (
               <section className="space-y-2">

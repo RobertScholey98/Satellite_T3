@@ -269,6 +269,13 @@ export const FactoryMergeCommand = Schema.Union([
     operationId: Id,
     reason: Text,
   }),
+  Schema.Struct({
+    type: Schema.Literal("merge.operation.escalate"),
+    commandId: CommandId,
+    operationId: Id,
+    reason: Text,
+    recommendation: Text,
+  }),
   Schema.Struct({ type: Schema.Literal("merge.group.review"), ...Fields }),
   Schema.Struct({
     type: Schema.Literal("merge.group.approve"),

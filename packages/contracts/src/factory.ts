@@ -222,7 +222,7 @@ const FactoryManagerFields = {
   workflow: FactoryWorkflowVersion,
   overrides: FactoryPolicyOverrides,
   boundaryId: Schema.optionalKey(FactoryBoundaryId),
-  status: Schema.Literals(["onboarding", "blocked", "active", "paused"]),
+  status: Schema.Literals(["onboarding", "blocked", "active", "paused", "retired"]),
   threadStatus: Schema.Literals(["pending", "created"]),
   launchStatus: Schema.Literals(["pending", "delivered"]),
   wait: Schema.NullOr(FactoryWait),
@@ -535,6 +535,11 @@ export const FactoryCommand = Schema.Union([
     commandId: CommandId,
     managerId: ThreadId,
     configuration: FactoryBoundaryConfiguration,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("manager.refresh-boundary"),
+    commandId: CommandId,
+    managerId: ThreadId,
   }),
   Schema.Struct({
     type: Schema.Literal("manager.create"),

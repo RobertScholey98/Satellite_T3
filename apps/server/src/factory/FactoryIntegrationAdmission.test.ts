@@ -31,7 +31,10 @@ import { deliveryIds, deliveryNow, deliverySelection } from "./FactoryDelivery.t
 import { FactorySource } from "./FactorySource.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import { FactoryControlAccess } from "./FactoryControlAccess.ts";
-import { startedMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
+import {
+  frozenMergeOperationFixture,
+  startedMergeOperationFixture,
+} from "./FactoryMergeOperation.testkit.ts";
 
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -190,6 +193,64 @@ it.effect(
             .pipe(Effect.flip)).code,
           "execution-unavailable",
         );
+        const frozenOperation = frozenMergeOperationFixture().state.mergeOperations[0]!;
+        const frozen: FactorySnapshot = {
+          ...approved,
+          mergeOperations: [
+            {
+              ...frozenOperation,
+              integrationId: seed.integrationId,
+              integrationAssignmentId: assignment.id,
+            },
+          ],
+        };
+        state = frozen;
+        const stopPath = profile.integration!.stopPath;
+        yield* fs.makeDirectory(stopPath, { recursive: true });
+        yield* fs.writeFileString(
+          path.join(stopPath, "merge-hold.json"),
+          encode({ holdId: frozenOperation.id }),
+        );
+        assert.isDefined(yield* runtime.runtimePolicyFor(integrated.lead));
+        yield* access.assertDirection({ threadId: integrated.lead, senderThreadId: null });
+        assert.equal(
+          (yield* access.assertExecution(child).pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        assert.equal(
+          (yield* runtime.assertDelegationFor(integrated.lead, deliverySelection).pipe(Effect.flip))
+            .code,
+          "permission-denied",
+        );
+        state = {
+          ...frozen,
+          controls: [
+            {
+              id: FactoryControlId.make("frozen-project-pause"),
+              generation: 1,
+              kind: "project-pause",
+              status: "active",
+              projectId: assignment.projectId,
+              stop: { status: "pending" },
+              requestedAt: deliveryNow,
+              updatedAt: deliveryNow,
+            },
+          ],
+        };
+        assert.equal(
+          (yield* access.assertExecution(integrated.lead).pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        state = frozen;
+        yield* fs.writeFileString(
+          path.join(stopPath, "revocation-hold.json"),
+          encode({ holdId: "integration-hold:revoked" }),
+        );
+        assert.equal(
+          (yield* runtime.runtimePolicyFor(integrated.lead).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        yield* fs.remove(stopPath, { recursive: true });
         state = approved;
         state = {
           ...approved,

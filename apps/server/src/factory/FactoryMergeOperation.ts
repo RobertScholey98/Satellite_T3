@@ -44,6 +44,28 @@ export const currentFactoryMergeOperation = (state: FactorySnapshot, integration
 };
 export const factoryMergeFrozenProof = (operation: FactoryMergeOperation) =>
   "frozen" in operation.lifecycle ? operation.lifecycle.frozen : null;
+/**
+ * Whether the shared merge freeze stops `threadId` in this integration team. Once the tested
+ * bytes are frozen, the lead's own thread may run again to reconcile, retry or escalate its
+ * operation; its tools are limited by the MCP guard and pauses and incidents still apply.
+ * Omit `threadId` to ask whether any team member is frozen.
+ */
+export const factoryMergeFreezeBlocks = (
+  state: FactorySnapshot,
+  assignment: FactoryAssignment,
+  threadId?: string,
+) => {
+  if (assignment.integrationId === undefined) return false;
+  const operation = currentFactoryMergeOperation(state, assignment.integrationId);
+  return (
+    operation !== undefined &&
+    !(
+      threadId === assignment.threadId &&
+      factoryMergeFrozenProof(operation) !== null &&
+      operation.lifecycle.phase !== "completed"
+    )
+  );
+};
 export const factoryMergeFrozenDigest = (
   operation: FactoryMergeOperation,
   frozen: Omit<FactoryMergeFrozenProof, "digest">,
@@ -561,6 +583,24 @@ export function decideFactoryMergeOperation(input: {
           : operation.members.every((entry) => entry.outcome.phase === "pending")
             ? [effect("merge.operation.resume")]
             : [],
+      );
+    case "merge.operation.escalate":
+      // Holds further automatic submissions and hands the decision, such as a revert, to the human.
+      if (!owns)
+        return fail(
+          "Only this integration lead or the human can escalate the shared action.",
+          "permission-denied",
+        );
+      if (operation.lifecycle.phase !== "running" && operation.lifecycle.phase !== "attention")
+        return fail("Only a running or held shared merge can be escalated.");
+      return hold(
+        command.reason,
+        command.recommendation,
+        operation.lifecycle.phase === "attention"
+          ? operation.lifecycle.retry
+          : operation.members.some((entry) => entry.outcome.phase === "unknown")
+            ? "reconcile"
+            : "same-vector",
       );
     case "merge.operation.retry": {
       const next = operation.members.find((entry) => entry.outcome.phase === "pending");

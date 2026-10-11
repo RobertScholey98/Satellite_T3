@@ -10,6 +10,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   factoryMergeDecisionIdentity,
   factoryMergeOperationActions,
+  factoryMergeOperationAlert,
   factoryMergeReviewLocked,
   factoryMergeEvidenceUrl,
   factoryMergePullRequestUrl,
@@ -208,5 +209,29 @@ describe("shared merge operation controls", () => {
       }),
     ).toBe(false);
     expect(factoryMergeReviewLocked(fixture())).toBe(false);
+  });
+  it("flags a held or partially merged operation in the thread bar until every merge is confirmed", () => {
+    const held = operation();
+    expect(factoryMergeOperationAlert({ mergeOperations: [held] }, "group")).toBe(
+      "Shared merge needs your attention",
+    );
+    expect(factoryMergeOperationAlert({ mergeOperations: [held] }, "other-group")).toBeNull();
+    const merged = {
+      reviewed: {} as FactoryMergeOperation["members"][number]["reviewed"],
+      authority: {} as FactoryMergeOperation["members"][number]["authority"],
+      attempts: 1,
+      outcome: { phase: "confirmed" as const, receipt: {} as never },
+    };
+    const stopped: FactoryMergeOperation = {
+      ...held,
+      members: [merged],
+      lifecycle: { phase: "stopped", frozen: null, reason: "Wait for owners", stoppedAt: now },
+    };
+    expect(factoryMergeOperationAlert({ mergeOperations: [stopped] }, "group")).toBe(
+      "Shared merge partially merged",
+    );
+    expect(
+      factoryMergeOperationAlert({ mergeOperations: [{ ...stopped, members: [] }] }, "group"),
+    ).toBeNull();
   });
 });

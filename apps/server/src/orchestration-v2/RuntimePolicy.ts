@@ -98,8 +98,13 @@ export const layerFromProjectStore = Layer.effect(
     const factory = yield* FactoryExecution;
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
+        // A fork is an ordinary thread, so only a subagent inherits its parent's factory policy.
+        const pendingParentThreadId =
+          input.thread.lineage.relationshipToParent === "subagent"
+            ? (input.thread.lineage.parentThreadId ?? undefined)
+            : undefined;
         const factoryExecution = yield* factory
-          .runtimePolicyFor(input.thread.id, input.thread.lineage.parentThreadId ?? undefined)
+          .runtimePolicyFor(input.thread.id, pendingParentThreadId)
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -113,11 +118,7 @@ export const layerFromProjectStore = Layer.effect(
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
         if (factoryExecution !== undefined) {
           yield* factory
-            .assertSelectionFor(
-              input.thread.id,
-              input.modelSelection,
-              input.thread.lineage.parentThreadId ?? undefined,
-            )
+            .assertSelectionFor(input.thread.id, input.modelSelection, pendingParentThreadId)
             .pipe(
               Effect.mapError(
                 (cause) =>

@@ -1,9 +1,4 @@
-import {
-  FactoryError,
-  type ModelSelection,
-  type ProjectId,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { FactoryError, type ModelSelection, type ThreadId } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -14,7 +9,8 @@ import * as FactoryStore from "./FactoryStore.ts";
 import { isFactoryModelApproved, resolveFactoryModelPolicy } from "./FactoryModelPolicy.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
-import { currentFactoryMergeOperation } from "./FactoryMergeOperation.ts";
+import { factoryMergeFreezeBlocks } from "./FactoryMergeOperation.ts";
+import { resolveFactoryLineage } from "./FactoryLineage.ts";
 
 export class FactoryModelAdmission extends Context.Service<
   FactoryModelAdmission,
@@ -42,128 +38,96 @@ const make = Effect.gen(function* () {
     pendingParentThreadId?: ThreadId,
   ) {
     const state = yield* store.snapshot;
-    const visited = new Set<ThreadId>();
-    let threadId = requestedThreadId;
-    let projectId: ProjectId | undefined;
-    for (;;) {
-      if (visited.has(threadId) || visited.size >= 64) {
-        return yield* new FactoryError({
-          code: "execution-unavailable",
-          detail: "The thread's engineering assignment could not be resolved.",
-        });
-      }
-      visited.add(threadId);
-      const manager = state.managers.find((entry) => entry.threadId === threadId);
-      const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === threadId);
-      const assignment = state.assignments.find(
-        (entry) =>
-          entry.threadId === threadId ||
-          entry.previousLeadThreadIds?.includes(threadId) ||
-          entry.id === auxiliary?.assignmentId,
-      );
-      if (manager !== undefined || assignment !== undefined) {
-        const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
-        if (
-          owner === undefined ||
-          (projectId !== undefined &&
-            projectId !==
-              (assignment?.projectId ??
-                (owner.role === "system" ? owner.workspaceProjectId : owner.projectId))) ||
-          (assignment !== undefined &&
-            (owner.role === "system"
-              ? !factorySharedAssignmentOwned(state, assignment)
-              : assignment.projectId !== owner.projectId))
-        ) {
-          return yield* new FactoryError({ code: "execution-unavailable" });
-        }
-        if (assignment?.previousLeadThreadIds?.includes(threadId))
-          return yield* new FactoryError({
-            code: "permission-denied",
-            detail: "The replaced lead cannot restart or delegate work.",
-          });
-        if (
-          assignment?.integrationId &&
-          auxiliary?.kind !== "retrospective" &&
-          currentFactoryMergeOperation(state, assignment.integrationId)
-        )
-          return yield* new FactoryError({
-            code: "permission-denied",
-            detail: "The shared merge operation has frozen this integration team.",
-          });
-        if (
-          auxiliary !== undefined &&
-          (delegating ||
-            threadId !== requestedThreadId ||
-            (auxiliary.kind === "retrospective" &&
-              !factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros)) ||
-            !modelSelectionsEqual(auxiliary.modelSelection, selection))
-        )
-          return yield* new FactoryError({
-            code: "permission-denied",
-            detail:
-              "Independent review and retrospective conversations use their approved model and cannot delegate implementation.",
-          });
-        if (manager !== undefined || assignment?.kind === "onboarding") {
-          if (
-            !delegating &&
-            threadId === requestedThreadId &&
-            modelSelectionsEqual(owner.modelSelection, selection) &&
-            (owner.role !== "system" ||
-              isFactoryModelApproved(
-                resolveFactoryModelPolicy(
-                  state.modelDefaults,
-                  owner.modelOverrides,
-                  owner.modelSelection,
-                ),
-                selection,
-              ))
-          )
-            return;
-          return yield* new FactoryError({
-            code: "permission-denied",
-            detail:
-              "Manager and onboarding threads can use only their explicitly approved discovery model.",
-          });
-        }
-        const current = resolveFactoryModelPolicy(
-          state.modelDefaults,
-          owner.modelOverrides,
-          owner.modelSelection,
-        );
-        if (
-          assignment?.modelPolicy !== undefined &&
-          isFactoryModelApproved(assignment.modelPolicy, selection) &&
-          isFactoryModelApproved(current, selection)
-        )
-          return;
-        return yield* new FactoryError({
-          code: "permission-denied",
-          detail:
-            "This model, provider account, or option is outside the assignment's current approved model grant.",
-        });
-      }
-      const thread = yield* projections
-        .getThreadShell(threadId)
-        .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause })));
-      if (thread === null && visited.size === 1 && pendingParentThreadId !== undefined) {
-        threadId = pendingParentThreadId;
-        continue;
-      }
-      if (thread === null || thread.deletedAt !== null) {
-        return yield* new FactoryError({ code: "execution-unavailable" });
-      }
-      if (projectId !== undefined && projectId !== thread.projectId) {
-        return yield* new FactoryError({ code: "execution-unavailable" });
-      }
-      projectId = thread.projectId;
-      if (thread.lineage.parentThreadId === null) {
-        if (thread.lineage.relationshipToParent === "subagent") {
-          return yield* new FactoryError({ code: "execution-unavailable" });
-        }
-        return;
-      }
-      threadId = thread.lineage.parentThreadId;
+    const match = yield* resolveFactoryLineage({
+      state,
+      threadId: requestedThreadId,
+      pendingParentThreadId,
+      getThreadShell: (threadId) =>
+        projections
+          .getThreadShell(threadId)
+          .pipe(Effect.mapError((cause) => new FactoryError({ code: "persistence", cause }))),
+    });
+    if (match === undefined) return;
+    const { threadId, projectId, manager, assignment, auxiliary } = match;
+    const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
+    if (
+      owner === undefined ||
+      (projectId !== undefined &&
+        projectId !==
+          (assignment?.projectId ??
+            (owner.role === "system" ? owner.workspaceProjectId : owner.projectId))) ||
+      (assignment !== undefined &&
+        (owner.role === "system"
+          ? !factorySharedAssignmentOwned(state, assignment)
+          : assignment.projectId !== owner.projectId))
+    ) {
+      return yield* new FactoryError({ code: "execution-unavailable" });
     }
+    if (assignment?.previousLeadThreadIds?.includes(threadId))
+      return yield* new FactoryError({
+        code: "permission-denied",
+        detail: "The replaced lead cannot restart or delegate work.",
+      });
+    if (
+      assignment &&
+      auxiliary?.kind !== "retrospective" &&
+      factoryMergeFreezeBlocks(state, assignment, delegating ? undefined : requestedThreadId)
+    )
+      return yield* new FactoryError({
+        code: "permission-denied",
+        detail: "The shared merge operation has frozen this integration team.",
+      });
+    if (
+      auxiliary !== undefined &&
+      (delegating ||
+        threadId !== requestedThreadId ||
+        (auxiliary.kind === "retrospective" &&
+          !factoryAuxiliaryIsCurrent(assignment, auxiliary, state.retros)) ||
+        !modelSelectionsEqual(auxiliary.modelSelection, selection))
+    )
+      return yield* new FactoryError({
+        code: "permission-denied",
+        detail:
+          "Independent review and retrospective conversations use their approved model and cannot delegate implementation.",
+      });
+    if (manager !== undefined || assignment?.kind === "onboarding") {
+      if (
+        !delegating &&
+        threadId === requestedThreadId &&
+        modelSelectionsEqual(owner.modelSelection, selection) &&
+        (owner.role !== "system" ||
+          isFactoryModelApproved(
+            resolveFactoryModelPolicy(
+              state.modelDefaults,
+              owner.modelOverrides,
+              owner.modelSelection,
+            ),
+            selection,
+          ))
+      )
+        return;
+      return yield* new FactoryError({
+        code: "permission-denied",
+        detail:
+          "Manager and onboarding threads can use only their explicitly approved discovery model.",
+      });
+    }
+    const current = resolveFactoryModelPolicy(
+      state.modelDefaults,
+      owner.modelOverrides,
+      owner.modelSelection,
+    );
+    if (
+      assignment?.modelPolicy !== undefined &&
+      isFactoryModelApproved(assignment.modelPolicy, selection) &&
+      isFactoryModelApproved(current, selection)
+    )
+      return;
+    return yield* new FactoryError({
+      code: "permission-denied",
+      detail:
+        "This model, provider account, or option is outside the assignment's current approved model grant.",
+    });
   });
 
   return FactoryModelAdmission.of({

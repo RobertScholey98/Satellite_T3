@@ -40,6 +40,9 @@ export const FactoryBoundary = Schema.Struct({
   workflow: FactoryWorkflowVersion,
   profileId: TrimmedNonEmptyString,
   approvedAt: IsoDateTime,
+  // The mapped control files and automatically protected names in the baseline. Starting work
+  // must match these; other read-only files may change between baselines.
+  controlPaths: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
 });
 export type FactoryBoundary = typeof FactoryBoundary.Type;
 
