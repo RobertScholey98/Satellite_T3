@@ -1,6 +1,7 @@
 import { type EnvironmentId } from "@t3tools/contracts";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
 import { FactorySidebar } from "./factory/FactorySidebar";
+import { factoryManagedThreadKeys } from "./factory/FactorySidebarReadModel";
 import { useFactoryEnvironments } from "../state/factory";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
 import { setThreadChangeRequestSnapshot } from "./ThreadStatusIndicators";
@@ -2463,25 +2464,14 @@ export default function Sidebar() {
   const environments = useEnvironmentIdentities();
   const factoryEnvironments = useFactoryEnvironments();
   const [visibleFactoryThreadKeys, setVisibleFactoryThreadKeys] = useState<readonly string[]>([]);
-  const managedThreadKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const environment of factoryEnvironments) {
-      for (const manager of environment.data?.managers ?? []) {
-        if (manager.role === "project" && manager.threadStatus === "created") {
-          keys.add(scopedThreadKey(scopeThreadRef(environment.environmentId, manager.threadId)));
-        }
-      }
-      for (const assignment of environment.data?.assignments ?? []) {
-        if (assignment.threadStatus === "created") {
-          keys.add(scopedThreadKey(scopeThreadRef(environment.environmentId, assignment.threadId)));
-        }
-      }
-      for (const retro of environment.data?.retros ?? []) {
-        keys.add(scopedThreadKey(scopeThreadRef(environment.environmentId, retro.threadId)));
-      }
-    }
-    return keys;
-  }, [factoryEnvironments]);
+  const managedThreadKeyList = useMemo(
+    () => factoryManagedThreadKeys(factoryEnvironments),
+    [factoryEnvironments],
+  );
+  const managedThreadKeys = useMemo(
+    () => new Set(managedThreadKeyList === "" ? [] : managedThreadKeyList.split("\n")),
+    [managedThreadKeyList],
+  );
   const serverConfigs = useAtomValue(environmentServerConfigsAtom);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);

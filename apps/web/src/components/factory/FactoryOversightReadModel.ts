@@ -1,4 +1,10 @@
-import type { FactoryAssignment, FactoryDependency, FactorySnapshot } from "@t3tools/contracts";
+import type {
+  FactoryAssignment,
+  FactoryDependency,
+  FactorySnapshot,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 /** Captured allowance and current policy both constrain recovery; a new default never refills it. */
 export function factoryRecoveryAllowance(snapshot: FactorySnapshot, assignment: FactoryAssignment) {
@@ -34,4 +40,30 @@ export function factoryOversightSummary(assignment: FactoryAssignment) {
   if (incident) return `Recovery: ${incident.phase}`;
   if (assignment.wait) return assignment.wait.reason;
   return assignment.oversight?.progress?.summary ?? "Progress and dependencies";
+}
+
+/**
+ * Finds the assignment a thread links to directly. Without one, `lineage` means the thread's
+ * ancestry could still reach overseen work in its project. Only then does a caller need the
+ * project's thread roster, so threads outside the factory never subscribe to it.
+ */
+export function factoryThreadOversightTarget(
+  snapshot: FactorySnapshot,
+  threadId: ThreadId,
+  projectId: ProjectId,
+):
+  | { readonly kind: "direct"; readonly assignment: FactoryAssignment }
+  | { readonly kind: "lineage" }
+  | null {
+  const auxiliary = snapshot.auxiliaryThreads.find((entry) => entry.threadId === threadId);
+  const assignment = snapshot.assignments.find(
+    (entry) =>
+      entry.id === auxiliary?.assignmentId || entry.previousLeadThreadIds?.includes(threadId),
+  );
+  if (assignment) return { kind: "direct", assignment };
+  return snapshot.assignments.some(
+    (entry) => entry.projectId === projectId && entry.kind !== "onboarding",
+  )
+    ? { kind: "lineage" }
+    : null;
 }

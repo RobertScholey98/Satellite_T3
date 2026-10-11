@@ -51,7 +51,9 @@ const assignment: FactoryAssignment = {
   createdAt: now,
   updatedAt: now,
 };
-const initial: FactorySnapshot = {
+const decodeSnapshot = Schema.decodeUnknownSync(FactorySnapshot);
+// Decoding fills in every collection this fixture leaves out.
+const initial = decodeSnapshot({
   revision: 4,
   defaults: policy,
   managers: [
@@ -85,7 +87,7 @@ const initial: FactorySnapshot = {
   findings: [],
   followups: [],
   projectTrackers: [],
-};
+});
 const thread = (
   id: string,
   parent: string | null = null,
@@ -110,7 +112,6 @@ const cancellation: Extract<FactoryControl, { kind: "cancellation" }> = {
   managerId,
   stop: { status: "pending" },
 };
-const decodeSnapshot = Schema.decodeUnknownSync(FactorySnapshot);
 
 describe("factory thread controls", () => {
   it("resolves shared implementation teams in their repository while the peer manager uses its own workspace", () => {

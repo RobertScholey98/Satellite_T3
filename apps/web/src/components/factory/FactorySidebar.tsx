@@ -21,8 +21,10 @@ import {
   Settings2Icon,
   UsersIcon,
 } from "lucide-react";
+import * as Schema from "effect/Schema";
 import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from "react";
 
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { factoryEnvironment, type FactoryEnvironmentView } from "../../state/factory";
 import { randomUUID } from "../../lib/utils";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -36,6 +38,7 @@ import {
   factoryProjectPause,
 } from "./FactoryControlsReadModel";
 import { factoryOversightSummary } from "./FactoryOversightReadModel";
+import { factoryCanCreateManager, factorySidebarVisible } from "./FactorySidebarReadModel";
 import { FactorySystemManagerRow } from "./FactorySystemManagerRow";
 import {
   SidebarGroup,
@@ -94,6 +97,8 @@ const FactoryCollaborationDialog = lazy(() =>
   })),
 );
 
+const FACTORY_SECTION_EXPANDED_KEY = "t3code:sidebar:factory-expanded";
+
 const managerStatusLabels = {
   onboarding: "Onboarding",
   blocked: "Needs setup",
@@ -129,7 +134,11 @@ export function FactorySidebar({
   readonly onThreadActivate: (thread: ScopedThreadRef) => unknown;
   readonly onVisibleThreadsChange: (keys: readonly string[]) => void;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useLocalStorage(
+    FACTORY_SECTION_EXPANDED_KEY,
+    true,
+    Schema.Boolean,
+  );
   const [collapsedManagers, setCollapsedManagers] = useState<ReadonlySet<string>>(() => new Set());
   const [creating, setCreating] = useState(false);
   const [report, setReport] = useState<FactoryOnboardingReport | null>(null);
@@ -289,17 +298,9 @@ export function FactorySidebar({
   }, [onVisibleThreadsChange, visibleKeys]);
   useEffect(() => () => onVisibleThreadsChange([]), [onVisibleThreadsChange]);
 
-  const canCreate = scopedProjects.some((project) => {
-    const environment = environments.find((entry) => entry.environmentId === project.environmentId);
-    return (
-      environment?.connected &&
-      environment.canOperate &&
-      environment.data !== null &&
-      !environment.data.managers.some(
-        (manager) => manager.role === "project" && manager.projectId === project.id,
-      )
-    );
-  });
+  const canCreate = scopedProjects.some((project) =>
+    factoryCanCreateManager(environments, project),
+  );
   const relevantEnvironments = environments.filter((environment) =>
     scopedProjects.some((project) => project.environmentId === environment.environmentId),
   );
@@ -331,7 +332,7 @@ export function FactorySidebar({
   const detailsAssignment = detailsEnvironment?.data?.assignments.find(
     (assignment) => assignment.id === assignmentDetails?.assignmentId,
   );
-  if (projects.length === 0) return null;
+  if (!factorySidebarVisible(environments, scopedProjects)) return null;
 
   return (
     <SidebarGroup aria-label="Engineering managers">

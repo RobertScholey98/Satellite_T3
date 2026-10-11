@@ -18,6 +18,7 @@ import { factoryEnvironment, type FactoryEnvironmentView } from "../../state/fac
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
+import { factoryCanCreateManager } from "./FactorySidebarReadModel";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -41,17 +42,8 @@ export function CreateManagerDialog({
   readonly environments: readonly FactoryEnvironmentView[];
   readonly onClose: () => void;
 }) {
-  const isAvailable = (project: EnvironmentProject) => {
-    const environment = environments.find((entry) => entry.environmentId === project.environmentId);
-    return (
-      environment?.connected &&
-      environment.canOperate &&
-      environment.data !== null &&
-      !environment.data.managers.some(
-        (manager) => manager.role === "project" && manager.projectId === project.id,
-      )
-    );
-  };
+  const isAvailable = (project: EnvironmentProject) =>
+    factoryCanCreateManager(environments, project);
   const [selectedKey, setSelectedKey] = useState<string | null>(() => {
     const project = projects.find(isAvailable);
     return project ? `${project.environmentId}:${project.id}` : null;

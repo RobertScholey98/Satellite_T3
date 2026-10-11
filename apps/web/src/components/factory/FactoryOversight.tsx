@@ -6,6 +6,7 @@ import {
   type FactoryDependency,
   type FactoryEvidence,
   type FactoryOversightCommand,
+  type ProjectId,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -37,6 +38,7 @@ import {
   factoryDependencyStatus,
   factoryOversightSummary,
   factoryRecoveryAllowance,
+  factoryThreadOversightTarget,
 } from "./FactoryOversightReadModel";
 
 type OversightInput = FactoryOversightCommand extends infer Command
@@ -634,28 +636,70 @@ export function FactoryThreadOversight({ threadRef }: { threadRef: ScopedThreadR
   const environments = useFactoryEnvironments();
   const thread = useThreadShell(threadRef);
   const environment = environments.find((entry) => entry.environmentId === threadRef.environmentId);
-  const projectId = thread?.projectId;
+  if (!thread || !environment?.data) return null;
+  const target = factoryThreadOversightTarget(environment.data, thread.id, thread.projectId);
+  if (target === null) return null;
+  if (target.kind === "direct")
+    return (
+      <ThreadOversight
+        environment={environment}
+        threadId={thread.id}
+        assignment={target.assignment}
+      />
+    );
+  return (
+    <LineageOversight
+      environment={environment}
+      threadRef={threadRef}
+      projectId={thread.projectId}
+    />
+  );
+}
+
+function LineageOversight({
+  environment,
+  threadRef,
+  projectId,
+}: {
+  environment: FactoryEnvironmentView;
+  threadRef: ScopedThreadRef;
+  projectId: ProjectId;
+}) {
   const projectRefs = useMemo(
-    () => (projectId ? [{ environmentId: threadRef.environmentId, projectId }] : []),
+    () => [{ environmentId: threadRef.environmentId, projectId }],
     [threadRef.environmentId, projectId],
   );
   const threads = useThreadShellsForProjectRefs(projectRefs);
-  if (!thread || !environment?.data) return null;
-  const snapshot = environment.data;
-  const auxiliary = snapshot.auxiliaryThreads.find((entry) => entry.threadId === thread.id);
-  const assignment =
-    snapshot.assignments.find(
-      (entry) =>
-        entry.id === auxiliary?.assignmentId || entry.previousLeadThreadIds?.includes(thread.id),
-    ) ?? factoryThreadMembership(snapshot, threadRef, threads)?.assignment;
-  if (!assignment || assignment.kind === "onboarding") return null;
+  const assignment = environment.data
+    ? factoryThreadMembership(environment.data, threadRef, threads)?.assignment
+    : undefined;
+  if (!assignment) return null;
+  return (
+    <ThreadOversight
+      environment={environment}
+      threadId={threadRef.threadId}
+      assignment={assignment}
+    />
+  );
+}
+
+function ThreadOversight({
+  environment,
+  threadId,
+  assignment,
+}: {
+  environment: FactoryEnvironmentView;
+  threadId: ThreadId;
+  assignment: FactoryAssignment;
+}) {
+  if (assignment.kind === "onboarding") return null;
   return (
     <details className="border-b border-border px-4 py-2">
       <summary className="cursor-pointer text-xs text-muted-foreground">
         Assignment oversight · {factoryOversightSummary(assignment)}
       </summary>
       <div className="max-h-96 overflow-y-auto pt-3">
-        {thread.id !== assignment.threadId ? (
+        {threadId !== assignment.threadId ? (
           <ThreadLink environment={environment} threadId={assignment.threadId}>
             Open current implementation lead
           </ThreadLink>

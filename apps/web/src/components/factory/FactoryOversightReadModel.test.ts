@@ -3,6 +3,8 @@ import {
   FactoryDependency,
   FactorySnapshot,
   MessageId,
+  ProjectId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
@@ -11,6 +13,7 @@ import {
   factoryDependencyStatus,
   factoryOversightSummary,
   factoryRecoveryAllowance,
+  factoryThreadOversightTarget,
 } from "./FactoryOversightReadModel";
 
 const now = "2026-10-10T12:00:00.000Z";
@@ -172,5 +175,37 @@ describe("factory oversight presentation", () => {
     expect(factoryOversightSummary({ ...assignment, wait: escalated.wait })).toBe(
       "Choose the next step",
     );
+  });
+});
+
+describe("factory thread oversight target", () => {
+  const project = ProjectId.make("project");
+  const other = ProjectId.make("other");
+  const thread = ThreadId.make("unrelated");
+
+  it("leaves threads in projects without overseen work alone", () => {
+    expect(factoryThreadOversightTarget(snapshot, thread, other)).toBeNull();
+    expect(
+      factoryThreadOversightTarget(
+        { ...snapshot, assignments: [{ ...assignment, kind: "onboarding" }] },
+        thread,
+        project,
+      ),
+    ).toBeNull();
+  });
+
+  it("checks lineage only where overseen work exists in the project", () => {
+    expect(factoryThreadOversightTarget(snapshot, thread, project)).toEqual({ kind: "lineage" });
+  });
+
+  it("resolves a replaced lead directly, without the project's threads", () => {
+    const previous = ThreadId.make("previous-lead");
+    expect(
+      factoryThreadOversightTarget(
+        { ...snapshot, assignments: [{ ...assignment, previousLeadThreadIds: [previous] }] },
+        previous,
+        other,
+      ),
+    ).toEqual({ kind: "direct", assignment: { ...assignment, previousLeadThreadIds: [previous] } });
   });
 });
