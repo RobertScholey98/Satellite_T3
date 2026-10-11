@@ -1987,7 +1987,13 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
-export const WsRpcGroup = RpcGroup.make(
+/**
+ * The RPCs Satellite adds to upstream's surface. The server implements them in
+ * their own handler layer: a single `toLayer` over every RPC exceeds the
+ * compiler's instantiation limit, which silently widens the server layer's
+ * requirements to `any`.
+ */
+export const WsSatelliteRpcGroup = RpcGroup.make(
   WsFactoryGetSnapshotRpc,
   WsFactoryGetMergeGroupRpc,
   WsFactoryDispatchCommandRpc,
@@ -2130,6 +2136,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsDocumentsSubmitRpc,
   WsDocumentsRetryRpc,
   WsDocumentsHistoryRpc,
+).middleware(RpcScopeAuthorization);
+
+export const WsCoreRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2309,3 +2318,5 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
 ).middleware(RpcScopeAuthorization);
+
+export const WsRpcGroup = WsCoreRpcGroup.merge(WsSatelliteRpcGroup);

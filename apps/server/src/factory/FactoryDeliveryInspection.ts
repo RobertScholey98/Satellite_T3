@@ -3,6 +3,7 @@ import {
   FactoryError,
   type FactoryAssignmentId,
   type FactoryRevisionHostEvidence,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -11,7 +12,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import type { ProviderMergeEvidence } from "../pullRequest/pullRequestMergeEvidence.ts";
 import * as FactoryStore from "./FactoryStore.ts";
@@ -36,7 +36,6 @@ export class FactoryDeliveryInspection extends Context.Service<
   }
 >()("t3/factory/FactoryDeliveryInspection") {}
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const isFactoryError = Schema.is(FactoryError);
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 function hostEvidence(raw: ProviderMergeEvidence, observedAt: string): FactoryRevisionHostEvidence {

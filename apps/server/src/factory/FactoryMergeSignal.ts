@@ -3,6 +3,7 @@ import {
   FACTORY_MERGE_GROUP_STATUS_CONTEXT,
   FactoryError,
   type PullRequestRef,
+  isFactoryError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -26,7 +27,6 @@ const decodeCombinedStatus = Schema.decodeUnknownEffect(
     }),
   ),
 );
-const isFactoryError = Schema.is(FactoryError);
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 

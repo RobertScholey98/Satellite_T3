@@ -6,6 +6,7 @@ import {
   type FactoryPreviewActionResult,
   type FactoryPreviewFinishInput,
   type ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -56,7 +57,6 @@ const Bundle = Schema.Struct({
   ),
 });
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const isFactoryError = Schema.is(FactoryError);
 const decodeJournal = Schema.decodeUnknownEffect(Schema.fromJsonString(Journal));
 const decodeReceipt = Schema.decodeUnknownEffect(Schema.fromJsonString(Receipt));
 const decodeBundle = Schema.decodeUnknownEffect(Schema.fromJsonString(Bundle));

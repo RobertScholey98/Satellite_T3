@@ -8,6 +8,7 @@ import {
   type FactorySnapshot,
   type ModelSelection,
   type ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -30,7 +31,6 @@ export class FactoryRecoveryEffects extends Context.Service<
 >()("t3/factory/FactoryRecoveryEffects") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const isFactoryError = Schema.is(FactoryError);
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));

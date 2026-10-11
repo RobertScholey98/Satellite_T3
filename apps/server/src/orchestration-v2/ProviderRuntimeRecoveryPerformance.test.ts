@@ -27,6 +27,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -47,6 +48,7 @@ const layerStores = Layer.mergeAll(
   IdAllocator.layer,
 ).pipe(Layer.provideMerge(SqlitePersistence.layerMemory));
 const layerTest = ProviderRuntimeRecovery.layer.pipe(
+  Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
   Layer.provideMerge(EventSink.layer.pipe(Layer.provideMerge(layerStores))),
   Layer.provideMerge(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })),
 );

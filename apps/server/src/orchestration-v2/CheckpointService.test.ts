@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
 import * as FactoryExecution from "../factory/FactoryExecution.ts";
+import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as SatelliteTestRuntime from "./testkit/SatelliteTestRuntime.ts";
@@ -59,6 +60,7 @@ it.effect.each([false, true, "interrupt"] as const)(
           : Effect.succeed(true),
     );
     const layerTest = CheckpointService.layer.pipe(
+      Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
       Layer.provide(
         Layer.mergeAll(
           IdAllocator.layer,
@@ -136,6 +138,7 @@ it.effect("never checkpoints or restores the repository containing an owned idea
     const checkpoints = yield* CheckpointService.CheckpointServiceV2.pipe(
       Effect.provide(
         Layer.fresh(CheckpointService.layer).pipe(
+          Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
           Layer.provide(
             Layer.mergeAll(dependencies, Layer.succeed(ProjectionStoreV2, projections)),
           ),

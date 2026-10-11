@@ -1,11 +1,23 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { FactoryControlAccess } from "./FactoryControlAccess.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
 
-export const layerUnmanaged = Layer.succeed(FactoryExecution, {
+// The factory gates as an environment with no managers sees them: no thread is managed, so every
+// gate admits.
+export const layerUnmanagedExecution = Layer.succeed(FactoryExecution, {
   runtimePolicyFor: () => Effect.succeed(undefined),
   assertSelectionFor: () => Effect.void,
   assertDelegationFor: () => Effect.void,
   qualify: () => Effect.die("This fixture cannot qualify managed factory execution."),
 });
+
+export const layerUnmanagedControls = Layer.succeed(FactoryControlAccess, {
+  membership: () => Effect.succeed(undefined),
+  assertExecution: () => Effect.void,
+  assertDirection: () => Effect.void,
+});
+
+// Like the production `FactoryExecution.layer`, this also supplies the control gate.
+export const layerUnmanaged = Layer.merge(layerUnmanagedExecution, layerUnmanagedControls);

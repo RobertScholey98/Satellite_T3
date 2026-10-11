@@ -1,4 +1,4 @@
-import { CommandId, FactoryError } from "@t3tools/contracts";
+import { CommandId, FactoryError, isFactoryError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -21,7 +21,8 @@ export class FactoryRecoveryReconciliation extends Context.Service<
   }
 >()("t3/factory/FactoryRecoveryReconciliation") {}
 
-const failure = (cause: unknown) => new FactoryError({ code: "execution-unavailable", cause });
+const failure = (cause: unknown) =>
+  isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 
 const make = Effect.gen(function* () {
   const store = yield* FactoryStore.FactoryStore;

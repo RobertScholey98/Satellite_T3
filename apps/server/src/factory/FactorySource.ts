@@ -5,6 +5,7 @@ import {
   FactoryStartingSource,
   ProjectId,
   ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -81,7 +82,6 @@ export class FactorySource extends Context.Service<
 
 const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(SourceManifest));
 const encodeManifest = Schema.encodeEffect(Schema.fromJsonString(SourceManifest));
-const isFactoryError = Schema.is(FactoryError);
 const unavailable = (detail: string) => new FactoryError({ code: "execution-unavailable", detail });
 const preserve = (cause: unknown) =>
   isFactoryError(cause)

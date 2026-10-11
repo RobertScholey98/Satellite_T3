@@ -111,8 +111,8 @@ import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { ProviderSwitchServiceV2 } from "./ProviderSwitchService.ts";
 import { isAutomaticCompletionRun, queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
-import { FactoryExecution } from "../factory/FactoryExecution.ts";
-import { FactoryControlAccess, factoryDirectionSender } from "../factory/FactoryControlAccess.ts";
+import * as FactoryExecution from "../factory/FactoryExecution.ts";
+import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
 import * as Result from "effect/Result";
 import {
   makeSubagentChildThread,
@@ -618,12 +618,6 @@ function delegatedTaskTerminalStatus(
   }
 }
 
-function nextQueuedRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
-): OrchestrationV2Run | undefined {
-  return queuedRunsInDeliveryOrder(projection)[0];
-}
-
 function latestStableRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs">,
 ): OrchestrationV2Run | null {
@@ -850,22 +844,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerSessions = yield* ProviderSessionManagerV2;
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const runtimePolicy = yield* RuntimePolicyV2;
-  const factoryExecution = yield* Effect.serviceOption(FactoryExecution);
-  const factoryControls = yield* Effect.serviceOption(FactoryControlAccess);
-  // Engineering controls decide whether a message's sender may direct its thread. Without the
-  // factory every message is admitted.
+  const factoryExecution = yield* FactoryExecution.FactoryExecution;
+  const factoryControls = yield* FactoryControlAccess.FactoryControlAccess;
+  // Engineering controls decide whether a message's sender may direct its thread. A thread no
+  // manager owns admits every message.
   const assertFactoryDirection = (
     threadId: ThreadId,
-    message: Parameters<typeof factoryDirectionSender>[0],
+    message: Parameters<typeof FactoryControlAccess.factoryDirectionSender>[0],
     pendingParentThreadId?: ThreadId,
   ) =>
-    Option.isNone(factoryControls)
-      ? Effect.void
-      : factoryControls.value.assertDirection({
-          threadId,
-          senderThreadId: factoryDirectionSender(message),
-          ...(pendingParentThreadId === undefined ? {} : { pendingParentThreadId }),
-        });
+    factoryControls.assertDirection({
+      threadId,
+      senderThreadId: FactoryControlAccess.factoryDirectionSender(message),
+      ...(pendingParentThreadId === undefined ? {} : { pendingParentThreadId }),
+    });
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
 
@@ -902,12 +894,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly pendingParentThreadId?: ThreadId;
   }) =>
     Effect.gen(function* () {
-      const boundary = Option.isSome(factoryExecution)
-        ? yield* factoryExecution.value.runtimePolicyFor(
-            input.threadId,
-            input.pendingParentThreadId,
-          )
-        : undefined;
+      const boundary = yield* factoryExecution.runtimePolicyFor(
+        input.threadId,
+        input.pendingParentThreadId,
+      );
       if (boundary !== undefined) {
         return yield* idAllocator.allocate.providerSession({
           providerInstanceId: input.providerInstanceId,
@@ -1217,7 +1207,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
   ) =>
     Effect.gen(function* () {
-      if (Option.isNone(factoryControls)) return nextQueuedRun(projection);
       for (const candidate of queuedRunsInDeliveryOrder(projection)) {
         const message = projection.messages.find((entry) => entry.id === candidate.userMessageId);
         if (message === undefined) return candidate;
@@ -1455,18 +1444,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           });
         return;
       }
-      const executionBoundaryId = Option.isSome(factoryExecution)
-        ? (yield* factoryExecution.value.runtimePolicyFor(threadId).pipe(
-            Effect.mapError(
-              (cause) =>
-                new OrchestratorDispatchError({
-                  commandId,
-                  commandType: "message.dispatch",
-                  cause,
-                }),
-            ),
-          ))?.boundaryId
-        : undefined;
+      const executionBoundaryId = (yield* factoryExecution.runtimePolicyFor(threadId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorDispatchError({
+              commandId,
+              commandType: "message.dispatch",
+              cause,
+            }),
+        ),
+      ))?.boundaryId;
       if (queuedProviderThread.executionBoundaryId !== executionBoundaryId) {
         return yield* new OrchestratorDispatchError({
           commandId,
@@ -2811,11 +2798,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const providerSwitchPlan =
       command.type === "thread.model-selection.set" || command.type === "provider.switch"
         ? yield* Effect.gen(function* () {
-            if (Option.isSome(factoryExecution)) {
-              yield* factoryExecution.value
-                .assertSelectionFor(command.threadId, command.modelSelection)
-                .pipe(mapDispatchError(command));
-            }
+            yield* factoryExecution
+              .assertSelectionFor(command.threadId, command.modelSelection)
+              .pipe(mapDispatchError(command));
             yield* providerAdapters.get(command.modelSelection.instanceId).pipe(
               Effect.mapError(
                 (cause) =>
@@ -4825,13 +4810,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
       const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
-      if (Option.isSome(factoryExecution)) {
-        yield* (
-          delegatedFrom === undefined
-            ? factoryExecution.value.assertSelectionFor(command.threadId, modelSelection)
-            : factoryExecution.value.assertDelegationFor(delegatedFrom, modelSelection)
-        ).pipe(mapDispatchError(command));
-      }
+      yield* (
+        delegatedFrom === undefined
+          ? factoryExecution.assertSelectionFor(command.threadId, modelSelection)
+          : factoryExecution.assertDelegationFor(delegatedFrom, modelSelection)
+      ).pipe(mapDispatchError(command));
       let dispatchMode = resolveMessageDispatchIntent(
         projection,
         command.dispatchMode,
@@ -5034,11 +5017,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (candidate) => candidate.id === projection.thread.activeProviderThreadId,
       );
       const activeRun = projection.runs.find(isBlockingRun);
-      const executionBoundaryId = Option.isSome(factoryExecution)
-        ? (yield* factoryExecution.value
-            .runtimePolicyFor(command.threadId, delegatedFrom)
-            .pipe(mapDispatchError(command)))?.boundaryId
-        : undefined;
+      const executionBoundaryId = (yield* factoryExecution
+        .runtimePolicyFor(command.threadId, delegatedFrom)
+        .pipe(mapDispatchError(command)))?.boundaryId;
       const boundaryChanged =
         activeProviderThread !== undefined &&
         activeProviderThread.executionBoundaryId !== executionBoundaryId;
@@ -6738,11 +6719,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
 
-      if (Option.isSome(factoryExecution)) {
-        yield* factoryExecution.value
-          .assertDelegationFor(command.parentThreadId, command.modelSelection)
-          .pipe(mapDispatchError(command));
-      }
+      yield* factoryExecution
+        .assertDelegationFor(command.parentThreadId, command.modelSelection)
+        .pipe(mapDispatchError(command));
       const targetAdapter = yield* providerAdapters.get(command.modelSelection.instanceId).pipe(
         Effect.mapError(
           (cause) =>
@@ -11293,6 +11272,8 @@ export const layer: Layer.Layer<
   | RuntimePolicyV2
   | ThreadForkServiceV2
   | SqlClient.SqlClient
+  | FactoryExecution.FactoryExecution
+  | FactoryControlAccess.FactoryControlAccess
 > = Layer.effect(OrchestratorV2, makeOrchestrator()).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
   Layer.provide(IdeaNotebookStore.layer),

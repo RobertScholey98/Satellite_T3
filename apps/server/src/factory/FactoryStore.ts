@@ -5,6 +5,7 @@ import {
   FactorySnapshot,
   type FactoryHostCommand,
   type ProjectId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { sha256 } from "@noble/hashes/sha2";
@@ -80,11 +81,10 @@ const decodeIntent = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryEff
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(FactorySnapshot));
 const encodeResult = Schema.encodeEffect(Schema.fromJsonString(FactoryCommandResult));
 const encodeIntent = Schema.encodeEffect(Schema.fromJsonString(FactoryEffectIntent));
-const isFactoryError = Schema.is(FactoryError);
 const OBSERVATION_CURSOR_BATCH = 256;
-const storageError = (cause: unknown) => new FactoryError({ code: "persistence", cause });
-const preserveDomainError = (cause: unknown) =>
-  isFactoryError(cause) ? cause : storageError(cause);
+// Storage failures become persistence errors; a decider refusal keeps its own code.
+const storageError = (cause: unknown) =>
+  isFactoryError(cause) ? cause : new FactoryError({ code: "persistence", cause });
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -133,7 +133,7 @@ const make = Effect.gen(function* () {
       return yield* new FactoryError({ code: "command-conflict" });
     }
     return yield* decodeResult(receipt.result_json);
-  }, Effect.mapError(preserveDomainError));
+  }, Effect.mapError(storageError));
 
   const commitTransaction = Effect.fn("FactoryStore.commitTransaction")(function* (
     input: DecisionInput,
@@ -177,6 +177,9 @@ const make = Effect.gen(function* () {
       VALUES (1, ${state.revision}, ${snapshotJson})
       ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, payload_json = excluded.payload_json
     `;
+    // The publish after commit reads this row back; keyed by its JSON, the cache skips the
+    // decode, and a rolled-back write simply misses.
+    decoded = { json: snapshotJson, state };
     yield* sql`
       INSERT INTO factory_commands (command_id, request_json, result_json)
       VALUES (${input.command.commandId}, ${request}, ${resultJson})
@@ -242,7 +245,7 @@ const make = Effect.gen(function* () {
                   }),
                 )
                 .pipe(
-                  Effect.mapError(preserveDomainError),
+                  Effect.mapError(storageError),
                   Effect.flatMap((changed) =>
                     changed === undefined
                       ? Effect.void
@@ -256,7 +259,7 @@ const make = Effect.gen(function* () {
     commit: (input) =>
       mutex.withPermits(1)(
         sql.withTransaction(commitTransaction(input)).pipe(
-          Effect.mapError(preserveDomainError),
+          Effect.mapError(storageError),
           Effect.tap(() => publish),
         ),
       ),
@@ -281,7 +284,7 @@ const make = Effect.gen(function* () {
         RETURNING effect_id
       `;
         if (rows.length === 0) return yield* new FactoryError({ code: "invalid-state" });
-      }).pipe(Effect.mapError(preserveDomainError)),
+      }).pipe(Effect.mapError(storageError)),
     retireEffect: (id) =>
       Effect.gen(function* () {
         const rows = yield* sql<{ readonly effect_id: string }>`
@@ -290,7 +293,7 @@ const make = Effect.gen(function* () {
         RETURNING effect_id
       `;
         if (rows.length === 0) return yield* new FactoryError({ code: "invalid-state" });
-      }).pipe(Effect.mapError(preserveDomainError)),
+      }).pipe(Effect.mapError(storageError)),
     finishEffect: (input) =>
       mutex.withPermits(1)(
         sql
@@ -634,7 +637,7 @@ const make = Effect.gen(function* () {
             }),
           )
           .pipe(
-            Effect.mapError(preserveDomainError),
+            Effect.mapError(storageError),
             Effect.tap(() => publish),
           ),
       ),

@@ -18,12 +18,21 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
+import type * as FactoryExecution from "../factory/FactoryExecution.ts";
+import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import type * as FactoryPullRequestGate from "../factory/FactoryPullRequestGate.ts";
 import * as FactoryStore from "../factory/FactoryStore.ts";
 import { initialFactorySnapshot } from "../factory/FactoryState.ts";
+import type * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import type * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import type * as CheckpointService from "./CheckpointService.ts";
+import type * as EffectWorker from "./EffectWorker.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
+import type * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
+import type * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { makeProviderAdapter } from "./testkit/SatelliteTestRuntime.ts";
 
@@ -86,8 +95,14 @@ const controls = FactoryControlAccess.layer.pipe(Layer.provide(stores));
 const testLayer = ProviderReplayHarness.layerWithRegistry(
   { name: "factory-control-admission" },
   ProviderAdapterRegistry.layerFromAdapters([makeProviderAdapter(modelSelection.instanceId)]),
-  { databaseLayer: database, runEffectWorker: false },
-).pipe(Layer.provide(controls), Layer.provideMerge(stores));
+  {
+    databaseLayer: database,
+    runEffectWorker: false,
+    factory: Layer.merge(FactoryExecutionTestkit.layerUnmanagedExecution, controls).pipe(
+      Layer.orDie,
+    ),
+  },
+).pipe(Layer.provideMerge(stores));
 
 const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -164,7 +179,29 @@ const completeRun = (messageId: MessageId) =>
     });
   });
 
+type Requires<L extends Layer.Any, Service> = [Service] extends [Layer.Services<L>] ? true : false;
+type Controls = FactoryControlAccess.FactoryControlAccess;
+type Gates = Controls | FactoryExecution.FactoryExecution;
+
 describe("Orchestrator factory controls", () => {
+  it("cannot compose a shared path without its factory gates", () => {
+    // Checked by the type checker: a gate read as an optional service would switch off silently
+    // when its layer is missing, so each shared path must require its gate.
+    const required: ReadonlyArray<true> = [
+      true satisfies Requires<typeof Orchestrator.layer, Gates>,
+      true satisfies Requires<typeof ProviderTurnStartService.layer, Controls>,
+      true satisfies Requires<typeof EffectWorker.layerExecutor, Controls>,
+      true satisfies Requires<typeof CheckpointService.layer, Gates>,
+      true satisfies Requires<typeof ProviderRuntimeRecoveryService.layer, Controls>,
+      true satisfies Requires<typeof OrchestratorMcpService.layer, Gates>,
+      true satisfies Requires<
+        typeof PullRequestService.layer,
+        FactoryPullRequestGate.FactoryPullRequestGate
+      >,
+    ];
+    assert.lengthOf(required, 7);
+  });
+
   it.effect(
     "delivers queued human guidance past held parent direction and resumes the same parent run on handback",
     () =>

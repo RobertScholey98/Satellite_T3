@@ -6,6 +6,7 @@ import {
   type FactoryEffectIntent,
   type RunId,
   type ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -33,7 +34,8 @@ export class FactoryIntegrationEffects extends Context.Service<
 
 type Operation = Extract<FactoryEffectIntent, { type: "integration.resume" }>["operation"];
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const failure = (cause: unknown) => new FactoryError({ code: "execution-unavailable", cause });
+const failure = (cause: unknown) =>
+  isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 const active = (assignment: FactoryAssignment | undefined): assignment is FactoryAssignment =>
   assignment !== undefined &&
   !assignment.outcome &&

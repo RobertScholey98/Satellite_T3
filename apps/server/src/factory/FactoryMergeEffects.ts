@@ -1,4 +1,10 @@
-import { CommandId, FactoryError, MessageId, type ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  FactoryError,
+  MessageId,
+  type ThreadId,
+  isFactoryError,
+} from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -6,7 +12,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Store from "./FactoryStore.ts";
 import * as Access from "./FactoryControlAccess.ts";
@@ -24,7 +29,6 @@ export class FactoryMergeEffects extends Context.Service<
   }
 >()("t3/factory/FactoryMergeEffects") {}
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const isFactoryError = Schema.is(FactoryError);
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 const make = Effect.gen(function* () {

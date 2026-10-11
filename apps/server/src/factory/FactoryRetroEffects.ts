@@ -10,6 +10,7 @@ import {
   type FactorySnapshot,
   type FactoryRequiredPullRequest,
   type IssuePublicationRequest,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -17,7 +18,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 
 import * as IssuePublication from "../issues/IssuePublication.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
@@ -55,7 +55,6 @@ export class FactoryRetroEffects extends Context.Service<
 >()("t3/factory/FactoryRetroEffects") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const isFactoryError = Schema.is(FactoryError);
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 const prKey = (ref: { host?: string | undefined; repository: string; number: number }) =>

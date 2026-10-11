@@ -1,4 +1,4 @@
-import { FactoryAssignmentId, FactoryError } from "@t3tools/contracts";
+import { FactoryAssignmentId, FactoryError, isFactoryError } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -86,7 +86,6 @@ const decodeTree = Schema.decodeUnknownEffect(Schema.fromJsonString(GitTree));
 const decodeCommit = Schema.decodeUnknownEffect(Schema.fromJsonString(GitCommit));
 const decodeReservation = Schema.decodeUnknownEffect(Schema.fromJsonString(Reservation));
 const encodeReservation = Schema.encodeEffect(Schema.fromJsonString(Reservation));
-const isFactoryError = Schema.is(FactoryError);
 const preserve = (cause: unknown) =>
   isFactoryError(cause)
     ? cause

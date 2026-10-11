@@ -14,6 +14,7 @@ import {
   type FactoryWorkflowVersion,
   type ProjectId,
   type ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -211,7 +212,6 @@ const decodeSuspension = Schema.decodeUnknownEffect(
 );
 const unavailable = (detail: string) => new FactoryError({ code: "execution-unavailable", detail });
 const denied = () => new FactoryError({ code: "permission-denied" });
-const isFactoryError = Schema.is(FactoryError);
 const preserve = (cause: unknown) =>
   isFactoryError(cause)
     ? cause

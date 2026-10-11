@@ -45,6 +45,19 @@ import { factoryIntegrationVerificationReadiness } from "./FactoryIntegration.ts
 import { FactoryIntegrationExecution } from "./FactoryIntegrationExecution.ts";
 
 import * as FactoryImprovementEvidence from "./FactoryImprovementEvidence.ts";
+import type {
+  FactoryPreviewSnapshotToolkit,
+  FactoryToolkit,
+} from "../mcp/toolkits/factory/tools.ts";
+import type { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
+
+// The tool names this guard rules on, checked against the toolkits that register them.
+type GuardedTool =
+  | keyof (typeof FactoryToolkit)["tools"]
+  | keyof (typeof FactoryPreviewSnapshotToolkit)["tools"]
+  | keyof (typeof OrchestratorToolkit)["tools"];
+const isTool = (toolName: string, ...names: ReadonlyArray<GuardedTool>) =>
+  names.some((name) => name === toolName);
 
 export class FactoryMcpGuard extends Context.Service<
   FactoryMcpGuard,
@@ -226,9 +239,8 @@ const make = Effect.gen(function* () {
           member.assignment?.integrationId !== undefined &&
           member.assignment.threadId === invocation.thread?.threadId;
         const mergeOperationTool =
-          toolName === "factory_merge_group_get" ||
-          toolName === "factory_merge_operation_action" ||
-          (toolName === "factory_dispatch" && isMergeOperationRequest(payload));
+          isTool(toolName, "factory_merge_group_get", "factory_merge_operation_action") ||
+          (isTool(toolName, "factory_dispatch") && isMergeOperationRequest(payload));
         if (invocation.thread !== undefined)
           yield* controls
             .assertExecution(invocation.thread.threadId)
@@ -242,13 +254,14 @@ const make = Effect.gen(function* () {
             member.assignment.integrationId,
           ) &&
           !mergeOperationTool &&
-          toolName !== "factory_snapshot"
+          !isTool(toolName, "factory_snapshot")
         )
           return yield* denied();
         if (member.manager.role === "system" && member.assignment === undefined) {
           if (
             invocation.thread?.threadId !== member.manager.threadId ||
-            ![
+            !isTool(
+              toolName,
               "factory_improvement_snapshot",
               "factory_improvement_record",
               "factory_investigation_read",
@@ -259,7 +272,7 @@ const make = Effect.gen(function* () {
               "t3_thread_send",
               "t3_thread_wait",
               "t3_thread_interrupt",
-            ].includes(toolName)
+            )
           )
             return yield* denied();
           const profile = yield* execution
@@ -267,14 +280,15 @@ const make = Effect.gen(function* () {
             .pipe(Effect.mapError(unavailable));
           if (!profile) return yield* unavailable();
           if (
-            [
+            isTool(
+              toolName,
               "factory_improvement_snapshot",
               "factory_improvement_record",
               "factory_investigation_read",
               "factory_dispatch",
               "factory_snapshot",
               "factory_collaboration_directory",
-            ].includes(toolName)
+            )
           )
             return;
         }
@@ -282,13 +296,21 @@ const make = Effect.gen(function* () {
           member.auxiliary === undefined &&
           member.assignment !== undefined &&
           member.assignment.kind !== "onboarding" &&
-          ["orchestrator_capabilities", "delegate_task", "task_status", "task_cancel"].includes(
+          isTool(
             toolName,
+            "orchestrator_capabilities",
+            "delegate_task",
+            "task_status",
+            "task_cancel",
           );
         let scopedCommunication = false;
         if (
-          ["t3_thread_read", "t3_thread_send", "t3_thread_wait", "t3_thread_interrupt"].includes(
+          isTool(
             toolName,
+            "t3_thread_read",
+            "t3_thread_send",
+            "t3_thread_wait",
+            "t3_thread_interrupt",
           ) &&
           invocation.thread !== undefined &&
           hasThreadTarget(payload)
@@ -306,15 +328,15 @@ const make = Effect.gen(function* () {
           const ownManager =
             target?.assignment === undefined && target?.manager.id === member.manager.id;
           scopedCommunication =
-            (member.auxiliary === undefined || toolName === "t3_thread_read") &&
+            (member.auxiliary === undefined || isTool(toolName, "t3_thread_read")) &&
             sameManager &&
             (member.auxiliary?.kind !== "retrospective" || sameAssignment) &&
             (member.assignment === undefined ||
               sameAssignment ||
-              (ownManager && toolName !== "t3_thread_interrupt"));
+              (ownManager && !isTool(toolName, "t3_thread_interrupt")));
           if (
             scopedCommunication &&
-            toolName === "t3_thread_send" &&
+            isTool(toolName, "t3_thread_send") &&
             target?.assignment?.wait != null &&
             (member.assignment === undefined ||
               targetControls?.ancestorThreadIds.includes(invocation.thread.threadId))
@@ -324,10 +346,7 @@ const make = Effect.gen(function* () {
               message:
                 "Parent direction is held while this assignment waits. Resolve its recorded prerequisite through the scoped factory workflow before continuing work.",
             });
-          if (
-            scopedCommunication &&
-            (toolName === "t3_thread_send" || toolName === "t3_thread_interrupt")
-          )
+          if (scopedCommunication && isTool(toolName, "t3_thread_send", "t3_thread_interrupt"))
             yield* controls
               .assertDirection({
                 threadId: payload.threadId,
@@ -338,41 +357,44 @@ const make = Effect.gen(function* () {
                   (cause) =>
                     new OrchestratorMcpFailure({
                       code: "capability_denied",
-                      message: cause.detail ?? cause.message,
+                      message: cause.message,
                     }),
                 ),
               );
         }
         if (
-          toolName !== "factory_snapshot" &&
+          !isTool(toolName, "factory_snapshot") &&
           !(
-            toolName === "factory_collaboration_directory" &&
+            isTool(toolName, "factory_collaboration_directory") &&
             member.assignment === undefined &&
             invocation.thread?.threadId === member.manager.threadId
           ) &&
-          toolName !== "factory_ticket_read" &&
-          toolName !== "factory_dispatch" &&
+          !isTool(toolName, "factory_ticket_read") &&
+          !isTool(toolName, "factory_dispatch") &&
           !(
             integrationLead &&
-            [
+            isTool(
+              toolName,
               "factory_merge_group_get",
               "factory_merge_group_review",
               "factory_merge_group_start",
               "factory_merge_operation_action",
-            ].includes(toolName)
+            )
           ) &&
-          ![
+          !isTool(
+            toolName,
             "factory_integration_get",
             "factory_integration_command",
             "factory_integration_read_patch",
-          ].includes(toolName) &&
+          ) &&
           !(
             member.auxiliary?.kind === "delivery-review" &&
-            [
+            isTool(
+              toolName,
               "factory_preview_action",
               "factory_preview_snapshot",
               "factory_preview_finish",
-            ].includes(toolName)
+            )
           ) &&
           !implementationTeamTool &&
           !scopedCommunication
@@ -380,13 +402,13 @@ const make = Effect.gen(function* () {
           return yield* denied();
         if (integrationLead && mergeOperationTool) return;
         if (
-          ["factory_integration_get", "factory_integration_read_patch"].includes(toolName) &&
+          isTool(toolName, "factory_integration_get", "factory_integration_read_patch") &&
           member.auxiliary === undefined &&
           member.manager.role === "project"
         )
           return;
         if (
-          (toolName === "factory_dispatch" || toolName === "factory_integration_command") &&
+          isTool(toolName, "factory_dispatch", "factory_integration_command") &&
           isIntegrationRefresh(payload) &&
           member.auxiliary === undefined &&
           member.assignment?.integrationId === payload.command.integrationId &&

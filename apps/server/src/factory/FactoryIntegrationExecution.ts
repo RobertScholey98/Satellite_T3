@@ -7,6 +7,7 @@ import {
   type FactoryIntegrationInput,
   type FactoryIntegrationManifest,
   type ProjectId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -92,7 +93,6 @@ export class FactoryIntegrationExecution extends Context.Service<
 >()("t3/factory/FactoryIntegrationExecution") {}
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const isFactoryError = Schema.is(FactoryError);
 const preserve = (cause: unknown) =>
   isFactoryError(cause)
     ? cause

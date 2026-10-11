@@ -8,6 +8,7 @@ import {
   type ProjectId,
   type RunId,
   type ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -30,7 +31,8 @@ export class FactoryControlEffects extends Context.Service<
 >()("t3/factory/FactoryControlEffects") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const failure = (cause: unknown) => new FactoryError({ code: "execution-unavailable", cause });
+const failure = (cause: unknown) =>
+  isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 const diagnosisCanResume = (
   state: FactorySnapshot,
   assignment: FactoryAssignment | undefined,

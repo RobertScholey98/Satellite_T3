@@ -28,7 +28,7 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
-import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
+import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -91,6 +91,7 @@ export const layerExecutor: Layer.Layer<
   | ThreadTitleRegenerationService.ThreadTitleRegenerationService
   | ThreadManagementService.ThreadManagementService
   | ServerSettings.ServerSettingsService
+  | FactoryControlAccess.FactoryControlAccess
 > = Layer.effect(
   OrchestrationEffectExecutorV2,
   Effect.gen(function* () {
@@ -105,7 +106,7 @@ export const layerExecutor: Layer.Layer<
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
-    const factory = yield* Effect.serviceOption(FactoryControlAccess);
+    const factory = yield* FactoryControlAccess.FactoryControlAccess;
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
@@ -115,10 +116,7 @@ export const layerExecutor: Layer.Layer<
             return Effect.gen(function* () {
               // Factory reconciliation decides whether a managed lead resumes. A
               // managed delegated child is not continued and owes its parent a result.
-              if (
-                Option.isSome(factory) &&
-                (yield* factory.value.membership(effect.threadId)) !== undefined
-              )
+              if ((yield* factory.membership(effect.threadId)) !== undefined)
                 return yield* threads.recoverDelegatedTask(effect.threadId, sourceRunId);
               yield* continueRestartedRun({ threadId: effect.threadId, sourceRunId });
             }).pipe(

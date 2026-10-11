@@ -6,6 +6,7 @@ import {
   type FactoryReconciliationObservation,
   type PullRequestRef,
   type ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import { factoryDeliveryWaitReason } from "./FactoryDelivery.ts";
@@ -43,7 +44,8 @@ export class FactoryReconciliation extends Context.Service<
 >()("t3/factory/FactoryReconciliation") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const failure = (cause: unknown) => new FactoryError({ code: "execution-unavailable", cause });
+const failure = (cause: unknown) =>
+  isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 
 export const layer = Layer.effect(
   FactoryReconciliation,

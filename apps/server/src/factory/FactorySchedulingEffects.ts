@@ -14,6 +14,7 @@ import {
   type IssueDetail,
   type IssueRef,
   type ProjectId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -70,7 +71,6 @@ export class FactorySchedulingEffects extends Context.Service<
   }
 >()("t3/factory/FactorySchedulingEffects") {}
 
-const isFactoryError = Schema.is(FactoryError);
 const isIssueError = Schema.is(IssueOperationError);
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const hash = (value: unknown) =>
@@ -190,8 +190,7 @@ const make = Effect.gen(function* () {
       return result.success;
     }).pipe(
       Effect.mapError(
-        (cause) =>
-          new IssueOperationError({ reason: "conflict", message: cause.detail ?? cause.message }),
+        (cause) => new IssueOperationError({ reason: "conflict", message: cause.message }),
       ),
     );
   const refresh = Effect.fn(

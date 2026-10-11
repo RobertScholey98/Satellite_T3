@@ -1,5 +1,6 @@
 import {
   FactoryError,
+  isFactoryError,
   type FactoryDiscoveryQualification,
   type FactoryWorkflowVersion,
   type ModelSelection,
@@ -114,13 +115,7 @@ const make = Effect.gen(function* () {
     revision: string,
     destination: string,
   ) {
-    const source = yield* sources
-      .readRevision(repositoryRoot, revision)
-      .pipe(
-        Effect.mapError(
-          (cause) => new QualificationError({ detail: cause.detail ?? cause.message }),
-        ),
-      );
+    const source = yield* sources.readRevision(repositoryRoot, revision);
     yield* fs.makeDirectory(destination, { recursive: true });
     for (const file of source.files) {
       const target = path.join(destination, file.path);
@@ -304,9 +299,12 @@ const make = Effect.gen(function* () {
     Effect.catch((cause) =>
       Effect.succeed({
         status: "unavailable" as const,
+        // Source capture explains its own refusals, such as a link it cannot preserve.
         reason: isQualificationError(cause)
           ? cause.detail
-          : "The isolated discovery environment could not be prepared. Check the environment's repository access and available disk space.",
+          : isFactoryError(cause)
+            ? cause.message
+            : "The isolated discovery environment could not be prepared. Check the environment's repository access and available disk space.",
       }),
     ),
   );

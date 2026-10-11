@@ -717,18 +717,18 @@ export function buildCodexTurnStartParams(input: {
 }) {
   return Effect.gen(function* () {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
-    const approvalPolicy =
-      input.runtimePolicy.factoryExecution !== undefined
-        ? "never"
-        : input.runtimePolicy.approvalPolicy === undefined
-          ? runtimeModeDefaults.approvalPolicy
-          : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
-    const sandboxPolicy =
-      input.runtimePolicy.factoryExecution !== undefined
-        ? { type: "externalSandbox" as const, networkAccess: "enabled" as const }
-        : input.runtimePolicy.sandboxPolicy === undefined
-          ? runtimeModeDefaults.sandboxPolicy
-          : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
+    // A factory-managed turn runs confined in its container, so Codex neither asks nor sandboxes.
+    const factoryManaged = input.runtimePolicy.factoryExecution !== undefined;
+    const approvalPolicy = factoryManaged
+      ? "never"
+      : input.runtimePolicy.approvalPolicy === undefined
+        ? runtimeModeDefaults.approvalPolicy
+        : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
+    const sandboxPolicy = factoryManaged
+      ? { type: "externalSandbox" as const, networkAccess: "enabled" as const }
+      : input.runtimePolicy.sandboxPolicy === undefined
+        ? runtimeModeDefaults.sandboxPolicy
+        : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
     const selectedEffort = getModelSelectionStringOptionValue(
       input.modelSelection,
       "reasoningEffort",
@@ -749,9 +749,7 @@ export function buildCodexTurnStartParams(input: {
             {
               model: input.modelSelection.model,
               reasoningEffort: effort ?? "medium",
-              ...(input.runtimePolicy.factoryExecution === undefined
-                ? {}
-                : { factoryManaged: true }),
+              ...(factoryManaged ? { factoryManaged: true } : {}),
             },
             {
               browser: input.browserToolsAvailable ?? true,
@@ -777,10 +775,7 @@ export function buildCodexTurnStartParams(input: {
       threadId: input.nativeThreadId,
       input: input.codexInput,
       ...(additionalContext ? { additionalContext } : {}),
-      cwd:
-        input.runtimePolicy.factoryExecution === undefined
-          ? input.runtimePolicy.cwd
-          : FACTORY_CONTAINER_WORKSPACE,
+      cwd: factoryManaged ? FACTORY_CONTAINER_WORKSPACE : input.runtimePolicy.cwd,
       model: input.modelSelection.model,
       // Model catalogues can default summaries to "none". Request them on every
       // turn, including resumed threads, for T3's reasoning timeline.
@@ -1308,34 +1303,29 @@ export function codexThreadRuntimeParams(input: {
 } {
   const mcpSession =
     input.threadId === null ? undefined : McpProviderSession.readMcpProviderSession(input.threadId);
+  const factoryManaged = input.runtimePolicy?.factoryExecution !== undefined;
   return {
     ...(input.runtimePolicy?.cwd == null
       ? {}
-      : {
-          cwd:
-            input.runtimePolicy.factoryExecution === undefined
-              ? input.runtimePolicy.cwd
-              : FACTORY_CONTAINER_WORKSPACE,
-        }),
+      : { cwd: factoryManaged ? FACTORY_CONTAINER_WORKSPACE : input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
-      ...(input.runtimePolicy?.factoryExecution === undefined
-        ? {}
-        : {
+      ...(factoryManaged
+        ? {
             "agents.enabled": false,
             "features.multi_agent": false,
             "features.multi_agent_v2": false,
-          }),
+          }
+        : {}),
       ...(mcpSession === undefined
         ? {}
         : {
             mcp_servers: {
               "t3-code": {
-                url:
-                  input.runtimePolicy?.factoryExecution === undefined
-                    ? mcpSession.endpoint
-                    : factoryContainerEndpoint(mcpSession.endpoint),
+                url: factoryManaged
+                  ? factoryContainerEndpoint(mcpSession.endpoint)
+                  : mcpSession.endpoint,
                 http_headers: {
                   Authorization: mcpSession.authorizationHeader,
                 },
@@ -1525,18 +1515,19 @@ export const layerAppServerClientFactory: Layer.Layer<
         Effect.gen(function* () {
           const scope = yield* Scope.Scope;
           const factoryProfile = input.runtimePolicy.factoryExecution;
-          const factoryContainerName =
+          // A managed session runs in its own named container, removed when the session closes.
+          const factory =
             factoryProfile === undefined
               ? undefined
-              : `satellite-factory-${yield* crypto.randomUUIDv4.pipe(Effect.mapError((cause) => new ProviderAdapterOpenSessionError({ driver: CODEX_PROVIDER, providerSessionId: input.providerSessionId, cause })))}`;
-          const factoryLaunch =
-            factoryProfile === undefined
-              ? undefined
-              : yield* prepareFactoryCodexLaunch({
-                  profile: factoryProfile,
-                  settings: input.settings,
-                  environment: input.environment,
-                  containerName: factoryContainerName!,
+              : yield* Effect.gen(function* () {
+                  const containerName = `satellite-factory-${yield* crypto.randomUUIDv4}`;
+                  const launch = yield* prepareFactoryCodexLaunch({
+                    profile: factoryProfile,
+                    settings: input.settings,
+                    environment: input.environment,
+                    containerName,
+                  });
+                  return { profile: factoryProfile, containerName, launch };
                 }).pipe(
                   Effect.provideService(FileSystem.FileSystem, fileSystem),
                   Effect.provideService(Path.Path, path),
@@ -1576,7 +1567,7 @@ export const layerAppServerClientFactory: Layer.Layer<
             ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
           };
           const command = yield* makeCodexAppServerSpawnCommand(
-            factoryLaunch === undefined
+            factory === undefined
               ? {
                   command: input.settings.binaryPath || "codex",
                   args: [
@@ -1589,17 +1580,13 @@ export const layerAppServerClientFactory: Layer.Layer<
                   env: environment,
                 }
               : {
-                  command: factoryLaunch.command,
-                  args: factoryLaunch.args,
-                  env: factoryLaunch.environment,
+                  command: factory.launch.command,
+                  args: factory.launch.args,
+                  env: factory.launch.environment,
                   extendEnv: false,
                 },
           );
-          if (
-            factoryProfile !== undefined &&
-            factoryLaunch !== undefined &&
-            factoryContainerName !== undefined
-          ) {
+          if (factory !== undefined) {
             yield* Effect.addFinalizer(() =>
               spawner
                 .exitCode(
@@ -1607,12 +1594,12 @@ export const layerAppServerClientFactory: Layer.Layer<
                     "docker",
                     [
                       "--context",
-                      factoryProfile.dockerContext,
+                      factory.profile.dockerContext,
                       "rm",
                       "--force",
-                      factoryContainerName,
+                      factory.containerName,
                     ],
-                    { env: factoryLaunch.environment, extendEnv: false },
+                    { env: factory.launch.environment, extendEnv: false },
                   ),
                 )
                 .pipe(Effect.timeout("10 seconds"), Effect.ignore),

@@ -8,6 +8,7 @@ import {
   type FactoryDecisionCommand,
   type FactoryMergeOperation,
   type FactoryMergeOperationMember,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -50,7 +51,6 @@ export class FactoryMergeOperationEffects extends Context.Service<
 >()("t3/factory/FactoryMergeOperationEffects") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const isFactoryError = Schema.is(FactoryError);
 const isRateLimit = Schema.is(GitHubApiRateLimitError);
 const isRateLimitPaused = Schema.is(SourceControlRateLimitPausedError);
 const isResponseError = Schema.is(GitHubApiResponseError);

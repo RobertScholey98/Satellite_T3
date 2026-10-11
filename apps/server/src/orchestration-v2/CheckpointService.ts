@@ -22,7 +22,7 @@ import * as Schema from "effect/Schema";
 
 import { parseTurnDiffFilesFromNumstat } from "../checkpointing/Diffs.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
-import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
+import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
 import * as FactoryExecution from "../factory/FactoryExecution.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -250,7 +250,11 @@ function makeCheckpoint(input: {
 export const layer: Layer.Layer<
   CheckpointServiceV2,
   never,
-  CheckpointStore.CheckpointStore | Crypto.Crypto | IdAllocator.IdAllocatorV2
+  | CheckpointStore.CheckpointStore
+  | Crypto.Crypto
+  | IdAllocator.IdAllocatorV2
+  | FactoryExecution.FactoryExecution
+  | FactoryControlAccess.FactoryControlAccess
 > = Layer.effect(
   CheckpointServiceV2,
   Effect.gen(function* () {
@@ -260,33 +264,27 @@ export const layer: Layer.Layer<
       checkpointRefForScopeOrdinal(input).pipe(Effect.provideService(Crypto.Crypto, crypto));
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
-    const factory = yield* Effect.serviceOption(FactoryExecution.FactoryExecution);
-    const factoryControls = yield* Effect.serviceOption(FactoryControlAccess);
+    const factory = yield* FactoryExecution.FactoryExecution;
+    const factoryControls = yield* FactoryControlAccess.FactoryControlAccess;
     const workspaceLocks = yield* KeyedLock.make<string>();
     const withWorkspaceLock = <A, E, R>(cwd: string, effect: Effect.Effect<A, E, R>) =>
       workspaceLocks.withLock(cwd, effect);
 
     const isFactoryScope = (threadId: ThreadId) =>
-      Option.isNone(factory)
-        ? Effect.succeed(false)
-        : factory.value.runtimePolicyFor(threadId).pipe(
-            Effect.map((profile) => profile !== undefined),
-            // Paused, held or cancelled factory threads still work in factory snapshots.
-            Effect.catch(() =>
-              Option.isNone(factoryControls)
-                ? Effect.succeed(true)
-                : factoryControls.value
-                    .membership(threadId)
-                    .pipe(Effect.map((member) => member !== undefined)),
-            ),
-            // A failed lookup must not silently turn off checkpoints for ordinary threads.
-            Effect.catch((cause) =>
-              Effect.logWarning("Could not resolve the factory checkpoint scope", {
-                threadId,
-                cause,
-              }).pipe(Effect.as(false)),
-            ),
-          );
+      factory.runtimePolicyFor(threadId).pipe(
+        Effect.map((profile) => profile !== undefined),
+        // Paused, held or cancelled factory threads still work in factory snapshots.
+        Effect.catch(() =>
+          factoryControls.membership(threadId).pipe(Effect.map((member) => member !== undefined)),
+        ),
+        // A failed lookup must not silently turn off checkpoints for ordinary threads.
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not resolve the factory checkpoint scope", {
+            threadId,
+            cause,
+          }).pipe(Effect.as(false)),
+        ),
+      );
     const isExcludedScope = Effect.fnUntraced(function* (scope: OrchestrationV2CheckpointScope) {
       if (yield* isFactoryScope(scope.threadId)) return true;
       return yield* Option.isNone(projections)

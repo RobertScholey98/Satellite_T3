@@ -5,6 +5,7 @@ import {
   type FactoryDeliveryEffectIntent,
   type FactoryHostCommand,
   type ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -39,7 +40,6 @@ class DeliveryStopped extends Schema.TaggedError<DeliveryStopped>()("DeliverySto
   disposition: Schema.Literals(["held", "superseded"]),
 }) {}
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const isFactoryError = Schema.is(FactoryError);
 const isStopped = Schema.is(DeliveryStopped);
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });

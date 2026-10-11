@@ -5,6 +5,7 @@ import {
   type FactoryInvestigationRead,
   type FactoryRetroEvidenceRef,
   type ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { sha256 } from "@noble/hashes/sha2";
@@ -14,7 +15,6 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -34,7 +34,6 @@ const denied = () =>
     detail:
       "Evidence must belong to a finding attached to this open investigation and its source assignment.",
   });
-const isFactoryError = Schema.is(FactoryError);
 const sameRef = (left: FactoryRetroEvidenceRef, right: FactoryRetroEvidenceRef) =>
   stableStringify(left) === stableStringify(right);
 const make = Effect.gen(function* () {

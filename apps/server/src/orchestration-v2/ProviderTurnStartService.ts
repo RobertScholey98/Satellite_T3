@@ -21,7 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
-import { FactoryControlAccess, factoryDirectionSender } from "../factory/FactoryControlAccess.ts";
+import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -99,6 +99,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
+  | FactoryControlAccess.FactoryControlAccess
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -113,7 +114,7 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
-    const factoryControls = yield* Effect.serviceOption(FactoryControlAccess);
+    const factoryControls = yield* FactoryControlAccess.FactoryControlAccess;
 
     const makeFactoryStartGuard =
       (input: {
@@ -124,8 +125,7 @@ export const layer: Layer.Layer<
       }) =>
       (expectedStatus: "starting" | "running") =>
         Effect.gen(function* () {
-          if (Option.isNone(factoryControls)) return true;
-          const admitted = yield* factoryControls.value
+          const admitted = yield* factoryControls
             .assertDirection({
               threadId: input.run.threadId,
               senderThreadId: input.senderThreadId,
@@ -444,7 +444,7 @@ export const layer: Layer.Layer<
         run,
         attempt,
         rootNode,
-        senderThreadId: factoryDirectionSender(message),
+        senderThreadId: FactoryControlAccess.factoryDirectionSender(message),
       });
       if (!(yield* factoryStartGuard("starting"))) return;
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
@@ -1326,14 +1326,9 @@ export const layer: Layer.Layer<
                 }),
           ),
         );
-      const deliverySession =
-        effectiveHandoffs.length === 0 &&
-        missedItems.length === 0 &&
-        restartNote === "" &&
-        !noteContinuation &&
-        Option.isNone(factoryControls)
-          ? session
-          : makeDeliverySession(session, startWithHandoffs);
+      // Always deliver through the wrapper: it re-checks engineering controls before the
+      // provider accepts the turn, even when there is no handoff history to send.
+      const deliverySession = makeDeliverySession(session, startWithHandoffs);
       yield* runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,

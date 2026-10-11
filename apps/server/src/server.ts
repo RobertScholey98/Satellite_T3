@@ -28,7 +28,6 @@ import * as FactoryDeliveryEffects from "./factory/FactoryDeliveryEffects.ts";
 import * as FactoryPreviewExecution from "./factory/FactoryPreviewExecution.ts";
 import * as FactoryPreviewEvidence from "./factory/FactoryPreviewEvidence.ts";
 import * as FactoryPreviewService from "./factory/FactoryPreviewService.ts";
-import * as FactoryControlAccess from "./factory/FactoryControlAccess.ts";
 import * as FactoryPreviewHttp from "./factory/FactoryPreviewHttp.ts";
 import * as FactoryPreviewPublication from "./factory/FactoryPreviewPublication.ts";
 import * as FactoryRetroEffects from "./factory/FactoryRetroEffects.ts";
@@ -44,7 +43,6 @@ import * as FactoryIntegrationEffects from "./factory/FactoryIntegrationEffects.
 import * as FactoryIntegrationExecution from "./factory/FactoryIntegrationExecution.ts";
 import * as FactoryMergeEffects from "./factory/FactoryMergeEffects.ts";
 import * as FactoryMergeOperationEffects from "./factory/FactoryMergeOperationEffects.ts";
-import * as FactoryMergeSignal from "./factory/FactoryMergeSignal.ts";
 import * as FactoryWorkflowExecution from "./factory/FactoryWorkflowExecution.ts";
 import * as FactoryImprovementEvidence from "./factory/FactoryImprovementEvidence.ts";
 import * as FactorySchedulingEffects from "./factory/FactorySchedulingEffects.ts";
@@ -319,16 +317,16 @@ const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.l
 
 const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer));
 
+const layerSourceControlHosts = Layer.mergeAll(
+  AzureDevOpsCli.layer,
+  BitbucketApi.layer,
+  GitHubCli.layer,
+  GitLabCli.layer,
+  ForgejoCli.layer,
+);
+
 const layerSourceControlProviderRegistry = SourceControlProviderRegistry.layer.pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      AzureDevOpsCli.layer,
-      BitbucketApi.layer,
-      GitHubCli.layer,
-      GitLabCli.layer,
-      ForgejoCli.layer,
-    ),
-  ),
+  Layer.provide(layerSourceControlHosts),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(layerVcsDriverRegistry),
 );
@@ -369,19 +367,12 @@ const layerRepositoryIdentityResolver = Layer.effect(
   }),
 ).pipe(Layer.provide(layerSourceControlProviderRegistry), Layer.provide(ProcessRunner.layer));
 
+const layerIssueHost = IssueHost.layer.pipe(Layer.provide(layerSourceControlHosts));
+
 const layerIssueService = IssueService.layer.pipe(
   Layer.provide(ProjectStore.layer),
-  Layer.provide(IssueHost.layer),
+  Layer.provide(layerIssueHost),
   Layer.provide(layerSourceControlProviderRegistry),
-  Layer.provide(
-    Layer.mergeAll(
-      GitHubCli.layer,
-      GitLabCli.layer,
-      AzureDevOpsCli.layer,
-      ForgejoCli.layer,
-      BitbucketApi.layer,
-    ),
-  ),
 );
 
 const layerPullRequestService = PullRequestService.layer.pipe(
@@ -569,101 +560,61 @@ const layerServerBrowser = ServerBrowser.layer.pipe(
   Layer.provide(PreviewBrowser.layer),
 );
 
-const layerFactoryPreview = FactoryPreviewService.layer.pipe(
-  Layer.provideMerge(FactoryPreviewEvidence.layer),
-  Layer.provideMerge(FactoryPreviewExecution.layer),
-  Layer.provide(FactoryControlAccess.layer),
-  Layer.provide(layerServerBrowser),
-  Layer.provide(ProcessRunner.layer),
-);
-
-const layerFactoryDelivery = FactoryDeliveryEffects.layer.pipe(
-  Layer.provide(FactoryPublicationHost.layer),
-  Layer.provide(FactoryPreviewPublication.layer),
-  Layer.provide(FactoryControlAccess.layer),
-  Layer.provide(FactoryHandover.layer),
-  Layer.provide(layerPullRequestService),
+const layerFactoryServices = FactoryService.layer.pipe(
+  Layer.provideMerge(FactoryMergeOperationEffects.layer),
+  Layer.provideMerge(FactoryMergeEffects.layer),
+  Layer.provideMerge(FactoryIntegrationEffects.layer),
+  Layer.provideMerge(FactoryIntegrationExecution.layer),
+  Layer.provideMerge(FactoryCollaborationEffects.layer),
+  Layer.provideMerge(FactoryWorkflowEffects.layer),
+  Layer.provideMerge(FactoryImprovementEffects.layer),
+  Layer.provideMerge(
+    FactoryDeliveryEffects.layer.pipe(
+      Layer.provide(FactoryPublicationHost.layer),
+      Layer.provide(FactoryPreviewPublication.layer),
+    ),
+  ),
+  Layer.provideMerge(
+    FactoryPreviewService.layer.pipe(
+      Layer.provideMerge(FactoryPreviewEvidence.layer),
+      Layer.provideMerge(FactoryPreviewExecution.layer),
+      Layer.provide(layerServerBrowser),
+    ),
+  ),
+  Layer.provideMerge(
+    FactorySchedulingEffects.layer.pipe(
+      Layer.provide(
+        IssueScheduling.layer.pipe(
+          Layer.provide(layerIssueHost),
+          Layer.provide(ProjectStore.layer),
+        ),
+      ),
+    ),
+  ),
+  Layer.provideMerge(
+    FactoryRetroEffects.layer.pipe(
+      Layer.provide(FactoryRetroExecution.layer),
+      Layer.provide(FactoryRetroEvidence.layer),
+      Layer.provide(
+        IssuePublication.layer.pipe(
+          Layer.provide(IssuePublicationHost.layer.pipe(Layer.provide(AzureDevOpsCli.layer))),
+          Layer.provide(layerIssueHost),
+          Layer.provide(ProjectStore.layer),
+        ),
+      ),
+    ),
+  ),
 );
 
 const layerSatelliteFeatures = Layer.mergeAll(
   Layer.merge(FactoryMcpGuard.layer, FactoryObserver.layer).pipe(
     Layer.provide(FactoryImprovementEvidence.layer),
-    Layer.provideMerge(
-      FactoryService.layer.pipe(
-        Layer.provideMerge(
-          FactoryMergeOperationEffects.layer.pipe(
-            Layer.provide(FactoryMergeSignal.layer),
-            Layer.provide(FactoryControlAccess.layer),
-            Layer.provide(FactoryHandover.layer),
-            Layer.provide(layerPullRequestService),
-          ),
-        ),
-        Layer.provideMerge(
-          FactoryMergeEffects.layer.pipe(
-            Layer.provide(FactoryControlAccess.layer),
-            Layer.provide(layerPullRequestService),
-          ),
-        ),
-        Layer.provideMerge(
-          FactoryIntegrationEffects.layer.pipe(
-            Layer.provide(FactoryControlAccess.layer),
-            Layer.provide(FactoryHandover.layer),
-          ),
-        ),
-        Layer.provideMerge(
-          FactoryIntegrationExecution.layer.pipe(Layer.provide(layerPullRequestService)),
-        ),
-        Layer.provideMerge(
-          FactoryCollaborationEffects.layer.pipe(
-            Layer.provide(FactoryControlAccess.layer),
-            Layer.provide(FactoryHandover.layer),
-          ),
-        ),
-        Layer.provideMerge(
-          FactoryWorkflowEffects.layer.pipe(
-            Layer.provide(FactoryControlAccess.layer),
-            Layer.provide(FactoryHandover.layer),
-          ),
-        ),
-        Layer.provideMerge(
-          FactoryImprovementEffects.layer.pipe(Layer.provide(FactoryControlAccess.layer)),
-        ),
-        Layer.provideMerge(layerFactoryDelivery),
-        Layer.provideMerge(layerFactoryPreview),
-        Layer.provideMerge(
-          FactorySchedulingEffects.layer.pipe(
-            Layer.provide(
-              IssueScheduling.layer.pipe(
-                Layer.provide(IssueHost.layer),
-                Layer.provide(ProjectStore.layer),
-                Layer.provide(AzureDevOpsCli.layer),
-              ),
-            ),
-            Layer.provide(FactoryControlAccess.layer),
-          ),
-        ),
-        Layer.provideMerge(
-          FactoryRetroEffects.layer.pipe(
-            Layer.provide(FactoryRetroExecution.layer),
-            Layer.provide(FactoryRetroEvidence.layer),
-            Layer.provide(
-              IssuePublication.layer.pipe(
-                Layer.provide(IssuePublicationHost.layer),
-                Layer.provide(IssueHost.layer),
-                Layer.provide(AzureDevOpsCli.layer),
-                Layer.provide(ProjectStore.layer),
-              ),
-            ),
-            Layer.provide(FactoryControlAccess.layer),
-            Layer.provide(FactoryHandover.layer),
-            Layer.provide(layerPullRequestService),
-            Layer.provide(ProcessRunner.layer),
-          ),
-        ),
-        Layer.provide(FactoryHandover.layer),
-      ),
+    Layer.provideMerge(layerFactoryServices),
+    // Every factory layer above shares these. FactoryControlAccess comes from
+    // layerFactoryExecution, which the runtime provides to this whole layer.
+    Layer.provide(
+      Layer.mergeAll(FactoryHandover.layer, layerPullRequestService, ProcessRunner.layer),
     ),
-    Layer.provide(layerPullRequestService),
   ),
   DocumentService.layer,
   RevdocService.layer,

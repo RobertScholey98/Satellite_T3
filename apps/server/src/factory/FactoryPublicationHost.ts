@@ -6,6 +6,7 @@ import {
   type FactoryAssignment,
   type FactoryDeliveryRevision,
   type FactoryPublicationDestination,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -76,7 +77,6 @@ const encodeReservation = Schema.encodeEffect(Schema.fromJsonString(ReservationR
 const decodeReservation = Schema.decodeUnknownEffect(Schema.fromJsonString(ReservationRecord));
 const encodePublish = Schema.encodeEffect(Schema.fromJsonString(PublishRecord));
 const decodePublish = Schema.decodeUnknownEffect(Schema.fromJsonString(PublishRecord));
-const isFactoryError = Schema.is(FactoryError);
 const preserve = (cause: unknown) =>
   isFactoryError(cause)
     ? cause

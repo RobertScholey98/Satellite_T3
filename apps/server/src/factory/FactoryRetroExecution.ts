@@ -3,6 +3,7 @@ import {
   type FactoryAssignmentId,
   type FactoryRetroQualification,
   type ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -55,7 +56,6 @@ const encodeProfile = Schema.encodeEffect(Schema.fromJsonString(FactoryExecution
 const decodeIntegration = Schema.decodeUnknownEffect(
   Schema.fromJsonString(IntegrationRuntimeArtifact),
 );
-const isFactoryError = Schema.is(FactoryError);
 const unavailable = () =>
   new FactoryError({
     code: "execution-unavailable",

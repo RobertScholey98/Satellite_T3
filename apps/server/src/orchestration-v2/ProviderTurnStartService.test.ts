@@ -40,6 +40,7 @@ import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import type { FactoryExecutionProfile } from "../factory/FactoryExecution.ts";
 import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
+import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -134,6 +135,7 @@ it("does not commit running state when inherited background routing cannot be re
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
+        FactoryExecutionTestkit.layerUnmanagedControls,
       ),
     ),
   );
@@ -556,7 +558,7 @@ function makeLocalCommandHarness(input: {
             }),
         }),
         input.factoryDirection === undefined
-          ? Layer.empty
+          ? FactoryExecutionTestkit.layerUnmanagedControls
           : Layer.mock(FactoryControlAccess)({
               assertDirection: input.factoryDirection,
             }),

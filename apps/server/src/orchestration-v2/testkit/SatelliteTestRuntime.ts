@@ -14,6 +14,9 @@ import {
   type OrchestrationV2UserInputQuestion,
   type RuntimeRequestId,
 } from "@t3tools/contracts";
+import type * as FactoryControlAccess from "../../factory/FactoryControlAccess.ts";
+import type * as FactoryExecution from "../../factory/FactoryExecution.ts";
+import * as FactoryExecutionTestkit from "../../factory/FactoryExecution.testkit.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import { IdeaNotebookStore } from "../../ideas/IdeaNotebookStore.ts";
@@ -48,10 +51,6 @@ const registry = Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
   list: () => Effect.succeed([]),
   get: (instanceId) => Effect.succeed(makeProviderAdapter(instanceId)),
 });
-const runtime = layerWithRegistry({ name: "satellite-feature-tests" }, registry, {
-  databaseLayer: database,
-  runEffectWorker: false,
-});
 const stores = Layer.mergeAll(
   EventStore.layer,
   ProjectionStore.layer,
@@ -59,39 +58,56 @@ const stores = Layer.mergeAll(
   IdeaNotebookStore.layer,
 ).pipe(Layer.provideMerge(database));
 
-/** Real V2 command receipts, event projection, and Satellite service views without provider execution. */
-export const layer = Layer.mergeAll(
-  SatelliteOrchestration.layer,
-  ProjectService.layer,
-  ThreadSearch.layer,
-).pipe(
-  Layer.provideMerge(
-    Layer.mergeAll(runtime, stores, McpSessionRegistryTestkit.layer, IdAllocator.layer),
-  ),
-  Layer.provide(
-    Layer.mergeAll(
-      Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
-        getAvailable: () =>
-          Effect.succeed({
-            repositoryIdentity: null,
-            faviconPath: null,
-            repositoryIdentityResolved: true,
-          }),
-        peek: () =>
-          Effect.succeed({
-            repositoryIdentity: null,
-            faviconPath: null,
-            repositoryIdentityResolved: true,
-          }),
-        invalidate: () => Effect.void,
-      }),
-      Layer.mock(WorkspacePaths.WorkspacePaths)({}),
-      Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
-        ensureTranscript: () => Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
-      }),
+/**
+ * Real V2 command receipts, event projection, and Satellite service views without provider
+ * execution. The orchestration runtime consults the given factory gates.
+ */
+export const layerWithFactory = (
+  factory: Layer.Layer<
+    FactoryExecution.FactoryExecution | FactoryControlAccess.FactoryControlAccess
+  >,
+) =>
+  Layer.mergeAll(SatelliteOrchestration.layer, ProjectService.layer, ThreadSearch.layer).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        layerWithRegistry({ name: "satellite-feature-tests" }, registry, {
+          databaseLayer: database,
+          runEffectWorker: false,
+          factory,
+        }),
+        stores,
+        McpSessionRegistryTestkit.layer,
+        IdAllocator.layer,
+      ),
     ),
-  ),
-);
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
+          getAvailable: () =>
+            Effect.succeed({
+              repositoryIdentity: null,
+              faviconPath: null,
+              repositoryIdentityResolved: true,
+            }),
+          peek: () =>
+            Effect.succeed({
+              repositoryIdentity: null,
+              faviconPath: null,
+              repositoryIdentityResolved: true,
+            }),
+          invalidate: () => Effect.void,
+        }),
+        Layer.mock(WorkspacePaths.WorkspacePaths)({}),
+        Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
+          ensureTranscript: () =>
+            Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
+        }),
+      ),
+    ),
+  );
+
+/** The runtime for an environment with no managers. */
+export const layer = layerWithFactory(FactoryExecutionTestkit.layerUnmanaged);
 
 export const recordProject = Effect.fn(function* (input: {
   readonly projectId: ProjectId;

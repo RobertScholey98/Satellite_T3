@@ -44,6 +44,7 @@ import * as PullRequestService from "./PullRequestService.ts";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import type { ProviderMergeEvidence } from "./pullRequestMergeEvidence.ts";
 import * as FactoryPullRequestGate from "../factory/FactoryPullRequestGate.ts";
+import { initialFactorySnapshot } from "../factory/FactoryState.ts";
 import { FactoryStore } from "../factory/FactoryStore.ts";
 import { ready as integrationReady } from "../factory/FactoryIntegration.testkit.ts";
 import {
@@ -1131,18 +1132,17 @@ function makeService(input: {
   return Effect.flatMap(
     Layer.build(
       Layer.mergeAll(
-        input.factorySnapshot === undefined
-          ? Layer.empty
-          : FactoryPullRequestGate.layer.pipe(
-              Layer.provide(
-                Layer.mock(FactoryStore)({
-                  snapshot:
-                    typeof input.factorySnapshot === "function"
-                      ? Effect.sync(input.factorySnapshot)
-                      : Effect.succeed(input.factorySnapshot),
-                }),
-              ),
-            ),
+        // Without a snapshot the gate sees an environment with no managed work.
+        FactoryPullRequestGate.layer.pipe(
+          Layer.provide(
+            Layer.mock(FactoryStore)({
+              snapshot:
+                typeof input.factorySnapshot === "function"
+                  ? Effect.sync(input.factorySnapshot)
+                  : Effect.succeed(input.factorySnapshot ?? initialFactorySnapshot()),
+            }),
+          ),
+        ),
         Layer.mock(ServerSettingsService.ServerSettingsService)({
           getSettings: Effect.succeed(input.settings ?? DEFAULT_SERVER_SETTINGS),
         }),

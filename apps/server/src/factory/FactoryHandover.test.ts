@@ -22,6 +22,7 @@ import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionMana
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as Satellite from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
 import { FactoryExecution, type FactoryExecutionProfile } from "./FactoryExecution.ts";
+import * as FactoryExecutionTestkit from "./FactoryExecution.testkit.ts";
 import * as FactoryHandover from "./FactoryHandover.ts";
 
 const projectId = ProjectId.make("handover-project");
@@ -235,7 +236,13 @@ it.effect("same-model handover keeps conversation history in a fresh confined na
       const continued = yield* projections.getThreadProjection(threadId);
       assert.equal(continued.runs.at(-1)?.providerThreadId, current.id);
       assert.equal(continued.contextHandoffs.length, 1);
-    }).pipe(Effect.provide(Satellite.layer.pipe(Layer.provide(execution))));
+    }).pipe(
+      Effect.provide(
+        Satellite.layerWithFactory(
+          Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls),
+        ),
+      ),
+    );
   }),
 );
 
@@ -334,7 +341,13 @@ it.effect(
           after.messages.map((message) => message.text),
           ["Host work", "Queued before handover"],
         );
-      }).pipe(Effect.provide(Satellite.layer.pipe(Layer.provide(execution))));
+      }).pipe(
+        Effect.provide(
+          Satellite.layerWithFactory(
+            Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls),
+          ),
+        ),
+      );
     }),
 );
 

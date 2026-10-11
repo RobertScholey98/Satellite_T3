@@ -14,7 +14,6 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -27,7 +26,7 @@ import {
   restartContinuationRun,
   restartPrepareCommandId,
 } from "./RestartContinuation.ts";
-import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
+import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
 import {
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
@@ -191,22 +190,20 @@ export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
-  const factory = yield* Effect.serviceOption(FactoryControlAccess);
+  const factory = yield* FactoryControlAccess.FactoryControlAccess;
   // Factory-managed work always records its restart intent; the factory decides
   // whether it resumes. A failed lookup falls back to the per-project opt-in, and
   // the effect worker checks membership again before continuing anything.
   const isManaged = (threadId: ThreadId) =>
-    Option.isNone(factory)
-      ? Effect.succeed(false)
-      : factory.value.membership(threadId).pipe(
-          Effect.map((member) => member !== undefined),
-          Effect.catch((cause) =>
-            Effect.logWarning("Could not resolve factory membership during runtime recovery", {
-              threadId,
-              cause,
-            }).pipe(Effect.as(false)),
-          ),
-        );
+    factory.membership(threadId).pipe(
+      Effect.map((member) => member !== undefined),
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not resolve factory membership during runtime recovery", {
+          threadId,
+          cause,
+        }).pipe(Effect.as(false)),
+      ),
+    );
   const reconcileProjection = Effect.fn("ProviderRuntimeRecoveryService.reconcileProjection")(
     function* (
       projection: ProjectionStore.ProjectionRuntimeRecoveryState,

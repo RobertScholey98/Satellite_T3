@@ -782,3 +782,5 @@ export class FactoryError extends Schema.TaggedError<FactoryError>()("FactoryErr
     }
   }
 }
+
+export const isFactoryError = Schema.is(FactoryError);

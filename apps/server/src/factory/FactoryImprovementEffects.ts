@@ -5,13 +5,13 @@ import {
   ThreadId,
   factorySystemManager,
   type FactoryCommand,
+  isFactoryError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
@@ -44,7 +44,6 @@ export class FactoryImprovementEffects extends Context.Service<
 >()("t3/factory/FactoryImprovementEffects") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-const isFactoryError = Schema.is(FactoryError);
 const error = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 

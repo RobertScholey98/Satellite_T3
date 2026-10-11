@@ -8,10 +8,7 @@ import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import {
-  authorizeFactoryPullRequestAction,
-  FactoryPullRequestGate,
-} from "../factory/FactoryPullRequestGate.ts";
+import * as FactoryPullRequestGate from "../factory/FactoryPullRequestGate.ts";
 import { BeforeGitHubMutation, GitHubApiRequestError } from "../sourceControl/GitHubApi.ts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -710,7 +707,7 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
-  const factoryGate = yield* Effect.serviceOption(FactoryPullRequestGate);
+  const factoryGate = yield* FactoryPullRequestGate.FactoryPullRequestGate;
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,
@@ -2025,9 +2022,7 @@ export const make = Effect.gen(function* () {
   // Managed delivery is decided by the factory gate; this supplies the host reads it needs.
   const authorizeFactoryAction = Effect.fn("PullRequestService.authorizeFactoryAction")(
     function* (input: PullRequestActionInput, project: SupportedProject) {
-      if (Option.isNone(factoryGate))
-        return { requireConditionalMerge: false, beforeMutation: null };
-      return yield* authorizeFactoryPullRequestAction(factoryGate.value, {
+      return yield* FactoryPullRequestGate.authorizeFactoryPullRequestAction(factoryGate, {
         request: input,
         ref: {
           projectId: project.project.id,
@@ -2199,23 +2194,21 @@ export const make = Effect.gen(function* () {
                       .pipe(
                         Effect.provideService(
                           BeforeGitHubMutation,
-                          beforeMutation === null
-                            ? null
-                            : beforeMutation.pipe(
-                                Effect.tapError((error) =>
-                                  Effect.sync(() => {
-                                    refusal = error;
-                                  }),
-                                ),
-                                Effect.mapError(
-                                  (cause) =>
-                                    new GitHubApiRequestError({
-                                      host: project.host,
-                                      operation: "factory.merge.authorize",
-                                      cause,
-                                    }),
-                                ),
-                              ),
+                          beforeMutation.pipe(
+                            Effect.tapError((error) =>
+                              Effect.sync(() => {
+                                refusal = error;
+                              }),
+                            ),
+                            Effect.mapError(
+                              (cause) =>
+                                new GitHubApiRequestError({
+                                  host: project.host,
+                                  operation: "factory.merge.authorize",
+                                  cause,
+                                }),
+                            ),
+                          ),
                         ),
                         // Once the authorized provider action starts, a failure may leave partial
                         // remote updates. Validation and permission failures above changed nothing.

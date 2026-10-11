@@ -3,6 +3,7 @@ import {
   FactoryError,
   FactoryPreviewAppConfiguration,
   ThreadId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
@@ -102,7 +103,6 @@ const encodeManifest = Schema.encodeEffect(
     ),
   ),
 );
-const isFactoryError = Schema.is(FactoryError);
 const preserve = (cause: unknown) =>
   isFactoryError(cause)
     ? cause

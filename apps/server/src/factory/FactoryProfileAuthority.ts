@@ -1,4 +1,4 @@
-import { FactoryError } from "@t3tools/contracts";
+import { FactoryError, isFactoryError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -11,7 +11,6 @@ import {
   type FactoryExecutionProfile,
 } from "./FactoryExecutionProfile.ts";
 
-const isFactoryError = Schema.is(FactoryError);
 const decodeDeliveryHold = Schema.decodeUnknownEffect(
   Schema.fromJsonString(FactoryDeliveryExecutionHold),
 );

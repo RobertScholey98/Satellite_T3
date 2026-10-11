@@ -68,14 +68,19 @@ The factory checks shared paths as well as its own services:
 A new path that starts, continues or directs provider work, or that acts on a managed PR, needs the
 same check.
 
-## Server composition needs a boot
+## Server composition must stay type-checked
 
-`server.ts` composition is not fully type-checked. tsgo infers the requirements of the `ws.ts` RPC
-layer as `any` (TS377030), so a missing layer still compiles. One factory service once went
-unwired this way, and the server would have crashed at startup. Until this is fixed, boot the
-server once against a scratch home after you add or rewire a service, for example with
-`vp run dev --home-dir <tmp>`. A boot does not prove the gates, though. Gates that read their
-service through `Effect.serviceOption` switch off without a crash when the layer is missing.
+A missing layer in `server.ts` is a compile error at `runServer`, and only the compiler catches
+it reliably. Effect builds a layer once per reference, so a layer provided in one branch can
+satisfy a requirement that another branch forgot, and the server still boots. Keep the WebSocket
+handlers split into the core and Satellite layers in `ws.ts`. A single `toLayer` over every RPC
+exceeds the compiler's instantiation limit. tsgo then drops the error and widens the server's
+requirements to `any` (TS377030), so a missing layer compiles again.
+
+The gates listed above are required services, so a missing gate layer is a compile error rather
+than a gate that silently switches off. Never read a gate through `Effect.serviceOption`. Tests
+that need no managers provide the unmanaged layers from
+[`FactoryExecution.testkit.ts`](../../apps/server/src/factory/FactoryExecution.testkit.ts).
 
 ## Deployment signal
 

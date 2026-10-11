@@ -1,4 +1,4 @@
-import { FactoryError, FactoryWorkflowVersion } from "@t3tools/contracts";
+import { FactoryError, FactoryWorkflowVersion, isFactoryError } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -29,7 +29,6 @@ const Manifest = Schema.Struct({
 const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(Manifest));
 const encodeManifest = Schema.encodeEffect(Schema.fromJsonString(Manifest));
 const encodePaths = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
-const isFactoryError = Schema.is(FactoryError);
 const unavailable = (detail: string) => new FactoryError({ code: "execution-unavailable", detail });
 const preserve = (cause: unknown) =>
   isFactoryError(cause)

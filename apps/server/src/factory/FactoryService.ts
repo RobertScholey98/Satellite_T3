@@ -15,6 +15,7 @@ import {
   type OrchestrationV2StoredEvent,
   type FactoryHostCommand,
   type ProjectId,
+  isFactoryError,
 } from "@t3tools/contracts";
 import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Context from "effect/Context";
@@ -29,13 +30,13 @@ import * as Stream from "effect/Stream";
 
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
-import { ProjectService } from "../project/ProjectService.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
-import { FactorySource } from "./FactorySource.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import * as FactorySource from "./FactorySource.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { decide, type FactoryActor } from "./FactoryState.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryControlEffects from "./FactoryControlEffects.ts";
@@ -49,12 +50,12 @@ import {
 } from "./FactoryModelPolicy.ts";
 import { type FactoryOversightContext } from "./FactoryOversight.ts";
 import { type FactoryDeliveryContext } from "./FactoryDelivery.ts";
-import { FactoryDeliveryEffects } from "./FactoryDeliveryEffects.ts";
-import { FactoryPreviewService } from "./FactoryPreviewService.ts";
-import { FactoryRetroEffects } from "./FactoryRetroEffects.ts";
+import * as FactoryDeliveryEffects from "./FactoryDeliveryEffects.ts";
+import * as FactoryPreviewService from "./FactoryPreviewService.ts";
+import * as FactoryRetroEffects from "./FactoryRetroEffects.ts";
 import { type FactoryRetroContext } from "./FactoryRetros.ts";
-import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
-import { FactoryImprovementEffects } from "./FactoryImprovementEffects.ts";
+import * as FactorySchedulingEffects from "./FactorySchedulingEffects.ts";
+import * as FactoryImprovementEffects from "./FactoryImprovementEffects.ts";
 import type { FactoryImprovementContext } from "./FactoryImprovements.ts";
 import type { FactorySchedulingContext } from "./FactoryScheduling.ts";
 import * as FactoryWorkflowEffects from "./FactoryWorkflowEffects.ts";
@@ -100,134 +101,94 @@ export class FactoryService extends Context.Service<
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const renderJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const isFactoryError = Schema.is(FactoryError);
 
 const scopedSnapshot =
   (query: FactoryQuery) =>
-  (snapshot: FactorySnapshot): FactorySnapshot =>
-    query.projectId === undefined
-      ? snapshot
-      : {
-          ...snapshot,
-          ...scopeFactoryCollaboration(snapshot, { kind: "project", projectId: query.projectId }),
-          ...scopeFactoryIntegration(snapshot, { kind: "project", projectId: query.projectId }),
-          ...scopeFactoryMerge(snapshot, { kind: "project", projectId: query.projectId }),
-          sharedRepositories: snapshot.sharedRepositories.filter(
-            (entry) => entry.projectId === query.projectId,
-          ),
-          sharedWorks: snapshot.sharedWorks.filter((entry) =>
-            snapshot.sharedRepositories.some(
-              (repository) =>
-                repository.id === entry.plan.repositoryId &&
-                repository.projectId === query.projectId,
-            ),
-          ),
-          experimentConfigurations: [],
-          workflowExperiments: snapshot.workflowExperiments.filter((entry) =>
-            snapshot.assignments.some(
-              (assignment) =>
-                assignment.id === entry.assignmentId && assignment.projectId === query.projectId,
-            ),
-          ),
-          workflowReleases: [],
-          workflowAdoptions: [],
-          workflowOverrides: [],
-          workflowMigrations: snapshot.workflowMigrations.filter((entry) =>
-            snapshot.assignments.some(
-              (assignment) =>
-                assignment.id === entry.assignmentId && assignment.projectId === query.projectId,
-            ),
-          ),
-          improvementValidations: [],
-          modelRecommendations: [],
-          improvementConfigurations: [],
-          improvementIntakes: [],
-          improvementBatches: [],
-          improvementInvestigations: [],
-          improvementProposals: [],
-          improvementDecisions: [],
-          improvementFeedback: [],
-          improvementRecurrences: [],
-          improvementEvidenceReads: [],
-          managers: snapshot.managers.filter(
-            (manager) =>
-              manager.projectId === query.projectId ||
-              snapshot.assignments.some(
-                (assignment) =>
-                  assignment.projectId === query.projectId &&
-                  assignment.managerId === manager.id &&
-                  factorySharedAssignmentOwned(snapshot, assignment),
-              ),
-          ),
-          assignments: snapshot.assignments.filter(
-            (assignment) => assignment.projectId === query.projectId,
-          ),
-          boundaries: snapshot.boundaries.filter(
-            (boundary) => boundary.projectId === query.projectId,
-          ),
-          controls: snapshot.controls.filter((control) =>
-            control.kind === "project-pause"
-              ? control.projectId === query.projectId
-              : snapshot.managers.some(
-                  (manager) =>
-                    manager.id === control.managerId &&
-                    (manager.projectId === query.projectId ||
-                      snapshot.assignments.some(
-                        (assignment) =>
-                          assignment.projectId === query.projectId &&
-                          assignment.managerId === manager.id &&
-                          factorySharedAssignmentOwned(snapshot, assignment),
-                      )),
-                ),
-          ),
-          guidance: snapshot.guidance.filter((guidance) =>
-            snapshot.assignments.some(
-              (assignment) =>
-                assignment.id === guidance.assignmentId && assignment.projectId === query.projectId,
-            ),
-          ),
-          dependencies: snapshot.dependencies.filter((dependency) =>
-            snapshot.assignments.some(
-              (assignment) =>
-                assignment.id === dependency.assignmentId &&
-                assignment.projectId === query.projectId,
-            ),
-          ),
-          auxiliaryThreads: snapshot.auxiliaryThreads.filter(
-            (thread) => thread.projectId === query.projectId,
-          ),
-          mergeRules: snapshot.mergeRules.filter((rule) => rule.projectId === query.projectId),
-          previewConfigurations: snapshot.previewConfigurations.filter(
-            (config) => config.projectId === query.projectId,
-          ),
-          previewPublicationPolicies: snapshot.previewPublicationPolicies.filter(
-            (policy) => policy.projectId === query.projectId,
-          ),
-          retros: snapshot.retros.filter((retro) =>
-            snapshot.assignments.some(
-              (assignment) =>
-                assignment.id === retro.assignmentId && assignment.projectId === query.projectId,
-            ),
-          ),
-          findings: snapshot.findings.filter((finding) =>
-            snapshot.assignments.some(
-              (assignment) =>
-                assignment.id === finding.assignmentId && assignment.projectId === query.projectId,
-            ),
-          ),
-          followups: snapshot.followups.filter(
-            (followup) => followup.projectId === query.projectId,
-          ),
-          projectTrackers: snapshot.projectTrackers.filter(
-            (tracker) => tracker.projectId === query.projectId,
-          ),
-          schedulingConfigurations: snapshot.schedulingConfigurations.filter(
-            (entry) => entry.projectId === query.projectId,
-          ),
-          scheduleCandidates: snapshot.scheduleCandidates.filter(
-            (entry) => entry.projectId === query.projectId,
-          ),
-        };
+  (snapshot: FactorySnapshot): FactorySnapshot => {
+    if (query.projectId === undefined) return snapshot;
+    const projectId = query.projectId;
+    const assignments = snapshot.assignments.filter(
+      (assignment) => assignment.projectId === projectId,
+    );
+    const assignmentIds = new Set<string>(assignments.map((assignment) => assignment.id));
+    const inProject = (entry: { readonly assignmentId: string }) =>
+      assignmentIds.has(entry.assignmentId);
+    // A system manager is visible where it owns shared work in this project.
+    const managers = snapshot.managers.filter(
+      (manager) =>
+        manager.projectId === projectId ||
+        assignments.some(
+          (assignment) =>
+            assignment.managerId === manager.id &&
+            factorySharedAssignmentOwned(snapshot, assignment),
+        ),
+    );
+    const managerIds = new Set(managers.map((manager) => manager.id));
+    return {
+      ...snapshot,
+      ...scopeFactoryCollaboration(snapshot, { kind: "project", projectId }),
+      ...scopeFactoryIntegration(snapshot, { kind: "project", projectId }),
+      ...scopeFactoryMerge(snapshot, { kind: "project", projectId }),
+      sharedRepositories: snapshot.sharedRepositories.filter(
+        (entry) => entry.projectId === projectId,
+      ),
+      sharedWorks: snapshot.sharedWorks.filter((entry) =>
+        snapshot.sharedRepositories.some(
+          (repository) =>
+            repository.id === entry.plan.repositoryId && repository.projectId === projectId,
+        ),
+      ),
+      experimentConfigurations: [],
+      workflowExperiments: snapshot.workflowExperiments.filter(inProject),
+      workflowReleases: [],
+      workflowAdoptions: [],
+      workflowOverrides: [],
+      workflowMigrations: snapshot.workflowMigrations.filter(inProject),
+      improvementValidations: [],
+      modelRecommendations: [],
+      improvementConfigurations: [],
+      improvementIntakes: [],
+      improvementBatches: [],
+      improvementInvestigations: [],
+      improvementProposals: [],
+      improvementDecisions: [],
+      improvementFeedback: [],
+      improvementRecurrences: [],
+      improvementEvidenceReads: [],
+      managers,
+      assignments,
+      boundaries: snapshot.boundaries.filter((boundary) => boundary.projectId === projectId),
+      controls: snapshot.controls.filter((control) =>
+        control.kind === "project-pause"
+          ? control.projectId === projectId
+          : managerIds.has(control.managerId),
+      ),
+      guidance: snapshot.guidance.filter(inProject),
+      dependencies: snapshot.dependencies.filter(inProject),
+      auxiliaryThreads: snapshot.auxiliaryThreads.filter(
+        (thread) => thread.projectId === projectId,
+      ),
+      mergeRules: snapshot.mergeRules.filter((rule) => rule.projectId === projectId),
+      previewConfigurations: snapshot.previewConfigurations.filter(
+        (config) => config.projectId === projectId,
+      ),
+      previewPublicationPolicies: snapshot.previewPublicationPolicies.filter(
+        (policy) => policy.projectId === projectId,
+      ),
+      retros: snapshot.retros.filter(inProject),
+      findings: snapshot.findings.filter(inProject),
+      followups: snapshot.followups.filter((followup) => followup.projectId === projectId),
+      projectTrackers: snapshot.projectTrackers.filter(
+        (tracker) => tracker.projectId === projectId,
+      ),
+      schedulingConfigurations: snapshot.schedulingConfigurations.filter(
+        (entry) => entry.projectId === projectId,
+      ),
+      scheduleCandidates: snapshot.scheduleCandidates.filter(
+        (entry) => entry.projectId === projectId,
+      ),
+    };
+  };
 
 const onboardingInstructions = (intent: FactoryThreadLaunchIntent) =>
   [
@@ -244,24 +205,30 @@ const onboardingInstructions = (intent: FactoryThreadLaunchIntent) =>
 export const layer = Layer.effect(
   FactoryService,
   Effect.gen(function* () {
-    const store = yield* FactoryStore;
-    const execution = yield* FactoryExecution;
-    const boundaries = yield* FactoryBoundaryExecution;
-    const sources = yield* FactorySource;
-    const handovers = yield* FactoryHandover;
-    const threads = yield* ThreadManagementService;
-    const projects = yield* ProjectService;
+    const store = yield* FactoryStore.FactoryStore;
+    const execution = yield* FactoryExecution.FactoryExecution;
+    const boundaries = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+    const sources = yield* FactorySource.FactorySource;
+    const handovers = yield* FactoryHandover.FactoryHandover;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const projects = yield* ProjectService.ProjectService;
     const controls = yield* FactoryControlAccess.FactoryControlAccess;
     const controlEffects = yield* FactoryControlEffects.FactoryControlEffects;
     const recoveryEffects = yield* FactoryRecoveryEffects.FactoryRecoveryEffects;
     const reconciliation = yield* FactoryReconciliation.FactoryReconciliation;
     const recoveryReconciliation =
       yield* FactoryRecoveryReconciliation.FactoryRecoveryReconciliation;
-    const deliveryEffects = yield* Effect.serviceOption(FactoryDeliveryEffects);
-    const previews = yield* Effect.serviceOption(FactoryPreviewService);
-    const retros = yield* Effect.serviceOption(FactoryRetroEffects);
-    const scheduling = yield* Effect.serviceOption(FactorySchedulingEffects);
-    const improvements = yield* Effect.serviceOption(FactoryImprovementEffects);
+    const deliveryEffects = yield* Effect.serviceOption(
+      FactoryDeliveryEffects.FactoryDeliveryEffects,
+    );
+    const previews = yield* Effect.serviceOption(FactoryPreviewService.FactoryPreviewService);
+    const retros = yield* Effect.serviceOption(FactoryRetroEffects.FactoryRetroEffects);
+    const scheduling = yield* Effect.serviceOption(
+      FactorySchedulingEffects.FactorySchedulingEffects,
+    );
+    const improvements = yield* Effect.serviceOption(
+      FactoryImprovementEffects.FactoryImprovementEffects,
+    );
     const workflows = yield* Effect.serviceOption(FactoryWorkflowEffects.FactoryWorkflowEffects);
     const collaboration = yield* Effect.serviceOption(
       FactoryCollaborationEffects.FactoryCollaborationEffects,
@@ -297,7 +264,9 @@ export const layer = Layer.effect(
           }),
       );
 
-    const launch = Effect.fn("FactoryService.launch")(function* (pending: PendingFactoryEffect) {
+    const launch = Effect.fn("FactoryService.launch")(function* (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) {
       const { intent } = pending;
       if (intent.type !== "thread.launch") return;
       const snapshot = yield* store.snapshot;
@@ -534,7 +503,9 @@ export const layer = Layer.effect(
       }
     });
 
-    const prepare = Effect.fn("FactoryService.prepare")(function* (pending: PendingFactoryEffect) {
+    const prepare = Effect.fn("FactoryService.prepare")(function* (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) {
       const { intent } = pending;
       if (intent.type !== "assignment.prepare") return;
       const snapshot = yield* store.snapshot;
@@ -651,352 +622,186 @@ export const layer = Layer.effect(
     });
 
     let workerProgress = 0;
-    const worker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+    // Runs one worker's share of the outbox. Handling an intent can commit new ones, so an
+    // intent that moves the factory revision re-reads the outbox and runs `onProgress`.
+    const drainIntents = <E>(
+      accepts: (type: FactoryStore.PendingFactoryEffect["intent"]["type"]) => boolean,
+      handle: (entry: FactoryStore.PendingFactoryEffect) => Effect.Effect<void, E>,
+      onProgress: Effect.Effect<void> = Effect.void,
+    ) =>
       Effect.gen(function* () {
         const visited = new Set<string>();
         for (;;) {
           const pending = (yield* store.pending).filter(
-            (entry) =>
-              !visited.has(entry.id) &&
-              [
-                "thread.launch",
-                "assignment.prepare",
-                "auxiliary.launch",
-                "assignment.replace-lead",
-              ].includes(entry.intent.type),
+            (entry) => !visited.has(entry.id) && accepts(entry.intent.type),
           );
           if (pending.length === 0) return;
           for (const entry of pending) {
             visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            if (entry.intent.type === "assignment.prepare") yield* prepare(entry);
-            else if (entry.intent.type === "thread.launch")
-              yield* commands.withPermits(1)(launch(entry));
-            else yield* recoveryEffects.handle(entry);
-            if ((yield* store.snapshot).revision !== revision) {
+            const revision = (yield* store.latest).revision;
+            yield* handle(entry);
+            if ((yield* store.latest).revision !== revision) {
               workerProgress += 1;
               visited.clear();
-              yield* controlWorker.enqueue(undefined);
-              yield* oversightWorker.enqueue(undefined);
-              yield* deliveryWorker.enqueue(undefined);
-              yield* retroWorker.enqueue(undefined);
+              yield* onProgress;
             }
           }
         }
-      }),
+      });
+    // A failed intent stays pending in the outbox; log it and carry on with the next one.
+    const keepPending =
+      <E>(
+        message: string,
+        handle: (entry: FactoryStore.PendingFactoryEffect) => Effect.Effect<void, E>,
+      ) =>
+      (entry: FactoryStore.PendingFactoryEffect) =>
+        handle(entry).pipe(
+          Effect.catch((cause) => Effect.logError(message, { effectId: entry.id, cause })),
+        );
+    const logFailure =
+      (message: string) =>
+      <E>(effect: Effect.Effect<void, E>) =>
+        effect.pipe(Effect.catch((cause) => Effect.logError(message, { cause })));
+    const enqueue = (...workers: ReadonlyArray<DrainableWorker<void>>) =>
+      Effect.forEach(workers, (target) => target.enqueue(undefined), { discard: true });
+
+    const worker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
+      drainIntents(
+        (type) =>
+          type === "thread.launch" ||
+          type === "assignment.prepare" ||
+          type === "auxiliary.launch" ||
+          type === "assignment.replace-lead",
+        (entry) =>
+          entry.intent.type === "assignment.prepare"
+            ? prepare(entry)
+            : entry.intent.type === "thread.launch"
+              ? commands.withPermits(1)(launch(entry))
+              : recoveryEffects.handle(entry),
+        enqueue(controlWorker, oversightWorker, deliveryWorker, retroWorker),
+      ),
     );
     const controlWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
-      Effect.gen(function* () {
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) =>
-              !visited.has(entry.id) &&
-              ["control.stop", "control.resume", "thread.deliver", "thread.queue.resume"].includes(
-                entry.intent.type,
-              ),
-          );
-          if (pending.length === 0) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            yield* controlEffects.run(entry).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory control effect remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-              yield* worker.enqueue(undefined);
-              yield* oversightWorker.enqueue(undefined);
-              yield* deliveryWorker.enqueue(undefined);
-              yield* retroWorker.enqueue(undefined);
-            }
-          }
-        }
-      }),
+      drainIntents(
+        (type) =>
+          type === "control.stop" ||
+          type === "control.resume" ||
+          type === "thread.deliver" ||
+          type === "thread.queue.resume",
+        keepPending("Factory control effect remains pending", (entry) => controlEffects.run(entry)),
+        enqueue(worker, oversightWorker, deliveryWorker, retroWorker),
+      ),
     );
     const oversightWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
-      Effect.gen(function* () {
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) =>
-              !visited.has(entry.id) &&
-              (entry.intent.type === "assignment.reconcile" ||
-                entry.intent.type === "auxiliary.reconcile"),
-          );
-          if (pending.length === 0) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            yield* (
-              entry.intent.type === "auxiliary.reconcile"
-                ? recoveryReconciliation.handle(entry)
-                : reconciliation.handle(entry)
-            ).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory reconciliation remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-              yield* worker.enqueue(undefined);
-              yield* controlWorker.enqueue(undefined);
-              yield* deliveryWorker.enqueue(undefined);
-              yield* retroWorker.enqueue(undefined);
-            }
-          }
-        }
-      }),
+      drainIntents(
+        (type) => type === "assignment.reconcile" || type === "auxiliary.reconcile",
+        keepPending("Factory reconciliation remains pending", (entry) =>
+          entry.intent.type === "auxiliary.reconcile"
+            ? recoveryReconciliation.handle(entry)
+            : reconciliation.handle(entry),
+        ),
+        enqueue(worker, controlWorker, deliveryWorker, retroWorker),
+      ),
     );
     const deliveryWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
         if (Option.isNone(deliveryEffects) && Option.isNone(previews)) return;
         if (Option.isSome(previews))
           yield* previews.value.reconcile.pipe(
-            Effect.catch((cause) =>
-              Effect.logError("Factory preview shutdown remains pending", { cause }),
-            ),
+            logFailure("Factory preview shutdown remains pending"),
           );
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) => !visited.has(entry.id) && entry.intent.type.startsWith("delivery."),
-          );
-          if (!pending.length) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
+        yield* drainIntents(
+          (type) => type.startsWith("delivery."),
+          keepPending("Factory delivery remains pending", (entry) => {
             const handler =
               entry.intent.type === "delivery.preview.start" ||
               entry.intent.type === "delivery.preview.stop"
                 ? previews
                 : deliveryEffects;
-            if (Option.isNone(handler)) continue;
-            yield* handler.value.handle(entry).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory delivery remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-              yield* worker.enqueue(undefined);
-              yield* controlWorker.enqueue(undefined);
-              yield* oversightWorker.enqueue(undefined);
-              yield* retroWorker.enqueue(undefined);
-            }
-          }
-        }
+            return Option.isNone(handler) ? Effect.void : handler.value.handle(entry);
+          }),
+          enqueue(worker, controlWorker, oversightWorker, retroWorker),
+        );
       }),
     );
     const retroWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
         if (Option.isNone(retros)) return;
         yield* retros.value.reconcile.pipe(
-          Effect.catch((cause) =>
-            Effect.logError("Factory retrospective reconciliation remains pending", { cause }),
-          ),
+          logFailure("Factory retrospective reconciliation remains pending"),
         );
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) =>
-              !visited.has(entry.id) &&
-              (entry.intent.type === "assignment.conclude" ||
-                entry.intent.type.startsWith("retro.") ||
-                entry.intent.type.startsWith("followup.")),
-          );
-          if (!pending.length) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            yield* retros.value.handle(entry).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory retrospective work remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-              yield* worker.enqueue(undefined);
-              yield* controlWorker.enqueue(undefined);
-              yield* oversightWorker.enqueue(undefined);
-              yield* deliveryWorker.enqueue(undefined);
-            }
-          }
-        }
+        yield* drainIntents(
+          (type) =>
+            type === "assignment.conclude" ||
+            type.startsWith("retro.") ||
+            type.startsWith("followup."),
+          keepPending("Factory retrospective work remains pending", (entry) =>
+            retros.value.handle(entry),
+          ),
+          enqueue(worker, controlWorker, oversightWorker, deliveryWorker),
+        );
       }),
     );
     const schedulingWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
         if (Option.isNone(scheduling)) return;
-        yield* scheduling.value.reconcile.pipe(
-          Effect.catch((cause) =>
-            Effect.logError("Factory scheduling reconciliation failed", { cause }),
-          ),
+        const reconcile = scheduling.value.reconcile.pipe(
+          logFailure("Factory scheduling reconciliation failed"),
         );
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) => !visited.has(entry.id) && entry.intent.type.startsWith("schedule."),
-          );
-          if (!pending.length) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            yield* scheduling.value.handle(entry).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory scheduling remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-              yield* scheduling.value.reconcile.pipe(
-                Effect.catch((cause) =>
-                  Effect.logError("Factory scheduling reconciliation failed", { cause }),
-                ),
-              );
-            }
-          }
-        }
+        yield* reconcile;
+        yield* drainIntents(
+          (type) => type.startsWith("schedule."),
+          keepPending("Factory scheduling remains pending", (entry) =>
+            scheduling.value.handle(entry),
+          ),
+          reconcile,
+        );
       }),
     );
     const improvementWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
         if (Option.isNone(improvements)) return;
-        yield* improvements.value.reconcile.pipe(
-          Effect.catch((cause) =>
-            Effect.logError("Factory improvement intake remains pending", { cause }),
-          ),
+        const reconcile = improvements.value.reconcile.pipe(
+          logFailure("Factory improvement intake remains pending"),
         );
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) =>
-              !visited.has(entry.id) &&
-              (entry.intent.type.startsWith("improvement.") ||
-                entry.intent.type === "system.launch"),
-          );
-          if (!pending.length) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            yield* improvements.value.handle(entry).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory improvement work remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-              yield* improvements.value.reconcile.pipe(
-                Effect.catch((cause) =>
-                  Effect.logError("Factory improvement intake remains pending", { cause }),
-                ),
-              );
-            }
-          }
-        }
+        yield* reconcile;
+        yield* drainIntents(
+          (type) => type.startsWith("improvement.") || type === "system.launch",
+          keepPending("Factory improvement work remains pending", (entry) =>
+            improvements.value.handle(entry),
+          ),
+          reconcile,
+        );
       }),
     );
     const workflowWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
-      Effect.gen(function* () {
-        if (Option.isNone(workflows)) return;
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) => !visited.has(entry.id) && entry.intent.type.startsWith("workflow."),
-          );
-          if (!pending.length) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            yield* workflows.value.handle(entry).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory workflow operation remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-            }
-          }
-        }
-      }),
+      Option.isNone(workflows)
+        ? Effect.void
+        : drainIntents(
+            (type) => type.startsWith("workflow."),
+            keepPending("Factory workflow operation remains pending", (entry) =>
+              workflows.value.handle(entry),
+            ),
+          ),
     );
     const collaborationWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
         if (Option.isNone(collaboration)) return;
-        yield* collaboration.value.reconcile.pipe(
-          Effect.catch((cause) =>
-            Effect.logError("Factory collaboration reconciliation remains pending", { cause }),
-          ),
+        const reconcile = collaboration.value.reconcile.pipe(
+          logFailure("Factory collaboration reconciliation remains pending"),
         );
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) =>
-              !visited.has(entry.id) &&
-              (entry.intent.type.startsWith("collaboration.") ||
-                entry.intent.type.startsWith("incident.")),
-          );
-          if (!pending.length) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            yield* collaboration.value.handle(entry).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory collaboration work remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-              yield* collaboration.value.reconcile.pipe(
-                Effect.catch((cause) =>
-                  Effect.logError("Factory collaboration reconciliation remains pending", {
-                    cause,
-                  }),
-                ),
-              );
-              yield* worker.enqueue(undefined);
-              yield* controlWorker.enqueue(undefined);
-            }
-          }
-        }
+        yield* reconcile;
+        yield* drainIntents(
+          (type) => type.startsWith("collaboration.") || type.startsWith("incident."),
+          keepPending("Factory collaboration work remains pending", (entry) =>
+            collaboration.value.handle(entry),
+          ),
+          reconcile.pipe(Effect.andThen(enqueue(worker, controlWorker))),
+        );
       }),
     );
     const createIntegrationThread = Effect.fn("FactoryService.createIntegrationThread")(function* (
-      pending: PendingFactoryEffect,
+      pending: FactoryStore.PendingFactoryEffect,
     ) {
       if (pending.intent.type !== "integration.thread.create") return;
       const integrationId = pending.intent.integrationId;
@@ -1078,79 +883,33 @@ export const layer = Layer.effect(
       }),
     );
     const integrationWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
-      Effect.gen(function* () {
-        if (Option.isNone(integrations)) return;
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) =>
-              !visited.has(entry.id) &&
-              entry.intent.type.startsWith("integration.") &&
-              entry.intent.type !== "integration.stop",
-          );
-          if (!pending.length) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            yield* (
+      Option.isNone(integrations)
+        ? Effect.void
+        : drainIntents(
+            (type) => type.startsWith("integration.") && type !== "integration.stop",
+            keepPending("Factory integration work remains pending", (entry) =>
               entry.intent.type === "integration.thread.create"
                 ? createIntegrationThread(entry)
-                : integrations.value.handle(entry)
-            ).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory integration work remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-              yield* worker.enqueue(undefined);
-              yield* controlWorker.enqueue(undefined);
-            }
-          }
-        }
-      }),
+                : integrations.value.handle(entry),
+            ),
+            enqueue(worker, controlWorker),
+          ),
     );
     const mergeWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
-      Effect.gen(function* () {
-        if (Option.isNone(merges) && Option.isNone(mergeOperations)) return;
-        const visited = new Set<string>();
-        for (;;) {
-          const pending = (yield* store.pending).filter(
-            (entry) =>
-              !visited.has(entry.id) &&
-              ((Option.isSome(merges) && entry.intent.type.startsWith("merge.group.")) ||
-                (Option.isSome(mergeOperations) &&
-                  entry.intent.type.startsWith("merge.operation."))),
-          );
-          if (!pending.length) return;
-          for (const entry of pending) {
-            visited.add(entry.id);
-            const revision = (yield* store.snapshot).revision;
-            const executor = entry.intent.type.startsWith("merge.operation.")
-              ? mergeOperations
-              : merges;
-            if (Option.isNone(executor)) continue;
-            yield* executor.value.handle(entry).pipe(
-              Effect.catch((cause) =>
-                Effect.logError("Factory shared delivery remains pending", {
-                  effectId: entry.id,
-                  cause,
-                }),
-              ),
-            );
-            if ((yield* store.snapshot).revision !== revision) {
-              workerProgress += 1;
-              visited.clear();
-              yield* worker.enqueue(undefined);
-              yield* controlWorker.enqueue(undefined);
-            }
-          }
-        }
-      }),
+      Option.isNone(merges) && Option.isNone(mergeOperations)
+        ? Effect.void
+        : drainIntents(
+            (type) =>
+              (Option.isSome(merges) && type.startsWith("merge.group.")) ||
+              (Option.isSome(mergeOperations) && type.startsWith("merge.operation.")),
+            keepPending("Factory shared delivery remains pending", (entry) => {
+              const executor = entry.intent.type.startsWith("merge.operation.")
+                ? mergeOperations
+                : merges;
+              return Option.isNone(executor) ? Effect.void : executor.value.handle(entry);
+            }),
+            enqueue(worker, controlWorker),
+          ),
     );
     const wake = Effect.all(
       [

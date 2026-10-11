@@ -13,6 +13,7 @@ import {
   ThreadId,
   type FactoryModelPolicy,
   type OrchestrationV2AppThread,
+  isFactoryError,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
@@ -39,7 +40,8 @@ import migrateFactory from "../persistence/Migrations/067_EngineeringFactory.ts"
 import * as FactoryModelAdmission from "./FactoryModelAdmission.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { FactoryExecution, layer as factoryExecutionLayer } from "./FactoryExecution.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryExecutionTestkit from "./FactoryExecution.testkit.ts";
 import type { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
 import * as FactorySourceTestkit from "./FactorySource.testkit.ts";
@@ -155,7 +157,6 @@ const snapshot = {
 } satisfies FactorySnapshot;
 
 const encodeSnapshot = Schema.encodeSync(Schema.fromJsonString(FactorySnapshot));
-const isFactoryError = Schema.is(FactoryError);
 const saveSnapshot = (state: FactorySnapshot) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -231,10 +232,10 @@ const persistedStores = Layer.mergeAll(FactoryStore.layer, ProjectionStore.layer
 );
 const executionFor = (profile?: FactoryExecutionProfile) =>
   Layer.effect(
-    FactoryExecution,
+    FactoryExecution.FactoryExecution,
     Effect.gen(function* () {
       const admission = yield* FactoryModelAdmission.FactoryModelAdmission;
-      return FactoryExecution.of({
+      return FactoryExecution.FactoryExecution.of({
         qualify: () => Effect.die("Unexpected qualification in model admission test"),
         runtimePolicyFor: (threadId, pendingParentThreadId) =>
           Effect.succeed(
@@ -249,8 +250,14 @@ const execution = executionFor();
 const orchestrationLayer = ProviderReplayHarness.layerWithRegistry(
   { name: "factory-model-admission" },
   ProviderAdapterRegistry.layerFromAdapters([makeProviderAdapter(leadModel.instanceId)]),
-  { databaseLayer: SqlitePersistence.layerMemory, runEffectWorker: false },
-).pipe(Layer.provide(execution), Layer.provideMerge(persistedStores));
+  {
+    databaseLayer: SqlitePersistence.layerMemory,
+    runEffectWorker: false,
+    factory: Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls).pipe(
+      Layer.orDie,
+    ),
+  },
+).pipe(Layer.provideMerge(persistedStores));
 const createLead = (threadId = leadId, selection = leadModel) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -778,7 +785,7 @@ describe("factory model admission", () => {
 
 // The production factory services wrap every ordinary dispatch and turn start, so ordinary
 // threads must keep working with them present and no manager configured.
-const productionFactoryLayer = factoryExecutionLayer.pipe(
+const productionFactoryLayer = FactoryExecution.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       ServerConfig.layerTest(process.cwd(), { prefix: "factory-lineage-" }),
@@ -795,8 +802,12 @@ const unmanagedOrchestrationLayer = Layer.merge(
   ProviderReplayHarness.layerWithRegistry(
     { name: "factory-unmanaged-lineage" },
     ProviderAdapterRegistry.layerFromAdapters([makeProviderAdapter(leadModel.instanceId)]),
-    { databaseLayer: SqlitePersistence.layerMemory, runEffectWorker: false },
-  ).pipe(Layer.provide(productionFactoryLayer)),
+    {
+      databaseLayer: SqlitePersistence.layerMemory,
+      runEffectWorker: false,
+      factory: productionFactoryLayer.pipe(Layer.orDie),
+    },
+  ),
   RuntimePolicy.layerFromProjectStore.pipe(
     Layer.provide(productionFactoryLayer),
     Layer.provide(

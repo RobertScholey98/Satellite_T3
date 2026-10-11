@@ -42,6 +42,7 @@ import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.t
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { FactoryExecution } from "../factory/FactoryExecution.ts";
 import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
+import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
 
 describe("OrchestratorMcpService", () => {
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
@@ -94,6 +95,7 @@ describe("OrchestratorMcpService", () => {
       } as unknown as OrchestrationV2ThreadProjection;
       let hasNestedWork = true;
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanaged,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -211,6 +213,7 @@ describe("OrchestratorMcpService", () => {
         turnItems: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanaged,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -294,6 +297,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanaged,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -370,6 +374,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanaged,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -449,6 +454,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanaged,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -535,6 +541,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanaged,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -651,6 +658,7 @@ describe("OrchestratorMcpService", () => {
         ],
       ]) as unknown as ReadonlyMap<ThreadId, OrchestrationV2ThreadProjection>;
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanagedExecution,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) => Effect.succeed(projections.get(threadId)!),
@@ -702,7 +710,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
         child.takeover === undefined
-          ? Layer.empty
+          ? FactoryExecutionTestkit.layerUnmanagedControls
           : Layer.mock(FactoryControlAccess)({
               assertDirection: (input) => {
                 assert.strictEqual(input.senderThreadId, parentThreadId);
@@ -946,6 +954,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           forkShadow,
         ];
         const layerDependencies = Layer.mergeAll(
+          FactoryExecutionTestkit.layerUnmanaged,
           NodeServices.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -1067,6 +1076,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           OrchestratorMcpService.layer.pipe(
             Layer.provide(
               Layer.mergeAll(
+                FactoryExecutionTestkit.layerUnmanagedControls,
                 NodeServices.layer,
                 Layer.mock(FactoryExecution)({
                   runtimePolicyFor: () =>
@@ -1132,6 +1142,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         };
         const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
         const layerDependencies = Layer.mergeAll(
+          FactoryExecutionTestkit.layerUnmanaged,
           NodeServices.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: (threadId) =>
@@ -1229,6 +1240,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       };
       let delegated = false;
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanaged,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -1306,6 +1318,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         checkedAt: "2026-09-13T00:00:00.000Z",
       });
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanaged,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -1398,6 +1411,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const probes = yield* Ref.make(0);
       const dispatched = yield* Ref.make(0);
       const layerDependencies = Layer.mergeAll(
+        FactoryExecutionTestkit.layerUnmanaged,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -1542,6 +1556,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
           let delegated = false;
           const layerDependencies = Layer.mergeAll(
+            FactoryExecutionTestkit.layerUnmanaged,
             NodeServices.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadRecords: (threadId) =>
@@ -1716,6 +1731,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       OrchestratorMcpService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            FactoryExecutionTestkit.layerUnmanaged,
             NodeServices.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadShell: (threadId) =>
@@ -1783,6 +1799,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             OrchestratorMcpService.layer.pipe(
               Layer.provide(
                 Layer.mergeAll(
+                  FactoryExecutionTestkit.layerUnmanaged,
                   NodeServices.layer,
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
                     getThreadShell: () => Effect.succeed(null),
@@ -1865,6 +1882,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             OrchestratorMcpService.layer.pipe(
               Layer.provide(
                 Layer.mergeAll(
+                  FactoryExecutionTestkit.layerUnmanaged,
                   NodeServices.layer,
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
                     getThreadShell: (threadId) =>

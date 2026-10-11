@@ -1,4 +1,4 @@
-import { FactoryAssignmentId, FactoryError } from "@t3tools/contracts";
+import { FactoryAssignmentId, FactoryError, isFactoryError } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -19,7 +19,6 @@ const Manifest = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: DocumentName, sha256: Schema.String })),
 });
 const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(Manifest));
-const isFactoryError = Schema.is(FactoryError);
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "persistence", cause });
 

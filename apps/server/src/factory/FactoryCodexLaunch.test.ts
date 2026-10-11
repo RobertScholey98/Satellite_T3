@@ -127,6 +127,43 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("keeps the factory refusal that stopped a launch as its cause", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped();
+    const stopPath = path.join(root, "retro-stopped");
+    yield* fs.writeFileString(stopPath, "");
+    const failure = yield* prepareFactoryCodexLaunch({
+      profile: {
+        boundaryId: "stopped-retro",
+        dockerContext: "local",
+        imageId: "sha256:test",
+        projectSnapshotPath: root,
+        workflowSnapshotPath: root,
+        runtimePath: path.join(root, "runtime"),
+        retro: {
+          retroId: "retro",
+          assignmentId: "assignment",
+          conclusionId: "conclusion",
+          evidenceDigest: "digest",
+          sourceBasis: "final-candidate",
+          stopPath,
+        },
+      },
+      settings: settings({ homePath: path.join(root, "empty") }),
+      environment: {},
+      containerName: "factory-stopped-retro",
+    }).pipe(Effect.flip);
+    assert.equal(failure._tag, "FactoryCodexLaunchError");
+    assert.equal(
+      failure.detail,
+      "This retrospective runtime has stopped. Its evidence remains available.",
+    );
+    assert.deepInclude(failure.cause, { _tag: "FactoryError", code: "execution-unavailable" });
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it("excludes credential paths and traversal while retaining ordinary tracked project instructions", () => {
   for (const path of [
     ".env",

@@ -32,6 +32,7 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
+import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
@@ -58,19 +59,16 @@ it.effect(
           recoverDelegatedTask: (childThreadId) =>
             Ref.update(recovered, (ids) => [...ids, childThreadId]),
         },
-      }).pipe(
-        Layer.provide(
-          Layer.mock(FactoryControlAccess)({
-            membership: (id) =>
-              Effect.succeed({
-                threadId: id,
-                managerId: ThreadId.make("factory-manager"),
-                projectId: ProjectId.make("factory-project"),
-                ancestorThreadIds: [],
-              }),
-          }),
-        ),
-      );
+        factoryControls: Layer.mock(FactoryControlAccess)({
+          membership: (id) =>
+            Effect.succeed({
+              threadId: id,
+              managerId: ThreadId.make("factory-manager"),
+              projectId: ProjectId.make("factory-project"),
+              ancestorThreadIds: [],
+            }),
+        }),
+      });
       const executor = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
         Effect.provide(layer),
       );
@@ -135,6 +133,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly factoryControls?: Layer.Layer<FactoryControlAccess>;
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const layerDependencies = Layer.mergeAll(
@@ -204,6 +203,7 @@ function layerExecutorFor(input: {
     Layer.provide(
       Layer.mergeAll(
         layerDependencies,
+        input.factoryControls ?? FactoryExecutionTestkit.layerUnmanagedControls,
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},

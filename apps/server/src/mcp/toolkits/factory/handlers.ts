@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { FactoryError, PreviewAutomationSnapshot } from "@t3tools/contracts";
-import { FactoryPreviewService } from "../../../factory/FactoryPreviewService.ts";
+import * as FactoryPreviewService from "../../../factory/FactoryPreviewService.ts";
 
 import * as FactoryMcpGuard from "../../../factory/FactoryMcpGuard.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -109,7 +109,8 @@ export const layer = McpToolAccess.toLayer(FactoryToolkit, {
         yield* McpInvocationContext.McpInvocationContext,
         "Candidate preview",
       );
-      return yield* (yield* FactoryPreviewService).invoke(scope.thread.threadId, input);
+      const previews = yield* FactoryPreviewService.FactoryPreviewService;
+      return yield* previews.invoke(scope.thread.threadId, input);
     }),
   ),
   factory_preview_finish: McpToolAccess.actsAsCaller((input) =>
@@ -118,7 +119,8 @@ export const layer = McpToolAccess.toLayer(FactoryToolkit, {
         yield* McpInvocationContext.McpInvocationContext,
         "Candidate preview",
       );
-      return yield* (yield* FactoryPreviewService).finish(scope.thread.threadId, input);
+      const previews = yield* FactoryPreviewService.FactoryPreviewService;
+      return yield* previews.finish(scope.thread.threadId, input);
     }),
   ),
   factory_snapshot: McpToolAccess.readsAsCaller(() =>
@@ -144,7 +146,8 @@ export const layerSnapshot = McpToolAccess.toLayer(FactoryPreviewSnapshotToolkit
         yield* McpInvocationContext.McpInvocationContext,
         "Candidate preview",
       );
-      const result = yield* (yield* FactoryPreviewService).invoke(scope.thread.threadId, {
+      const previews = yield* FactoryPreviewService.FactoryPreviewService;
+      const result = yield* previews.invoke(scope.thread.threadId, {
         ...input,
         action: { type: "snapshot" },
       });
