@@ -18,6 +18,7 @@ import { FactoryHandover } from "./FactoryHandover.ts";
 import { FactoryPreviewService } from "./FactoryPreviewService.ts";
 import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
 import {
+  factoryCollaborationConditionSatisfied,
   factoryRequestParticipants,
   factoryRequestReconsiderable,
 } from "./FactoryCollaboration.ts";
@@ -135,7 +136,8 @@ const make = Effect.gen(function* () {
         threadId: recipient.threadId,
         messageId,
         commandId: CommandId.make(`factory:${pending.id}:deliver`),
-        text: entry.text,
+        // Framed so the recipient does not mistake a peer for its own manager.
+        text: `[Peer lead message for request ${entry.requestId} from assignment ${source.id}. Your own manager's direction and boundaries still govern your work.]\n${entry.text}`,
         senderThreadId: source.threadId,
         attachments: [],
         mode: "queue",
@@ -387,6 +389,21 @@ const make = Effect.gen(function* () {
   });
   const reconcile = Effect.gen(function* () {
     const state = yield* store.snapshot;
+    for (const restriction of state.incidentRestrictions)
+      if (
+        restriction.phase === "active" &&
+        factoryCollaborationConditionSatisfied(state, restriction.resumeCondition)
+      )
+        // The deterministic command id makes the owner's notice happen once.
+        yield* store.commit({
+          actor: { kind: "system" },
+          command: {
+            type: "incident.condition-met",
+            commandId: CommandId.make(`collaboration:${restriction.id}:condition-met`),
+            restrictionId: restriction.id,
+          },
+          now: yield* nowIso,
+        });
     for (const request of state.crossProjectRequests) {
       if (factoryRequestReconsiderable(state, request))
         yield* store.commit({

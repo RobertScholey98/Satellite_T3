@@ -103,7 +103,7 @@ export function FactoryCollaborationIncidents({
               <Button
                 size="xs"
                 variant="outline"
-                disabled={command.disabled || restriction.stop.phase !== "confirmed"}
+                disabled={command.disabled || restriction.stop.phase === "pending"}
                 onClick={() =>
                   void command.submit({ type: "incident.release", restrictionId: restriction.id })
                 }

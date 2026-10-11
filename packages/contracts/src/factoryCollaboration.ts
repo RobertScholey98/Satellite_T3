@@ -120,7 +120,8 @@ export const FactoryCollaborationPlan = Schema.Struct({
   createdAt: IsoDateTime,
 });
 export type FactoryCollaborationPlan = typeof FactoryCollaborationPlan.Type;
-const DecisionOptions = Schema.Array(Schema.Struct({ id: Id, description: Text })).check(
+const DecisionOption = Schema.Struct({ id: Id, description: Text });
+const DecisionOptions = Schema.Array(DecisionOption).check(
   Schema.isMinLength(2),
   Schema.isMaxLength(10),
 );
@@ -129,7 +130,13 @@ export const FactoryCollaborationDecision = Schema.Struct({
   requestIds: Ids,
   revision: Id,
   summary: Text,
-  options: DecisionOptions,
+  // Each participant's options are kept side by side; a later raise replaces only its author's.
+  options: Schema.Array(
+    Schema.Struct({
+      ...DecisionOption.fields,
+      authorThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
+    }),
+  ).check(Schema.isMinLength(2), Schema.isMaxLength(30)),
   recommendations: Schema.Array(
     Schema.Struct({ authorThreadId: Schema.NullOr(ThreadId), text: Text }),
   ),
@@ -309,6 +316,7 @@ export const FactoryCollaborationHostCommand = Schema.Union([
   }),
   Schema.Struct({ type: Schema.Literal("incident.stopped"), ...Fields, restrictionId: Id }),
   Schema.Struct({ type: Schema.Literal("incident.resumed"), ...Fields, restrictionId: Id }),
+  Schema.Struct({ type: Schema.Literal("incident.condition-met"), ...Fields, restrictionId: Id }),
   Schema.Struct({
     type: Schema.Literal("incident.failed"),
     ...Fields,

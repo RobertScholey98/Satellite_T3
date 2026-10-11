@@ -43,14 +43,24 @@ export function FactoryCollaborationCondition({
   const options =
     kind === "assignment-concluded"
       ? state.assignments
-          .filter((entry) => entry.kind !== "onboarding")
+          .filter(
+            (entry) =>
+              entry.kind !== "onboarding" &&
+              !entry.outcome &&
+              entry.status !== "complete" &&
+              entry.completion?.phase !== "concluded",
+          )
           .map((entry) => ({ value: entry.id, label: entry.title ?? entry.id }))
       : kind === "incident-released"
-        ? state.incidentRestrictions.map((entry) => ({
-            value: entry.id,
-            label: `${entry.activity} · ${entry.reason}`,
-          }))
-        : state.collaborationDecisions.map((entry) => ({ value: entry.id, label: entry.summary }));
+        ? state.incidentRestrictions
+            .filter((entry) => entry.phase !== "released")
+            .map((entry) => ({
+              value: entry.id,
+              label: `${entry.activity} · ${entry.reason}`,
+            }))
+        : state.collaborationDecisions
+            .filter((entry) => entry.resolution.phase === "pending")
+            .map((entry) => ({ value: entry.id, label: entry.summary }));
   return (
     <fieldset className="space-y-2">
       <legend className="mb-1 text-sm font-medium">{label}</legend>

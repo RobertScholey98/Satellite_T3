@@ -41,7 +41,15 @@ function Decision({
       </p>
       <ul className="list-disc space-y-2 pl-5 text-sm">
         {decision.options.map((option) => (
-          <li key={option.id}>{option.description}</li>
+          <li key={option.id}>
+            {option.description}
+            {option.authorThreadId !== undefined ? (
+              <span className="text-muted-foreground">
+                {" "}
+                · proposed by {option.authorThreadId ?? "Human"}
+              </span>
+            ) : null}
+          </li>
         ))}
       </ul>
       {decision.recommendations.map((recommendation) => (

@@ -195,7 +195,10 @@ it.effect("reconciles a lost peer ACK after request withdrawal without sending a
     }).pipe(Effect.provide(runtime.pipe(Layer.provide(intercepted))));
     assert.equal(sends, 1);
     const records = yield* threads.getThreadRecords(apiLead, ["messages"]);
-    assert.equal(records.messages.filter((entry) => entry.text === "Use /v2/profile").length, 1);
+    const delivered = records.messages.filter((entry) => entry.text.endsWith("\nUse /v2/profile"));
+    assert.equal(delivered.length, 1);
+    // The peer's text arrives framed as a peer message, not as owner direction.
+    assert.isTrue(delivered[0]!.text.startsWith("[Peer lead message for request request "));
   }).pipe(Effect.provide(base)),
 );
 
@@ -487,4 +490,73 @@ it.effect(
       assert.equal((yield* threads.getThreadRecords(apiLead, ["messages"])).messages.length, 1);
       assert.equal((yield* store.snapshot).collaborationMessages[0]!.delivery.phase, "delivered");
     }).pipe(Effect.provide(base)),
+);
+
+it.effect("tells the incident owner once when its resume condition is met", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const store = yield* Store.FactoryStore;
+    const raised = yield* store.commit({
+      actor: { kind: "human" },
+      command: {
+        type: "collaboration.decision.raise",
+        commandId: CommandId.make("raise"),
+        requestIds: ["request"],
+        summary: "Hold API delivery?",
+        options: [
+          { id: "hold", description: "Hold" },
+          { id: "ship", description: "Ship" },
+        ],
+        recommendation: "Hold until recovery",
+      },
+      now: deliveryNow,
+    });
+    const decisionId = raised.decisionId!;
+    yield* store.commit({
+      actor: { kind: "thread", threadId: apiManager },
+      command: {
+        type: "incident.restrict",
+        commandId: CommandId.make("restrict"),
+        managerId: apiManager,
+        assignmentIds: [apiAssignment],
+        activity: "delivery",
+        reason: "Production incident",
+        resumeCondition: { kind: "human-decision", decisionId },
+      },
+      now: deliveryNow,
+    });
+    const notices = Effect.map(store.pending, (pending) =>
+      pending.filter(
+        (entry) =>
+          entry.intent.type === "collaboration.notify" && entry.intent.eventId === "condition-met",
+      ),
+    );
+    const reconcile = Effect.gen(function* () {
+      const effects = yield* Collaboration.FactoryCollaborationEffects;
+      yield* effects.reconcile;
+    }).pipe(Effect.provide(runtime));
+    yield* reconcile;
+    assert.lengthOf(yield* notices, 0);
+    yield* store.commit({
+      actor: { kind: "human" },
+      command: {
+        type: "collaboration.decision.decide",
+        commandId: CommandId.make("decide"),
+        decisionId,
+        revision: (yield* store.snapshot).collaborationDecisions[0]!.revision,
+        optionId: "ship",
+        reason: "Recovery finished",
+      },
+      now: deliveryNow,
+    });
+    yield* reconcile;
+    yield* reconcile;
+    const sent = yield* notices;
+    assert.lengthOf(sent, 1);
+    assert.isTrue(
+      sent[0]!.intent.type === "collaboration.notify" &&
+        sent[0]!.intent.recipientManagerIds.includes(apiManager),
+    );
+    assert.equal((yield* store.snapshot).incidentRestrictions[0]?.phase, "active");
+  }).pipe(Effect.provide(base)),
 );

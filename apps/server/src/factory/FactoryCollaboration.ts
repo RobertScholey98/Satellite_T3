@@ -202,6 +202,28 @@ export function reconcileFactoryRequestCancellation(
     };
   });
   const requests = state.crossProjectRequests.map((request): FactoryCrossProjectRequest => {
+    const lifecycle = request.lifecycle;
+    if (
+      lifecycle.phase === "accepted" &&
+      !withdrawn(request) &&
+      assignments.find((entry) => entry.id === lifecycle.support.assignmentId)?.outcome
+    ) {
+      // The receiver cancelled its support: reopen so it can answer again and the requester knows.
+      const next: FactoryCrossProjectRequest = {
+        ...request,
+        generation: request.generation + 1,
+        updatedAt: now,
+        lifecycle: { phase: "requested" },
+      };
+      effects.push(
+        requestNotice(
+          next,
+          `support-cancelled:${next.generation}`,
+          `Supporting assignment ${lifecycle.support.assignmentId} for request ${next.id} was cancelled. The request is open again: the receiver may accept it with new support, defer or decline it, and the requester may withdraw it.`,
+        ),
+      );
+      return next;
+    }
     if (
       request.lifecycle.phase === "withdrawn" ||
       !withdrawn(request) ||
@@ -325,7 +347,10 @@ export function decideFactoryCollaboration(input: {
   const validCondition = (condition: FactoryCollaborationCondition) => {
     switch (condition.kind) {
       case "assignment-concluded":
-        return state.assignments.some((entry) => entry.id === condition.assignmentId);
+        // A cancelled assignment never concludes, so it cannot satisfy a condition.
+        return state.assignments.some(
+          (entry) => entry.id === condition.assignmentId && entry.outcome === undefined,
+        );
       case "incident-released":
         return state.incidentRestrictions.some((entry) => entry.id === condition.restrictionId);
       case "human-decision":
@@ -392,6 +417,33 @@ export function decideFactoryCollaboration(input: {
       { restrictionId: restriction.id },
       effects,
     );
+  // The owner, its restricted teams, and every peer manager and lead collaborating with them.
+  const incidentNotice = (
+    restriction: FactoryIncidentRestriction,
+    eventId: string,
+    text: string,
+  ) => {
+    const peers = state.crossProjectRequests.flatMap((request) => {
+      const members = factoryRequestParticipants(state, request);
+      return members.some((member) => restriction.assignmentIds.includes(member.id))
+        ? [{ request, members }]
+        : [];
+    });
+    return notify(
+      "incident",
+      restriction.id,
+      eventId,
+      [
+        restriction.managerId,
+        ...peers.flatMap(({ request }) => [request.originManagerId, request.receiverManagerId]),
+      ],
+      [
+        ...restriction.assignmentIds,
+        ...peers.flatMap(({ members }) => members.map((member) => member.id)),
+      ],
+      text,
+    );
+  };
   switch (command.type) {
     case "collaboration.request.create": {
       const origin = command.origin;
@@ -875,22 +927,59 @@ export function decideFactoryCollaboration(input: {
         new Set(command.options.map((entry) => entry.id)).size !== command.options.length
       )
         return fail("A consolidated decision must concern the caller's recorded collaboration.");
-      const existing = state.collaborationDecisions.find(
+      // Any pending decision that touches these requests is the one consolidated decision.
+      const overlapping = state.collaborationDecisions.filter(
         (entry) =>
-          entry.resolution.phase === "pending" && sameSet(entry.requestIds, command.requestIds),
+          entry.resolution.phase === "pending" &&
+          entry.requestIds.some((id) => command.requestIds.includes(id)),
       );
+      if (overlapping.length > 1)
+        return fail(
+          "These requests already belong to separate pending decisions. Raise against one of them.",
+          "command-conflict",
+        );
+      const existing = overlapping[0];
       const authorThreadId = actor.kind === "thread" ? actor.threadId : null;
+      const kept = (existing?.options ?? []).filter(
+        (entry) => entry.authorThreadId !== authorThreadId,
+      );
+      const options = [
+        ...kept,
+        ...command.options.flatMap((option) => {
+          const clash = kept.find((entry) => entry.id === option.id);
+          if (clash?.description === option.description) return [];
+          const id = clash ? `${authorThreadId ?? "human"}:${option.id}` : option.id;
+          return [{ ...option, id, authorThreadId }];
+        }),
+      ];
+      const requestIds = [
+        ...new Set([...(existing?.requestIds ?? []), ...command.requestIds]),
+      ].sort();
+      if (
+        options.length > 30 ||
+        new Set(options.map((entry) => entry.id)).size !== options.length ||
+        requestIds.length > 30
+      )
+        return fail("The consolidated decision cannot hold these options.", "invalid-state");
+      // The trade-off keeps its first framing; a different framing travels with its author.
+      const summary = existing?.summary ?? command.summary;
       const decision: FactoryCollaborationDecision = {
         id: existing?.id ?? `collaboration-decision:${command.commandId}`,
-        requestIds: [...new Set(command.requestIds)].sort(),
+        requestIds,
         revision: command.commandId,
-        summary: command.summary,
-        options: command.options,
+        summary,
+        options,
         recommendations: [
           ...(existing?.recommendations ?? []).filter(
             (entry) => entry.authorThreadId !== authorThreadId,
           ),
-          { authorThreadId, text: command.recommendation },
+          {
+            authorThreadId,
+            text: (command.summary === summary
+              ? command.recommendation
+              : `${command.summary}\n${command.recommendation}`
+            ).slice(0, 6000),
+          },
         ],
         resolution: { phase: "pending" },
         createdAt: existing?.createdAt ?? now,
@@ -909,8 +998,11 @@ export function decideFactoryCollaboration(input: {
             "decision",
             decision.id,
             decision.revision,
-            requests.flatMap((entry) => [entry.originManagerId, entry.receiverManagerId]),
-            participants(requests).map((entry) => entry.id),
+            findRequests(requestIds).flatMap((entry) => [
+              entry.originManagerId,
+              entry.receiverManagerId,
+            ]),
+            participants(findRequests(requestIds)).map((entry) => entry.id),
             `One consolidated human decision is required: ${decision.summary}\nUnaffected work may continue. Recommendations do not change permissions.`,
           ),
         ],
@@ -969,9 +1061,12 @@ export function decideFactoryCollaboration(input: {
       if (
         members.length !== new Set(command.assignmentIds).size ||
         members.some((entry) => entry.managerId !== manager.id || !active(entry)) ||
-        !validCondition(command.resumeCondition)
+        !validCondition(command.resumeCondition) ||
+        factoryCollaborationConditionSatisfied(state, command.resumeCondition)
       )
-        return fail("Name active assignments in this project and an existing resume condition.");
+        return fail(
+          "Name active assignments in this project and a resume condition that has not happened yet.",
+        );
       const restriction: FactoryIncidentRestriction = {
         id: `incident:${command.commandId}`,
         managerId: manager.id,
@@ -986,11 +1081,6 @@ export function decideFactoryCollaboration(input: {
         createdAt: now,
         updatedAt: now,
       };
-      const peers = state.crossProjectRequests.filter((entry) =>
-        factoryRequestParticipants(state, entry).some((member) =>
-          restriction.assignmentIds.includes(member.id),
-        ),
-      );
       return accept(
         { incidentRestrictions: [...state.incidentRestrictions, restriction] },
         { restrictionId: restriction.id },
@@ -1004,15 +1094,9 @@ export function decideFactoryCollaboration(input: {
                 },
               ]
             : []),
-          notify(
-            "incident",
-            restriction.id,
+          incidentNotice(
+            restriction,
             "restricted",
-            [
-              manager.id,
-              ...peers.flatMap((entry) => [entry.originManagerId, entry.receiverManagerId]),
-            ],
-            restriction.assignmentIds,
             `Incident restricts ${restriction.activity}: ${restriction.reason}. Unrelated work remains authorized. Resume condition: ${JSON.stringify(restriction.resumeCondition)}.`,
           ),
         ],
@@ -1027,7 +1111,7 @@ export function decideFactoryCollaboration(input: {
         return fail("Only the incident owner can release or retry its restriction.");
       if (restriction.phase === "released") return accept({}, { restrictionId: restriction.id });
       if (command.type === "incident.retry") {
-        if (restriction.stop.phase === "failed")
+        if (restriction.phase === "active" && restriction.stop.phase === "failed")
           return saveRestriction({ ...restriction, stop: { phase: "pending" }, updatedAt: now }, [
             {
               type: "incident.stop",
@@ -1045,7 +1129,8 @@ export function decideFactoryCollaboration(input: {
           ]);
         return fail("Only a recorded incident enforcement failure can retry.", "invalid-state");
       }
-      if (restriction.stop.phase !== "confirmed")
+      // A failed stop may still be released: releasing only lifts the restriction.
+      if (restriction.stop.phase === "pending")
         return fail(
           "Wait for the affected runtime to stop before releasing its restriction.",
           "invalid-state",
@@ -1068,16 +1153,34 @@ export function decideFactoryCollaboration(input: {
               },
             ]
           : [
-              notify(
-                "incident",
-                restriction.id,
+              incidentNotice(
+                restriction,
                 "released",
-                [restriction.managerId],
-                restriction.assignmentIds,
                 "The incident restriction was released. Other controls and project permissions still apply.",
               ),
             ],
       );
+    }
+    case "incident.condition-met": {
+      if (!host) return fail("Only the host reports a satisfied resume condition.");
+      const restriction = state.incidentRestrictions.find(
+        (entry) => entry.id === command.restrictionId,
+      );
+      if (
+        restriction?.phase !== "active" ||
+        !factoryCollaborationConditionSatisfied(state, restriction.resumeCondition)
+      )
+        return fail("This restriction has no satisfied resume condition.", "invalid-state");
+      return accept({}, { restrictionId: restriction.id }, [
+        notify(
+          "incident",
+          restriction.id,
+          "condition-met",
+          [restriction.managerId],
+          [],
+          `The resume condition for incident restriction ${restriction.id} has been met. The restriction stays in force until you or the human release it.`,
+        ),
+      ]);
     }
     case "incident.targets.recorded":
     case "incident.stopped":
@@ -1101,7 +1204,7 @@ export function decideFactoryCollaboration(input: {
       if (command.type === "incident.stopped")
         return saveRestriction({ ...restriction, stop: { phase: "confirmed" }, updatedAt: now });
       if (command.type === "incident.resumed") {
-        if (restriction.phase !== "releasing" || restriction.stop.phase !== "confirmed")
+        if (restriction.phase !== "releasing" || restriction.stop.phase === "pending")
           return fail("This incident is not awaiting runtime resumption.", "invalid-state");
         return saveRestriction(
           { ...restriction, phase: "released", resume: null, updatedAt: now },
@@ -1118,12 +1221,9 @@ export function decideFactoryCollaboration(input: {
               restrictionId: restriction.id,
               ...queue,
             })),
-            notify(
-              "incident",
-              restriction.id,
+            incidentNotice(
+              restriction,
               "released",
-              [restriction.managerId],
-              restriction.assignmentIds,
               "The incident restriction was released. Resume only where other controls permit.",
             ),
           ],

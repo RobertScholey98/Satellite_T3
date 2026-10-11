@@ -8,6 +8,7 @@ import {
   ProjectId,
   ThreadId,
   type FactoryDecisionCommand,
+  type FactoryEffectIntent,
   FactorySnapshot,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
@@ -580,6 +581,307 @@ describe("cross-project collaboration", () => {
     const decided = apply(second.state, choose);
     assert.equal(decided.state.collaborationDecisions[0]?.resolution.phase, "decided");
     assert.deepEqual(decided.state.assignments, opened.state.assignments);
+  });
+
+  it("keeps every manager's options in one decision when request sets overlap", () => {
+    const opened = request();
+    const first = opened.result.requestId!;
+    const another = {
+      ...opened.state.assignments[0]!,
+      id: FactoryAssignmentId.make("second-feature"),
+      threadId: ThreadId.make("second-feature-lead"),
+    };
+    const second = apply(
+      { ...opened.state, assignments: [...opened.state.assignments, another] },
+      {
+        type: "collaboration.request.create",
+        commandId: id(),
+        origin: { kind: "assignment", assignmentId: another.id },
+        receiverManagerId: receiverId,
+        outcome: "Expose the settings API",
+        acceptanceConditions: "Settings page reads it",
+        compatibility: "Preserve existing clients",
+      },
+      actor(deliveryIds.manager),
+    );
+    const raise = (
+      state: FactorySnapshot,
+      by: ThreadId,
+      requestIds: string[],
+      summary: string,
+      [a, b]: [string, string],
+    ) =>
+      apply(
+        state,
+        {
+          type: "collaboration.decision.raise",
+          commandId: id(),
+          requestIds,
+          summary,
+          options: [
+            { id: "option-1", description: a },
+            { id: "option-2", description: b },
+          ],
+          recommendation: `${by} recommendation`,
+        },
+        actor(by),
+      ).state;
+    const web = raise(second.state, deliveryIds.manager, [first], "Which ships first?", [
+      "Feature first",
+      "Migration first",
+    ]);
+    const api = raise(
+      web,
+      receiverId,
+      [first, second.result.requestId!],
+      "API capacity is limited",
+      ["Settings first", "Both later"],
+    );
+    assert.lengthOf(api.collaborationDecisions, 1);
+    const merged = api.collaborationDecisions[0]!;
+    assert.deepEqual(merged.requestIds, [first, second.result.requestId!].sort());
+    assert.equal(merged.summary, "Which ships first?");
+    assert.deepEqual(
+      merged.options.map((entry) => entry.description),
+      ["Feature first", "Migration first", "Settings first", "Both later"],
+    );
+    assert.equal(new Set(merged.options.map((entry) => entry.id)).size, 4);
+    assert.isTrue(
+      merged.recommendations.some(
+        (entry) =>
+          entry.authorThreadId === receiverId && entry.text.startsWith("API capacity is limited"),
+      ),
+    );
+    const revised = raise(api, receiverId, [second.result.requestId!], "Which ships first?", [
+      "Settings now",
+      "Both later",
+    ]);
+    assert.lengthOf(revised.collaborationDecisions, 1);
+    const decision = revised.collaborationDecisions[0]!;
+    assert.deepEqual(
+      decision.options.map((entry) => entry.description),
+      ["Feature first", "Migration first", "Settings now", "Both later"],
+    );
+    const decided = apply(revised, {
+      type: "collaboration.decision.decide",
+      commandId: id(),
+      decisionId: decision.id,
+      revision: decision.revision,
+      optionId: "option-1",
+      reason: "The web manager's framing wins",
+    });
+    assert.equal(
+      decided.state.collaborationDecisions[0]?.resolution.phase === "decided" &&
+        decided.state.collaborationDecisions[0].resolution.optionId,
+      "option-1",
+    );
+  });
+
+  it("reopens the request and tells the requester when the receiver cancels its support", () => {
+    const opened = request();
+    const requestId = opened.result.requestId!;
+    const assigned = allocation();
+    const accepted = accept(opened.state, requestId, assigned);
+    const cancelled = apply(accepted.state, {
+      type: "assignment.cancel",
+      commandId: id(),
+      assignmentId: assigned.assignmentId,
+    });
+    assert.equal(cancelled.state.crossProjectRequests[0]?.lifecycle.phase, "requested");
+    assert.isTrue(
+      cancelled.effects.some(
+        (entry) =>
+          entry.type === "collaboration.notify" &&
+          entry.recipientManagerIds.includes(deliveryIds.manager) &&
+          entry.recipientAssignmentIds.includes(deliveryIds.assignment),
+      ),
+    );
+    const replacement = allocation();
+    const reaccepted = accept(cancelled.state, requestId, replacement);
+    const lifecycle = reaccepted.state.crossProjectRequests[0]!.lifecycle;
+    assert.isTrue(
+      lifecycle.phase === "accepted" && lifecycle.support.assignmentId === replacement.assignmentId,
+    );
+  });
+
+  it("tells collaborating peer managers and leads when an incident restricts and releases", () => {
+    const opened = request();
+    const assigned = allocation();
+    const accepted = accept(opened.state, opened.result.requestId!, assigned);
+    const reachesPeers = (effects: readonly FactoryEffectIntent[]) =>
+      effects.some(
+        (entry) =>
+          entry.type === "collaboration.notify" &&
+          entry.recipientManagerIds.includes(deliveryIds.manager) &&
+          entry.recipientAssignmentIds.includes(deliveryIds.assignment),
+      );
+    const restricted = apply(
+      accepted.state,
+      {
+        type: "incident.restrict",
+        commandId: id(),
+        managerId: receiverId,
+        assignmentIds: [assigned.assignmentId],
+        activity: "delivery",
+        reason: "Production incident freezes API delivery",
+        resumeCondition: { kind: "assignment-concluded", assignmentId: deliveryIds.assignment },
+      },
+      actor(receiverId),
+    );
+    assert.isTrue(reachesPeers(restricted.effects));
+    const released = apply(
+      restricted.state,
+      {
+        type: "incident.release",
+        commandId: id(),
+        restrictionId: restricted.result.restrictionId!,
+      },
+      actor(receiverId),
+    );
+    assert.equal(released.state.incidentRestrictions[0]?.phase, "released");
+    assert.isTrue(reachesPeers(released.effects));
+  });
+
+  it("releases a restriction whose stop failed and resumes its teams", () => {
+    const opened = request();
+    const assigned = allocation();
+    const accepted = accept(opened.state, opened.result.requestId!, assigned);
+    const restricted = apply(
+      accepted.state,
+      {
+        type: "incident.restrict",
+        commandId: id(),
+        managerId: receiverId,
+        assignmentIds: [assigned.assignmentId],
+        activity: "execution",
+        reason: "The test runner conflicts with incident recovery",
+        resumeCondition: { kind: "assignment-concluded", assignmentId: deliveryIds.assignment },
+      },
+      actor(receiverId),
+    );
+    const restrictionId = restricted.result.restrictionId!;
+    const failed = apply(
+      restricted.state,
+      {
+        type: "incident.failed",
+        commandId: id(),
+        restrictionId,
+        step: "stop",
+        reason: "The runtime never settled",
+      },
+      host,
+    );
+    const released = apply(
+      failed.state,
+      { type: "incident.release", commandId: id(), restrictionId },
+      actor(receiverId),
+    );
+    assert.equal(released.state.incidentRestrictions[0]?.phase, "releasing");
+    const resumed = apply(
+      released.state,
+      { type: "incident.resumed", commandId: id(), restrictionId },
+      host,
+    );
+    assert.equal(resumed.state.incidentRestrictions[0]?.phase, "released");
+    assert.isUndefined(factoryIncidentBlocked(resumed.state, assigned.assignmentId, "execution"));
+  });
+
+  it("tells the owner once its resume condition is met and rejects conditions that cannot fire", () => {
+    const opened = request();
+    const requestId = opened.result.requestId!;
+    const assigned = allocation();
+    const accepted = accept(opened.state, requestId, assigned);
+    const raised = apply(
+      accepted.state,
+      {
+        type: "collaboration.decision.raise",
+        commandId: id(),
+        requestIds: [requestId],
+        summary: "Hold API delivery?",
+        options: [
+          { id: "hold", description: "Hold" },
+          { id: "ship", description: "Ship" },
+        ],
+        recommendation: "Hold",
+      },
+      actor(receiverId),
+    );
+    const decisionId = raised.result.decisionId!;
+    const restrict = {
+      type: "incident.restrict",
+      commandId: id(),
+      managerId: receiverId,
+      assignmentIds: [assigned.assignmentId],
+      activity: "delivery",
+      reason: "Production incident",
+      resumeCondition: { kind: "human-decision", decisionId },
+    } as const;
+    const restricted = apply(raised.state, restrict, actor(receiverId));
+    const restrictionId = restricted.result.restrictionId!;
+    const met = { type: "incident.condition-met", commandId: id(), restrictionId } as const;
+    assert.isTrue(
+      Result.isFailure(
+        decide({ state: restricted.state, actor: host, command: met, now: deliveryNow }),
+      ),
+    );
+    const decided = apply(restricted.state, {
+      type: "collaboration.decision.decide",
+      commandId: id(),
+      decisionId,
+      revision: restricted.state.collaborationDecisions[0]!.revision,
+      optionId: "ship",
+      reason: "Incident resolved",
+    });
+    const notified = apply(decided.state, met, host);
+    assert.equal(notified.state.incidentRestrictions[0]?.phase, "active");
+    assert.isTrue(
+      notified.effects.some(
+        (entry) =>
+          entry.type === "collaboration.notify" && entry.recipientManagerIds.includes(receiverId),
+      ),
+    );
+    assert.isTrue(
+      Result.isFailure(
+        decide({
+          state: decided.state,
+          actor: actor(receiverId),
+          command: { ...restrict, commandId: id() },
+          now: deliveryNow,
+        }),
+      ),
+    );
+    const cancelledWork = {
+      ...accepted.state.assignments[0]!,
+      id: FactoryAssignmentId.make("cancelled-work"),
+      threadId: ThreadId.make("cancelled-lead"),
+      outcome: {
+        kind: "cancelled" as const,
+        controlId: FactoryControlId.make("cancellation:cancelled-work"),
+      },
+    };
+    const second = request({
+      ...fixture(),
+      assignments: [...fixture().assignments, cancelledWork],
+    });
+    assert.isTrue(
+      Result.isFailure(
+        decide({
+          state: second.state,
+          actor: actor(receiverId),
+          now: deliveryNow,
+          command: {
+            type: "collaboration.request.respond",
+            commandId: id(),
+            requestId: second.result.requestId!,
+            response: {
+              kind: "defer",
+              reason: "Waits for work that was cancelled",
+              reconsider: { kind: "assignment-concluded", assignmentId: cancelledWork.id },
+            },
+          },
+        }),
+      ),
+    );
   });
 
   it("restricts only the owner's conflicting activity and preserves other controls after release", () => {
