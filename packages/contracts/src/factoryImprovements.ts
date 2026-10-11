@@ -26,10 +26,13 @@ export const FactoryImprovementSettings = Schema.Struct({
   maxBatchItems: bounded(1, 20),
   maxSummaryChars: bounded(1_000, 16_000),
   routineBatchesPerDay: bounded(0, 24),
+  urgentBatchesPerDay: bounded(0, 24),
 });
 export type FactoryImprovementSettings = typeof FactoryImprovementSettings.Type;
 export const FactoryImprovementConfiguration = Schema.Struct({
   ...FactoryImprovementSettings.fields,
+  /** Absent on configurations approved before the urgent allowance existed. */
+  urgentBatchesPerDay: Schema.optionalKey(FactoryImprovementSettings.fields.urgentBatchesPerDay),
   id: Id,
   approvedBy: CommandId,
   approvedAt: IsoDateTime,
@@ -121,7 +124,7 @@ export const FactoryImprovementProposal = Schema.Struct({
   investigationId: Id,
   revision: Id,
   content: FactoryImprovementProposalContent,
-  phase: Schema.Literals(["draft", "human-review", "decided"]),
+  phase: Schema.Literals(["draft", "human-review", "decided", "superseded"]),
   createdAt: IsoDateTime,
   submittedAt: Schema.NullOr(IsoDateTime),
 });

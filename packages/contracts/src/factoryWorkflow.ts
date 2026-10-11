@@ -142,7 +142,8 @@ export const FactoryWorkflowAdoptionScope = Schema.Union([
 export type FactoryWorkflowAdoptionScope = typeof FactoryWorkflowAdoptionScope.Type;
 export const FactoryWorkflowAdoption = Schema.Struct({
   id: Id,
-  releaseId: Id,
+  /** Null resets the scope to each manager's own approved workflow. */
+  releaseId: Schema.NullOr(Id),
   scope: FactoryWorkflowAdoptionScope,
   commandId: CommandId,
   adoptedAt: IsoDateTime,
@@ -154,7 +155,8 @@ export type FactoryWorkflowOverride = typeof FactoryWorkflowOverride.Type;
 export const FactoryWorkflowMigration = Schema.Struct({
   id: Id,
   assignmentId: FactoryAssignmentId,
-  releaseId: Id,
+  /** Null restores the team on its current pinned version. */
+  releaseId: Schema.NullOr(Id),
   previousVersion: FactoryWorkflowVersion,
   previousEpoch: NonNegativeInt,
   preparedEpoch: Schema.NullOr(NonNegativeInt),
@@ -163,7 +165,7 @@ export const FactoryWorkflowMigration = Schema.Struct({
     status: Schema.Literals(["pending", "running", "waiting", "complete"]),
     wait: Schema.NullOr(FactoryWait),
   }),
-  kind: Schema.Literals(["migration", "trial"]),
+  kind: Schema.Literals(["migration", "trial", "restore"]),
   reason: Text,
   commandId: CommandId,
   createdAt: IsoDateTime,
@@ -283,12 +285,12 @@ export const FactoryWorkflowCommand = Schema.Union([
     revision: Id,
     proposalId: Id,
     proposalRevision: Id,
-    assignmentId: Schema.optionalKey(FactoryAssignmentId),
+    assignmentId: FactoryAssignmentId,
   }),
   Schema.Struct({
     type: Schema.Literal("workflow.adopt"),
     commandId: CommandId,
-    releaseId: Id,
+    releaseId: Schema.NullOr(Id),
     scope: FactoryWorkflowAdoptionScope,
   }),
   Schema.Struct({
@@ -299,9 +301,10 @@ export const FactoryWorkflowCommand = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("workflow.restart"),
     commandId: CommandId,
-    releaseId: Id,
+    /** Omitted only for a restore, which keeps each team's current pinned version. */
+    releaseId: Schema.optionalKey(Id),
     assignmentIds: AssignmentIds,
-    kind: Schema.Literals(["migration", "trial"]),
+    kind: FactoryWorkflowMigration.fields.kind,
     reason: Text,
   }),
   Schema.Struct({

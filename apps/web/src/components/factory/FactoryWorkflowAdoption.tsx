@@ -9,7 +9,6 @@ import { useEnvironmentScope } from "../../state/session";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
-import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
@@ -28,37 +27,46 @@ export function FactoryWorkflowAdoption({
   const permission = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
   const command = useFactoryCommand(environment, permission);
   const [repositoryId, setRepositoryId] = useState<string | null>(null);
-  const [proposalRevision, setProposalRevision] = useState<string | null>(null);
-  const [revision, setRevision] = useState("");
+  const [deliveryId, setDeliveryId] = useState<string | null>(null);
   const [releaseId, setReleaseId] = useState<string | null>(null);
   const [scope, setScope] = useState<"default" | "managers">("default");
   const [managerIds, setManagerIds] = useState<readonly ThreadId[]>([]);
   const [assignmentIds, setAssignmentIds] = useState<readonly FactoryAssignmentId[]>([]);
-  const [restartKind, setRestartKind] = useState<"migration" | "trial">("migration");
+  const [restartKind, setRestartKind] = useState<"migration" | "trial" | "restore">("migration");
   const [reason, setReason] = useState("");
   const data = environment.data;
   if (!data) return null;
-  const accepted = data.improvementProposals.filter((proposal) =>
-    data.improvementDecisions.some(
-      (decision) =>
-        decision.proposalId === proposal.id &&
-        decision.revision === proposal.revision &&
-        decision.outcome === "accepted",
-    ),
-  );
-  const proposal = accepted.find((entry) => entry.revision === proposalRevision);
   const repositories = data.sharedRepositories.filter((entry) => entry.enabled);
+  // Releases are registered from the exact commit the human approved and merged.
+  const deliveries = data.assignments.flatMap((assignment) => {
+    const purpose = assignment.sharedWork;
+    if (purpose?.kind !== "implementation" || purpose.repositoryId !== repositoryId) return [];
+    const plan = data.sharedWorks.find((entry) => entry.id === purpose.workId)?.plan;
+    const revision = assignment.delivery?.revisions.findLast(
+      (entry) => entry.merge?.status === "merged",
+    )?.approval?.expectedHeadSha;
+    return plan && revision ? [{ assignment, plan, revision }] : [];
+  });
+  const delivery = deliveries.find((entry) => entry.assignment.id === deliveryId);
   const releases = data.workflowReleases;
   const release = releases.find((entry) => entry.id === releaseId);
+  const releaseProposal = data.improvementProposals.find(
+    (entry) => entry.id === release?.proposalId && entry.revision === release.proposalRevision,
+  );
+  const releaseAssignment = data.assignments.find((entry) => entry.id === release?.assignmentId);
+  const releasePullRequest = releaseAssignment?.delivery?.revisions.findLast(
+    (entry) => entry.merge?.status === "merged",
+  )?.publication?.ref;
   const latestDefault = data.workflowAdoptions.findLast((entry) => entry.scope.kind === "default");
   const defaultRelease = releases.find((entry) => entry.id === latestDefault?.releaseId);
+  const restore = restartKind === "restore";
   const active = data.assignments.filter(
     (entry) =>
       entry.kind !== "onboarding" &&
       entry.status !== "complete" &&
       !entry.outcome &&
       (entry.completion === undefined || entry.completion.phase === "collecting") &&
-      entry.sharedWork?.kind !== "experiment",
+      (restore || entry.sharedWork?.kind !== "experiment"),
   );
   const selectedAssignments = assignmentIds.filter((id) => active.some((entry) => entry.id === id));
   return (
@@ -66,9 +74,9 @@ export function FactoryWorkflowAdoption({
       <section className="space-y-3">
         <h3 className="text-sm font-medium">Register an exact workflow release</h3>
         <p className="text-sm text-muted-foreground">
-          Register a committed version of your owned workflow library against an accepted proposal.
-          This verifies identity and required capabilities; it does not require quality tests or
-          adopt the version.
+          Register the merged commit you approved for a proposal's shared implementation. This
+          verifies identity and required capabilities; it does not require quality tests or adopt
+          the version.
         </p>
         <div className="space-y-2">
           <Label htmlFor={`${prefix}-repository`}>Owned repository</Label>
@@ -91,56 +99,46 @@ export function FactoryWorkflowAdoption({
           </Select>
         </div>
         <div className="space-y-2">
-          <Label htmlFor={`${prefix}-proposal`}>Accepted proposal revision</Label>
+          <Label htmlFor={`${prefix}-delivery`}>Merged implementation</Label>
           <Select
-            value={proposalRevision}
+            value={deliveryId}
             disabled={command.disabled}
-            items={accepted.map((entry) => ({
-              value: entry.revision,
-              label: `${entry.content.problem.slice(0, 90)} · ${entry.revision}`,
+            items={deliveries.map((entry) => ({
+              value: entry.assignment.id,
+              label: `${entry.assignment.title ?? entry.assignment.id} · ${entry.revision}`,
             }))}
-            onValueChange={setProposalRevision}
+            onValueChange={setDeliveryId}
           >
-            <SelectTrigger id={`${prefix}-proposal`}>
-              <SelectValue placeholder="Select accepted revision" />
+            <SelectTrigger id={`${prefix}-delivery`}>
+              <SelectValue placeholder="Select merged implementation" />
             </SelectTrigger>
             <SelectPopup>
-              {accepted.map((entry) => (
-                <SelectItem key={entry.revision} value={entry.revision}>
-                  {entry.content.problem.slice(0, 90)} · {entry.revision}
+              {deliveries.map((entry) => (
+                <SelectItem key={entry.assignment.id} value={entry.assignment.id}>
+                  {entry.assignment.title ?? entry.assignment.id} · {entry.revision}
                 </SelectItem>
               ))}
             </SelectPopup>
           </Select>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${prefix}-commit`}>Exact committed revision</Label>
-          <Input
-            id={`${prefix}-commit`}
-            value={revision}
-            disabled={command.disabled}
-            onChange={(event) => setRevision(event.target.value)}
-            spellCheck={false}
-            autoCapitalize="none"
-          />
+          {repositoryId && !deliveries.length ? (
+            <p className="text-xs text-muted-foreground">
+              No shared implementation in this repository has a merged, approved delivery yet.
+            </p>
+          ) : null}
         </div>
         <Button
           size="sm"
           variant="outline"
-          disabled={
-            command.disabled ||
-            !repositoryId ||
-            !proposal ||
-            !/^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(revision.trim())
-          }
+          disabled={command.disabled || !repositoryId || !delivery}
           onClick={() => {
-            if (repositoryId && proposal)
+            if (repositoryId && delivery)
               void command.submit({
                 type: "workflow.release.register",
                 repositoryId,
-                revision: revision.trim(),
-                proposalId: proposal.id,
-                proposalRevision: proposal.revision,
+                revision: delivery.revision,
+                proposalId: delivery.plan.proposalId,
+                proposalRevision: delivery.plan.proposalRevision,
+                assignmentId: delivery.assignment.id,
               });
           }}
         >
@@ -156,6 +154,22 @@ export function FactoryWorkflowAdoption({
             : "Each manager's existing approved workflow"}
           .
         </p>
+        {defaultRelease ? (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={command.disabled}
+            onClick={() =>
+              void command.submit({
+                type: "workflow.adopt",
+                releaseId: null,
+                scope: { kind: "default" },
+              })
+            }
+          >
+            Reset default to each manager's existing workflow
+          </Button>
+        ) : null}
         <p className="text-sm text-muted-foreground">
           Manager overrides take precedence over the environment default. Existing assignments keep
           their starting version. Adoption grants no additional source, model, publication or
@@ -186,7 +200,12 @@ export function FactoryWorkflowAdoption({
         </div>
         {release ? (
           <p className="break-all text-xs text-muted-foreground">
-            Snapshot {release.snapshotDigest}. Owned Codex library; pstack provenance creates no
+            Proposal: {releaseProposal?.content.problem.slice(0, 200) ?? release.proposalId}.
+            Implementation: {releaseAssignment?.title ?? release.assignmentId ?? "not recorded"}
+            {releasePullRequest
+              ? ` · ${releasePullRequest.repository}#${releasePullRequest.number}`
+              : ""}
+            . Snapshot {release.snapshotDigest}. Owned Codex library; pstack provenance creates no
             upstream subscription.
           </p>
         ) : null}
@@ -251,7 +270,10 @@ export function FactoryWorkflowAdoption({
           return (
             <div key={override.managerId} className="space-y-1 text-sm">
               <p className="break-all">
-                {manager?.name ?? override.managerId}: {version?.revision ?? "Release unavailable"}
+                {manager?.name ?? override.managerId}:{" "}
+                {adoption?.releaseId === null
+                  ? "Its existing approved workflow"
+                  : (version?.revision ?? "Release unavailable")}
               </p>
               <Button
                 size="xs"
@@ -273,9 +295,11 @@ export function FactoryWorkflowAdoption({
       <section className="space-y-3">
         <h3 className="text-sm font-medium">Explicitly restart selected active teams</h3>
         <p className="text-sm text-muted-foreground">
-          Use the selected release above. The host stops each team, preserves permitted work and
-          restarts it with a fresh workflow profile. A trial changes only the selected teams; it
-          does not change the adopted default. Paused work stays paused.
+          Migrations and trials use the selected release above. A restore keeps each team's current
+          pinned version, for work held after its authority was withdrawn and restored. The host
+          stops each team, preserves permitted work and restarts it with a fresh workflow profile. A
+          trial changes only the selected teams; it does not change the adopted default. Paused work
+          stays paused.
         </p>
         <div className="space-y-2">
           <Label htmlFor={`${prefix}-restart-kind`}>Restart purpose</Label>
@@ -292,6 +316,7 @@ export function FactoryWorkflowAdoption({
             <SelectPopup>
               <SelectItem value="migration">Migrate selected teams</SelectItem>
               <SelectItem value="trial">Human-approved live trial</SelectItem>
+              <SelectItem value="restore">Restore on current pinned version</SelectItem>
             </SelectPopup>
           </Select>
         </div>
@@ -334,13 +359,18 @@ export function FactoryWorkflowAdoption({
         <Button
           size="sm"
           variant="outline"
-          disabled={command.disabled || !release || !selectedAssignments.length || !reason.trim()}
+          disabled={
+            command.disabled ||
+            (!restore && !release) ||
+            !selectedAssignments.length ||
+            !reason.trim()
+          }
           onClick={() => {
-            if (release)
+            if (restore || release)
               void command
                 .submit({
                   type: "workflow.restart",
-                  releaseId: release.id,
+                  ...(restore || !release ? {} : { releaseId: release.id }),
                   assignmentIds: selectedAssignments,
                   kind: restartKind,
                   reason: reason.trim(),
@@ -396,7 +426,10 @@ export function FactoryWorkflowAdoption({
                 </div>
                 <p className="break-all text-xs text-muted-foreground">
                   {migration.previousVersion.revision} →{" "}
-                  {target?.version.revision ?? migration.releaseId} · {migration.kind}
+                  {migration.releaseId === null
+                    ? migration.previousVersion.revision
+                    : (target?.version.revision ?? migration.releaseId)}{" "}
+                  · {migration.kind}
                 </p>
                 <p className="text-muted-foreground">{migration.reason}</p>
                 {authorityHeld || needsPreparation ? (

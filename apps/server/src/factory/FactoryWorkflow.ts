@@ -12,6 +12,7 @@ import {
   type FactorySnapshot,
   type FactorySupportingWork,
   type FactoryWorkflowMigration,
+  type FactoryWorkflowRelease,
   type FactoryWorkflowVersion,
   type CommandId,
 } from "@t3tools/contracts";
@@ -166,6 +167,18 @@ export function decideFactoryWorkflow(
         entry.revision === revision &&
         entry.outcome === "accepted",
     );
+  // A release from a project-scoped proposal reaches only those projects, never the default.
+  const releaseReaches = (
+    release: FactoryWorkflowRelease,
+    projectIds: "all" | readonly (string | null | undefined)[],
+  ) => {
+    const scope = proposal(release.proposalId, release.proposalRevision)?.content.scope;
+    return (
+      scope?.kind !== "projects" ||
+      (projectIds !== "all" &&
+        projectIds.every((id) => scope.projectIds.some((projectId) => projectId === id)))
+    );
+  };
   const repositoryFor = (id: string) =>
     state.sharedRepositories.find((entry) => entry.id === id && entry.managerId === manager?.id);
   const revoke = (assignments: readonly FactoryAssignment[], reason: string) => {
@@ -325,7 +338,8 @@ export function decideFactoryWorkflow(
           expectedBenefit: command.expectedBenefit,
           assessmentApproach: command.assessmentApproach,
           changesSkills: command.changesSkills || factoryWorkChangesSkills(boundary, command.work),
-          weakensRules: command.weakensRules,
+          // Any protected-control change can weaken rules, whatever the proposer declares.
+          weakensRules: command.weakensRules || command.work.kind === "rule-change",
         },
         createdAt: now,
         notification: null,
@@ -594,17 +608,33 @@ export function decideFactoryWorkflow(
           "The host must identify the exact committed owned workflow snapshot.",
           "invalid-state",
         );
+      // A release is the exact commit the human approved and merged for this proposal's work.
+      const delivered = state.assignments.find(
+        (entry) =>
+          entry.id === command.assignmentId &&
+          entry.sharedWork?.kind === "implementation" &&
+          entry.sharedWork.repositoryId === repository.id &&
+          factorySharedAssignmentOwned(state, entry),
+      );
+      const plan = state.sharedWorks.find(
+        (entry) =>
+          delivered?.sharedWork?.kind === "implementation" &&
+          entry.id === delivered.sharedWork.workId,
+      )?.plan;
       if (
-        command.assignmentId !== undefined &&
-        !state.assignments.some(
-          (entry) =>
-            entry.id === command.assignmentId &&
-            entry.sharedWork?.kind === "implementation" &&
-            entry.sharedWork.repositoryId === repository.id &&
-            factorySharedAssignmentOwned(state, entry),
+        !delivered ||
+        plan?.proposalId !== command.proposalId ||
+        plan.proposalRevision !== command.proposalRevision ||
+        !delivered.delivery?.revisions.some(
+          (revision) =>
+            revision.merge?.status === "merged" &&
+            revision.approval?.expectedHeadSha.toLowerCase() === command.revision.toLowerCase(),
         )
       )
-        return fail("A release implementation must be the registered repository's own team.");
+        return fail(
+          "A release must be the merged commit approved for this proposal's implementation.",
+          "invalid-state",
+        );
       const existing = state.workflowReleases.find(
         (entry) =>
           entry.repositoryId === repository.id && entry.version.revision === command.revision,
@@ -617,7 +647,7 @@ export function decideFactoryWorkflow(
         snapshotDigest: qualified.snapshotDigest,
         proposalId: command.proposalId,
         proposalRevision: command.proposalRevision,
-        assignmentId: command.assignmentId ?? null,
+        assignmentId: command.assignmentId,
         provenance: "owned-codex-library" as const,
         baselineOrigin: "pstack-codex-adaptation" as const,
         registeredAt: now,
@@ -629,8 +659,12 @@ export function decideFactoryWorkflow(
     }
     case "workflow.adopt": {
       if (!human) return fail("Workflow adoption always requires a human decision.");
+      // A null release resets the scope to each manager's own approved workflow.
       const release = state.workflowReleases.find((entry) => entry.id === command.releaseId);
-      if (!release || !acceptedProposal(release.proposalId, release.proposalRevision))
+      if (
+        command.releaseId !== null &&
+        (!release || !acceptedProposal(release.proposalId, release.proposalRevision))
+      )
         return fail("Select a committed release linked to an accepted proposal.", "invalid-state");
       if (
         command.scope.kind === "managers" &&
@@ -638,9 +672,24 @@ export function decideFactoryWorkflow(
           command.scope.managerIds.some((id) => !state.managers.some((entry) => entry.id === id)))
       )
         return fail("Select existing managers once.", "invalid-state");
+      if (
+        release &&
+        !releaseReaches(
+          release,
+          command.scope.kind === "default"
+            ? "all"
+            : command.scope.managerIds.map(
+                (id) => state.managers.find((entry) => entry.id === id)?.projectId,
+              ),
+        )
+      )
+        return fail(
+          "A project-scoped release can only be adopted by those projects' managers.",
+          "invalid-state",
+        );
       const adoption = {
         id: `workflow-adoption:${command.commandId}`,
-        releaseId: release.id,
+        releaseId: release?.id ?? null,
         scope: command.scope,
         commandId: command.commandId,
         adoptedAt: now,
@@ -672,19 +721,27 @@ export function decideFactoryWorkflow(
         return fail(
           "Live trials and active-assignment migration require explicit human selection.",
         );
+      // A restore restarts each team on its own pinned version, so held work can resume
+      // without moving onto another release.
       const release = state.workflowReleases.find((entry) => entry.id === command.releaseId);
-      if (
-        !release ||
-        !acceptedProposal(release.proposalId, release.proposalRevision) ||
-        new Set(command.assignmentIds).size !== command.assignmentIds.length
-      )
-        return fail(
-          "Select an approved exact workflow release and distinct active assignments.",
-          "invalid-state",
-        );
       const assignments = command.assignmentIds.map((id) =>
         state.assignments.find((entry) => entry.id === id),
       );
+      if (
+        (command.kind === "restore"
+          ? command.releaseId !== undefined
+          : !release ||
+            !acceptedProposal(release.proposalId, release.proposalRevision) ||
+            !releaseReaches(
+              release,
+              assignments.map((entry) => entry?.projectId),
+            )) ||
+        new Set(command.assignmentIds).size !== command.assignmentIds.length
+      )
+        return fail(
+          "Select an approved exact workflow release, or a restore, and distinct active assignments.",
+          "invalid-state",
+        );
       if (
         assignments.some(
           (entry) =>
@@ -710,7 +767,7 @@ export function decideFactoryWorkflow(
       const migrations: FactoryWorkflowMigration[] = assignments.map((entry) => ({
         id: `workflow-migration:${command.commandId}:${entry!.id}`,
         assignmentId: entry!.id,
-        releaseId: release.id,
+        releaseId: release?.id ?? null,
         previousVersion: entry!.workflow,
         previousEpoch: entry!.grant!.epoch,
         preparedEpoch: null,
@@ -911,8 +968,11 @@ export function decideFactoryWorkflow(
       if (!host) return fail("Only the host records workflow restart execution.");
       const migration = state.workflowMigrations.find((entry) => entry.id === command.migrationId);
       const assignment = state.assignments.find((entry) => entry.id === migration?.assignmentId);
-      const release = state.workflowReleases.find((entry) => entry.id === migration?.releaseId);
-      if (!migration || !assignment || !assignment.grant || !release)
+      const version =
+        migration?.releaseId === null
+          ? migration.previousVersion
+          : state.workflowReleases.find((entry) => entry.id === migration?.releaseId)?.version;
+      if (!migration || !assignment || !assignment.grant || !version)
         return fail("Restart source is unavailable.", "invalid-state");
       if (
         state.workflowMigrations.findLast((entry) => entry.assignmentId === assignment.id)?.id !==
@@ -1011,7 +1071,7 @@ export function decideFactoryWorkflow(
           { phase: "preparing", startingSource: command.startingSource },
           {
             ...assignment,
-            workflow: release.version,
+            workflow: version,
             startingSource: command.startingSource,
             grant: { ...assignment.grant, epoch: assignment.grant.epoch + 1 },
             preparation: "preparing",

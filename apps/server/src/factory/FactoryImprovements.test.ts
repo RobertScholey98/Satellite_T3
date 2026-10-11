@@ -546,7 +546,7 @@ describe("bounded improvement batches", () => {
     ).state;
     const urgentPlan = factoryImprovementBatchPlan(state, deliveryNow, { kind: "urgent" })!;
     assert.equal(urgentPlan.intakeIds.length, 1);
-    assert.equal(urgentPlan.budgetDay, null);
+    assert.equal(urgentPlan.budgetDay, "2026-10-10");
     assert.deepStrictEqual(state.improvementBatches[0], batch);
     const receipt = {
       type: "improvement.batch.delivered",
@@ -602,11 +602,18 @@ describe("bounded improvement batches", () => {
       }).state;
     }
     assert.equal(factoryImprovementNextDueAt(state, deliveryNow), "2026-10-11T00:00:00.000Z");
-    assert.equal(
-      apply(state, { type: "improvement.flush", commandId: id() }, human).state.improvementBatches
-        .length,
-      2,
-    );
+    const flushed = decide({
+      state,
+      command: { type: "improvement.flush", commandId: id() },
+      actor: human,
+      now: deliveryNow,
+    });
+    assert.isTrue(Result.isFailure(flushed));
+    if (Result.isFailure(flushed))
+      assert.equal(
+        flushed.failure.detail,
+        "Today's routine allowance is spent. Raise it in review settings to review now.",
+      );
     const paused = {
       ...state,
       managers: state.managers.map((entry) =>
@@ -619,6 +626,70 @@ describe("bounded improvement batches", () => {
         .length,
       1,
     );
+  });
+  it("bounds escalation reviews per day and does not requeue an escalation that was only rerouted", () => {
+    const escalated = (number: number): FactoryFinding => ({
+      ...finding(number),
+      escalation: { summary: `Outage ${number}`, commandId: id(), escalatedAt: deliveryNow },
+    });
+    const first = escalated(1);
+    const second = escalated(2);
+    let state: FactorySnapshot = apply(
+      { ...fixture(), findings: [first, second] },
+      {
+        type: "improvement.configure",
+        commandId: id(),
+        ...factoryImprovementDefaults,
+        urgentBatchesPerDay: 1,
+      },
+      human,
+    ).state;
+    state = intake(state, first, "explicit-escalation").state;
+    const seal = (current: FactorySnapshot, now = deliveryNow) =>
+      apply(
+        current,
+        {
+          type: "improvement.batch.requested",
+          commandId: id(),
+          kind: "urgent",
+          expectedStateRevision: current.revision,
+        },
+        host,
+        {},
+        now,
+      ).state;
+    state = seal(state);
+    assert.equal(state.improvementBatches.length, 1);
+    const batch = state.improvementBatches[0]!;
+    state = apply(state, {
+      type: "improvement.batch.delivered",
+      commandId: id(),
+      batchId: batch.id,
+      digest: batch.digest,
+      messageId: MessageId.make("urgent-message"),
+    }).state;
+    state = intake(state, second, "explicit-escalation").state;
+    state = seal(state);
+    assert.equal(state.improvementBatches.length, 1);
+    assert.equal(factoryImprovementNextDueAt(state, deliveryNow), "2026-10-11T00:00:00.000Z");
+    assert.deepEqual(
+      seal(state, "2026-10-11T00:00:00.000Z").improvementBatches.at(-1)?.intakeIds,
+      state.improvementIntakes
+        .filter((entry) => entry.findingId === second.id)
+        .map((entry) => entry.id),
+    );
+    const rerouted = {
+      ...first,
+      route: { ...first.route, suspectedCause: "project" as const, rationale: "Rerouted" },
+    };
+    assert.equal(factoryImprovementFindingDigest(rerouted), factoryImprovementFindingDigest(first));
+    const intakes = state.improvementIntakes.length;
+    state = intake(
+      { ...state, findings: [rerouted, second] },
+      rerouted,
+      "explicit-escalation",
+    ).state;
+    assert.equal(state.improvementIntakes.length, intakes);
   });
   it("schedules a sparse routine backlog at its age deadline and rejects stale seal requests", () => {
     const item = finding(1);
@@ -778,6 +849,7 @@ describe("proposal review", () => {
     assert.equal(result.state.improvementFeedback[0]!.usefulness, "useful");
     assert.equal(result.state.improvementDecisions[0]!.outcome, "rejected");
     assert.equal(result.state.improvementProposals[0]!.content.tradeoffs, content.tradeoffs);
+    assert.equal(result.state.improvementProposals[0]!.phase, "superseded");
   });
   it("records only evidence attached to an open named investigation", () => {
     const investigation = investigated();

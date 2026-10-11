@@ -49,7 +49,14 @@ const fields = [
     title: "Routine batches per UTC day",
     min: 0,
     max: 24,
-    help: "Zero holds routine reviews. Explicit escalations use their prompt path and remain bounded.",
+    help: "Zero holds routine reviews.",
+  },
+  {
+    key: "urgentBatchesPerDay",
+    title: "Escalation reviews per UTC day",
+    min: 0,
+    max: 24,
+    help: "Each explicit escalation review is one manager turn. Escalations beyond this wait for the next day. Zero holds them.",
   },
 ] as const;
 
@@ -80,6 +87,7 @@ function ReviewSettings({ environment }: { environment: FactoryEnvironmentView }
     maxBatchItems: current?.maxBatchItems ?? 20,
     maxSummaryChars: current?.maxSummaryChars ?? 16000,
     routineBatchesPerDay: current?.routineBatchesPerDay ?? 2,
+    urgentBatchesPerDay: current?.urgentBatchesPerDay ?? 4,
   });
   const [message, setMessage] = useState<string | null>(null);
   const save = async () => {
@@ -101,6 +109,7 @@ function ReviewSettings({ environment }: { environment: FactoryEnvironmentView }
         maxBatchItems: values.maxBatchItems!,
         maxSummaryChars: values.maxSummaryChars!,
         routineBatchesPerDay: values.routineBatchesPerDay!,
+        urgentBatchesPerDay: values.urgentBatchesPerDay!,
       })
     )
       setMessage("Review settings saved.");

@@ -36,11 +36,14 @@ export const factoryImprovementDefaults: FactoryImprovementSettings = {
   maxBatchItems: 20,
   maxSummaryChars: 16_000,
   routineBatchesPerDay: 2,
+  urgentBatchesPerDay: 4,
 };
 export const factoryImprovementConfiguration = (
   state: FactorySnapshot,
-): FactoryImprovementSettings =>
-  state.improvementConfigurations.at(-1) ?? factoryImprovementDefaults;
+): FactoryImprovementSettings => ({
+  ...factoryImprovementDefaults,
+  ...state.improvementConfigurations.at(-1),
+});
 const hash = (value: unknown) =>
   Hex.encode(sha256(new TextEncoder().encode(stableStringify(value))));
 export const factoryImprovementFindingDigest = (finding: FactoryFinding) =>
@@ -53,7 +56,8 @@ export const factoryImprovementFindingDigest = (finding: FactoryFinding) =>
       ...new Map(finding.evidence.map((entry) => [stableStringify(entry), entry])).values(),
     ].sort((a, b) => stableStringify(a).localeCompare(stableStringify(b))),
     activeBlocker: finding.activeBlocker,
-    route: finding.route,
+    // Rerouting an escalation alone must not wake the system manager again.
+    route: finding.escalation ? null : finding.route,
     containmentOf: finding.containmentOf,
     escalation: finding.escalation?.summary ?? null,
   });
@@ -101,9 +105,14 @@ const pending = (state: FactorySnapshot, kind: "urgent" | "routine") =>
       entry.delivery.phase === "queued" &&
       (kind === "urgent" ? entry.origin === "explicit-escalation" : entry.origin === "retro"),
   );
-const spent = (state: FactorySnapshot, day: string) =>
-  state.improvementBatches.filter((entry) => entry.kind === "routine" && entry.budgetDay === day)
-    .length;
+export const factoryImprovementBatchesSpent = (
+  state: FactorySnapshot,
+  kind: "urgent" | "routine",
+  day: string,
+) =>
+  state.improvementBatches.filter((entry) => entry.kind === kind && entry.budgetDay === day).length;
+const allowance = (settings: FactoryImprovementSettings, kind: "urgent" | "routine") =>
+  kind === "urgent" ? settings.urgentBatchesPerDay : settings.routineBatchesPerDay;
 const dayAt = (now: string) => now.slice(0, 10);
 const nextDay = (now: string) =>
   DateTime.formatIso(DateTime.makeUnsafe(Date.parse(`${dayAt(now)}T00:00:00.000Z`) + 86_400_000));
@@ -127,13 +136,14 @@ export function factoryImprovementBatchPlan(
     return undefined;
   const queued = pending(state, options.kind);
   if (!queued.length) return undefined;
-  const budgetDay = options.kind === "routine" ? dayAt(now) : null;
+  const budgetDay = dayAt(now);
   if (
-    budgetDay !== null &&
-    (spent(state, budgetDay) >= configuration.routineBatchesPerDay ||
-      (!options.force &&
-        queued.length < configuration.routineThreshold &&
-        Date.parse(now) < Date.parse(queued[0]!.queuedAt) + configuration.maxAgeHours * 3_600_000))
+    factoryImprovementBatchesSpent(state, options.kind, budgetDay) >=
+      allowance(configuration, options.kind) ||
+    (options.kind === "routine" &&
+      !options.force &&
+      queued.length < configuration.routineThreshold &&
+      Date.parse(now) < Date.parse(queued[0]!.queuedAt) + configuration.maxAgeHours * 3_600_000)
   )
     return undefined;
   const selected = queued.slice(0, configuration.maxBatchItems);
@@ -166,24 +176,32 @@ export function factoryImprovementNextDueAt(state: FactorySnapshot, now: string)
     factoryImprovementBatchPlan(state, now, { kind: "routine" })
   )
     return now;
+  const waiting = (kind: "urgent" | "routine") =>
+    pending(state, kind).length > 0 &&
+    allowance(configuration, kind) > 0 &&
+    !state.improvementBatches.some(
+      (entry) => entry.kind === kind && entry.delivery.status === "pending",
+    );
+  // Escalations held by a spent urgent allowance are due when the next UTC day begins.
+  const urgent = waiting("urgent") ? Date.parse(nextDay(now)) : null;
   const queued = pending(state, "routine");
-  if (
-    !queued.length ||
-    configuration.routineBatchesPerDay === 0 ||
-    state.improvementBatches.some(
-      (entry) => entry.kind === "routine" && entry.delivery.status === "pending",
-    )
-  )
-    return null;
-  const age = Date.parse(queued[0]!.queuedAt) + configuration.maxAgeHours * 3_600_000;
-  const due =
-    spent(state, dayAt(now)) >= configuration.routineBatchesPerDay
-      ? Math.max(
-          Date.parse(nextDay(now)),
-          queued.length >= configuration.routineThreshold ? 0 : age,
-        )
-      : age;
-  return DateTime.formatIso(DateTime.makeUnsafe(Math.max(Date.parse(now), due)));
+  const age = waiting("routine")
+    ? Date.parse(queued[0]!.queuedAt) + configuration.maxAgeHours * 3_600_000
+    : null;
+  const routine =
+    age === null
+      ? null
+      : factoryImprovementBatchesSpent(state, "routine", dayAt(now)) >=
+          configuration.routineBatchesPerDay
+        ? Math.max(
+            Date.parse(nextDay(now)),
+            queued.length >= configuration.routineThreshold ? 0 : age,
+          )
+        : age;
+  const due = Math.min(urgent ?? Infinity, routine ?? Infinity);
+  return due === Infinity
+    ? null
+    : DateTime.formatIso(DateTime.makeUnsafe(Math.max(Date.parse(now), due)));
 }
 
 export function decideFactoryImprovements(
@@ -460,6 +478,7 @@ export function decideFactoryImprovements(
               maxBatchItems: command.maxBatchItems,
               maxSummaryChars: command.maxSummaryChars,
               routineBatchesPerDay: command.routineBatchesPerDay,
+              urgentBatchesPerDay: command.urgentBatchesPerDay,
               approvedBy: command.commandId,
               approvedAt: now,
             },
@@ -468,8 +487,26 @@ export function decideFactoryImprovements(
         {},
         [{ type: "improvement.reconcile" }],
       );
-    case "improvement.flush":
-      return human ? seal("routine", true) : fail("Only the human can flush a review batch.");
+    case "improvement.flush": {
+      if (!human) return fail("Only the human can flush a review batch.");
+      if (factoryImprovementBatchPlan(state, now, { kind: "routine", force: true }))
+        return seal("routine", true);
+      const settings = factoryImprovementConfiguration(state);
+      return fail(
+        !settings.enabled
+          ? "Shared evidence review is disabled."
+          : !availableManager(state)
+            ? "The system manager is not available to review evidence."
+            : state.improvementBatches.some(
+                  (entry) => entry.kind === "routine" && entry.delivery.status === "pending",
+                )
+              ? "A routine batch is already waiting for delivery."
+              : !pending(state, "routine").length
+                ? "No routine findings are waiting."
+                : "Today's routine allowance is spent. Raise it in review settings to review now.",
+        "invalid-state",
+      );
+    }
     case "improvement.batch.retry": {
       if (!human) return fail("Only the human can retry a failed review delivery.");
       const batch = state.improvementBatches.find((entry) => entry.id === command.batchId);
@@ -723,7 +760,12 @@ export function decideFactoryImprovements(
       return accepted(
         {
           improvementProposals: [
-            ...state.improvementProposals,
+            // An undecided older revision can no longer be decided, so retire it from review.
+            ...state.improvementProposals.map((entry) =>
+              entry.id === id && (entry.phase === "draft" || entry.phase === "human-review")
+                ? { ...entry, phase: "superseded" as const }
+                : entry,
+            ),
             {
               id,
               revision,

@@ -413,6 +413,9 @@ export function FactoryImprovementsDialog({
   const spent = data.improvementBatches.filter(
     (entry) => entry.kind === "routine" && entry.budgetDay === today,
   ).length;
+  const urgentSpent = data.improvementBatches.filter(
+    (entry) => entry.kind === "urgent" && entry.budgetDay === today,
+  ).length;
   const config = data.improvementConfigurations.at(-1);
   const evidenceProps = { environment, projects, canOpenThread, onOpenThread };
   const viewItems = [
@@ -443,6 +446,9 @@ export function FactoryImprovementsDialog({
               <span>{queued.length} evidence items queued</span>
               <span>
                 Routine budget used today: {spent} / {config?.routineBatchesPerDay ?? 2}
+              </span>
+              <span>
+                Escalation reviews today: {urgentSpent} / {config?.urgentBatchesPerDay ?? 4}
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
