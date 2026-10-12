@@ -22,6 +22,7 @@ import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { factoryThreadDeleted } from "./FactoryThreadReach.ts";
 
 /**
  * Carries out the effects of the human's controls: stopping and resuming the runtimes a pause,
@@ -448,7 +449,12 @@ export const layer = Layer.effect(
         return yield* allowed.failure;
       }
       const thread = yield* threads.getThreadShell(intent.threadId).pipe(Effect.mapError(failure));
-      if (thread === null || thread.deletedAt !== null || thread.archivedAt !== null) return;
+      // A deleted thread can never receive the message, so the relay retires instead of waiting.
+      if (thread === null && (yield* factoryThreadDeleted(threads, intent.threadId))) {
+        yield* store.retireEffect(pending.id);
+        return;
+      }
+      if (thread === null || thread.archivedAt !== null) return;
       yield* store.beginEffect(pending.id);
       const records = yield* threads
         .getThreadRecords(intent.threadId, ["messages", "runs"], { messageIds: [intent.messageId] })
@@ -538,6 +544,11 @@ export const layer = Layer.effect(
         return;
       }
       if (control.status !== "released") return;
+      // A deleted thread's queued runs can never resume.
+      if (yield* factoryThreadDeleted(threads, intent.threadId)) {
+        yield* store.retireEffect(pending.id);
+        return;
+      }
       // With `runIds` this releases exactly the runs a pause captured. Without, it is a handback
       // and releases the taken-over thread and its subagents.
       const member = yield* access.membership(intent.threadId);

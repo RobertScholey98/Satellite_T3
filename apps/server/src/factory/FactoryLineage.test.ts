@@ -94,6 +94,7 @@ describe("resolveFactoryLineage", () => {
         orphan: shell(otherProject, null, "subagent"),
         managed: shell(managedProject, ThreadId.make("deleted"), "subagent"),
         cycle: shell(otherProject, ThreadId.make("cycle"), "subagent"),
+        "managed-cycle": shell(managedProject, ThreadId.make("managed-cycle"), "subagent"),
       });
       const resolve = (threadId: string) =>
         resolveFactoryLineage({
@@ -104,7 +105,11 @@ describe("resolveFactoryLineage", () => {
       assert.isUndefined(yield* resolve("ordinary"));
       assert.isUndefined(yield* resolve("orphan"));
       assert.equal((yield* resolve("managed").pipe(Effect.flip)).code, "execution-unavailable");
-      assert.equal((yield* resolve("cycle").pipe(Effect.flip)).code, "execution-unavailable");
+      assert.isUndefined(yield* resolve("cycle"));
+      assert.equal(
+        (yield* resolve("managed-cycle").pipe(Effect.flip)).code,
+        "execution-unavailable",
+      );
     }),
   );
 });

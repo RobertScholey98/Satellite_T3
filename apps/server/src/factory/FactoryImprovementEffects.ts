@@ -29,6 +29,7 @@ import {
 } from "./FactoryImprovements.ts";
 import type { FactoryActor } from "./FactoryState.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { deletedThreadDetail, factoryThreadDeleted } from "./FactoryThreadReach.ts";
 
 /**
  * The host side of the system manager and improvement intake. It qualifies and launches the
@@ -194,11 +195,11 @@ const make = Effect.gen(function* () {
         const existing = yield* threads.getThreadShell(manager.threadId);
         if (
           existing &&
-          (existing.projectId !== manager.workspaceProjectId ||
-            existing.archivedAt !== null ||
-            existing.deletedAt !== null)
+          (existing.projectId !== manager.workspaceProjectId || existing.archivedAt !== null)
         )
           return yield* new FactoryError({ code: "invalid-state" });
+        if (!existing && (yield* factoryThreadDeleted(threads, manager.threadId)))
+          return yield* new FactoryError({ code: "invalid-state", detail: deletedThreadDetail });
         if (!existing)
           yield* threads.dispatch({
             type: "thread.create",

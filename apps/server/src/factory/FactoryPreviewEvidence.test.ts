@@ -89,7 +89,7 @@ const setup = Effect.gen(function* () {
   let blocked = false;
   let hold = false;
   const entered = yield* Deferred.make<void>();
-  const snapshot: PreviewAutomationSnapshot = {
+  let snapshot: PreviewAutomationSnapshot = {
     url: instance.origin!,
     title: "App",
     loading: false,
@@ -156,6 +156,9 @@ const setup = Effect.gen(function* () {
     entered,
     hold: () => {
       hold = true;
+    },
+    leaveOrigin: () => {
+      snapshot = { ...snapshot, url: "https://outside.example/" };
     },
     block: () => {
       blocked = true;
@@ -246,6 +249,20 @@ it.effect(
           .pipe(Effect.flip);
       assert.equal(fixture.calls.length, 1);
     }).pipe(Effect.provide(base)),
+);
+
+it.effect("records a rejected snapshot as failed so the instance stays usable", () =>
+  Effect.gen(function* () {
+    const fixture = yield* setup;
+    fixture.leaveOrigin();
+    const error = yield* fixture.action("outside", { type: "snapshot" }).pipe(Effect.flip);
+    assert.equal(error.detail, "The snapshot left the approved app instance.");
+    const replay = yield* fixture.action("outside", { type: "snapshot" }).pipe(Effect.flip);
+    assert.equal(replay.detail, "The snapshot left the approved app instance.");
+    assert.equal(fixture.calls.length, 1);
+    const next = yield* fixture.action("back", { type: "navigate", path: "/" });
+    assert.equal(next.sequence, 1);
+  }).pipe(Effect.provide(base)),
 );
 
 it.effect(

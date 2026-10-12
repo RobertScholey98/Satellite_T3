@@ -774,8 +774,12 @@ export function decideFactoryMergeOperation(input: {
       );
     case "merge.operation.retry": {
       const next = operation.members.find((entry) => entry.outcome.phase === "pending");
+      if (!owns)
+        return fail(
+          "Only this integration lead or the human can retry the shared action.",
+          "permission-denied",
+        );
       if (
-        !owns ||
         operation.lifecycle.phase !== "attention" ||
         operation.lifecycle.retry !== "same-vector" ||
         !frozen ||
@@ -783,7 +787,6 @@ export function decideFactoryMergeOperation(input: {
       )
         return fail(
           "This operation needs reconciliation or a separate recovery decision before retry.",
-          "permission-denied",
         );
       const readiness = factoryMergeOperationWriteReadiness(
         state,
@@ -1004,7 +1007,7 @@ export function decideFactoryMergeOperation(input: {
           };
         });
         // A merge seen before the freeze happened outside the frozen evidence, so nothing retries.
-        // Otherwise a hold becomes retryable once no outcome is uncertain.
+        // Otherwise a hold awaiting reconciliation becomes retryable once no outcome is uncertain.
         const lifecycle =
           !frozen && operation.lifecycle.phase !== "stopped"
             ? {
@@ -1017,6 +1020,7 @@ export function decideFactoryMergeOperation(input: {
                 retry: "none" as const,
               }
             : operation.lifecycle.phase === "attention" &&
+                operation.lifecycle.retry === "reconcile" &&
                 members.every((entry) => entry.outcome.phase !== "unknown")
               ? { ...operation.lifecycle, retry: "same-vector" as const }
               : operation.lifecycle;
@@ -1076,10 +1080,12 @@ export function decideFactoryMergeOperation(input: {
           );
         }
         // Expected for a member not yet submitted. Once no outcome is uncertain, a frozen hold
-        // becomes retryable; write readiness still gates the retry itself.
+        // awaiting reconciliation becomes retryable; write readiness still gates the retry itself.
+        // A hold that needs a new review or has no retry keeps its decision.
         if (member.outcome.phase === "pending")
           return save(
             operation.lifecycle.phase === "attention" &&
+              operation.lifecycle.retry === "reconcile" &&
               frozen &&
               operation.members.every((entry) => entry.outcome.phase !== "unknown")
               ? { ...operation, lifecycle: { ...operation.lifecycle, retry: "same-vector" } }

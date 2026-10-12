@@ -267,7 +267,7 @@ describe("cross-project collaboration", () => {
           ? {
               ...entry,
               completion: {
-                ...initialFactoryCompletion(entry.scope, receiverId),
+                ...initialFactoryCompletion(entry.scope),
                 phase: "concluded",
                 conclusion: {
                   kind: "delivered",

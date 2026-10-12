@@ -18,6 +18,7 @@ import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryPreviewService from "./FactoryPreviewService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { factoryThreadReach } from "./FactoryThreadReach.ts";
 import {
   factoryCollaborationConditionSatisfied,
   factoryRequestParticipants,
@@ -40,7 +41,8 @@ export class FactoryCollaborationEffects extends Context.Service<
     readonly reconcile: Effect.Effect<void, FactoryError>;
     /**
      * Runs one pending effect. An effect whose target thread is not currently directable stays
-     * pending for a later pass instead of failing.
+     * pending for a later pass instead of failing. A deleted target is skipped, and fails a peer
+     * message.
      */
     readonly handle: (
       pending: FactoryStore.PendingFactoryEffect,
@@ -75,19 +77,8 @@ const make = Effect.gen(function* () {
       });
     return true;
   });
-  // `false` leaves the effect pending: the thread may not be directed now, or it is deleted or
-  // archived.
-  const allowed = Effect.fn(function* (threadId: ThreadId, senderThreadId?: ThreadId) {
-    const result = yield* access
-      .assertDirection({ threadId, senderThreadId: senderThreadId ?? null })
-      .pipe(Effect.result);
-    if (Result.isFailure(result)) {
-      if (result.failure.code === "permission-denied") return false;
-      return yield* result.failure;
-    }
-    const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(failure));
-    return shell !== null && shell.deletedAt === null && shell.archivedAt === null;
-  });
+  const reach = (threadId: ThreadId, senderThreadId?: ThreadId) =>
+    factoryThreadReach(threads, access, threadId, senderThreadId);
   const message = Effect.fn(function* (pending: FactoryStore.PendingFactoryEffect) {
     if (pending.intent.type !== "collaboration.message.deliver") return;
     const id = pending.intent.messageId;
@@ -146,11 +137,23 @@ const make = Effect.gen(function* () {
       });
       return;
     }
-    if (
-      !(yield* allowed(source.threadId)) ||
-      !(yield* allowed(recipient.threadId, source.threadId))
-    )
+    const sender = yield* reach(source.threadId);
+    const target = sender === "send" ? yield* reach(recipient.threadId, source.threadId) : sender;
+    if (target === "hold") return;
+    if (target === "gone") {
+      yield* store.finishEffect({
+        id: pending.id,
+        now: yield* nowIso,
+        failed: true,
+        command: {
+          type: "collaboration.message.failed",
+          commandId: CommandId.make(`${pending.id}:gone`),
+          messageId: id,
+          reason: "A lead's thread was deleted before delivery.",
+        },
+      });
       return;
+    }
     yield* store.beginEffect(pending.id);
     const sent = yield* threads
       .sendToThread({
@@ -220,7 +223,9 @@ const make = Effect.gen(function* () {
     for (const target of recipients) {
       const messageId = MessageId.make(`factory:collaboration:${pending.id}:${target.id}`);
       if (yield* accepted(target.threadId, messageId)) continue;
-      if (!(yield* allowed(target.threadId))) {
+      const reachable = yield* reach(target.threadId);
+      if (reachable === "gone") continue;
+      if (reachable === "hold") {
         held = true;
         continue;
       }
@@ -405,15 +410,17 @@ const make = Effect.gen(function* () {
       yield* store.retireEffect(pending.id);
       return;
     }
-    if (!(yield* allowed(intent.threadId))) return;
-    yield* threads
-      .dispatch({
-        type: "queue.resume",
-        threadId: intent.threadId,
-        runIds: intent.runIds,
-        commandId: CommandId.make(`${pending.id}:queue`),
-      })
-      .pipe(Effect.mapError(failure));
+    const reachable = yield* reach(intent.threadId);
+    if (reachable === "hold") return;
+    if (reachable === "send")
+      yield* threads
+        .dispatch({
+          type: "queue.resume",
+          threadId: intent.threadId,
+          runIds: intent.runIds,
+          commandId: CommandId.make(`${pending.id}:queue`),
+        })
+        .pipe(Effect.mapError(failure));
     yield* store.retireEffect(pending.id);
   });
   const reconcile = Effect.gen(function* () {

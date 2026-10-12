@@ -182,15 +182,16 @@ it.effect(
             },
           ],
         };
+        // The shared merge freezes the team's workers; the refusal keeps its own code.
         assert.equal(
           (yield* runtime.runtimePolicyFor(child).pipe(Effect.flip)).code,
-          "execution-unavailable",
+          "permission-denied",
         );
         assert.equal(
           (yield* runtime
             .runtimePolicyFor(ThreadId.make("pending-merge-worker"), integrated.lead)
             .pipe(Effect.flip)).code,
-          "execution-unavailable",
+          "permission-denied",
         );
         const frozenOperation = frozenMergeOperationFixture().state.mergeOperations[0]!;
         const frozen: FactorySnapshot = {

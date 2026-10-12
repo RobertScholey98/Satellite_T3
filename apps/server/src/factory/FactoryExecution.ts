@@ -540,7 +540,10 @@ const make = Effect.gen(function* () {
         runtimePath,
       };
     },
-    Effect.mapError(() => new FactoryError({ code: "execution-unavailable" })),
+    // Refusals keep their own code and detail; anything else reads as unavailable.
+    Effect.mapError((cause) =>
+      isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause }),
+    ),
   );
   return FactoryExecution.of({
     qualify,

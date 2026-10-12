@@ -40,8 +40,8 @@ function factoryProjectManaged(state: FactorySnapshot, projectId: ProjectId | un
  *
  * - With no managers nothing is managed, so it reads nothing.
  * - Forks are human-created, ordinary threads; the walk stops at a fork edge.
- * - A broken chain (deleted or missing ancestor, orphaned subagent, crossed project) is
- *   ordinary unless its project is managed, where it fails closed.
+ * - A broken chain (deleted or missing ancestor, orphaned subagent, crossed project, cycle or
+ *   implausible depth) is ordinary unless its project is managed, where it fails closed.
  */
 export const resolveFactoryLineage = <E>(input: {
   readonly state: FactorySnapshot;
@@ -62,8 +62,8 @@ export const resolveFactoryLineage = <E>(input: {
     let threadId = input.threadId;
     let projectId: ProjectId | undefined;
     for (;;) {
-      // A cycle or an implausibly deep chain fails closed in any project, managed or not.
-      if (visited.has(threadId) || visited.size >= 64) return yield* unavailable();
+      // A cycle or an implausibly deep chain is broken like any other.
+      if (visited.has(threadId) || visited.size >= 64) return yield* broken(projectId);
       visited.add(threadId);
       const manager = state.managers.find((entry) => entry.threadId === threadId);
       const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === threadId);

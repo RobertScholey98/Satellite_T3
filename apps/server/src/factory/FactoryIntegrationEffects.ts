@@ -16,6 +16,7 @@ import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Store from "./FactoryStore.ts";
+import { factoryThreadReach } from "./FactoryThreadReach.ts";
 import * as Access from "./FactoryControlAccess.ts";
 import * as Handover from "./FactoryHandover.ts";
 import * as Execution from "./FactoryExecution.ts";
@@ -86,22 +87,8 @@ const make = Effect.gen(function* () {
       });
     return true;
   });
-  // Whether the thread is live and may be directed now. A permission refusal means wait, not
-  // fail; any other refusal fails the effect.
-  const allowed = Effect.fn("FactoryIntegrationEffects.allowed")(function* (
-    threadId: ThreadId,
-    senderThreadId?: ThreadId,
-  ) {
-    const result = yield* access
-      .assertDirection({ threadId, senderThreadId: senderThreadId ?? null })
-      .pipe(Effect.result);
-    if (Result.isFailure(result)) {
-      if (result.failure.code === "permission-denied") return false;
-      return yield* result.failure;
-    }
-    const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(failure));
-    return shell !== null && shell.deletedAt === null && shell.archivedAt === null;
-  });
+  const reach = (threadId: ThreadId, senderThreadId?: ThreadId) =>
+    factoryThreadReach(threads, access, threadId, senderThreadId);
   // The work a stop interrupts: lead and subagent threads with a run in progress, and queued
   // runs that are not held, so the same work resumes when the stop is lifted.
   const collectTargets = Effect.fn("FactoryIntegrationEffects.collectTargets")(function* (
@@ -250,7 +237,9 @@ const make = Effect.gen(function* () {
         held = true;
         continue;
       }
-      if (!(yield* allowed(target.threadId))) {
+      const reachable = yield* reach(target.threadId);
+      if (reachable === "gone") continue;
+      if (reachable === "hold") {
         held = true;
         continue;
       }
@@ -343,12 +332,25 @@ const make = Effect.gen(function* () {
       });
       return;
     }
-    // Either lead may not be directed now: wait for a later drain without failing.
-    if (
-      !(yield* allowed(source.threadId)) ||
-      !(yield* allowed(recipient.threadId, source.threadId))
-    )
+    // Either lead may not be directed now: wait for a later drain without failing. A deleted lead
+    // can never receive it, so the message fails.
+    const sender = yield* reach(source.threadId);
+    const target = sender === "send" ? yield* reach(recipient.threadId, source.threadId) : sender;
+    if (target === "hold") return;
+    if (target === "gone") {
+      yield* store.finishEffect({
+        id: pending.id,
+        now: yield* nowIso,
+        failed: true,
+        command: {
+          type: "integration.message.failed",
+          commandId: CommandId.make(`${pending.id}:gone`),
+          messageId,
+          reason: "A lead's thread was deleted before delivery.",
+        },
+      });
       return;
+    }
     yield* store.beginEffect(pending.id);
     const content = entry.content;
     const text =
@@ -438,7 +440,7 @@ const make = Effect.gen(function* () {
       if (!shell || shell.deletedAt !== null || shell.archivedAt !== null) continue;
       const membership = yield* access.membership(threadId);
       if (membership?.assignmentId !== assignment.id) continue;
-      if (!(yield* allowed(threadId))) {
+      if ((yield* reach(threadId)) !== "send") {
         held = true;
         continue;
       }

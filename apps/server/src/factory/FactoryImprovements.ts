@@ -931,7 +931,9 @@ export function decideFactoryImprovements(
     case "proposal.submit":
     case "proposal.decide":
     case "proposal.feedback": {
-      if (command.type === "proposal.submit" ? !canInvestigate : !human)
+      if (command.type === "proposal.submit" && !canInvestigate)
+        return fail("Only the human or active system manager can submit a shared proposal.");
+      if (command.type !== "proposal.submit" && !human)
         return fail("Proposal decisions and usefulness feedback belong to the human.");
       const proposal = state.improvementProposals.find(
         (entry) => entry.id === command.proposalId && entry.revision === command.revision,

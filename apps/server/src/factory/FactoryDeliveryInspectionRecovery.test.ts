@@ -96,3 +96,26 @@ it.effect(
       }).pipe(Effect.provide(Inspection.layer.pipe(Layer.provide(fixtures))));
     }).pipe(Effect.provide(base), Effect.scoped),
 );
+
+it.effect("reports why a superseded revision cannot refresh instead of retrying it", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const state = reviewedDeliveryFixture();
+    yield* sql`INSERT INTO factory_state(id,revision,payload_json) VALUES(1,${state.revision},${encode(state)})`;
+    const fixtures = Layer.mock(PullRequests.PullRequestService)({
+      inspectForMerge: () => Effect.succeed(evidence),
+    });
+    const error = yield* Effect.gen(function* () {
+      return yield* (yield* Inspection.FactoryDeliveryInspection).refresh({
+        ...deliveryRevisionCommand,
+        revisionId: "superseded-revision",
+        commandId: CommandId.make("superseded-refresh"),
+      });
+    }).pipe(Effect.provide(Inspection.layer.pipe(Layer.provide(fixtures))), Effect.flip);
+    assert.equal(error.code, "stale-revision");
+    assert.equal(
+      error.detail,
+      "This delivery revision no longer matches its current execution grant and source.",
+    );
+  }).pipe(Effect.provide(base), Effect.scoped),
+);

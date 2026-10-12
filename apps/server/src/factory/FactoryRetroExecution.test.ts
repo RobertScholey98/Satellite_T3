@@ -387,9 +387,10 @@ live(
       yield* Effect.gen(function* () {
         const execution = yield* FactoryExecution.FactoryExecution;
         assert.equal((yield* execution.runtimePolicyFor(retroThread))?.retro?.retroId, "retro");
+        // The cancelled lead stays refused, with the control's own code.
         assert.equal(
           (yield* execution.runtimePolicyFor(deliveryIds.lead).pipe(Effect.flip)).code,
-          "execution-unavailable",
+          "permission-denied",
         );
         const models = yield* FactoryModelAdmission.FactoryModelAdmission;
         yield* models.assertSelectionFor(retroThread, deliverySelection);
@@ -472,9 +473,10 @@ live(
           controls: [],
           retros: f.getState().retros.map((retro) => ({ ...retro, evidenceDigest: "superseded" })),
         });
+        // Superseded retro evidence retires the retro thread's runtime with its own refusal.
         assert.equal(
           (yield* execution.runtimePolicyFor(retroThread).pipe(Effect.flip)).code,
-          "execution-unavailable",
+          "permission-denied",
         );
       }).pipe(
         Effect.provide(

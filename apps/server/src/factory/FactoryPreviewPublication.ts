@@ -114,10 +114,6 @@ export class FactoryPreviewPublication extends Context.Service<
     readonly publish: (
       input: typeof Input.Type,
     ) => Effect.Effect<FactoryPublishedPreview, FactoryError>;
-    /** The published links for the revision's current evidence, if publishing has completed. */
-    readonly read: (
-      input: typeof Input.Type,
-    ) => Effect.Effect<FactoryPublishedPreview | undefined, FactoryError>;
   }
 >()("t3/factory/FactoryPreviewPublication") {}
 
@@ -474,18 +470,7 @@ const make = Effect.gen(function* () {
     mutex.withPermit,
     Effect.mapError(preserve),
   );
-  const read = Effect.fn("FactoryPreviewPublication.read")(function* (input: typeof Input.Type) {
-    const state = yield* store.snapshot;
-    const operationsDigest = state.assignments
-      .find((entry) => entry.id === input.assignmentId)
-      ?.delivery?.revisions.find((entry) => entry.id === input.revisionId)
-      ?.uxEvidence?.operationsDigest;
-    if (!operationsDigest) return undefined;
-    const target = yield* location(input, operationsDigest);
-    if (!(yield* fs.exists(target))) return undefined;
-    return (yield* fs.readFileString(target).pipe(Effect.flatMap(decodeReservation))).proof;
-  }, Effect.mapError(preserve));
-  return FactoryPreviewPublication.of({ publish, read });
+  return FactoryPreviewPublication.of({ publish });
 });
 
 export const layer = Layer.effect(FactoryPreviewPublication, make);

@@ -760,6 +760,41 @@ describe("owned workflow authority", () => {
     assert.deepEqual(prepared.state.assignments[0]?.oversight, assignment.oversight);
   });
 
+  it("records a late restart failure without reopening work that completed meanwhile", () => {
+    const registered = release(fixture());
+    const assignment = registered.state.assignments[0]!;
+    const started = apply(registered.state, {
+      type: "workflow.restart",
+      commandId: commandId(),
+      releaseId: registered.result.releaseId!,
+      assignmentIds: [assignment.id],
+      kind: "migration",
+      reason: "Use approved instructions",
+    });
+    const completed: FactorySnapshot = {
+      ...started.state,
+      assignments: started.state.assignments.map((entry) => ({
+        ...entry,
+        status: "complete",
+        wait: null,
+      })),
+    };
+    const failed = apply(
+      completed,
+      {
+        type: "workflow.restart.failed",
+        commandId: commandId(),
+        migrationId: started.result.migrationIds![0]!,
+        step: "stop",
+        reason: "Container unavailable",
+      },
+      host,
+    );
+    assert.equal(failed.state.workflowMigrations[0]?.lifecycle.phase, "failed");
+    assert.equal(failed.state.assignments[0]?.status, "complete");
+    assert.isNull(failed.state.assignments[0]?.wait);
+  });
+
   it("keeps tightened grants and the authority wait when revocation races stop and preparation", () => {
     const registered = release(fixture());
     const old = registered.state.assignments[0]!;

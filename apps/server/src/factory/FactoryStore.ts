@@ -671,8 +671,7 @@ const make = Effect.gen(function* () {
                 now: input.now,
               });
               yield* sql`
-              UPDATE factory_outbox SET status = ${status},
-                error_code = ${failed ? "launch-failed" : null}
+              UPDATE factory_outbox SET status = ${status}
               WHERE effect_id = ${input.id} AND status = 'pending'
             `;
             }),

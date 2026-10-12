@@ -77,6 +77,7 @@ import * as ServerActivation from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { type FactoryControlContext } from "./FactoryControls.ts";
 import * as FactoryThreadScope from "./FactoryThreadScope.ts";
+import { deletedThreadDetail, factoryThreadDeleted } from "./FactoryThreadReach.ts";
 import * as FactoryPrompts from "./FactoryPrompts.ts";
 
 /** The service before its thread-scoped reads, which `FactoryThreadScope` builds from it. */
@@ -332,11 +333,11 @@ export const layer = Layer.effect(
         const existing = yield* threads.getThreadShell(intent.threadId);
         if (
           existing !== null &&
-          (existing.projectId !== intent.projectId ||
-            existing.deletedAt !== null ||
-            existing.archivedAt !== null)
+          (existing.projectId !== intent.projectId || existing.archivedAt !== null)
         )
           return yield* new FactoryError({ code: "invalid-state" });
+        if (existing === null && (yield* factoryThreadDeleted(threads, intent.threadId)))
+          return yield* new FactoryError({ code: "invalid-state", detail: deletedThreadDetail });
         if (existing === null)
           yield* threads.dispatch({
             type: "thread.create",
@@ -1462,9 +1463,6 @@ export const layer = Layer.effect(
             : command.type === "manager.refresh-boundary" && actor.kind === "human"
               ? yield* boundaries.refresh(command)
               : undefined;
-        if (command.type === "assignment.file.mutate") yield* boundaries.mutate(command);
-        const verification =
-          command.type === "assignment.verify" ? yield* boundaries.verify(command) : undefined;
         const result = yield* store
           .commit({
             actor,
@@ -1483,7 +1481,6 @@ export const layer = Layer.effect(
             ...(allocation === undefined ? {} : { allocation }),
             ...(qualification === undefined ? {} : { qualification }),
             ...(boundary === undefined ? {} : { boundary }),
-            ...(verification === undefined ? {} : { verification }),
           })
           .pipe(
             Effect.catch((cause) =>

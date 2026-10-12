@@ -248,10 +248,10 @@ it.effect(
             },
           ],
         };
-        assert.equal(
-          (yield* execution.runtimePolicyFor(systemId).pipe(Effect.flip)).code,
-          "execution-unavailable",
-        );
+        // The pause refusal keeps its code and reason rather than reading as unavailable.
+        const paused = yield* execution.runtimePolicyFor(systemId).pipe(Effect.flip);
+        assert.equal(paused.code, "permission-denied");
+        assert.isDefined(paused.detail);
         snapshot = {
           ...snapshot,
           controls: [],
@@ -259,7 +259,7 @@ it.effect(
         };
         assert.equal(
           (yield* execution.runtimePolicyFor(systemId).pipe(Effect.flip)).code,
-          "execution-unavailable",
+          "permission-denied",
         );
         assert.equal(
           (yield* execution
@@ -451,7 +451,7 @@ it.effect(
             };
             assert.equal(
               (yield* execution.runtimePolicyFor(diagnosisId).pipe(Effect.flip)).code,
-              "execution-unavailable",
+              "permission-denied",
             );
           }
         }
@@ -485,11 +485,11 @@ it.effect(
         };
         assert.equal(
           (yield* execution.runtimePolicyFor(owner).pipe(Effect.flip)).code,
-          "execution-unavailable",
+          "permission-denied",
         );
         assert.equal(
           (yield* execution.runtimePolicyFor(child).pipe(Effect.flip)).code,
-          "execution-unavailable",
+          "permission-denied",
         );
         assert.isUndefined(yield* execution.runtimePolicyFor(ordinary));
       }).pipe(

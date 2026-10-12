@@ -138,11 +138,9 @@ export function factoryIncidentBlocked(
   state: FactorySnapshot,
   assignmentId: FactoryAssignmentId,
   activity: FactoryIncidentRestriction["activity"],
-  excludingRestrictionId?: string,
 ): string | undefined {
   const restriction = state.incidentRestrictions.find(
     (entry) =>
-      entry.id !== excludingRestrictionId &&
       entry.phase !== "released" &&
       entry.assignmentIds.includes(assignmentId) &&
       (entry.activity === "execution" || entry.activity === activity),

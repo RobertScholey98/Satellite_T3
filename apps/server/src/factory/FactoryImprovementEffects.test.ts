@@ -16,6 +16,7 @@ import * as Access from "./FactoryControlAccess.ts";
 import * as Execution from "./FactoryExecution.ts";
 import * as Improvements from "./FactoryImprovementEffects.ts";
 import * as Store from "./FactoryStore.ts";
+import { deletedThreadDetail } from "./FactoryThreadReach.ts";
 import {
   deliveryFixture,
   deliveryIds,
@@ -285,6 +286,33 @@ describe("FactoryImprovementEffects", () => {
         "active",
       );
       assert.equal((yield* f.messages).length, 1);
+    }).pipe(Effect.provide(base), Effect.scoped),
+  );
+
+  it.effect("a retry never recreates a system-manager thread the human deleted", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      f.failSend(true);
+      yield* f.create;
+      yield* f.threads.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("delete-system-thread"),
+        threadId: systemId,
+      });
+      const command = {
+        type: "system.retry" as const,
+        commandId: CommandId.make("retry-system"),
+        managerId: systemId,
+      };
+      const context = yield* f.effects.context({ kind: "human" }, command);
+      yield* f.store.commit({ actor: { kind: "human" }, now: deliveryNow, command, ...context });
+      f.failSend(false);
+      for (const entry of yield* f.store.pending)
+        if (entry.intent.type === "system.launch") yield* f.effects.handle(entry);
+      const manager = (yield* f.store.snapshot).managers.find((entry) => entry.id === systemId)!;
+      assert.equal(manager.status, "blocked");
+      assert.equal(manager.wait?.reason, deletedThreadDetail);
+      assert.isNull(yield* f.threads.getThreadShell(systemId));
     }).pipe(Effect.provide(base), Effect.scoped),
   );
 

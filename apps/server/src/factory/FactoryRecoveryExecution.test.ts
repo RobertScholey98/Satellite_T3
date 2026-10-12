@@ -342,15 +342,6 @@ live(
             (yield* restarted.verify({ assignmentId, expectedEpoch: 0 })).gates[0]?.status,
             "passed",
           );
-          const exported = yield* restarted.exportArtifact({
-            assignmentId,
-            artifactId: historical.artifactId,
-          });
-          assert.equal(exported.sourceDigest, historical.sourceDigest);
-          assert.include(exported.sourcePath, qualification.profileId);
-          yield* restarted
-            .exportArtifact({ assignmentId, artifactId: verification.artifactId })
-            .pipe(Effect.flip);
         }).pipe(Effect.provide(FactoryBoundaryExecution.layer));
         const saved = state;
         yield* execution.suspend({ assignmentId, generation: 1 });

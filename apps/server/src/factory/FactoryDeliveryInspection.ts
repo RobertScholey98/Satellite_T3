@@ -224,6 +224,8 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.result);
       if (Result.isSuccess(result)) return;
       if (result.failure.code !== "stale-revision") return yield* result.failure;
+      // Only moving state is worth another pass; a superseded revision reports why.
+      yield* readRevision(input);
     }
     return yield* new FactoryError({
       code: "stale-revision",

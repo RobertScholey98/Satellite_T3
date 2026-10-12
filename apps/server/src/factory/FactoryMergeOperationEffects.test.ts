@@ -179,7 +179,7 @@ it.effect.each(["lost-ack", "unknown", "transient"] as const)(
               operationId: current.id,
             })
             .pipe(Effect.flip);
-          assert.equal(retry.code, "permission-denied");
+          assert.equal(retry.code, "invalid-state");
         }
       }).pipe(Effect.provide(harness.layer));
     }).pipe(Effect.provide(base), Effect.scoped),
@@ -326,6 +326,41 @@ it.effect("reconciles a submission that never reached the host back to a bounded
       );
       assert.equal(harness.writes.length, 2);
     }).pipe(Effect.provide(harness.layer.pipe(Layer.provide(facade))));
+  }).pipe(Effect.provide(base), Effect.scoped),
+);
+
+it.effect("a reopened member PR clears its reconcile hold for a retry", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeMergeOperationHarness();
+    yield* Effect.gen(function* () {
+      const operation = yield* harness.start;
+      const first = canonicalFactoryPullRequest(operation.members[0]!.reviewed.ref);
+      harness.closed.add(first);
+      yield* harness.drain;
+      const held = yield* harness.current;
+      assert.equal(held.lifecycle.phase, "attention");
+      if (held.lifecycle.phase === "attention") assert.equal(held.lifecycle.retry, "reconcile");
+      assert.equal(harness.writes.length, 0);
+      harness.closed.delete(first);
+      yield* harness.commit({
+        type: "merge.operation.reconcile",
+        operationId: operation.id,
+        commandId: CommandId.make("reconcile-reopened"),
+      });
+      yield* harness.drain;
+      const reconciled = yield* harness.current;
+      if (reconciled.lifecycle.phase === "attention")
+        assert.equal(reconciled.lifecycle.retry, "same-vector");
+      else assert.fail("The reconciled operation should still be held");
+      yield* harness.commit({
+        type: "merge.operation.retry",
+        operationId: operation.id,
+        commandId: CommandId.make("retry-reopened"),
+      });
+      yield* harness.drain;
+      assert.equal((yield* harness.current).lifecycle.phase, "completed");
+      assert.equal(harness.writes.length, 2);
+    }).pipe(Effect.provide(harness.layer));
   }).pipe(Effect.provide(base), Effect.scoped),
 );
 

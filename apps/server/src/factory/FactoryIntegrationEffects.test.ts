@@ -257,6 +257,41 @@ it.effect(
     }).pipe(Effect.provide(base)),
 );
 
+it.effect("fails an integration peer message whose recipient lead's thread was deleted", () =>
+  Effect.gen(function* () {
+    const prepared = ready();
+    yield* seed(prepared.state);
+    const store = yield* Store.FactoryStore;
+    const threads = yield* Threads.ThreadManagementService;
+    yield* store.commit({
+      actor: { kind: "thread", threadId: integrated.lead },
+      command: {
+        type: "integration.message.send",
+        commandId: CommandId.make("message"),
+        integrationId: prepared.integrationId,
+        fromAssignmentId: integrated.assignment,
+        toAssignmentId: api.assignment,
+        text: "Please incorporate the fixture patch",
+      },
+      now: deliveryNow,
+    });
+    const pending = (yield* store.pending).find(
+      (entry) => entry.intent.type === "integration.message.deliver",
+    )!;
+    yield* threads.dispatch({
+      type: "thread.delete",
+      commandId: CommandId.make("delete-api-lead"),
+      threadId: api.lead,
+    });
+    yield* Effect.gen(function* () {
+      const effects = yield* IntegrationEffects.FactoryIntegrationEffects;
+      yield* effects.handle(pending);
+    }).pipe(Effect.provide(runtime));
+    assert.equal((yield* store.snapshot).integrationMessages[0]!.delivery.phase, "failed");
+    assert.isFalse((yield* store.pending).some((entry) => entry.id === pending.id));
+  }).pipe(Effect.provide(base)),
+);
+
 it.effect("captures pre-verification queues and keeps them held during human takeover", () =>
   Effect.gen(function* () {
     const prepared = ready();

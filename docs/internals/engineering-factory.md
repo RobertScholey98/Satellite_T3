@@ -44,8 +44,8 @@ record owns a thread. Every access check uses it.
 - A fork is an ordinary thread that a human created. The lineage walk stops at a fork edge. Do not
   make forks inherit factory policy.
 - A broken chain fails closed only in a managed project. A broken chain is a deleted or missing
-  ancestor, an orphaned subagent, or a chain that crosses projects. Elsewhere the thread is
-  ordinary, so the factory never blocks unrelated work.
+  ancestor, an orphaned subagent, a chain that crosses projects, or a cycle or implausibly deep
+  chain. Elsewhere the thread is ordinary, so the factory never blocks unrelated work.
 - With no managers, resolution reads nothing. Keep these checks cheap for people who never use the
   factory.
 

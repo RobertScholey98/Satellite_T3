@@ -353,8 +353,9 @@ const make = Effect.gen(function* () {
 
   /**
    * Reads the member's PR fresh from the host and records what it shows. A pending member that is
-   * still open returns `"open"` without a commit. An unknown attempt counts as not merged only when
-   * the host proves the exact PR open with no auto-merge or queue that could still merge it.
+   * still open returns `"open"`, committed only when it clears a reconcile hold. An unknown
+   * attempt counts as not merged only when the host proves the exact PR open with no auto-merge or
+   * queue that could still merge it.
    */
   const observe = Effect.fn(function* (
     pending: Store.PendingFactoryEffect,
@@ -391,8 +392,23 @@ const make = Effect.gen(function* () {
           observedAt: yield* nowIso,
         },
       };
+    } else if (detail.state === "open" && same && member.outcome.phase === "pending") {
+      // A hold for reconciliation becomes retryable once its next member is proved open, as after
+      // a closed PR is reopened. Otherwise an open pending member needs no commit.
+      if (
+        current.lifecycle.phase !== "attention" ||
+        current.lifecycle.retry !== "reconcile" ||
+        current.members.find((entry) => entry.outcome.phase !== "confirmed") !== member
+      )
+        return "open" as const;
+      observation = {
+        phase: "open",
+        headSha: member.reviewed.headSha,
+        targetBranch: member.authority.targetBranch,
+        queued: false,
+        observedAt: yield* nowIso,
+      };
     } else if (detail.state === "open" && same) {
-      if (member.outcome.phase === "pending") return "open" as const;
       const evidence = yield* pullRequests.inspectForMerge(ref).pipe(Effect.mapError(failure));
       const rejection = definitiveRejection(mutationFailure);
       const open =

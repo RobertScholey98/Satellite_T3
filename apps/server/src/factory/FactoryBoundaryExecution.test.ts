@@ -14,11 +14,13 @@ import {
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -584,14 +586,6 @@ live(
             expectedEpoch: 0,
           });
           assert.equal(preserved.gates[0]?.status, "passed");
-          const artifact = yield* restarted.exportArtifact({
-            assignmentId: assignment.id,
-            artifactId: preserved.artifactId,
-          });
-          assert.equal(
-            yield* fs.readFileString(path.join(artifact.sourcePath, "src", "value.cjs")),
-            "module.exports = 2;",
-          );
           assert.equal(
             state.assignments.find((entry) => entry.id === assignment.id)?.grant?.epoch,
             0,
@@ -608,13 +602,6 @@ live(
         assert.equal(narrowed.code, 0, narrowed.stderr);
         const passed = yield* execution.verify({ assignmentId: assignment.id, expectedEpoch: 0 });
         assert.equal(passed.gates[0]?.status, "passed");
-        assert.equal(
-          (yield* execution.exportArtifact({
-            assignmentId: assignment.id,
-            artifactId: passed.artifactId,
-          })).sourceDigest,
-          passed.sourceDigest,
-        );
         const freshId = FactorySourceId.make(yield* (yield* Crypto.Crypto).randomUUIDv4);
         const freshFiles = yield* Effect.forEach(
           [
@@ -1017,12 +1004,6 @@ live(
         yield* fs.writeFileString(journalFile, json({ ...journal, complete: false }));
         yield* execution.mutate(create);
         yield* execution.mutate(create);
-        assert.equal(
-          (yield* execution
-            .exportArtifact({ assignmentId: assignment.id, artifactId: passed.artifactId })
-            .pipe(Effect.flip)).code,
-          "execution-unavailable",
-        );
         const rename = {
           ...create,
           commandId: CommandId.make("rename"),
@@ -1283,4 +1264,152 @@ live(
       Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
     ),
   180000,
+);
+
+it.effect("a crash while recording an approved boundary leaves the approval retryable", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped();
+    const profileId = "0b6f3c1e-8d0a-4c4e-9f43-2f0f6a3c9e11";
+    const managerId = ThreadId.make("system-manager");
+    const workflow = { repositoryRoot: "/owned-workflow", revision: "a".repeat(40) };
+    const workflowBytes = Buffer.from("Owned immutable skill");
+    const workflowFile = {
+      path: "skills/SKILL.md",
+      content: workflowBytes.toString("base64"),
+      digest: Buffer.from(yield* (yield* Crypto.Crypto).digest("SHA-256", workflowBytes)).toString(
+        "hex",
+      ),
+      mode: "100644" as const,
+    };
+    const now = "2026-10-10T12:00:00.000Z";
+    const initial = initialFactorySnapshot();
+    const state: FactorySnapshot = {
+      ...initial,
+      managers: [
+        {
+          id: managerId,
+          threadId: managerId,
+          role: "system",
+          projectId: null,
+          workspaceProjectId: ProjectId.make("workspace"),
+          qualification: { status: "qualified", profileId, checkedAt: now },
+          name: "System",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+          workflow,
+          overrides: {},
+          status: "active",
+          threadStatus: "created",
+          launchStatus: "delivered",
+          wait: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+    // Simulates a process crash halfway through the first write of the boundary record.
+    let crash = true;
+    const crashing = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (real) =>
+        FileSystem.FileSystem.of({
+          ...real,
+          writeFileString: (target, data, options) => {
+            if (!crash || !target.includes(`${path.sep}boundaries${path.sep}`))
+              return real.writeFileString(target, data, options);
+            crash = false;
+            return real
+              .writeFileString(target, data.slice(0, data.length / 2), options)
+              .pipe(Effect.andThen(Effect.die("crashed")));
+          },
+        }),
+      ),
+    );
+    const succeeded = {
+      stdout: "factory-writable-boundary-ok",
+      stderr: "",
+      code: ChildProcessSpawner.ExitCode(0),
+      timedOut: false,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutInvalidUtf8: false,
+      stderrInvalidUtf8: false,
+    };
+    yield* Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const directory = path.join(config.stateDir, "factory", "execution", profileId);
+      const profile = {
+        boundaryId: profileId,
+        dockerContext: "local",
+        imageId: "sha256:verified",
+        projectSnapshotPath: path.join(directory, "project"),
+        workflowSnapshotPath: path.join(directory, "workflow"),
+        runtimePath: path.join(directory, "sessions"),
+        sourceRevision: "b".repeat(40),
+      };
+      for (const [file, content] of [
+        ["src/value.cjs", "module.exports = 1;"],
+        ["tests/required.cjs", "require('../src/value.cjs');"],
+      ] as const) {
+        const target = path.join(profile.projectSnapshotPath, file);
+        yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+        yield* fs.writeFileString(target, content);
+      }
+      yield* fs.makeDirectory(path.join(profile.workflowSnapshotPath, "skills"), {
+        recursive: true,
+      });
+      yield* fs.writeFile(
+        path.join(profile.workflowSnapshotPath, workflowFile.path),
+        workflowBytes,
+      );
+      yield* fs.writeFileString(path.join(directory, "profile.json"), json(profile));
+      const execution = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+      const approval = {
+        managerId,
+        projectId: ProjectId.make("shared-project"),
+        workflow,
+        qualification: { status: "qualified" as const, profileId, checkedAt: now },
+        configuration: {
+          protectedPaths: ["tests/required.cjs"],
+          writablePaths: ["src/value.cjs"],
+          creatableDirectories: ["src"],
+          gates: [
+            {
+              id: "required",
+              label: "Required test",
+              executable: "/usr/local/bin/node",
+              args: ["/workspace/tests/required.cjs"],
+              cwd: ".",
+              timeoutMs: 10000,
+              protectedInputs: ["tests/required.cjs"],
+            },
+          ],
+        },
+      };
+      assert.isTrue(Exit.isFailure(yield* execution.approveShared(approval).pipe(Effect.exit)));
+      assert.isFalse(crash);
+      const boundary = yield* execution.approveShared(approval);
+      assert.deepEqual(boundary.writablePaths, ["src/value.cjs"]);
+    }).pipe(
+      Effect.provide(
+        FactoryBoundaryExecution.layer.pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(
+              ServerConfig.layerTest(root, root),
+              Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+              Layer.succeed(
+                ProcessRunner.ProcessRunner,
+                ProcessRunner.ProcessRunner.of({ run: () => Effect.succeed(succeeded) }),
+              ),
+              Layer.mock(FactorySource.FactorySource)({
+                readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
+              }),
+            ),
+          ),
+          Layer.provide(crashing),
+        ),
+      ),
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

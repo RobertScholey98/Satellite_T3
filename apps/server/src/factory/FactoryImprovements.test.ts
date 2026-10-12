@@ -768,6 +768,41 @@ describe("proposal review", () => {
     assert.deepStrictEqual(accepted.effects, []);
     assert.equal(accepted.state.improvementProposals[0]!.content.assessmentApproach, null);
   });
+  it("tells a paused system manager why it cannot submit its draft", () => {
+    const investigation = investigated();
+    const written = apply(
+      investigation.state,
+      {
+        type: "proposal.write",
+        commandId: id(),
+        investigationId: investigation.result.investigationId!,
+        content,
+      },
+      manager,
+    );
+    const submitted = decide({
+      state: {
+        ...written.state,
+        managers: written.state.managers.map((entry) =>
+          entry.id === managerId ? { ...entry, status: "paused" as const } : entry,
+        ),
+      },
+      actor: manager,
+      now: deliveryNow,
+      command: {
+        type: "proposal.submit",
+        commandId: id(),
+        proposalId: written.result.proposalId!,
+        revision: written.result.proposalRevision!,
+      },
+    });
+    assert.isTrue(Result.isFailure(submitted));
+    if (Result.isFailure(submitted))
+      assert.equal(
+        submitted.failure.detail,
+        "Only the human or active system manager can submit a shared proposal.",
+      );
+  });
   it("invalidates an old review when a new immutable revision is written and records usefulness independently", () => {
     const investigation = investigated();
     let result = apply(

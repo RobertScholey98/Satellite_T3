@@ -403,9 +403,9 @@ it.effect(
         }).pipe(Effect.provide(f.layer));
         const count = f.mutations.length;
         const replay = yield* Effect.gen(function* () {
-          const service = yield* FactoryPreviewPublication.FactoryPreviewPublication;
-          assert.deepEqual(yield* service.read(f.input), first);
-          return yield* service.publish(f.input);
+          return yield* (yield* FactoryPreviewPublication.FactoryPreviewPublication).publish(
+            f.input,
+          );
         }).pipe(Effect.provide(f.layer));
         assert.deepEqual(replay, first);
         assert.equal(f.mutations.length, count);

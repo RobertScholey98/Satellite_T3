@@ -540,10 +540,15 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
                 : ref.kind === "feedback"
                   ? state.improvementFeedback.find((entry) => entry.id === ref.id)
                   : state.improvementRecurrences.find((entry) => entry.id === ref.id);
+        if (!record)
+          return yield* new FactoryError({
+            code: "invalid-state",
+            detail:
+              "That improvement record or revision does not exist. Read the improvement snapshot for current ids and revisions.",
+          });
         const limit = input.limit ?? 8000;
         const offset = input.cursor?.offset ?? 0;
         if (
-          !record ||
           !Number.isInteger(limit) ||
           limit < 1 ||
           limit > 16000 ||

@@ -695,7 +695,15 @@ export function decideFactoryDelivery(
       {
         ...delivery,
         currentRevisionId: id,
-        revisions: [...delivery.revisions, next],
+        // A capture still in flight is superseded: its effect stops at the next currency check,
+        // and failing it here keeps its receipt from landing and its status from holding
+        // conclusion open.
+        revisions: [
+          ...delivery.revisions.map((entry) =>
+            entry.status === "capturing" ? { ...entry, status: "failed" as const } : entry,
+          ),
+          next,
+        ],
         readiness: ["Preparing an immutable candidate."],
       },
       [{ type: "delivery.capture", ...effectFields, revisionId: id }],

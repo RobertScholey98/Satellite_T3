@@ -248,6 +248,74 @@ it.effect("holds peer delivery during project pause and resumes the same durable
   }).pipe(Effect.provide(base)),
 );
 
+it.effect("fails a peer message whose recipient lead's thread was deleted", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const store = yield* Store.FactoryStore;
+    const threads = yield* Threads.ThreadManagementService;
+    yield* store.commit({
+      actor: { kind: "thread", threadId: deliveryIds.lead },
+      command: {
+        type: "collaboration.message.send",
+        commandId: CommandId.make("send"),
+        requestId: "request",
+        fromAssignmentId: deliveryIds.assignment,
+        toAssignmentId: apiAssignment,
+        text: "Confirm response fields",
+      },
+      now: deliveryNow,
+    });
+    const pending = (yield* store.pending).find(
+      (entry) => entry.intent.type === "collaboration.message.deliver",
+    )!;
+    yield* threads.dispatch({
+      type: "thread.delete",
+      commandId: CommandId.make("delete-api-lead"),
+      threadId: apiLead,
+    });
+    yield* Effect.gen(function* () {
+      const effects = yield* Collaboration.FactoryCollaborationEffects;
+      yield* effects.handle(pending);
+    }).pipe(Effect.provide(runtime));
+    assert.equal((yield* store.snapshot).collaborationMessages[0]!.delivery.phase, "failed");
+    assert.isFalse((yield* store.pending).some((entry) => entry.id === pending.id));
+  }).pipe(Effect.provide(base)),
+);
+
+it.effect("retires a notice once its only unreached recipient's thread was deleted", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const store = yield* Store.FactoryStore;
+    const threads = yield* Threads.ThreadManagementService;
+    yield* store.commit({
+      actor: { kind: "thread", threadId: deliveryIds.lead },
+      command: {
+        type: "collaboration.plan.propose",
+        commandId: CommandId.make("plan"),
+        requestIds: ["request"],
+        text: "An additional endpoint needs approval",
+        changes: { kind: "boundary", reason: "Outside original API path" },
+      },
+      now: deliveryNow,
+    });
+    const pending = (yield* store.pending).find(
+      (entry) => entry.intent.type === "collaboration.notify",
+    )!;
+    yield* threads.dispatch({
+      type: "thread.delete",
+      commandId: CommandId.make("delete-manager"),
+      threadId: deliveryIds.manager,
+    });
+    yield* Effect.gen(function* () {
+      const effects = yield* Collaboration.FactoryCollaborationEffects;
+      yield* effects.handle(pending);
+    }).pipe(Effect.provide(runtime));
+    for (const threadId of [apiManager, deliveryIds.lead, apiLead])
+      assert.equal((yield* threads.getThreadRecords(threadId, ["messages"])).messages.length, 1);
+    assert.isFalse((yield* store.pending).some((entry) => entry.id === pending.id));
+  }).pipe(Effect.provide(base)),
+);
+
 it.effect(
   "notifies unpaused peers independently and deduplicates their receipts while another manager is paused",
   () =>

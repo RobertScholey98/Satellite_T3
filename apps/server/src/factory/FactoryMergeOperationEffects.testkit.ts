@@ -43,6 +43,7 @@ export const makeMergeOperationHarness = Effect.fn(function* (
   const fs = yield* FileSystem.FileSystem;
   const root = yield* fs.makeTempDirectoryScoped();
   const merged = new Set<string>();
+  const closed = new Set<string>();
   const github = makeFakeGitHub();
   const writes: string[] = [];
   const stages: string[] = [];
@@ -79,7 +80,7 @@ export const makeMergeOperationHarness = Effect.fn(function* (
       body: "Body",
       url: `https://github.com/${ref.repository}/pull/${ref.number}`,
       author: null,
-      state: done ? "merged" : "open",
+      state: done ? "merged" : closed.has(canonicalFactoryPullRequest(ref)) ? "closed" : "open",
       isDraft: false,
       mergeability: "mergeable",
       additions: 1,
@@ -260,5 +261,18 @@ export const makeMergeOperationHarness = Effect.fn(function* (
   const current: Effect.Effect<FactoryMergeOperation, FactoryError> = store.snapshot.pipe(
     Effect.map((state) => state.mergeOperations[0]!),
   );
-  return { fixture, store, layer, start, drain, current, writes, stages, merged, commit, github };
+  return {
+    fixture,
+    store,
+    layer,
+    start,
+    drain,
+    current,
+    writes,
+    stages,
+    merged,
+    closed,
+    commit,
+    github,
+  };
 });

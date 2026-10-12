@@ -72,7 +72,7 @@ export function commissionFactoryAssignment(input: {
     kind: work.kind,
     title: work.title,
     scope: work.scope,
-    completion: initialFactoryCompletion(work.scope, manager.id),
+    completion: initialFactoryCompletion(work.scope),
     oversight: initialFactoryOversight(),
     complexity: work.complexity,
     modelSelection: selected.success.selection,

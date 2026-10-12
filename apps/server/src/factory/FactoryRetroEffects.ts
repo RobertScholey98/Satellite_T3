@@ -39,6 +39,7 @@ import {
   type FactoryRetroContext,
 } from "./FactoryRetros.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { deletedThreadDetail, factoryThreadDeleted } from "./FactoryThreadReach.ts";
 import { factoryMergeFrozenProof } from "./FactoryMergeOperation.ts";
 import type { FactoryActor } from "./FactoryState.ts";
 
@@ -671,6 +672,11 @@ const make = Effect.gen(function* () {
       }
       const manager = state.managers.find((entry) => entry.id === assignment.managerId);
       if (!manager || manager.status !== "active") return;
+      // A deleted manager thread can never receive the invitation; retrying would only fail again.
+      if (yield* factoryThreadDeleted(threads, manager.threadId)) {
+        yield* store.retireEffect(pending.id);
+        return;
+      }
       yield* notify({
         threadId: manager.threadId,
         projectId: assignment.projectId,
@@ -714,7 +720,9 @@ const make = Effect.gen(function* () {
       const profile = yield* execution.runtimePolicyFor(retro.threadId);
       if (!profile) return yield* new FactoryError({ code: "execution-unavailable" });
       yield* access.assertExecution(retro.threadId);
-      if ((yield* threads.getThreadShell(retro.threadId)) === null)
+      if ((yield* threads.getThreadShell(retro.threadId)) === null) {
+        if (yield* factoryThreadDeleted(threads, retro.threadId))
+          return yield* new FactoryError({ code: "invalid-state", detail: deletedThreadDetail });
         yield* threads.dispatch({
           type: "thread.create",
           commandId: CommandId.make(`${pending.id}:create`),
@@ -729,6 +737,7 @@ const make = Effect.gen(function* () {
           createdBy: "system",
           creationSource: "server",
         });
+      }
       yield* notify({
         threadId: retro.threadId,
         projectId: assignment.projectId,

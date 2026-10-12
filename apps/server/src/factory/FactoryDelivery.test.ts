@@ -9,6 +9,7 @@ import * as Result from "effect/Result";
 import { decide, type FactoryActor } from "./FactoryState.ts";
 import { factoryDeliveryReadiness } from "./FactoryDelivery.ts";
 import { factoryDirectionBlocked } from "./FactoryControls.ts";
+import { factoryCompletionEligibility } from "./FactoryRetros.ts";
 import {
   applyDelivery,
   deliveryActors,
@@ -597,6 +598,52 @@ describe("factory delivery", () => {
     ).state;
     assert.equal(state.assignments[0]!.delivery!.flow!.status, "releasing");
   });
+  it("fails a superseded capture so its receipt cannot land or hold conclusion open", () => {
+    const capture = (state: FactorySnapshot, id: string) =>
+      applyDelivery(state, {
+        type: "delivery.capture",
+        commandId: CommandId.make(id),
+        assignmentId: deliveryIds.assignment,
+        expectedEpoch: 1,
+        selectedPaths: ["src/feature.ts"],
+        commitMessage: "feat: feature",
+      }).state;
+    const captured = (id: string) =>
+      ({
+        type: "delivery.captured",
+        commandId: CommandId.make(`${id}:captured`),
+        assignmentId: deliveryIds.assignment,
+        revisionId: `revision:${id}`,
+        candidateId: `candidate:${id}`,
+        candidateDigest: `digest:${id}`,
+        publication: {
+          reservationId: `reservation:${id}`,
+          host: "github.com",
+          repository: "owner/repo",
+          branch: "factory/work",
+          baseBranch: "main",
+          headSha: `head:${id}`,
+          treeOid: "tree",
+        },
+        verification: {
+          artifactId: "checks",
+          sourceDigest: `digest:${id}`,
+          passed: true,
+          checkedAt: deliveryNow,
+        },
+      }) satisfies FactoryDecisionCommand;
+    const state = capture(capture(reviewedDeliveryFixture(), "superseded"), "current");
+    const revisions = state.assignments[0]!.delivery!.revisions;
+    assert.equal(revisions.find((entry) => entry.id === "revision:superseded")!.status, "failed");
+    rejected(state, captured("superseded"), deliveryActors.host);
+    const landed = applyDelivery(state, captured("current"), deliveryActors.host).state;
+    const eligibility = factoryCompletionEligibility(landed, landed.assignments[0]!);
+    assert.notInclude(
+      eligibility.eligible ? [] : eligibility.reasons,
+      "An external publication or merge outcome remains unresolved.",
+    );
+  });
+
   it("does not accept the lead or an unrelated worker as its independent reviewer", () => {
     const state = reviewedDeliveryFixture();
     const report = {

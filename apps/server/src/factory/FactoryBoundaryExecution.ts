@@ -244,21 +244,6 @@ export class FactoryBoundaryExecution extends Context.Service<
       readonly expectedEpoch: number;
     }) => Effect.Effect<FactoryVerification, FactoryError>;
     /**
-     * Returns a verification's stored source when every gate passed and the workspace still
-     * matches what was verified.
-     */
-    readonly exportArtifact: (input: {
-      readonly assignmentId: FactoryAssignmentId;
-      readonly artifactId: string;
-    }) => Effect.Effect<
-      {
-        readonly sourcePath: string;
-        readonly sourceDigest: string;
-        readonly files: ReadonlyArray<{ readonly path: string; readonly digest: string }>;
-      },
-      FactoryError
-    >;
-    /**
      * Revokes the workspace for the assignment's current grant epoch and kills its containers.
      * Revocation is permanent; only a new grant and `prepare` give it a workspace again.
      */
@@ -283,7 +268,6 @@ const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
 const decodeBoundary = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryBoundary));
 const decodeCapture = Schema.decodeUnknownEffect(Schema.fromJsonString(CapturedSource));
-const decodeVerification = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryVerification));
 const decodeCandidate = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryCandidateArtifact));
 const decodeDeliveryHold = Schema.decodeUnknownEffect(
   Schema.fromJsonString(FactoryDeliveryExecutionHold),
@@ -481,6 +465,20 @@ const make = Effect.gen(function* () {
     }
   });
 
+  // Writes `profile.json` or `boundary.json` atomically. A replay treats either file's presence
+  // as done, so it must never find a partial one.
+  const publish = Effect.fn("FactoryBoundaryExecution.publish")(function* (
+    directory: string,
+    name: "profile" | "boundary",
+    value: unknown,
+  ) {
+    const temporary = path.join(directory, `${name}.${yield* crypto.randomUUIDv4}.json`);
+    yield* fs.writeFileString(temporary, json(value), { flag: "wx" });
+    yield* fs
+      .rename(temporary, path.join(directory, `${name}.json`))
+      .pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
+  });
+
   /**
    * Proves in the real non-root worker container that `sourcePath` is writable and
    * `protectedPath` is not.
@@ -631,7 +629,7 @@ const make = Effect.gen(function* () {
         ),
       ),
     );
-    yield* fs.writeFileString(path.join(directory, "boundary.json"), json(boundary));
+    yield* publish(directory, "boundary", boundary);
     return boundary;
   });
 
@@ -1274,17 +1272,6 @@ const make = Effect.gen(function* () {
     mutex.withPermit,
     Effect.mapError(preserve),
   );
-  // Writes `profile.json` atomically, so a replay never reads a partial profile.
-  const publishProfile = Effect.fn("FactoryBoundaryExecution.publishProfile")(function* (
-    directory: string,
-    profile: FactoryExecutionProfile,
-  ) {
-    const temporary = path.join(directory, `profile.${yield* crypto.randomUUIDv4}.json`);
-    yield* fs.writeFileString(temporary, json(profile), { flag: "wx" });
-    yield* fs
-      .rename(temporary, path.join(directory, "profile.json"))
-      .pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
-  });
   const inspect = Effect.fn("FactoryBoundaryExecution.inspect")(
     function* (input: Parameters<FactoryBoundaryExecution["Service"]["inspect"]>[0]) {
       const {
@@ -1345,7 +1332,7 @@ const make = Effect.gen(function* () {
         yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
         yield* current(input.assignmentId, input.expectedEpoch);
         yield* assertActive(original);
-        yield* publishProfile(directory, profile);
+        yield* publish(directory, "profile", profile);
       }
       return {
         qualification: {
@@ -1420,7 +1407,7 @@ const make = Effect.gen(function* () {
         yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
         yield* current(input.assignmentId, input.expectedEpoch);
         yield* assertActive(original);
-        yield* publishProfile(directory, profile);
+        yield* publish(directory, "profile", profile);
       }
       return {
         qualification: {
@@ -1467,7 +1454,7 @@ const make = Effect.gen(function* () {
         yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
         yield* current(input.assignmentId, input.expectedEpoch);
         yield* assertActive(original);
-        yield* publishProfile(directory, profile);
+        yield* publish(directory, "profile", profile);
       }
       return {
         status: "qualified" as const,
@@ -1715,7 +1702,7 @@ const make = Effect.gen(function* () {
           });
         // `profile.json` is written last; its presence is what a replay treats as prepared.
         yield* current(input.assignmentId, input.grant.epoch, false, true);
-        yield* fs.writeFileString(path.join(directory, "profile.json"), json(profile));
+        yield* publish(directory, "profile", profile);
         return {
           status: "qualified" as const,
           profileId,
@@ -1934,43 +1921,6 @@ const make = Effect.gen(function* () {
           }),
         );
       return result;
-    },
-    mutex.withPermit,
-    Effect.mapError(preserve),
-  );
-
-  const exportArtifact = Effect.fn("FactoryBoundaryExecution.exportArtifact")(
-    function* (input: Parameters<FactoryBoundaryExecution["Service"]["exportArtifact"]>[0]) {
-      const { profile, grant, boundary } = yield* prepared(input.assignmentId);
-      if (!/^[a-f0-9-]{36}$/.test(input.artifactId)) return yield* denied();
-      const directory = path.join(
-        root,
-        "execution",
-        profile.boundaryId,
-        "artifacts",
-        input.artifactId,
-      );
-      const result = yield* fs
-        .readFileString(path.join(directory, "verification.json"))
-        .pipe(Effect.flatMap(decodeVerification));
-      if (
-        result.epoch !== grant.epoch ||
-        result.boundaryId !== boundary.id ||
-        result.gates.some((gate) => gate.status !== "passed")
-      )
-        return yield* denied();
-      const currentSource = yield* helper(profile, { kind: "capture" }).pipe(
-        Effect.flatMap(decodeCapture),
-      );
-      if (currentSource.digest !== result.sourceDigest)
-        return yield* unavailable(
-          "The assignment changed after verification. Run the approved checks again before exporting this artifact.",
-        );
-      return {
-        sourcePath: path.join(directory, "source"),
-        sourceDigest: result.sourceDigest,
-        files: currentSource.files.map(({ path: file, digest }) => ({ path: file, digest })),
-      };
     },
     mutex.withPermit,
     Effect.mapError(preserve),
@@ -2258,7 +2208,7 @@ const make = Effect.gen(function* () {
           )
             return yield* denied();
           yield* assertActive(profile);
-          yield* publishProfile(directory, inspection);
+          yield* publish(directory, "profile", inspection);
           yield* writeMarker({
             holdId: input.holdId,
             epoch: input.expectedEpoch,
@@ -2333,7 +2283,6 @@ const make = Effect.gen(function* () {
     rebind,
     mutate,
     verify,
-    exportArtifact,
     stop,
     suspend,
     resume,

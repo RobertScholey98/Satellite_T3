@@ -240,6 +240,20 @@ export const layer = Layer.effect(
         screenshot: { ...recorded.result.screenshot, data: Buffer.from(bytes).toString("base64") },
       });
     });
+    const checkSnapshot = Effect.fn(function* (value: unknown, origin: string) {
+      const snapshot = yield* decodeSnapshot(value).pipe(
+        Effect.mapError(() => "The native browser returned an unreadable snapshot."),
+      );
+      if (new URL(snapshot.url).origin !== origin)
+        return yield* Effect.fail("The snapshot left the approved app instance.");
+      const bytes = Buffer.from(snapshot.screenshot.data, "base64");
+      if (
+        bytes.length > 16_000_000 ||
+        !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      )
+        return yield* Effect.fail("The native browser did not return a bounded PNG screenshot.");
+      return { snapshot, bytes };
+    });
     const invoke = Effect.fn("FactoryPreviewEvidence.invoke")(function* (
       input: FactoryPreviewActionInput & { readonly threadId: ThreadId },
     ) {
@@ -311,20 +325,22 @@ export const layer = Layer.effect(
               input: operationInput,
             })
             .pipe(Effect.result);
-          let nativeResult: unknown = result._tag === "Success" ? result.success : null;
+          // A rejected snapshot has a known outcome, so it is journaled as failed rather than left
+          // `started`, which would block the instance as if the result were uncertain.
+          const captured =
+            result._tag === "Success" && action.type === "snapshot"
+              ? yield* checkSnapshot(result.success, instance.origin!).pipe(Effect.result)
+              : undefined;
+          const error =
+            result._tag === "Failure"
+              ? "The candidate browser action failed. Inspect the app state before retrying with a new command."
+              : captured?._tag === "Failure"
+                ? captured.failure
+                : undefined;
+          let nativeResult: unknown = !error && result._tag === "Success" ? result.success : null;
           let screenshot: (typeof Receipt.Type)["screenshot"];
-          if (result._tag === "Success" && action.type === "snapshot") {
-            const snapshot = yield* decodeSnapshot(nativeResult);
-            if (new URL(snapshot.url).origin !== instance.origin)
-              return yield* unavailable("The snapshot left the approved app instance.");
-            const bytes = Buffer.from(snapshot.screenshot.data, "base64");
-            if (
-              bytes.length > 16_000_000 ||
-              !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-            )
-              return yield* unavailable(
-                "The native browser did not return a bounded PNG screenshot.",
-              );
+          if (captured?._tag === "Success") {
+            const { snapshot, bytes } = captured.success;
             const fileName = `${entry.sequence}.png`;
             yield* fs.writeFile(path.join(directory, fileName), bytes, { flag: "wx" });
             screenshot = { digest: yield* digest(bytes), fileName };
@@ -344,12 +360,7 @@ export const layer = Layer.effect(
             input: operationInput,
             result: nativeResult,
             ...(screenshot ? { screenshot } : {}),
-            ...(result._tag === "Failure"
-              ? {
-                  error:
-                    "The candidate browser action failed. Inspect the app state before retrying with a new command.",
-                }
-              : {}),
+            ...(error ? { error } : {}),
             recordedAt: DateTime.formatIso(yield* DateTime.now),
           };
           const bytes = json(record);
@@ -363,7 +374,7 @@ export const layer = Layer.effect(
               ...journal.entries,
               {
                 ...entry,
-                status: result._tag === "Success" ? "succeeded" : "failed",
+                status: error ? "failed" : "succeeded",
                 receiptDigest,
               },
             ],

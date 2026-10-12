@@ -165,6 +165,7 @@ const scenario = <A, E, R>(
     prepare?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["prepare"];
     verify?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["verify"];
     previewReconcile?: Effect.Effect<void, FactoryError>;
+    deletedThreadIds?: readonly ThreadId[];
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -196,6 +197,12 @@ const scenario = <A, E, R>(
         creationSource: "web",
       });
     }
+    for (const threadId of options.deletedThreadIds ?? [])
+      yield* threads.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make(`delete:${threadId}`),
+        threadId,
+      });
     const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO factory_state (id,revision,payload_json) VALUES(1,0,${encodeSnapshot({
       ...initial(assignments),
@@ -1500,6 +1507,54 @@ it.effect("retires guidance relayed to a lead that was replaced", () =>
           threadId: leadId,
           messageId: MessageId.make("guidance-for-replaced-lead"),
           text: "The user gave guidance in a worker thread.",
+        },
+      ],
+    },
+  ),
+);
+
+it.effect("retires a relay to a thread that was deleted", () =>
+  scenario(
+    Effect.gen(function* () {
+      const factory = yield* FactoryService.FactoryService;
+      const sql = yield* SqlClient.SqlClient;
+      yield* factory.drain;
+      const rows = yield* sql<{ readonly effect_id: string; readonly status: string }>`
+        SELECT effect_id, status FROM factory_outbox WHERE command_id = 'persisted-delivery'
+        ORDER BY effect_id`;
+      assert.deepEqual(rows, [
+        { effect_id: "persisted-delivery:0", status: "superseded" },
+        { effect_id: "persisted-delivery:1", status: "superseded" },
+      ]);
+    }),
+    {
+      deletedThreadIds: [leadId],
+      controls: [
+        {
+          id: FactoryControlId.make("released-pause"),
+          kind: "project-pause",
+          projectId,
+          generation: 1,
+          status: "released",
+          stop: { status: "confirmed", stoppedAt: now },
+          requestedAt: now,
+          updatedAt: now,
+        },
+      ],
+      effects: [
+        {
+          type: "thread.deliver",
+          kind: "guidance",
+          threadId: leadId,
+          messageId: MessageId.make("guidance-for-deleted-lead"),
+          text: "The user gave guidance in a worker thread.",
+        },
+        {
+          type: "thread.queue.resume",
+          threadId: leadId,
+          controlId: FactoryControlId.make("released-pause"),
+          generation: 1,
+          runIds: [],
         },
       ],
     },

@@ -261,6 +261,50 @@ describe("durable shared merge operations", () => {
     assert.isTrue(factoryMergeOperationReadiness(confirmed.state, fixture.groupId).canRetry);
   });
 
+  it("keeps a new-review hold when later observations leave nothing uncertain", () => {
+    const fixture = frozenMergeOperationFixture();
+    const held = applyMerge(
+      fixture.state,
+      {
+        type: "merge.operation.held",
+        commandId: mergeCommandId(),
+        operationId: fixture.operationId,
+        reason: "The reviewed evidence changed.",
+        recommendation: "Review the changed evidence.",
+        retry: "new-review",
+      },
+      { kind: "system" },
+    );
+    const member = held.state.mergeOperations[0]!.members[0]!;
+    const open = applyMerge(
+      held.state,
+      {
+        type: "merge.operation.observed",
+        commandId: mergeCommandId(),
+        operationId: fixture.operationId,
+        assignmentId: member.reviewed.assignmentId,
+        observation: {
+          phase: "open",
+          headSha: member.reviewed.headSha,
+          targetBranch: member.authority.targetBranch,
+          queued: false,
+          observedAt: deliveryNow,
+        },
+      },
+      { kind: "system" },
+    );
+    const confirmed = confirmMergeMember(
+      held.state,
+      fixture.operationId,
+      member.reviewed.assignmentId,
+    );
+    for (const state of [open.state, confirmed.state]) {
+      const lifecycle = state.mergeOperations[0]!.lifecycle;
+      assert.equal(lifecycle.phase === "attention" ? lifecycle.retry : null, "new-review");
+      assert.isFalse(factoryMergeOperationReadiness(state, fixture.groupId).canRetry);
+    }
+  });
+
   it("holds a transient rejection for a deliberate retry instead of spending every attempt at once", () => {
     const fixture = frozenMergeOperationFixture();
     const submitted = submitMergeMember(fixture.state, fixture.operationId);

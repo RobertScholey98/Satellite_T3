@@ -17,7 +17,6 @@ import {
   type FactorySnapshot,
   type PullRequestRef,
   type QualifiedIssueDestination,
-  type ThreadId,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import { sha256 } from "@noble/hashes/sha2";
@@ -66,7 +65,6 @@ const conclusionDisposition = (conclusion: FactoryConclusion): FactoryConclusion
  */
 export const initialFactoryCompletion = (
   scope: FactoryAssignmentScope | undefined,
-  _managerId?: ThreadId,
 ): FactoryAssignmentCompletion => ({
   phase: "collecting",
   waitReason: null,

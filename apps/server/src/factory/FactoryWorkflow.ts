@@ -1097,12 +1097,15 @@ export function decideFactoryWorkflow(
             startingSource:
               migration.lifecycle.phase === "preparing" ? migration.lifecycle.startingSource : null,
           },
-          {
-            ...assignment,
-            status: "waiting",
-            wait: { kind: "execution-boundary", reason: command.reason },
-            updatedAt: now,
-          },
+          // Concluded work keeps its status; only the migration records the failure.
+          assignment.outcome !== undefined || assignment.status === "complete"
+            ? assignment
+            : {
+                ...assignment,
+                status: "waiting",
+                wait: { kind: "execution-boundary", reason: command.reason },
+                updatedAt: now,
+              },
           [],
           {
             preparedEpoch: migration.preparedEpoch,

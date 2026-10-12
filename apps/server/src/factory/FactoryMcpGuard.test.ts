@@ -1335,13 +1335,14 @@ describe("FactoryMcpGuard", () => {
           assert.isTrue(
             (yield* call("factory_improvement_record", { record: namedRecord }, managerId)).isError,
           );
-          assert.isTrue(
-            (yield* call(
-              "factory_improvement_record",
-              { record: { ...namedRecord, revision: "other-revision" } },
-              systemId,
-            )).isError,
+          // A missing record says so rather than reading as a permission refusal.
+          const missing = yield* call(
+            "factory_improvement_record",
+            { record: { ...namedRecord, revision: "other-revision" } },
+            systemId,
           );
+          assert.isTrue(missing.isError);
+          assert.include(JSON.stringify(missing.content), "does not exist");
           assert.isTrue(
             (yield* call(
               "factory_improvement_record",
@@ -1912,6 +1913,7 @@ describe("FactoryMcpGuard", () => {
       Effect.gen(function* () {
         shells.set(childId, {
           ...liveThreadShell(childId),
+          projectId: ProjectId.make("web"),
           lineage: {
             rootThreadId: childId,
             parentThreadId: childId,
