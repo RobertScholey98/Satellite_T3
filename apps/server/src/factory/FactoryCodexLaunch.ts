@@ -12,6 +12,8 @@ import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { factoryDockerArguments, FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 
+// The fields of Codex's `auth.json` that are copied into a session's provider home. Decoding drops
+// every other field, so only the model credential reaches the container.
 const ModelCredentials = Schema.Struct({
   auth_mode: Schema.optional(Schema.String),
   OPENAI_API_KEY: Schema.optional(Schema.NullOr(Schema.String)),
@@ -32,6 +34,12 @@ const decodeCredentials = Schema.decodeUnknownEffect(Schema.fromJsonString(Model
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(ModelCredentials));
 const isLaunchError = Schema.is(ConfinedCodexLaunch.ConfinedCodexLaunchError);
 
+/**
+ * Builds the `docker` command that starts Codex's app server inside a profile's boundary. Refuses
+ * a held profile, rewrites the session's provider home from scratch, and passes exactly one model
+ * credential: the managed access token, a copy of the selected account's file credential, or
+ * `OPENAI_API_KEY`. The host environment is reduced to what the Docker CLI needs.
+ */
 export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
   function* (input: {
     readonly profile: FactoryExecutionProfile;
@@ -89,6 +97,7 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
       "features.multi_agent_v2=false",
     ];
     const authPath = path.join(codexHome, "auth.json");
+    // A credential from an earlier launch must not outlive a change of account or setup mode.
     if (yield* fs.exists(authPath)) yield* fs.remove(authPath);
     if (input.settings.setupMode === "managed") {
       if (!input.environment.ACCESS_TOKEN)
@@ -96,6 +105,7 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
           detail: "The selected managed Codex model account is not available.",
         });
       environment.ACCESS_TOKEN = input.environment.ACCESS_TOKEN;
+      // `--env NAME` forwards the value from Docker's environment, keeping it out of the argv.
       args.push("--env", "ACCESS_TOKEN");
       config.push(
         'model_provider="openai_token_sharing"',

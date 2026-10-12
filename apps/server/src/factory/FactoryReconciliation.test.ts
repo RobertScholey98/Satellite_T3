@@ -29,11 +29,8 @@ import {
   restartPrepareCommandId,
 } from "../orchestration-v2/RestartContinuation.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import {
-  layer as SatelliteLayer,
-  recordProject,
-} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
+import * as SatelliteTestRuntime from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryReconciliation from "./FactoryReconciliation.ts";
 import * as FactoryStore from "./FactoryStore.ts";
@@ -105,7 +102,7 @@ const initial = (item: FactoryAssignment): FactorySnapshot => ({
   ],
 });
 const runtime = Layer.mergeAll(FactoryStore.layer, ThreadManagement.layer).pipe(
-  Layer.provideMerge(SatelliteLayer),
+  Layer.provideMerge(SatelliteTestRuntime.layer),
 );
 const layer = FactoryReconciliation.layer.pipe(
   Layer.provide(FactoryControlAccess.layer),
@@ -117,7 +114,11 @@ const scenario = <A, E, R>(
   transform: (state: FactorySnapshot) => FactorySnapshot = (state) => state,
 ) =>
   Effect.gen(function* () {
-    yield* recordProject({ projectId, title: "Reconciliation", workspaceRoot: "/project" });
+    yield* SatelliteTestRuntime.recordProject({
+      projectId,
+      title: "Reconciliation",
+      workspaceRoot: "/project",
+    });
     const threads = yield* ThreadManagement.ThreadManagementService;
     for (const threadId of [managerId, leadId])
       yield* threads.dispatch({
@@ -303,7 +304,7 @@ it.effect(
       item,
     ).pipe(
       Effect.provide(
-        Layer.mock(PullRequestService)({
+        Layer.mock(PullRequestService.PullRequestService)({
           detail: (input) =>
             Effect.succeed(
               input.number === 43 ? { ...detail, number: 43, headSha: "second-head" } : detail,
@@ -497,7 +498,11 @@ it.effect.each(["open", "wrong-identity", "missing-head", "merged"] as const)(
         })),
       }),
     ).pipe(
-      Effect.provide(Layer.mock(PullRequestService)({ detail: () => Effect.succeed(response) })),
+      Effect.provide(
+        Layer.mock(PullRequestService.PullRequestService)({
+          detail: () => Effect.succeed(response),
+        }),
+      ),
     );
   },
 );
@@ -515,7 +520,7 @@ it.effect("rejects an unlinked delivery before calling the provider", () =>
       claimAssignment,
     ).pipe(
       Effect.provide(
-        Layer.mock(PullRequestService)({
+        Layer.mock(PullRequestService.PullRequestService)({
           detail: () => Ref.update(reads, (count) => count + 1).pipe(Effect.as(detail)),
         }),
       ),

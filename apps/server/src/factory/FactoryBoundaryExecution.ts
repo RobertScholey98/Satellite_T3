@@ -29,8 +29,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { ServerConfig } from "../config.ts";
-import { ProcessRunner } from "../processRunner.ts";
+import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import {
   factoryCanWrite,
   factoryPathWithin,
@@ -46,11 +46,11 @@ import {
   FactoryDeliveryExecutionHold,
 } from "./FactoryExecutionProfile.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import { factoryVolumeHelper } from "./FactoryVolumeHelper.ts";
 import { factoryWritableProbe } from "./FactoryWritableProbe.ts";
-import { FactorySource, factoryCanonicalText } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import { FactoryCandidateArtifact } from "./FactoryCandidate.ts";
 import * as FactoryPublication from "./FactoryPublication.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
@@ -65,14 +65,31 @@ const CapturedFile = Schema.Struct({
 });
 const CapturedSource = Schema.Struct({ files: Schema.Array(CapturedFile), digest: Schema.String });
 
+/**
+ * Owns the Docker side of managed work: approved boundary baselines, each assignment's workspace
+ * volume, file changes and checks inside it, delivery candidates, read-only snapshots for review
+ * and recovery, and the authority markers that stop work. The factory service and its effect
+ * reactors call it. Every assignment operation readmits the assignment against current state,
+ * and a mismatch is refused, usually with `permission-denied`.
+ */
 export class FactoryBoundaryExecution extends Context.Service<
   FactoryBoundaryExecution,
   {
+    /**
+     * Writes or removes an incident marker in the assignment's authority directory and kills its
+     * running containers. Release is accepted only once the incident's stop is confirmed.
+     */
     readonly setIncidentHold: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly restrictionId: string;
       readonly held: boolean;
     }) => Effect.Effect<void, FactoryError>;
+    /**
+     * Holds or releases implementation while the human reviews a concrete UI flow. Holding
+     * captures the workspace into a read-only snapshot and returns its qualification; replaying
+     * the hold returns the same snapshot, and a released hold cannot be held again. Release
+     * returns `undefined`.
+     */
     readonly setDeliveryHold: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly threadId: ThreadId;
@@ -87,31 +104,53 @@ export class FactoryBoundaryExecution extends Context.Service<
       | undefined,
       FactoryError
     >;
+    /**
+     * Captures a stopped workspace as the starting source for the assignment's workflow
+     * migration. The workspace must already be revoked, and is mounted read-only.
+     */
     readonly captureMigration: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly migrationId: string;
       readonly expectedEpoch: number;
     }) => Effect.Effect<FactoryStartingSource, FactoryError>;
+    /**
+     * Captures the workspace as a delivery candidate for the selected paths. Keyed by the
+     * command: a replay returns the stored candidate, and a replay with other paths is refused.
+     */
     readonly captureCandidate: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly expectedEpoch: number;
       readonly commandId: CommandId;
       readonly selectedPaths: ReadonlyArray<string>;
     }) => Effect.Effect<FactoryCandidateArtifact, FactoryError>;
+    /**
+     * Reads a stored candidate, finalized when it has been, and refuses one whose files no
+     * longer match its digests. Does not check that the assignment is still current.
+     */
     readonly readCandidate: (
       candidateId: string,
     ) => Effect.Effect<FactoryCandidateArtifact, FactoryError>;
+    /**
+     * Binds a candidate to the publication tree prepared for its reservation, after checking that
+     * the reservation describes exactly this candidate. Idempotent for the same reservation; any
+     * other reservation is refused. Needs `FactoryPublication` in the layer.
+     */
     readonly finalizeCandidate: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly expectedEpoch: number;
       readonly candidateId: string;
       readonly reservationId: string;
     }) => Effect.Effect<FactoryCandidateArtifact, FactoryError>;
+    /** Runs the boundary's checks on a finalized candidate's published files, not the workspace. */
     readonly verifyCandidate: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly expectedEpoch: number;
       readonly candidateId: string;
     }) => Effect.Effect<FactoryVerification, FactoryError>;
+    /**
+     * Prepares a read-only snapshot of a finalized candidate's published tree for an independent
+     * reviewer thread. A replay for the same thread and grant returns the same profile.
+     */
     readonly inspectCandidate: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly expectedEpoch: number;
@@ -124,6 +163,11 @@ export class FactoryBoundaryExecution extends Context.Service<
       },
       FactoryError
     >;
+    /**
+     * Stores a project manager's boundary baseline from its discovery snapshot and proves the
+     * write boundary in a throwaway volume. The same discovery profile and configuration always
+     * produce the same boundary.
+     */
     readonly approve: (input: {
       readonly managerId: ThreadId;
       readonly configuration: FactoryBoundaryConfiguration;
@@ -132,6 +176,11 @@ export class FactoryBoundaryExecution extends Context.Service<
       readonly managerId: ThreadId;
       readonly commandId: CommandId;
     }) => Effect.Effect<FactoryBoundary, FactoryError>;
+    /**
+     * Like `approve`, for a system manager's shared work in a project that has no project
+     * manager. Unlike `approve`, it accepts `protected-integrity` verification, which needs no
+     * editable files.
+     */
     readonly approveShared: (input: {
       readonly managerId: ThreadId;
       readonly projectId: ProjectId;
@@ -139,6 +188,12 @@ export class FactoryBoundaryExecution extends Context.Service<
       readonly qualification: Extract<FactoryDiscoveryQualification, { status: "qualified" }>;
       readonly configuration: FactoryBoundaryConfiguration;
     }) => Effect.Effect<FactoryBoundary, FactoryError>;
+    /**
+     * Creates the workspace volume for the assignment's current grant, seeded from the boundary
+     * baseline or the starting source, and proves the write boundary inside it. Refuses a
+     * starting source that changes an adopted control. A replay for the same grant, workflow and
+     * starting source reuses the stored profile.
+     */
     readonly prepare: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly threadId: ThreadId;
@@ -146,6 +201,7 @@ export class FactoryBoundaryExecution extends Context.Service<
       readonly grant: FactoryAssignmentGrant;
       readonly startingSourceId?: FactorySourceId;
     }) => Effect.Effect<FactoryDiscoveryQualification, FactoryError>;
+    /** Prepares a read-only snapshot of the workspace for a recovery inspector thread. */
     readonly inspect: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly threadId: ThreadId;
@@ -157,6 +213,10 @@ export class FactoryBoundaryExecution extends Context.Service<
       },
       FactoryError
     >;
+    /**
+     * Gives a replacement lead its own profile on the same workspace during recovery. The new
+     * profile shares the original's volume, receipts and artifacts, with a fresh provider home.
+     */
     readonly rebind: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly threadId: ThreadId;
@@ -165,16 +225,28 @@ export class FactoryBoundaryExecution extends Context.Service<
       Extract<FactoryDiscoveryQualification, { status: "qualified" }>,
       FactoryError
     >;
+    /**
+     * Applies one file operation to the workspace. Keyed by `commandId`: a replay of the same
+     * request does nothing, and a different request under that id is a `command-conflict`.
+     */
     readonly mutate: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly expectedEpoch: number;
       readonly commandId: CommandId;
       readonly operation: FactoryFileMutation;
     }) => Effect.Effect<void, FactoryError>;
+    /**
+     * Captures the workspace and runs the boundary's gates on it in offline containers, with the
+     * adopted controls laid over it. A failing gate is reported in the result, not as an error.
+     */
     readonly verify: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly expectedEpoch: number;
     }) => Effect.Effect<FactoryVerification, FactoryError>;
+    /**
+     * Returns a verification's stored source when every gate passed and the workspace still
+     * matches what was verified.
+     */
     readonly exportArtifact: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly artifactId: string;
@@ -186,11 +258,20 @@ export class FactoryBoundaryExecution extends Context.Service<
       },
       FactoryError
     >;
+    /**
+     * Revokes the workspace for the assignment's current grant epoch and kills its containers.
+     * Revocation is permanent; only a new grant and `prepare` give it a workspace again.
+     */
     readonly stop: (assignmentId: FactoryAssignmentId) => Effect.Effect<void, FactoryError>;
+    /**
+     * Pauses the workspace for a project pause and kills its containers. A pause older than the
+     * current one is refused, and suspending a generation that was already resumed does nothing.
+     */
     readonly suspend: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly generation: number;
     }) => Effect.Effect<void, FactoryError>;
+    /** Lifts the pause of the matching generation, if the workspace is still current and intact. */
     readonly resume: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly generation: number;
@@ -222,14 +303,20 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const runner = yield* ProcessRunner;
-  const config = yield* ServerConfig;
-  const store = yield* FactoryStore;
-  const sources = yield* FactorySource;
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const config = yield* ServerConfig.ServerConfig;
+  const store = yield* FactoryStore.FactoryStore;
+  const sources = yield* FactorySource.FactorySource;
   const publication = yield* Effect.serviceOption(FactoryPublication.FactoryPublication);
+  // `mutex` serializes workspace operations. Holds and pauses take `controlMutex` instead, so
+  // they never queue behind a long check run; `drain` kills containers, then waits out the
+  // operation that holds `mutex`.
   const mutex = yield* Semaphore.make(1);
   const controlMutex = yield* Semaphore.make(1);
   const platform = yield* HostProcessPlatform;
+  // Highest stopped grant epoch per assignment, in memory only. It refuses work at once after a
+  // stop, including for an assignment that has no workspace yet; the revocation file is the
+  // durable record.
   const stoppedEpochs = new Map<string, number>();
   const root = path.join(config.stateDir, "factory");
   const assertActive = (profile: FactoryExecutionProfile) =>
@@ -238,6 +325,8 @@ const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
 
+  // A UUID-shaped id derived from a value, so a replayed request finds the profile, boundary or
+  // candidate it stored the first time.
   const identity = (value: unknown) =>
     crypto.digest("SHA-256", new TextEncoder().encode(stableStringify(value))).pipe(
       Effect.map((bytes) => {
@@ -282,6 +371,11 @@ const make = Effect.gen(function* () {
               ),
         ),
       );
+  /**
+   * Runs the volume helper on an assignment's workspace in an offline container. Refuses
+   * inspection profiles and stopped or held workspaces. The helper journals each mutation by
+   * command id, so a retried mutation applies once.
+   */
   const helper = Effect.fn("FactoryBoundaryExecution.helper")(function* (
     profile: FactoryExecutionProfile,
     input: unknown,
@@ -338,6 +432,7 @@ const make = Effect.gen(function* () {
       json(input),
     ).pipe(Effect.ensuring(docker(profile, ["rm", "--force", name]).pipe(Effect.ignore)));
   });
+  /** Reads a host directory as captured files, refusing links, special files and unsafe paths. */
   const filesAt = Effect.fn("FactoryBoundaryExecution.filesAt")(function* (directory: string) {
     const files: Array<typeof CapturedFile.Type> = [];
     const pending = [""];
@@ -386,6 +481,10 @@ const make = Effect.gen(function* () {
     }
   });
 
+  /**
+   * Proves in the real non-root worker container that `sourcePath` is writable and
+   * `protectedPath` is not.
+   */
   const proveWorkspace = Effect.fn("FactoryBoundaryExecution.proveWorkspace")(function* (
     profile: FactoryExecutionProfile,
     sourcePath: string,
@@ -440,6 +539,8 @@ const make = Effect.gen(function* () {
       return yield* unavailable(
         "Every approved source and protected input must identify an existing regular file in the baseline snapshot.",
       );
+    // Every baseline file not listed as writable is protected. Only configured protected files
+    // and protected names become controls, which are copied out and mounted at `/controls`.
     const protectedPaths = [
       ...new Set([
         ...configuration.protectedPaths,
@@ -482,6 +583,7 @@ const make = Effect.gen(function* () {
         files.filter((file) => controlPaths.includes(file.path)),
       );
     }
+    // A replay keeps the stored baseline but proves the boundary again in a throwaway volume.
     const proofFiles = existingBoundary ? yield* filesAt(path.join(directory, "source")) : files;
     const proofSource = boundary.writablePaths[0] ?? "SATELLITE_FACTORY_WRITE_PROBE.txt";
     if (boundary.protectedPaths.length === 0)
@@ -646,6 +748,7 @@ const make = Effect.gen(function* () {
         expectedVersion: discovery.workflow,
       });
       const profile = { ...original, workflow, workflowSnapshotPath: workflow.snapshotPath };
+      // A profile without `sourceRevision` still records it in its snapshot's header line.
       const sourceRevision =
         profile.sourceRevision ??
         /^Read-only tracked-file snapshot at ([a-f0-9]{40,64})\.$/i.exec(
@@ -675,6 +778,13 @@ const make = Effect.gen(function* () {
     Effect.mapError(preserve),
   );
 
+  /**
+   * Admits an operation on the assignment's current grant from live state. Refuses an ended,
+   * stopped, onboarding or unauthorized assignment, a paused project, an open incident, and a
+   * workflow migration in progress. `resuming` skips the project-pause check, `preparing` admits
+   * the migration being prepared, and `releasingSuspension` skips the incident check so a pause
+   * can be lifted while the incident's own marker keeps holding execution.
+   */
   const current = Effect.fn("FactoryBoundaryExecution.current")(function* (
     assignmentId: FactoryAssignmentId,
     expectedEpoch?: number,
@@ -729,6 +839,9 @@ const make = Effect.gen(function* () {
     if ((stoppedEpochs.get(assignmentId) ?? -1) >= assignment.grant.epoch) return yield* denied();
     if (assignment.kind === "onboarding" || assignment.authorization === undefined)
       return yield* denied();
+    // A control change belongs only to a rule-change assignment, under the authorization that
+    // granted it. A manager's own authorization also needs rule weakening allowed by both the
+    // grant and the manager's current policy, except for shared experiments.
     const controlChange = assignment.grant.controlChange;
     if (controlChange !== null) {
       if (
@@ -763,6 +876,7 @@ const make = Effect.gen(function* () {
           )),
     };
   });
+  // File changes and checks wait while a concrete UI flow is held for the human's decision.
   const admitImplementation = Effect.fn("FactoryBoundaryExecution.admitImplementation")(function* (
     assignmentId: FactoryAssignmentId,
     expectedEpoch: number,
@@ -773,6 +887,11 @@ const make = Effect.gen(function* () {
         "Implementation is held for the concrete UI flow decision. Wait for human approval and confirmed release before changing or verifying the assignment.",
       );
   });
+  /**
+   * Admits work in the assignment's prepared workspace and returns its profile with the workflow
+   * resolved. `pathConfiguration` lists every file the workspace started with as writable, so
+   * `factoryCanWrite` demands an exact source-path grant for any of them.
+   */
   const prepared = Effect.fn("FactoryBoundaryExecution.prepared")(function* (
     assignmentId: FactoryAssignmentId,
     expectedEpoch?: number,
@@ -837,6 +956,10 @@ const make = Effect.gen(function* () {
     /^[a-f0-9-]{36}$/.test(candidateId)
       ? Effect.succeed(path.join(root, "candidates", candidateId))
       : Effect.fail(denied());
+  /**
+   * Checks candidate files (unique paths ignoring case, canonical base64, size limits, matching
+   * digests) and returns the digest over their paths, digests and modes.
+   */
   const candidateDigest = Effect.fn("FactoryBoundaryExecution.candidateDigest")(function* (
     files: FactoryCandidateArtifact["files"],
   ) {
@@ -914,6 +1037,8 @@ const make = Effect.gen(function* () {
         !(yield* fs.exists(workspace.revocationPath))
       )
         return yield* denied();
+      // Not through `helper`, which refuses a revoked workspace: this capture runs only after
+      // revocation, against a read-only mount of the volume.
       const captureName = `satellite-factory-migration-${yield* crypto.randomUUIDv4}`;
       const capture = yield* docker(
         profile,
@@ -953,6 +1078,8 @@ const make = Effect.gen(function* () {
         .filter((file) => file.path !== "SATELLITE_DISCOVERY.md")
         .map((file) => ({ ...file, mode: file.mode ?? ("100644" as const) }));
       yield* candidateDigest(files);
+      // The migration or assignment can change while the capture runs, so admission is checked
+      // again on both sides of storing the source.
       yield* recheck;
       const source = yield* sources.captureArtifact({
         requestId: CommandId.make(`factory-migration:${input.migrationId}`),
@@ -1073,6 +1200,8 @@ const make = Effect.gen(function* () {
         )
       )
         return yield* denied();
+      // Readmit after the capture, since a stop or hold can land while it runs. `capture.json`
+      // appears atomically and marks the candidate as stored.
       yield* current(input.assignmentId, input.expectedEpoch);
       yield* assertActive(profile);
       yield* fs.makeDirectory(directory, { recursive: true });
@@ -1145,6 +1274,7 @@ const make = Effect.gen(function* () {
     mutex.withPermit,
     Effect.mapError(preserve),
   );
+  // Writes `profile.json` atomically, so a replay never reads a partial profile.
   const publishProfile = Effect.fn("FactoryBoundaryExecution.publishProfile")(function* (
     directory: string,
     profile: FactoryExecutionProfile,
@@ -1320,6 +1450,7 @@ const make = Effect.gen(function* () {
       const directory = path.join(root, "execution", profileId);
       if (yield* fs.exists(path.join(directory, "profile.json"))) {
         const profile = yield* readProfile(profileId);
+        // A replacement keeps the original's `boundaryId`, so it shares its receipts and artifacts.
         if (
           profile.inspection !== undefined ||
           profile.boundaryId !== original.boundaryId ||
@@ -1374,6 +1505,7 @@ const make = Effect.gen(function* () {
         )
       )
         return yield* denied();
+      // The baseline stored on disk must still be the one state approved.
       const baseline = yield* readBoundary(boundary.id);
       if (stableStringify(baseline) !== stableStringify(boundary)) return yield* denied();
       if (input.startingSourceId !== assignment.startingSource?.id) return yield* denied();
@@ -1394,6 +1526,10 @@ const make = Effect.gen(function* () {
       const files: Array<typeof CapturedFile.Type> =
         starting === undefined ? [...baselineFiles] : [...starting.files];
       if (starting !== undefined) {
+        // A starting source, in both its worktree and its index, must leave every adopted
+        // control as the baseline has it, apart from the grant's control-change paths. Line
+        // endings are ignored. Discovery's metadata file may be missing; the baseline copy is
+        // added back.
         const checkControls = (candidate: ReadonlyArray<typeof CapturedFile.Type>) => {
           const byPath = new Map(candidate.map((file) => [file.path, file]));
           return [
@@ -1418,8 +1554,10 @@ const make = Effect.gen(function* () {
               return false;
             if (original === undefined || fresh === undefined) return true;
             return !Buffer.from(
-              factoryCanonicalText(Buffer.from(original.content, "base64")),
-            ).equals(Buffer.from(factoryCanonicalText(Buffer.from(fresh.content, "base64"))));
+              FactorySource.factoryCanonicalText(Buffer.from(original.content, "base64")),
+            ).equals(
+              Buffer.from(FactorySource.factoryCanonicalText(Buffer.from(fresh.content, "base64"))),
+            );
           });
         };
         const changed = checkControls(starting.files) ?? checkControls(starting.indexFiles);
@@ -1437,6 +1575,8 @@ const make = Effect.gen(function* () {
         existingPaths.some((file) => !factoryRelativePath(file))
       )
         return yield* denied();
+      // A granted source path is a baseline writable file, or a file absent from the baseline
+      // that the starting source carries inside a creatable directory.
       if (
         grant.sourcePaths.some(
           (file) =>
@@ -1517,6 +1657,8 @@ const make = Effect.gen(function* () {
       yield* fs.makeDirectory(path.dirname(profile.assignmentWorkspace!.revocationPath), {
         recursive: true,
       });
+      // A volume left by an interrupted attempt is discarded, so the workspace always starts
+      // from these files.
       yield* docker(profile, ["volume", "rm", profile.assignmentWorkspace!.volumeName]).pipe(
         Effect.ignore,
       );
@@ -1528,6 +1670,8 @@ const make = Effect.gen(function* () {
         profile.assignmentWorkspace!.volumeName,
       ]);
       return yield* Effect.gen(function* () {
+        // The probe needs one writable path. Without a granted existing file it writes a
+        // temporary file the grant could create, and deletes it after the proof.
         const existingWritable = files.find((file) =>
           factoryCanWrite(file.path, grant, pathConfiguration),
         )?.path;
@@ -1569,6 +1713,7 @@ const make = Effect.gen(function* () {
             commandId: yield* crypto.randomUUIDv4,
             request: `remove-runtime-probe:${temporaryPath}`,
           });
+        // `profile.json` is written last; its presence is what a replay treats as prepared.
         yield* current(input.assignmentId, input.grant.epoch, false, true);
         yield* fs.writeFileString(path.join(directory, "profile.json"), json(profile));
         return {
@@ -1616,6 +1761,8 @@ const make = Effect.gen(function* () {
         "mutations",
         `${receiptId}.json`,
       );
+      // The receipt is written after the helper applies the change. A crash in between replays
+      // through the helper's own journal, which applies the change once.
       const request = stableStringify(input);
       if (yield* fs.exists(receiptPath)) {
         if ((yield* fs.readFileString(receiptPath)) !== request)
@@ -1665,6 +1812,8 @@ const make = Effect.gen(function* () {
         ),
       );
       const gates: Array<FactoryVerification["gates"][number]> = [];
+      // Integrity mode compares the capture with the workspace's starting files and fails on any
+      // content or mode change the grant does not allow. Line endings are ignored.
       if (boundary.verification === "protected-integrity") {
         yield* candidateDigest(
           source.files.map((file) => ({ ...file, mode: file.mode ?? ("100644" as const) })),
@@ -1683,8 +1832,10 @@ const make = Effect.gen(function* () {
             before &&
             after &&
             (before.mode === undefined || after.mode === undefined || before.mode === after.mode) &&
-            Buffer.from(factoryCanonicalText(Buffer.from(before.content, "base64"))).equals(
-              Buffer.from(factoryCanonicalText(Buffer.from(after.content, "base64"))),
+            Buffer.from(
+              FactorySource.factoryCanonicalText(Buffer.from(before.content, "base64")),
+            ).equals(
+              Buffer.from(FactorySource.factoryCanonicalText(Buffer.from(after.content, "base64"))),
             );
           if (!unchanged && !factoryCanWrite(name, grant, configuration))
             return yield* unavailable(
@@ -1699,6 +1850,8 @@ const make = Effect.gen(function* () {
             "Verified captured file digests and preserved every path outside the exact assignment grant.",
         });
       }
+      // Each gate runs offline on a read-only copy. Its wrapper polls the authority directory
+      // and kills the gate when the workspace is revoked, held or paused.
       for (const gate of boundary.gates) {
         yield* admitImplementation(input.assignmentId, input.expectedEpoch);
         yield* assertActive(profile);
@@ -1836,6 +1989,7 @@ const make = Effect.gen(function* () {
     if (profile.assignmentWorkspace.assignmentId !== assignmentId) return yield* denied();
     return profile;
   });
+  // Removes every container labeled for the assignment: agents, helpers and gate runs.
   const killOwned = Effect.fn("FactoryBoundaryExecution.killOwned")(function* (
     profile: FactoryExecutionProfile,
     assignmentId = profile.assignmentWorkspace?.assignmentId,
@@ -1852,6 +2006,8 @@ const make = Effect.gen(function* () {
       yield* docker(profile, ["rm", "--force", id]);
     }
   });
+  // Kills, waits for the running workspace operation to finish, then kills again, catching any
+  // container that operation started after the first pass.
   const drain = (profile: FactoryExecutionProfile, assignmentId?: string) =>
     Effect.gen(function* () {
       yield* killOwned(profile, assignmentId);
@@ -1894,6 +2050,8 @@ const make = Effect.gen(function* () {
       )
         return yield* denied();
       const profile = yield* assignmentProfile(input.assignmentId);
+      // With no workspace there is no marker to write, but containers labeled for the assignment
+      // are still killed, through the Docker context of the boundary's profile.
       if (profile === undefined) {
         const assignment = state.assignments.find((entry) => entry.id === input.assignmentId);
         const boundary = state.boundaries.find(
@@ -1912,6 +2070,8 @@ const make = Effect.gen(function* () {
         .digest("SHA-256", new TextEncoder().encode(input.restrictionId))
         .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("hex")));
       const target = path.join(directory, `${name}.json`);
+      // A hold writes its marker before draining, so work that starts during the drain is
+      // already refused by the marker.
       if (input.held) {
         yield* fs.makeDirectory(directory, { recursive: true });
         yield* fs.writeFileString(target, json({ restrictionId: input.restrictionId }));
@@ -2046,6 +2206,8 @@ const make = Effect.gen(function* () {
         };
       }
       if (previous?.holdId === input.holdId) return yield* denied();
+      // The snapshot is published before the marker that names it, so a replayed hold always
+      // finds it. Inside the permit, containers are killed directly; `drain` would wait on itself.
       return yield* mutex.withPermit(
         Effect.gen(function* () {
           const { profile } = yield* recoverySource(input.assignmentId, input.expectedEpoch);
@@ -2125,6 +2287,8 @@ const make = Effect.gen(function* () {
     const state = yield* store.snapshot;
     const assignment = state.assignments.find((entry) => entry.id === assignmentId);
     if (assignment === undefined) return yield* denied();
+    // Takes no permit: the stop is recorded first so in-flight operations fail their next
+    // admission, then `drain` waits them out.
     if (assignment.grant !== undefined)
       stoppedEpochs.set(
         assignmentId,

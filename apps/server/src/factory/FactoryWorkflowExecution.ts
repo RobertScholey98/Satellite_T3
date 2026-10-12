@@ -8,8 +8,8 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { ServerConfig } from "../config.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as ServerConfig from "../config.ts";
+import * as FactorySource from "./FactorySource.ts";
 import {
   FactoryWorkflowSnapshot,
   type FactoryExecutionProfile,
@@ -39,18 +39,36 @@ const authoringPaths = [
   "skills/writing-for-agents/SKILL-MECHANICS.md",
 ];
 
+/**
+ * Owns the host's read-only workflow snapshots under the state directory, one directory per
+ * content digest. Execution profiles mount them read-only at `/workflow`, so a team runs with
+ * exactly the committed files of its pinned version.
+ */
 export class FactoryWorkflowExecution extends Context.Service<
   FactoryWorkflowExecution,
   {
+    /**
+     * Materializes a committed revision as a read-only snapshot, or reuses the one already on
+     * disk, then verifies it. Fails when a partial snapshot from an interrupted write differs.
+     */
     readonly snapshot: (input: {
       readonly version: FactoryWorkflowVersion;
       readonly requireSkillAuthoring?: boolean;
     }) => Effect.Effect<FactoryWorkflowSnapshot, FactoryError>;
+    /**
+     * Rechecks a snapshot against its manifest: identity, inventory and every file digest.
+     * `requireSkillAuthoring` also demands the skill-authoring instructions that skill work needs.
+     */
     readonly verify: (input: {
       readonly snapshot: FactoryWorkflowSnapshot;
       readonly expectedVersion: FactoryWorkflowVersion;
       readonly requireSkillAuthoring?: boolean;
     }) => Effect.Effect<void, FactoryError>;
+    /**
+     * The verified snapshot behind an execution profile. A legacy profile without a recorded
+     * snapshot is accepted only when its files match the commit exactly, apart from an unchanged
+     * `SATELLITE_DISCOVERY.md`.
+     */
     readonly resolve: (input: {
       readonly profile: FactoryExecutionProfile;
       readonly expectedVersion: FactoryWorkflowVersion;
@@ -63,14 +81,16 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const sources = yield* FactorySource;
-  const config = yield* ServerConfig;
+  const sources = yield* FactorySource.FactorySource;
+  const config = yield* ServerConfig.ServerConfig;
   const mutex = yield* Semaphore.make(1);
   const root = path.join(config.stateDir, "factory", "workflows");
   const digest = (bytes: Uint8Array) =>
     crypto.digest("SHA-256", bytes).pipe(Effect.map((value) => Buffer.from(value).toString("hex")));
   const identity = (manifest: typeof Manifest.Type) =>
     digest(Buffer.from(stableStringify(manifest)));
+  // Lists regular files only. Any link, or a path whose real location differs, fails the
+  // snapshot rather than letting it point outside its directory.
   const inventory = Effect.fn(function* (directory: string) {
     const found: string[] = [];
     const visit = Effect.fn(function* (
@@ -154,6 +174,7 @@ const make = Effect.gen(function* () {
         snapshotPath: path.join(directory, "source"),
         manifestPath: path.join(directory, "manifest.json"),
       };
+      // The manifest is written last, so its presence marks a complete snapshot.
       if (!(yield* fs.exists(result.manifestPath))) {
         yield* fs.makeDirectory(result.snapshotPath, { recursive: true });
         const names = new Set<string>();

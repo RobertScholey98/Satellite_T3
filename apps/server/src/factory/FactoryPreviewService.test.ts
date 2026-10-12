@@ -17,8 +17,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import observationMigration from "../persistence/Migrations/069_FactoryObservation.ts";
 import { deliveryIds, deliveryNow, reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
-import { FactoryPreviewEvidence } from "./FactoryPreviewEvidence.ts";
-import { FactoryPreviewExecution, type FactoryPreviewInstance } from "./FactoryPreviewExecution.ts";
+import * as FactoryPreviewEvidence from "./FactoryPreviewEvidence.ts";
+import * as FactoryPreviewExecution from "./FactoryPreviewExecution.ts";
 import * as Preview from "./FactoryPreviewService.ts";
 import * as Store from "./FactoryStore.ts";
 
@@ -73,11 +73,11 @@ const setup = Effect.gen(function* () {
   let stopFails = false;
   const entered = yield* Deferred.make<void>();
   const release = yield* Deferred.make<void>();
-  let instance: FactoryPreviewInstance | undefined;
+  let instance: FactoryPreviewExecution.FactoryPreviewInstance | undefined;
   const services = Preview.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(FactoryPreviewExecution)({
+        Layer.mock(FactoryPreviewExecution.FactoryPreviewExecution)({
           start: (input) =>
             Effect.gen(function* () {
               events.push("start");
@@ -109,7 +109,7 @@ const setup = Effect.gen(function* () {
               return instance;
             }),
         }),
-        Layer.mock(FactoryPreviewEvidence)({
+        Layer.mock(FactoryPreviewEvidence.FactoryPreviewEvidence)({
           close: () =>
             Effect.gen(function* () {
               events.push("close");

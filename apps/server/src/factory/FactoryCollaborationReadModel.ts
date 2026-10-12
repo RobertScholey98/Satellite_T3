@@ -7,9 +7,16 @@ export type FactoryCollaborationReadScope =
   | {
       readonly kind: "assignment";
       readonly assignmentId: FactoryAssignmentId;
+      /** True only for the lead itself; other threads of the team see requests, not messages. */
       readonly includeLeadCommunication: boolean;
     };
 
+/**
+ * The collaboration records one reader may see: a project's snapshot, a manager's thread or a
+ * team's thread. Requests are visible to both ends; messages, plans and decisions follow the
+ * requests. Incident restrictions list only their targets in scope where there are any, and
+ * never carry the host's resume targets.
+ */
 export function scopeFactoryCollaboration(
   state: FactorySnapshot,
   scope: FactoryCollaborationReadScope,

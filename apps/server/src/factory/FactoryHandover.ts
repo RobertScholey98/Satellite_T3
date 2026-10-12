@@ -21,10 +21,25 @@ interface FactoryTeamStopInput {
   readonly commandId: CommandId;
 }
 
+/**
+ * Stops a thread and every subagent under it before the factory takes over, replaces or holds
+ * that work. Factory effects call it and retry on failure; each thread's stop command id is
+ * derived from the caller's `commandId`, so a retry reuses the same ids.
+ */
 export class FactoryHandover extends Context.Service<
   FactoryHandover,
   {
+    /**
+     * Stops an existing human thread that is being handed over to a new assignment. Refuses a
+     * deleted, archived or subagent thread, then stops its team.
+     */
     readonly stop: (input: FactoryTeamStopInput) => Effect.Effect<void, FactoryError>;
+    /**
+     * Stops the thread and its subagents in the project (never forks), detaches their provider
+     * sessions with the MCP credential revoked, then waits for active runs to settle. Succeeds
+     * only once every stop, detachment and run has been confirmed; any failure leaves the work in
+     * place for a retry.
+     */
     readonly stopTeam: (input: FactoryTeamStopInput) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryHandover") {}
@@ -120,6 +135,8 @@ const make = Effect.gen(function* () {
         detachments.push({ threadId, providerSessionId });
       }
     }
+    // Every thread is told to stop before any session is detached, and failures are collected
+    // rather than short-circuiting, so one unreadable thread does not leave the rest running.
     const detached = yield* Effect.forEach(
       detachments,
       ({ threadId, providerSessionId }) =>

@@ -11,9 +11,9 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ServerConfig from "../config.ts";
-import { ProcessRunner, layer as processLayer, type ProcessRunInput } from "../processRunner.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import { type FactoryCandidateArtifact } from "./FactoryCandidate.ts";
 import {
   FACTORY_CODEX_IMAGE,
@@ -27,8 +27,8 @@ import {
 } from "./FactoryIntegrationRuntime.ts";
 import { granted, apply, actor, host, integrated, api } from "./FactoryIntegration.testkit.ts";
 import { deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
-import { FactorySource, type FactorySourceFile } from "./FactorySource.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactorySource from "./FactorySource.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import * as Workflow from "./FactoryWorkflowExecution.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 import { startedMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
@@ -66,7 +66,7 @@ const scenario = (live: boolean) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const crypto = yield* Crypto.Crypto;
-    const realRunner = yield* ProcessRunner;
+    const realRunner = yield* ProcessRunner.ProcessRunner;
     const root = yield* fs.makeTempDirectoryScoped();
     const seed = granted();
     let state: FactorySnapshot = seed.state;
@@ -76,7 +76,7 @@ const scenario = (live: boolean) =>
     const file = Effect.fn(function* (
       name: string,
       value: string,
-    ): Effect.fn.Return<FactorySourceFile> {
+    ): Effect.fn.Return<FactorySource.FactorySourceFile> {
       return {
         path: name,
         content: Buffer.from(value).toString("base64"),
@@ -86,7 +86,7 @@ const scenario = (live: boolean) =>
         mode: "100644",
       };
     });
-    const files: FactorySourceFile[] = [
+    const files: FactorySource.FactorySourceFile[] = [
       yield* file("runner.js", coordinator),
       yield* file("gate.js", "require('node:fs').accessSync('/workspace/fixtures/input.json');"),
       yield* file("test/check.js", client),
@@ -120,11 +120,11 @@ const scenario = (live: boolean) =>
       assert.match(imageId, /^sha256:/);
     }
     const candidates = new Map<string, FactoryCandidateArtifact>();
-    const volumes = new Map<string, readonly FactorySourceFile[]>();
-    const invocations: ProcessRunInput[] = [];
+    const volumes = new Map<string, readonly FactorySource.FactorySourceFile[]>();
+    const invocations: ProcessRunner.ProcessRunInput[] = [];
     const ownedVolumes = new Set<string>();
     let runningCheck: Deferred.Deferred<void> | undefined;
-    const run = Effect.fn(function* (input: ProcessRunInput) {
+    const run = Effect.fn(function* (input: ProcessRunner.ProcessRunInput) {
       invocations.push(input);
       const createAt = input.args.indexOf("volume");
       if (createAt >= 0 && input.args[createAt + 1] === "create")
@@ -193,13 +193,13 @@ const scenario = (live: boolean) =>
     });
     const dependencies = Layer.mergeAll(
       ServerConfig.layerTest(root, root),
-      Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
-      Layer.mock(FactoryBoundaryExecution)({
+      Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+      Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
         readCandidate: (id) => Effect.succeed(candidates.get(id)!),
       }),
-      Layer.mock(PullRequestService)({}),
-      Layer.succeed(ProcessRunner, { run }),
-      Layer.mock(FactorySource)({
+      Layer.mock(PullRequestService.PullRequestService)({}),
+      Layer.succeed(ProcessRunner.ProcessRunner, { run }),
+      Layer.mock(FactorySource.FactorySource)({
         readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
       }),
     );
@@ -610,7 +610,10 @@ const scenario = (live: boolean) =>
           : Effect.void,
       ),
     );
-  }).pipe(Effect.scoped, Effect.provide(processLayer.pipe(Layer.provideMerge(NodeServices.layer))));
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+  );
 
 it.effect(
   "pins two-project inputs, preserves scoped overlays, rejects changed authority and reconciles delayed stops",

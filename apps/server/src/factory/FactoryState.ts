@@ -74,6 +74,11 @@ import {
   factoryRelativePath,
 } from "./FactoryBoundaryPaths.ts";
 
+/**
+ * Who issued a command. A `thread` is a managed thread acting through its scoped tools;
+ * `assignmentId` names the assignment it belongs to, which lets a lead's subagents act for it.
+ * `system` is the host recording effect receipts and observations; dispatch never accepts it.
+ */
 export type FactoryActor =
   | { readonly kind: "human" }
   | {
@@ -83,12 +88,17 @@ export type FactoryActor =
     }
   | { readonly kind: "system" };
 
+/**
+ * Ids the service generates before deciding, so the decider stays pure. Commands that create a
+ * manager or assignment refuse without one. For a handover, `leadThreadId` is the human's thread.
+ */
 export interface FactoryAllocation {
   readonly managerThreadId: ThreadId;
   readonly leadThreadId: ThreadId;
   readonly assignmentId: FactoryAssignmentId;
 }
 
+/** An accepted command. The store writes `effects` to the outbox in the same transaction. */
 export interface FactoryDecision {
   readonly state: FactorySnapshot;
   readonly result: FactoryCommandResult;
@@ -161,6 +171,12 @@ export const effectivePolicy = (
   manager: Pick<FactoryManager, "overrides">,
 ): FactoryPolicy => resolveManagerPolicy(state.defaults, manager.overrides);
 
+/**
+ * Clamps each open assignment's granted policy to its manager's current policy. This only
+ * narrows; widening takes `assignments.extend-grant`. A manager-authorized rule change (not an
+ * experiment) loses its control-change grant once rule weakening is off: the epoch bump makes the
+ * service stop its boundary, and the team waits for new authority. Human-authorized ones keep it.
+ */
 const reduceGrants = (
   assignments: ReadonlyArray<FactoryAssignment>,
   managers: ReadonlyArray<FactoryManager>,
@@ -212,6 +228,7 @@ const onboardingWait = (qualification: FactoryDiscoveryQualification): FactoryWa
     ? { kind: "execution-boundary", reason: qualification.reason }
     : null;
 
+/** Launches the manager and onboarding lead threads still pending, once discovery qualifies. */
 const launchIntents = (
   manager: Extract<FactoryManager, { readonly role: "project" }>,
   assignment: FactoryAssignment,
@@ -261,6 +278,11 @@ const implementationLaunch = (assignment: FactoryAssignment): ReadonlyArray<Fact
       ]
     : [];
 
+/**
+ * Clamps each open assignment's model policy to its manager's current pool. When a model the
+ * team could use is withdrawn, the grant epoch bumps, which stops the running boundary, and the
+ * team waits for authority unless it already waits on a human decision.
+ */
 const reduceModelGrants = (
   state: FactorySnapshot,
   managers: ReadonlyArray<FactoryManager>,
@@ -297,6 +319,12 @@ const reduceModelGrants = (
     };
   });
 
+/**
+ * Decides one command against the full snapshot. Each feature decider claims the commands it
+ * owns and returns `undefined` for the rest, so the order here is part of the rules: guards that
+ * hold for every feature run before any decider, and the core manager and assignment lifecycle
+ * runs last. The optional inputs are facts the service verified outside the pure decider.
+ */
 function decideCore(
   input: FactoryIntegrationContext &
     FactoryControlContext &
@@ -321,6 +349,8 @@ function decideCore(
 ): Result.Result<FactoryDecision, FactoryError> {
   const requestedAssignmentId =
     "assignmentId" in input.command ? input.command.assignmentId : undefined;
+  // Integration teams and experiments are refused here, before the feature deciders, so no
+  // single-assignment delivery or completion path can finish or publish them.
   const integrationAssignment = input.state.assignments.find(
     (entry) => entry.id === requestedAssignmentId && entry.integrationId !== undefined,
   );
@@ -398,6 +428,8 @@ function decideCore(
         }),
       );
     }
+    // Applying re-decides as the matching configure command under the same command id, so grant
+    // reduction and the system manager pause apply unchanged. `applied` makes it one-shot.
     const target = recommendation.target;
     const configured = decide({
       ...input,
@@ -434,6 +466,8 @@ function decideCore(
     return Result.map(improvementDecision, (value) =>
       reconcileFactoryRequestCancellation(value, input.now),
     );
+  // A system manager whose model is outside the approved pool stays paused until the pool or
+  // its model changes; resuming it would run an unapproved model.
   if (input.command.type === "manager.resume" || input.command.type === "control.retry") {
     const retryControlId =
       input.command.type === "control.retry" ? input.command.controlId : undefined;
@@ -479,6 +513,9 @@ function decideCore(
   if (deliveryDecision !== undefined) return deliveryDecision;
   const { state, actor, command, now } = input;
   const fail = (code: FactoryError["code"]) => Result.fail(new FactoryError({ code }));
+  // Every core acceptance bumps `revision` once here. Two things survive what a case writes: a
+  // manager under an active pause stays paused, with the written status kept as the status the
+  // resume restores, and an assignment with a recorded outcome keeps its status and wait.
   const accepted = (
     managers: ReadonlyArray<FactoryManager>,
     assignments: ReadonlyArray<FactoryAssignment>,
@@ -515,6 +552,9 @@ function decideCore(
     });
   };
 
+  // Runs after a model policy change. If the system manager's own model is no longer approved it
+  // is paused; if already paused with a resume in flight, the resume is dropped and the stop runs
+  // again. The pause shares the policy command's revision rather than adding its own.
   const pauseRevokedSystemManager = (
     decision: FactoryDecision,
   ): Result.Result<FactoryDecision, FactoryError> => {
@@ -582,6 +622,7 @@ function decideCore(
     }));
   };
 
+  // A manager whose execution is blocked (retired, paused or restricted) takes on no new work.
   if (command.type === "assignment.commission" || command.type === "assignment.handover") {
     const manager = state.managers.find((entry) => entry.id === command.managerId);
     if (
@@ -602,6 +643,7 @@ function decideCore(
     command.type === "onboarding.report"
   ) {
     const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
+    // An assignment with an outcome is finished; nothing may retry, edit or verify in it.
     if (assignment?.outcome !== undefined) return fail("invalid-state");
     if (
       assignment &&
@@ -663,6 +705,8 @@ function decideCore(
       const dependencyAssignment = state.assignments.find(
         (entry) => entry.id === dependency?.assignmentId,
       );
+      // An approved dependency authorizes its manager to commission exactly the supporting work
+      // it approved, while the assignment that asked for it is still open.
       const dependencyAuthorized =
         dependency?.state === "approved" &&
         dependency.authorization?.managerId === manager.id &&
@@ -676,6 +720,8 @@ function decideCore(
         !dependencyAuthorized
       )
         return fail("permission-denied");
+      // The human may commission directly. The manager thread may commission only on a verified
+      // direct human message, an approved dependency, or an admitted schedule candidate.
       if (
         actor.kind !== "human" &&
         (actor.kind !== "thread" ||
@@ -713,6 +759,9 @@ function decideCore(
         (actor.kind !== "human" || !input.handoverVerified)
       )
         return fail("permission-denied");
+      // Protected controls change only in a rule-change assignment, which the human authorizes
+      // unless policy lets the manager weaken rules. Source paths must sit inside the boundary's
+      // writable files or creatable directories and never touch a protected path.
       const policy = effectivePolicy(state, manager);
       const controls = command.controlPaths ?? [];
       if (command.kind === "implementation" && controls.length > 0)
@@ -831,6 +880,8 @@ function decideCore(
     case "assignment.retry": {
       const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
       if (!assignment) return fail("assignment-not-found");
+      // A manager's id is its thread id. Retry only clears an environment failure; work that
+      // was already prepared relaunches without preparing again.
       if (
         actor.kind !== "human" &&
         (actor.kind !== "thread" || actor.threadId !== assignment.managerId)
@@ -862,6 +913,8 @@ function decideCore(
           (actor.threadId !== assignment.threadId && actor.assignmentId !== assignment.id))
       )
         return fail("permission-denied");
+      // The caller names the grant epoch it holds, so an edit or check from before a grant
+      // change is refused. A held UI flow blocks both until the host releases it.
       if (
         assignment.kind === "onboarding" ||
         assignment.preparation !== "ready" ||
@@ -871,6 +924,8 @@ function decideCore(
         assignment.grant?.epoch !== command.expectedEpoch
       )
         return fail("invalid-state");
+      // The service decides once without the result to admit the call, runs the boundary
+      // operation, then commits; only a verification result is recorded.
       if (command.type === "assignment.verify" && input.verification !== undefined) {
         const verification = input.verification;
         if (
@@ -896,6 +951,8 @@ function decideCore(
       if (!assignment || assignment.threadId !== command.threadId)
         return fail("assignment-not-found");
       if (assignment.kind === "onboarding") return fail("invalid-state");
+      // A preparation receipt that lands after the assignment left `pending` is a late arrival,
+      // not an error: it is accepted without changing anything.
       if (assignment.status !== "pending")
         return accepted(state.managers, state.assignments, { assignmentId: assignment.id });
       if (command.type === "assignment.prepare.failed") {
@@ -914,6 +971,7 @@ function decideCore(
           { assignmentId: assignment.id },
         );
       }
+      // Once captured, the starting source is fixed; a retry prepares from the same source.
       if (
         command.startingSource !== undefined &&
         command.startingSource.projectId !== assignment.projectId
@@ -926,6 +984,7 @@ function decideCore(
       )
         return fail("invalid-state");
       if (command.type === "assignment.preparation.recorded") {
+        // Stages only move forward; repeating the current stage is a harmless replay.
         const order = { stopping: 0, capturing: 1, preparing: 2, ready: 3 };
         if (
           assignment.preparation === undefined ||
@@ -985,6 +1044,8 @@ function decideCore(
     case "assignments.extend-grant": {
       if (actor.kind !== "human") return fail("permission-denied");
       if (command.assignmentIds.length === 0) return fail("invalid-state");
+      // Widens each grant to its manager's current policy. Shared repository work always keeps
+      // human approval for delivery.
       const selected = new Set(command.assignmentIds);
       for (const id of selected) {
         const assignment = state.assignments.find((entry) => entry.id === id);
@@ -1025,9 +1086,12 @@ function decideCore(
         onboarding.qualification.status !== "qualified"
       )
         return fail("invalid-state");
+      // The service's preflight decides before the boundary is approved and has none yet; only
+      // the commit carries it.
       if (input.boundary === undefined)
         return accepted(state.managers, state.assignments, { managerId: manager.id });
       const boundary = input.boundary;
+      // The boundary must be new and pinned to the workflow revision onboarding ran against.
       if (
         boundary.projectId !== manager.projectId ||
         boundary.workflow.repositoryRoot !== onboarding.workflow.repositoryRoot ||
@@ -1054,6 +1118,8 @@ function decideCore(
       if (manager === undefined) return fail("manager-not-found");
       const previous = state.boundaries.find((entry) => entry.id === manager.boundaryId);
       const boundary = input.boundary;
+      // A refresh adds a new boundary on the same workflow revision; it never moves the manager
+      // to another workflow. Older boundaries stay in the snapshot.
       if (
         manager.role !== "project" ||
         previous === undefined ||
@@ -1104,6 +1170,8 @@ function decideCore(
     }
     case "manager.create": {
       if (actor.kind !== "human") return fail("permission-denied");
+      // A shared workflow repository belongs to the system manager, and a project has at most
+      // one manager that is not retired.
       if (
         state.sharedRepositories.some(
           (entry) =>
@@ -1141,6 +1209,8 @@ function decideCore(
       ) {
         return fail("invalid-state");
       }
+      // Without a qualified read-only boundary the manager is created blocked and nothing
+      // launches; `manager.retry-onboarding` qualifies again.
       const qualification = input.qualification ?? unavailableQualification;
       const wait = onboardingWait(qualification);
       const manager: Extract<FactoryManager, { readonly role: "project" }> = {
@@ -1210,6 +1280,8 @@ function decideCore(
       ) {
         return fail("invalid-state");
       }
+      // Once the manager or lead thread exists it was launched with this setup, so its
+      // workflow, model and qualified profile can no longer change.
       if (
         (command.workflow !== undefined || command.modelSelection !== undefined) &&
         (manager.threadStatus === "created" || assignment.threadStatus === "created")
@@ -1269,6 +1341,8 @@ function decideCore(
       const manager = state.managers.find((entry) => entry.id === assignment.managerId);
       if (manager === undefined) return fail("manager-not-found");
       if (manager.boundaryId !== undefined) return fail("invalid-state");
+      // The report completes onboarding. The manager stays blocked until the human approves a
+      // boundary; the wait tells the human whether the report left project decisions open.
       const wait: FactoryWait = {
         kind:
           command.report.unresolvedDecisions.length === 0 ? "execution-boundary" : "human-decision",
@@ -1305,6 +1379,8 @@ function decideCore(
       if (onboarding === undefined || onboarding.qualification.status !== "qualified") {
         return fail("execution-unavailable");
       }
+      // `started` means the thread exists; `recorded` means its first message was delivered,
+      // which is when an unreported assignment starts running.
       const delivered = command.type === "thread.launch.recorded";
       return accepted(
         state.managers.map((entry) =>
@@ -1351,6 +1427,8 @@ function decideCore(
       const targetDelivered =
         targetManager?.launchStatus === "delivered" ||
         (assignment.threadId === command.threadId && assignment.launchStatus === "delivered");
+      // A failure after the thread's first message was delivered, or after onboarding
+      // reported, is stale and changes nothing.
       if (targetDelivered || assignment.report !== null) {
         return accepted(state.managers, state.assignments, {
           managerId: manager.id,
@@ -1376,6 +1454,12 @@ function decideCore(
   return fail("invalid-state");
 }
 
+/**
+ * The factory's only state transition, used by the store's commit and by the service's
+ * preflight. Pure: the same snapshot, command and verified inputs give the same decision. After
+ * the command's own rules it refuses enrolling an assignment in a second merge group, then
+ * reconciles every integration and merge group so their derived state never lags a command.
+ */
 export function decide(
   input: Parameters<typeof decideCore>[0],
 ): Result.Result<FactoryDecision, FactoryError> {

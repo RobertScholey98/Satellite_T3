@@ -28,15 +28,26 @@ import { isFactoryModelApproved } from "./FactoryModelPolicy.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 import { factoryMergeReceiptDigest } from "./FactoryMergeOperation.ts";
 
+/**
+ * Facts the pure decider cannot check itself. `FactoryRetroEffects.context` gathers them before
+ * the command is decided and fails the command outright when verification fails.
+ */
 export interface FactoryRetroContext {
+  /** The tracker destination the owning environment validated for `project.tracker.configure`. */
   readonly qualifiedTracker?: QualifiedIssueDestination;
+  /** Set once every evidence reference the command cites exists inside its assignment. */
   readonly evidenceValidated?: boolean;
 }
 type Disposition<T> = T extends FactoryConclusion
   ? Omit<T, "id" | "evidenceDigest" | "concludedAt">
   : never;
+/** What a conclusion records about delivery, without its identity, evidence digest or time. */
 export type FactoryConclusionDisposition = Disposition<FactoryConclusion>;
 export const factoryRetroId = (assignmentId: FactoryAssignmentId) => `retro:${assignmentId}`;
+/**
+ * PR identity across links, publications and manifests. Host and repository compare
+ * case-insensitively, and a missing host means github.com.
+ */
 export const factorySamePullRequest = (a: PullRequestRef, b: PullRequestRef) =>
   a.projectId === b.projectId &&
   (a.host ?? "github.com").toLowerCase() === (b.host ?? "github.com").toLowerCase() &&
@@ -49,6 +60,10 @@ const conclusionDisposition = (conclusion: FactoryConclusion): FactoryConclusion
   return disposition;
 };
 
+/**
+ * The completion record work starts with. Work commissioned without a PR waits on its agreed
+ * target, human acceptance by default; other work starts with an empty, unsealed PR manifest.
+ */
 export const initialFactoryCompletion = (
   scope: FactoryAssignmentScope | undefined,
   _managerId?: ThreadId,
@@ -69,6 +84,13 @@ export const initialFactoryCompletion = (
   conclusion: null,
 });
 
+/**
+ * Decides whether an assignment's delivery is finished and, if so, the exact disposition its
+ * conclusion must record. Host reconciliation checks it before freezing the work and again when
+ * sealing the conclusion, and both retro reports recheck it, so a disposition that changes after
+ * conclusion makes the reports stale. An unresolved host outcome, such as an unknown shared merge
+ * or a publication still in flight, blocks every conclusion, cancellation included.
+ */
 export function factoryCompletionEligibility(
   state: FactorySnapshot,
   assignment: FactoryAssignment,
@@ -103,6 +125,8 @@ export function factoryCompletionEligibility(
     )
   )
     return wait("An external publication or merge outcome remains unresolved.");
+  // Cancellation outranks the delivery plan. It concludes once the team is confirmed stopped and
+  // the human has recorded why.
   if (assignment.outcome) {
     const control = state.controls.find((entry) => entry.id === assignment.outcome?.controlId);
     if (control?.kind !== "cancellation" || control.stop.status !== "confirmed")
@@ -117,6 +141,8 @@ export function factoryCompletionEligibility(
       },
     };
   }
+  // An integration team delivers through the shared merge it ran, not a PR manifest. Its latest
+  // operation must confirm every member, and the receipt digest must still match the operation.
   if (assignment.integrationId) {
     const operation = state.mergeOperations.findLast(
       (entry) =>
@@ -177,6 +203,7 @@ export function factoryCompletionEligibility(
   }
   if (!plan.sealed || plan.requirements.length === 0)
     return wait("The complete required-PR manifest must be declared and sealed.");
+  // Each requirement is met by a merge (at its expected head, when one is pinned) or a waiver.
   const deliveryIds: string[] = [];
   const waiverCommandIds: FactoryAssignmentCompletion["waivers"][number]["commandId"][] = [];
   for (const requirement of plan.requirements) {
@@ -199,6 +226,8 @@ export function factoryCompletionEligibility(
       `Required PR ${requirement.ref.repository}#${requirement.ref.number} has not actually merged or been explicitly waived.`,
     );
   }
+  // The manifest must also name every PR the team merged or published, so no delivered change
+  // escapes the conclusion and its retro.
   const known = [
     ...completion.deliveries.flatMap((entry) =>
       entry.kind === "pull-request-merged" ? [entry.ref] : [],
@@ -245,6 +274,13 @@ const unfiledTickets = (
       : [],
   );
 
+/**
+ * Decides completion, findings, retrospectives and follow-up tickets, and returns `undefined` for
+ * commands it does not own. An assignment ends in order: the team declares what it must deliver,
+ * host reconciliation freezes the work, seals the evidence and concludes it, the team retro runs
+ * read-only against that evidence, the manager disposes of every finding, and the assignment
+ * completes once each ticket disposition reaches triage or the human waives it.
+ */
 export function decideFactoryRetros(
   input: FactoryRetroContext & {
     readonly state: FactorySnapshot;
@@ -302,6 +338,8 @@ export function decideFactoryRetros(
     followup: FactoryFollowup,
     effects: readonly FactoryEffectIntent[] = [],
   ) => {
+    // A finished retro's assignment completes here, when its last ticket disposition reaches
+    // triage or the human waives it.
     const followups = state.followups.some((entry) => entry.id === followup.id)
       ? state.followups.map((entry) =>
           entry.id === followup.id ? { ...followup, updatedAt: now } : entry,
@@ -328,6 +366,9 @@ export function decideFactoryRetros(
       { followupId: followup.id, assignmentId: followup.assignmentId },
     );
   };
+  // The human and the commissioning manager manage. Leading adds the team's current lead and,
+  // until the retro reports are complete, the retro lead. Any thread in the assignment may
+  // report its own evidence.
   const canManage = (assignment: FactoryAssignment) =>
     actor.kind === "human" || (actor.kind === "thread" && actor.threadId === assignment.managerId);
   const canLead = (assignment: FactoryAssignment) =>
@@ -342,6 +383,8 @@ export function decideFactoryRetros(
         )));
   const ownEvidence = (assignment: FactoryAssignment) =>
     canLead(assignment) || (actor.kind === "thread" && actor.assignmentId === assignment.id);
+  // A lead or project manager owner must be this assignment's own. System-remit and human owners
+  // are always in scope.
   const ownerInScope = (owner: FactoryFindingOwner, assignment: FactoryAssignment) =>
     owner.kind === "implementation-lead"
       ? owner.assignmentId === assignment.id
@@ -353,6 +396,8 @@ export function decideFactoryRetros(
       projectId: assignment.projectId,
       ancestorThreadIds: [],
     }) === undefined;
+  // Agents stop while their project is paused, and the commissioning manager also stops while its
+  // own execution is blocked. The human is never held.
   const publicAllowed = (assignment: FactoryAssignment) =>
     actor.kind === "human" ||
     (!state.controls.some(
@@ -412,6 +457,8 @@ export function decideFactoryRetros(
     );
 
   switch (command.type) {
+    // Clears a recorded wait. A failed conclusion step is queued again; work still collecting is
+    // picked up by the next host reconciliation once it is eligible.
     case "assignment.completion.retry": {
       const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
       if (!assignment || !canLead(assignment) || !publicAllowed(assignment))
@@ -462,6 +509,8 @@ export function decideFactoryRetros(
         return fail("This assignment cannot change its PR requirements.");
       const completion = assignment.completion ?? initialFactoryCompletion(assignment.scope);
       const plan = completion.plan;
+      // The manifest is versioned so concurrent edits by the lead and manager cannot overwrite
+      // each other, and it is frozen once conclusion starts.
       if (
         plan.kind !== "pull-requests" ||
         plan.version !== command.expectedVersion ||
@@ -480,6 +529,8 @@ export function decideFactoryRetros(
         )
       )
         return fail("Required PR identities must be unique and belong to this project.");
+      // Requirements only grow. Dropping or retargeting one would hide undelivered scope, so the
+      // human waives it instead.
       if (
         plan.requirements.some(
           (previous) =>
@@ -494,6 +545,8 @@ export function decideFactoryRetros(
         return fail(
           "An existing PR obligation cannot be removed or silently changed; explicitly waive remaining scope.",
         );
+      // Sealing claims the manifest is complete, so the lead's latest progress report must say no
+      // implementation work remains.
       if (
         command.seal &&
         (command.requirements.length === 0 ||
@@ -535,6 +588,7 @@ export function decideFactoryRetros(
         new Set(command.requirementIds).size !== command.requirementIds.length
       )
         return fail("Every waiver must name an existing unique requirement.");
+      // A new waiver for the same requirement replaces the old one, so the latest reason stands.
       return saveAssignment({
         ...assignment,
         completion: {
@@ -580,6 +634,8 @@ export function decideFactoryRetros(
         },
       });
     }
+    // Host reconciliation freezes work once it looks eligible. The revision fence makes the
+    // eligibility it saw the one decided here; a repeat after the freeze is a no-op.
     case "assignment.completion.begin": {
       if (actor.kind !== "system")
         return fail("Only host reconciliation can freeze concluded work.", "permission-denied");
@@ -596,6 +652,9 @@ export function decideFactoryRetros(
         [{ type: "assignment.conclude", assignmentId: assignment.id }],
       );
     }
+    // While preparing a conclusion the host found linked PRs the manifest lacks, or a required
+    // merge it can no longer confirm. Discovered PRs join the manifest unsealed, so the team
+    // must confirm it again before work can conclude.
     case "assignment.completion.reopen": {
       if (actor.kind !== "system")
         return fail("Only host reconciliation can reopen a conclusion.", "permission-denied");
@@ -633,6 +692,8 @@ export function decideFactoryRetros(
       const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
       if (!assignment?.completion || assignment.completion.phase !== "concluding")
         return fail("The implementation must be frozen before concluding.");
+      // The conclusion was built before evidence was sealed, so it must still match eligibility
+      // exactly. FactoryStore fences the project's thread links for the same reason.
       const eligible = factoryCompletionEligibility(state, assignment);
       if (!eligible.eligible) return fail(eligible.reasons.join(" "));
       const disposition = conclusionDisposition(command.conclusion);
@@ -670,6 +731,7 @@ export function decideFactoryRetros(
           phase: "concluded",
           conclusion: command.conclusion,
         },
+        // Cancelled work keeps its status; delivered work waits on its retrospectives.
         status: assignment.outcome ? assignment.status : "waiting",
         wait: assignment.outcome
           ? assignment.wait
@@ -743,6 +805,8 @@ export function decideFactoryRetros(
         assignmentId: assignment.id,
       });
     }
+    // Rerouting is the manager's call and keeps the previous route in history. Any lead may
+    // escalate; the first escalation's summary stands.
     case "finding.route":
     case "finding.escalate": {
       const finding = state.findings.find((entry) => entry.id === command.findingId);
@@ -815,8 +879,10 @@ export function decideFactoryRetros(
             "The retrospective changed before terminal observation was recorded.",
             "stale-revision",
           );
+        // A launch failure that lands after the team report has nothing left to fail.
         if (retro.reports.phase !== "team-pending") return accept();
       }
+      // Stopping is how a complete retro's session ends, so it is the one receipt still allowed.
       if (retro.reports.phase === "complete" && command.type !== "retro.stopped")
         return fail("The retrospective is already complete.");
       const execution: FactoryRetro["execution"] =
@@ -864,6 +930,7 @@ export function decideFactoryRetros(
       if (!retro || !assignment || !canLead(assignment) || !publicAllowed(assignment))
         return fail("This actor cannot retry the retrospective.", "permission-denied");
       if (retro.reports.phase === "complete") return fail("The retrospective is already complete.");
+      // Once the team report exists, a retry only re-sends the manager's invitation.
       if (retro.reports.phase === "manager-pending")
         return saveRetro(retro, [
           {
@@ -910,6 +977,8 @@ export function decideFactoryRetros(
           "Only the designated retrospective lead can submit the team report.",
           "permission-denied",
         );
+      // The human may submit for the team. The retro thread may submit only from its prepared
+      // read-only session.
       if (actor.kind === "thread" && retro.execution.status !== "ready")
         return fail(
           "The designated read-only retrospective session is not ready.",
@@ -922,6 +991,8 @@ export function decideFactoryRetros(
         !validLearning(assignment.id, command.report.learning)
       )
         return fail("The report must match the current conclusion and scoped evidence.");
+      // A report reviews the delivery the conclusion sealed. If eligibility now decides a
+      // different disposition, that evidence is stale.
       const eligibility = factoryCompletionEligibility(state, assignment);
       if (
         !eligibility.eligible ||
@@ -930,6 +1001,8 @@ export function decideFactoryRetros(
           stableStringify(conclusionDisposition(assignment.completion.conclusion))
       )
         return fail("The assignment's delivery disposition changed.", "stale-revision");
+      // The manager's report must cite this digest, which binds the report to its conclusion and
+      // author.
       const report = {
         ...command.report,
         digest: hash({ conclusionId: retro.conclusionId, report: command.report, actor }),
@@ -963,6 +1036,8 @@ export function decideFactoryRetros(
           stableStringify(conclusionDisposition(assignment.completion.conclusion))
       )
         return fail("The assignment's delivery disposition changed.", "stale-revision");
+      // Every finding gets exactly one disposition. A ticket disposition cites a follow-up raised
+      // for that finding, and an existing ticket must already be in triage through one.
       const findings = state.findings.filter((entry) => entry.assignmentId === assignment.id);
       if (
         findings.some(
@@ -1017,6 +1092,8 @@ export function decideFactoryRetros(
         submittedAt: now,
         teamReportDigest: command.teamReportDigest,
       };
+      // The retro session stops now. The assignment completes now only if every ticket is already
+      // filed; otherwise saveFollowup completes it when the last one is.
       const unfiled = unfiledTickets(state.followups, command.report.dispositions);
       return saveRetro(
         { ...retro, reports: { phase: "complete", team: retro.reports.team, manager: report } },
@@ -1046,6 +1123,7 @@ export function decideFactoryRetros(
           "Tracker publication destinations require human configuration.",
           "permission-denied",
         );
+      // Configurations append; the latest for a project is the active one.
       const current = activeTracker(command.projectId);
       if ((current?.id ?? null) !== command.expectedTrackerId)
         return fail("The tracker configuration changed.", "stale-revision");
@@ -1077,6 +1155,8 @@ export function decideFactoryRetros(
         );
       if (state.followups.some((entry) => entry.id === command.followupId))
         return fail("The follow-up already exists.", "command-conflict");
+      // Project tickets are only for implementation or project causes. Other causes reach the
+      // system manager through improvement intake instead.
       const findings = command.findingIds.map((id) =>
         state.findings.find((entry) => entry.id === id && entry.assignmentId === assignment.id),
       );
@@ -1105,6 +1185,7 @@ export function decideFactoryRetros(
           `Follow-up ${existing.id} already covers these findings. Use it in the disposition, or retry or link that follow-up.`,
           "command-conflict",
         );
+      // Without an approved tracker the follow-up waits for configuration and publishes on retry.
       const tracker = activeTracker(assignment.projectId);
       const followup: FactoryFollowup = {
         id: command.followupId,
@@ -1149,6 +1230,7 @@ export function decideFactoryRetros(
       const assignment = state.assignments.find((entry) => entry.id === followup?.assignmentId);
       if (!followup || !assignment || !canLead(assignment) || !publicAllowed(assignment))
         return fail("This actor cannot retry or link that follow-up.", "permission-denied");
+      // A ticket confirmed in triage is final, so retrying or linking it again changes nothing.
       if (
         followup.publication.status === "linked" ||
         (followup.publication.status === "recorded" &&
@@ -1160,6 +1242,8 @@ export function decideFactoryRetros(
           followup.publication.status === "recorded"
             ? followup.publication.receipt.progress
             : undefined;
+        // The tracker may already hold a created ticket. Only the human can say that a different
+        // ticket is the same one, and a ticket known to exist can never be swapped.
         if (progress?.status === "outcome-unknown" && actor.kind !== "human")
           return fail(
             "Only the human can resolve an unknown publication by selecting an existing ticket.",
@@ -1249,6 +1333,8 @@ export function decideFactoryRetros(
         stableStringify(tracker.destination) !== stableStringify(command.receipt.destination)
       )
         return fail("The receipt belongs to another publication destination.");
+      // A receipt can be recorded again as the tracker makes progress. It keeps its request and
+      // any known issue, and never moves back out of triage.
       if (publication.status === "recorded") {
         const previous = publication.receipt;
         if (

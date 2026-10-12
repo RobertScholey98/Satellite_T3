@@ -21,9 +21,9 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { ServerConfig } from "../config.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import * as ServerConfig from "../config.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as GitHubCredentials from "../sourceControl/GitHubCredentials.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -31,7 +31,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as FactoryPublication from "./FactoryPublication.ts";
 import * as FactoryPreviewPublication from "./FactoryPreviewPublication.ts";
 import * as FactorySource from "./FactorySource.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 
@@ -86,14 +86,31 @@ const preserve = (cause: unknown) =>
         cause,
       });
 
+/**
+ * Turns a delivery revision into a GitHub pull request. `prepare` pins the destination and
+ * builds the private commit while the candidate is captured; `publish` pushes it and opens or
+ * adopts the PR when the lead publishes. Both are safe to rerun: each records its choices on disk
+ * first and reconciles with what the host already shows.
+ */
 export class FactoryPublicationHost extends Context.Service<
   FactoryPublicationHost,
   {
+    /**
+     * Pins the destination on the revision's first run and builds its commit. An assignment's
+     * first revision targets the project's GitHub remote and default branch on a branch derived
+     * from the assignment; later revisions stack onto the last published revision's commit.
+     */
     readonly prepare: (input: {
       readonly assignment: FactoryAssignment;
       readonly revision: FactoryDeliveryRevision;
       readonly candidate: FactoryPublication.FactoryPublicationCandidate;
     }) => Effect.Effect<FactoryPublicationDestination, FactoryError>;
+    /**
+     * Pushes the exact prepared commit, publishes any UX screenshots, and creates or adopts the
+     * one open PR carrying this assignment's marker, then links it to the lead's thread. Every
+     * host write first rechecks that the revision is still current and unblocked. Fails, rather
+     * than guessing, when the push or the PR's identity cannot be confirmed.
+     */
     readonly publish: (input: {
       readonly assignment: FactoryAssignment;
       readonly revision: FactoryDeliveryRevision;
@@ -107,16 +124,16 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const config = yield* ServerConfig;
-  const projects = yield* ProjectStoreV2;
-  const threads = yield* ThreadManagementService;
+  const config = yield* ServerConfig.ServerConfig;
+  const projects = yield* ProjectStore.ProjectStoreV2;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
   const registry = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
   const api = yield* GitHubApi.GitHubApi;
   const credentials = yield* GitHubCredentials.GitHubCredentials;
   const publication = yield* FactoryPublication.FactoryPublication;
   const sources = yield* FactorySource.FactorySource;
-  const store = yield* FactoryStore;
+  const store = yield* FactoryStore.FactoryStore;
   const previews = yield* FactoryPreviewPublication.FactoryPreviewPublication;
   const mutex = yield* Semaphore.make(1);
   const root = path.join(config.stateDir, "factory", "publication-host");
@@ -170,6 +187,9 @@ const make = Effect.gen(function* () {
       endpoint: `repos/${encodeURIComponent(destination.owner)}/${encodeURIComponent(destination.repository)}`,
     });
   };
+  // Given `expectedFingerprint`, the call is pinned to the credential the destination was
+  // reserved with, so a changed account fails instead of publishing as someone else.
+  // `beforeWrite` runs up front and again right before the request is sent.
   const request = Effect.fn(function* (
     input: GitHubApi.GitHubRestInput,
     expectedFingerprint?: string,
@@ -243,6 +263,8 @@ const make = Effect.gen(function* () {
           code: "invalid-state",
           detail: "The frozen candidate does not match the reserved delivery scope.",
         });
+      // The first run records the reservation; reruns must describe the same revision and
+      // candidate, so the destination never changes after it is chosen.
       const directory = yield* directoryFor(revision.id);
       const reservationPath = path.join(directory, "reservation.json");
       let record: typeof ReservationRecord.Type;
@@ -424,6 +446,9 @@ const make = Effect.gen(function* () {
     }) {
       const { assignment, revision } = input;
       yield* requireRevision(assignment, revision);
+      // Guards every host write: the revision must still be current with the same candidate,
+      // evidence, publication, source and workflow, screenshot publication must still be allowed
+      // when there are screenshots, and no control or incident may block delivery.
       const requireLiveWrite = Effect.gen(function* () {
         const state = yield* store.snapshot;
         const current = state.assignments.find((entry) => entry.id === assignment.id);
@@ -499,6 +524,7 @@ const make = Effect.gen(function* () {
           code: "invalid-state",
           detail: "Publication does not match the exact captured delivery revision.",
         });
+      // The hidden marker is how a later run recognizes this assignment's PR on the host.
       const marker = `<!-- satellite-factory:${yield* hash(`${assignment.projectId}:${assignment.id}`)} -->`;
       const screenshots = revision.uxEvidence
         ? yield* previews.publish({ assignmentId: assignment.id, revisionId: revision.id })
@@ -508,6 +534,7 @@ const make = Effect.gen(function* () {
         : "";
       const body = `${input.body}${screenshotMarkdown}\n\n${marker}`;
       const directory = yield* directoryFor(revision.id);
+      // A rerun must publish the same title and body; the recorded PR number is checked below.
       const recordPath = path.join(directory, "publish.json");
       let record: typeof PublishRecord.Type = { title: input.title, body };
       if (yield* fs.exists(recordPath)) {
@@ -532,6 +559,8 @@ const make = Effect.gen(function* () {
               ? "The publication branch moved outside this reservation. No remote work was overwritten."
               : "The push outcome is unknown. Delivery remains unconfirmed until the reserved head is observed.",
         });
+      // A PR is adopted only if it is open, carries the marker, and points from the reserved
+      // branch at the pushed head to the reserved base in the same repository.
       const validate = (pr: typeof PullRequest.Type) => {
         if (
           pr.number <= 0 ||
@@ -603,6 +632,8 @@ const make = Effect.gen(function* () {
           Effect.flatMap((response) => decodePullRequest(response.body)),
           Effect.result,
         );
+        // A create that failed before reaching the host is a plain failure. Once admitted, the
+        // outcome is read back from the host whatever the response said.
         if (!admitted && Result.isFailure(created)) return yield* preserve(created.failure);
         observed = yield* find();
         if (!observed)
@@ -613,6 +644,7 @@ const make = Effect.gen(function* () {
             ...(Result.isFailure(created) ? { cause: created.failure } : {}),
           });
       }
+      // An update failure is ignored here; the verify read below decides.
       if (observed.title !== input.title || observed.body !== body) {
         yield* requireCredential(reservation.destination);
         yield* hostRequest({

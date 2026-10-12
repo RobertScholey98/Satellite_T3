@@ -20,17 +20,33 @@ import {
   type FactoryControlMembership,
 } from "./FactoryControls.ts";
 
+/**
+ * Answers which factory record a thread belongs to and whether it may run or be directed now.
+ * The governance seams, the MCP guard and the factory's own workers ask here. An ordinary
+ * thread resolves to `undefined` and every check passes. `pendingParentThreadId` resolves a
+ * subagent that is not projected yet through its parent.
+ */
 export class FactoryControlAccess extends Context.Service<
   FactoryControlAccess,
   {
+    /**
+     * The thread's manager, assignment, auxiliary role and ancestors. Fails with
+     * `execution-unavailable` when the lineage is broken inside a managed project or points at a
+     * record its owner does not hold.
+     */
     readonly membership: (
       threadId: ThreadId,
       pendingParentThreadId?: ThreadId,
     ) => Effect.Effect<FactoryControlMembership | undefined, FactoryError>;
+    /** Fails with `permission-denied` and the reason when the thread may not run now. */
     readonly assertExecution: (
       threadId: ThreadId,
       pendingParentThreadId?: ThreadId,
     ) => Effect.Effect<void, FactoryError>;
+    /**
+     * Execution plus who may direct the thread. `senderThreadId` is the directing thread, `null`
+     * for the human or host; omitting it checks execution only.
+     */
     readonly assertDirection: (input: {
       readonly threadId: ThreadId;
       readonly senderThreadId?: ThreadId | null | undefined;
@@ -60,6 +76,8 @@ const make = Effect.gen(function* () {
       if (match === undefined) return undefined;
       const { manager, assignment, auxiliary, projectId } = match;
       const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
+      // Fail closed when the record does not hang together: a system manager's subagent, a
+      // thread in another project than its record, or an assignment outside its manager's remit.
       if (
         owner === undefined ||
         (owner.role === "system" &&
@@ -84,6 +102,8 @@ const make = Effect.gen(function* () {
         managerRole: owner.role,
         ...(assignment === undefined ? {} : { assignmentId: assignment.id }),
         ...(auxiliary === undefined ? {} : { auxiliaryThreadId: auxiliary.threadId }),
+        // Root first. A delivery review counts its lead as an ancestor, so controls on the lead,
+        // such as a takeover, also cover the review.
         ancestorThreadIds:
           auxiliary?.kind === "delivery-review" && assignment !== undefined
             ? [assignment.threadId, ...match.ancestorThreadIds.toReversed()]
@@ -106,6 +126,8 @@ const make = Effect.gen(function* () {
     const member = yield* resolve(state, threadId, pendingParentThreadId);
     if (member === undefined) return;
     const lineage = new Set([...member.ancestorThreadIds, member.threadId]);
+    // A shared merge freezes its integration team (its retrospective still runs), and a replaced
+    // lead's whole lineage stops for good.
     const owner = state.assignments.find((entry) => entry.id === member.assignmentId);
     const auxiliary = state.auxiliaryThreads.find(
       (entry) => entry.threadId === member.auxiliaryThreadId,
@@ -143,6 +165,8 @@ const make = Effect.gen(function* () {
             "Only the current independent review or retrospective can run. A completed or superseded conversation cannot resume or create a team.",
         });
     }
+    // Auxiliary threads (diagnosis, review, retrospective) report; they never direct another
+    // thread.
     if (
       direction &&
       senderThreadId != null &&
@@ -153,6 +177,9 @@ const make = Effect.gen(function* () {
         code: "permission-denied",
         detail: "Independent diagnosis can report findings but cannot direct implementation work.",
       });
+    // A lead may direct another team's lead only across a live edge: an accepted cross-project
+    // request between the current leads, or a ready, unheld integration it leads or joins.
+    // The sending team must itself be free to act. Same-project, non-integration peers skip this.
     if (direction && senderThreadId != null && member.assignmentId !== undefined) {
       const source = state.assignments.find(
         (entry) =>

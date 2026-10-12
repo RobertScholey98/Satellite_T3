@@ -26,9 +26,9 @@ import {
   FactoryExecutionProfile,
 } from "./FactoryExecutionProfile.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
 const live = process.env.SATELLITE_FACTORY_LIVE_TEST === "1" ? it.effect : it.effect.skip;
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -406,8 +406,8 @@ live(
             Layer.provideMerge(
               Layer.mergeAll(
                 ServerConfig.layerTest(root, root),
-                Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
-                Layer.mock(FactorySource)({
+                Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+                Layer.mock(FactorySource.FactorySource)({
                   readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
                   read: () => Effect.die("Recovery must not recapture the original repository"),
                 }),

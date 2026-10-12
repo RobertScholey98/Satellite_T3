@@ -18,19 +18,16 @@ import * as Result from "effect/Result";
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
-import {
-  layer as SatelliteTestLayer,
-  recordProject,
-} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import * as SatelliteTestRuntime from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
-import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
-import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryBoundaryExecutionTestkit from "./FactoryBoundaryExecution.testkit.ts";
+import * as FactorySourceTestkit from "./FactorySource.testkit.ts";
+import * as FactoryHandoverTestkit from "./FactoryHandover.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const projectId = ProjectId.make("factory-service-project");
 const human = { kind: "human" } as const;
@@ -59,16 +56,20 @@ const runtime = Layer.mergeAll(
   FactoryStore.layer,
   ThreadManagement.layer,
   CommandReceipts.layer,
-  boundaryUnavailable,
-  sourceUnused,
-  handoverUnused,
-  layerTestDependencies,
-).pipe(Layer.provideMerge(SatelliteTestLayer));
+  FactoryBoundaryExecutionTestkit.layerUnavailable,
+  FactorySourceTestkit.layerUnused,
+  FactoryHandoverTestkit.layerUnused,
+  FactoryServiceTestkit.layerTestDependencies,
+).pipe(Layer.provideMerge(SatelliteTestRuntime.layer));
 const layer = FactoryService.layer.pipe(Layer.provideMerge(runtime));
 
 it.effect("checkpoints deleted ordinary history and still observes later managed guidance", () =>
   Effect.gen(function* () {
-    yield* recordProject({ projectId, title: "Project", workspaceRoot: "/project" });
+    yield* SatelliteTestRuntime.recordProject({
+      projectId,
+      title: "Project",
+      workspaceRoot: "/project",
+    });
     const factory = yield* FactoryService.FactoryService;
     const threads = yield* ThreadManagement.ThreadManagementService;
     const store = yield* FactoryStore.FactoryStore;
@@ -149,7 +150,7 @@ it.effect("checkpoints deleted ordinary history and still observes later managed
   }).pipe(
     Effect.provide(layer),
     Effect.provide(
-      Layer.mock(FactoryExecution)({
+      Layer.mock(FactoryExecution.FactoryExecution)({
         qualify: () => Effect.succeed(qualification),
         assertSelectionFor: () => Effect.void,
         assertDelegationFor: () => Effect.void,
@@ -162,7 +163,7 @@ it.effect("checkpoints deleted ordinary history and still observes later managed
 it.effect("creates ordinary durable threads once and records the owning lead's report", () =>
   Effect.gen(function* () {
     const qualifications = yield* Ref.make(0);
-    const execution = Layer.succeed(FactoryExecution, {
+    const execution = Layer.succeed(FactoryExecution.FactoryExecution, {
       qualify: () =>
         Ref.update(qualifications, (count) => count + 1).pipe(Effect.as(qualification)),
       assertSelectionFor: () => Effect.void,
@@ -170,7 +171,11 @@ it.effect("creates ordinary durable threads once and records the owning lead's r
       runtimePolicyFor: () => Effect.succeed(profile),
     });
     yield* Effect.gen(function* () {
-      yield* recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
+      yield* SatelliteTestRuntime.recordProject({
+        projectId,
+        title: "Web",
+        workspaceRoot: "/project",
+      });
       const factory = yield* FactoryService.FactoryService;
       const threads = yield* ThreadManagement.ThreadManagementService;
       const first = yield* factory.dispatch(human, create);
@@ -232,8 +237,16 @@ it.effect("creates ordinary durable threads once and records the owning lead's r
 it.effect("refuses the first manager while the beta is off and never strands existing ones", () =>
   Effect.gen(function* () {
     const secondProjectId = ProjectId.make("factory-service-second-project");
-    yield* recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
-    yield* recordProject({ projectId: secondProjectId, title: "Api", workspaceRoot: "/api" });
+    yield* SatelliteTestRuntime.recordProject({
+      projectId,
+      title: "Web",
+      workspaceRoot: "/project",
+    });
+    yield* SatelliteTestRuntime.recordProject({
+      projectId: secondProjectId,
+      title: "Api",
+      workspaceRoot: "/api",
+    });
     const factory = yield* FactoryService.FactoryService;
     const settings = yield* ServerSettings.ServerSettingsService;
     const refused = yield* factory.dispatch(human, create).pipe(Effect.result);
@@ -266,7 +279,7 @@ it.effect("refuses the first manager while the beta is off and never strands exi
         Layer.provideMerge(runtime),
       ),
     ),
-    Effect.provideService(FactoryExecution, {
+    Effect.provideService(FactoryExecution.FactoryExecution, {
       qualify: () =>
         Effect.succeed({ status: "unavailable", reason: "Start the local Docker engine." }),
       assertSelectionFor: () => Effect.void,
@@ -278,7 +291,11 @@ it.effect("refuses the first manager while the beta is off and never strands exi
 
 it.effect("persists an actionable wait without launching when confinement is unavailable", () =>
   Effect.gen(function* () {
-    yield* recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
+    yield* SatelliteTestRuntime.recordProject({
+      projectId,
+      title: "Web",
+      workspaceRoot: "/project",
+    });
     const factory = yield* FactoryService.FactoryService;
     yield* factory.dispatch(human, create);
     yield* factory.drain;
@@ -288,7 +305,7 @@ it.effect("persists an actionable wait without launching when confinement is una
     assert.equal(snapshot.managers[0]!.wait?.reason, "Start the local Docker engine.");
   }).pipe(
     Effect.provide(layer),
-    Effect.provideService(FactoryExecution, {
+    Effect.provideService(FactoryExecution.FactoryExecution, {
       qualify: () =>
         Effect.succeed({ status: "unavailable", reason: "Start the local Docker engine." }),
       assertSelectionFor: () => Effect.void,
@@ -302,7 +319,11 @@ it.effect("a failed launch remains recoverable and its receipt does not claim su
   Effect.gen(function* () {
     const available = yield* Ref.make(false);
     yield* Effect.gen(function* () {
-      yield* recordProject({ projectId, title: "API", workspaceRoot: "/project" });
+      yield* SatelliteTestRuntime.recordProject({
+        projectId,
+        title: "API",
+        workspaceRoot: "/project",
+      });
       const factory = yield* FactoryService.FactoryService;
       yield* factory.dispatch(human, create);
       yield* factory.drain;
@@ -322,7 +343,7 @@ it.effect("a failed launch remains recoverable and its receipt does not claim su
       assert.equal(recovered.assignments[0]!.id, failed.assignments[0]!.id);
     }).pipe(
       Effect.provide(layer),
-      Effect.provideService(FactoryExecution, {
+      Effect.provideService(FactoryExecution.FactoryExecution, {
         qualify: () => Effect.succeed(qualification),
         assertSelectionFor: () => Effect.void,
         assertDelegationFor: () => Effect.void,
@@ -343,9 +364,13 @@ it.effect(
   "recovers a rejected lead message without replacing the profile or resending the manager",
   () =>
     Effect.gen(function* () {
-      yield* recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
+      yield* SatelliteTestRuntime.recordProject({
+        projectId,
+        title: "Web",
+        workspaceRoot: "/project",
+      });
       const threads = yield* ThreadManagement.ThreadManagementService;
-      const orchestrator = yield* OrchestratorV2;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
       const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
       const qualifications = yield* Ref.make(0);
       const sends = yield* Ref.make<ReadonlyArray<ThreadManagement.ThreadManagementSendInput>>([]);
@@ -434,7 +459,7 @@ it.effect(
       }).pipe(
         Effect.provide(FactoryService.layer),
         Effect.provideService(ThreadManagement.ThreadManagementService, interceptedThreads),
-        Effect.provideService(FactoryExecution, {
+        Effect.provideService(FactoryExecution.FactoryExecution, {
           qualify: () =>
             Ref.update(qualifications, (count) => count + 1).pipe(Effect.as(qualification)),
           assertSelectionFor: () => Effect.void,
@@ -447,7 +472,11 @@ it.effect(
 
 it.effect("reconciles an accepted message after losing its factory acknowledgement", () =>
   Effect.gen(function* () {
-    yield* recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
+    yield* SatelliteTestRuntime.recordProject({
+      projectId,
+      title: "Web",
+      workspaceRoot: "/project",
+    });
     const store = yield* FactoryStore.FactoryStore;
     const threads = yield* ThreadManagement.ThreadManagementService;
     const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
@@ -504,7 +533,7 @@ it.effect("reconciles an accepted message after losing its factory acknowledgeme
       Effect.provide(FactoryService.layer),
       Effect.provideService(FactoryStore.FactoryStore, interceptedStore),
       Effect.provideService(ThreadManagement.ThreadManagementService, interceptedThreads),
-      Effect.provideService(FactoryExecution, execution),
+      Effect.provideService(FactoryExecution.FactoryExecution, execution),
     );
 
     yield* Effect.gen(function* () {
@@ -530,7 +559,7 @@ it.effect("reconciles an accepted message after losing its factory acknowledgeme
     }).pipe(
       Effect.provide(Layer.fresh(FactoryService.layer)),
       Effect.provideService(ThreadManagement.ThreadManagementService, interceptedThreads),
-      Effect.provideService(FactoryExecution, execution),
+      Effect.provideService(FactoryExecution.FactoryExecution, execution),
     );
   }).pipe(Effect.provide(runtime)),
 );

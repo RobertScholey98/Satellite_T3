@@ -23,6 +23,11 @@ import { preserveFactoryManagerPauses } from "./FactoryControls.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 
+/**
+ * Host qualification for `system.create` and `system.retry`, gathered by
+ * `FactoryImprovementEffects.context`. A retry reuses the manager's thread; a create gets a new
+ * one.
+ */
 export interface FactoryImprovementContext {
   readonly systemManagerCreation?: {
     readonly threadId: ThreadId;
@@ -39,6 +44,7 @@ export const factoryImprovementDefaults: FactoryImprovementSettings = {
   routineBatchesPerDay: 2,
   urgentBatchesPerDay: 4,
 };
+/** The active review settings: the human's latest saved configuration over the defaults. */
 export const factoryImprovementConfiguration = (
   state: FactorySnapshot,
 ): FactoryImprovementSettings => ({
@@ -47,6 +53,10 @@ export const factoryImprovementConfiguration = (
 });
 const hash = (value: unknown) =>
   Hex.encode(sha256(new TextEncoder().encode(stableStringify(value))));
+/**
+ * The version of a finding the system manager has seen. Intake repeats only when this changes, so
+ * it ignores evidence order and duplicates.
+ */
 export const factoryImprovementFindingDigest = (finding: FactoryFinding) =>
   hash({
     id: finding.id,
@@ -63,6 +73,7 @@ export const factoryImprovementFindingDigest = (finding: FactoryFinding) =>
     escalation: finding.escalation?.summary ?? null,
   });
 const systemManager = (state: FactorySnapshot) => factorySystemManager(state.managers);
+// The system manager takes new work only while qualified, launched, active and not paused.
 const availableManager = (state: FactorySnapshot) => {
   const manager = systemManager(state);
   return manager?.role === "system" &&
@@ -78,6 +89,10 @@ const availableManager = (state: FactorySnapshot) => {
     ? manager
     : undefined;
 };
+/**
+ * Findings that a completed retro named in a learning or disposed of. These feed routine intake;
+ * any other finding reaches the system manager only through an explicit escalation.
+ */
 export const factoryImprovementRetroFindingIds = (state: FactorySnapshot): readonly string[] => [
   ...new Set(
     state.retros.flatMap((retro) =>
@@ -99,6 +114,7 @@ export const factoryImprovementRetroFindingIds = (state: FactorySnapshot): reado
     ),
   ),
 ];
+// Escalations form the urgent queue and completed-retro findings the routine one.
 const pending = (state: FactorySnapshot, kind: "urgent" | "routine") =>
   state.improvementIntakes.filter(
     (entry) =>
@@ -113,12 +129,20 @@ export const factoryImprovementBatchesSpent = (
   state.improvementBatches.filter((entry) => entry.kind === kind && entry.budgetDay === day).length;
 const allowance = (settings: FactoryImprovementSettings, kind: "urgent" | "routine") =>
   kind === "urgent" ? settings.urgentBatchesPerDay : settings.routineBatchesPerDay;
+// Allowances reset at the start of each UTC day.
 const dayAt = (now: string) => now.slice(0, 10);
 const nextDay = (now: string) =>
   DateTime.formatIso(DateTime.makeUnsafe(Date.parse(`${dayAt(now)}T00:00:00.000Z`) + 86_400_000));
 const truncate = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`;
 
+/**
+ * The next batch of one kind to seal, or `undefined` when none is due. Each kind has at most one
+ * batch awaiting delivery. Routine batches wait for the threshold or for the oldest intake to
+ * reach the maximum age, and each sealed batch spends that kind's daily allowance. Forcing a
+ * routine batch skips the threshold and age but not the allowance; a forced urgent batch is the
+ * human's and spends none. The summary splits its character budget evenly across intakes.
+ */
 export function factoryImprovementBatchPlan(
   state: FactorySnapshot,
   now: string,
@@ -171,6 +195,11 @@ export function factoryImprovementBatchPlan(
   };
 }
 
+/**
+ * When intake next needs a wake: `now` if a batch can be sealed, otherwise the earliest time a
+ * held batch becomes due, or `null` when nothing is waiting. `FactoryImprovementEffects.watch`
+ * sleeps until this time rather than polling.
+ */
 export function factoryImprovementNextDueAt(state: FactorySnapshot, now: string): string | null {
   const configuration = factoryImprovementConfiguration(state);
   if (!configuration.enabled || !availableManager(state)) return null;
@@ -207,6 +236,12 @@ export function factoryImprovementNextDueAt(state: FactorySnapshot, now: string)
     : DateTime.formatIso(DateTime.makeUnsafe(Math.max(Date.parse(now), due)));
 }
 
+/**
+ * Decides the system manager's lifecycle, evidence intake and batching, investigations and
+ * proposals, and returns `undefined` for commands it leaves to other deciders. It also screens
+ * the system manager's other commands that reach it: the system manager may steer only
+ * assignments it owns through shared work, and anything else from it is refused.
+ */
 export function decideFactoryImprovements(
   input: FactoryImprovementContext & {
     readonly state: FactorySnapshot;
@@ -237,6 +272,8 @@ export function decideFactoryImprovements(
               ? state.dependencies.find((entry) => entry.id === command.dependencyId)?.assignmentId
               : undefined;
     const assignment = state.assignments.find((entry) => entry.id === assignmentId);
+    // An owned shared-work assignment is steered through the ordinary deciders, and only while
+    // the system manager is available.
     if (
       systemActor &&
       assignment &&
@@ -299,6 +336,8 @@ export function decideFactoryImprovements(
     ids.every(
       (id) => id !== self && state.improvementInvestigations.some((entry) => entry.id === id),
     );
+  // A sealed batch freezes its intakes and digest. Delivery and failure receipts must cite that
+  // digest, so a batch never changes after the manager may have seen it.
   const seal = (kind: "urgent" | "routine", force = false) => {
     const plan = factoryImprovementBatchPlan(state, now, { kind, force });
     if (!plan) return accepted();
@@ -441,6 +480,8 @@ export function decideFactoryImprovements(
       const creation = input.systemManagerCreation;
       if (!creation || creation.threadId !== manager.threadId)
         return fail("Retry requires host qualification for the same manager.", "invalid-state");
+      // Once its thread exists the manager's workspace and model are pinned, so a retry can only
+      // relaunch the same qualified profile.
       if (
         manager.threadStatus === "created" &&
         (command.workflow !== undefined ||
@@ -497,6 +538,8 @@ export function decideFactoryImprovements(
         manager.qualification.profileId !== command.profileId
       )
         return fail("The system-manager profile changed.", "stale-revision");
+      // A receipt after a delivered launch changes nothing. A failure blocks the manager until the
+      // human retries, and remembers whether its thread was already created.
       if (manager.launchStatus === "delivered") return accepted();
       const delivered = command.type === "system.launch.recorded";
       return accepted(
@@ -573,6 +616,7 @@ export function decideFactoryImprovements(
       const batch = state.improvementBatches.find((entry) => entry.id === command.batchId);
       if (!batch || batch.delivery.status !== "pending" || !batch.delivery.failure)
         return fail("This review batch is not waiting for a delivery retry.", "invalid-state");
+      // The notify effect stays pending while a failure is recorded; clearing it resumes delivery.
       return accepted(
         {
           improvementBatches: state.improvementBatches.map((entry) =>
@@ -619,6 +663,8 @@ export function decideFactoryImprovements(
           "Intake requires an explicit escalation or a completed manager-retro finding.",
           "invalid-state",
         );
+      // A repeat for the same finding version is a no-op, and a retro intake never downgrades an
+      // escalation.
       const previous = state.improvementIntakes.findLast((entry) => entry.findingId === finding.id);
       if (
         previous?.sourceDigest === command.sourceDigest &&
@@ -661,6 +707,8 @@ export function decideFactoryImprovements(
           [{ type: "improvement.reconcile" }],
         );
       }
+      // Implementation and project causes from retros are sampled per project, queuing every
+      // `sampleEvery`th one. Escalations and all other causes are always queued.
       const local =
         command.origin === "retro" &&
         ["implementation", "project"].includes(finding.route.suspectedCause);
@@ -699,6 +747,7 @@ export function decideFactoryImprovements(
       const batch = state.improvementBatches.find((entry) => entry.id === command.batchId);
       if (!batch || batch.digest !== command.digest)
         return fail("The delivery receipt does not match its frozen batch.", "invalid-state");
+      // Delivery is recorded once; a replay must name the same message.
       if (batch.delivery.status === "delivered")
         return batch.delivery.messageId === command.messageId
           ? accepted({}, { batchId: batch.id })
@@ -750,6 +799,8 @@ export function decideFactoryImprovements(
         { investigationId: id },
       );
     }
+    // Records each bounded read made through FactoryImprovementEvidence, so an investigation keeps
+    // the provenance of what the system manager read.
     case "improvement.evidence.read": {
       if (!host) return fail("Investigation read receipts are host-owned.");
       const investigation = state.improvementInvestigations.find(
@@ -886,6 +937,7 @@ export function decideFactoryImprovements(
         (entry) => entry.id === command.proposalId && entry.revision === command.revision,
       );
       if (!proposal) return fail("The proposal revision was not found.", "invalid-state");
+      // Feedback may rate any revision. Only the newest can be submitted or decided.
       if (command.type === "proposal.feedback")
         return accepted(
           {

@@ -151,6 +151,8 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
       return member;
     });
 
+  // Integration reads are open to a project manager's own thread, an integration team, and the
+  // lead of another assignment (not its subagents). Auxiliaries and system managers are refused.
   const integrationCaller = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const member = yield* managedCaller(threadId);
@@ -180,9 +182,13 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
     });
 
   return {
+    // A manager sees its own assignments; a team sees only its assignment. Lists are cut to
+    // records of those assignments or their projects; the system manager also sees its shared
+    // repositories and the environment's workflow adoption records.
     threadSnapshot: (threadId) =>
       Effect.gen(function* () {
         const { manager, assignment } = yield* managedCaller(threadId);
+        // The system manager has no single project, so it starts from the unscoped state.
         const snapshot =
           manager.role === "system" && assignment === undefined
             ? yield* store.snapshot
@@ -317,6 +323,7 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
           ),
         };
       }),
+    // Only the integration lead itself reads its merge group.
     threadMergeGroup: (threadId, groupId) =>
       Effect.gen(function* () {
         const member = yield* managedCaller(threadId);
@@ -394,6 +401,8 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
         if (!project) return yield* denied();
         return project.projectId;
       }),
+    // The system manager's improvement view, newest first. Each list pages five entries per
+    // cursor step and long text is cut, so one read stays small.
     threadImprovements: (threadId, cursor = 0) =>
       Effect.gen(function* () {
         const member = yield* managedCaller(threadId);
@@ -499,6 +508,8 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
           nextCursor: hasMore ? cursor + 5 : null,
         };
       }),
+    // Pages one full improvement record as text. The cursor carries the record's digest, so a
+    // record that changes mid-read fails with `stale-revision` instead of mixing versions.
     threadImprovementRecord: (threadId, input) =>
       Effect.gen(function* () {
         const member = yield* managedCaller(threadId);
@@ -559,6 +570,7 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
           nextCursor: nextOffset < serialized.length ? { offset: nextOffset, digest } : null,
         };
       }),
+    // Managers only: every other manager that is not retired, thirty per page.
     threadDirectory: (threadId, cursor = 0) =>
       Effect.gen(function* () {
         const member = yield* managedCaller(threadId);
@@ -589,6 +601,8 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
           nextCursor: cursor + page.length < entries.length ? cursor + page.length : null,
         };
       }),
+    // The manager reads its own candidates' tickets; a lead reads only the ticket it was
+    // commissioned from.
     threadTicketAccess: (threadId, candidateId) =>
       Effect.gen(function* () {
         yield* controls.assertExecution(threadId).pipe(Effect.mapError(unavailable));
@@ -606,6 +620,8 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
         )
           return yield* denied();
       }),
+    // Commands run as the calling thread. Capability setup, grant approval, merge group
+    // decisions and stopping a merge belong to the human, so no managed thread may send them.
     threadDispatch: (threadId, command) =>
       Effect.gen(function* () {
         if (
@@ -619,6 +635,8 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
           return yield* denied();
         yield* controls.assertExecution(threadId).pipe(Effect.mapError(unavailable));
         const member = yield* managedCaller(threadId);
+        // The system manager's own thread is limited to improvement, shared work, retro,
+        // recovery and peer coordination commands.
         if (
           member.manager.role === "system" &&
           member.assignment === undefined &&
@@ -661,6 +679,8 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
             command.type === "followup.request")
         )
           return yield* denied();
+        // Auxiliary threads send only their own output: a retrospective its retro, findings and
+        // follow-ups, a diagnosis its report, and a delivery review its review and previews.
         const retroCommand =
           member.auxiliary?.kind === "retrospective" &&
           ((command.type === "retro.team.submit" &&
@@ -689,6 +709,8 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
                   ("reviewId" in command && command.reviewId !== member.auxiliary.incidentId)))
         )
           return yield* denied();
+        // A subagent may edit files, verify, report findings and escalate a message in its own
+        // thread; everything else must come from the manager, lead or auxiliary thread itself.
         const descendantOperation =
           member.assignment !== undefined &&
           member.assignment.kind !== "onboarding" &&

@@ -14,9 +14,9 @@ import * as Layer from "effect/Layer";
 import { FetchHttpClient, HttpClient, HttpRouter, HttpServer } from "effect/http";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { deliveryIds, deliveryNow, reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
-import { FactoryPreviewEvidence } from "./FactoryPreviewEvidence.ts";
+import * as FactoryPreviewEvidence from "./FactoryPreviewEvidence.ts";
 import { routeLayer } from "./FactoryPreviewHttp.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
 const setup = (scopes: readonly AuthEnvironmentScope[]) =>
   Effect.gen(function* () {
@@ -56,8 +56,8 @@ const setup = (scopes: readonly AuthEnvironmentScope[]) =>
     };
     let reads = 0;
     const layers = Layer.mergeAll(
-      Layer.mock(FactoryStore)({ snapshot: Effect.succeed(state) }),
-      Layer.mock(FactoryPreviewEvidence)({
+      Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.succeed(state) }),
+      Layer.mock(FactoryPreviewEvidence.FactoryPreviewEvidence)({
         read: () =>
           Effect.sync(() => {
             reads += 1;

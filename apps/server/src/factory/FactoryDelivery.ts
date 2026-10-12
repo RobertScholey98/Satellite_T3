@@ -25,6 +25,10 @@ import {
 } from "./FactoryModelPolicy.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 
+/**
+ * Values the service resolves before the pure decider runs. For `delivery.review.request` it
+ * allocates a fresh reviewer thread and model; the decider only checks them against policy.
+ */
 export interface FactoryDeliveryContext {
   readonly deliveryReviewAllocation?: {
     readonly threadId: ThreadId;
@@ -44,6 +48,11 @@ export const currentFactoryDeliveryRevision = (assignment: FactoryAssignment) =>
     (entry) => entry.id === assignment.delivery?.currentRevisionId,
   );
 
+/**
+ * Why a delivering assignment is quiet on purpose: a flow hold, a running team review, a merge
+ * the host is reconciling, or a verified revision waiting only on the human. Oversight and
+ * reconciliation treat a returned reason as an expected wait, not a stalled lead to recover.
+ */
 export function factoryDeliveryWaitReason(assignment: FactoryAssignment): string | undefined {
   const delivery = assignment.delivery;
   const revision = currentFactoryDeliveryRevision(assignment);
@@ -78,11 +87,17 @@ const uxVerificationUnavailable = (state: FactorySnapshot, assignment: FactoryAs
     ? "UX verification unavailable: this project has no approved app preview runtime (previews run Node entry points only). Check the UI change yourself before approving."
     : undefined;
 
+/** The project's highest rule version is the one in force, even when that version is disabled. */
 export const currentFactoryMergeRule = (state: FactorySnapshot, assignment: FactoryAssignment) =>
   state.mergeRules
     .filter((entry) => entry.projectId === assignment.projectId)
     .sort((a, b) => b.version - a.version)[0];
 
+/**
+ * Every selected path must sit inside an allowed path and outside every excluded one, and the
+ * declared UI impact must be none, or an established pattern when the rule allows those. An empty
+ * selection never matches.
+ */
 const matchesRule = (
   rule: FactoryProjectMergeRule | undefined,
   assignment: FactoryAssignment,
@@ -102,6 +117,13 @@ const matchesRule = (
     (assignment.delivery?.impact?.classification === "established-pattern" &&
       rule.allowEstablishedPatterns));
 
+/**
+ * Recomputes from current state whether a revision may merge. `reasons` lists what still blocks
+ * it; empty means its evidence is complete and current. `needsHuman` says the merge also needs a
+ * human approval of this exact head and bundle, and `humanApproved` whether one exists. The
+ * decider, the merge effects and the pull-request gate each rerun it, so evidence that went stale
+ * after a revision was ready refuses the merge.
+ */
 export function factoryDeliveryReadiness(
   state: FactorySnapshot,
   assignment: FactoryAssignment,
@@ -112,6 +134,8 @@ export function factoryDeliveryReadiness(
   const grant = assignment.grant;
   if (!manager || !grant || assignment.outcome !== undefined || assignment.status === "complete")
     reasons.push("The assignment no longer has active delivery authority.");
+  // Evidence never carries across authority: a revision is bound to the grant, boundary,
+  // workflow and source it was captured under.
   if (
     grant?.epoch !== revision.grantEpoch ||
     grant.boundaryId !== revision.boundaryId ||
@@ -214,10 +238,12 @@ export function factoryDeliveryReadiness(
   const ruleEligible =
     policy?.delivery === "project-rule" && matchesRule(rule, assignment, revision);
   const approval = revision.approval;
+  // A new head or a resealed bundle voids the human's approval.
   const humanApproved =
     approval?.authority === "human" &&
     approval.expectedHeadSha === revision.publication?.headSha &&
     approval.bundleDigest === revision.bundleDigest;
+  // Once routed to the human a revision stays routed, so a later rule change cannot skip them.
   const needsHuman =
     revision.routedToHuman === true ||
     !ruleEligible ||
@@ -234,6 +260,14 @@ export function factoryDeliveryReadiness(
   };
 }
 
+/**
+ * Decides every `delivery.*` command and returns `undefined` for any other type, so `FactoryState`
+ * moves on to the next decider. The human configures runtimes, rules and screenshot publication
+ * and approves flows and revisions. The implementation lead (or the human in its place) drives its
+ * own assignment's delivery. The host records receipts for effects it ran, and each receipt must
+ * match the operation it answers, so one for a hold, preview or merge that has since changed is
+ * refused rather than applied. The manager has no role here.
+ */
 export function decideFactoryDelivery(
   input: FactoryDeliveryContext & {
     readonly state: FactorySnapshot;
@@ -280,6 +314,7 @@ export function decideFactoryDelivery(
       config.args.some((arg) => arg.length > 4096 || arg.includes("\0"))
     )
       return fail("Approve a pinned image, a repository Node entry point, and a valid app port.");
+    // Configurations accumulate; a reviewer names one by id when starting a preview.
     return accept({
       previewConfigurations: [
         ...state.previewConfigurations,
@@ -324,6 +359,8 @@ export function decideFactoryDelivery(
       [...command.allowedPaths, ...command.excludedPaths].some((path) => !factoryRelativePath(path))
     )
       return fail("Merge rules need normalized repository-relative paths.");
+    // Rules are appended as new versions, never edited, so a project-rule approval can name the
+    // version it relied on and a later rule change voids it.
     const previous = state.mergeRules.filter((entry) => entry.projectId === command.projectId);
     return accept({
       mergeRules: [
@@ -365,6 +402,7 @@ export function decideFactoryDelivery(
       effects,
       next.currentRevisionId,
     );
+  // The human may act as the lead on any assignment. `host` is the server recording receipts.
   const lead =
     actor.kind === "human" || (actor.kind === "thread" && actor.threadId === assignment.threadId);
   const host = actor.kind === "system";
@@ -403,6 +441,8 @@ export function decideFactoryDelivery(
       extra,
       assignmentChanges,
     );
+  // Flow transitions clear or set the assignment's wait only when it is this hold's review of its
+  // newest artifact. A wait on anything else is left alone.
   const ownsFlowWait =
     assignment.wait?.kind === "flow-review" &&
     assignment.wait.holdId === delivery.flow?.holdId &&
@@ -411,9 +451,13 @@ export function decideFactoryDelivery(
     if (!lead || !active)
       return fail("Only the active implementation lead can declare impact.", "permission-denied");
     if (command.impact.evidence.length === 0) return fail("Impact needs concrete evidence.");
+    // Repeating the same declaration is accepted and changes nothing.
     if (stableStringify(delivery.impact) === stableStringify(command.impact)) return save(delivery);
     if (delivery.flow?.status === "releasing")
       return fail("Wait for the accepted flow release before changing its impact.");
+    // A new impact drops every revision's reviews, approval and bundle, since those confirmed the
+    // old one. Changed flows start a hold; a hold already in progress keeps its id and status but
+    // loses its artifact and decision, so the lead resubmits the flow against the new impact.
     const activeFlow =
       delivery.flow && delivery.flow.status !== "released" ? delivery.flow : undefined;
     const hold = command.impact.changedFlows || activeFlow !== undefined;
@@ -465,6 +509,7 @@ export function decideFactoryDelivery(
       readiness: [command.reason],
     });
   }
+  // A flow error holds the pending hold or capture effect; clearing it lets that effect run again.
   if (command.type === "delivery.flow.retry") {
     if (!lead || !active || !delivery.flow)
       return fail("Only the active lead can retry this flow operation.", "permission-denied");
@@ -474,6 +519,8 @@ export function decideFactoryDelivery(
   if (command.type === "delivery.flow.recorded") {
     if (!host || delivery.flow?.holdId !== command.holdId)
       return fail("This flow receipt is not current.");
+    // The receipt must answer the transition still in progress: holding while stopping,
+    // releasing while releasing.
     if (command.held ? delivery.flow.status !== "stopping" : delivery.flow.status !== "releasing")
       return fail("The flow hold changed while execution was being reconciled.");
     return save(
@@ -503,6 +550,8 @@ export function decideFactoryDelivery(
       return fail("Submit the concrete flow while implementation is held.");
     if (command.content.length > 200_000)
       return fail("Keep the concrete flow document below 200,000 characters.");
+    // The submission stays pending until the host stores and digests it; the human decides on
+    // that digest. A resubmission clears the previous decision.
     const { decision: _decision, ...flow } = delivery.flow;
     return save(
       {
@@ -558,6 +607,8 @@ export function decideFactoryDelivery(
   if (command.type === "delivery.flow.decide") {
     if (actor.kind !== "human")
       return fail("Only the human can approve a UI flow.", "permission-denied");
+    // The decision names the digest the human saw, and a resubmission still being stored blocks
+    // it. Approval releases the hold through its effect; rejection keeps implementation held.
     if (
       !active ||
       delivery.flow?.status !== "held" ||
@@ -597,6 +648,7 @@ export function decideFactoryDelivery(
       !command.approved && ownsFlowWait ? { wait: null, status: "running" } : {},
     );
   }
+  // Ends the human's review and returns direction to the manager. It approves nothing.
   if (command.type === "delivery.review.handback") {
     if (actor.kind !== "human")
       return fail("Only the human can hand the review back.", "permission-denied");
@@ -608,6 +660,8 @@ export function decideFactoryDelivery(
     if (assignment.grant.epoch !== command.expectedEpoch)
       return fail("The assignment grant changed.");
     if (!delivery.impact) return fail("Declare UI impact before preparing a delivery candidate.");
+    // A new capture becomes the current revision at once, so it waits until no earlier
+    // publication or merge is unreconciled. Earlier revisions stay as history.
     if (
       delivery.revisions.some(
         (entry) =>
@@ -652,6 +706,8 @@ export function decideFactoryDelivery(
   const revisionEffect = { ...effectFields, revisionId: revision.id };
   switch (command.type) {
     case "delivery.preview.start": {
+      // App evidence is tied to an open independent review of the current candidate, so only
+      // that review's reviewer (or the human) may start the preview.
       const review = revision.reviews.find((entry) => entry.id === command.reviewId);
       if (
         !active ||
@@ -709,6 +765,8 @@ export function decideFactoryDelivery(
     case "delivery.preview.recorded":
       if (!host || revision.preview?.instanceId !== command.instanceId)
         return fail("This preview receipt is not current.");
+      // Startup takes time, so a ready receipt rechecks the review, grant, flow and controls.
+      // Other statuses for this instance are always recorded, so a stop or failure is not lost.
       if (
         command.status === "ready" &&
         (!active ||
@@ -793,6 +851,8 @@ export function decideFactoryDelivery(
         return fail("Only the active lead can publish the current candidate.", "permission-denied");
       if (revision.status !== "captured" || !revision.publication)
         return fail("Prepare the candidate before publication.");
+      // The pull request opens only after verification and a passed team review, and UI work
+      // also needs the reviewer's app evidence, because its screenshots publish with the PR.
       if (
         uiImpact(assignment) &&
         !uxVerificationUnavailable(state, assignment) &&
@@ -857,6 +917,8 @@ export function decideFactoryDelivery(
         revision.reviews.some((entry) => entry.status === "pending" || entry.status === "running")
       )
         return fail("An independent review is already in progress.");
+      // The reviewer is a fresh thread, never the lead, on a model the assignment's current
+      // policy still approves.
       const allocation = input.deliveryReviewAllocation;
       const manager = state.managers.find((entry) => entry.id === assignment.managerId);
       if (
@@ -926,6 +988,8 @@ export function decideFactoryDelivery(
     case "delivery.review.prepared":
     case "delivery.review.started": {
       if (!host) return fail("Only the host can record review launch.", "permission-denied");
+      // Both record the reviewer's qualified profile. Only `started` marks the review running,
+      // because `prepared` lands before the review message is sent.
       const review = revision.reviews.find((entry) => entry.id === command.reviewId);
       if (!review || !isCurrent) return fail("This review was superseded.");
       return updateRevision(
@@ -986,6 +1050,8 @@ export function decideFactoryDelivery(
           "permission-denied",
         );
       if (command.evidence.length === 0) return fail("Review findings need concrete evidence.");
+      // Only the qualified reviewer thread reports, never the lead or the human. The sealed
+      // bundle covers the reviews, so a report voids it and any approval of it.
       const { approval: _approval, bundleDigest: _bundle, ...rest } = revision;
       return updateRevision(
         {
@@ -1023,6 +1089,8 @@ export function decideFactoryDelivery(
         },
       );
     }
+    // Asks the host to inspect the PR and seal fresh evidence; readiness is decided when
+    // `delivery.inspected` lands.
     case "delivery.ready":
       if (!lead || !active || !isCurrent || revision.status !== "published")
         return fail("Reconcile the current published revision.");
@@ -1030,11 +1098,14 @@ export function decideFactoryDelivery(
     case "delivery.inspected": {
       if (!host || !isCurrent || !revision.publication)
         return fail("Inspection is not for the current publication.");
+      // The host sealed its bundle against one state revision. Any commit since could change
+      // what the bundle covers, so the receipt is refused and the host inspects again.
       if (command.expectedStateRevision !== state.revision)
         return fail(
           "The evidence changed while the host sealed its bundle. Reconcile again.",
           "stale-revision",
         );
+      // An existing approval survives only a reseal with the same bundle and head.
       const { approval: oldApproval, ...rest } = revision;
       const next = {
         ...rest,
@@ -1110,6 +1181,8 @@ export function decideFactoryDelivery(
         )
       )
         return fail("UX evidence belongs to a different candidate or reviewer.");
+      // New app evidence voids the approval, the sealed bundle and any screenshots already
+      // published, since all three covered the earlier evidence.
       const {
         approval: _approval,
         bundleDigest: _bundle,
@@ -1133,6 +1206,8 @@ export function decideFactoryDelivery(
     case "delivery.approve": {
       if (actor.kind !== "human")
         return fail("Only the human can approve this revision.", "permission-denied");
+      // Approval is the last step, not an override: it needs no other blocker and names the
+      // exact head and bundle the human reviewed.
       const readiness = factoryDeliveryReadiness(state, assignment, revision);
       if (
         !active ||
@@ -1167,6 +1242,7 @@ export function decideFactoryDelivery(
       );
     }
     case "delivery.merge": {
+      // A merge group member merges only through the group's shared operation.
       if (factoryMergeGroupForAssignment(state, assignment.id))
         return fail(
           "This participant must merge through its integration team's shared action.",
@@ -1182,6 +1258,8 @@ export function decideFactoryDelivery(
         );
       if (revision.merge && revision.merge.status !== "failed")
         return fail("Reconcile the existing merge operation before requesting another.");
+      // A rule-authorized merge records its approval now, bound to the current head, bundle and
+      // rule version, so the merge effect and the PR gate recheck the same binding.
       const operationId = `merge:${command.commandId}`;
       return updateRevision(
         {
@@ -1201,6 +1279,7 @@ export function decideFactoryDelivery(
         [{ type: "delivery.merge", ...revisionEffect, operationId }],
       );
     }
+    // A merged receipt needs the host's merge time; an accepted request never counts as merged.
     case "delivery.merge.recorded":
       if (
         !host ||
@@ -1230,6 +1309,8 @@ export function decideFactoryDelivery(
         );
       if (!lead || !active || !isCurrent)
         return fail("Only the active lead can retry this delivery operation.", "permission-denied");
+      // Clearing the error lets the held effect run again. An `unknown` merge returns to
+      // `requested`, which is the lead's explicit consent to resubmit it.
       const { error: _error, ...next } = revision;
       return updateRevision(
         {
@@ -1244,6 +1325,7 @@ export function decideFactoryDelivery(
     }
     case "delivery.effect.failed":
       if (!host) return fail("Only the host can report execution failure.", "permission-denied");
+      // The error holds further work on this revision until `delivery.retry`. Nothing is undone.
       return updateRevision(
         {
           ...revision,

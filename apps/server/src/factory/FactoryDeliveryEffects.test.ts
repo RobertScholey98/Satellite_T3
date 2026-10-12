@@ -16,18 +16,18 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Satellite from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import type { ProviderMergeEvidence } from "../pullRequest/pullRequestMergeEvidence.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import type { FactoryCandidateArtifact } from "./FactoryCandidate.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { ready as integrationReady } from "./FactoryIntegration.testkit.ts";
 import { factoryMergeGroupEvidence } from "./FactoryMerge.ts";
 import { factoryMergeGroupForAssignment } from "./FactoryMergeOwnership.ts";
 import * as FactoryDeliveryEffects from "./FactoryDeliveryEffects.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
-import { FactoryPublicationHost } from "./FactoryPublicationHost.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
+import * as FactoryPublicationHost from "./FactoryPublicationHost.ts";
 import { FactoryDeliveryPermit } from "./FactoryPullRequestGate.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import {
@@ -201,11 +201,13 @@ const scenario = <A, E, R>(
   body: Effect.Effect<A, E, R>,
   options: {
     seed?: FactorySnapshot;
-    boundary?: Partial<FactoryBoundaryExecution["Service"]>;
-    host?: Partial<FactoryPublicationHost["Service"]>;
-    pr?: (store: FactoryStore.FactoryStore["Service"]) => Partial<PullRequestService["Service"]>;
+    boundary?: Partial<FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]>;
+    host?: Partial<FactoryPublicationHost.FactoryPublicationHost["Service"]>;
+    pr?: (
+      store: FactoryStore.FactoryStore["Service"],
+    ) => Partial<PullRequestService.PullRequestService["Service"]>;
     store?: (store: FactoryStore.FactoryStore["Service"]) => FactoryStore.FactoryStore["Service"];
-    stopTeam?: FactoryHandover["Service"]["stopTeam"];
+    stopTeam?: FactoryHandover.FactoryHandover["Service"]["stopTeam"];
     lostSendAck?: boolean;
   } = {},
 ) =>
@@ -257,7 +259,7 @@ const scenario = <A, E, R>(
             Layer.mergeAll(
               Layer.succeed(FactoryStore.FactoryStore, options.store?.(store) ?? store),
               threadLayer,
-              Layer.mock(FactoryBoundaryExecution)({
+              Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
                 captureCandidate: () => Effect.succeed(candidate()),
                 finalizeCandidate: () => Effect.succeed(finalCandidate()),
                 verifyCandidate: () =>
@@ -274,20 +276,22 @@ const scenario = <A, E, R>(
                   Effect.succeed(held ? { qualification, sourceDigest: "held-source" } : undefined),
                 ...options.boundary,
               }),
-              Layer.mock(FactoryPublicationHost)({
+              Layer.mock(FactoryPublicationHost.FactoryPublicationHost)({
                 prepare: () => Effect.succeed(destination),
                 publish: () => Effect.succeed(publishedRef),
                 ...options.host,
               }),
-              Layer.mock(PullRequestService)({
+              Layer.mock(PullRequestService.PullRequestService)({
                 inspectForMerge: () => Effect.succeed(evidence),
                 detail: () => Effect.succeed(detail(false)),
                 invalidate: () => Effect.void,
                 runAction: () => Effect.void,
                 ...options.pr?.(store),
               }),
-              Layer.mock(FactoryHandover)({ stopTeam: options.stopTeam ?? (() => Effect.void) }),
-              Layer.mock(FactoryExecution)({
+              Layer.mock(FactoryHandover.FactoryHandover)({
+                stopTeam: options.stopTeam ?? (() => Effect.void),
+              }),
+              Layer.mock(FactoryExecution.FactoryExecution)({
                 assertSelectionFor: () => Effect.void,
                 runtimePolicyFor: () =>
                   Effect.gen(function* () {

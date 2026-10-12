@@ -75,6 +75,9 @@ const make = Effect.gen(function* () {
     resolveMember(threadId).pipe(Effect.mapError(unavailable));
   type Member = NonNullable<Effect.Success<ReturnType<typeof membership>>>;
 
+  // Rules on one tool call. Every call first passes the execution check (pauses, holds,
+  // replaced leads); then the tool must fit the caller's role, and most tools also need a
+  // confined runtime for the owning thread.
   const authorize = (threadId: ThreadId, member: Member, toolName: string, payload: unknown) =>
     Effect.gen(function* () {
       const integrationLead =
@@ -97,6 +100,8 @@ const make = Effect.gen(function* () {
         !isTool(toolName, "factory_snapshot")
       )
         return yield* denied();
+      // The system manager's own thread gets its factory tools and thread messaging, and no
+      // team tools; its subagents get nothing.
       if (member.manager.role === "system" && member.assignment === undefined) {
         if (
           threadId !== member.manager.threadId ||
@@ -132,6 +137,8 @@ const make = Effect.gen(function* () {
         )
           return;
       }
+      // Assignment teams delegate within their boundary; onboarding and auxiliary threads
+      // cannot start a team.
       const implementationTeamTool =
         member.auxiliary === undefined &&
         member.assignment !== undefined &&
@@ -154,6 +161,9 @@ const make = Effect.gen(function* () {
         ) &&
         hasThreadTarget(payload)
       ) {
+        // Thread tools reach only threads under the same manager. A manager reaches its teams;
+        // a team reaches its own threads and its manager, which it cannot interrupt. Auxiliaries
+        // only read, and a retrospective reads only its own assignment's threads.
         const target = yield* membership(payload.threadId);
         const targetControls = yield* controls
           .membership(payload.threadId)
@@ -170,6 +180,8 @@ const make = Effect.gen(function* () {
           (member.assignment === undefined ||
             sameAssignment ||
             (ownManager && !isTool(toolName, "t3_thread_interrupt")));
+        // A waiting assignment takes no messages from its manager or ancestor threads; its
+        // recorded prerequisite has to be resolved through the factory first.
         if (
           scopedCommunication &&
           isTool(toolName, "t3_thread_send") &&
@@ -250,6 +262,7 @@ const make = Effect.gen(function* () {
         threadId === member.assignment.threadId
       )
         return;
+      // Everything that remains needs the owning thread's confined runtime to exist.
       const profile = yield* execution
         .runtimePolicyFor(member.ownerThreadId)
         .pipe(Effect.mapError(unavailable));

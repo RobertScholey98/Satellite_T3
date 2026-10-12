@@ -9,7 +9,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
@@ -23,6 +23,14 @@ export class FactoryObserverError extends Schema.TaggedError<FactoryObserverErro
   }
 }
 
+/**
+ * Feeds every orchestration event to `FactoryService.observe`, after running factory recovery
+ * once, and turns pull request merge notifications into project reconciliation. Built once by
+ * `server.ts`; it starts observing as the layer is built.
+ *
+ * `drain` waits until recovery has run and every event up to the current latest sequence has
+ * been observed, then drains the factory's effects. It fails if observation has stopped.
+ */
 export class FactoryObserver extends Context.Service<
   FactoryObserver,
   { readonly drain: Effect.Effect<void, FactoryObserverError | EventSink.EventSinkV2Error> }
@@ -32,7 +40,7 @@ const make = Effect.gen(function* () {
   const events = yield* EventSink.EventSinkV2;
   const store = yield* FactoryStore.FactoryStore;
   const factory = yield* FactoryService.FactoryService;
-  const pullRequests = yield* Effect.serviceOption(PullRequestService);
+  const pullRequests = yield* Effect.serviceOption(PullRequestService.PullRequestService);
   // Without managers nothing needs observing, and a missing cursor means the history predates
   // the factory. Either way start at the current high-water mark rather than replaying it.
   const cursor = yield* store.observationCursor;

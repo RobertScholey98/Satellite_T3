@@ -28,6 +28,7 @@ import {
   resolvePullRequestAuthorFilter,
   type OrchestrationProjectShell,
   type FactoryError,
+  isFactoryError,
   type ProjectId,
   type PullRequestAction,
   type PullRequestActionInput,
@@ -523,6 +524,20 @@ function toUnavailableError(error: PullRequestProviderError): PullRequestUnavail
     provider: error.provider,
     cause: error,
   });
+}
+
+/**
+ * The action gate's refusal inside a provider failure. A refusal at the mutation boundary travels
+ * through GitHub's request hook as a transport error, so it is found through each `cause`; the
+ * caller then sees the gate's reason instead of "Could not reach GitHub".
+ */
+function gateRefusalIn(error: unknown): FactoryError | undefined {
+  let current = error;
+  while (typeof current === "object" && current !== null) {
+    if (isFactoryError(current)) return current;
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return undefined;
 }
 
 function toPullRequestError(
@@ -2167,10 +2182,6 @@ export const make = Effect.gen(function* () {
               Effect.flatMap((removeAgentCreditsOnMerge) =>
                 authorizeAction(input, project).pipe(
                   Effect.flatMap(({ requireConditionalMerge, beforeMutation }) => {
-                    // A refusal at the mutation boundary travels through GitHub's request hook,
-                    // which only carries transport errors. Keep it so the caller sees the
-                    // gate's reason instead of "Could not reach GitHub".
-                    let refusal: FactoryError | undefined;
                     return project.api
                       .runAction({
                         cwd: project.project.workspaceRoot,
@@ -2200,11 +2211,6 @@ export const make = Effect.gen(function* () {
                         Effect.provideService(
                           BeforeGitHubMutation,
                           beforeMutation.pipe(
-                            Effect.tapError((error) =>
-                              Effect.sync(() => {
-                                refusal = error;
-                              }),
-                            ),
                             Effect.mapError(
                               (cause) =>
                                 new GitHubApiRequestError({
@@ -2222,11 +2228,12 @@ export const make = Effect.gen(function* () {
                             ? Effect.void
                             : refreshAfterTurn(project.project.id),
                         ),
-                        Effect.mapError((error) =>
-                          refusal === undefined
+                        Effect.mapError((error) => {
+                          const refusal = gateRefusalIn(error);
+                          return refusal === undefined
                             ? toPullRequestError("runAction")(error)
-                            : gateRefusal(refusal),
-                        ),
+                            : gateRefusal(refusal);
+                        }),
                         Effect.as(
                           project.api.kind === "azure-devops"
                             ? input.repository.trim()

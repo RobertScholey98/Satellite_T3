@@ -62,6 +62,7 @@ export const resolveFactoryLineage = <E>(input: {
     let threadId = input.threadId;
     let projectId: ProjectId | undefined;
     for (;;) {
+      // A cycle or an implausibly deep chain fails closed in any project, managed or not.
       if (visited.has(threadId) || visited.size >= 64) return yield* unavailable();
       visited.add(threadId);
       const manager = state.managers.find((entry) => entry.threadId === threadId);

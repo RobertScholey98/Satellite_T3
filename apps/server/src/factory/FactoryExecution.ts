@@ -18,13 +18,13 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { ServerConfig } from "../config.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import * as ServerConfig from "../config.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadGovernance from "../orchestration-v2/ThreadGovernance.ts";
-import { ProcessRunner } from "../processRunner.ts";
-import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryModelAdmission from "./FactoryModelAdmission.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import {
@@ -35,7 +35,7 @@ import {
 } from "./FactoryExecutionProfile.ts";
 import { factoryExecutionProbe } from "./FactoryExecutionProbe.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 import { IntegrationAdmissionArtifact, integrationDigest } from "./FactoryIntegrationRuntime.ts";
 import { factoryMergeFreezeBlocks } from "./FactoryMergeOperation.ts";
@@ -45,6 +45,7 @@ import {
 } from "./FactoryIntegration.ts";
 import { factoryGrantChangesSkills } from "./FactoryBoundaryPaths.ts";
 import { resolveFactoryLineage } from "./FactoryLineage.ts";
+import * as FactoryPrompts from "./FactoryPrompts.ts";
 
 export { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 
@@ -53,14 +54,29 @@ class QualificationError extends Schema.TaggedError<QualificationError>()(
   { detail: Schema.String },
 ) {}
 
+/**
+ * Qualifies the Docker boundary that discovery runs in, and answers for every thread which
+ * boundary it must run in. Orchestration reaches it through `layerThreadGovernance`.
+ */
 export class FactoryExecution extends Context.Service<
   FactoryExecution,
   {
+    /**
+     * Prepares a discovery profile: a local Linux Docker engine, the pinned image (built when
+     * missing), snapshots of the project's HEAD and the pinned workflow, and a passing boundary
+     * probe. Never fails; a problem returns an `unavailable` qualification with a reason for the
+     * human.
+     */
     readonly qualify: (input: {
       readonly projectId: ProjectId;
       readonly modelSelection: ModelSelection;
       readonly workflow: FactoryWorkflowVersion;
     }) => Effect.Effect<FactoryDiscoveryQualification>;
+    /**
+     * The profile a thread must run in, scoped to that thread, or `undefined` for a thread the
+     * factory does not own. A managed thread whose profile is missing, stale for its role, or
+     * held fails with `execution-unavailable`; there is no host fallback.
+     */
     readonly runtimePolicyFor: (
       threadId: ThreadId,
       pendingParentThreadId?: ThreadId,
@@ -85,16 +101,16 @@ const isQualificationError = Schema.is(QualificationError);
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const runner = yield* ProcessRunner;
+  const runner = yield* ProcessRunner.ProcessRunner;
   const crypto = yield* Crypto.Crypto;
-  const config = yield* ServerConfig;
-  const projects = yield* ProjectStoreV2;
-  const projections = yield* ProjectionStoreV2;
-  const providers = yield* ProviderInstanceRegistry;
-  const store = yield* FactoryStore;
+  const config = yield* ServerConfig.ServerConfig;
+  const projects = yield* ProjectStore.ProjectStoreV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+  const store = yield* FactoryStore.FactoryStore;
   const models = yield* FactoryModelAdmission.FactoryModelAdmission;
   const controls = yield* FactoryControlAccess.FactoryControlAccess;
-  const sources = yield* FactorySource;
+  const sources = yield* FactorySource.FactorySource;
   const workflows = yield* FactoryWorkflowExecution.FactoryWorkflowExecution;
   const root = path.join(config.stateDir, "factory", "execution");
 
@@ -124,6 +140,8 @@ const make = Effect.gen(function* () {
       yield* fs.writeFile(target, Buffer.from(file.content, "base64"), { flag: "wx" });
       yield* fs.chmod(target, file.mode === "100755" ? 0o755 : 0o644);
     }
+    // `FactoryBoundaryExecution` parses this file's first line for the source revision and
+    // recognizes it as discovery metadata, so keep that line's format stable.
     yield* fs.writeFileString(
       path.join(destination, "SATELLITE_DISCOVERY.md"),
       [
@@ -164,6 +182,7 @@ const make = Effect.gen(function* () {
         ["context", "inspect", dockerContext, "--format", "{{.Endpoints.docker.Host}}"],
         "The Docker context could not be inspected.",
       );
+      // Bind mounts and authority files are host paths, so a remote engine would not see them.
       if (!/^(?:npipe:\/\/|unix:\/\/)/.test(endpoint)) {
         return yield* new QualificationError({
           detail: "Discovery requires a local Docker engine owned by this environment.",
@@ -326,6 +345,7 @@ const make = Effect.gen(function* () {
       if (match === undefined) return undefined;
       const { manager, auxiliary } = match;
       const systemManager = manager?.role === "system" ? manager : undefined;
+      // A project manager's own thread runs in its onboarding assignment's discovery profile.
       const assignment =
         match.assignment ??
         state.assignments.find(
@@ -335,6 +355,8 @@ const make = Effect.gen(function* () {
         yield* models.assertSelectionFor(threadId, systemManager.modelSelection);
       const flow = assignment?.delivery?.flow;
       const heldFlow = auxiliary === undefined && flow !== undefined && flow.status !== "released";
+      // While a UI flow is held, only the lead runs, and only in the flow's read-only snapshot
+      // once that snapshot is ready.
       if (
         heldFlow &&
         (flow.status === "stopping" || threadId !== assignment?.threadId || !flow.qualification)
@@ -361,6 +383,7 @@ const make = Effect.gen(function* () {
       const profile = yield* fs
         .readFileString(path.join(root, profileId, "profile.json"))
         .pipe(Effect.flatMap(decodeProfile));
+      // A system manager runs only in its own plain discovery profile.
       if (
         systemManager !== undefined &&
         (systemManager.threadId !== threadId ||
@@ -440,6 +463,7 @@ const make = Effect.gen(function* () {
               Schema.decodeUnknownEffect(Schema.fromJsonString(IntegrationAdmissionArtifact)),
             ),
           );
+        // The stored manifest must still hash to its digest and still match current state.
         const { inputDigest, ...fields } = artifact.manifest;
         const digest = yield* integrationDigest(fields).pipe(
           Effect.provideService(Crypto.Crypto, crypto),
@@ -499,6 +523,8 @@ const make = Effect.gen(function* () {
         )
           return yield* new FactoryError({ code: "execution-unavailable" });
       }
+      // Each thread gets its own provider home, so threads sharing a profile never share Codex
+      // state or credentials.
       const runtimePath = path.join(
         profile.runtimePath,
         Buffer.from(threadId).toString("base64url"),
@@ -549,6 +575,7 @@ export const layerThreadGovernance = Layer.effect(
                   boundaryId: profile.boundaryId,
                   workspacePath: profile.projectSnapshotPath,
                   profile,
+                  orchestrationInstructions: FactoryPrompts.managedCodexOrchestration,
                 },
           ),
         ),

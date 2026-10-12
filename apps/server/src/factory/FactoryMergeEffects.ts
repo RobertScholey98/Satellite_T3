@@ -22,6 +22,10 @@ import { factoryMergeGroupHeads } from "./FactoryMergeOperation.ts";
 import { canonicalFactoryPullRequest } from "./FactoryMergeOwnership.ts";
 import * as MergeSignal from "./FactoryMergeSignal.ts";
 
+/**
+ * Runs merge group outbox effects for `FactoryService`: inspect seals a combined review, notify
+ * queues a group message to the lead and members, and hold shows the group's hold on the host.
+ */
 export class FactoryMergeEffects extends Context.Service<
   FactoryMergeEffects,
   {
@@ -45,6 +49,10 @@ const make = Effect.gen(function* () {
         pending.some((entry) => entry.id === id) ? store.retireEffect(id) : Effect.void,
       ),
     );
+  /**
+   * Whether the thread already has this message with its run. A message without its run fails,
+   * so the effect stays pending instead of sending again.
+   */
   const accepted = Effect.fn(function* (threadId: ThreadId, messageId: MessageId) {
     if (!(yield* threads.getThreadShell(threadId))) return false;
     const records = yield* threads.getThreadRecords(threadId, ["messages", "runs"], {
@@ -59,6 +67,11 @@ const make = Effect.gen(function* () {
       });
     return true;
   }, Effect.mapError(failure));
+  /**
+   * Queues the message once on each recipient's lead thread, skipping ended assignments and
+   * recipients no longer in the group. A previous lead thread that already has it counts. Any
+   * recipient that fails, for example one refused direction, keeps the effect pending.
+   */
   const notify = Effect.fn(function* (pending: Store.PendingFactoryEffect) {
     if (pending.intent.type !== "merge.group.notify") return;
     const intent = pending.intent;
@@ -105,6 +118,11 @@ const make = Effect.gen(function* () {
     }
     if (!held) yield* retire(pending.id);
   });
+  /**
+   * Refreshes each member's host evidence, captures the integration bytes and seals the review only
+   * if nothing changed during capture. Only changed evidence is tried again, up to three tries;
+   * then the review fails with the last reason. A review the group no longer requests is dropped.
+   */
   const inspect = Effect.fn(function* (pending: Store.PendingFactoryEffect) {
     if (pending.intent.type !== "merge.group.inspect") return;
     const intent = pending.intent;

@@ -2,6 +2,10 @@ import type { FactoryAssignmentGrant, FactoryBoundaryConfiguration } from "@t3to
 
 import { admissibleFactorySourcePath } from "./FactoryExecutionProfile.ts";
 
+/**
+ * A slash-separated relative path that means the same file on every host. It is checked as
+ * written, never normalized, so `.`, `..` and empty segments are refused rather than resolved.
+ */
 export function factorySafeRelativePath(value: string): boolean {
   return (
     value.length > 0 &&
@@ -19,6 +23,7 @@ export function factorySafeRelativePath(value: string): boolean {
   );
 }
 
+/** A safe relative path that may also enter a managed snapshot, so never a credential path. */
 export function factoryRelativePath(value: string): boolean {
   return factorySafeRelativePath(value) && admissibleFactorySourcePath(value);
 }
@@ -29,6 +34,10 @@ export function factoryRelativePath(value: string): boolean {
 const autoLoadedName =
   /^(?:node_modules|bower_components|jspm_packages|vendor|site-packages|__pycache__|__mocks__|conftest\.py|sitecustomize\.py|usercustomize\.py|setup\.py|[\w.-]+\.pth|[\w.-]+\.pyc|setupTests\.\w+|[\w.-]+\.conf\.\w+|deno\.jsonc?|Gemfile|Rakefile|build\.rs)$/i;
 
+/**
+ * Whether a path names a control an agent may change only with a control-change grant. Any
+ * segment counts, so a nested `package.json` or a file under `.github` is protected too.
+ */
 export function factoryProtectedPath(value: string): boolean {
   return value
     .split("/")
@@ -41,6 +50,7 @@ export function factoryProtectedPath(value: string): boolean {
     );
 }
 
+/** Strictly inside `directory`; the directory itself does not count. */
 export function factoryPathWithin(value: string, directory: string): boolean {
   return value.startsWith(`${directory}/`);
 }
@@ -87,12 +97,21 @@ export function factoryGrantChangesSkills(
   );
 }
 
+/**
+ * Whether a grant lets an agent write a path. A control-change path is writable only when it is
+ * exactly a configured protected file. Otherwise protected names and anything under a protected
+ * entry are refused, a listed writable file needs an exact source-path grant, and any other path
+ * must be a new file inside a granted creatable directory. The boundary's workspace checks add
+ * every file the workspace started with to `writablePaths`, so there a creatable-directory grant
+ * never covers an existing file.
+ */
 export function factoryCanWrite(
   value: string,
   grant: FactoryAssignmentGrant,
   configuration: FactoryBoundaryConfiguration,
 ): boolean {
   if (!factoryRelativePath(value)) return false;
+  // A case-only variant of a configured path would alias it on a case-insensitive filesystem.
   if (
     [
       ...configuration.protectedPaths,
@@ -117,6 +136,12 @@ export function factoryCanWrite(
   return grant.creatableDirectories.some((entry) => factoryPathWithin(value, entry));
 }
 
+/**
+ * Whether a boundary configuration is one the boundary can enforce. Only `protected-integrity`
+ * verification may have no editable files or no gates. Each gate runs the image's Node directly
+ * on one of its protected inputs at that input's `/workspace` path, optionally with `--test`, for
+ * at most five minutes.
+ */
 export function factoryValidConfiguration(configuration: FactoryBoundaryConfiguration): boolean {
   if (
     configuration.writablePaths.length === 0 &&

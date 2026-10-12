@@ -6,22 +6,19 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import {
-  layer as SatelliteLayer,
-  recordProject,
-} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import * as SatelliteTestRuntime from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import { deliveryFixture, deliveryIds, deliverySelection } from "./FactoryDelivery.testkit.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
-import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
+import * as FactorySchedulingEffects from "./FactorySchedulingEffects.ts";
 import * as FactoryService from "./FactoryService.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const runtime = Layer.mergeAll(FactoryStore.layer, ThreadManagement.layer).pipe(
-  Layer.provideMerge(SatelliteLayer),
+  Layer.provideMerge(SatelliteTestRuntime.layer),
 );
 const human = { kind: "human" } as const;
 const reason = "The ticket is no longer in the configured Ready column.";
@@ -70,7 +67,7 @@ const scenario = (pauseBeforeRestoring: boolean) =>
         },
       },
     };
-    yield* recordProject({
+    yield* SatelliteTestRuntime.recordProject({
       projectId: deliveryIds.project,
       title: "Scheduling launch",
       workspaceRoot: "/project",
@@ -169,8 +166,8 @@ const scenario = (pauseBeforeRestoring: boolean) =>
         FactoryService.layer.pipe(
           Layer.provideMerge(
             Layer.mergeAll(
-              layerTestDependencies,
-              Layer.mock(FactoryExecution)({
+              FactoryServiceTestkit.layerTestDependencies,
+              Layer.mock(FactoryExecution.FactoryExecution)({
                 assertSelectionFor: () => Effect.void,
                 assertDelegationFor: () => Effect.void,
                 runtimePolicyFor: () =>
@@ -183,14 +180,14 @@ const scenario = (pauseBeforeRestoring: boolean) =>
                     runtimePath: "/confined/runtime",
                   }),
               }),
-              Layer.mock(FactoryBoundaryExecution)({
+              Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
                 suspend: () => Effect.void,
                 resume: () => Effect.void,
                 stop: () => Effect.void,
               }),
-              Layer.mock(FactoryHandover)({ stopTeam: () => Effect.void }),
-              Layer.mock(FactorySource)({}),
-              Layer.mock(FactorySchedulingEffects)({
+              Layer.mock(FactoryHandover.FactoryHandover)({ stopTeam: () => Effect.void }),
+              Layer.mock(FactorySource.FactorySource)({}),
+              Layer.mock(FactorySchedulingEffects.FactorySchedulingEffects)({
                 context: () => Effect.succeed({}),
                 reconcile: Effect.void,
                 handle: () => Effect.void,

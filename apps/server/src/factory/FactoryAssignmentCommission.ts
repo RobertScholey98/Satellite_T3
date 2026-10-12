@@ -16,6 +16,13 @@ import { initialFactoryOversight } from "./FactoryOversight.ts";
 import { resolveFactoryModelPolicy, selectFactoryModel } from "./FactoryModelPolicy.ts";
 import type { FactoryAllocation } from "./FactoryState.ts";
 
+/**
+ * Builds a new pending assignment from approved supporting work. Every path that creates an
+ * assignment (state transitions, collaboration, workflow and integration) goes through here so
+ * the lead's model is chosen and the grant is shaped the same way. Refuses a missing allocation
+ * or one whose ids are already in use. With `existingThreadId`, the assignment takes over that
+ * human thread as a handover and starts by stopping it rather than capturing source.
+ */
 export function commissionFactoryAssignment(input: {
   readonly state: FactorySnapshot;
   readonly manager: FactoryManager;

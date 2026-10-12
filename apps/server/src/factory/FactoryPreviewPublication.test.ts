@@ -24,7 +24,7 @@ import * as FactoryPreviewEvidence from "./FactoryPreviewEvidence.ts";
 import * as FactoryPreviewPublication from "./FactoryPreviewPublication.ts";
 import * as FactoryPublication from "./FactoryPublication.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const BlobBody = Schema.Struct({ encoding: Schema.Literal("base64"), content: Schema.String });
@@ -190,7 +190,7 @@ const fixture = Effect.fn(function* () {
   });
   const dependencies = Layer.mergeAll(
     ServerConfig.layerTest(root, root),
-    Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
+    Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
     Layer.mock(FactoryPreviewEvidence.FactoryPreviewEvidence)({
       read: () =>
         Effect.succeed({

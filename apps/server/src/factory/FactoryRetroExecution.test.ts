@@ -19,10 +19,10 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ServerConfig from "../config.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
-import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
@@ -39,7 +39,7 @@ import * as FactoryRetroEvidence from "./FactoryRetroEvidence.ts";
 import * as FactoryRetroExecution from "./FactoryRetroExecution.ts";
 import * as FactorySource from "./FactorySource.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { decide } from "./FactoryState.ts";
 import { completedMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
 import { integrated } from "./FactoryIntegration.testkit.ts";
@@ -212,7 +212,7 @@ const fixture = Effect.fn(function* (live = false) {
   const dependencies = Layer.mergeAll(
     ServerConfig.layerTest(root, root),
     evidenceLayer,
-    Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
+    Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
     Layer.mock(FactorySource.FactorySource)({
       readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
       read: () =>
@@ -233,10 +233,12 @@ const fixture = Effect.fn(function* (live = false) {
         }),
     }),
     Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({}),
-    Layer.mock(ProjectStoreV2)({}),
-    Layer.mock(ProviderInstanceRegistry)({}),
-    Layer.mock(ProjectionStoreV2)({ getThreadShell: () => Effect.succeed(null) }),
-    Layer.mock(ThreadManagementService)({ getThreadShell: () => Effect.succeed(null) }),
+    Layer.mock(ProjectStore.ProjectStoreV2)({}),
+    Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThreadShell: () => Effect.succeed(null) }),
+    Layer.mock(ThreadManagementService.ThreadManagementService)({
+      getThreadShell: () => Effect.succeed(null),
+    }),
   );
   return {
     fs,

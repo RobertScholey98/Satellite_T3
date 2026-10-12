@@ -9,7 +9,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { ServerConfig } from "../config.ts";
+import * as ServerConfig from "../config.ts";
 
 const DocumentName = Schema.Literals(["assignment.json", "team.json", "feedback.json"]);
 const Manifest = Schema.Struct({
@@ -22,9 +22,17 @@ const decodeManifest = Schema.decodeUnknownEffect(Schema.fromJsonString(Manifest
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "persistence", cause });
 
+/**
+ * The frozen evidence a retrospective reviews. The evidence digest is the hash of a manifest
+ * naming each document's hash, so it identifies exactly the documents the retro may read.
+ */
 export class FactoryRetroEvidence extends Context.Service<
   FactoryRetroEvidence,
   {
+    /**
+     * Writes the assignment, team and feedback documents with their manifest. Sealing identical
+     * documents again verifies the existing copy and returns the same digest.
+     */
     readonly seal: (input: {
       readonly retroId: string;
       readonly conclusionId: string;
@@ -34,6 +42,7 @@ export class FactoryRetroEvidence extends Context.Service<
         readonly content: string;
       }>;
     }) => Effect.Effect<{ readonly evidenceDigest: string }, FactoryError>;
+    /** Locates sealed evidence after checking every file against the digest; any change fails. */
     readonly read: (input: {
       readonly retroId: string;
       readonly conclusionId: string;
@@ -49,7 +58,7 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const config = yield* ServerConfig;
+  const config = yield* ServerConfig.ServerConfig;
   const mutex = yield* Semaphore.make(1);
   const hash = (content: string) =>
     crypto
@@ -117,6 +126,8 @@ const make = Effect.gen(function* () {
             yield* read({ ...input, evidenceDigest });
             return { evidenceDigest };
           }
+          // The manifest is written last and exclusively, so it marks a complete seal. Documents
+          // left by an interrupted seal are simply overwritten.
           yield* fs.makeDirectory(directory, { recursive: true });
           for (const document of documents)
             yield* fs.writeFileString(path.join(directory, document.name), document.content);

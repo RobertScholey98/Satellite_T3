@@ -16,11 +16,13 @@ import type {
   SourceControlProviderKind,
 } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
-import { PullRequestOperationError } from "@t3tools/contracts";
+import { FactoryError, PullRequestOperationError } from "@t3tools/contracts";
 
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
 import * as ForgejoCli from "../sourceControl/ForgejoCli.ts";
+import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as ForgejoPullRequestProvider from "./ForgejoPullRequestProvider.ts";
+import * as PullRequestActionGate from "./PullRequestActionGate.ts";
 import { PullRequestProviderError, type PullRequestProviderApi } from "./PullRequestProvider.ts";
 import type * as PullRequestService from "./PullRequestService.ts";
 import {
@@ -464,6 +466,58 @@ it.effect(
       yield* service.runAction({ ...ref, action: "merge" });
       assert.strictEqual(mutations, 1);
     }),
+);
+
+it.effect("reports the owner's reason when the gate refuses at the mutation boundary", () =>
+  Effect.gen(function* () {
+    const reason = "Merging waits for the human's approval of this exact head.";
+    const service = yield* makeService({
+      actionGate: Layer.succeed(
+        PullRequestActionGate.PullRequestActionGate,
+        PullRequestActionGate.PullRequestActionGate.of({
+          authorize: () =>
+            Effect.succeed({
+              requireConditionalMerge: false,
+              beforeMutation: Effect.fail(
+                new FactoryError({ code: "permission-denied", detail: reason }),
+              ),
+            }),
+        }),
+      ),
+      projects: [project({ id: "web", title: "Web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakeProvider("github", {
+          // Like the GitHub client: run the hook before the write and wrap what it fails with.
+          runAction: () =>
+            Effect.gen(function* () {
+              const admitted = yield* GitHubApi.BeforeGitHubMutation;
+              if (admitted) yield* admitted;
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PullRequestProviderError({
+                    provider: "github",
+                    operation: "runAction",
+                    reason: "failed",
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            ),
+        }),
+      ],
+    });
+    const error = yield* service
+      .runAction({
+        projectId: "web" as ProjectId,
+        repository: "acme/web",
+        number: 7,
+        action: "close",
+      })
+      .pipe(Effect.flip);
+    assert.strictEqual(error._tag, "PullRequestOperationError");
+    assert.strictEqual(error._tag === "PullRequestOperationError" ? error.detail : null, reason);
+  }),
 );
 
 it.effect.each(["origin", "upstream", "unenriched"] as const)(

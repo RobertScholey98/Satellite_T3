@@ -30,15 +30,15 @@ import {
   recordProject,
 } from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import { ProjectService } from "../project/ProjectService.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryService from "./FactoryService.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("factory-recovery-project");
@@ -202,7 +202,9 @@ it.effect(
             VALUES (1, ${initial.revision}, ${encodeSnapshot(initial)})`;
           }
           return yield* body.pipe(
-            Effect.provide(FactoryService.layer.pipe(Layer.provide(layerTestDependencies))),
+            Effect.provide(
+              FactoryService.layer.pipe(Layer.provide(FactoryServiceTestkit.layerTestDependencies)),
+            ),
             Effect.provideService(FactoryStore.FactoryStore, {
               ...store,
               finishEffect: (input) =>
@@ -224,8 +226,8 @@ it.effect(
             }),
             Effect.provide(
               Layer.mergeAll(
-                Layer.mock(ProjectService)({}),
-                Layer.succeed(FactoryExecution, {
+                Layer.mock(ProjectService.ProjectService)({}),
+                Layer.succeed(FactoryExecution.FactoryExecution, {
                   qualify: () => Effect.die("Recovery must not repeat onboarding."),
                   assertSelectionFor: () => Effect.void,
                   assertDelegationFor: () => Effect.void,
@@ -239,7 +241,7 @@ it.effect(
                       runtimePath: "/confined/runtime",
                     }),
                 }),
-                Layer.mock(FactoryBoundaryExecution)({
+                Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
                   prepare: (input) =>
                     Effect.gen(function* () {
                       assert.equal(input.startingSourceId, source.id);
@@ -253,7 +255,7 @@ it.effect(
                       };
                     }),
                 }),
-                Layer.mock(FactorySource)({
+                Layer.mock(FactorySource.FactorySource)({
                   capture: () =>
                     Effect.gen(function* () {
                       assert.equal(
@@ -265,7 +267,7 @@ it.effect(
                       return source;
                     }),
                 }),
-                Layer.mock(FactoryHandover)({}),
+                Layer.mock(FactoryHandover.FactoryHandover)({}),
               ),
             ),
           );

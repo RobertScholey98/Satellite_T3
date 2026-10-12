@@ -28,17 +28,37 @@ import {
   type FactoryImprovementContext,
 } from "./FactoryImprovements.ts";
 import type { FactoryActor } from "./FactoryState.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
+/**
+ * The host side of the system manager and improvement intake. It qualifies and launches the
+ * system manager, takes escalated and retro-concluded findings into intake, and seals and
+ * delivers evidence batches. FactoryService's improvement worker drives it.
+ */
 export class FactoryImprovementEffects extends Context.Service<
   FactoryImprovementEffects,
   {
+    /**
+     * Qualifies the system manager's environment for `system.create` and `system.retry`. A retry
+     * after the thread exists reuses its qualified profile.
+     */
     readonly context: (
       actor: FactoryActor,
       command: FactoryCommand,
     ) => Effect.Effect<FactoryImprovementContext, FactoryError>;
+    /**
+     * Takes in every escalated or retro-concluded finding whose current version is not yet in
+     * intake, then seals each batch that is due.
+     */
     readonly reconcile: Effect.Effect<void, FactoryError>;
-    readonly handle: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
+    /**
+     * Launches the system manager or delivers one batch. A pause, block or direction hold leaves
+     * the effect pending; a retired manager or a superseded profile or batch retires it.
+     */
+    readonly handle: (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) => Effect.Effect<void, FactoryError>;
+    /** Wakes the worker on each new state revision and when the next held batch falls due. */
     readonly watch: (wake: Effect.Effect<void>) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/factory/FactoryImprovementEffects") {}
@@ -48,7 +68,7 @@ const error = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 
 const make = Effect.gen(function* () {
-  const store = yield* FactoryStore;
+  const store = yield* FactoryStore.FactoryStore;
   const threads = yield* Threads.ThreadManagementService;
   const execution = yield* Execution.FactoryExecution;
   const access = yield* Access.FactoryControlAccess;
@@ -127,6 +147,8 @@ const make = Effect.gen(function* () {
     }
   });
 
+  // A message counts as delivered once it is recorded against a run, so sends are checked before
+  // and after to avoid repeating one.
   const accepted = Effect.fn(function* (threadId: ThreadId, messageId: MessageId) {
     const records = yield* threads.getThreadRecords(threadId, ["messages", "runs"], {
       messageIds: [messageId],
@@ -135,7 +157,7 @@ const make = Effect.gen(function* () {
       (message) => message.id === messageId && records.runs.some((run) => run.id === message.runId),
     );
   });
-  const handle = Effect.fn(function* (pending: PendingFactoryEffect) {
+  const handle = Effect.fn(function* (pending: FactoryStore.PendingFactoryEffect) {
     const intent = pending.intent;
     if (intent.type === "improvement.reconcile") {
       yield* reconcile;
@@ -226,6 +248,7 @@ const make = Effect.gen(function* () {
               ),
             );
       }).pipe(Effect.result);
+      // A launch refused because direction was withdrawn is a hold, not a failure.
       if (Result.isFailure(launched)) {
         const stillAllowed = yield* access
           .assertDirection({ threadId: manager.threadId, senderThreadId: null })
@@ -301,6 +324,8 @@ const make = Effect.gen(function* () {
             ),
           );
     }).pipe(Effect.result);
+    // A failed send is recorded on the batch, and the effect stays pending until the human
+    // retries delivery.
     if (Result.isFailure(sent)) {
       const current = yield* store.snapshot;
       const allowedNow = yield* access

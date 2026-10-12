@@ -19,9 +19,19 @@ import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 
+/**
+ * Serves the system manager's bounded reads of finding evidence through
+ * `factory_investigation_read`. A read must name an evidence reference on a finding attached to
+ * an open investigation, and never leaves that finding's assignment and project.
+ */
 export class FactoryImprovementEvidence extends Context.Service<
   FactoryImprovementEvidence,
   {
+    /**
+     * Returns one page of a serialized record and records the read. The cursor carries the
+     * record's digest, so a record that changes mid-read fails instead of splicing two versions.
+     * A thread reference pages through its activity one item at a time.
+     */
     readonly read: (
       managerId: ThreadId,
       input: FactoryInvestigationRead,
@@ -90,6 +100,7 @@ const make = Effect.gen(function* () {
             limit: 1,
           });
           const item = page.items[0];
+          // An activity item can come from another thread, which must also be this assignment's.
           if (item) {
             const source = yield* access.membership(item.sourceThreadId);
             const sourceShell = yield* threads.getThreadShell(item.sourceThreadId);
@@ -171,6 +182,7 @@ const make = Effect.gen(function* () {
           : hasMore
             ? { afterPosition: position, offset: 0, digest: null }
             : null;
+      // Checked again so a hold placed on the manager while reading stops the read being served.
       yield* access.assertExecution(managerId);
       yield* store.commit({
         actor: { kind: "system" },

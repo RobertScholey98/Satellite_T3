@@ -38,9 +38,14 @@ const failure = (cause: unknown) =>
 export class FactoryMergeSignal extends Context.Service<
   FactoryMergeSignal,
   {
+    /**
+     * Labels the PR, creating the label in its repository when missing. Fails unless GitHub then
+     * shows the label, because the deployment gate treats an unlabeled merge as ungrouped.
+     */
     readonly label: (ref: PullRequestRef) => Effect.Effect<void, FactoryError>;
     /** Removes the label from a PR that left its group, so its own deployment passes the gate. */
     readonly unlabel: (ref: PullRequestRef) => Effect.Effect<void, FactoryError>;
+    /** Sets the merge group status on `sha` unless GitHub already shows the same one. */
     readonly publish: (input: {
       readonly ref: PullRequestRef;
       readonly sha: string;

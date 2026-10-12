@@ -18,6 +18,14 @@ const decodeIntegrationHold = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ holdId: Schema.String })),
 );
 
+/**
+ * Host-side check of the authority holds a boundary's files record, run before a container
+ * launch or boundary operation. Fails with `execution-unavailable` while the profile's
+ * integration preparation, retrospective runtime or assignment workspace is held. A held delivery
+ * flow admits only the inspection profile bound to that hold, and an inspection profile is
+ * refused once its hold is gone. The volume helper repeats these checks inside its container,
+ * so a new kind of hold needs both. A profile with none of these scopes always passes.
+ */
 export const assertFactoryProfileActive = Effect.fn("assertFactoryProfileActive")(
   function* (profile: FactoryExecutionProfile | undefined) {
     if (profile?.integration !== undefined) {

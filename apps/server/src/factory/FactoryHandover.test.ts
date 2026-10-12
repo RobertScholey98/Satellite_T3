@@ -21,18 +21,14 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as Satellite from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import {
-  FactoryExecution,
-  layerThreadGovernance,
-  type FactoryExecutionProfile,
-} from "./FactoryExecution.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryExecutionTestkit from "./FactoryExecution.testkit.ts";
 import * as FactoryHandover from "./FactoryHandover.ts";
 
 const projectId = ProjectId.make("handover-project");
 const threadId = ThreadId.make("handover-thread");
 const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
-const profile: FactoryExecutionProfile = {
+const profile: FactoryExecution.FactoryExecutionProfile = {
   boundaryId: "managed-thread-boundary",
   dockerContext: "default",
   imageId: "sha256:qualified",
@@ -189,8 +185,10 @@ it.effect(
 
 it.effect("same-model handover keeps conversation history in a fresh confined native context", () =>
   Effect.gen(function* () {
-    const boundary = yield* Ref.make<FactoryExecutionProfile | undefined>(undefined);
-    const execution = Layer.mock(FactoryExecution)({
+    const boundary = yield* Ref.make<FactoryExecution.FactoryExecutionProfile | undefined>(
+      undefined,
+    );
+    const execution = Layer.mock(FactoryExecution.FactoryExecution)({
       runtimePolicyFor: () => Ref.get(boundary),
       assertSelectionFor: () => Effect.void,
       assertDelegationFor: () => Effect.void,
@@ -243,7 +241,7 @@ it.effect("same-model handover keeps conversation history in a fresh confined na
     }).pipe(
       Effect.provide(
         Satellite.layerWithGovernance(
-          layerThreadGovernance.pipe(
+          FactoryExecution.layerThreadGovernance.pipe(
             Layer.provide(Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls)),
           ),
         ),
@@ -317,8 +315,10 @@ it.effect(
   "a held host queue fails visibly instead of resuming its old context after handover",
   () =>
     Effect.gen(function* () {
-      const boundary = yield* Ref.make<FactoryExecutionProfile | undefined>(undefined);
-      const execution = Layer.mock(FactoryExecution)({
+      const boundary = yield* Ref.make<FactoryExecution.FactoryExecutionProfile | undefined>(
+        undefined,
+      );
+      const execution = Layer.mock(FactoryExecution.FactoryExecution)({
         runtimePolicyFor: () => Ref.get(boundary),
         assertSelectionFor: () => Effect.void,
         assertDelegationFor: () => Effect.void,
@@ -350,7 +350,7 @@ it.effect(
       }).pipe(
         Effect.provide(
           Satellite.layerWithGovernance(
-            layerThreadGovernance.pipe(
+            FactoryExecution.layerThreadGovernance.pipe(
               Layer.provide(Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls)),
             ),
           ),

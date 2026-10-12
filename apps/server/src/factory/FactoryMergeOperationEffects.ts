@@ -21,7 +21,7 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { ServerConfig } from "../config.ts";
+import * as ServerConfig from "../config.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as PullRequests from "../pullRequest/PullRequestService.ts";
 import { GitHubConditionalMergeError } from "../pullRequest/GitHubPullRequestCli.ts";
@@ -45,6 +45,14 @@ import { canonicalFactoryPullRequest } from "./FactoryMergeOwnership.ts";
 import { FactoryMergeGroupPermit } from "./FactoryPullRequestGate.ts";
 import * as Store from "./FactoryStore.ts";
 
+/**
+ * Runs the shared merge's outbox effects for `FactoryService`: prepare stops the integration team
+ * and freezes its tested bytes, advance submits the next member, reconcile reads host outcomes,
+ * resume restarts a team stopped before any submission, and signal publishes Group deployment
+ * readiness. One operation's effects run one at a time. Every merge is recorded as `submitting`
+ * before the host call and then observed on the host, never assumed. An effect left unretired
+ * stays in the outbox and runs again on the next drain.
+ */
 export class FactoryMergeOperationEffects extends Context.Service<
   FactoryMergeOperationEffects,
   { readonly handle: (pending: Store.PendingFactoryEffect) => Effect.Effect<void, FactoryError> }
@@ -62,6 +70,7 @@ type Observation = Extract<
   { type: "merge.operation.observed" }
 >["observation"];
 type Recovery = Extract<FactoryDecisionCommand, { type: "merge.operation.held" }>["retry"];
+/** The running threads and queued runs that prepare paused, so resume restarts only those. */
 const Targets = Schema.Struct({
   operationId: Schema.String,
   preparationId: Schema.String,
@@ -71,6 +80,10 @@ const Targets = Schema.Struct({
 const encodeTargets = Schema.encodeEffect(Schema.fromJsonString(Targets));
 const decodeTargets = Schema.decodeUnknownEffect(Schema.fromJsonString(Targets));
 
+/**
+ * Classifies a failed merge call by its cause chain: rate limits are transient, and refusals that
+ * cannot have merged are permanent. Anything else is undefined and left to what the host shows.
+ */
 function definitiveRejection(error: unknown): "transient" | "permanent" | undefined {
   const seen = new Set<unknown>();
   let current = error;
@@ -102,7 +115,7 @@ const make = Effect.gen(function* () {
   const signals = yield* MergeSignal.FactoryMergeSignal;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const config = yield* ServerConfig;
+  const config = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
   const locks = new Map<string, Semaphore.Semaphore>();
   const lock = (id: string) => {
@@ -138,6 +151,10 @@ const make = Effect.gen(function* () {
     command: Parameters<typeof store.finishEffect>[0]["command"],
   ) => nowIso.pipe(Effect.flatMap((now) => store.finishEffect({ id: pending.id, command, now })));
 
+  /**
+   * Records a host-side failure as an attention hold and retires the effect. The command id hashes
+   * the reason and retry, so repeating the same failure records one hold.
+   */
   const hold = Effect.fn(function* (
     pending: Store.PendingFactoryEffect,
     id: string,
@@ -173,6 +190,7 @@ const make = Effect.gen(function* () {
     preparationId: string,
   ) {
     const file = yield* location(current.id);
+    // A retried prepare keeps the first record: by then the team is already paused.
     if (yield* fs.exists(file)) return;
     const listed = yield* threads.listProjectThreads({
       projectId: assignment.projectId,
@@ -229,6 +247,11 @@ const make = Effect.gen(function* () {
       .pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
   }, Effect.mapError(failure));
 
+  /**
+   * Records what the team was running, stops the integration and its threads, refreshes member
+   * evidence, then captures the stopped bytes. They are frozen only if they still match the sealed
+   * review's passing verification and change no path beyond the published candidates.
+   */
   const prepare = Effect.fn(function* (
     pending: Store.PendingFactoryEffect,
     current: FactoryMergeOperation,
@@ -328,6 +351,11 @@ const make = Effect.gen(function* () {
     });
   });
 
+  /**
+   * Reads the member's PR fresh from the host and records what it shows. A pending member that is
+   * still open returns `"open"` without a commit. An unknown attempt counts as not merged only when
+   * the host proves the exact PR open with no auto-merge or queue that could still merge it.
+   */
   const observe = Effect.fn(function* (
     pending: Store.PendingFactoryEffect,
     current: FactoryMergeOperation,
@@ -420,6 +448,7 @@ const make = Effect.gen(function* () {
     return observation.phase;
   });
 
+  /** True when the effect is done: the operation is gone, already completed, or completes now. */
   const complete = Effect.fn(function* (pending: Store.PendingFactoryEffect, id: string) {
     const current = yield* operation(id);
     if (!current || current.lifecycle.phase === "completed") {
@@ -452,6 +481,10 @@ const make = Effect.gen(function* () {
     if (!(yield* complete(pending, current.id))) yield* retire(pending.id);
   });
 
+  /**
+   * Submits the next member's merge. Every unconfirmed member is observed first, so a PR that
+   * changed or merged outside Satellite holds the operation before any write.
+   */
   const advance = Effect.fn(function* (
     pending: Store.PendingFactoryEffect,
     current: FactoryMergeOperation,
@@ -517,6 +550,8 @@ const make = Effect.gen(function* () {
     );
     if (head) yield* signals.publish(head);
     const attemptId = `${fresh.id}:${member.reviewed.assignmentId}:${member.attempts + 1}`;
+    // Recording the attempt completes this effect and queues a reconcile, which reads the outcome
+    // if the server stops before the observation below.
     yield* finish(pending, {
       type: "merge.operation.submitting",
       operationId: fresh.id,
@@ -558,6 +593,12 @@ const make = Effect.gen(function* () {
       );
   });
 
+  /**
+   * Restarts what prepare paused after a stop with nothing submitted: releases the integration
+   * hold, nudges threads that were running and resumes their queued runs. Message ids are fixed per
+   * thread, so a rerun does not nudge twice. A thread still refused direction keeps the effect
+   * pending.
+   */
   const resume = Effect.fn(function* (
     pending: Store.PendingFactoryEffect,
     current: FactoryMergeOperation,
@@ -711,6 +752,7 @@ const make = Effect.gen(function* () {
           }
         }).pipe(Effect.result);
         if (Result.isFailure(result)) {
+          // Resume runs only on a stopped operation, which has nothing to hold; it runs again.
           if (pending.intent.type === "merge.operation.resume") return;
           // Readiness stays pending at the host; the effect retries without holding the merges.
           if (pending.intent.type === "merge.operation.signal")
@@ -718,6 +760,7 @@ const make = Effect.gen(function* () {
               effectId: pending.id,
               cause: result.failure,
             });
+          // Any uncertain outcome holds for reconciliation; stale evidence needs a new review.
           const latest = yield* operation(id);
           const error = failure(result.failure);
           yield* hold(

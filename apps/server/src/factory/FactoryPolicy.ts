@@ -5,6 +5,12 @@ export const resolveManagerPolicy = (
   overrides: FactoryPolicyOverrides,
 ) => ({ ...defaults, ...overrides });
 
+/**
+ * Narrows an assignment's granted policy to whatever the manager's current policy still allows.
+ * Each field takes the stricter of the two, so a later manager policy change can only tighten
+ * an existing assignment, never widen it. Shared workflow changes are always limited to
+ * investigation.
+ */
 export const constrainAssignmentPolicy = (
   grantedPolicy: FactoryPolicy,
   currentManagerPolicy: FactoryPolicy,

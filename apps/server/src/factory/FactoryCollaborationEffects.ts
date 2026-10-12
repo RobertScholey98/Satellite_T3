@@ -12,23 +12,39 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
-import { FactoryPreviewService } from "./FactoryPreviewService.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
+import * as FactoryPreviewService from "./FactoryPreviewService.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import {
   factoryCollaborationConditionSatisfied,
   factoryRequestParticipants,
   factoryRequestReconsiderable,
 } from "./FactoryCollaboration.ts";
 
+/**
+ * Carries out the collaboration and incident effects the decider queues: peer-message delivery,
+ * notices to managers and leads, incident stop and resume, and release of queued runs. The
+ * factory's collaboration worker drives it.
+ */
 export class FactoryCollaborationEffects extends Context.Service<
   FactoryCollaborationEffects,
   {
+    /**
+     * Reports, as the host, conditions that have come true in the snapshot: a met incident resume
+     * condition, a reconsiderable request and a concluded support assignment. Command ids are
+     * deterministic, so each report lands once however often this runs.
+     */
     readonly reconcile: Effect.Effect<void, FactoryError>;
-    readonly handle: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
+    /**
+     * Runs one pending effect. An effect whose target thread is not currently directable stays
+     * pending for a later pass instead of failing.
+     */
+    readonly handle: (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryCollaborationEffects") {}
 
@@ -36,12 +52,14 @@ const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 const make = Effect.gen(function* () {
-  const store = yield* FactoryStore;
-  const threads = yield* ThreadManagementService;
-  const boundaries = yield* FactoryBoundaryExecution;
-  const handovers = yield* FactoryHandover;
-  const access = yield* FactoryControlAccess;
-  const previews = yield* FactoryPreviewService;
+  const store = yield* FactoryStore.FactoryStore;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const boundaries = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+  const handovers = yield* FactoryHandover.FactoryHandover;
+  const access = yield* FactoryControlAccess.FactoryControlAccess;
+  const previews = yield* FactoryPreviewService.FactoryPreviewService;
+  // Whether the thread already holds this message, which is how a send that succeeded before a
+  // crash is recognized on replay.
   const accepted = Effect.fn(function* (threadId: ThreadId, messageId: MessageId) {
     const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(failure));
     if (!shell) return false;
@@ -57,6 +75,8 @@ const make = Effect.gen(function* () {
       });
     return true;
   });
+  // `false` leaves the effect pending: the thread may not be directed now, or it is deleted or
+  // archived.
   const allowed = Effect.fn(function* (threadId: ThreadId, senderThreadId?: ThreadId) {
     const result = yield* access
       .assertDirection({ threadId, senderThreadId: senderThreadId ?? null })
@@ -68,7 +88,7 @@ const make = Effect.gen(function* () {
     const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(failure));
     return shell !== null && shell.deletedAt === null && shell.archivedAt === null;
   });
-  const message = Effect.fn(function* (pending: PendingFactoryEffect) {
+  const message = Effect.fn(function* (pending: FactoryStore.PendingFactoryEffect) {
     if (pending.intent.type !== "collaboration.message.deliver") return;
     const id = pending.intent.messageId;
     const state = yield* store.snapshot;
@@ -173,7 +193,7 @@ const make = Effect.gen(function* () {
       },
     });
   });
-  const notify = Effect.fn(function* (pending: PendingFactoryEffect) {
+  const notify = Effect.fn(function* (pending: FactoryStore.PendingFactoryEffect) {
     if (pending.intent.type !== "collaboration.notify") return;
     const intent = pending.intent;
     const state = yield* store.snapshot;
@@ -221,6 +241,8 @@ const make = Effect.gen(function* () {
     }
     if (!held) yield* store.retireEffect(pending.id);
   });
+  // Every thread an incident must reach: current and earlier leads, and auxiliary threads other
+  // than retrospectives.
   const roots = (state: FactorySnapshot, assignmentIds: readonly string[]) =>
     state.assignments
       .filter((entry) => assignmentIds.includes(entry.id))
@@ -234,7 +256,7 @@ const make = Effect.gen(function* () {
           .filter((entry) => entry.assignmentId === assignment.id && entry.kind !== "retrospective")
           .map((entry) => ({ threadId: entry.threadId, projectId: entry.projectId })),
       ]);
-  const incident = Effect.fn(function* (pending: PendingFactoryEffect) {
+  const incident = Effect.fn(function* (pending: FactoryStore.PendingFactoryEffect) {
     if (pending.intent.type !== "incident.stop" && pending.intent.type !== "incident.resume")
       return;
     const intent = pending.intent;
@@ -257,6 +279,8 @@ const make = Effect.gen(function* () {
       const affected = roots(state, restriction.assignmentIds);
       const failures: FactoryError[] = [];
       if (restriction.activity === "execution") {
+        // Record what was running or queued before stopping it, so release resumes exactly
+        // that work. A retried stop finds it already stopped, so only the first capture counts.
         if (stopping && restriction.resumeThreadIds === undefined) {
           const captured = yield* Effect.gen(function* () {
             const threadIds = new Set<ThreadId>();
@@ -336,6 +360,7 @@ const make = Effect.gen(function* () {
             if (Result.isFailure(result)) failures.push(result.failure);
           }
       }
+      // Preview reconciliation stops previews that a restriction now forbids.
       if (stopping && restriction.activity !== "delivery") {
         const result = yield* previews.reconcile.pipe(Effect.result);
         if (Result.isFailure(result)) failures.push(result.failure);
@@ -361,13 +386,14 @@ const make = Effect.gen(function* () {
           },
     });
   });
-  const queue = Effect.fn(function* (pending: PendingFactoryEffect) {
+  const queue = Effect.fn(function* (pending: FactoryStore.PendingFactoryEffect) {
     if (pending.intent.type !== "incident.queue.resume") return;
     const intent = pending.intent;
     const state = yield* store.snapshot;
     const restriction = state.incidentRestrictions.find(
       (entry) => entry.id === intent.restrictionId,
     );
+    // Only runs captured when the incident stopped them are released, and only once it is over.
     if (
       restriction?.phase !== "released" ||
       !restriction.resumeQueues?.some(
@@ -444,7 +470,7 @@ const make = Effect.gen(function* () {
   });
   return FactoryCollaborationEffects.of({
     reconcile,
-    handle: Effect.fn(function* (pending: PendingFactoryEffect) {
+    handle: Effect.fn(function* (pending: FactoryStore.PendingFactoryEffect) {
       if (!(yield* store.pending).some((entry) => entry.id === pending.id)) return;
       switch (pending.intent.type) {
         case "collaboration.message.deliver":

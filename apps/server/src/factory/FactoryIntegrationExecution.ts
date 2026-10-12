@@ -20,13 +20,13 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
-import { ServerConfig } from "../config.ts";
-import { ProcessRunner } from "../processRunner.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
-import { FactoryStore } from "./FactoryStore.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as FactoryStore from "./FactoryStore.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import { FactoryExecutionProfile, factoryDockerArguments } from "./FactoryExecutionProfile.ts";
-import { FactoryWorkflowExecution } from "./FactoryWorkflowExecution.ts";
+import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 import { FactorySourceFile } from "./FactorySource.ts";
 import {
   factoryIntegrationAccessBlocked,
@@ -54,23 +54,47 @@ type Receipt<T extends FactoryDecisionCommand["type"]> = Omit<
   "type" | "commandId"
 >;
 type Preparation = { readonly integrationId: string; readonly preparationId: string };
+/**
+ * Runs integration work in isolated Docker containers for the integration and merge effects
+ * and the factory MCP tools. Each method reads the current snapshot and refuses work whose
+ * integration, preparation or authority is no longer current. Its returns become host
+ * receipts, which the decider checks again. Artifacts live under the state directory, so a
+ * retried `prepare` or `verify` returns the result it already recorded.
+ */
 export class FactoryIntegrationExecution extends Context.Service<
   FactoryIntegrationExecution,
   {
+    /**
+     * Snapshots the capability's approved boundary and checks that its gates and coordinator are
+     * protected Node entrypoints the classification can read. Fails if the capability is
+     * superseded while it runs.
+     */
     readonly qualify: (input: {
       readonly capabilityId: string;
     }) => Effect.Effect<Receipt<"integration.capability.qualified">, FactoryError>;
+    /**
+     * Builds the combined workspace from each participant's current candidate, or its finalized
+     * tree once published, and carries over the test work of the last prepared runtime. A path
+     * that both the owner and the retained test work changed fails as a refresh conflict.
+     */
     readonly prepare: (
       input: Preparation,
     ) => Effect.Effect<Receipt<"integration.prepared">, FactoryError>;
+    /**
+     * Writes the hold's marker into the authority of the preparation and every earlier one,
+     * then removes their containers. Containers that start later see the marker and refuse to
+     * run. `preparationId` defaults to the current one; `null` means there is nothing to stop.
+     */
     readonly stop: (input: {
       readonly integrationId: string;
       readonly holdId: string;
       readonly preparationId?: string | null;
     }) => Effect.Effect<void, FactoryError>;
+    /** Removes one hold's marker once the prepared inputs are confirmed still current. */
     readonly release: (
       input: Preparation & { readonly holdId: string },
     ) => Effect.Effect<void, FactoryError>;
+    /** Applies one granted test or fixture change and returns the new test artifact. */
     readonly mutate: (
       input: Preparation & {
         readonly grantId: string;
@@ -78,12 +102,23 @@ export class FactoryIntegrationExecution extends Context.Service<
         readonly operation: FactoryFileMutation;
       },
     ) => Effect.Effect<Receipt<"integration.file.mutated">, FactoryError>;
+    /**
+     * Seals the test artifact, then runs every participant's protected gates and the
+     * coordinator against read-only copies of all projects. The caller must first stop the team
+     * under a hold named for the verification. A check that loses authority while running is
+     * `stopped`, never `passed`.
+     */
     readonly verify: (input: {
       readonly verificationId: string;
     }) => Effect.Effect<Receipt<"integration.verified">, FactoryError>;
+    /**
+     * Reads the test and fixture changes in a prepared runtime. Fails if anything outside a
+     * granted test or fixture path changed.
+     */
     readonly capture: (
       input: Preparation,
     ) => Effect.Effect<FactoryIntegrationTestArtifact, FactoryError>;
+    /** Pages through one project's immutable test patch, at most 16000 characters a page. */
     readonly readPatch: (input: {
       readonly patchArtifactId: string;
       readonly cursor?: number;
@@ -93,6 +128,7 @@ export class FactoryIntegrationExecution extends Context.Service<
 >()("t3/factory/FactoryIntegrationExecution") {}
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+/** Keeps a `FactoryError` as is and turns any other failure into a generic runtime failure. */
 const preserve = (cause: unknown) =>
   isFactoryError(cause)
     ? cause
@@ -103,12 +139,12 @@ const preserve = (cause: unknown) =>
       });
 const Capture = Schema.Struct({ files: Schema.Array(FactorySourceFile), digest: Schema.String });
 const make = Effect.gen(function* () {
-  const store = yield* FactoryStore;
-  const boundary = yield* FactoryBoundaryExecution;
-  const workflows = yield* FactoryWorkflowExecution;
-  const pullRequests = yield* PullRequestService;
-  const runner = yield* ProcessRunner;
-  const config = yield* ServerConfig;
+  const store = yield* FactoryStore.FactoryStore;
+  const boundary = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+  const workflows = yield* FactoryWorkflowExecution.FactoryWorkflowExecution;
+  const pullRequests = yield* PullRequestService.PullRequestService;
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const config = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
@@ -124,6 +160,8 @@ const make = Effect.gen(function* () {
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
     );
+  // One permit per integration: prepare, mutate, capture and verify never overlap on one
+  // workspace, and `stop` waits on it to catch containers that an in-flight operation started.
   const locks = new Map<string, Semaphore.Semaphore>();
   const lock = (id: string) => {
     let mutex = locks.get(id);
@@ -134,8 +172,10 @@ const make = Effect.gen(function* () {
     return mutex;
   };
   const root = path.join(config.stateDir, "factory", "integration");
+  // Directories are named by a digest of the id, so an id never becomes a path segment.
   const location = (kind: string, id: string) =>
     integrationDigest(id).pipe(Effect.map((digest) => path.join(root, kind, digest)));
+  // Writes through a fresh temporary file and a rename, so readers never see a partial file.
   const write = Effect.fn(function* (file: string, value: unknown) {
     yield* fs.makeDirectory(path.dirname(file), { recursive: true });
     const temporary = `${file}.${yield* crypto.randomUUIDv4}`;
@@ -168,6 +208,11 @@ const make = Effect.gen(function* () {
         ),
       );
   });
+  /**
+   * Loads the integration for work on its current preparation, which must be `requested` while
+   * `preparing` and `ready` otherwise. Refuses a frozen merge, a concluded team or blocked
+   * access.
+   */
   const current = Effect.fn(function* (input: Preparation, preparing = false) {
     const state = yield* store.snapshot;
     const integration = state.integrations.find((entry) => entry.id === input.integrationId);
@@ -257,6 +302,10 @@ const make = Effect.gen(function* () {
       yield* fs.chmod(target, file.mode === "100755" ? 0o555 : 0o444);
     }
   });
+  /**
+   * Runs the volume helper against the integration volume, labelled so `kill` finds it. Writing
+   * calls also mount the authority directory so the helper refuses while a hold is in place.
+   */
   const helper = Effect.fn(function* (
     runtime: IntegrationRuntimeArtifact,
     input: unknown,
@@ -417,6 +466,11 @@ const make = Effect.gen(function* () {
   }, Effect.mapError(preserve));
   const patchPath = (id: string) =>
     location("patches", id).pipe(Effect.map((directory) => path.join(directory, "patch.json")));
+  /**
+   * Diffs the workspace against each project's prepared files and writes one patch per grant,
+   * named by its content digest. Any change outside a granted test or fixture path, or a file
+   * outside every participant root, fails the capture, so production edits never reach evidence.
+   */
   const captureRuntime = Effect.fn(function* (runtime: IntegrationRuntimeArtifact) {
     const captured = yield* helper(runtime, { kind: "capture" }, true).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Capture))),
@@ -494,6 +548,7 @@ const make = Effect.gen(function* () {
     yield* write(path.join(yield* location("tests", artifact.id), "artifact.json"), artifact);
     return artifact;
   });
+  // A patch's id is the digest of its content, so a patch changed on disk fails to read.
   const readPatchArtifact = Effect.fn(function* (id: string) {
     const patch = yield* fs
       .readFileString(yield* patchPath(id))
@@ -536,6 +591,8 @@ const make = Effect.gen(function* () {
     );
     if (!preparation)
       return yield* integrationError("The stop request names another integration preparation.");
+    // A preparation that has not written its runtime yet still has a known profile directory,
+    // so the hold reaches it before its first container starts.
     const pendingProfileId = yield* integrationId(preparationId);
     yield* write(
       path.join(
@@ -590,6 +647,8 @@ const make = Effect.gen(function* () {
           entry.id === selected?.previousPreparationId && entry.integrationId === integration.id,
       );
     }
+    // Waiting for the permit lets an in-flight operation finish; anything it started since the
+    // first pass is removed by the second.
     yield* lock(input.integrationId).withPermit(Effect.void);
     for (const runtime of stopped)
       yield* kill(runtime.profile, integration.assignmentId, runtime.preparationId);
@@ -650,6 +709,7 @@ const make = Effect.gen(function* () {
         const { state, integration, preparation, assignment } = yield* current(input, true);
         const directory = yield* location("preparations", preparation.id);
         const completed = path.join(directory, "runtime.json");
+        // `runtime.json` is written last, so its presence means a retry can return the result.
         if (yield* fs.exists(completed)) {
           const runtime = yield* readRuntime(preparation.id);
           const reasons = factoryIntegrationManifestReasons(
@@ -743,6 +803,8 @@ const make = Effect.gen(function* () {
             sourceDigest = candidate.finalized.sourceDigest;
           }
           yield* integrationValidateFiles(files);
+          // Protected files, including gates and the coordinator, must be byte for byte what the
+          // capability qualified.
           for (const protectedFile of capability.files.filter((file) =>
             capability.boundary.protectedPaths.some(
               (root) => file.path === root || file.path.startsWith(root + "/"),
@@ -866,6 +928,8 @@ const make = Effect.gen(function* () {
         };
         let previous: IntegrationRuntimeArtifact | undefined;
         let previousTests: FactoryIntegrationTestArtifact | undefined;
+        // Test work carries over from the newest earlier preparation that reached a runtime;
+        // preparations that failed before writing one are skipped.
         let priorId = preparation.previousPreparationId;
         const visited = new Set<string>();
         while (priorId && !visited.has(priorId)) {
@@ -891,6 +955,8 @@ const make = Effect.gen(function* () {
           const previousPatch = previousTests?.projects.find(
             (entry) => entry.projectId === project.grant.projectId,
           );
+          // Retained work replaces a path only if the owner's source left it unchanged since the
+          // last preparation. A failure here leaves the earlier patch on disk.
           if (previousProject && previousPatch) {
             const patch = yield* readPatchArtifact(previousPatch.patchArtifactId);
             const prior = new Map(previousProject.files.map((file) => [file.path, file]));
@@ -922,8 +988,11 @@ const make = Effect.gen(function* () {
               ),
             });
         }
+        // Recorded before any container starts, so `stop` can find this runtime even if the
+        // preparation never finishes. Authority is checked again around each slow step.
         yield* write(path.join(directory, "request.json"), runtime);
         yield* current(input, true);
+        // An interrupted attempt may have left the volume; it is rebuilt from the inputs.
         yield* dockerResult(profile, ["volume", "rm", volumeName]);
         yield* docker(profile, [
           "volume",
@@ -934,6 +1003,8 @@ const make = Effect.gen(function* () {
         ]);
         yield* helper(runtime, { kind: "initialize", files: workspaceFiles });
         yield* filesTo(profile.projectSnapshotPath, workspaceFiles);
+        // Proves the boundary before agents get it: a granted file is writable, a production
+        // file is not, and the workspace root accepts no new file or link.
         const writable = workspaceFiles.find((file) => file.writable);
         const protectedFile = workspaceFiles.find((file) => !file.writable);
         if (!writable || !protectedFile)
@@ -979,6 +1050,10 @@ const make = Effect.gen(function* () {
       }),
     );
   }, Effect.mapError(preserve));
+  /**
+   * The ready runtime, refused once its manifest is stale or a published input's head or base
+   * has moved on the host.
+   */
   const runtimeCurrent = Effect.fn(function* (input: Preparation) {
     yield* current(input);
     const runtime = yield* readRuntime(input.preparationId);
@@ -1035,6 +1110,7 @@ const make = Effect.gen(function* () {
             ? { content: Buffer.from(input.operation.content).toString("base64") }
             : {}),
         };
+        // The helper journals by this id, so a retried operation is not applied twice.
         const commandId = yield* integrationId(input.operationId);
         yield* runtimeCurrent(input);
         yield* helper(runtime, {
@@ -1089,6 +1165,8 @@ const make = Effect.gen(function* () {
         const runtime = yield* runtimeCurrent(request);
         if (runtime.manifest.inputDigest !== verification.inputDigest)
           return yield* integrationError("The verification input vector changed before execution.");
+        // The team is stopped under this verification's own hold so nothing writes while the
+        // artifact is sealed. The checks ignore that marker and stop on any other hold.
         const ownHold = path.join(
           runtime.profile.integration!.stopPath,
           `${yield* integrationDigest(verification.id)}.json`,
@@ -1122,6 +1200,9 @@ const make = Effect.gen(function* () {
           })),
         });
         const checks: Receipt<"integration.verified">["checks"][number][] = [];
+        // Authority is checked before and after each check, and a watchdog inside the container
+        // kills it when a hold, revocation, suspension or incident appears. Either way the check
+        // records `stopped`, so lost authority never reads as a result.
         const run = Effect.fn(function* (
           project: IntegrationRuntimeArtifact["projects"][number],
           id: string,
@@ -1254,6 +1335,7 @@ const make = Effect.gen(function* () {
           hostArtifactId: `integration-verification:${verification.id}`,
           checks,
         };
+        // A retry after a restart returns this receipt rather than running the checks again.
         yield* write(receiptPath, receipt);
         return receipt;
       }),

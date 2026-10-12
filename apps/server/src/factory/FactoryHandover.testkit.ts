@@ -1,5 +1,5 @@
 import * as Layer from "effect/Layer";
 
-import { FactoryHandover } from "./FactoryHandover.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
 
-export const layerUnused = Layer.mock(FactoryHandover)({});
+export const layerUnused = Layer.mock(FactoryHandover.FactoryHandover)({});

@@ -30,7 +30,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as RuntimePolicy from "../orchestration-v2/RuntimePolicy.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
-import { ProcessRunner } from "../processRunner.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { makeProviderAdapter } from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
@@ -798,7 +798,7 @@ const productionFactoryLayer = FactoryExecution.layer.pipe(
     Layer.mergeAll(
       ServerConfig.layerTest(process.cwd(), { prefix: "factory-lineage-" }),
       Layer.mock(ProjectStore.ProjectStoreV2)({}),
-      Layer.mock(ProcessRunner)({}),
+      Layer.mock(ProcessRunner.ProcessRunner)({}),
       Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
       FactorySourceTestkit.layerUnused,
     ),

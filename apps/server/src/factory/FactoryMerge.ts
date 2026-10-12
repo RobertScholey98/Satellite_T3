@@ -42,6 +42,7 @@ const sameMembers = (
 ) =>
   stableStringify([...left].sort((a, b) => a.assignmentId.localeCompare(b.assignmentId))) ===
   stableStringify([...right].sort((a, b) => a.assignmentId.localeCompare(b.assignmentId)));
+/** A persisted group, or the group an integration implies before its first decision persists it. */
 const findGroup = (state: FactorySnapshot, groupId: string) =>
   state.mergeGroups.find((entry) => entry.id === groupId) ??
   state.integrations
@@ -93,6 +94,11 @@ const memberReadiness = (
     ];
   });
 
+/**
+ * What a combined review seals: each member's current published, inspected revision and the
+ * passing combined verification that exercised exactly those bytes. Inspection, approval and the
+ * shared merge freeze all compare against it, so any reason means the group is not ready.
+ */
 export type FactoryMergeGroupEvidence =
   | { readonly ready: false; readonly reasons: readonly string[] }
   | {
@@ -141,6 +147,7 @@ export function factoryMergeGroupEvidence(
     reasons.push(
       ...readiness.reasons.map((reason) => `${assignment.title ?? assignmentId}: ${reason}`),
     );
+    // A member merging on its own would leave the group with a partial vector it never reviewed.
     if (revision.merge && revision.merge.status !== "failed")
       reasons.push(`Participant ${assignmentId} has an independent merge outcome to reconcile.`);
     const publication = revision.publication;
@@ -212,6 +219,8 @@ export function factoryMergeGroupEvidence(
   const artifact = state.integrationTestArtifacts.find(
     (entry) => entry.id === result.testArtifactId,
   );
+  // Tests that exist only in the integration would not merge with the members, so every changed
+  // path must already be in the published candidates.
   if (
     !artifact ||
     artifact.digest !== result.testArtifactDigest ||
@@ -276,6 +285,11 @@ const reviewMatches = (
   );
 };
 
+/**
+ * The combined review status the group view shows. `ready` needs current evidence, a seal that
+ * still matches it and, when any member needs the human, the human's approval of that exact
+ * review. Approving and requesting the merge both close while a shared operation owns the review.
+ */
 export function factoryMergeGroupReadiness(
   state: FactorySnapshot,
   groupId: string,
@@ -332,6 +346,10 @@ export function factoryMergeGroupReadiness(
   };
 }
 
+/**
+ * Why a decision cannot create its new integrations: a participant already belongs to a group
+ * that holds it. `decide` checks every command's result, so no path puts one member in two groups.
+ */
 export function factoryMergeEnrollmentConflict(
   previous: FactorySnapshot,
   state: FactorySnapshot,
@@ -395,6 +413,7 @@ function withdrawGroupApprovals(
   });
 }
 
+/** What the host shows for a group; any change queues one `merge.group.hold`. */
 const holdKey = (state: FactorySnapshot, group: FactoryMergeGroup | undefined) =>
   group
     ? stableStringify({
@@ -479,6 +498,12 @@ export function reconcileFactoryMergeGroups(
   return { ...decision, state, effects: [...decision.effects, ...holds] };
 }
 
+/**
+ * Decides the combined review and group membership commands; `merge.group.start` belongs to the
+ * shared merge decider, which runs first. The human releases and restores a group. The active
+ * integration lead or the human requests a review, only the host seals it, and only the human
+ * approves or rejects it. Review commands are refused while a shared operation owns the review.
+ */
 export function decideFactoryMerge(input: {
   readonly state: FactorySnapshot;
   readonly actor: FactoryActor;
@@ -625,6 +650,8 @@ export function decideFactoryMerge(input: {
           ],
         );
       const evidence = factoryMergeGroupEvidence(state, group.id);
+      // Sealing the same vector again keeps an earlier request for changes, so refreshing the
+      // review cannot clear it. An earlier approval is not carried over.
       const priorDecision = evidence.ready
         ? state.mergeGroupReviews.findLast(
             (entry) =>
@@ -700,6 +727,8 @@ export function decideFactoryMerge(input: {
             reason: command.reason,
             decidedAt: now,
           };
+      // Approval lands on each member's reviewed revision as a human delivery approval bound to its
+      // head and bundle. Releasing the group withdraws it from members that have not merged.
       const assignments = approved
         ? state.assignments.map((entry) => {
             const member = evidence.members.find((item) => item.assignmentId === entry.id);

@@ -744,7 +744,7 @@ export function buildCodexTurnStartParams(input: {
             {
               model: input.modelSelection.model,
               reasoningEffort: effort ?? "medium",
-              ...(confined ? { factoryManaged: true } : {}),
+              orchestrationInstructions: input.runtimePolicy.confinement?.orchestrationInstructions,
             },
             {
               browser: input.browserToolsAvailable ?? true,

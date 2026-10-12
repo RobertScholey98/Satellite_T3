@@ -30,6 +30,8 @@ import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import { effectiveFactoryWorkflow } from "./FactoryWorkflow.ts";
 import type { FactoryActor, FactoryAllocation, FactoryDecision } from "./FactoryState.ts";
 
+// An assignment that can still collaborate: not cancelled, not complete, and either without a
+// completion or still collecting one.
 const active = (assignment: FactoryAssignment | undefined): assignment is FactoryAssignment =>
   assignment !== undefined &&
   assignment.outcome === undefined &&
@@ -71,6 +73,11 @@ export function retainDeliveredMessages<
   });
 }
 
+/**
+ * The originating and supporting assignments of an accepted request: the leads who may message,
+ * plan and share access with each other. Empty in every other phase, so a request that is not
+ * accepted grants no peer access.
+ */
 export function factoryRequestParticipants(
   state: FactorySnapshot,
   request: FactoryCrossProjectRequest,
@@ -103,6 +110,11 @@ export function factoryCollaborationConditionSatisfied(
   }
 }
 
+/**
+ * Whether the host may reopen a deferred or declined request on its own: its recorded
+ * reconsideration event has happened and the work that raised it is still active. The
+ * collaboration reactor commits `collaboration.request.reconsider` as the system when this holds.
+ */
 export function factoryRequestReconsiderable(
   state: FactorySnapshot,
   request: FactoryCrossProjectRequest,
@@ -116,6 +128,12 @@ export function factoryRequestReconsiderable(
   );
 }
 
+/**
+ * The refusal reason when an unreleased incident restriction covers this assignment's activity,
+ * or `undefined` when it may proceed. An execution restriction blocks every activity; a narrower
+ * one blocks only its own. A restriction that is still releasing keeps blocking until the host
+ * confirms the runtime resumed.
+ */
 export function factoryIncidentBlocked(
   state: FactorySnapshot,
   assignmentId: FactoryAssignmentId,
@@ -166,6 +184,20 @@ const requestNotice = (
   );
 };
 
+/**
+ * Settles cross-project requests after a decision that may have cancelled work or closed an
+ * investigation. Runs over the decided state, so it sees the cancellation that just happened.
+ *
+ * - Cancels dedicated supporting assignments and integration teams that no surviving request or
+ *   dependency still needs, repeating until nothing more falls.
+ * - Reopens an accepted request whose support was cancelled, and a deferral that waited on an
+ *   assignment that can now never conclude.
+ * - Withdraws requests whose origin ended, then copies the human's cancellation reason onto the
+ *   cancellations it caused once every source reason is known.
+ *
+ * Idempotent: a second run over its own output changes nothing, which is what lets the state
+ * decider apply it after every control and improvement decision.
+ */
 export function reconcileFactoryRequestCancellation(
   decision: FactoryDecision,
   now: string,
@@ -362,6 +394,14 @@ export function reconcileFactoryRequestCancellation(
   };
 }
 
+/**
+ * Decides `collaboration.*` and `incident.*` commands: cross-project requests, peer messages,
+ * shared plans, consolidated human decisions and incident restrictions. Returns `undefined` for
+ * any other command so the state decider can try the next one.
+ *
+ * Managers own commitments between projects, leads own the technical work inside them, the human
+ * may act for either, and the host (the system actor) only records what physically happened.
+ */
 export function decideFactoryCollaboration(input: {
   readonly state: FactorySnapshot;
   readonly actor: FactoryActor;
@@ -395,6 +435,8 @@ export function decideFactoryCollaboration(input: {
         manager.role === "project" &&
         entry.projectId === manager.projectId,
     );
+  // A manager acts for itself only while active and its project is not paused; the human always
+  // may.
   const ownsManager = (managerId: ThreadId) =>
     human ||
     (actor.kind === "thread" &&
@@ -410,6 +452,8 @@ export function decideFactoryCollaboration(input: {
         entry.projectId === assignment.projectId,
     ) &&
     assignment.wait?.kind !== "authority";
+  // A lead loses its voice while its execution is stopped by an incident, a project pause or an
+  // authority hold, so a halted team cannot keep coordinating through its peers.
   const ownsLead = (assignment: FactoryAssignment) =>
     human ||
     (actor.kind === "thread" &&
@@ -564,6 +608,7 @@ export function decideFactoryCollaboration(input: {
           "Select an active originating assignment or system investigation.",
           "invalid-state",
         );
+      // One live request per source, receiver and outcome; a withdrawn one may be asked again.
       if (
         state.crossProjectRequests.some(
           (entry) =>
@@ -614,6 +659,7 @@ export function decideFactoryCollaboration(input: {
       const response = command.response;
       const base = { ...request, generation: request.generation + 1, updatedAt: now };
       if (response.kind !== "accept") {
+        // A reconsideration event that has already happened would reopen the request at once.
         if (
           response.reconsider !== null &&
           (!validCondition(response.reconsider) ||
@@ -656,6 +702,8 @@ export function decideFactoryCollaboration(input: {
         )
           return fail("Only active work owned by the receiver can be shared.");
         assignment = existing;
+        // Shared work stays dedicated if another request commissioned it, so it is still
+        // cancelled once no request needs it.
         dedicated = state.crossProjectRequests.some(
           (entry) => supportOf(entry)?.assignmentId === existing.id && supportOf(entry)?.dedicated,
         );
@@ -664,6 +712,9 @@ export function decideFactoryCollaboration(input: {
         const policy = resolveManagerPolicy(state.defaults, manager.overrides);
         const work: FactorySupportingWork = support.work;
         const controls = work.controlPaths ?? [];
+        // Commissioned support gets no wider reach than the receiver's own boundary. Only a
+        // rule-change touches protected controls, and a manager may commission one only when its
+        // policy authorizes rule weakening.
         if (
           !boundary ||
           (work.kind === "implementation" && controls.length > 0) ||
@@ -751,6 +802,7 @@ export function decideFactoryCollaboration(input: {
       if (!request || !ownsManager(request.originManagerId))
         return fail("Only the originating owner can withdraw this request.");
       if (request.lifecycle.phase === "withdrawn") return accept({}, { requestId: request.id });
+      // Withdrawing may leave dedicated support with nothing to do; reconciliation cancels it.
       const next: FactoryCrossProjectRequest = {
         ...request,
         generation: request.generation + 1,
@@ -814,6 +866,7 @@ export function decideFactoryCollaboration(input: {
         support.completion.conclusion?.id !== command.conclusionId
       )
         return fail("The support conclusion has not been recorded.", "invalid-state");
+      // Each conclusion is announced once; a replayed report changes nothing.
       if (request.lifecycle.notifiedConclusionId === command.conclusionId) return accept();
       return saveRequest(
         {
@@ -874,9 +927,12 @@ export function decideFactoryCollaboration(input: {
       if (!host) return fail("Only the host records actual peer-message outcomes.");
       const message = state.collaborationMessages.find((entry) => entry.id === command.messageId);
       if (!message) return fail("Message not found.", "invalid-state");
+      // Delivery is final: a late failure or a repeated receipt cannot undo it.
       if (message.delivery.phase === "delivered") return accept();
       if (command.type === "collaboration.message.recorded") {
         const recipient = state.assignments.find((entry) => entry.id === message.toAssignmentId);
+        // The lead may have been replaced since the message was queued; an earlier lead thread
+        // of the same assignment is still the right recipient.
         if (
           !recipient ||
           ![recipient.threadId, ...(recipient.previousLeadThreadIds ?? [])].includes(
@@ -916,6 +972,9 @@ export function decideFactoryCollaboration(input: {
       )
         return fail("Amend each request in this plan at most once.", "invalid-state");
       const owners = planOwners(requests);
+      // A boundary plan goes straight to the owners; an owning manager who proposes it has
+      // already approved it. A new plan supersedes every earlier plan over the same requests,
+      // agreed or not, unless it was declined.
       const proposer =
         actor.kind === "thread" && owners.includes(actor.threadId) ? actor.threadId : undefined;
       const plan: FactoryCollaborationPlan = {
@@ -1053,6 +1112,8 @@ export function decideFactoryCollaboration(input: {
         ...(plan.approvals ?? []).filter((entry) => entry.managerId !== decider),
         { managerId: decider, approvedAt: now },
       ];
+      // The human's approval agrees the plan at once; owning managers' approvals accumulate
+      // until every owner has approved. Any single decline ends it.
       if (
         decider !== null &&
         !owners.every((managerId) => approvals.some((entry) => entry.managerId === managerId))
@@ -1113,6 +1174,8 @@ export function decideFactoryCollaboration(input: {
         );
       const existing = overlapping[0];
       const authorThreadId = actor.kind === "thread" ? actor.threadId : null;
+      // Raising again replaces only the caller's own options and recommendation. An option id
+      // that clashes with another author's different option is prefixed with the caller's id.
       const kept = (existing?.options ?? []).filter(
         (entry) => entry.authorThreadId !== authorThreadId,
       );
@@ -1187,6 +1250,8 @@ export function decideFactoryCollaboration(input: {
       );
       if (!human)
         return fail("Only the human decides a cross-project trade-off beyond delegated authority.");
+      // Every raise sets a new revision, so a decision made against an older set of options is
+      // refused rather than applied to options the human never saw.
       if (
         !decision ||
         decision.resolution.phase !== "pending" ||
@@ -1240,6 +1305,7 @@ export function decideFactoryCollaboration(input: {
         return fail(
           "Name active assignments in this project and a resume condition that has not happened yet.",
         );
+      // Only an execution restriction has a runtime to stop; the others take effect at once.
       const restriction: FactoryIncidentRestriction = {
         id: `incident:${command.commandId}`,
         managerId: manager.id,
@@ -1309,6 +1375,8 @@ export function decideFactoryCollaboration(input: {
           "invalid-state",
         );
       if (restriction.phase === "releasing") return accept({}, { restrictionId: restriction.id });
+      // An execution restriction stays in force while releasing, until the host reports the
+      // runtime resumed; other activities are released at once.
       const next: FactoryIncidentRestriction = {
         ...restriction,
         phase: restriction.activity === "execution" ? "releasing" : "released",
@@ -1366,6 +1434,8 @@ export function decideFactoryCollaboration(input: {
       if (!restriction) return fail("Restriction not found.", "invalid-state");
       if (restriction.phase === "released") return accept();
       if (command.type === "incident.targets.recorded") {
+        // The first record of what was running wins: a retried stop finds that work already
+        // stopped and would record less to resume.
         if (restriction.resumeThreadIds !== undefined) return accept();
         return saveRestriction({
           ...restriction,
@@ -1402,6 +1472,7 @@ export function decideFactoryCollaboration(input: {
           ],
         );
       }
+      // A failure report for a step that is no longer in progress is stale.
       if (
         (command.step === "stop" && restriction.stop.phase === "confirmed") ||
         (command.step === "resume" && restriction.phase !== "releasing")

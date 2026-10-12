@@ -17,6 +17,7 @@ import { FactorySourceFile } from "./FactorySource.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { factoryProtectedPath, factoryRelativePath } from "./FactoryBoundaryPaths.ts";
 
+/** What qualification saw; preparation holds participants' protected files to `files`. */
 export const IntegrationCapabilityArtifact = Schema.Struct({
   capability: FactoryIntegrationCapability,
   boundary: FactoryBoundary,
@@ -25,12 +26,21 @@ export const IntegrationCapabilityArtifact = Schema.Struct({
   configurationDigest: Schema.String,
   coordinatorDigest: Schema.NullOr(Schema.String),
 });
+/**
+ * One participant in a prepared runtime. `alias` is a digest-derived directory name under
+ * `participants/`, so project ids never appear as paths. `files` are the readable input files
+ * before any integration test work.
+ */
 export const IntegrationProjectArtifact = Schema.Struct({
   alias: Schema.String,
   grant: FactoryIntegrationGrant,
   capability: IntegrationCapabilityArtifact,
   files: Schema.Array(FactorySourceFile),
 });
+/**
+ * A preparation's runtime record. Written as `request.json` before containers start and as
+ * `runtime.json` once ready; `initialTestArtifact` is a placeholder until then.
+ */
 export const IntegrationRuntimeArtifact = Schema.Struct({
   integrationId: Schema.String,
   preparationId: Schema.String,
@@ -40,6 +50,7 @@ export const IntegrationRuntimeArtifact = Schema.Struct({
   initialTestArtifact: FactoryIntegrationTestArtifact,
 });
 export type IntegrationRuntimeArtifact = typeof IntegrationRuntimeArtifact.Type;
+/** The manifest a team thread's runtime is admitted against, kept beside its profile. */
 export const IntegrationAdmissionArtifact = Schema.Struct({
   profileId: Schema.String,
   assignmentId: Schema.String,
@@ -56,12 +67,14 @@ export const IntegrationPatchArtifact = Schema.Struct({
   deletedPaths: Schema.Array(Schema.String),
 });
 export type IntegrationPatchArtifact = typeof IntegrationPatchArtifact.Type;
+/** SHA-256 hex over a stable JSON encoding, so key order never changes a digest. */
 export const integrationDigest = (value: unknown) =>
   Crypto.Crypto.use((crypto) =>
     crypto
       .digest("SHA-256", Buffer.from(stableStringify(value)))
       .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("hex"))),
   );
+/** A deterministic UUID-shaped id for profile directories and helper journal entries. */
 export const integrationId = (value: string) =>
   integrationDigest(value).pipe(
     Effect.map(
@@ -73,6 +86,10 @@ export const integrationError = (detail: string) =>
   new FactoryError({ code: "execution-unavailable", detail });
 export const integrationReadable = (name: string, grant: FactoryIntegrationGrant["paths"]) =>
   grant.readPaths.some((root) => root === "." || name === root || name.startsWith(`${root}/`));
+/**
+ * Whether integration work may change this path: granted as a test or fixture file or under a
+ * granted directory, and never protected by the factory or the project's boundary.
+ */
 export const integrationWritable = (
   name: string,
   grant: FactoryIntegrationGrant["paths"],
@@ -106,6 +123,10 @@ export const integrationValidateFiles = Effect.fn(function* (files: readonly Fac
   if (files.reduce((sum, file) => sum + file.content.length, 0) > 350 * 1024 * 1024)
     return yield* integrationError("The integration input exceeds the bounded snapshot size.");
 });
+/**
+ * Reads every file under a directory, sorted by path. Symlinks, hard links and special entries
+ * fail the read rather than being skipped, so a snapshot can never point outside itself.
+ */
 export const integrationInventory = Effect.fn(function* (directory: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -145,6 +166,11 @@ export const integrationInventory = Effect.fn(function* (directory: string) {
   return result;
 });
 
+/**
+ * Checks that a runtime read from disk is internally consistent: the profile names this
+ * preparation, the manifest digest matches its fields, and each project matches its input,
+ * grant and capability. It does not check that the inputs are still current.
+ */
 export const assertIntegrationRuntimeIdentity = Effect.fn(function* (
   runtime: IntegrationRuntimeArtifact,
 ) {

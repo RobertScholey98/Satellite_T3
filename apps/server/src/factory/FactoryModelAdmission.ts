@@ -12,14 +12,28 @@ import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 import { factoryMergeFreezeBlocks } from "./FactoryMergeOperation.ts";
 import { resolveFactoryLineage } from "./FactoryLineage.ts";
 
+/**
+ * Decides which model a factory thread may run or delegate to. `FactoryExecution` exposes it as
+ * the `ThreadGovernance` model checks and to the factory's own effects. Ordinary threads always
+ * pass. It governs supported delegation paths only, not spend: a shell command in the container
+ * can still reach a model directly.
+ */
 export class FactoryModelAdmission extends Context.Service<
   FactoryModelAdmission,
   {
+    /**
+     * Admits `selection` for work in the thread itself. Pass `pendingParentThreadId` for a child
+     * that is not projected yet.
+     */
     readonly assertSelectionFor: (
       threadId: ThreadId,
       selection: ModelSelection,
       pendingParentThreadId?: ThreadId,
     ) => Effect.Effect<void, FactoryError>;
+    /**
+     * Admits `selection` for work delegated from `parentThreadId`. Manager, onboarding and
+     * auxiliary threads can never delegate.
+     */
     readonly assertDelegationFor: (
       parentThreadId: ThreadId,
       selection: ModelSelection,
@@ -50,6 +64,8 @@ const make = Effect.gen(function* () {
     if (match === undefined) return;
     const { threadId, projectId, manager, assignment, auxiliary } = match;
     const owner = manager ?? state.managers.find((entry) => entry.id === assignment?.managerId);
+    // A missing owner, or a thread, assignment and manager that disagree on the project, fails
+    // closed rather than falling back to an ordinary thread.
     if (
       owner === undefined ||
       (projectId !== undefined &&
@@ -90,6 +106,9 @@ const make = Effect.gen(function* () {
         detail:
           "Independent review and retrospective conversations use their approved model and cannot delegate implementation.",
       });
+    // Manager and onboarding threads run only on the manager's own model, and only in that
+    // thread; their subagents are refused. A system manager's model must also still be approved
+    // by its current policy.
     if (manager !== undefined || assignment?.kind === "onboarding") {
       if (
         !delegating &&
@@ -112,6 +131,8 @@ const make = Effect.gen(function* () {
           "Manager and onboarding threads can use only their explicitly approved discovery model.",
       });
     }
+    // Team work needs the model in both the assignment's pinned grant and the manager's current
+    // policy, so withdrawing a model takes effect without rewriting the assignment.
     const current = resolveFactoryModelPolicy(
       state.modelDefaults,
       owner.modelOverrides,

@@ -14,17 +14,14 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import {
-  layer as SatelliteTestLayer,
-  recordProject,
-} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
+import * as SatelliteTestRuntime from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
-import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactorySourceTestkit from "./FactorySource.testkit.ts";
+import * as FactoryHandoverTestkit from "./FactoryHandover.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const projectId = ProjectId.make("boundary-service-web");
 const human = { kind: "human" } as const;
@@ -54,7 +51,7 @@ const boundary = {
   profileId: "qualified-profile",
   approvedAt: "2026-10-10T12:00:00.000Z",
 } satisfies FactoryBoundary;
-const providerExecution = Layer.succeed(FactoryExecution, {
+const providerExecution = Layer.succeed(FactoryExecution.FactoryExecution, {
   assertSelectionFor: () => Effect.void,
   assertDelegationFor: () => Effect.void,
   qualify: () =>
@@ -74,15 +71,21 @@ const providerExecution = Layer.succeed(FactoryExecution, {
     }),
 });
 const runtime = Layer.mergeAll(FactoryStore.layer, ThreadManagement.layer).pipe(
-  Layer.provideMerge(SatelliteTestLayer),
+  Layer.provideMerge(SatelliteTestRuntime.layer),
 );
 const layer = FactoryService.layer.pipe(
-  Layer.provide(Layer.mergeAll(sourceUnused, handoverUnused, layerTestDependencies)),
+  Layer.provide(
+    Layer.mergeAll(
+      FactorySourceTestkit.layerUnused,
+      FactoryHandoverTestkit.layerUnused,
+      FactoryServiceTestkit.layerTestDependencies,
+    ),
+  ),
   Layer.provideMerge(runtime),
   Layer.provide(providerExecution),
 );
 const start = Effect.gen(function* () {
-  yield* recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
+  yield* SatelliteTestRuntime.recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
   const factory = yield* FactoryService.FactoryService;
   yield* factory.drain;
   yield* factory.dispatch(human, {
@@ -125,7 +128,9 @@ describe("factory boundary approval service", () => {
     () =>
       Effect.gen(function* () {
         const captures = yield* Ref.make<
-          ReadonlyArray<Parameters<FactoryBoundaryExecution["Service"]["approve"]>[0]>
+          ReadonlyArray<
+            Parameters<FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["approve"]>[0]
+          >
         >([]);
         yield* Effect.gen(function* () {
           const { factory, manager, assignment } = yield* start;
@@ -183,7 +188,7 @@ describe("factory boundary approval service", () => {
           Effect.provide(
             layer.pipe(
               Layer.provide(
-                Layer.mock(FactoryBoundaryExecution)({
+                Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
                   approve: (input) =>
                     Ref.update(captures, (previous) => [...previous, input]).pipe(
                       Effect.as(boundary),
@@ -239,7 +244,7 @@ describe("factory boundary approval service", () => {
           Effect.provide(
             layer.pipe(
               Layer.provide(
-                Layer.mock(FactoryBoundaryExecution)({
+                Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
                   approve: () =>
                     Ref.update(captures, (count) => count + 1).pipe(
                       Effect.andThen(Ref.get(available)),

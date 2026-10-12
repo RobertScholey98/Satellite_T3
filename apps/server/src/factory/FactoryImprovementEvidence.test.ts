@@ -16,8 +16,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
-import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import { deliveryFixture, deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
 import * as FactoryImprovementEvidence from "./FactoryImprovementEvidence.ts";
@@ -151,8 +151,10 @@ const scenario = <E>(test: (s: Scenario) => Effect.Effect<void, E>) =>
     const shell = (id: ThreadId) => ({ ...liveThreadShell(id), projectId: deliveryIds.project });
     const dependencies = Layer.mergeAll(
       Layer.succeed(FactoryStore.FactoryStore, store),
-      Layer.mock(ProjectionStoreV2)({ getThreadShell: (id) => Effect.succeed(shell(id)) }),
-      Layer.mock(ThreadManagementService)({
+      Layer.mock(ProjectionStore.ProjectionStoreV2)({
+        getThreadShell: (id) => Effect.succeed(shell(id)),
+      }),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
         getThreadShell: (id) => Effect.succeed(shell(id)),
         getTimelinePage: (_id, options) =>
           Effect.gen(function* () {

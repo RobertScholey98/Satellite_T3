@@ -6,12 +6,17 @@ import type {
   PullRequestRef,
 } from "@t3tools/contracts";
 
+/** PR identity for comparing refs: the host defaults to github.com and case is ignored. */
 export const canonicalFactoryPullRequest = (ref: PullRequestRef): string =>
   `${(ref.host ?? "github.com").toLowerCase()}/${ref.repository.toLowerCase()}#${ref.number}`;
 
 export const factoryMergeGroupId = (integrationId: string): string =>
   `merge-group:${integrationId}`;
 
+/**
+ * Every integration has one merge group. Before `reconcileFactoryMergeGroups` persists it, this
+ * derives the group from the integration's participants and their published PRs.
+ */
 export function factoryMergeGroupForIntegration(
   state: FactorySnapshot,
   integration: FactoryIntegration,
@@ -56,6 +61,11 @@ export function factoryMergeGroupForAssignment(
     .find(factoryMergeGroupHolds);
 }
 
+/**
+ * Every group holding this PR, through a recorded ref or a member's published revision. The pull
+ * request gate holds merges of a PR found here outside the shared merge, and more than one group
+ * blocks the combined review.
+ */
 export function factoryMergeGroupsForPullRequest(
   state: FactorySnapshot,
   ref: PullRequestRef,

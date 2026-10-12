@@ -17,17 +17,32 @@ import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
 import { factoryRecoveryBlocked } from "./FactoryOversight.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
+/**
+ * Launches the threads a recovery incident asks for: an independent, read-only diagnosis thread
+ * and a replacement lead. Each launch stops the current lead, prepares the boundary and records
+ * a prepared receipt before it sends the initial message, so a restart resumes from whichever
+ * half already landed.
+ */
 export class FactoryRecoveryEffects extends Context.Service<
   FactoryRecoveryEffects,
-  { readonly handle: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError> }
+  {
+    /**
+     * Runs one `auxiliary.launch` or `assignment.replace-lead` intent. An intent the incident has
+     * moved past retires; while the manager is inactive or recovery is blocked it stays pending.
+     * A failed launch records a failure receipt for the incident.
+     */
+    readonly handle: (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) => Effect.Effect<void, FactoryError>;
+  }
 >()("t3/factory/FactoryRecoveryEffects") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -46,6 +61,11 @@ type RecoveryIntent = Extract<
   FactoryEffectIntent,
   { type: "auxiliary.launch" | "assignment.replace-lead" }
 >;
+/**
+ * The assignment when the intent still belongs to its current incident step, otherwise
+ * `undefined` and the effect retires. `acceptedReceipt` also matches a replacement lead that has
+ * already taken over, so a replay after the recorded receipt can still finish.
+ */
 const currentRecovery = (
   state: FactorySnapshot,
   intent: RecoveryIntent,
@@ -81,12 +101,12 @@ const currentRecovery = (
 };
 
 const make = Effect.gen(function* () {
-  const store = yield* FactoryStore;
-  const boundaries = yield* FactoryBoundaryExecution;
-  const execution = yield* FactoryExecution;
-  const handovers = yield* FactoryHandover;
-  const threads = yield* ThreadManagementService;
-  const access = yield* FactoryControlAccess;
+  const store = yield* FactoryStore.FactoryStore;
+  const boundaries = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+  const execution = yield* FactoryExecution.FactoryExecution;
+  const handovers = yield* FactoryHandover.FactoryHandover;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const access = yield* FactoryControlAccess.FactoryControlAccess;
 
   const accepted = Effect.fn("FactoryRecoveryEffects.accepted")(function* (
     threadId: ThreadId,
@@ -103,8 +123,11 @@ const make = Effect.gen(function* () {
     return true;
   }, Effect.mapError(failure));
 
+  // Creates the thread if needed and sends its initial message under the manager's direction.
+  // Rechecks that the recovery is current between each host step, since any of them can race a
+  // human control.
   const launch = Effect.fn("FactoryRecoveryEffects.launch")(function* (input: {
-    readonly pending: PendingFactoryEffect;
+    readonly pending: FactoryStore.PendingFactoryEffect;
     readonly assignment: FactoryAssignment;
     readonly threadId: ThreadId;
     readonly messageId: MessageId;
@@ -182,7 +205,7 @@ const make = Effect.gen(function* () {
   }, Effect.mapError(failure));
 
   const handle = Effect.fn("FactoryRecoveryEffects.handle")(function* (
-    pending: PendingFactoryEffect,
+    pending: FactoryStore.PendingFactoryEffect,
   ) {
     const { intent } = pending;
     if (intent.type !== "auxiliary.launch" && intent.type !== "assignment.replace-lead") return;

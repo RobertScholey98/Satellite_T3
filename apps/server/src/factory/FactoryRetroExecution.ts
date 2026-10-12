@@ -16,8 +16,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { ServerConfig } from "../config.ts";
-import { ProcessRunner } from "../processRunner.ts";
+import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import {
   admissibleFactorySourcePath,
@@ -34,9 +34,19 @@ import {
   integrationDigest,
 } from "./FactoryIntegrationRuntime.ts";
 
+/**
+ * Builds the read-only Docker profile a retrospective session runs in, and retires it, for
+ * FactoryRetroEffects.
+ */
 export class FactoryRetroExecution extends Context.Service<
   FactoryRetroExecution,
   {
+    /**
+     * Qualifies the retro's profile: the team's final candidate, its starting snapshot or the
+     * frozen integration inputs, plus the workflow and image the team last ran with and the
+     * sealed evidence. Repeat calls reuse the profile already written. Fails once the retro is
+     * stopped, complete or paused, or no longer matches its conclusion.
+     */
     readonly prepare: (input: {
       readonly assignmentId: FactoryAssignmentId;
       readonly retroId: string;
@@ -47,6 +57,7 @@ export class FactoryRetroExecution extends Context.Service<
       { readonly qualification: FactoryRetroQualification; readonly sourceDigest: string },
       FactoryError
     >;
+    /** Writes the retro's stop marker; every later prepare for that retro fails. */
     readonly stop: (input: { readonly retroId: string }) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryRetroExecution") {}
@@ -67,18 +78,19 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const config = yield* ServerConfig;
+  const config = yield* ServerConfig.ServerConfig;
   const store = yield* FactoryStore.FactoryStore;
   const evidence = yield* FactoryRetroEvidence.FactoryRetroEvidence;
   const sources = yield* FactorySource.FactorySource;
   const boundaries = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
-  const runner = yield* ProcessRunner;
+  const runner = yield* ProcessRunner.ProcessRunner;
   const mutex = yield* Semaphore.make(1);
   const root = path.join(config.stateDir, "factory", "execution");
   const digest = (bytes: Uint8Array) =>
     crypto.digest("SHA-256", bytes).pipe(Effect.map((value) => Buffer.from(value).toString("hex")));
   const digestIntegration = (value: unknown) =>
     integrationDigest(value).pipe(Effect.provideService(Crypto.Crypto, crypto));
+  // Derived from the retro ID, so a retried prepare or a stop finds the same directory.
   const profileIdFor = (retroId: string) =>
     digest(new TextEncoder().encode(stableStringify({ kind: "retrospective", retroId }))).pipe(
       Effect.map(
@@ -138,6 +150,7 @@ const make = Effect.gen(function* () {
     source: string,
     destination: string,
   ) {
+    // Any symlink is refused, so the copy cannot pull in files from outside the snapshot.
     if (path.relative(source, yield* fs.realPath(source)) !== "") return yield* unavailable();
     yield* fs.makeDirectory(destination, { recursive: true });
     for (const name of yield* fs.readDirectory(source, { recursive: true })) {
@@ -324,6 +337,8 @@ const make = Effect.gen(function* () {
         });
         if (proof.code !== 0 || proof.stdout.trim() !== "factory-boundary-ok")
           return yield* unavailable();
+        // Recheck after the probe so a stop or pause that landed meanwhile wins. profile.json is
+        // written last and exclusively, so its presence marks a complete profile.
         yield* assertCurrent(input);
         if (yield* fs.exists(stopPath)) return yield* unavailable();
         yield* fs.writeFileString(profilePath, yield* encodeProfile(profile), { flag: "wx" });

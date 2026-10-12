@@ -12,11 +12,14 @@ import * as Schema from "effect/Schema";
 /**
  * The isolated runtime a governor assigns to a thread. Orchestration reads the boundary and the
  * host workspace. `profile` belongs to the governor: only its `ConfinedCodexLaunch` reads it.
+ * `orchestrationInstructions`, when set, replaces T3 Code's orchestration guidance for the agent,
+ * because the governor decides which delegation tools exist inside its runtime.
  */
 export const ConfinedExecution = Schema.Struct({
   boundaryId: Schema.String,
   workspacePath: Schema.String,
   profile: Schema.Unknown,
+  orchestrationInstructions: Schema.optional(Schema.String),
 });
 export type ConfinedExecution = typeof ConfinedExecution.Type;
 

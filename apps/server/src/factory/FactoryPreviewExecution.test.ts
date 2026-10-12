@@ -34,7 +34,7 @@ import { type FactoryCandidateArtifact } from "./FactoryCandidate.ts";
 import { FACTORY_CODEX_IMAGE, type FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import * as FactoryPreviewExecution from "./FactoryPreviewExecution.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const fixture = Effect.fn(function* (options?: {
@@ -406,7 +406,7 @@ const fixture = Effect.fn(function* (options?: {
     Layer.provide(
       Layer.mergeAll(
         ServerConfig.layerTest(root, root),
-        Layer.mock(FactoryStore)({
+        Layer.mock(FactoryStore.FactoryStore)({
           snapshot: Effect.sync(() => state),
           changes: SubscriptionRef.changes(changes),
         }),

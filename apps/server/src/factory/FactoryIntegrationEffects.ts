@@ -25,9 +25,17 @@ import {
   factoryIntegrationParticipants,
 } from "./FactoryIntegration.ts";
 
+/**
+ * Carries out the integration effects the decider emits: notices, lead messages, capability
+ * qualification, preparation, file changes, verification, stops, and resuming the work an
+ * operation stopped. The factory drains `integration.stop` on its own worker, so a hold never
+ * waits behind a long preparation or verification. Each handler re-reads the snapshot and
+ * retires an effect whose record is gone or superseded.
+ */
 export class FactoryIntegrationEffects extends Context.Service<
   FactoryIntegrationEffects,
   {
+    /** Handles one pending effect. A failure or a wait leaves it pending for the next drain. */
     readonly handle: (pending: Store.PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryIntegrationEffects") {}
@@ -59,6 +67,8 @@ const make = Effect.gen(function* () {
     return mutex;
   };
 
+  // Whether the thread already holds this message. Every send checks it first, so a retried
+  // effect never sends twice.
   const accepted = Effect.fn("FactoryIntegrationEffects.accepted")(function* (
     threadId: ThreadId,
     messageId: MessageId,
@@ -76,6 +86,8 @@ const make = Effect.gen(function* () {
       });
     return true;
   });
+  // Whether the thread is live and may be directed now. A permission refusal means wait, not
+  // fail; any other refusal fails the effect.
   const allowed = Effect.fn("FactoryIntegrationEffects.allowed")(function* (
     threadId: ThreadId,
     senderThreadId?: ThreadId,
@@ -90,6 +102,8 @@ const make = Effect.gen(function* () {
     const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(failure));
     return shell !== null && shell.deletedAt === null && shell.archivedAt === null;
   });
+  // The work a stop interrupts: lead and subagent threads with a run in progress, and queued
+  // runs that are not held, so the same work resumes when the stop is lifted.
   const collectTargets = Effect.fn("FactoryIntegrationEffects.collectTargets")(function* (
     assignment: FactoryAssignment,
   ) {
@@ -132,6 +146,8 @@ const make = Effect.gen(function* () {
     }
     return { threadIds, resumeQueues };
   });
+  // Records an operation's targets once, before it stops the team. A preparation also takes
+  // over the work it inherited from earlier interruptions that were never resumed.
   const recordTargets = Effect.fn("FactoryIntegrationEffects.recordTargets")(function* (
     pending: Store.PendingFactoryEffect,
     integrationId: string,
@@ -189,6 +205,8 @@ const make = Effect.gen(function* () {
         commandId: CommandId.make(`${pending.id}:stop-team`),
       });
   });
+  // Stops both the isolated runtime and the provider team, attempting each even if the other
+  // fails.
   const stopTeam = Effect.fn("FactoryIntegrationEffects.stopTeam")(function* (
     pending: Store.PendingFactoryEffect,
     integrationId: string,
@@ -226,6 +244,8 @@ const make = Effect.gen(function* () {
     for (const target of recipients) {
       const messageId = MessageId.make(`factory:integration:${pending.id}:${target.id}`);
       if (yield* accepted(target.threadId, messageId)) continue;
+      // The team hears nothing until its integration is ready again. The effect stays pending
+      // until every recipient has the notice.
       if (target.id === integration?.assignmentId && integration.phase !== "ready") {
         held = true;
         continue;
@@ -277,6 +297,7 @@ const make = Effect.gen(function* () {
         },
       });
     });
+    // A delivery that already landed on the recipient's current or an earlier lead counts.
     for (const threadId of recipient
       ? [recipient.threadId, ...(recipient.previousLeadThreadIds ?? [])]
       : [])
@@ -295,6 +316,8 @@ const make = Effect.gen(function* () {
         participants.some((item) => item.id === recipient?.id)) ||
         (recipient?.id === implementation.id &&
           participants.some((item) => item.id === source?.id)));
+    // The decider's rule again at delivery time: a message that no longer links the integration
+    // lead with a current participant lead fails rather than reach the wrong team.
     if (
       !linked ||
       !active(source) ||
@@ -320,6 +343,7 @@ const make = Effect.gen(function* () {
       });
       return;
     }
+    // Either lead may not be directed now: wait for a later drain without failing.
     if (
       !(yield* allowed(source.threadId)) ||
       !(yield* allowed(recipient.threadId, source.threadId))
@@ -362,6 +386,12 @@ const make = Effect.gen(function* () {
     }
     yield* receipt(recipient.threadId);
   });
+  /**
+   * Gives the team back the work an operation stopped once the integration is ready: releases a
+   * verification's hold, points each target thread at the new workspace, nudges interrupted
+   * threads and resumes their queued runs. Threads that left the team are skipped. A thread
+   * that may not be directed now keeps the effect pending.
+   */
   const resume = Effect.fn("FactoryIntegrationEffects.resume")(function* (
     pending: Store.PendingFactoryEffect,
   ) {
@@ -379,6 +409,8 @@ const make = Effect.gen(function* () {
         ? intent.operation.id
         : state.integrationVerifications.find((entry) => entry.id === intent.operation.id)
             ?.preparationId;
+    // Retired once the team concludes or the preparation is replaced. A newer preparation
+    // inherits the work this operation stopped and resumes it itself.
     if (
       !integration ||
       !active(assignment) ||
@@ -467,6 +499,7 @@ const make = Effect.gen(function* () {
   const handleLocked = Effect.fn("FactoryIntegrationEffects.handleLocked")(function* (
     pending: Store.PendingFactoryEffect,
   ) {
+    // Another drain may have finished this effect while it waited for the lock.
     if (!(yield* store.pending).some((entry) => entry.id === pending.id)) return;
     const intent = pending.intent;
     switch (intent.type) {
@@ -537,6 +570,8 @@ const make = Effect.gen(function* () {
           yield* store.retireEffect(pending.id);
           return;
         }
+        // A preparation that may no longer run is recorded as failed, which blocks the
+        // integration until a refresh.
         const blocked = factoryIntegrationAccessBlocked(state, integration.id);
         if (integration.phase !== "preparing" || blocked !== null) {
           yield* store.finishEffect({
@@ -558,6 +593,8 @@ const make = Effect.gen(function* () {
         }
         if (assignment.threadStatus !== "created") return;
         yield* store.beginEffect(pending.id);
+        // Record the running work, stop it, then build. Stopping the earlier runtime first makes
+        // its test work final before the new preparation carries it over.
         const result = yield* Effect.gen(function* () {
           yield* recordTargets(
             pending,
@@ -642,6 +679,8 @@ const make = Effect.gen(function* () {
             { kind: "verification", id: verification.id },
             assignment,
           );
+          // The hold is named for the verification, which `verify` requires before it seals the
+          // test artifact; resuming afterwards releases it.
           yield* stopTeam(pending, integration.id, verification.id, verification.preparationId);
           return yield* integrationExecution.verify({ verificationId: verification.id });
         }).pipe(Effect.result);
@@ -714,6 +753,7 @@ const make = Effect.gen(function* () {
       const assignment = snapshot.assignments.find(
         (entry) => entry.id === integration?.assignmentId,
       );
+      // The hold's work is captured once before anything stops, so lifting it can resume it.
       if (assignment && integration?.hold?.resumeThreadIds === undefined) {
         const targets = yield* collectTargets(assignment);
         if (!(yield* current)) {
@@ -740,6 +780,9 @@ const make = Effect.gen(function* () {
           holdId: intent.holdId,
         })
         .pipe(Effect.result);
+      // The provider stop and the receipt re-check the hold under the integration lock, so a
+      // hold replaced meanwhile retires this effect instead of recording against the new one.
+      // A failed stop is recorded on the hold and the effect stays pending to retry.
       yield* lock(intent.integrationId).withPermit(
         Effect.gen(function* () {
           if (!(yield* current)) {
@@ -789,6 +832,8 @@ const make = Effect.gen(function* () {
               (entry) => entry.id === intent.verificationId,
             )?.integrationId
           : undefined;
+    // Workspace operations on one integration run one at a time, and a stop's receipt waits
+    // for any of them in progress.
     if (
       integrationId !== undefined &&
       [

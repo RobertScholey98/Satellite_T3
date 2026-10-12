@@ -19,16 +19,12 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ServerConfig from "../config.ts";
-import { ProcessRunner, type ProcessRunInput } from "../processRunner.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as Boundary from "./FactoryBoundaryExecution.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
-import {
-  FactorySource,
-  type FactorySourceArtifact,
-  type FactorySourceFile,
-} from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -92,14 +88,14 @@ it.effect(
           },
         ],
       };
-      const invocations: ProcessRunInput[] = [];
-      let capturedFiles: ReadonlyArray<FactorySourceFile> = [];
-      const sources = new Map<FactorySourceId, FactorySourceArtifact>();
-      let volumeFiles: ReadonlyArray<FactorySourceFile> = [skill, agents];
+      const invocations: ProcessRunner.ProcessRunInput[] = [];
+      let capturedFiles: ReadonlyArray<FactorySource.FactorySourceFile> = [];
+      const sources = new Map<FactorySourceId, FactorySource.FactorySourceArtifact>();
+      let volumeFiles: ReadonlyArray<FactorySource.FactorySourceFile> = [skill, agents];
       const dependencies = Layer.mergeAll(
         ServerConfig.layerTest(root, root),
-        Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
-        Layer.mock(ProcessRunner)({
+        Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+        Layer.mock(ProcessRunner.ProcessRunner)({
           run: (input) =>
             Effect.sync(() => {
               invocations.push(input);
@@ -121,7 +117,7 @@ it.effect(
               };
             }),
         }),
-        Layer.mock(FactorySource)({
+        Layer.mock(FactorySource.FactorySource)({
           readRevision: (_root, revision) =>
             Effect.succeed({
               files: [
@@ -187,7 +183,7 @@ it.effect(
         });
         assert.equal(boundary.gates.length, 0);
         assert.equal(state.assignments.length, 0);
-        const source: FactorySourceArtifact = {
+        const source: FactorySource.FactorySourceArtifact = {
           source: {
             id: FactorySourceId.make("source"),
             projectId,

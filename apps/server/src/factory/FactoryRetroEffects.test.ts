@@ -20,13 +20,13 @@ import * as ServerConfig from "../config.ts";
 import * as IssuePublication from "../issues/IssuePublication.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Satellite from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryRetroEvidence from "./FactoryRetroEvidence.ts";
 import * as FactoryRetroEffects from "./FactoryRetroEffects.ts";
-import { FactoryRetroExecution } from "./FactoryRetroExecution.ts";
+import * as FactoryRetroExecution from "./FactoryRetroExecution.ts";
 import { initialFactoryCompletion } from "./FactoryRetros.ts";
 import { integrated } from "./FactoryIntegration.testkit.ts";
 import { completedMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
@@ -216,7 +216,7 @@ const fixture = Effect.fn(function* (seed = noPr()) {
           }),
         ),
     }),
-    Layer.mock(FactoryHandover)({
+    Layer.mock(FactoryHandover.FactoryHandover)({
       stopTeam: (input) =>
         Effect.gen(function* () {
           assert.equal((yield* store.snapshot).assignments[0]!.completion?.phase, "concluding");
@@ -224,7 +224,7 @@ const fixture = Effect.fn(function* (seed = noPr()) {
           yield* stopAction;
         }),
     }),
-    Layer.mock(FactoryExecution)({
+    Layer.mock(FactoryExecution.FactoryExecution)({
       runtimePolicyFor: () =>
         Effect.succeed({
           boundaryId: "retro-profile",
@@ -235,7 +235,7 @@ const fixture = Effect.fn(function* (seed = noPr()) {
           runtimePath: root,
         }),
     }),
-    Layer.mock(FactoryRetroExecution)({
+    Layer.mock(FactoryRetroExecution.FactoryRetroExecution)({
       prepare: (input) =>
         Effect.gen(function* () {
           prepared.push(input.retroId);
@@ -252,7 +252,7 @@ const fixture = Effect.fn(function* (seed = noPr()) {
       stop: () => Effect.void,
     }),
     Layer.mock(IssuePublication.IssuePublication)({}),
-    Layer.mock(PullRequestService)({
+    Layer.mock(PullRequestService.PullRequestService)({
       detail: () => (detail ? Effect.succeed(detail) : Effect.die("Unexpected external PR read")),
     }),
   );

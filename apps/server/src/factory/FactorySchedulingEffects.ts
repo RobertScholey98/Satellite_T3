@@ -33,7 +33,7 @@ import * as IssueScheduling from "../issues/IssueScheduling.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import type { FactoryActor } from "./FactoryState.ts";
 import {
   factoryScheduleAuthority,
@@ -47,26 +47,55 @@ import {
   type FactorySchedulingContext,
 } from "./FactoryScheduling.ts";
 
+/**
+ * The host side of project scheduling. Keeps each enabled project's ticket queue in step with its
+ * board, notifies project managers when the queue changes, and holds the tracker reservation that
+ * gives one assignment exclusive ownership of a ticket generation.
+ */
 export class FactorySchedulingEffects extends Context.Service<
   FactorySchedulingEffects,
   {
+    /**
+     * Resolves the `FactorySchedulingContext` for a command. For a candidate commission this
+     * reserves the ticket on the tracker; a failed admission holds the candidate with its reason.
+     */
     readonly context: (
       actor: FactoryActor,
       command: FactoryCommand,
     ) => Effect.Effect<FactorySchedulingContext, FactoryError>;
+    /** Reads a candidate's current ticket for the manager, recording a changed detail digest. */
     readonly read: (
       candidateId: string,
     ) => Effect.Effect<
       { readonly detail: IssueDetail; readonly detailDigest: string },
       FactoryError
     >;
+    /**
+     * Holds ineligible candidates, lifts eligibility holds that no longer apply, and requests
+     * manager notifications for candidates whose state or eligibility changed. Leaves tracker
+     * holds to the board refresh.
+     */
     readonly reconcile: Effect.Effect<void, FactoryError>;
-    readonly handle: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
+    readonly handle: (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) => Effect.Effect<void, FactoryError>;
+    /**
+     * Revalidates a scheduled assignment's reservation and authority just before its lead
+     * starts, and attaches the lead's thread to the issue attempt. Fails when either lapsed.
+     */
     readonly beforeLaunch: (
       assignment: FactoryAssignment,
       worktreePath: string,
     ) => Effect.Effect<void, FactoryError>;
+    /**
+     * Releases a reservation that no assignment took, such as after a refused commission.
+     * Refuses while any assignment still owns the candidate.
+     */
     readonly release: (candidateId: string) => Effect.Effect<void, FactoryError>;
+    /**
+     * Refreshes boards on every sync and once a minute, and runs `wake` after each state
+     * revision and refresh. The fibers live for the scope.
+     */
     readonly watch: (wake: Effect.Effect<void>) => Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/factory/FactorySchedulingEffects") {}
@@ -145,12 +174,13 @@ const observedSource = (
 };
 
 const make = Effect.gen(function* () {
-  const store = yield* FactoryStore;
+  const store = yield* FactoryStore.FactoryStore;
   const tracker = yield* IssueScheduling.IssueScheduling;
   const issues = yield* IssueService.IssueService;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const access = yield* FactoryControlAccess.FactoryControlAccess;
   const refreshMutex = yield* Semaphore.make(1);
+  // Records a hold unless the candidate is consumed or already held for the same reason.
   const hold = Effect.fn(function* (
     candidateId: string,
     reason: string,
@@ -193,6 +223,8 @@ const make = Effect.gen(function* () {
         (cause) => new IssueOperationError({ reason: "conflict", message: cause.message }),
       ),
     );
+  // Reads the board and records material changes as observations. A failed read holds every
+  // open candidate, and a ticket missing from the board is held until it comes back.
   const refresh = Effect.fn(
     function* (projectId: ProjectId) {
       const state = yield* store.snapshot;
@@ -461,6 +493,8 @@ const make = Effect.gen(function* () {
       attach: { projectId: assignment.projectId, threadId: assignment.threadId, worktreePath },
     });
   }, Effect.mapError(error));
+  // A reservation with no assignment can always be released. With `completed`, one whose
+  // assignments all concluded can also be released once the human reopened a newer generation.
   const authorizeRelease = (candidateId: string, completed: boolean) =>
     Effect.gen(function* () {
       const state = yield* store.snapshot;
@@ -498,9 +532,10 @@ const make = Effect.gen(function* () {
     tracker
       .release({ candidateId, authorizeUnstarted: authorizeRelease(candidateId, false) })
       .pipe(Effect.mapError(error));
-  const handle = Effect.fn(function* (pending: PendingFactoryEffect) {
+  const handle = Effect.fn(function* (pending: FactoryStore.PendingFactoryEffect) {
     const intent = pending.intent;
     if (intent.type === "schedule.reconcile") {
+      // Disabling scheduling frees every reservation not yet taken by an assignment.
       const state = yield* store.snapshot;
       if (!factorySchedulingConfiguration(state, intent.projectId)?.enabled) {
         for (const candidate of state.scheduleCandidates)
@@ -524,6 +559,8 @@ const make = Effect.gen(function* () {
       return;
     }
     if (intent.type !== "schedule.notify") return;
+    // Send only candidates whose state still matches the requested digest; a newer request
+    // covers the rest.
     const state = yield* store.snapshot;
     const candidates = intent.notifications.flatMap((notification) => {
       const candidate = state.scheduleCandidates.find(

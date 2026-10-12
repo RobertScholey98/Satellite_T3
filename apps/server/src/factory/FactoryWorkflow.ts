@@ -33,18 +33,31 @@ import {
 } from "./FactoryWorkflowOwnership.ts";
 import type { FactoryActor, FactoryAllocation, FactoryDecision } from "./FactoryState.ts";
 
+/**
+ * Host facts the pure deciders cannot read for themselves. `FactoryWorkflowEffects.context`
+ * resolves them before the decision, and a field is present only for the command that needs it.
+ */
 export interface FactoryWorkflowContext {
+  /** Real path of the project's workspace, so `manager.create` can spot a shared repository. */
   readonly projectRepositoryRoot?: string;
+  /** A qualified runtime and approved boundary for `shared.repository.register`. */
   readonly sharedRepository?: {
     readonly boundary: FactoryBoundary;
     readonly repositoryRoot: string;
   };
+  /** The verified snapshot of the committed revision for `workflow.release.register`. */
   readonly workflowRelease?: {
     readonly version: FactoryWorkflowVersion;
     readonly snapshotDigest: string;
   };
 }
 
+/**
+ * The workflow version a manager's new assignments pin. A per-manager override wins over the
+ * latest default adoption; an adoption with a null release, or no adoption at all, falls back to
+ * the manager's own approved workflow. Running delivery teams keep their pinned version until the
+ * human selects them for `workflow.restart`.
+ */
 export function effectiveFactoryWorkflow(
   state: FactorySnapshot,
   manager: FactoryManager,
@@ -60,6 +73,7 @@ export function effectiveFactoryWorkflow(
   );
 }
 
+/** The latest experiment configuration. Experiments stay disabled until the human enables them. */
 export function factoryExperimentSettings(state: FactorySnapshot): FactoryExperimentSettings {
   const configuration = state.experimentConfigurations.at(-1);
   return configuration === undefined
@@ -84,6 +98,12 @@ export function factoryWorkChangesSkills(
   );
 }
 
+/**
+ * Whether shared work fits its boundary exactly. It must touch something; implementation work
+ * never names protected controls and rule-change work always does; each control path must be one
+ * of the boundary's protected files; and source paths must be writable or inside a creatable
+ * directory, never protected.
+ */
 function validWork(boundary: FactoryBoundary, work: FactorySupportingWork): boolean {
   const controls = work.controlPaths ?? [];
   return (
@@ -111,6 +131,13 @@ function validWork(boundary: FactoryBoundary, work: FactorySupportingWork): bool
   );
 }
 
+/**
+ * Decides the system manager's workflow-improvement commands: shared repositories and work,
+ * isolated experiments, workflow releases, adoption and restarts, validations and model
+ * recommendations. Returns `undefined` for any other command so `decide` tries the next decider.
+ * `workflow.models.apply` also falls through, because `decide` applies it by re-deciding the
+ * recommended model configuration as a human command.
+ */
 export function decideFactoryWorkflow(
   input: FactoryWorkflowContext & {
     readonly state: FactorySnapshot;
@@ -155,6 +182,8 @@ export function decideFactoryWorkflow(
       ),
       manager.modelSelection,
     );
+  // The system manager coordinates only from its own thread, and only while it is active,
+  // delivered and on an approved model. The human can always coordinate.
   const canCoordinate =
     human || (managerAvailable && actor.kind === "thread" && actor.threadId === manager.threadId);
   const proposal = (proposalId: string, revision: string) =>
@@ -183,6 +212,8 @@ export function decideFactoryWorkflow(
   };
   const repositoryFor = (id: string) =>
     state.sharedRepositories.find((entry) => entry.id === id && entry.managerId === manager?.id);
+  // Withdrawing authority bumps each live team's grant epoch, so anything prepared under the old
+  // grant is stale, and holds the team on an authority wait. The host stops the teams.
   const revoke = (assignments: readonly FactoryAssignment[], reason: string) => {
     const ids = assignments
       .filter((entry) => entry.outcome === undefined && entry.status !== "complete")
@@ -226,6 +257,8 @@ export function decideFactoryWorkflow(
     );
     if (!boundary || !validWork(boundary, work))
       return fail("The work must fit the registered source and exact protected-file grants.");
+    // Shared work always delivers through human approval, whatever the manager's own policy.
+    // Implementation acts on the human's authorization; an experiment on the commission itself.
     return commissionFactoryAssignment({
       state,
       manager,
@@ -259,6 +292,8 @@ export function decideFactoryWorkflow(
       if (!human || !manager)
         return fail("The human registers a shared repository for the system manager.");
       const qualified = input.sharedRepository;
+      // A project is either shared with the system manager or run by its own project manager,
+      // never both, and two registrations never share a repository root or boundary.
       if (
         !qualified ||
         qualified.boundary.projectId !== command.projectId ||
@@ -339,6 +374,7 @@ export function decideFactoryWorkflow(
           work: command.work,
           expectedBenefit: command.expectedBenefit,
           assessmentApproach: command.assessmentApproach,
+          // Derived from the paths too, so a proposer cannot understate a skill change.
           changesSkills: command.changesSkills || factoryWorkChangesSkills(boundary, command.work),
           // Any protected-control change can weaken rules, whatever the proposer declares.
           weakensRules: command.weakensRules || command.work.kind === "rule-change",
@@ -352,6 +388,8 @@ export function decideFactoryWorkflow(
     case "shared.work.authorize": {
       if (!human) return fail("Only the human can authorize the exact shared implementation plan.");
       const record = state.sharedWorks.find((entry) => entry.id === command.workId);
+      // The human authorizes one plan once, and only against the exact proposal revision they
+      // accepted. A changed proposal needs a new plan.
       if (
         !record ||
         record.lifecycle.phase !== "proposed" ||
@@ -407,6 +445,8 @@ export function decideFactoryWorkflow(
         (entry) => entry.id === command.workId && entry.managerId === command.managerId,
       );
       if (!record) return fail("Shared work notification not found.", "invalid-state");
+      // Late or repeated receipts are no-ops. The manager may commission before the receipt
+      // lands, so a commissioned plan still records it.
       if (record.lifecycle.phase === "revoked" || record.notification?.phase === "delivered")
         return accepted();
       if (record.lifecycle.phase !== "authorized" && record.lifecycle.phase !== "commissioned")
@@ -457,6 +497,7 @@ export function decideFactoryWorkflow(
               ? {
                   ...entry,
                   lifecycle,
+                  // Commissioning makes an undelivered notification moot; its effect retires.
                   notification:
                     entry.notification?.phase === "delivered"
                       ? entry.notification
@@ -474,6 +515,7 @@ export function decideFactoryWorkflow(
       const record = state.sharedWorks.find((entry) => entry.id === command.workId);
       if (!record || record.lifecycle.phase === "revoked")
         return fail("Select current shared work.", "invalid-state");
+      // Revoking a plan before commission only closes it; after commission it also stops the team.
       const assignmentId =
         record.lifecycle.phase === "commissioned" ? record.lifecycle.assignmentId : null;
       const stopped = revoke(
@@ -537,6 +579,8 @@ export function decideFactoryWorkflow(
       const investigation = state.improvementInvestigations.find(
         (entry) => entry.id === command.investigationId && entry.lifecycle.phase !== "closed",
       );
+      // The concurrency limit counts only unconcluded experiments; the per-investigation limit
+      // counts every experiment ever commissioned for it.
       const running = state.workflowExperiments.filter((entry) =>
         state.assignments.some(
           (assignment) =>
@@ -641,6 +685,7 @@ export function decideFactoryWorkflow(
         (entry) =>
           entry.repositoryId === repository.id && entry.version.revision === command.revision,
       );
+      // Registering the same commit again returns the existing release.
       if (existing) return accepted({}, { releaseId: existing.id });
       const release = {
         id: `workflow-release:${command.commandId}`,
@@ -696,6 +741,8 @@ export function decideFactoryWorkflow(
         commandId: command.commandId,
         adoptedAt: now,
       };
+      // A manager-scoped adoption replaces those managers' overrides. A default adoption leaves
+      // existing overrides in place, so it reaches only managers without one.
       const ids = command.scope.kind === "managers" ? command.scope.managerIds : [];
       return accepted(
         {
@@ -718,6 +765,9 @@ export function decideFactoryWorkflow(
         ),
       });
     }
+    // A restart moves each selected team through stopping, preparing and ready, then resumes it.
+    // The host reports each step with a receipt below. Only an assignment's latest migration is
+    // current, and a team cannot start another restart until its last one has resumed.
     case "workflow.restart": {
       if (!human)
         return fail(
@@ -830,6 +880,8 @@ export function decideFactoryWorkflow(
           "Select a current prepared restart held for an explicit authority decision.",
           "invalid-state",
         );
+      // Continuing lifts the hold but grants nothing back. The grant must be the one the profile
+      // was prepared for, and current shared-work and model permissions must still admit the team.
       if (
         assignment.grant.epoch !== migration.preparedEpoch ||
         assignment.qualification.status !== "qualified"
@@ -856,6 +908,8 @@ export function decideFactoryWorkflow(
         return fail(
           "Restore the required current repository, work, experiment and model permissions before continuing.",
         );
+      // The team returns to the wait it had before the restart, except an authority hold, which
+      // this decision clears, and a dependency wait whose dependencies are now usable.
       const previousWait = migration.previousState.wait;
       const wait =
         previousWait?.kind === "authority"
@@ -907,6 +961,8 @@ export function decideFactoryWorkflow(
       )
         return fail("Only the current active restart can retry.", "invalid-state");
       const phase = migration.lifecycle;
+      // If the grant changed after preparation, even a ready restart goes back to preparing on a
+      // fresh epoch, so the team never resumes on a profile prepared for an older grant.
       const needsPreparation =
         phase.phase === "ready" &&
         phase.resume.phase !== "delivered" &&
@@ -934,6 +990,7 @@ export function decideFactoryWorkflow(
       const rebase =
         next.phase === "preparing" && assignment.grant.epoch !== migration.preparedEpoch;
       const preparedEpoch = rebase ? assignment.grant.epoch + 1 : migration.preparedEpoch;
+      // Remember a current authority hold, so preparation finishing does not release the team.
       const retainedAuthorityReason =
         assignment.wait?.kind === "authority"
           ? assignment.wait.reason
@@ -984,6 +1041,8 @@ export function decideFactoryWorkflow(
         migration.id
       )
         return fail("A newer restart supersedes this receipt.", "stale-revision");
+      // Stop and prepare receipts carry the revision the host read its evidence at; any change
+      // since then makes the evidence stale.
       if ("expectedStateRevision" in command && command.expectedStateRevision !== state.revision)
         return fail("Restart evidence changed before recording.", "stale-revision");
       const record = (
@@ -1014,6 +1073,8 @@ export function decideFactoryWorkflow(
           { migrationIds: [migration.id], assignmentId: assignment.id },
           effects,
         );
+      // A failure for a step the migration has already left is a replay and changes nothing.
+      // Failure and resume receipts land even for concluded work; stop and prepare receipts do not.
       if (command.type === "workflow.restart.failed") {
         if (command.step === "resume")
           return migration.lifecycle.phase === "ready" &&
@@ -1063,6 +1124,9 @@ export function decideFactoryWorkflow(
       }
       if (assignment.outcome !== undefined || assignment.status === "complete")
         return fail("Concluded work cannot restart.", "invalid-state");
+      // The stopped team's work is captured as a fresh handover source for its own lead. The
+      // assignment then pins the new version and a new grant epoch, so its old profile no longer
+      // qualifies.
       if (command.type === "workflow.restart.stopped") {
         if (
           migration.lifecycle.phase !== "stopping" ||
@@ -1116,6 +1180,8 @@ export function decideFactoryWorkflow(
           "The new workflow profile has not been qualified for this grant.",
           "stale-revision",
         );
+      // Prepared: the team gets back its pre-restart status and wait, unless an authority hold is
+      // current or was retained, in which case it waits for `workflow.restart.continue`.
       return record(
         { phase: "ready", completedAt: now, resume: { phase: "pending" } },
         {
@@ -1146,6 +1212,7 @@ export function decideFactoryWorkflow(
     case "improvement.validation.record": {
       if (!canCoordinate || !acceptedProposal(command.proposalId, command.proposalRevision))
         return fail("Validation needs its exact accepted shared proposal and authorized reviewer.");
+      // A named implementation or release must come from this same proposal revision.
       if (
         command.assignmentId !== undefined &&
         !state.assignments.some(
@@ -1199,6 +1266,7 @@ export function decideFactoryWorkflow(
       )
         return fail("Manager not found.", "manager-not-found");
       const scope = proposal(command.proposalId, command.proposalRevision)!.content.scope;
+      // A project-scoped proposal may only recommend models for its own projects' managers.
       if (
         scope.kind === "projects" &&
         (target.kind === "default" ||

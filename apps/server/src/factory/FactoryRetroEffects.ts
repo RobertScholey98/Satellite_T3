@@ -20,12 +20,12 @@ import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 
 import * as IssuePublication from "../issues/IssuePublication.ts";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
 import {
   constrainFactoryModelPolicy,
   resolveFactoryModelPolicy,
@@ -38,19 +38,40 @@ import {
   factoryRetroId,
   type FactoryRetroContext,
 } from "./FactoryRetros.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { factoryMergeFrozenProof } from "./FactoryMergeOperation.ts";
 import type { FactoryActor } from "./FactoryState.ts";
 
+/**
+ * The host side of completion and retrospectives. It verifies evidence before retro commands are
+ * decided, concludes eligible work, runs the read-only retro session, invites the manager to its
+ * report, and files follow-up tickets. FactoryService's retrospective worker drives it.
+ */
 export class FactoryRetroEffects extends Context.Service<
   FactoryRetroEffects,
   {
+    /**
+     * Checks what `decideFactoryRetros` cannot: cited evidence exists in the assignment, a retro
+     * report still matches a confirmed delivery, and a tracker destination is valid. A failed
+     * check fails the command.
+     */
     readonly context: (
       actor: FactoryActor,
       command: FactoryCommand,
     ) => Effect.Effect<FactoryRetroContext, FactoryError>;
+    /**
+     * Starts conclusion for every eligible assignment, skipping paused projects and work whose
+     * delivery effects are still pending.
+     */
     readonly reconcile: Effect.Effect<void, FactoryError>;
-    readonly handle: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
+    /**
+     * Runs one conclusion, retro or follow-up effect. Returning without finishing leaves it
+     * pending for the next wake. A failed conclusion or ticket publication is recorded so it can
+     * be retried; a stale revision is rethrown so the worker tries again.
+     */
+    readonly handle: (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryRetroEffects") {}
 
@@ -68,15 +89,16 @@ const projectPaused = (state: FactorySnapshot, assignment: FactoryAssignment) =>
   );
 
 const make = Effect.gen(function* () {
-  const store = yield* FactoryStore;
-  const threads = yield* ThreadManagementService;
-  const access = yield* FactoryControlAccess;
-  const handovers = yield* FactoryHandover;
-  const execution = yield* FactoryExecution;
+  const store = yield* FactoryStore.FactoryStore;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const access = yield* FactoryControlAccess.FactoryControlAccess;
+  const handovers = yield* FactoryHandover.FactoryHandover;
+  const execution = yield* FactoryExecution.FactoryExecution;
   const runtime = yield* FactoryRetroExecution.FactoryRetroExecution;
   const evidence = yield* FactoryRetroEvidence.FactoryRetroEvidence;
   const issues = yield* IssuePublication.IssuePublication;
-  const pullRequests = yield* PullRequestService;
+  const pullRequests = yield* PullRequestService.PullRequestService;
+  // Every lead the assignment has had, its non-retro auxiliary threads, and all their subagents.
   const team = Effect.fn(function* (assignment: FactoryAssignment) {
     const shells = yield* threads.listProjectThreads({
       projectId: assignment.projectId,
@@ -103,6 +125,10 @@ const make = Effect.gen(function* () {
     }
     return shells.filter((shell) => ids.has(shell.id));
   }, Effect.mapError(failure));
+  // Compares the manifest with what the host sees now. `discovered` lists PRs linked to team
+  // threads or published by the team that the manifest lacks. For work that was not cancelled,
+  // `invalidReason` is set when those must be added (only when `discover`) or a required merge
+  // no longer matches the PR host.
   const deliveryConflict = Effect.fn(function* (current: FactoryAssignment, discover = true) {
     const completion = current.completion;
     if (!completion) return yield* new FactoryError({ code: "invalid-state" });
@@ -164,6 +190,8 @@ const make = Effect.gen(function* () {
       }
     return { discovered, invalidReason };
   }, Effect.mapError(failure));
+  // Each reference must exist and belong to this assignment, so a report cannot cite another
+  // team's work.
   const validateEvidence = Effect.fn(function* (
     assignment: FactoryAssignment,
     refs: ReadonlyArray<FactoryRetroEvidenceRef>,
@@ -262,6 +290,8 @@ const make = Effect.gen(function* () {
       return yield* new FactoryError({ code: "invalid-state" });
     return { evidenceValidated: true as const };
   }, Effect.mapError(failure));
+  // A message counts as delivered once it is recorded against a run. `notify` checks this before
+  // and after sending, so a replayed effect or a send that failed after landing is not repeated.
   const accepted = Effect.fn(function* (threadId: ThreadId, messageId: MessageId) {
     const records = yield* threads.getThreadRecords(threadId, ["messages", "runs"], {
       messageIds: [messageId],
@@ -296,8 +326,10 @@ const make = Effect.gen(function* () {
         ),
       );
   }, Effect.mapError(failure));
+  // Stops the team, rechecks delivery against the PR host, seals the evidence the retro reads,
+  // and records the conclusion. A delivery mismatch reopens collection instead.
   const conclude = Effect.fn(function* (
-    pending: PendingFactoryEffect,
+    pending: FactoryStore.PendingFactoryEffect,
     assignment: FactoryAssignment,
   ) {
     if (assignment.completion?.phase !== "concluding") {
@@ -327,6 +359,8 @@ const make = Effect.gen(function* () {
       !factoryCompletionEligibility(state, assignment).eligible
     )
       return;
+    // Taken before the team stops, so a thread, lineage or PR link change while evidence is
+    // sealed makes FactoryStore refuse the conclusion.
     const expectedProjectThreadFence = yield* store.completionFence(assignment.projectId);
     const shells = yield* team(assignment);
     for (const shell of shells)
@@ -490,7 +524,9 @@ const make = Effect.gen(function* () {
       });
     }
   });
-  const handle = Effect.fn("FactoryRetroEffects.handle")(function* (pending: PendingFactoryEffect) {
+  const handle = Effect.fn("FactoryRetroEffects.handle")(function* (
+    pending: FactoryStore.PendingFactoryEffect,
+  ) {
     const intent = pending.intent;
     const state = yield* store.snapshot;
     if (intent.type === "assignment.conclude") {
@@ -531,6 +567,8 @@ const make = Effect.gen(function* () {
         destination: tracker.destination,
         draft: followup.draft,
       };
+      // IssuePublication runs this just before each tracker write, so a pause, tracker change or
+      // new issue selection made while the effect waited stops the write.
       const beforeMutation = Effect.gen(function* () {
         const latest = yield* store.snapshot;
         const assignment = latest.assignments.find((entry) => entry.id === followup.assignmentId);
@@ -603,6 +641,7 @@ const make = Effect.gen(function* () {
       return;
     }
     if (intent.type === "retro.stop") {
+      // The stop marker goes first, so a prepare racing this stop cannot qualify the session.
       yield* runtime.stop({ retroId: retro.id });
       if ((yield* threads.getThreadShell(retro.threadId)) !== null)
         yield* handovers.stopTeam({
@@ -706,6 +745,8 @@ const make = Effect.gen(function* () {
         ].join("\n\n"),
       });
     }).pipe(Effect.result);
+    // A launch refused by a pause or takeover is a hold, not a failure: the effect stays pending
+    // until it lifts.
     if (Result.isFailure(launched)) {
       const latest = yield* store.snapshot;
       if (

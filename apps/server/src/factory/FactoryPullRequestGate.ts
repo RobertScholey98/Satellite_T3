@@ -10,7 +10,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PullRequestActionGate from "../pullRequest/PullRequestActionGate.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import {
   factoryMergeGroupForAssignment,
   factoryMergeGroupsForPullRequest,
@@ -18,12 +18,20 @@ import {
 import { factoryDeliveryReadiness } from "./FactoryDelivery.ts";
 import { factoryMergeOperationWriteReadiness } from "./FactoryMergeOperation.ts";
 
+/**
+ * Provided only by the delivery merge effect around its host merge, naming the operation it runs.
+ * Without it the gate refuses every merge of a managed pull request.
+ */
 export const FactoryDeliveryPermit = Context.Reference<{
   readonly assignmentId: FactoryAssignmentId;
   readonly revisionId: string;
   readonly operationId: string;
 } | null>("t3/factory/FactoryDeliveryPermit", { defaultValue: () => null });
 
+/**
+ * The merge-group counterpart: provided by the shared merge operation for one member's merge
+ * attempt, bound to the operation's frozen digest and the member's reviewed head.
+ */
 export const FactoryMergeGroupPermit = Context.Reference<{
   readonly groupId: string;
   readonly operationId: string;
@@ -39,13 +47,25 @@ interface MutationTarget {
   readonly headBranch: string;
   readonly headSha: string;
 }
+/**
+ * Decides which pull-request actions may touch PRs that managed teams or merge groups own. A PR
+ * is managed when a delivery revision published it (by number or branch) or a merge group knows
+ * it. Ordinary PRs pass untouched.
+ */
 export class FactoryPullRequestGate extends Context.Service<
   FactoryPullRequestGate,
   {
+    /** Cheap pre-check: whether any managed delivery work targets this repository at all. */
     readonly appliesToRepository: (
       host: string,
       repository: string,
     ) => Effect.Effect<boolean, FactoryError>;
+    /**
+     * Refuses unless every managed target may take this action. An individually managed PR takes
+     * only a merge, under the delivery permit for its current revision's approved head; a grouped
+     * PR merges only under the group permit, and may otherwise only be closed, reopened or have
+     * auto-merge disabled. `requireConditionalMerge` asks the caller to pin the merge to the head.
+     */
     readonly authorizeMutation: (input: {
       readonly action: string;
       readonly targets: ReadonlyArray<MutationTarget>;
@@ -64,7 +84,7 @@ const groupReversibleActions = new Set(["close", "reopen", "disable-auto-merge"]
 export const layer = Layer.effect(
   FactoryPullRequestGate,
   Effect.gen(function* () {
-    const store = yield* FactoryStore;
+    const store = yield* FactoryStore.FactoryStore;
     return FactoryPullRequestGate.of({
       appliesToRepository: (host, repository) =>
         store.snapshot.pipe(
@@ -95,6 +115,8 @@ export const layer = Layer.effect(
           const groupPermit = yield* FactoryMergeGroupPermit;
           let managed = false;
           for (const target of input.targets) {
+            // Matching the branch as well as the number also catches a PR someone else opened
+            // from a team's publication branch.
             const owners = state.assignments.flatMap((assignment) =>
               (assignment.delivery?.revisions ?? []).flatMap((revision) => {
                 const publication = revision.publication;
@@ -280,6 +302,7 @@ const authorizeFactoryPullRequestAction = <E>(
         return { ref: targetRef, headBranch: detail.headBranch, headSha: detail.headSha };
       }),
     );
+    // A stack action touches every open layer, so the caller must name each layer's current head.
     if (stack !== null) {
       const open = stack.layers.filter((entry) => entry.state === "open");
       const expected = request.expectedStackHeads ?? [];

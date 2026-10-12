@@ -32,20 +32,17 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import {
-  layer as SatelliteLayer,
-  recordProject,
-} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
+import * as SatelliteTestRuntime from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import { reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
-import { FactoryPreviewService } from "./FactoryPreviewService.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryPreviewService from "./FactoryPreviewService.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("controls-project");
@@ -129,7 +126,7 @@ const initial = (assignments: readonly FactoryAssignment[]): FactorySnapshot => 
   ],
 });
 const runtime = Layer.mergeAll(FactoryStore.layer, ThreadManagement.layer).pipe(
-  Layer.provideMerge(SatelliteLayer),
+  Layer.provideMerge(SatelliteTestRuntime.layer),
 );
 const source = {
   id: FactorySourceId.make("current-source"),
@@ -161,19 +158,23 @@ const scenario = <A, E, R>(
     dependencies?: readonly FactoryDependency[];
     controls?: readonly FactoryControl[];
     effects?: readonly FactoryEffectIntent[];
-    stopTeam?: FactoryHandover["Service"]["stopTeam"];
-    suspend?: FactoryBoundaryExecution["Service"]["suspend"];
-    resume?: FactoryBoundaryExecution["Service"]["resume"];
-    stop?: FactoryBoundaryExecution["Service"]["stop"];
-    prepare?: FactoryBoundaryExecution["Service"]["prepare"];
-    verify?: FactoryBoundaryExecution["Service"]["verify"];
+    stopTeam?: FactoryHandover.FactoryHandover["Service"]["stopTeam"];
+    suspend?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["suspend"];
+    resume?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["resume"];
+    stop?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["stop"];
+    prepare?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["prepare"];
+    verify?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["verify"];
     previewReconcile?: Effect.Effect<void, FactoryError>;
   } = {},
 ) =>
   Effect.gen(function* () {
     const assignments = options.assignments ?? [assignment];
     const auxiliaryThreads = options.auxiliaryThreads ?? [];
-    yield* recordProject({ projectId, title: "Controls", workspaceRoot: "/project" });
+    yield* SatelliteTestRuntime.recordProject({
+      projectId,
+      title: "Controls",
+      workspaceRoot: "/project",
+    });
     const threads = yield* ThreadManagement.ThreadManagementService;
     for (const threadId of [
       managerId,
@@ -226,17 +227,19 @@ const scenario = <A, E, R>(
         FactoryService.layer.pipe(
           Layer.provideMerge(
             Layer.mergeAll(
-              layerTestDependencies,
+              FactoryServiceTestkit.layerTestDependencies,
               options.previewReconcile === undefined
                 ? Layer.empty
-                : Layer.mock(FactoryPreviewService)({ reconcile: options.previewReconcile }),
-              Layer.mock(FactoryExecution)({
+                : Layer.mock(FactoryPreviewService.FactoryPreviewService)({
+                    reconcile: options.previewReconcile,
+                  }),
+              Layer.mock(FactoryExecution.FactoryExecution)({
                 qualify: () => Effect.succeed(qualification),
                 assertSelectionFor: () => Effect.void,
                 assertDelegationFor: () => Effect.void,
                 runtimePolicyFor: () => Effect.succeed(undefined),
               }),
-              Layer.mock(FactoryBoundaryExecution)({
+              Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
                 suspend: options.suspend ?? (() => Effect.void),
                 resume: options.resume ?? (() => Effect.void),
                 stop: options.stop ?? (() => Effect.void),
@@ -245,7 +248,7 @@ const scenario = <A, E, R>(
                   (() => Effect.die("Controls must not prepare another volume.")),
                 verify: options.verify ?? (() => Effect.die("Unexpected verification.")),
               }),
-              Layer.mock(FactoryHandover)({
+              Layer.mock(FactoryHandover.FactoryHandover)({
                 stopTeam:
                   options.stopTeam ??
                   ((input) =>
@@ -262,7 +265,7 @@ const scenario = <A, E, R>(
                         ),
                       )),
               }),
-              Layer.mock(FactorySource)({
+              Layer.mock(FactorySource.FactorySource)({
                 capture: () => Effect.succeed(source),
                 validateCurrent: () => Effect.void,
               }),

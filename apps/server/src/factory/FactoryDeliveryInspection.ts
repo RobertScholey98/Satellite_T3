@@ -19,9 +19,18 @@ import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 
 type Revision = { readonly assignmentId: FactoryAssignmentId; readonly revisionId: string };
+/**
+ * Reads a published revision's pull request from the host and seals the evidence bundle that
+ * approvals bind to. Used by the delivery and merge-group effects before readiness or merge.
+ */
 export class FactoryDeliveryInspection extends Context.Service<
   FactoryDeliveryInspection,
   {
+    /**
+     * Reads the host and computes the bundle without committing it. `expectedStateRevision` is
+     * the state the bundle was sealed against; the `delivery.inspected` receipt is refused if any
+     * commit landed since. Fails with `stale-revision` when the revision stops being current.
+     */
     readonly inspect: (input: Revision) => Effect.Effect<
       Revision & {
         readonly evidence: FactoryRevisionHostEvidence;
@@ -30,6 +39,10 @@ export class FactoryDeliveryInspection extends Context.Service<
       },
       FactoryError
     >;
+    /**
+     * Inspects and commits the result as `delivery.inspected`, retrying a few times while state
+     * keeps moving. Merge and merge-group effects use it to make evidence current before checking.
+     */
     readonly refresh: (
       input: Revision & { readonly commandId: CommandId },
     ) => Effect.Effect<void, FactoryError>;
@@ -38,6 +51,11 @@ export class FactoryDeliveryInspection extends Context.Service<
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
+/**
+ * Reduces the host's merge evidence to pass/fail facts. Anything the host could not report in
+ * full counts as `unknown`, never as passed. A check whose requiredness is unknown, or that ran
+ * on another head, makes the whole check set unknown.
+ */
 function hostEvidence(raw: ProviderMergeEvidence, observedAt: string): FactoryRevisionHostEvidence {
   const required = raw.checks.filter((check) => check.required !== false);
   const unknownChecks =
@@ -66,6 +84,8 @@ function hostEvidence(raw: ProviderMergeEvidence, observedAt: string): FactoryRe
     !raw.isDraft &&
     raw.mergeability === "mergeable" &&
     ["CLEAN", "HAS_HOOKS"].includes(raw.mergeState);
+  // The approval binds a head-conditioned direct merge. A merge queue or standing auto-merge
+  // merges on the host's own schedule instead.
   const conditionalMerge = !raw.autoMergeEnabled && !raw.mergeQueueEnabled;
   const reasons = [
     ...raw.issues,

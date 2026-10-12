@@ -39,6 +39,11 @@ const active = (assignment: FactoryAssignment | undefined): assignment is Factor
   (!assignment.completion || assignment.completion.phase === "collecting");
 export const latestFactoryMergeOperation = (state: FactorySnapshot, groupId: string) =>
   state.mergeOperations.findLast((entry) => entry.groupId === groupId);
+/**
+ * The operation that still owns this integration's team and combined review. A stop before any
+ * member was submitted no longer counts, so the team runs again and the group can review or start
+ * anew. A stop after any submission keeps the freeze in place, and a completed one stays too.
+ */
 export const currentFactoryMergeOperation = (state: FactorySnapshot, integrationId: string) => {
   const operation = state.mergeOperations.findLast(
     (entry) => entry.integrationId === integrationId,
@@ -73,6 +78,11 @@ export const factoryMergeFreezeBlocks = (
     )
   );
 };
+/**
+ * Binds a frozen proof to this operation's review and each member's reviewed revision and
+ * authority, so the proof cannot be carried to another operation or a changed member vector. The
+ * host computes it when freezing; write readiness recomputes it before every merge.
+ */
 export const factoryMergeFrozenDigest = (
   operation: FactoryMergeOperation,
   frozen: Omit<FactoryMergeFrozenProof, "digest">,
@@ -85,6 +95,10 @@ export const factoryMergeFrozenDigest = (
     members: operation.members.map(({ reviewed, authority }) => ({ reviewed, authority })),
     frozen,
   });
+/**
+ * Digest of every member's confirmed receipt. The host sends it with `merge.operation.completed`
+ * and the decider recomputes it, so completion names exactly the receipts the host saw.
+ */
 export const factoryMergeReceiptDigest = (operation: FactoryMergeOperation) =>
   hash({
     operationId: operation.id,
@@ -192,6 +206,11 @@ export function factoryMergeGroupRestoreBlock(state: FactorySnapshot, group: Fac
   return null;
 }
 
+/**
+ * Whether an earlier operation already spent submissions on this sealed review's exact members
+ * and tested bytes. Starting that vector again would grant a fresh three-attempt budget, so it is
+ * refused; changed members or bytes need a new review instead.
+ */
 function attemptedReviewVector(state: FactorySnapshot, groupId: string, reviewId: string) {
   const review = state.mergeGroupReviews.find((entry) => entry.id === reviewId);
   if (review?.lifecycle.phase !== "sealed") return false;
@@ -207,6 +226,10 @@ function attemptedReviewVector(state: FactorySnapshot, groupId: string, reviewId
   );
 }
 
+/**
+ * A host receipt counts only for this operation's exact reviewed revision, PR, head and target.
+ * Its id derives from the operation and member, so a receipt cannot move between operations.
+ */
 function receiptMatches(
   operation: FactoryMergeOperation,
   member: FactoryMergeOperationMember,
@@ -226,6 +249,11 @@ function receiptMatches(
   );
 }
 
+/**
+ * Whether the host may submit `assignmentId`'s merge now, with every reason it may not. The
+ * decider, the advance effect and the pull request gate all check it before a write. It checks
+ * every member of the frozen vector, because a change anywhere invalidates the shared merge.
+ */
 export function factoryMergeOperationWriteReadiness(
   state: FactorySnapshot,
   operationId: string,
@@ -365,6 +393,7 @@ export function factoryMergeOperationWriteReadiness(
       reasons.push(`Project ${member.reviewed.projectId} is paused.`);
     const incident = factoryIncidentBlocked(state, member.reviewed.assignmentId, "delivery");
     if (incident) reasons.push(incident);
+    // A merged member's assignment moves on to completion, so only its receipt is checked.
     if (member.outcome.phase === "confirmed") {
       if (!receiptMatches(operation, member, member.outcome.receipt))
         reasons.push("A confirmed member receipt does not match this operation.");
@@ -425,6 +454,7 @@ export function factoryMergeOperationWriteReadiness(
       reasons.push("Human takeover holds the shared merge action until handback.");
   }
   const selected = operation.members.find((entry) => entry.reviewed.assignmentId === assignmentId);
+  // Members merge one at a time in the frozen order, so confirmed members are always a prefix.
   if (operation.members.find((entry) => entry.outcome.phase !== "confirmed") !== selected)
     reasons.push("Merge members in the frozen operation order.");
   if (
@@ -433,17 +463,24 @@ export function factoryMergeOperationWriteReadiness(
     (selected.outcome.phase === "pending" && selected.attempts >= 3)
   )
     reasons.push("This member has completed or exhausted its three submission attempts.");
+  // The selected member is excluded: the pull request gate runs after `submitting` has already
+  // marked its own attempt unknown.
   if (
     operation.members.some(
       (entry) => entry.reviewed.assignmentId !== assignmentId && entry.outcome.phase === "unknown",
     )
   )
     reasons.push("Reconcile the previous member's unknown outcome before another write.");
+  // `attention` is accepted so a retry can be checked before it returns the operation to running.
   if (operation.lifecycle.phase !== "running" && operation.lifecycle.phase !== "attention")
     reasons.push("This shared operation is not available for another write.");
   return { allowed: reasons.length === 0, reasons: [...new Set(reasons)] };
 }
 
+/**
+ * The shared merge status and actions the group view offers. A stop before any submission counts
+ * as idle, so the group may start again unless that exact reviewed vector already spent attempts.
+ */
 export function factoryMergeOperationReadiness(
   state: FactorySnapshot,
   groupId: string,
@@ -503,6 +540,12 @@ export function factoryMergeOperationReadiness(
   };
 }
 
+/**
+ * Decides `merge.group.start` and every `merge.operation.*` command. The human or the current
+ * integration lead starts, reconciles, escalates and retries; only the human stops; only the host
+ * records what happened. An operation runs preparing, running, completed, with attention and
+ * stopped beside them. It never merges itself and never replaces a confirmed receipt.
+ */
 export function decideFactoryMergeOperation(input: {
   state: FactorySnapshot;
   actor: FactoryActor;
@@ -578,6 +621,7 @@ export function decideFactoryMergeOperation(input: {
         readiness.reasons.join(" ") || "The exact reviewed vector changed.",
         "stale-revision",
       );
+    // The freeze stops the integration and captures its bytes; work still in flight would race it.
     if (
       state.integrationPreparations.some(
         (entry) =>
@@ -598,6 +642,7 @@ export function decideFactoryMergeOperation(input: {
     if (preparation?.lifecycle.phase !== "ready")
       return fail("The verified integration preparation is unavailable.");
     const members: FactoryMergeOperationMember[] = [];
+    // Canonical PR order, so every start of the same vector merges its members in the same order.
     for (const reviewed of [...review.lifecycle.members].sort((a, b) =>
       canonicalFactoryPullRequest(a.ref).localeCompare(canonicalFactoryPullRequest(b.ref)),
     )) {
@@ -663,6 +708,7 @@ export function decideFactoryMergeOperation(input: {
     ],
     text,
   });
+  // `retry` names the way out: reconcile first, retry the same vector, review anew, or nothing.
   const hold = (
     reason: string,
     recommendation: string,
@@ -679,6 +725,8 @@ export function decideFactoryMergeOperation(input: {
     );
   switch (command.type) {
     case "merge.operation.reconcile":
+      // Allowed in every phase, stopped included, because only the host can say what an uncertain
+      // submission did. On a completed operation it only republishes an unconfirmed signal.
       if (!owns)
         return fail(
           "Only this integration lead or the human can request reconciliation.",
@@ -693,6 +741,8 @@ export function decideFactoryMergeOperation(input: {
         return fail("Only the human can stop the shared action.", "permission-denied");
       if (operation.lifecycle.phase === "completed")
         return fail("All merges are confirmed. A revert requires a separately authorized task.");
+      // An uncertain submission is read again rather than assumed. A stop before any submission
+      // resumes the team's paused work; after a confirmed merge the team stays frozen.
       return save(
         {
           ...operation,
@@ -746,6 +796,8 @@ export function decideFactoryMergeOperation(input: {
       ]);
     }
     case "merge.operation.frozen": {
+      // The host freezes against the state revision it captured, so any change in between is
+      // refused rather than frozen into the proof.
       if (
         !host ||
         operation.lifecycle.phase !== "preparing" ||
@@ -774,6 +826,7 @@ export function decideFactoryMergeOperation(input: {
         ...operation,
         lifecycle: { phase: "running" as const, frozen: command.frozen },
       };
+      // Check the first member as though the freeze had landed; a failing proof never runs.
       const readiness = factoryMergeOperationWriteReadiness(
         {
           ...state,
@@ -817,6 +870,8 @@ export function decideFactoryMergeOperation(input: {
         command.assignmentId,
       );
       if (!readiness.allowed) return fail(readiness.reasons.join(" "), "permission-denied");
+      // The attempt is spent and marked unknown before the host calls GitHub, so a crash mid-call
+      // leaves an outcome to reconcile instead of a write to repeat.
       return save(
         {
           ...operation,
@@ -865,6 +920,7 @@ export function decideFactoryMergeOperation(input: {
     case "merge.operation.held":
       if (!host)
         return fail("Only the host records shared execution failure.", "permission-denied");
+      // A late failure report cannot reopen a stopped or completed operation.
       if (["completed", "stopped"].includes(operation.lifecycle.phase)) return save(operation);
       return hold(command.reason, command.recommendation, command.retry);
     case "merge.operation.observed": {
@@ -874,11 +930,14 @@ export function decideFactoryMergeOperation(input: {
         (entry) => entry.reviewed.assignmentId === command.assignmentId,
       );
       if (!member) return fail("This observation names a foreign member.");
+      // Repeating the same receipt is a no-op; any other observation would rewrite a real merge.
       if (member.outcome.phase === "confirmed")
         return command.observation.phase === "confirmed" &&
           same(member.outcome.receipt, command.observation.receipt)
           ? save(operation)
           : fail("A confirmed merge receipt cannot be replaced.", "stale-revision");
+      // An observation of an unknown outcome must name its current attempt; one taken before any
+      // submission must name none.
       if (
         (member.outcome.phase === "unknown" && command.attemptId !== member.outcome.attemptId) ||
         (member.outcome.phase !== "unknown" && command.attemptId !== undefined)
@@ -896,6 +955,8 @@ export function decideFactoryMergeOperation(input: {
             ? { ...entry, outcome: { phase: "confirmed" as const, receipt: observed.receipt } }
             : entry,
         );
+        // Record the merge on the member's assignment as an individual merge would, unless its
+        // revision moved on or its completion already closed.
         const assignments = state.assignments.map((entry) => {
           if (
             entry.id !== member.reviewed.assignmentId ||
@@ -942,6 +1003,8 @@ export function decideFactoryMergeOperation(input: {
             },
           };
         });
+        // A merge seen before the freeze happened outside the frozen evidence, so nothing retries.
+        // Otherwise a hold becomes retryable once no outcome is uncertain.
         const lifecycle =
           !frozen && operation.lifecycle.phase !== "stopped"
             ? {
@@ -960,6 +1023,8 @@ export function decideFactoryMergeOperation(input: {
         return save(
           { ...operation, members, lifecycle },
           [
+            // Advance merges the next member while running; once all are confirmed it completes
+            // the operation from any phase.
             ...(frozen &&
             (operation.lifecycle.phase === "running" ||
               members.every((entry) => entry.outcome.phase === "confirmed"))
@@ -1010,6 +1075,8 @@ export function decideFactoryMergeOperation(input: {
             members,
           );
         }
+        // Expected for a member not yet submitted. Once no outcome is uncertain, a frozen hold
+        // becomes retryable; write readiness still gates the retry itself.
         if (member.outcome.phase === "pending")
           return save(
             operation.lifecycle.phase === "attention" &&
@@ -1039,6 +1106,8 @@ export function decideFactoryMergeOperation(input: {
           members,
         );
       }
+      // Unresolved: hold for reconciliation, never retry, because the host has not shown that the
+      // submission can no longer complete.
       if (operation.lifecycle.phase === "stopped") return save(operation);
       return hold(
         observed.reason,

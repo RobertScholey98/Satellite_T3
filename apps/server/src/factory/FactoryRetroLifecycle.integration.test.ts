@@ -25,22 +25,22 @@ import * as IssuePublication from "../issues/IssuePublication.ts";
 import * as IssuePublicationHost from "../issues/IssuePublicationHost.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Satellite from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import type { ProviderMergeEvidence } from "../pullRequest/pullRequestMergeEvidence.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import type { FactoryCandidateArtifact } from "./FactoryCandidate.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryDeliveryEffects from "./FactoryDeliveryEffects.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
-import { FactoryPublicationHost } from "./FactoryPublicationHost.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
+import * as FactoryPublicationHost from "./FactoryPublicationHost.ts";
 import * as FactoryRetroEffects from "./FactoryRetroEffects.ts";
 import * as FactoryRetroEvidence from "./FactoryRetroEvidence.ts";
-import { FactoryRetroExecution } from "./FactoryRetroExecution.ts";
+import * as FactoryRetroExecution from "./FactoryRetroExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 // #41: one directly assigned, single-project delivery from onboarding to its follow-up ticket.
 // Commands go through FactoryService and every effect runs on its real workers; only the
@@ -236,7 +236,7 @@ it.effect(
           };
         });
       const externalBoundaries = Layer.mergeAll(
-        Layer.succeed(FactoryExecution, {
+        Layer.succeed(FactoryExecution.FactoryExecution, {
           qualify: () => Effect.succeed(qualified("onboarding-profile")),
           runtimePolicyFor: () =>
             Effect.succeed({
@@ -251,7 +251,7 @@ it.effect(
           assertSelectionFor: () => Effect.void,
           assertDelegationFor: () => Effect.void,
         }),
-        Layer.mock(FactoryBoundaryExecution)({
+        Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
           approve: () => Effect.succeed(boundary),
           prepare: () => Effect.succeed(qualified("implementation-profile")),
           stop: () => Effect.void,
@@ -279,7 +279,7 @@ it.effect(
           inspectCandidate: () =>
             Effect.succeed({ qualification: qualified("review-profile"), sourceDigest: "digest" }),
         }),
-        Layer.mock(FactorySource)({
+        Layer.mock(FactorySource.FactorySource)({
           capture: () =>
             Effect.succeed({
               id: FactorySourceId.make("source"),
@@ -298,12 +298,15 @@ it.effect(
             }),
           validateCurrent: () => Effect.void,
         }),
-        Layer.mock(FactoryHandover)({ stop: () => Effect.void, stopTeam: () => Effect.void }),
-        Layer.mock(FactoryPublicationHost)({
+        Layer.mock(FactoryHandover.FactoryHandover)({
+          stop: () => Effect.void,
+          stopTeam: () => Effect.void,
+        }),
+        Layer.mock(FactoryPublicationHost.FactoryPublicationHost)({
           prepare: () => Effect.succeed(publication),
           publish: () => Effect.succeed(prRef),
         }),
-        Layer.mock(PullRequestService)({
+        Layer.mock(PullRequestService.PullRequestService)({
           inspectForMerge: () => Effect.succeed(mergeEvidence),
           detail: () => Effect.sync(() => pullRequest(host.merged)),
           invalidate: () => Effect.void,
@@ -312,7 +315,7 @@ it.effect(
               host.mergeActions++;
             }),
         }),
-        Layer.mock(FactoryRetroExecution)({
+        Layer.mock(FactoryRetroExecution.FactoryRetroExecution)({
           prepare: () =>
             Effect.succeed({ qualification: qualified("retro-profile"), sourceDigest: "source" }),
           stop: () => Effect.void,
@@ -330,7 +333,7 @@ it.effect(
           ).pipe(Layer.provide(FactoryControlAccess.layer)),
         ),
         Layer.provide(externalBoundaries),
-        Layer.provide(layerTestDependencies),
+        Layer.provide(FactoryServiceTestkit.layerTestDependencies),
       );
 
       yield* Effect.gen(function* () {

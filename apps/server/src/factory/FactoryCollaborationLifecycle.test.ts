@@ -30,7 +30,7 @@ import {
   deliveryNow,
   deliverySelection,
 } from "./FactoryDelivery.testkit.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const apiProject = ProjectId.make("api-project");
 const apiManager = ThreadId.make("api-manager");
@@ -154,7 +154,7 @@ it.effect(
       const runtime = Service.layer.pipe(
         Layer.provideMerge(Collaboration.layer.pipe(Layer.provide(Access.layer))),
         Layer.provide(external),
-        Layer.provide(layerTestDependencies),
+        Layer.provide(FactoryServiceTestkit.layerTestDependencies),
       );
       yield* Effect.gen(function* () {
         const factory = yield* Service.FactoryService;
@@ -364,7 +364,7 @@ it.effect(
       const restarted = Service.layer.pipe(
         Layer.provideMerge(Collaboration.layer.pipe(Layer.provide(Access.layer))),
         Layer.provide(external),
-        Layer.provide(layerTestDependencies),
+        Layer.provide(FactoryServiceTestkit.layerTestDependencies),
         Layer.provideMerge(Layer.fresh(Store.layer)),
       );
       yield* Effect.gen(function* () {

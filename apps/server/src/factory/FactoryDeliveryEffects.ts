@@ -16,26 +16,45 @@ import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 import * as FactoryDeliveryInspection from "./FactoryDeliveryInspection.ts";
 import { factoryMergeGroupForAssignment } from "./FactoryMergeOwnership.ts";
 import { factoryDeliveryReadiness } from "./FactoryDelivery.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
-import { FactoryPublicationHost } from "./FactoryPublicationHost.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
+import * as FactoryPublicationHost from "./FactoryPublicationHost.ts";
 import { FactoryDeliveryPermit } from "./FactoryPullRequestGate.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
+/**
+ * Runs the host side of delivery intents from the factory outbox: capturing and publishing
+ * candidates, launching independent reviewers, sealing evidence, merging, and flow holds. Each
+ * intent ends in a receipt command the decider checks against current state. Preview start and
+ * stop go to `FactoryPreviewService` instead.
+ */
 export class FactoryDeliveryEffects extends Context.Service<
   FactoryDeliveryEffects,
-  { readonly handle: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError> }
+  {
+    /**
+     * Runs one pending effect. A held effect returns quietly and stays pending until a later
+     * event wakes the outbox; a superseded one is retired. Other failures are committed as
+     * `delivery.effect.failed` or `delivery.flow.failed` so the lead sees them and retries.
+     */
+    readonly handle: (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) => Effect.Effect<void, FactoryError>;
+  }
 >()("t3/factory/FactoryDeliveryEffects") {}
 
+/**
+ * Ends an effect without recording a failure. `held` leaves it pending; `superseded` retires it
+ * because the revision, hold or grant it served is gone.
+ */
 class DeliveryStopped extends Schema.TaggedError<DeliveryStopped>()("DeliveryStopped", {
   disposition: Schema.Literals(["held", "superseded"]),
 }) {}
@@ -47,7 +66,7 @@ type DeliveryIntent = Exclude<
   FactoryDeliveryEffectIntent,
   { type: "delivery.preview.start" | "delivery.preview.stop" }
 >;
-const deliveryIntent = (pending: PendingFactoryEffect): DeliveryIntent | undefined =>
+const deliveryIntent = (pending: FactoryStore.PendingFactoryEffect): DeliveryIntent | undefined =>
   [
     "delivery.capture",
     "delivery.publish",
@@ -61,15 +80,15 @@ const deliveryIntent = (pending: PendingFactoryEffect): DeliveryIntent | undefin
     : undefined;
 
 const make = Effect.gen(function* () {
-  const store = yield* FactoryStore;
+  const store = yield* FactoryStore.FactoryStore;
   const inspection = yield* FactoryDeliveryInspection.FactoryDeliveryInspection;
-  const boundaries = yield* FactoryBoundaryExecution;
-  const publication = yield* FactoryPublicationHost;
-  const pullRequests = yield* PullRequestService;
-  const threads = yield* ThreadManagementService;
-  const execution = yield* FactoryExecution;
-  const access = yield* FactoryControlAccess;
-  const handovers = yield* FactoryHandover;
+  const boundaries = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+  const publication = yield* FactoryPublicationHost.FactoryPublicationHost;
+  const pullRequests = yield* PullRequestService.PullRequestService;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const execution = yield* FactoryExecution.FactoryExecution;
+  const access = yield* FactoryControlAccess.FactoryControlAccess;
+  const handovers = yield* FactoryHandover.FactoryHandover;
   const crypto = yield* Crypto.Crypto;
   const hash = (value: unknown) =>
     crypto
@@ -78,6 +97,10 @@ const make = Effect.gen(function* () {
   const commit = (command: FactoryHostCommand) =>
     Effect.flatMap(nowIso, (now) => store.commit({ actor: { kind: "system" }, now, command }));
 
+  /**
+   * Whether the review message already reached the reviewer thread. A message without its run
+   * is a launch that never started, reported as `launch-failed`.
+   */
   const accepted = Effect.fn("FactoryDeliveryEffects.accepted")(function* (
     threadId: ThreadId,
     messageId: MessageId,
@@ -94,13 +117,17 @@ const make = Effect.gen(function* () {
   }, Effect.mapError(failure));
 
   const handle = Effect.fn("FactoryDeliveryEffects.handle")(function* (
-    pending: PendingFactoryEffect,
+    pending: FactoryStore.PendingFactoryEffect,
   ) {
     const intent = deliveryIntent(pending);
     if (!intent) return;
     const attempt = pending.attempts + 1;
     const receiptId = CommandId.make(`${pending.id}:receipt`);
     let epoch: number | undefined;
+    // Reread before and after every external step. The first read pins the grant epoch, so a
+    // regrant partway through supersedes the effect instead of continuing under new authority.
+    // Controls, incidents, a recorded error, or a wait other than review or this flow's own
+    // hold it without retiring it.
     const readCurrent = Effect.gen(function* () {
       const state = yield* store.snapshot;
       const assignment = state.assignments.find((entry) => entry.id === intent.assignmentId);
@@ -174,6 +201,8 @@ const make = Effect.gen(function* () {
       if (!current.revision) return yield* new FactoryError({ code: "invalid-state" });
       return { ...current, revision: current.revision };
     });
+    // Only requires that this is still the revision's merge operation. Recording a merge the
+    // host already made must finish even after the assignment ends or is held.
     const readMergeOperation = Effect.gen(function* () {
       const state = yield* store.snapshot;
       const assignment = state.assignments.find((entry) => entry.id === intent.assignmentId);
@@ -193,6 +222,7 @@ const make = Effect.gen(function* () {
     const finish = (command: Parameters<typeof store.finishEffect>[0]["command"]) =>
       Effect.flatMap(nowIso, (now) => store.finishEffect({ id: pending.id, command, now }));
 
+    // Retries a few times when state moves between inspection and commit (`stale-revision`).
     const sealInspection = Effect.fn("FactoryDeliveryEffects.sealInspection")(function* () {
       if (!("revisionId" in intent)) return yield* new FactoryError({ code: "invalid-state" });
       for (let sealAttempt = 0; sealAttempt < 3; sealAttempt++) {
@@ -222,6 +252,9 @@ const make = Effect.gen(function* () {
       yield* store.beginEffect(pending.id);
       switch (intent.type) {
         case "delivery.capture": {
+          // Capture, private publication, finalization and verification must all describe one
+          // candidate: the finalized commit is the one prepared for publication, and the verified
+          // source is the finalized one.
           const { assignment, revision } = yield* readRevision;
           if (revision.status !== "capturing")
             return yield* new DeliveryStopped({ disposition: "superseded" });
@@ -307,6 +340,9 @@ const make = Effect.gen(function* () {
           return;
         }
         case "delivery.review.launch": {
+          // Safe to rerun after a restart: the qualification is committed once as
+          // `delivery.review.prepared`, the thread is created only if missing, and a send that
+          // errors counts as delivered when its message is found.
           const messageId = MessageId.make(
             `factory:${intent.threadId}:delivery-review:${intent.reviewId}`,
           );
@@ -334,6 +370,7 @@ const make = Effect.gen(function* () {
               ? reviewer.qualification.profileId
               : undefined;
           if (profileId === undefined) {
+            // A delivered review message implies a recorded qualification.
             if (wasAccepted) return yield* new FactoryError({ code: "invalid-state" });
             const inspected = yield* boundaries.inspectCandidate({
               assignmentId: current.assignment.id,
@@ -446,6 +483,8 @@ const make = Effect.gen(function* () {
           return;
         }
         case "delivery.merge": {
+          // Outcomes come from fresh host reads, never from an accepted request. A PR already
+          // merged on the host skips straight to recording that fact.
           let current = yield* readMergeOperation;
           const ref = current.revision.publication?.ref;
           if (!ref || current.revision.merge?.operationId !== intent.operationId)
@@ -459,6 +498,8 @@ const make = Effect.gen(function* () {
               );
           let detail = yield* freshDetail();
           if (detail.state !== "merged") {
+            // An assignment that joined a merge group closes its own unsubmitted merge as failed;
+            // the group's shared operation merges it instead.
             const supersedeGroupedRequest = Effect.gen(function* () {
               const latest = yield* readMergeOperation;
               if (!factoryMergeGroupForAssignment(latest.state, intent.assignmentId)) return false;
@@ -476,6 +517,8 @@ const make = Effect.gen(function* () {
               return true;
             });
             if (yield* supersedeGroupedRequest) return;
+            // `unknown` means an earlier attempt may have reached the host. Only the lead's
+            // `delivery.retry` turns it back into a request, so nothing resubmits blindly.
             if (current.revision.merge?.status === "unknown")
               return yield* new FactoryError({
                 code: "execution-unavailable",
@@ -486,6 +529,8 @@ const make = Effect.gen(function* () {
             if (current.revision.merge?.status !== "requested")
               return yield* new DeliveryStopped({ disposition: "superseded" });
             if (yield* supersedeGroupedRequest) return;
+            // Checks, reviews or the rule may have changed since the merge was requested, so the
+            // evidence is resealed and the approval's binding rechecked right before submission.
             yield* inspection.refresh({
               assignmentId: intent.assignmentId,
               revisionId: intent.revisionId,
@@ -513,6 +558,8 @@ const make = Effect.gen(function* () {
                   readiness.reasons.join(" ") ||
                   "Fresh evidence changed the approved revision. Review and approve its current bundle.",
               });
+            // Marked `unknown` before the write, so a crash after the host accepts the merge
+            // cannot lead to a second submission without the lead's retry.
             yield* commit({
               type: "delivery.merge.recorded",
               commandId: CommandId.make(`${pending.id}:submitting:${attempt}`),
@@ -523,6 +570,7 @@ const make = Effect.gen(function* () {
               reason: "Conditional merge submission is awaiting host confirmation.",
             });
             current = yield* readRevision;
+            // The permit is how the pull-request gate recognizes this exact merge operation.
             const mutation = yield* pullRequests
               .runAction({ ...ref, action: "merge", expectedHeadSha: approval.expectedHeadSha })
               .pipe(
@@ -570,6 +618,8 @@ const make = Effect.gen(function* () {
               code: "invalid-state",
               detail: "The host's merge fact belongs to another revision.",
             });
+          // The merged delivery is recorded once per operation, and only while the assignment is
+          // active and this is still its revision. Losing that race to a conclusion is fine.
           const deliveryId = `delivery:${intent.operationId}`;
           const belongsToActiveAssignment = () =>
             Effect.map(store.snapshot, (snapshot) => {
@@ -637,6 +687,7 @@ const make = Effect.gen(function* () {
             held: intent.held,
           });
           yield* readCurrent;
+          // A hold must come back with its qualified planning context and source digest.
           if (intent.held && result === undefined)
             return yield* new FactoryError({ code: "execution-unavailable" });
           yield* finish({
@@ -681,6 +732,8 @@ const make = Effect.gen(function* () {
       }
       return yield* current.failure;
     }
+    // State is reread before recording: a superseded effect retires instead, and an error the
+    // revision already carries is not recorded again, so repeated wakes do not renotify the lead.
     const error = failure(result.failure);
     const reason = error.detail ?? error.message;
     if (current.success.revision?.error === reason) return;

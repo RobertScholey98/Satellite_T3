@@ -25,34 +25,63 @@ import { checkIssueSchedulingFence } from "../issues/IssueScheduling.ts";
 
 type DecisionInput = Omit<Parameters<typeof decide>[0], "state">;
 
+/** An outbox entry. Its id is `<commandId>:<index>`; `attempts` counts `beginEffect` calls. */
 export interface PendingFactoryEffect {
   readonly id: string;
   readonly intent: FactoryEffectIntent;
   readonly attempts: number;
 }
 
+/**
+ * Persists the factory: one snapshot row, a receipt per command id, and an outbox of effect
+ * intents. Every state change runs `decide` inside one SQL transaction under one lock, so the
+ * state, the receipt and the new intents land together or not at all.
+ */
 export class FactoryStore extends Context.Service<
   FactoryStore,
   {
+    /** The persisted state; decoded again only when the stored revision moved. */
     readonly snapshot: Effect.Effect<FactorySnapshot, FactoryError>;
     /** The last published snapshot, held in memory. For cheap gating off the hot path. */
     readonly latest: Effect.Effect<FactorySnapshot>;
     readonly changes: Stream.Stream<FactorySnapshot>;
+    /**
+     * A digest of the project's threads, lineage and PR links. `assignment.concluded` carries
+     * the value its evidence was sealed against and is refused once the digest moves.
+     */
     readonly completionFence: (projectId: ProjectId) => Effect.Effect<string, FactoryError>;
+    /**
+     * The stored result for this command id, or undefined. Fails with `command-conflict` when
+     * the id was already used by a different actor or command.
+     */
     readonly findReceipt: (
       input: Pick<DecisionInput, "actor" | "command">,
     ) => Effect.Effect<FactoryCommandResult | undefined, FactoryError>;
+    /** Decides and persists one command, then publishes. A repeated command returns its receipt. */
     readonly commit: (input: DecisionInput) => Effect.Effect<FactoryCommandResult, FactoryError>;
     /** Highest sequence observed: persisted, or seen by this process. */
     readonly observationCursor: Effect.Effect<number, FactoryError>;
+    /**
+     * Records one orchestration event as observed and commits its command, at most once per
+     * sequence. An event at or below the cursor is ignored.
+     */
     readonly observe: (input: {
       readonly sequence: number;
       readonly command?: FactoryHostCommand;
       readonly now: string;
     }) => Effect.Effect<void, FactoryError>;
+    /** Outbox intents still pending, oldest first. */
     readonly pending: Effect.Effect<ReadonlyArray<PendingFactoryEffect>, FactoryError>;
+    /** Counts an attempt before host work starts; fails once the intent is no longer pending. */
     readonly beginEffect: (id: string) => Effect.Effect<void, FactoryError>;
+    /** Drops an intent that no longer applies, without a receipt. Repeating it is harmless. */
     readonly retireEffect: (id: string) => Effect.Effect<void, FactoryError>;
+    /**
+     * Commits the receipt command that closes an intent and marks the intent done, in one
+     * transaction. The command must answer this exact intent, and `failed` must match whether
+     * it is a failure receipt. Finishing again with the same receipt is a no-op. Progress
+     * commands that do not close an intent are excluded by type.
+     */
     readonly finishEffect: (input: {
       readonly id: string;
       readonly command: Exclude<
@@ -148,6 +177,8 @@ const make = Effect.gen(function* () {
     const receipt = yield* findReceipt(input);
     if (receipt !== undefined) return receipt;
     const request = stableStringify({ actor: input.actor, command: input.command });
+    // Fences that read other tables run inside this transaction, so nothing they check can
+    // change between the check and the write.
     const stateBefore = yield* snapshot;
     if (
       input.schedulingAdmission &&
@@ -315,6 +346,8 @@ const make = Effect.gen(function* () {
               const intent = yield* decodeIntent(effect.payload_json);
               const command = input.command;
               const failed = command.type.endsWith(".failed");
+              // A receipt must name the same intent it closes, so a late or misrouted receipt
+              // can never close a newer intent of the same kind.
               const matches = (() => {
                 switch (intent.type) {
                   case "integration.thread.create":
@@ -621,6 +654,7 @@ const make = Effect.gen(function* () {
                 return yield* new FactoryError({ code: "invalid-state" });
               }
               const status = failed ? "failed" : "completed";
+              // An intent already closed accepts only a replay of the receipt that closed it.
               if (effect.status !== "pending") {
                 const receipt = yield* findReceipt({
                   actor: { kind: "system" },

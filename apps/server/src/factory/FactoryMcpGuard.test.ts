@@ -40,20 +40,20 @@ import * as ProjectService from "../project/ProjectService.ts";
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
-import { FactoryImprovementEvidence } from "./FactoryImprovementEvidence.ts";
-import { FactoryIntegrationExecution } from "./FactoryIntegrationExecution.ts";
+import * as FactoryImprovementEvidence from "./FactoryImprovementEvidence.ts";
+import * as FactoryIntegrationExecution from "./FactoryIntegrationExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
+import * as FactorySchedulingEffects from "./FactorySchedulingEffects.ts";
 import { initialFactoryCompletion } from "./FactoryRetros.ts";
-import { FactoryPreviewService } from "./FactoryPreviewService.ts";
+import * as FactoryPreviewService from "./FactoryPreviewService.ts";
 import { reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
-import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
-import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
-import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
+import * as FactoryBoundaryExecutionTestkit from "./FactoryBoundaryExecution.testkit.ts";
+import * as FactorySourceTestkit from "./FactorySource.testkit.ts";
+import * as FactoryHandoverTestkit from "./FactoryHandover.testkit.ts";
 import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
 import { frozenMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const managerId = ThreadId.make("manager-web");
@@ -413,7 +413,7 @@ const scenario = <E, R>(
     for (const [id, shell] of shells)
       shells.set(id, { ...shell, projectId: ProjectId.make("web") });
     const external = Layer.mergeAll(
-      Layer.mock(FactorySchedulingEffects)({
+      Layer.mock(FactorySchedulingEffects.FactorySchedulingEffects)({
         watch: () => Effect.void,
         reconcile: Effect.void,
         handle: () => Effect.void,
@@ -444,7 +444,7 @@ const scenario = <E, R>(
             };
           }),
       }),
-      boundaryUnavailable,
+      FactoryBoundaryExecutionTestkit.layerUnavailable,
       Layer.mock(EventSink.EventSinkV2)({}),
       Layer.mock(ProjectionStore.ProjectionStoreV2)({
         getThreadShell: (id) => Effect.sync(() => shells.get(id) ?? null),
@@ -476,7 +476,7 @@ const scenario = <E, R>(
           ),
       }),
       Layer.mock(DeviceService.DeviceService)({}),
-      Layer.mock(FactoryIntegrationExecution)({
+      Layer.mock(FactoryIntegrationExecution.FactoryIntegrationExecution)({
         readPatch: (input) =>
           Effect.sync(() => {
             flags.hostCalls += 1;
@@ -493,7 +493,7 @@ const scenario = <E, R>(
           }),
       }),
       Layer.mock(ProjectService.ProjectService)({}),
-      Layer.mock(FactoryPreviewService)({
+      Layer.mock(FactoryPreviewService.FactoryPreviewService)({
         invoke: (threadId, input) =>
           Effect.sync(() => {
             previewCalls.push({
@@ -627,9 +627,13 @@ const scenario = <E, R>(
     ).pipe(
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(FactoryMcpGuard.layer),
-      Layer.provide(FactoryService.layer.pipe(Layer.provide(layerTestDependencies))),
-      Layer.provide(Layer.mock(FactoryImprovementEvidence)({})),
-      Layer.provide(Layer.mergeAll(sourceUnused, handoverUnused)),
+      Layer.provide(
+        FactoryService.layer.pipe(Layer.provide(FactoryServiceTestkit.layerTestDependencies)),
+      ),
+      Layer.provide(Layer.mock(FactoryImprovementEvidence.FactoryImprovementEvidence)({})),
+      Layer.provide(
+        Layer.mergeAll(FactorySourceTestkit.layerUnused, FactoryHandoverTestkit.layerUnused),
+      ),
       Layer.provide(external),
     );
     yield* Effect.gen(function* () {

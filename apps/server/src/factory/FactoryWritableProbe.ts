@@ -2,6 +2,13 @@ import * as Schema from "effect/Schema";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
+/**
+ * Builds the Node script that proves a writable boundary once its baseline is established. Run
+ * through Codex in the boundary's container, it checks that the worker is not root, that
+ * `sourcePath` can be rewritten in place, and that `protectedPath`, the read-only mounts, links
+ * out of the workspace and nested processes cannot escape. Both paths are workspace-relative.
+ * Prints `factory-writable-boundary-ok` only when every check passes.
+ */
 export function factoryWritableProbe(sourcePath: string, protectedPath: string): string {
   const checks = [
     "const fs = require('node:fs'); const {spawnSync} = require('node:child_process');",

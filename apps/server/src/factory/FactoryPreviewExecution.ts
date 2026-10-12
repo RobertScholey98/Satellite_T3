@@ -24,15 +24,21 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
-import { ServerConfig } from "../config.ts";
+import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import { factoryRelativePath } from "./FactoryBoundaryPaths.ts";
 import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
+/**
+ * The persisted reservation for one preview instance. Docker resources are named from it before
+ * they exist, so a restart or a cancelled start can find and verify (by label, image and id)
+ * whatever was created. An instance id is used once: after `stopped` or `failed` it never
+ * restarts.
+ */
 export const FactoryPreviewInstance = Schema.Struct({
   id: Schema.String,
   assignmentId: FactoryAssignmentId,
@@ -113,13 +119,34 @@ const preserve = (cause: unknown) =>
         cause,
       });
 
+/**
+ * Runs a finalized delivery candidate as an isolated app the delivery reviewer can drive. The app
+ * container sits on an internal Docker network with no egress, a read-only copy of the candidate
+ * and temporary data; a relay container publishes it on a localhost-only port. Used by
+ * `FactoryPreviewService` to start and stop instances and by `FactoryPreviewEvidence` to reach
+ * a ready one.
+ */
 export class FactoryPreviewExecution extends Context.Service<
   FactoryPreviewExecution,
   {
+    /**
+     * Builds or resumes the instance and waits until the app and relay are healthy. Fails if the
+     * preview stops being current (candidate, reviewer, epoch, approved configuration, holds) at
+     * any point, or if `stop` is called meanwhile; a failed start removes what it created.
+     * Retrying with the same input resumes; different input for the same id is a conflict.
+     */
     readonly start: (
       input: typeof StartInput.Type,
     ) => Effect.Effect<FactoryPreviewInstance, FactoryError>;
+    /**
+     * Reads an instance, failing unless it is still current. A ready instance is re-verified
+     * against its running containers and live endpoint on every call.
+     */
     readonly get: (instanceId: string) => Effect.Effect<FactoryPreviewInstance, FactoryError>;
+    /**
+     * Cancels any in-flight start, removes the instance's containers and network, and records it
+     * as stopped. Returns `undefined` when nothing was ever reserved. Safe to repeat.
+     */
     readonly stop: (
       instanceId: string,
     ) => Effect.Effect<FactoryPreviewInstance | undefined, FactoryError>;
@@ -130,9 +157,9 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const config = yield* ServerConfig;
-  const store = yield* FactoryStore;
-  const boundary = yield* FactoryBoundaryExecution;
+  const config = yield* ServerConfig.ServerConfig;
+  const store = yield* FactoryStore.FactoryStore;
+  const boundary = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
   const runner = yield* ProcessRunner.ProcessRunner;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const http = yield* HttpClient.HttpClient;
@@ -436,6 +463,7 @@ const make = Effect.gen(function* () {
     if (!container) {
       const filesDirectory = path.join(directory, "source");
       yield* fs.makeDirectory(filesDirectory, { recursive: true });
+      // The directory becomes a `--mount` source, where a comma would start another option.
       if (directory.includes(",") || path.relative(directory, yield* fs.realPath(directory)) !== "")
         return yield* new FactoryError({
           code: "execution-unavailable",
@@ -497,6 +525,8 @@ const make = Effect.gen(function* () {
         if (!decoded.Internal || decoded.Labels["satellite.factory.preview"] !== instance.id)
           return yield* new FactoryError({ code: "invalid-state" });
       }
+      // Currency is re-checked before every Docker create and start, so a preview that went
+      // stale mid-build never gains a new running resource.
       yield* requireCurrent(input);
       const health = `/usr/local/bin/node -e "require('http').get({host:'127.0.0.1',port:${configuration.port},path:'/'},r=>{r.resume();process.exit(r.statusCode>=200&&r.statusCode<500?0:1)}).on('error',()=>process.exit(1))"`;
       const created = yield* docker(instance.dockerContext, [
@@ -740,6 +770,7 @@ const make = Effect.gen(function* () {
   }, Effect.scoped);
   const stop = Effect.fn("FactoryPreviewExecution.stop")(function* (id: string) {
     const current = yield* lifecycle(id);
+    // Signal before taking the permit: a start holding it races this signal and gives way.
     yield* Deferred.succeed(current.stopped, undefined);
     return yield* Effect.gen(function* () {
       if (!(yield* fs.exists(path.join(yield* location(id), "instance.json")))) return undefined;
@@ -754,6 +785,7 @@ const make = Effect.gen(function* () {
     input: typeof StartInput.Type,
   ) {
     const current = yield* lifecycle(input.instanceId);
+    // Ends the start early on `stop`, or as soon as a factory state change makes it stale.
     const cancelled = Effect.raceFirst(
       Deferred.await(current.stopped).pipe(
         Effect.andThen(

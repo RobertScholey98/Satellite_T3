@@ -17,24 +17,42 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as Boundaries from "./FactoryBoundaryExecution.ts";
 import * as Execution from "./FactoryExecution.ts";
 import * as WorkflowExecution from "./FactoryWorkflowExecution.ts";
 import * as Handover from "./FactoryHandover.ts";
 import * as Access from "./FactoryControlAccess.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { effectiveFactoryWorkflow, type FactoryWorkflowContext } from "./FactoryWorkflow.ts";
 import type { FactoryActor } from "./FactoryState.ts";
 
+/**
+ * The host side of the workflow decider. `FactoryService` asks it for the facts a command needs
+ * before deciding, and the effect worker hands it the decider's workflow intents: notifying the
+ * system manager of authorized shared work, stopping revoked teams, and running each restart step.
+ */
 export class FactoryWorkflowEffects extends Context.Service<
   FactoryWorkflowEffects,
   {
+    /**
+     * Resolves the `FactoryWorkflowContext` for a command, or an empty context when it needs
+     * none. For the commands that need host facts it fails early when the actor is neither the
+     * human nor the system manager's thread, or when a report-only scope names a recipient other
+     * than the manager's live thread.
+     */
     readonly context: (
       actor: FactoryActor,
       command: FactoryCommand,
     ) => Effect.Effect<FactoryWorkflowContext, FactoryError>;
-    readonly handle: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
+    /**
+     * Runs one pending workflow intent and records its receipt. Safe to replay: intents that no
+     * longer match the snapshot retire, and messages use fixed ids that are checked before
+     * sending. Leaves the effect pending while the target manager or thread cannot be directed.
+     */
+    readonly handle: (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryWorkflowEffects") {}
 
@@ -43,14 +61,14 @@ const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
 
 const make = Effect.gen(function* () {
-  const store = yield* FactoryStore;
+  const store = yield* FactoryStore.FactoryStore;
   const boundaries = yield* Boundaries.FactoryBoundaryExecution;
   const execution = yield* Execution.FactoryExecution;
   const workflows = yield* WorkflowExecution.FactoryWorkflowExecution;
   const handovers = yield* Handover.FactoryHandover;
   const access = yield* Access.FactoryControlAccess;
   const threads = yield* Threads.ThreadManagementService;
-  const projects = yield* ProjectStoreV2;
+  const projects = yield* ProjectStore.ProjectStoreV2;
   const fs = yield* FileSystem.FileSystem;
 
   const context = Effect.fn("FactoryWorkflowEffects.context")(function* (
@@ -150,6 +168,8 @@ const make = Effect.gen(function* () {
     return {};
   });
 
+  // Stops the assignment's boundary and every root thread the team ever ran: the lead, earlier
+  // leads, reviewers, auxiliary threads and retros. Threads already gone are skipped.
   const stopTeam = Effect.fn("FactoryWorkflowEffects.stopTeam")(function* (
     state: FactorySnapshot,
     assignment: FactoryAssignment,
@@ -179,6 +199,8 @@ const make = Effect.gen(function* () {
     }
   }, Effect.mapError(failure));
 
+  // Whether a message with this fixed id already reached the thread and started a run, so a
+  // replayed effect never sends it twice.
   const accepted = Effect.fn(function* (threadId: ThreadId, messageId: MessageId) {
     const records = yield* threads.getThreadRecords(threadId, ["messages", "runs"], {
       messageIds: [messageId],
@@ -189,7 +211,7 @@ const make = Effect.gen(function* () {
   }, Effect.mapError(failure));
 
   const handle = Effect.fn("FactoryWorkflowEffects.handle")(function* (
-    pending: PendingFactoryEffect,
+    pending: FactoryStore.PendingFactoryEffect,
   ) {
     const intent = pending.intent;
     if (!(yield* store.pending).some((entry) => entry.id === pending.id)) return;
@@ -211,6 +233,8 @@ const make = Effect.gen(function* () {
         yield* store.retireEffect(pending.id);
         return;
       }
+      // An inactive manager, or one that cannot be directed now, gets the notification later:
+      // the effect stays pending without a failure receipt.
       if (manager.status !== "active") return;
       const allowed = yield* access
         .assertDirection({ threadId: manager.threadId, senderThreadId: null })
@@ -305,6 +329,7 @@ const make = Effect.gen(function* () {
       return;
     }
     const messageId = MessageId.make(`factory-workflow-restart:${migration.id}`);
+    // A lead that cannot be directed yet keeps the resume pending instead of failing it.
     if (step === "resume" && !(yield* accepted(assignment.threadId, messageId))) {
       const permitted = yield* access
         .assertDirection({ threadId: assignment.threadId, senderThreadId: assignment.managerId })
@@ -410,6 +435,8 @@ const make = Effect.gen(function* () {
       }
     }).pipe(Effect.mapError(failure), Effect.result);
     if (Result.isFailure(result)) {
+      // The snapshot moved while the step ran. Record nothing rather than a failure against
+      // state the step did not see.
       if (result.failure.code === "stale-revision") return;
       yield* store.finishEffect({
         id: pending.id,

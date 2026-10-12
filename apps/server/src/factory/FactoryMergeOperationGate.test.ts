@@ -3,7 +3,7 @@ import { FactoryControlId, type FactorySnapshot } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Gate from "./FactoryPullRequestGate.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import {
   frozenMergeOperationFixture,
   submitMergeMember,
@@ -125,7 +125,9 @@ it.effect(
     }).pipe(
       Effect.provide(
         Gate.layer.pipe(
-          Layer.provide(Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) })),
+          Layer.provide(
+            Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+          ),
         ),
       ),
     );

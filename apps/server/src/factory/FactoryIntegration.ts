@@ -34,10 +34,16 @@ import { factorySamePullRequest } from "./FactoryRetros.ts";
 import { effectiveFactoryWorkflow } from "./FactoryWorkflow.ts";
 import type { FactoryActor, FactoryAllocation, FactoryDecision } from "./FactoryState.ts";
 
+/**
+ * Facts the service resolves before deciding. For `integration.file.mutate` and
+ * `integration.verify` from a thread, `integrationActorAssignmentId` is the assignment that
+ * thread belongs to, so a team thread other than the lead can use the prepared workspace.
+ */
 export interface FactoryIntegrationContext {
   readonly integrationActorAssignmentId?: FactoryAssignmentId;
 }
 
+/** Still doing work. An assignment that is collecting its completion still counts. */
 const active = (assignment: FactoryAssignment | undefined): assignment is FactoryAssignment =>
   assignment !== undefined &&
   assignment.outcome === undefined &&
@@ -48,6 +54,7 @@ const sameSet = (a: readonly string[], b: readonly string[]) =>
   new Set(a).size === a.length &&
   new Set(b).size === b.length &&
   a.every((value) => b.includes(value));
+/** A root of `.` contains every path. */
 const contains = (roots: readonly string[], value: string) =>
   roots.some((root) => root === "." || root === value || factoryPathWithin(value, root));
 const writable = (paths: FactoryIntegrationPaths) => [
@@ -56,6 +63,10 @@ const writable = (paths: FactoryIntegrationPaths) => [
   ...paths.testDirectories,
   ...paths.fixtureDirectories,
 ];
+/**
+ * Whether a grant asks for no more than a capability classifies. An exact test or fixture file
+ * may also sit under a classified directory of the same kind.
+ */
 const pathsWithin = (paths: FactoryIntegrationPaths, limits: FactoryIntegrationPaths) =>
   paths.readPaths.every((path) => contains(limits.readPaths, path)) &&
   paths.testPaths.every(
@@ -66,6 +77,12 @@ const pathsWithin = (paths: FactoryIntegrationPaths, limits: FactoryIntegrationP
   ) &&
   paths.testDirectories.every((path) => contains(limits.testDirectories, path)) &&
   paths.fixtureDirectories.every((path) => contains(limits.fixtureDirectories, path));
+/**
+ * Whether a test and fixture classification fits the project's approved boundary. Every write
+ * path must be readable, already writable or creatable in the boundary, and clear of protected
+ * paths in either direction, ignoring case. A path is a test or a fixture, never both, and no
+ * write path repeats ignoring case.
+ */
 const validPaths = (paths: FactoryIntegrationPaths, boundary: FactoryBoundary) => {
   const writes = writable(paths);
   const protectedPaths = [...boundary.protectedPaths, ...(boundary.protectedCreatablePaths ?? [])];
@@ -104,6 +121,10 @@ const validPaths = (paths: FactoryIntegrationPaths, boundary: FactoryBoundary) =
   );
 };
 
+/**
+ * The participant assignments that still exist. A list shorter than
+ * `participantAssignmentIds` means a participant was removed, which blocks access.
+ */
 export function factoryIntegrationParticipants(
   state: FactorySnapshot,
   integrationId: string,
@@ -114,11 +135,21 @@ export function factoryIntegrationParticipants(
     : [];
 }
 
+/** Requested and revoked grants carry no authority; only active ones count. */
 const currentGrants = (state: FactorySnapshot, integrationId: string) =>
   state.integrationGrants.filter(
     (entry) => entry.integrationId === integrationId && entry.lifecycle.phase === "active",
   );
 
+/**
+ * Why the integration team may not run now, or `null` when it may. The team and every
+ * participant must be active, free of execution incidents, authority holds and project pauses.
+ * Every request must still be accepted with all its participants inside the integration. Each
+ * participant needs exactly one active grant from its own project's manager, on a current
+ * qualified capability in that manager's boundary, and the coordinator project's capability
+ * needs a qualified protected runner. The decider, the reconciler, the effect handlers and
+ * runtime admission all ask this, so a new blocking condition belongs here.
+ */
 export function factoryIntegrationAccessBlocked(
   state: FactorySnapshot,
   integrationId: string,
@@ -199,6 +230,11 @@ export function factoryIntegrationAccessBlocked(
   return null;
 }
 
+/**
+ * Agreed technical plans on this integration's requests whose participants still match their
+ * assignments' lead thread, grant epoch and scope. Sorted, so a manifest records the exact plan
+ * set it was prepared against.
+ */
 export function factoryIntegrationPlanIds(
   state: FactorySnapshot,
   integrationId: string,
@@ -226,6 +262,13 @@ export function factoryIntegrationPlanIds(
     .sort();
 }
 
+/**
+ * Why a prepared manifest no longer describes current work; empty while it still does. It goes
+ * stale when the participant set, the agreed plans, the coordinator, or a participant's current
+ * revision, lead, grant, capability or published head changes. An unpublished input also goes
+ * stale once its revision is published, so evidence is always taken against the published
+ * bytes. Execution checks it again around each isolated step.
+ */
 export function factoryIntegrationManifestReasons(
   state: FactorySnapshot,
   integrationId: string,
@@ -292,6 +335,12 @@ export function factoryIntegrationManifestReasons(
   return [...new Set(reasons)];
 }
 
+/**
+ * The latest combined verification as merge groups and the integration thread see it. A current
+ * blocker, a stale manifest, a newer preparation or a changed test artifact makes it `stale`
+ * whatever the run recorded, so `passed` means a passing run on inputs that are still current.
+ * `published` is true only when every verified input was a published head.
+ */
 export function factoryIntegrationVerificationReadiness(
   state: FactorySnapshot,
   integrationId: string,
@@ -350,6 +399,7 @@ export function factoryIntegrationVerificationReadiness(
   };
 }
 
+/** Tells the requester, every participant's manager and the integration team. */
 const notice = (
   integration: FactoryIntegration,
   eventId: string,
@@ -369,6 +419,14 @@ const notice = (
   text,
 });
 
+/**
+ * Runs after every accepted factory decision. Integrations that existed before the command
+ * notify their managers and team when the agreed plans or a participant's captured source
+ * changed. Any preparing or ready integration whose access is now blocked is held: it becomes
+ * `blocked`, its team waits, and `integration.stop` shuts its runtime down. Commands that remove
+ * access elsewhere, such as a grant revocation or a project pause, rely on this hold rather
+ * than stopping the integration themselves.
+ */
 export function reconcileFactoryIntegrations(
   decision: FactoryDecision,
   now: string,
@@ -378,6 +436,7 @@ export function reconcileFactoryIntegrations(
   const effects = [...decision.effects];
   const holds = new Map<string, FactoryIntegration>();
   for (const integration of state.integrations) {
+    // A newly commissioned integration has no earlier plans or sources to compare with.
     if (previousState?.integrations.some((entry) => entry.id === integration.id)) {
       const plans = (snapshot: FactorySnapshot) =>
         snapshot.collaborationPlans
@@ -414,9 +473,11 @@ export function reconcileFactoryIntegrations(
           ),
         );
     }
+    // `awaiting-grants` has no runtime to stop yet, and `blocked` is already held.
     if (integration.phase === "awaiting-grants" || integration.phase === "blocked") continue;
     const reason = factoryIntegrationAccessBlocked(state, integration.id);
     if (!reason) continue;
+    // The revision makes each hold distinct, so stop receipts for an older hold are refused.
     const holdId = `integration-hold:${integration.id}:${state.revision}`;
     const held: FactoryIntegration = {
       ...integration,
@@ -466,6 +527,12 @@ export function reconcileFactoryIntegrations(
   };
 }
 
+/**
+ * Decides every `integration.*` command and returns `undefined` for any other. The human may do
+ * whatever a manager or lead may. Receipts for host work come only from the host (`system`
+ * actor) and are refused as `stale-revision` once they no longer match the current record; the
+ * target and resume receipts accept a repeat with no change, so replayed effects converge.
+ */
 export function decideFactoryIntegration(
   input: FactoryIntegrationContext & {
     readonly state: FactorySnapshot;
@@ -491,6 +558,7 @@ export function decideFactoryIntegration(
       result: { ...result, revision: state.revision + 1 },
       effects,
     });
+  // The human, or the named manager's own thread while it is active and its project unpaused.
   const managerOwns = (managerId: ThreadId) =>
     human ||
     (actor.kind === "thread" &&
@@ -511,6 +579,9 @@ export function decideFactoryIntegration(
       ? state.integrations.find((entry) => entry.id === command.integrationId)
       : undefined;
   const assignment = state.assignments.find((entry) => entry.id === integration?.assignmentId);
+  // A merge operation that is live, or that stopped after any member got an outcome, merges on
+  // the tested inputs. Refreshing, changing tests, verifying, recreating the lead or resuming
+  // paused work would change what it merges, so all of them wait for it.
   if (
     integration &&
     state.mergeOperations.some(
@@ -533,12 +604,18 @@ export function decideFactoryIntegration(
     );
   const leadOwns = (entry: FactoryAssignment | undefined) =>
     human || (active(entry) && actor.kind === "thread" && actor.threadId === entry.threadId);
+  // Like `leadOwns` for the integration team, but any thread the service placed on the team
+  // through `integrationActorAssignmentId` also qualifies.
   const teamOwns = () =>
     human ||
     (active(assignment) &&
       actor.kind === "thread" &&
       (actor.threadId === assignment.threadId ||
         input.integrationActorAssignmentId === assignment.id));
+  /**
+   * Starts a new preparation from `source`, the state after the triggering change. The team
+   * waits until the host reports the inputs prepared.
+   */
   const prepare = (
     selected: FactoryIntegration,
     source: FactorySnapshot,
@@ -554,6 +631,9 @@ export function decideFactoryIntegration(
     const prior = source.integrationPreparations.find(
       (entry) => entry.id === selected.currentPreparationId,
     );
+    // Work stopped by the current hold, the prior preparation or its finished verifications and
+    // never resumed carries into the new preparation, so a refresh never strands a stopped
+    // thread or queued run. Its resume receipt then resumes all of it.
     const interrupted = [
       ...(selected.hold ? [selected.hold] : []),
       ...(prior && !prior.resumedAt ? [prior] : []),
@@ -626,6 +706,11 @@ export function decideFactoryIntegration(
       [{ type: "integration.prepare", integrationId: selected.id, preparationId: preparation.id }],
     );
   };
+  /**
+   * Whether a captured test artifact belongs to this preparation: one entry per participant
+   * project, each under a grant the preparation was made with, on the manifest's exact
+   * candidate once the preparation is ready, changing only granted test and fixture paths.
+   */
   const artifactValid = (
     artifact: FactoryIntegrationTestArtifact,
     selected: FactoryIntegration,
@@ -670,6 +755,7 @@ export function decideFactoryIntegration(
     case "integration.hold.targets.recorded": {
       if (!host || !integration || integration.hold?.id !== command.holdId)
         return fail("The integration hold changed before its work was captured.", "stale-revision");
+      // Captured once per hold, before the stop; a repeat keeps the first capture.
       if (integration.hold.resumeThreadIds !== undefined) return accept();
       const hold = {
         ...integration.hold,
@@ -727,6 +813,7 @@ export function decideFactoryIntegration(
           "This integration operation is no longer awaiting execution.",
           "stale-revision",
         );
+      // Captured once, while the operation is still requested and before it stops the team.
       if (record.resumeThreadIds !== undefined) return accept();
       const targets = { resumeThreadIds: command.threadIds, resumeQueues: command.resumeQueues };
       return accept(
@@ -753,6 +840,8 @@ export function decideFactoryIntegration(
           entry.projectId === command.projectId &&
           entry.status !== "retired",
       );
+      // Only the human classifies tests and fixtures. A new classification supersedes the
+      // project's current one, which blocks every grant made on it until the owner grants again.
       if (
         !human ||
         !boundary ||
@@ -762,6 +851,7 @@ export function decideFactoryIntegration(
         return fail(
           "Only the human can establish test and fixture classifications inside the current approved project boundary.",
         );
+      // The coordinator's result counts toward combined success, so agents must not change it.
       if (
         command.coordinator &&
         (!boundary.protectedPaths.includes(command.coordinator.entrypoint) ||
@@ -829,6 +919,7 @@ export function decideFactoryIntegration(
         capability.qualification.status !== "pending"
       )
         return fail("This capability qualification is no longer current.", "stale-revision");
+      // A coordinator capability qualifies only with a coordinator digest, any other only without.
       if (
         command.type === "integration.capability.qualified" &&
         Boolean(capability.coordinator) !== Boolean(command.coordinatorDigest)
@@ -892,6 +983,8 @@ export function decideFactoryIntegration(
             .map((entry) => [entry.id, entry]),
         ).values(),
       ];
+      // One active assignment per participating project, none already in another integration,
+      // and both the requester's and the coordinator's projects take part.
       if (
         participants.length < 2 ||
         participants.some((entry) => !active(entry) || entry.integrationId) ||
@@ -911,6 +1004,8 @@ export function decideFactoryIntegration(
         )
       )
         return fail("These requests already have an active integration team.", "command-conflict");
+      // The team is an ordinary implementation assignment under the requester with no source
+      // paths of its own; it reaches participant files only through the owners' grants.
       const constructed = commissionFactoryAssignment({
         state,
         manager,
@@ -1019,6 +1114,7 @@ export function decideFactoryIntegration(
             : entry,
         ),
       };
+      // Preparation starts on whichever arrives last: the lead thread or the final grant.
       if (
         command.type === "integration.thread.created" &&
         integration.phase === "awaiting-grants" &&
@@ -1061,6 +1157,9 @@ export function decideFactoryIntegration(
       );
       const boundary = state.boundaries.find((entry) => entry.id === capability?.boundaryId);
       const owner = state.managers.find((entry) => entry.id === participant?.managerId);
+      // Ownership is checked against the participant's manager, so the requester cannot grant
+      // another project's resources. Every grant, even a human-approved one, stays inside the
+      // approved boundary of the project's current qualified capability.
       if (
         !participant ||
         !owner ||
@@ -1089,6 +1188,8 @@ export function decideFactoryIntegration(
         authorizingCommandId: command.commandId,
         createdAt: requested?.createdAt ?? now,
       };
+      // One live grant per project: a new active grant revokes the project's other active and
+      // requested grants.
       const open = state.integrationGrants.filter(
         (entry) =>
           entry.integrationId === target.id &&
@@ -1139,6 +1240,8 @@ export function decideFactoryIntegration(
           grant,
         ],
       };
+      // Replacing a grant after preparation changes what the prepared workspace may hold, so the
+      // integration is held until a refresh rebuilds it under the new grant.
       if (replaced.length && target.currentPreparationId !== null) {
         const reason =
           "An owner replaced its integration grant. Refresh explicitly before resuming.";
@@ -1198,6 +1301,8 @@ export function decideFactoryIntegration(
       const grant = state.integrationGrants.find((entry) => entry.id === command.grantId);
       if (!grant || !managerOwns(grant.ownerManagerId))
         return fail("Only the project owner can revoke its integration grant.");
+      // Revoking an active grant blocks access and `reconcileFactoryIntegrations` holds the
+      // integration. Revoking a requested grant declines it and notifies the integration.
       if (grant.lifecycle.phase === "revoked") return accept({}, { integrationGrantId: grant.id });
       const grantIntegration = state.integrations.find((entry) => entry.id === grant.integrationId);
       return accept(
@@ -1237,6 +1342,8 @@ export function decideFactoryIntegration(
         integration.phase === "preparing"
       )
         return fail("The integration preparation changed or is already running.", "stale-revision");
+      // Refresh is the way out of `blocked`. It waits for a running verification, whose result
+      // belongs to the preparation it ran against.
       if (
         state.integrationVerifications.some(
           (entry) =>
@@ -1279,6 +1386,8 @@ export function decideFactoryIntegration(
           },
           { integrationId: integration.id },
         );
+      // The host prepared against an earlier snapshot, so its inputs must still match current
+      // authority, the preparation's own grants and the current source before they count.
       const blocked = factoryIntegrationAccessBlocked(state, integration.id);
       const preparedBasis: FactoryIntegrationPreparation = {
         ...preparation,
@@ -1334,6 +1443,8 @@ export function decideFactoryIntegration(
           ),
         },
         { integrationId: integration.id, integrationPreparationId: preparation.id },
+        // The lead first launches on a ready preparation; every preparation then resumes the
+        // work it stopped.
         [
           ...(assignment.launchStatus === "pending" && assignment.modelSelection
             ? [
@@ -1374,6 +1485,7 @@ export function decideFactoryIntegration(
         return fail("Only the current integration team can use its ready prepared workspace.");
       const blocked = factoryIntegrationAccessBlocked(state, integration.id);
       if (blocked) return fail(blocked, "execution-unavailable");
+      // A running verification seals the test artifact it runs, so the workspace stays still.
       if (
         state.integrationVerifications.some(
           (entry) =>
@@ -1381,6 +1493,7 @@ export function decideFactoryIntegration(
         )
       )
         return fail("A combined verification is already running.", "invalid-state");
+      // The host checks the same grant paths again inside the runtime before writing.
       if (command.type === "integration.file.mutate") {
         const grant = currentGrants(state, integration.id).find(
           (entry) => entry.id === command.grantId,
@@ -1424,6 +1537,7 @@ export function decideFactoryIntegration(
         preparation.lifecycle.manifest,
       );
       if (reasons.length) return fail(reasons.join(" "), "stale-revision");
+      // The recorded input digest lets the host refuse to run against a different input vector.
       const verificationId = `integration-verification:${command.commandId}`;
       return accept(
         {
@@ -1456,6 +1570,7 @@ export function decideFactoryIntegration(
       );
       if (!preparation || !artifactValid(command.testArtifact, integration, preparation))
         return fail("The captured test artifact is outside this preparation.", "invalid-state");
+      // A late capture is still recorded, but becomes current only while its preparation is.
       return accept(
         {
           integrationTestArtifacts: [...state.integrationTestArtifacts, command.testArtifact],
@@ -1503,6 +1618,8 @@ export function decideFactoryIntegration(
             },
           ],
         );
+      // `passed` needs at least one check, each passing with exit code 0. The run is recorded
+      // even after its preparation was replaced; readiness then reports it stale.
       if (
         !artifactValid(command.testArtifact, selected, preparation) ||
         (command.result === "passed" &&
@@ -1555,6 +1672,8 @@ export function decideFactoryIntegration(
           "This stop receipt belongs to a superseded integration hold.",
           "stale-revision",
         );
+      // A failed stop leaves the hold in force with the failure as its reason; the stop effect
+      // stays pending and retries.
       const hold = {
         ...integration.hold,
         status:
@@ -1585,6 +1704,9 @@ export function decideFactoryIntegration(
           : command.toAssignmentId;
       const sender = state.assignments.find((entry) => entry.id === fromId);
       const recipient = state.assignments.find((entry) => entry.id === toId);
+      // Messages pass only between the integration lead and a participant lead, either way, while
+      // every request is still accepted. A defect report always goes from the integration team to
+      // the owning lead and must cite a ready preparation.
       if (
         !active(sender) ||
         !active(recipient) ||

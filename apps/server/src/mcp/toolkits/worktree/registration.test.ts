@@ -33,7 +33,7 @@ import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as PreviewBrowser from "../../../preview/PreviewBrowser.ts";
-import { FactoryPreviewService } from "../../../factory/FactoryPreviewService.ts";
+import * as FactoryPreviewService from "../../../factory/FactoryPreviewService.ts";
 import * as FactoryImprovementEvidence from "../../../factory/FactoryImprovementEvidence.ts";
 import * as FactoryIntegrationExecution from "../../../factory/FactoryIntegrationExecution.ts";
 import * as FactorySchedulingEffects from "../../../factory/FactorySchedulingEffects.ts";
@@ -42,7 +42,7 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 
 const layerStubServices = Layer.mergeAll(
   McpToolAccessTestkit.unmanagedFactoryLayer,
-  Layer.mock(FactoryPreviewService)({}),
+  Layer.mock(FactoryPreviewService.FactoryPreviewService)({}),
   Layer.mock(FactoryService.FactoryService)({}),
   Layer.mock(FactorySchedulingEffects.FactorySchedulingEffects)({}),
   Layer.mock(FactoryIntegrationExecution.FactoryIntegrationExecution)({}),

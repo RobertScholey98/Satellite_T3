@@ -73,7 +73,7 @@ import {
   FactoryPreviewSnapshotTool,
   FactoryPreviewSnapshotToolkit,
 } from "./toolkits/factory/tools.ts";
-import { FactoryPreviewService } from "../factory/FactoryPreviewService.ts";
+import * as FactoryPreviewService from "../factory/FactoryPreviewService.ts";
 import * as FactoryHandlers from "./toolkits/factory/handlers.ts";
 
 /** Where an MCP client discovers how to sign in (RFC 9728), at this request's own origin. */
@@ -754,7 +754,7 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
 
 const registerFactoryPreviewSnapshot = Effect.fn("McpHttpServer.registerFactoryPreviewSnapshot")(
   function* () {
-    const previews = yield* FactoryPreviewService;
+    const previews = yield* FactoryPreviewService.FactoryPreviewService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const built = yield* FactoryPreviewSnapshotToolkit;
     yield* registerImageTool(
@@ -765,7 +765,7 @@ const registerFactoryPreviewSnapshot = Effect.fn("McpHttpServer.registerFactoryP
           .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
       (effect) =>
         effect.pipe(
-          Effect.provideService(FactoryPreviewService, previews),
+          Effect.provideService(FactoryPreviewService.FactoryPreviewService, previews),
           Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
         ),
       "factory-preview",

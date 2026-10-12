@@ -28,7 +28,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
-import { FactoryPreviewService } from "../../../factory/FactoryPreviewService.ts";
+import * as FactoryPreviewService from "../../../factory/FactoryPreviewService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -40,7 +40,7 @@ const failure = Schema.Union([FactoryError, OrchestratorMcpFailure]);
  * every managed session's `tools/list`; the content is the same either way.
  */
 export const EncodedRead = Schema.Record(Schema.String, Schema.Unknown);
-const previewDependencies = [...dependencies, FactoryPreviewService];
+const previewDependencies = [...dependencies, FactoryPreviewService.FactoryPreviewService];
 export const FactoryPreviewSnapshotTool = Tool.make("factory_preview_snapshot", {
   description:
     "Inspect the current independent review's isolated candidate app. Returns semantic page state and an actual PNG image; journals both against the immutable candidate and named journey. Use these locators for factory_preview_action. No external or user tab can be selected.",

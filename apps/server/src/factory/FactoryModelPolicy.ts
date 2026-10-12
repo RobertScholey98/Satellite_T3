@@ -13,6 +13,11 @@ import * as Result from "effect/Result";
 export const isFactoryModelApproved = (policy: FactoryModelPolicy, selection: ModelSelection) =>
   policy.approvedModels.some((approved) => modelSelectionsEqual(approved, selection));
 
+/**
+ * A manager's effective model policy. Manager overrides replace the approved list outright and
+ * replace preferences per role and complexity. With neither defaults nor overrides, only the
+ * manager's own `bootstrap` model is approved.
+ */
 export const resolveFactoryModelPolicy = (
   defaults: FactoryModelPolicy | undefined,
   overrides: FactoryModelPolicyOverrides | undefined,
@@ -30,6 +35,11 @@ export const resolveFactoryModelPolicy = (
   } satisfies FactoryModelPolicy;
 };
 
+/**
+ * Keeps only the models in an assignment's pinned policy that the manager's current policy still
+ * approves, so a later policy change can withdraw a model but never add one. Preferences stay
+ * pinned; `selectFactoryModel` ignores a preference whose model is no longer approved.
+ */
 export const constrainFactoryModelPolicy = (
   pinned: FactoryModelPolicy,
   current: FactoryModelPolicy,
@@ -40,6 +50,11 @@ export const constrainFactoryModelPolicy = (
   preferences: pinned.preferences,
 });
 
+/**
+ * Picks the model for a piece of work: an explicit selection if it is approved (otherwise a
+ * refusal, never a substitute), then the approved preference for the role and complexity, then
+ * the first approved model. `overrides` only labels whether the preference came from the manager.
+ */
 export const selectFactoryModel = (input: {
   readonly policy: FactoryModelPolicy;
   readonly overrides?: FactoryModelPolicyOverrides;

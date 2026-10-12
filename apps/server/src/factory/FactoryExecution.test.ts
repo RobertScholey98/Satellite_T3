@@ -20,17 +20,14 @@ import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import {
-  ProjectionStoreThreadNotFoundError,
-  ProjectionStoreV2,
-} from "../orchestration-v2/ProjectionStore.ts";
-import { ProcessRunner } from "../processRunner.ts";
-import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import * as FactorySource from "./FactorySource.ts";
 
 const owner = ThreadId.make("managed-owner");
@@ -135,11 +132,13 @@ it.effect(
         [ordinary, thread(ordinary, null, now)],
       ]);
       const dependencies = Layer.mergeAll(
-        Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => snapshot) }),
-        Layer.mock(ProjectStoreV2)({}),
-        Layer.mock(ProviderInstanceRegistry)({ getInstance: () => Effect.succeed(undefined) }),
-        Layer.mock(ProcessRunner)({}),
-        Layer.mock(ProjectionStoreV2)({
+        Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => snapshot) }),
+        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: () => Effect.succeed(undefined),
+        }),
+        Layer.mock(ProcessRunner.ProcessRunner)({}),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadShell: (id) => {
             const persisted = fixtures.get(id);
             return Effect.succeed(
@@ -149,7 +148,9 @@ it.effect(
           getThread: (id) =>
             fixtures.has(id)
               ? Effect.succeed(fixtures.get(id)!)
-              : Effect.fail(new ProjectionStoreThreadNotFoundError({ threadId: id })),
+              : Effect.fail(
+                  new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId: id }),
+                ),
         }),
         ServerConfig.layerTest(root, root),
       );

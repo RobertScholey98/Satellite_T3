@@ -1,3 +1,18 @@
+/**
+ * The only code that touches an assignment volume. It runs in a short-lived container with the
+ * volume at `/workspace`, reads one JSON request from stdin, and refuses every request while the
+ * boundary's authority directory holds a revocation, suspension, incident, integration hold or
+ * delivery hold. It refuses every integration hold and held delivery flow, stricter than the
+ * host-side `assertFactoryProfileActive`; a new kind of hold needs a check in both.
+ *
+ * - `initialize` seeds an empty volume and fails if it already has files.
+ * - `mutate` applies one file operation. It writes a journal receipt keyed by `commandId` before
+ *   acting, so a retry of the same request completes or reports success without applying twice,
+ *   and a retry with a different request for the same command fails.
+ * - `capture` prints every file with a digest over paths, content digests and modes.
+ *
+ * Paths that are symlinks, hard links, case aliases or special files are refused.
+ */
 export const factoryVolumeHelper = String.raw`
 const fs = require('node:fs');
 const path = require('node:path');

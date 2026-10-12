@@ -20,16 +20,16 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../config.ts";
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import observationMigration from "../persistence/Migrations/069_FactoryObservation.ts";
-import { ServerBrowser } from "../preview/ServerBrowser.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
+import * as ServerBrowser from "../preview/ServerBrowser.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { deliveryIds, deliveryNow, reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { FactoryPreviewExecution, type FactoryPreviewInstance } from "./FactoryPreviewExecution.ts";
+import * as FactoryPreviewExecution from "./FactoryPreviewExecution.ts";
 import * as Evidence from "./FactoryPreviewEvidence.ts";
 
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j4n8AAAAASUVORK5CYII=";
-const instance: FactoryPreviewInstance = {
+const instance: FactoryPreviewExecution.FactoryPreviewInstance = {
   id: "app-instance",
   assignmentId: deliveryIds.assignment,
   candidateId: "candidate",
@@ -83,7 +83,8 @@ const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   let state = initial();
   yield* sql`INSERT INTO factory_state (id,revision,payload_json) VALUES(1,0,${encode(state)})`;
-  const calls: Array<Parameters<ServerBrowser["Service"]["invokeRestricted"]>[0]> = [];
+  const calls: Array<Parameters<ServerBrowser.ServerBrowser["Service"]["invokeRestricted"]>[0]> =
+    [];
   let runtimeInstance = instance;
   let blocked = false;
   let hold = false;
@@ -101,12 +102,14 @@ const setup = Effect.gen(function* () {
     screenshot: { mimeType: "image/png", data: png, width: 1, height: 1 },
   };
   const ports = Layer.mergeAll(
-    Layer.mock(FactoryPreviewExecution)({ get: () => Effect.sync(() => runtimeInstance) }),
-    Layer.mock(FactoryControlAccess)({
+    Layer.mock(FactoryPreviewExecution.FactoryPreviewExecution)({
+      get: () => Effect.sync(() => runtimeInstance),
+    }),
+    Layer.mock(FactoryControlAccess.FactoryControlAccess)({
       assertExecution: () =>
         blocked ? Effect.fail(new FactoryError({ code: "permission-denied" })) : Effect.void,
     }),
-    Layer.mock(ServerBrowser)({
+    Layer.mock(ServerBrowser.ServerBrowser)({
       invokeRestricted: (input) =>
         Effect.gen(function* () {
           calls.push(input);
@@ -160,7 +163,7 @@ const setup = Effect.gen(function* () {
     stop: () => {
       runtimeInstance = { ...instance, status: "stopped" };
     },
-    replaceInstance: (changes: Partial<FactoryPreviewInstance>) => {
+    replaceInstance: (changes: Partial<FactoryPreviewExecution.FactoryPreviewInstance>) => {
       runtimeInstance = { ...instance, ...changes };
     },
     retire: Effect.gen(function* () {
@@ -286,7 +289,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const fixture = yield* setup;
-      const mismatches: ReadonlyArray<Partial<FactoryPreviewInstance>> = [
+      const mismatches: ReadonlyArray<Partial<FactoryPreviewExecution.FactoryPreviewInstance>> = [
         { reviewThreadId: ThreadId.make("other-reviewer") },
         { revisionId: "another-revision" },
         { assignmentId: FactoryAssignmentId.make("other-assignment") },

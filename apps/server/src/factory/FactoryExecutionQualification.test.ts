@@ -16,15 +16,15 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { makeProviderAdapter } from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
-import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
 import { FACTORY_CODEX_DOCKERFILE, FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import * as FactorySource from "./FactorySource.ts";
 
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
@@ -170,11 +170,13 @@ it.effect(
       });
       const projectId = ProjectId.make("qualification-project");
       const dependencies = Layer.mergeAll(
-        Layer.mock(FactoryStore)({}),
-        Layer.mock(ProjectionStoreV2)({}),
+        Layer.mock(FactoryStore.FactoryStore)({}),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
         Layer.succeed(ProcessRunner.ProcessRunner, executionRunner),
-        Layer.mock(ProviderInstanceRegistry)({ getInstance: () => Effect.succeed(instance) }),
-        Layer.mock(ProjectStoreV2)({
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: () => Effect.succeed(instance),
+        }),
+        Layer.mock(ProjectStore.ProjectStoreV2)({
           get: () =>
             Effect.succeed(
               Option.some({

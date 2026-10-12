@@ -15,12 +15,14 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
-import { FactoryPreviewExecution } from "./FactoryPreviewExecution.ts";
-import { FactoryPreviewEvidence } from "./FactoryPreviewEvidence.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as FactoryPreviewExecution from "./FactoryPreviewExecution.ts";
+import * as FactoryPreviewEvidence from "./FactoryPreviewEvidence.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { factoryIncidentBlocked } from "./FactoryCollaboration.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 
+// A preview may keep running only while it serves the live review of the current revision under
+// the current grant, with no held delivery flow, incident or execution block.
 const previewIsCurrent = (
   state: FactorySnapshot,
   assignment: FactoryAssignment,
@@ -49,15 +51,36 @@ const previewIsCurrent = (
   );
 };
 
+/**
+ * Owns the lifecycle of candidate previews for delivery review. `FactoryService` hands it the
+ * pending preview start and stop effects and calls `reconcile` on each delivery drain and after
+ * controls and preview stops; the delivery reviewer's MCP tools call `invoke` and `finish`.
+ */
 export class FactoryPreviewService extends Context.Service<
   FactoryPreviewService,
   {
+    /**
+     * Stops every preview that is no longer current, including failed ones that may have left
+     * containers behind, and records each as stopped. Keeps going past a failed stop and fails
+     * with the first error at the end, so callers can retry.
+     */
     readonly reconcile: Effect.Effect<void, FactoryError>;
-    readonly handle: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
+    /**
+     * Runs a pending `delivery.preview.start` or `delivery.preview.stop` effect and ignores other
+     * intents. Obsolete or superseded work is stopped and retired; a start that is blocked by an
+     * incident or execution hold is left pending to try again later.
+     */
+    readonly handle: (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) => Effect.Effect<void, FactoryError>;
     readonly invoke: (
       threadId: ThreadId,
       input: FactoryPreviewActionInput,
     ) => Effect.Effect<FactoryPreviewActionResult, FactoryError>;
+    /**
+     * Seals the reviewer's evidence and records it on the revision that owns the preview. Fails
+     * if that preview is no longer on the current revision.
+     */
     readonly finish: (
       threadId: ThreadId,
       input: FactoryPreviewFinishInput,
@@ -68,9 +91,9 @@ export class FactoryPreviewService extends Context.Service<
 export const layer = Layer.effect(
   FactoryPreviewService,
   Effect.gen(function* () {
-    const store = yield* FactoryStore;
-    const runtime = yield* FactoryPreviewExecution;
-    const evidence = yield* FactoryPreviewEvidence;
+    const store = yield* FactoryStore.FactoryStore;
+    const runtime = yield* FactoryPreviewExecution.FactoryPreviewExecution;
+    const evidence = yield* FactoryPreviewEvidence.FactoryPreviewEvidence;
     const stop = (instanceId: string) =>
       Effect.gen(function* () {
         const closed = yield* evidence.close(instanceId).pipe(Effect.result);

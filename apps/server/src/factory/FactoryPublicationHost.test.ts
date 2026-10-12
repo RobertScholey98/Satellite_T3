@@ -20,9 +20,9 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as GitHubCredentials from "../sourceControl/GitHubCredentials.ts";
 import * as SourceControlProvider from "../sourceControl/SourceControlProvider.ts";
@@ -33,7 +33,7 @@ import * as FactoryPublicationHost from "./FactoryPublicationHost.ts";
 import * as FactoryPreviewPublication from "./FactoryPreviewPublication.ts";
 import * as FactorySource from "./FactorySource.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("host-project");
@@ -185,7 +185,7 @@ const fixture = Effect.fn(function* () {
           ? Effect.succeed(screenshotProof)
           : Effect.die("No UX evidence in this fixture"),
     }),
-    Layer.mock(FactoryStore)({
+    Layer.mock(FactoryStore.FactoryStore)({
       snapshot: Effect.sync(() => ({
         ...initialFactorySnapshot(),
         assignments: [currentAssignment],
@@ -206,7 +206,7 @@ const fixture = Effect.fn(function* () {
           return { revision: 1 };
         }),
     }),
-    Layer.mock(ProjectStoreV2)({
+    Layer.mock(ProjectStore.ProjectStoreV2)({
       get: () =>
         Effect.succeed(
           Option.some({
@@ -225,7 +225,7 @@ const fixture = Effect.fn(function* () {
           }),
         ),
     }),
-    Layer.mock(ThreadManagementService)({
+    Layer.mock(ThreadManagementService.ThreadManagementService)({
       dispatch: (command) =>
         Effect.gen(function* () {
           links.push(command);

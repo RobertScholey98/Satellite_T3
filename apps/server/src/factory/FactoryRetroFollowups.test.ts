@@ -15,16 +15,16 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as IssuePublication from "../issues/IssuePublication.ts";
 import * as IssuePublicationHost from "../issues/IssuePublicationHost.ts";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import issueMigration from "../persistence/Migrations/070_IssuePublication.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
-import { FactoryRetroEvidence } from "./FactoryRetroEvidence.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
+import * as FactoryRetroEvidence from "./FactoryRetroEvidence.ts";
 import * as FactoryRetroEffects from "./FactoryRetroEffects.ts";
-import { FactoryRetroExecution } from "./FactoryRetroExecution.ts";
+import * as FactoryRetroExecution from "./FactoryRetroExecution.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { deliveryFixture, deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
 
@@ -156,13 +156,13 @@ const fixture = Effect.gen(function* () {
       Layer.mergeAll(
         Layer.succeed(FactoryStore.FactoryStore, store),
         Layer.succeed(IssuePublication.IssuePublication, issues),
-        Layer.mock(ThreadManagementService)({}),
-        Layer.mock(FactoryControlAccess)({}),
-        Layer.mock(FactoryExecution)({}),
-        Layer.mock(FactoryHandover)({}),
-        Layer.mock(FactoryRetroEvidence)({}),
-        Layer.mock(FactoryRetroExecution)({}),
-        Layer.mock(PullRequestService)({}),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+        Layer.mock(FactoryControlAccess.FactoryControlAccess)({}),
+        Layer.mock(FactoryExecution.FactoryExecution)({}),
+        Layer.mock(FactoryHandover.FactoryHandover)({}),
+        Layer.mock(FactoryRetroEvidence.FactoryRetroEvidence)({}),
+        Layer.mock(FactoryRetroExecution.FactoryRetroExecution)({}),
+        Layer.mock(PullRequestService.PullRequestService)({}),
       ),
     ),
   );

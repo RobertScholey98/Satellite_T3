@@ -15,8 +15,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import * as ServerConfig from "../config.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as FactorySource from "./FactorySource.ts";
 
@@ -80,7 +80,7 @@ it.effect(
       let selectedThread = thread;
       const dependencies = Layer.mergeAll(
         ServerConfig.layerTest(root, root),
-        Layer.mock(ProjectStoreV2)({
+        Layer.mock(ProjectStore.ProjectStoreV2)({
           get: () =>
             Effect.succeed(
               Option.some({
@@ -99,7 +99,9 @@ it.effect(
               }),
             ),
         }),
-        Layer.mock(ProjectionStoreV2)({ getThread: () => Effect.succeed(selectedThread) }),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThread: () => Effect.succeed(selectedThread),
+        }),
       );
       yield* Effect.gen(function* () {
         const source = yield* FactorySource.FactorySource;

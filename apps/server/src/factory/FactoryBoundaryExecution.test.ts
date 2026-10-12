@@ -29,8 +29,8 @@ import {
   FactoryExecutionProfile,
 } from "./FactoryExecutionProfile.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
-import { FactoryStore } from "./FactoryStore.ts";
-import { FactorySource, type FactorySourceArtifact } from "./FactorySource.ts";
+import * as FactoryStore from "./FactoryStore.ts";
+import * as FactorySource from "./FactorySource.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 import { initialFactoryCompletion } from "./FactoryRetros.ts";
 
@@ -163,8 +163,8 @@ live(
         assignments: [onboarding],
       };
       const volumes: Array<string> = [];
-      const sources = new Map<FactorySourceId, FactorySourceArtifact>();
-      let head: FactorySourceArtifact | undefined;
+      const sources = new Map<FactorySourceId, FactorySource.FactorySourceArtifact>();
+      let head: FactorySource.FactorySourceArtifact | undefined;
       yield* Effect.addFinalizer(() =>
         Effect.forEach(
           volumes,
@@ -641,7 +641,7 @@ live(
               };
             }),
         );
-        const freshArtifact: FactorySourceArtifact = {
+        const freshArtifact: FactorySource.FactorySourceArtifact = {
           source: {
             id: freshId,
             projectId,
@@ -1236,9 +1236,9 @@ live(
             Layer.provideMerge(
               Layer.mergeAll(
                 ServerConfig.layerTest(root, root),
-                Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
+                Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
                 Layer.succeed(ProcessRunner.ProcessRunner, executionRunner),
-                Layer.mock(FactorySource)({
+                Layer.mock(FactorySource.FactorySource)({
                   capture: () =>
                     head === undefined
                       ? Effect.die("Missing head fixture")

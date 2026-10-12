@@ -9,6 +9,10 @@ export const FactoryWorkflowSnapshot = Schema.Struct({
 });
 export type FactoryWorkflowSnapshot = typeof FactoryWorkflowSnapshot.Type;
 
+/**
+ * Tag of the pinned runner image. Profiles store the image id it resolved to at qualification
+ * and run that id, so rebuilding the tag never changes an existing profile's image.
+ */
 export const FACTORY_CODEX_IMAGE = "satellite-factory-codex:0.161.0";
 // Built on demand by qualification, so installed servers need no source checkout.
 // Bump FACTORY_CODEX_IMAGE whenever this changes.
@@ -27,6 +31,13 @@ WORKDIR /workspace
 ENTRYPOINT ["codex", "app-server"]
 `;
 
+/**
+ * Everything needed to start one confined runtime, stored as `profile.json` in its execution
+ * directory. The optional blocks mark the runtime's role: `assignmentWorkspace` for an
+ * assignment's writable volume, `inspection` for a read-only review snapshot, and `integration`
+ * or `retro` for those runtimes. `boundaryId` names the execution directory that owns the
+ * workspace's receipts and artifacts; a rebound profile keeps its original's.
+ */
 export const FactoryExecutionProfile = Schema.Struct({
   boundaryId: Schema.String,
   profileId: Schema.optionalKey(Schema.String),
@@ -75,6 +86,8 @@ export const FactoryExecutionProfile = Schema.Struct({
       grantEpoch: Schema.Number,
       boundaryId: Schema.String,
       controlsPath: Schema.String,
+      // Its directory is the authority directory, which also holds the suspension, incident and
+      // delivery-hold markers.
       revocationPath: Schema.String,
       workerUid: Schema.Number,
       workerGid: Schema.Number,
@@ -83,11 +96,20 @@ export const FactoryExecutionProfile = Schema.Struct({
 });
 export type FactoryExecutionProfile = typeof FactoryExecutionProfile.Type;
 
+/**
+ * `suspension.json` in the authority directory. `generation` orders pauses, so a stale resume
+ * cannot lift a newer pause.
+ */
 export const FactoryExecutionSuspension = Schema.Struct({
   generation: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   state: Schema.Literals(["suspended", "resumed"]),
 });
 export type FactoryExecutionSuspension = typeof FactoryExecutionSuspension.Type;
+/**
+ * `delivery-hold.json` in the authority directory. While `held`, the only runtime admitted for
+ * the workspace is the read-only snapshot `profileId` names, prepared for the human's UI flow
+ * review, and that snapshot runs only while the hold lasts.
+ */
 export const FactoryDeliveryExecutionHold = Schema.Struct({
   holdId: Schema.String,
   epoch: Schema.Int,
@@ -97,6 +119,12 @@ export const FactoryDeliveryExecutionHold = Schema.Struct({
 });
 export type FactoryDeliveryExecutionHold = typeof FactoryDeliveryExecutionHold.Type;
 
+/**
+ * The `docker run` arguments every confined runtime shares, up to but not including the image:
+ * no capabilities, a read-only root, resource limits, and the mounts the profile's role needs.
+ * An inspection always gets the read-only snapshot, never the assignment's volume. Callers
+ * append their own `--name` or `--entrypoint`, then the image.
+ */
 export function factoryDockerArguments(profile: FactoryExecutionProfile): Array<string> {
   return [
     "--context",
@@ -153,6 +181,10 @@ export function factoryDockerArguments(profile: FactoryExecutionProfile): Array<
   ];
 }
 
+/**
+ * Whether a path may enter a managed snapshot. Any segment naming VCS metadata, an environment
+ * file, a provider home or a credential refuses it, and source capture omits such files.
+ */
 export function admissibleFactorySourcePath(fileName: string): boolean {
   const parts = fileName.replaceAll("\\", "/").split("/");
   if (parts.some((part) => part === ".." || part === "." || part === "")) return false;

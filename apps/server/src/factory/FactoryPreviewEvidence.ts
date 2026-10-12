@@ -18,13 +18,16 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import { ServerConfig } from "../config.ts";
-import { ServerBrowser } from "../preview/ServerBrowser.ts";
-import { FactoryStore } from "./FactoryStore.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
+import * as ServerConfig from "../config.ts";
+import * as ServerBrowser from "../preview/ServerBrowser.ts";
+import * as FactoryStore from "./FactoryStore.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
-import { FactoryPreviewExecution } from "./FactoryPreviewExecution.ts";
+import * as FactoryPreviewExecution from "./FactoryPreviewExecution.ts";
 
+// One journal per preview instance under `preview-evidence/sessions`. An entry is written as
+// `started` before the browser acts and settled only after its receipt file is written, so a
+// crash leaves a `started` entry that blocks the instance rather than a silently lost action.
 const Entry = Schema.Struct({
   sequence: Schema.Number,
   commandId: Schema.String,
@@ -71,17 +74,40 @@ const unavailable = (detail: string) => new FactoryError({ code: "execution-unav
 const preserve = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "persistence", cause });
 
+/**
+ * Records what the delivery reviewer did in a candidate preview and seals it as UX evidence.
+ * Only the current delivery-review thread may act, and only on a ready instance built from the
+ * candidate it was asked to review. Every action and screenshot is journaled with a digest, so
+ * sealed evidence can be re-verified on every read. `FactoryPreviewService` drives it; the
+ * evidence HTTP route and screenshot publication read sealed bundles.
+ */
 export class FactoryPreviewEvidence extends Context.Service<
   FactoryPreviewEvidence,
   {
+    /** Closes the restricted browser session for one preview instance. */
     readonly close: (instanceId: string) => Effect.Effect<void, FactoryError>;
     readonly shutdownAll: () => Effect.Effect<void, FactoryError>;
+    /**
+     * Runs one browser action against the preview and journals it. Idempotent by `commandId`:
+     * a repeat returns the recorded result, and a different request under the same id is a
+     * conflict. An action whose outcome was never recorded blocks the instance; the reviewer
+     * needs a fresh preview instance. Navigation stays on the preview's origin.
+     */
     readonly invoke: (
       input: FactoryPreviewActionInput & { readonly threadId: ThreadId },
     ) => Effect.Effect<FactoryPreviewActionResult, FactoryError>;
+    /**
+     * Seals the journal as evidence for the named journeys. Each journey needs, in order, a
+     * navigation, a snapshot, an interaction and a resulting screenshot. Idempotent by
+     * `commandId`; the sealed bundle is keyed by its operations digest.
+     */
     readonly finish: (
       input: FactoryPreviewFinishInput & { readonly threadId: ThreadId },
     ) => Effect.Effect<FactoryRevisionUxEvidence, FactoryError>;
+    /**
+     * Loads a sealed bundle and re-checks every receipt and screenshot digest. Fails if anything
+     * on disk changed since sealing.
+     */
     readonly read: (operationsDigest: string) => Effect.Effect<
       {
         readonly evidence: FactoryRevisionUxEvidence;
@@ -99,11 +125,11 @@ export class FactoryPreviewEvidence extends Context.Service<
 export const layer = Layer.effect(
   FactoryPreviewEvidence,
   Effect.gen(function* () {
-    const store = yield* FactoryStore;
-    const runtime = yield* FactoryPreviewExecution;
-    const controls = yield* FactoryControlAccess;
-    const browser = yield* ServerBrowser;
-    const config = yield* ServerConfig;
+    const store = yield* FactoryStore.FactoryStore;
+    const runtime = yield* FactoryPreviewExecution.FactoryPreviewExecution;
+    const controls = yield* FactoryControlAccess.FactoryControlAccess;
+    const browser = yield* ServerBrowser.ServerBrowser;
+    const config = yield* ServerConfig.ServerConfig;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const crypto = yield* Crypto.Crypto;
@@ -342,6 +368,8 @@ export const layer = Layer.effect(
               },
             ],
           });
+          // The reviewer may have lost its authority while the browser acted; the action stays
+          // journaled, but its result is not returned.
           yield* admitted(input.instanceId, input.threadId);
           if (record.error) return yield* unavailable(record.error);
           return {
@@ -408,6 +436,8 @@ export const layer = Layer.effect(
           }
           for (const entry of journal.entries)
             if (entry.status !== "started") yield* receipt(directory, entry);
+          // The digest covers the whole journal, not only the chosen journeys, so `read` can
+          // rebuild it from the bundle alone.
           const operationsDigest = yield* digest(stableStringify({ journal, journeys }));
           const evidence: FactoryRevisionUxEvidence = {
             instanceId: instance.id,

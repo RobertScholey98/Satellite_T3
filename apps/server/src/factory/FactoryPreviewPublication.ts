@@ -9,13 +9,13 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { ServerConfig } from "../config.ts";
+import * as ServerConfig from "../config.ts";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as GitHubCredentials from "../sourceControl/GitHubCredentials.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 import * as FactoryPreviewEvidence from "./FactoryPreviewEvidence.ts";
 import * as FactoryPublication from "./FactoryPublication.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
 export const FactoryPublishedPreview = Schema.Struct({
   operationsDigest: Schema.String,
@@ -96,12 +96,25 @@ const preserve = (cause: unknown) =>
         cause,
       });
 
+/**
+ * Publishes a revision's sealed preview screenshots to GitHub so its pull request body can embed
+ * them. Each bundle becomes one parentless commit on its own evidence branch in the candidate's
+ * destination repository, written with the account that published the candidate. The project
+ * must opt in. `FactoryPublicationHost` calls it while publishing a revision.
+ */
 export class FactoryPreviewPublication extends Context.Service<
   FactoryPreviewPublication,
   {
+    /**
+     * Uploads the screenshots, checks the remote blobs, tree and commit against the sealed bytes,
+     * then creates the branch and returns stable image links. Safe to retry: a local reservation
+     * records the commit and the reference attempt, so a retry resumes instead of writing again.
+     * Refuses if the revision stops being current or a foreign ref already holds the branch.
+     */
     readonly publish: (
       input: typeof Input.Type,
     ) => Effect.Effect<FactoryPublishedPreview, FactoryError>;
+    /** The published links for the revision's current evidence, if publishing has completed. */
     readonly read: (
       input: typeof Input.Type,
     ) => Effect.Effect<FactoryPublishedPreview | undefined, FactoryError>;
@@ -109,7 +122,7 @@ export class FactoryPreviewPublication extends Context.Service<
 >()("t3/factory/FactoryPreviewPublication") {}
 
 const make = Effect.gen(function* () {
-  const store = yield* FactoryStore;
+  const store = yield* FactoryStore.FactoryStore;
   const evidence = yield* FactoryPreviewEvidence.FactoryPreviewEvidence;
   const publication = yield* FactoryPublication.FactoryPublication;
   const api = yield* GitHubApi.GitHubApi;
@@ -117,7 +130,7 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const config = yield* ServerConfig;
+  const config = yield* ServerConfig.ServerConfig;
   const mutex = yield* Semaphore.make(1);
   const digest = (algorithm: "SHA-1" | "SHA-256", bytes: Uint8Array) =>
     crypto
@@ -293,6 +306,7 @@ const make = Effect.gen(function* () {
             code: "permission-denied",
             detail: "The approved screenshot publication account changed.",
           });
+        // Writes re-check currency here and again just before the request is sent.
         if (body !== undefined) yield* current(input, record);
         const response = yield* api
           .rest({
@@ -418,6 +432,8 @@ const make = Effect.gen(function* () {
           code: "invalid-state",
           detail: "The remote evidence commit does not contain the exact sealed screenshot tree.",
         });
+      // The attempt is recorded before the create, and its result is ignored: the read-back
+      // below decides. A later retry accepts the branch only if it points at our commit.
       if (!existing) {
         record = { ...record, referenceAttempted: true };
         yield* save(input, record);

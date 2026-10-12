@@ -16,23 +16,31 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
+/**
+ * Carries out the effects of the human's controls: stopping and resuming the runtimes a pause,
+ * cancellation or retirement covers, delivering host messages into factory threads, and
+ * releasing held run queues. Each handler rereads the snapshot first. An effect that no longer
+ * applies is retired; one that is only blocked for now stays pending for a later pass.
+ */
 export class FactoryControlEffects extends Context.Service<
   FactoryControlEffects,
   {
-    readonly run: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
+    readonly run: (pending: FactoryStore.PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactoryControlEffects") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const failure = (cause: unknown) =>
   isFactoryError(cause) ? cause : new FactoryError({ code: "execution-unavailable", cause });
+// The running diagnosis thread of a team that waits on recovery. Its work is what ends that
+// wait, so the wait does not hold back its resume after a project pause.
 const diagnosisCanResume = (
   state: FactorySnapshot,
   assignment: FactoryAssignment | undefined,
@@ -89,12 +97,14 @@ const currentDeliveryReviewNotice = (
 export const layer = Layer.effect(
   FactoryControlEffects,
   Effect.gen(function* () {
-    const store = yield* FactoryStore;
-    const threads = yield* ThreadManagementService;
-    const boundaries = yield* FactoryBoundaryExecution;
-    const handovers = yield* FactoryHandover;
-    const access = yield* FactoryControlAccess;
+    const store = yield* FactoryStore.FactoryStore;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const boundaries = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+    const handovers = yield* FactoryHandover.FactoryHandover;
+    const access = yield* FactoryControlAccess.FactoryControlAccess;
 
+    // The root threads a control stops; their subagents are found from these. A takeover stops
+    // nothing; it only changes who may direct the thread.
     const targets = (
       state: FactorySnapshot,
       control: FactoryControl,
@@ -165,7 +175,9 @@ export const layer = Layer.effect(
       return projectThreads.filter((entry) => affected.has(entry.id) && entry.deletedAt === null);
     });
 
-    const stop = Effect.fn("FactoryControlEffects.stop")(function* (pending: PendingFactoryEffect) {
+    const stop = Effect.fn("FactoryControlEffects.stop")(function* (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) {
       if (pending.intent.type !== "control.stop") return;
       const intent = pending.intent;
       const state = yield* store.snapshot;
@@ -183,6 +195,8 @@ export const layer = Layer.effect(
       yield* store.beginEffect(pending.id);
       const result = yield* Effect.gen(function* () {
         const failures: FactoryError[] = [];
+        // Record what was running or queued before stopping it, so the resume restarts exactly
+        // that work. A cancellation never resumes, so it records nothing.
         if (control.kind !== "cancellation" && control.resumeThreadIds === undefined) {
           const captured = yield* Effect.gen(function* () {
             const resumeThreadIds = new Set<ThreadId>();
@@ -274,7 +288,7 @@ export const layer = Layer.effect(
     });
 
     const resume = Effect.fn("FactoryControlEffects.resume")(function* (
-      pending: PendingFactoryEffect,
+      pending: FactoryStore.PendingFactoryEffect,
     ) {
       if (pending.intent.type !== "control.resume") return;
       const intent = pending.intent;
@@ -334,7 +348,7 @@ export const layer = Layer.effect(
     });
 
     const deliver = Effect.fn("FactoryControlEffects.deliver")(function* (
-      pending: PendingFactoryEffect,
+      pending: FactoryStore.PendingFactoryEffect,
     ) {
       if (pending.intent.type !== "thread.deliver") return;
       const intent = pending.intent;
@@ -361,6 +375,9 @@ export const layer = Layer.effect(
         yield* store.retireEffect(pending.id);
         return;
       }
+      // While the team waits, delivery holds unless the thread is its current retrospective or
+      // the notice is bound to what the team waits on. A purpose-bound notice whose subject has
+      // moved on retires instead of waiting.
       let permitsWait = retrospective;
       if (intent.purpose !== undefined) {
         const purpose = intent.purpose;
@@ -437,7 +454,9 @@ export const layer = Layer.effect(
         .getThreadRecords(intent.threadId, ["messages", "runs"], { messageIds: [intent.messageId] })
         .pipe(Effect.mapError(failure));
       const accepted = records.messages.find((entry) => entry.id === intent.messageId);
+      // A message already in the thread was sent before a crash; only the receipt is missing.
       if (accepted === undefined) {
+        // Recheck against a fresh snapshot: the state may have moved during the reads above.
         if (retrospective) {
           const latest = yield* store.snapshot;
           const owner = latest.assignments.find((entry) => entry.id === member.assignmentId);
@@ -503,7 +522,7 @@ export const layer = Layer.effect(
     });
 
     const queue = Effect.fn("FactoryControlEffects.queue")(function* (
-      pending: PendingFactoryEffect,
+      pending: FactoryStore.PendingFactoryEffect,
     ) {
       if (pending.intent.type !== "thread.queue.resume") return;
       const intent = pending.intent;
@@ -519,6 +538,8 @@ export const layer = Layer.effect(
         return;
       }
       if (control.status !== "released") return;
+      // With `runIds` this releases exactly the runs a pause captured. Without, it is a handback
+      // and releases the taken-over thread and its subagents.
       const member = yield* access.membership(intent.threadId);
       if (!member) return yield* new FactoryError({ code: "invalid-state" });
       const assignment = state.assignments.find((entry) => entry.id === member.assignmentId);

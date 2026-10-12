@@ -17,25 +17,42 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
-import { EffectOutboxV2 } from "../orchestration-v2/EffectOutbox.ts";
+import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import {
   continueRestartedRun,
   restartContinuationEffectId,
   restartContinuationMessageId,
   restartPrepareCommandId,
 } from "../orchestration-v2/RestartContinuation.ts";
-import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
-import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import { factoryRecoveryBlocked } from "./FactoryOversight.ts";
 import { factorySamePullRequest } from "./FactoryRetros.ts";
-import { FactoryStore, type PendingFactoryEffect } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
+/**
+ * Answers what a quiet assignment is doing when the oversight decider asks. It records delivery
+ * the host can verify, a merged pull request or a team-authored report, and otherwise classifies
+ * the team as active, in an expected wait, ambiguous or outstanding. A finished provider turn is
+ * never treated as delivery.
+ */
 export class FactoryReconciliation extends Context.Service<
   FactoryReconciliation,
   {
-    readonly handle: (pending: PendingFactoryEffect) => Effect.Effect<void, FactoryError>;
+    /**
+     * Handles one `assignment.reconcile` intent and records `assignment.reconciled` or
+     * `assignment.delivery.recorded`. Along the way it records merges for the assignment's
+     * authorized pull-request dependencies.
+     */
+    readonly handle: (
+      pending: FactoryStore.PendingFactoryEffect,
+    ) => Effect.Effect<void, FactoryError>;
+    /**
+     * Whether the pull request is linked to the lead or one of its subagents and is open on the
+     * host, read fresh. False when no pull request provider is available.
+     */
     readonly reviewExists: (
       assignment: FactoryAssignment,
       ref: PullRequestRef,
@@ -50,12 +67,12 @@ const failure = (cause: unknown) =>
 export const layer = Layer.effect(
   FactoryReconciliation,
   Effect.gen(function* () {
-    const store = yield* FactoryStore;
-    const threads = yield* ThreadManagementService;
-    const access = yield* FactoryControlAccess;
-    const events = yield* EventSinkV2;
-    const outbox = yield* EffectOutboxV2;
-    const pullRequests = yield* Effect.serviceOption(PullRequestService);
+    const store = yield* FactoryStore.FactoryStore;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const access = yield* FactoryControlAccess.FactoryControlAccess;
+    const events = yield* EventSink.EventSinkV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const pullRequests = yield* Effect.serviceOption(PullRequestService.PullRequestService);
     /**
      * Resumes a lead whose turn a server restart cut, as restart continuation
      * does for opted-in threads. A resumed turn cut again by a crash is not
@@ -84,7 +101,10 @@ export const layer = Layer.effect(
         threadId,
         sourceRunId: run.id,
         managed: true,
-      }).pipe(Effect.provideService(ThreadManagementService, threads), Effect.result);
+      }).pipe(
+        Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+        Effect.result,
+      );
       if (Result.isFailure(resumed)) {
         yield* Effect.logWarning("Could not resume a lead after a server restart", {
           threadId,
@@ -271,6 +291,8 @@ export const layer = Layer.effect(
                   ),
               )
             : undefined;
+        // The completion plan's first unresolved pull request takes precedence over the recorded
+        // delivery claim.
         const claim = unresolved
           ? { kind: "pull-request" as const, ref: unresolved.ref }
           : assignment.oversight?.deliveryClaim;
@@ -397,6 +419,9 @@ export const layer = Layer.effect(
               ? undefined
               : yield* access.membership(message.senderThreadId);
           const progress = assignment.oversight?.progress;
+          // A report counts only when the current team sent it, not an auxiliary or a replaced
+          // lead, to an agreed recipient in the same project, and the team reported no remaining
+          // work with evidence.
           if (
             agreed &&
             recipient?.projectId === assignment.projectId &&
@@ -505,6 +530,8 @@ export const layer = Layer.effect(
           return;
         }
         const run = assignment.oversight?.lastObservedRun;
+        // Resuming and an outstanding verdict both act on what was read above. If anything moved
+        // since, the effect stays pending and the next pass reads again.
         if (
           (yield* store.snapshot).revision !== state.revision ||
           (yield* events.latestSequence().pipe(Effect.mapError(failure))) !== observedSequence

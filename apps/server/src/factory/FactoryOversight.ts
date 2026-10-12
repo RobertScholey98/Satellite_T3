@@ -32,12 +32,19 @@ import { factoryCompletionEligibility, initialFactoryCompletion } from "./Factor
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 
+/**
+ * Facts the host resolves before deciding, because the pure decider cannot read the host or
+ * pick ids. Each is present only for the command that needs it.
+ */
 export interface FactoryOversightContext {
+  /** Whether the host found the review a lead wants to wait on. */
   readonly reviewVerified?: boolean;
+  /** Fresh thread and approved model for a recovery diagnosis. */
   readonly auxiliaryAllocation?: {
     readonly threadId: ThreadId;
     readonly modelSelection: ModelSelection;
   };
+  /** Fresh thread and approved model for a replacement lead. */
   readonly replacementAllocation?: {
     readonly threadId: ThreadId;
     readonly modelSelection: ModelSelection;
@@ -57,6 +64,11 @@ const samePullRequest = (left: PullRequestRef, right: PullRequestRef) =>
 const sameStrings = (left: ReadonlyArray<string>, right: ReadonlyArray<string>) =>
   left.length === right.length && left.every((entry, index) => entry === right[index]);
 
+/**
+ * Whether host-confirmed delivery meets a dependency's unblock condition. A merged pull request
+ * must be in the condition's project and match its pinned ref and head when those are set; a
+ * report must come from the supporting assignment and reach the named recipient.
+ */
 export const factoryDeliverySatisfies = (
   dependency: FactoryDependency,
   delivery: FactoryDeliveryEvidence,
@@ -77,6 +89,10 @@ export const factoryDeliverySatisfies = (
   );
 };
 
+/**
+ * Whether a commission asks for exactly the supporting work a dependency approval authorized.
+ * Path lists compare in order, so the manager must repeat the approved work verbatim.
+ */
 export const factorySupportingWorkMatches = (
   approved: FactorySupportingWork,
   requested: FactorySupportingWork,
@@ -104,6 +120,12 @@ const member = (assignment: FactoryAssignment) => ({
   ancestorThreadIds: [],
 });
 
+/**
+ * The reason recovery may not act on this assignment now, or `undefined` when it may. Recovery
+ * needs open implementation work that its manager may direct, with no delivery wait, no active
+ * takeover, and no wait other than recovery's own. Callers about to replace the current wait
+ * pass the assignment with `wait: null`.
+ */
 export const factoryRecoveryBlocked = (state: FactorySnapshot, assignment: FactoryAssignment) => {
   if (
     assignment.kind === "onboarding" ||
@@ -129,6 +151,10 @@ export const factoryRecoveryBlocked = (state: FactorySnapshot, assignment: Facto
     return assignment.wait.reason;
 };
 
+/**
+ * Diagnosis-and-replan cycles this assignment may use: the smaller of what it was granted and
+ * what its manager's current policy allows, so tightening the policy applies to running work.
+ */
 export const factoryRecoveryAllowance = (
   state: FactorySnapshot,
   assignment: FactoryAssignment,
@@ -139,6 +165,15 @@ export const factoryRecoveryAllowance = (
     resolveManagerPolicy(state.defaults, manager.overrides).recoveryCycles,
   );
 
+/**
+ * Decides a team's progress reports, waits, dependencies, delivery evidence and recovery.
+ * Returns `undefined` for any other command.
+ *
+ * Recovery runs as a loop per incident. The host reconciles a stopped team into an incident, the
+ * manager begins an independent read-only diagnosis (one cycle of the allowance), then continues
+ * the lead, replaces it, or escalates to the human. An ambiguous outcome, an exhausted allowance
+ * or a failed diagnosis or replacement escalates on its own.
+ */
 export function decideFactoryOversight(
   input: FactoryOversightContext & {
     readonly state: FactorySnapshot;
@@ -209,6 +244,8 @@ export function decideFactoryOversight(
     );
   const leadAuthorized = (assignment: FactoryAssignment) =>
     actor.kind === "human" || (actor.kind === "thread" && actor.threadId === assignment.threadId);
+  // The manager acts on a team only while it may run itself and recovery is otherwise unblocked.
+  // The team's own wait does not stop the manager, who often acts to end it.
   const managerAuthorized = (assignment: FactoryAssignment) => {
     if (actor.kind === "human") return true;
     if (actor.kind !== "thread" || actor.threadId !== assignment.managerId) return false;
@@ -418,6 +455,8 @@ export function decideFactoryOversight(
       const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
       if (!assignment) return fail("assignment-not-found");
       if (!leadAuthorized(assignment)) return fail("permission-denied");
+      // While a wait is set, the lead may only restate a dependency or review wait of the same
+      // kind, and a dependency wait may add dependencies but never drop one.
       if (
         !activeAssignment(assignment) ||
         (assignment.wait !== null &&
@@ -556,6 +595,8 @@ export function decideFactoryOversight(
         },
         updatedAt: now,
       };
+      // A usable delivery leaves the wait; an unusable one keeps it. The team continues only when
+      // no awaited dependency remains.
       const remaining =
         assignment.wait?.kind === "dependency"
           ? assignment.wait.dependencyIds.filter((id) => id !== dependency.id || !command.usable)
@@ -635,6 +676,7 @@ export function decideFactoryOversight(
         status: command.status,
       };
       const previous = oversight.lastObservedRun;
+      // Repeated observations change nothing; only a run that has ended asks for reconciliation.
       if (
         previous?.threadId === observation.threadId &&
         previous.runId === observation.runId &&
@@ -703,6 +745,8 @@ export function decideFactoryOversight(
         return accept();
       const oversight = assignment.oversight ?? initialFactoryOversight();
       const previous = oversight.recovery.incident;
+      // One stopped run attempt opens at most one incident, however many triggers report it, and
+      // a new incident opens only after the previous one has continued.
       if (
         [...oversight.recovery.history, ...(previous === undefined ? [] : [previous])].some(
           (entry) =>
@@ -778,6 +822,8 @@ export function decideFactoryOversight(
       const claim = oversight.deliveryClaim;
       const delivery = command.delivery;
       const completion = assignment.completion ?? initialFactoryCompletion(assignment.scope);
+      // A merged pull request counts only if the team declared or claimed it, in its own
+      // project. A report counts only if claimed, and never where a pull request is required.
       const declared =
         completion.plan.kind === "pull-requests" &&
         delivery.kind === "pull-request-merged" &&
@@ -804,6 +850,8 @@ export function decideFactoryOversight(
         oversight: { ...oversight, delivery },
       };
       const complete = factoryCompletionEligibility(state, updated).eligible;
+      // A merge of a pinned pull request unblocks its dependents at once. Delivery from a
+      // supporting assignment counts for its dependents only once that assignment is complete.
       const propagated = state.dependencies.map((dependency) => {
         const explicit =
           dependency.unblockCondition.kind === "pull-request-merged" &&
@@ -863,6 +911,8 @@ export function decideFactoryOversight(
       if (oversight.recovery.cyclesUsed >= factoryRecoveryAllowance(state, assignment, manager))
         return fail("permission-denied");
       const allocation = input.auxiliaryAllocation;
+      // The diagnosis gets a thread no factory record has used, on a model the assignment
+      // and manager both approve. Beginning it spends one recovery cycle.
       if (
         !allocation ||
         state.auxiliaryThreads.some((entry) => entry.threadId === allocation.threadId) ||
@@ -938,6 +988,8 @@ export function decideFactoryOversight(
       const auxiliary = state.auxiliaryThreads.find((entry) => entry.threadId === command.threadId);
       if (!auxiliary) return fail("assignment-not-found");
       const assignment = state.assignments.find((entry) => entry.id === auxiliary.assignmentId);
+      // A delivery reviewer that stopped without a verdict fails its review and hands the reason
+      // to the lead. A diagnosis that stopped without findings escalates the incident.
       if (auxiliary.kind === "delivery-review") {
         const delivery = assignment?.delivery;
         const revision = delivery?.revisions.find((entry) => entry.id === auxiliary.revisionId);
@@ -1046,6 +1098,8 @@ export function decideFactoryOversight(
       )
         return fail("invalid-state");
       if (command.type === "auxiliary.started" || command.type === "auxiliary.prepared") {
+        // Once qualified, a diagnosis keeps its profile and source; a replayed launch cannot
+        // swap either.
         if (
           auxiliary.qualification !== undefined &&
           (auxiliary.qualification.profileId !== command.qualification.profileId ||
@@ -1098,6 +1152,7 @@ export function decideFactoryOversight(
         return fail("permission-denied");
       const assignment = state.assignments.find((entry) => entry.id === auxiliary.assignmentId);
       const incident = assignment?.oversight?.recovery.incident;
+      // A prepared diagnosis may report before the host records that it started.
       if (
         !assignment ||
         !activeAssignment(assignment) ||
@@ -1147,6 +1202,8 @@ export function decideFactoryOversight(
       if (!assignment) return fail("assignment-not-found");
       if (!managerAuthorized(assignment)) return fail("permission-denied");
       const incident = assignment.oversight?.recovery.incident;
+      // The manager replans after a diagnosis; the human may also replan straight from an
+      // escalation, which resolves its pending decision.
       const humanEscalation =
         actor.kind === "human" &&
         incident?.phase === "escalated" &&
@@ -1277,6 +1334,9 @@ export function decideFactoryOversight(
         incident.replacementThreadId !== command.threadId
       )
         return fail("invalid-state");
+      // Replacement lands in two host reports: `prepared` swaps in the new lead thread while the
+      // team still waits, and `recorded` confirms its launch and ends the wait. A report replayed
+      // after that is a no-op.
       if (
         incident.phase === "continuing" &&
         assignment.threadId === command.threadId &&

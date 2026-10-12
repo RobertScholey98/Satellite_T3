@@ -24,8 +24,11 @@ import { factoryPathWithin, factoryRelativePath } from "./FactoryBoundaryPaths.t
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 
+/** Host facts for scheduling decisions, resolved by `FactorySchedulingEffects.context`. */
 export interface FactorySchedulingContext {
+  /** The tracker reservation for an `assignment.commission` that names a candidate. */
   readonly schedulingAdmission?: FactorySchedulingAdmission;
+  /** Set when the host qualified the board for `project.scheduling.configure`. */
   readonly schedulingBoardVerified?: { readonly projectId: ProjectId; readonly boardId: string };
   /** The host's fresh board read for `schedule.track`. */
   readonly schedulingObservation?: {
@@ -38,12 +41,18 @@ export interface FactorySchedulingContext {
 }
 const hash = (value: unknown) =>
   Hex.encode(sha256(new TextEncoder().encode(stableStringify(value))));
+/**
+ * Identifies one ticket across observations and generations. Azure DevOps work items are not
+ * repository-scoped, so their key keeps only the first repository segment.
+ */
 export const factoryScheduleIssueKey = (ref: IssueRef) =>
   ref.hostKind === "azure-devops"
     ? `${ref.hostKind}:${ref.host.toLowerCase()}:${ref.repository.split("/")[0]!.toLowerCase()}:${ref.id}`
     : `${ref.hostKind}:${ref.host.toLowerCase()}:${ref.repository.toLowerCase()}:${ref.id}`;
+/** Each generation of a ticket is its own candidate; the human's reopen starts the next one. */
 export const factoryScheduleCandidateId = (canonicalIssueKey: string, generation: number) =>
   `schedule:${hash(canonicalIssueKey)}:${generation}`;
+/** Fingerprints the scope a commission must match exactly against the manager's preparation. */
 export const factoryScheduleWorkDigest = (work: FactorySupportingWork) =>
   hash({
     title: work.title,
@@ -59,6 +68,10 @@ export const factorySchedulePreparation = (
   candidate: FactoryScheduleCandidate,
 ): FactorySchedulePreparation | null =>
   candidate.lifecycle.phase === "observed" ? null : candidate.lifecycle.preparation;
+/**
+ * What the manager has been told about a candidate. Observation time and board revision are
+ * left out, so a board refresh with no material change does not notify the manager again.
+ */
 export const factoryScheduleNotificationDigest = (candidate: FactoryScheduleCandidate) =>
   hash({
     configurationId: candidate.configurationId,
@@ -72,9 +85,16 @@ const fail = (detail: string, code: FactoryError["code"] = "permission-denied") 
   Result.fail(new FactoryError({ code, detail }));
 
 export interface AuthorityOptions {
+  /**
+   * Rechecks an assignment already commissioned from the candidate, before its launch. The
+   * assignment does not count against itself, and a newer enabled configuration on the same
+   * board does not by itself revoke it.
+   */
   readonly existingAssignmentId?: FactoryAssignmentId;
+  /** The authority the work was admitted under; it must still be the one that applies. */
   readonly requiredAuthority?: FactoryScheduleAuthority;
 }
+/** Why a candidate cannot be commissioned now. Empty when it can. */
 function eligibilityReasons(
   state: FactorySnapshot,
   candidate: FactoryScheduleCandidate,
@@ -171,6 +191,8 @@ function eligibilityReasons(
     return ["This ticket generation already has an assignment."];
   // Direct human assignment replaces readiness; commission checks still apply to the work itself.
   if (options.requiredAuthority?.kind === "human") return [];
+  // Tracker readiness never authorizes protected-control changes. Improvement tickets fall
+  // through to the project improvement rule when readiness does not cover them.
   const controls = preparation.work.controlPaths ?? [];
   if (
     (candidate.observation.ready &&
@@ -247,6 +269,12 @@ function eligibilityReasons(
   return [];
 }
 
+/**
+ * The authority a candidate would be commissioned under now: tracker readiness when the ticket is
+ * Ready and the work touches no protected controls, otherwise the project's improvement rule.
+ * With `requiredAuthority`, fails unless that same authority still applies. The tracker calls
+ * this inside admission and again before launch.
+ */
 export function factoryScheduleAuthority(
   state: FactorySnapshot,
   candidate: FactoryScheduleCandidate,
@@ -286,6 +314,7 @@ export function factoryScheduleAuthority(
   return Result.succeed(authority);
 }
 
+/** Eligibility plus queue order: a candidate yields to a higher-priority eligible one. */
 export function factoryScheduleEligibility(
   state: FactorySnapshot,
   candidate: FactoryScheduleCandidate,
@@ -312,6 +341,11 @@ export function factoryScheduleEligibility(
   return { eligible: true };
 }
 
+/**
+ * Checks an `assignment.commission` that names a candidate. The host admission must match the
+ * current configuration, board, ticket detail and the exact prepared work, and its authority
+ * must still apply. A direct human message authorizes one commission only.
+ */
 export function validateFactorySchedulingCommission(
   state: FactorySnapshot,
   command: Extract<FactoryDecisionCommand, { type: "assignment.commission" }>,
@@ -389,6 +423,7 @@ export function validateFactorySchedulingCommission(
   return Result.succeed(candidate);
 }
 
+/** Consumes the candidate's generation in the same decision that creates its assignment. */
 export function claimFactoryScheduleCandidate(
   state: FactorySnapshot,
   candidate: FactoryScheduleCandidate,
@@ -415,6 +450,11 @@ export function claimFactoryScheduleCandidate(
   };
 }
 
+/**
+ * Decides scheduling configuration, the ticket queue and its host receipts. Returns `undefined`
+ * for other commands. Commissioning a candidate is decided with the assignment, through
+ * `validateFactorySchedulingCommission` and `claimFactoryScheduleCandidate`.
+ */
 export function decideFactoryScheduling(
   input: FactorySchedulingContext & {
     readonly state: FactorySnapshot;
@@ -481,6 +521,7 @@ export function decideFactoryScheduling(
       return fail("Another project already owns this canonical ticket.");
     if (previous?.lifecycle.phase === "commissioned" || previous?.lifecycle.phase === "dismissed")
       return consumed;
+    // Once a ticket is known to come from a project improvement, it keeps that source.
     const source =
       previous?.source.kind === "project-improvement" ? previous.source : observed.source;
     const candidate: FactoryScheduleCandidate = previous
@@ -513,6 +554,8 @@ export function decideFactoryScheduling(
     case "project.scheduling.configure": {
       if (actor.kind !== "human") return fail("Only the human can configure scheduling authority.");
       const previous = factorySchedulingConfiguration(state, command.projectId);
+      // Disabling scheduling on the current board needs no fresh board check, so the human can
+      // switch it off even when the tracker is unreachable.
       if (
         !(!command.enabled && previous?.boardId === command.boardId) &&
         (input.schedulingBoardVerified?.projectId !== command.projectId ||
@@ -527,6 +570,7 @@ export function decideFactoryScheduling(
         )
       )
         return fail("Improvement rules require project-relative paths.", "invalid-state");
+      // Rule ids are immutable because scheduled assignments cite the rule they ran under.
       if (
         rule &&
         state.schedulingConfigurations.some(
@@ -612,6 +656,8 @@ export function decideFactoryScheduling(
           "A notification batch must contain one to twenty distinct candidates belonging to its manager.",
           "invalid-state",
         );
+      // A receipt only marks candidates whose requested digest is still current; a newer
+      // request supersedes it. A request skips candidates already told or being told.
       if (command.type === "schedule.notified")
         return accept({
           scheduleCandidates: state.scheduleCandidates.map((candidate) => {
@@ -662,6 +708,7 @@ export function decideFactoryScheduling(
             "The candidate changed before its scheduling state was recorded.",
             "stale-revision",
           );
+        // A consumed generation ignores holds, and `ready` only lifts an existing hold.
         if (
           candidate.lifecycle.phase === "commissioned" ||
           candidate.lifecycle.phase === "dismissed"
@@ -689,6 +736,8 @@ export function decideFactoryScheduling(
         return fail("Only the owning manager or human can manage this ticket.");
       if (command.type === "schedule.reopen") {
         if (actor.kind !== "human") return fail("Only the human can reopen an issue generation.");
+        // Reopening starts a new generation with its own candidate id and releases the old
+        // reservation. The prior generation must be dismissed, or its assignment finished.
         const lifecycle = candidate.lifecycle;
         const assignment =
           lifecycle.phase === "commissioned"
@@ -759,6 +808,7 @@ export function decideFactoryScheduling(
           [{ type: "schedule.reconcile", projectId: candidate.projectId }],
         );
       }
+      // Retry lifts any hold and asks the host to recheck the ticket and its eligibility.
       const preparation = factorySchedulePreparation(candidate);
       return save(
         {

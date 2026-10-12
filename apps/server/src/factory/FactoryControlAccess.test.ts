@@ -15,7 +15,7 @@ import * as Result from "effect/Result";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as Access from "./FactoryControlAccess.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { decide, initialFactorySnapshot } from "./FactoryState.ts";
 import { deliveryIds, reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
 import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
@@ -59,7 +59,7 @@ const layer = (
   Access.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(FactoryStore)({ snapshot: Effect.succeed(snapshot) }),
+        Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.succeed(snapshot) }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
         }),

@@ -18,7 +18,7 @@ import {
   mergeHostEvidence,
 } from "./FactoryMergeEffects.testkit.ts";
 import { mergeFixture, integrated, deliveryIds, api } from "./FactoryMerge.testkit.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 it.effect(
   "refreshes one combined review, approves exact members, and keeps their independent merge paths closed",
@@ -63,7 +63,7 @@ it.effect(
       const runtime = Service.layer.pipe(
         Layer.provideMerge(Merge.layer.pipe(Layer.provide(Access.layer))),
         Layer.provide(external),
-        Layer.provide(layerTestDependencies),
+        Layer.provide(FactoryServiceTestkit.layerTestDependencies),
       );
       yield* Effect.gen(function* () {
         const factory = yield* Service.FactoryService;

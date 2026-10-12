@@ -20,17 +20,14 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import {
-  layer as SatelliteTestLayer,
-  recordProject,
-} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
+import * as SatelliteTestRuntime from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryService from "./FactoryService.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const projectId = ProjectId.make("commission-web");
 const human = { kind: "human" } as const;
@@ -84,9 +81,9 @@ const work = (managerId: ThreadId, key = "commission") => ({
   creatableDirectories: ["src/features"],
 });
 const runtime = Layer.mergeAll(FactoryStore.layer, ThreadManagement.layer).pipe(
-  Layer.provideMerge(SatelliteTestLayer),
+  Layer.provideMerge(SatelliteTestRuntime.layer),
 );
-const execution = Layer.succeed(FactoryExecution, {
+const execution = Layer.succeed(FactoryExecution.FactoryExecution, {
   qualify: () =>
     Effect.succeed({ status: "qualified", profileId: "onboarding-profile", checkedAt: now }),
   runtimePolicyFor: () =>
@@ -102,7 +99,7 @@ const execution = Layer.succeed(FactoryExecution, {
   assertDelegationFor: () => Effect.void,
 });
 const start = Effect.gen(function* () {
-  yield* recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
+  yield* SatelliteTestRuntime.recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
   const factory = yield* FactoryService.FactoryService;
   yield* factory.dispatch(human, {
     type: "manager.create",
@@ -143,11 +140,11 @@ const start = Effect.gen(function* () {
 const scenario = <A, E, R>(
   body: Effect.Effect<A, E, R>,
   options?: {
-    readonly capture?: FactorySource["Service"]["capture"];
-    readonly prepare?: FactoryBoundaryExecution["Service"]["prepare"];
-    readonly stop?: FactoryHandover["Service"]["stop"];
-    readonly revoke?: FactoryBoundaryExecution["Service"]["stop"];
-    readonly mutate?: FactoryBoundaryExecution["Service"]["mutate"];
+    readonly capture?: FactorySource.FactorySource["Service"]["capture"];
+    readonly prepare?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["prepare"];
+    readonly stop?: FactoryHandover.FactoryHandover["Service"]["stop"];
+    readonly revoke?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["stop"];
+    readonly mutate?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["mutate"];
   },
 ) =>
   body.pipe(
@@ -156,9 +153,9 @@ const scenario = <A, E, R>(
         Layer.provideMerge(runtime),
         Layer.provide(
           Layer.mergeAll(
-            layerTestDependencies,
+            FactoryServiceTestkit.layerTestDependencies,
             execution,
-            Layer.mock(FactoryBoundaryExecution)({
+            Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
               approve: () => Effect.succeed(boundary),
               prepare:
                 options?.prepare ??
@@ -171,11 +168,13 @@ const scenario = <A, E, R>(
               stop: options?.revoke ?? (() => Effect.void),
               mutate: options?.mutate ?? (() => Effect.void),
             }),
-            Layer.mock(FactorySource)({
+            Layer.mock(FactorySource.FactorySource)({
               capture: options?.capture ?? ((input) => Effect.succeed(source(input.threadId))),
               validateCurrent: () => Effect.void,
             }),
-            Layer.mock(FactoryHandover)({ stop: options?.stop ?? (() => Effect.void) }),
+            Layer.mock(FactoryHandover.FactoryHandover)({
+              stop: options?.stop ?? (() => Effect.void),
+            }),
           ),
         ),
       ),

@@ -23,6 +23,7 @@ import {
   factoryWorkflowRestartPending,
 } from "./FactoryWorkflowOwnership.ts";
 
+/** Where a thread sits in the factory, as `FactoryControlAccess` resolves it from lineage. */
 export interface FactoryControlMembership {
   readonly threadId: ThreadId;
   readonly managerId: ThreadId;
@@ -30,9 +31,15 @@ export interface FactoryControlMembership {
   readonly projectId: ProjectId;
   readonly assignmentId?: FactoryAssignmentId;
   readonly auxiliaryThreadId?: ThreadId;
+  /** Outermost first, ending at the thread's parent. Takeover checks compare positions in it. */
   readonly ancestorThreadIds: ReadonlyArray<ThreadId>;
 }
 
+/**
+ * Facts the host resolves before deciding, because the pure decider cannot read threads: the
+ * membership of a takeover or handback target, and proof that an escalated guidance message is a
+ * real human message in that thread.
+ */
 export interface FactoryControlContext {
   readonly controlTarget?: FactoryControlMembership;
   readonly guidance?: {
@@ -41,6 +48,15 @@ export interface FactoryControlContext {
   };
 }
 
+/**
+ * The reason a factory thread may not run now, or `undefined` when it may. Every path that
+ * starts or continues managed work asks this: manager retirement, incidents, concluded
+ * implementation, workflow restarts, authority holds, cancellation and pauses. A manager pause
+ * stops only the manager's own thread; its teams keep working within their grants.
+ *
+ * The current retrospective thread of an assignment is exempt from the assignment-level checks,
+ * since it must run after the team has concluded or been cancelled.
+ */
 export const factoryExecutionBlocked = (
   state: FactorySnapshot,
   member: FactoryControlMembership,
@@ -101,6 +117,13 @@ export const factoryExecutionBlocked = (
   }
 };
 
+/**
+ * `factoryExecutionBlocked` plus the checks on who is directing the thread. Pass `undefined` as
+ * the sender to skip them, and `null` for direction with no sender thread. Manager direction
+ * waits while the human reviews delivery with the lead, a paused manager's direction waits, and
+ * under a takeover the manager, sender-less direction and any thread above the taken-over one
+ * wait until handback.
+ */
 export const factoryDirectionBlocked = (
   state: FactorySnapshot,
   member: FactoryControlMembership,
@@ -140,6 +163,10 @@ export const factoryDirectionBlocked = (
   }
 };
 
+/**
+ * Keeps a manager under an active pause paused when a decision writes a new status for it. The
+ * written status moves onto the pause as the status its resume restores.
+ */
 export const preserveFactoryManagerPauses = (
   state: FactorySnapshot,
   managers: ReadonlyArray<FactoryManager>,
@@ -165,6 +192,15 @@ export const preserveFactoryManagerPauses = (
   return { managers: preserved, controls };
 };
 
+/**
+ * Decides the human's controls (pause, resume, retire, takeover, handback, cancel), the host's
+ * reports of what stopping and resuming physically did, and guidance relays. Returns `undefined`
+ * for any other command.
+ *
+ * Pausing again after a release bumps the control's generation, which the stop and resume
+ * effects carry, so a host report from an earlier generation is accepted as a no-op instead of
+ * changing the current one.
+ */
 export function decideFactoryControls(
   input: FactoryControlContext & {
     readonly state: FactorySnapshot;
@@ -225,6 +261,7 @@ export function decideFactoryControls(
         command.type === "manager.pause"
           ? state.managers.find((entry) => entry.id === command.managerId)
           : state.managers.find((entry) => entry.projectId === command.projectId);
+      // A project with no manager may still be paused when it hosts shared repository work.
       if (
         !manager &&
         (command.type !== "project.pause" ||
@@ -399,6 +436,8 @@ export function decideFactoryControls(
         !assignment ||
         assignment.managerId !== member.managerId ||
         assignment.projectId !== member.projectId ||
+        // A team with an outcome can be taken over only through its current retrospective
+        // thread, and the manager's own thread never.
         (assignment.outcome !== undefined && !retrospective) ||
         member.threadId === member.managerId
       )
@@ -532,6 +571,8 @@ export function decideFactoryControls(
       )
         return accept({}, { controlId: control.id });
       if (command.type === "control.stop.targets.recorded") {
+        // A cancellation never resumes, so it keeps no targets. For a pause the first record of
+        // what was running wins; a retried stop would find that work already stopped.
         if (control.kind === "cancellation" || control.resumeThreadIds !== undefined)
           return accept({}, { controlId: control.id });
         return save({
@@ -564,6 +605,8 @@ export function decideFactoryControls(
           resume: { status: "failed", detail: command.reason },
           updatedAt: now,
         });
+      // The pause ends only once the host confirms the resume, then the interrupted threads
+      // are told to continue and their held queues are released.
       const { resume: _, ...released } = control;
       return save(
         { ...released, status: "released", updatedAt: now },
@@ -607,6 +650,9 @@ export function decideFactoryControls(
         command.type === "guidance.observed" ? command.assignmentId : proof?.target.assignmentId;
       const assignment = state.assignments.find((entry) => entry.id === assignmentId);
       if (!assignment) return fail("assignment-not-found");
+      // Escalation needs the host's proof that the message is the human's own, in a thread under
+      // this assignment's manager and project. Besides the human, only the lead, the manager or
+      // that thread may escalate it.
       if (
         command.type === "guidance.escalate" &&
         (!proof ||
@@ -624,6 +670,7 @@ export function decideFactoryControls(
       const existing = state.guidance.find(
         (entry) => entry.threadId === command.threadId && entry.messageId === command.messageId,
       );
+      // A message is observed once and escalated at most once.
       if (existing && (command.type === "guidance.observed" || existing.escalation !== undefined))
         return accept();
       const guidance: FactoryGuidance = {

@@ -12,9 +12,20 @@ import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
 import { factoryExecutionBlocked } from "./FactoryControls.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 
+/**
+ * Decides whether an auxiliary thread (diagnosis, candidate review or retrospective) that went
+ * quiet is still working or stopped without its report. A stopped diagnosis or review is
+ * recorded as failed through `auxiliary.reconciled`; a stopped retrospective through
+ * `retro.failed`.
+ */
 export class FactoryRecoveryReconciliation extends Context.Service<
   FactoryRecoveryReconciliation,
   {
+    /**
+     * Handles one `auxiliary.reconcile` intent. Stays pending while the thread is blocked,
+     * waiting on a provider request, or has its own launch or delivery effect queued, and
+     * retires once the auxiliary is no longer current.
+     */
     readonly handle: (
       pending: FactoryStore.PendingFactoryEffect,
     ) => Effect.Effect<void, FactoryError>;
@@ -33,6 +44,8 @@ const make = Effect.gen(function* () {
     handle: Effect.fn("FactoryRecoveryReconciliation.handle")(function* (pending) {
       if (pending.intent.type !== "auxiliary.reconcile") return;
       const intent = pending.intent;
+      // Each pass reads the factory revision and event sequence first, and starts over if either
+      // moved while thread records were read, so the verdict never rests on a torn view.
       for (;;) {
         const state = yield* store.snapshot;
         const auxiliary = state.auxiliaryThreads.find(
@@ -156,6 +169,7 @@ const make = Effect.gen(function* () {
         )
           return;
         yield* store.beginEffect(pending.id);
+        // The auxiliary's subagents count as its team: any of them still running keeps it active.
         const sequence = yield* events.latestSequence().pipe(Effect.mapError(failure));
         const shells = yield* threads
           .listProjectThreads({

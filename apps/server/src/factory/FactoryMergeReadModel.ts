@@ -5,6 +5,10 @@ export type FactoryMergeReadScope =
   | { readonly kind: "manager"; readonly managerId: ThreadId }
   | { readonly kind: "assignment"; readonly assignmentId: FactoryAssignmentId };
 
+/**
+ * The merge groups, reviews and operations a project, manager or assignment view may see: every
+ * group whose integration lead or any member is in scope, so each side sees the whole group.
+ */
 export function scopeFactoryMerge(
   state: FactorySnapshot,
   scope: FactoryMergeReadScope,

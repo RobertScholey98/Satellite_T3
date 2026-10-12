@@ -17,7 +17,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { ServerConfig } from "../config.ts";
+import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as GitHubCredentials from "../sourceControl/GitHubCredentials.ts";
 import {
@@ -42,6 +42,11 @@ export const FactoryPublicationDestination = Schema.Union([
     credentialFingerprint: Schema.String,
   }),
 ]);
+/**
+ * Fixes a publication before any Git work. `parentCommit` is the commit to build on and
+ * `expectedTip` the remote branch tip the push may replace (`null` for a new branch). A later
+ * revision sets `previousReservationId` and builds on that reservation's commit.
+ */
 export const FactoryPublicationReservation = Schema.Struct({
   id: Schema.String,
   assignmentId: FactoryAssignmentId,
@@ -69,6 +74,11 @@ export const FactoryPublicationCandidate = Schema.Struct({
   configuration: FactoryBoundaryConfiguration,
 });
 export type FactoryPublicationCandidate = typeof FactoryPublicationCandidate.Type;
+/**
+ * The private commit built for a reservation. `publishedSourceDigest` covers the whole committed
+ * tree; finalization adopts it as the candidate digest, so verification and review see exactly
+ * what is pushed.
+ */
 export const FactoryPublicationPrepared = Schema.Struct({
   reservationId: Schema.String,
   candidateId: Schema.String,
@@ -88,6 +98,11 @@ const Artifact = Schema.Struct({
   publishedFiles: Schema.Array(FactorySource.FactorySourceFile),
 });
 export type FactoryPublicationArtifact = typeof Artifact.Type;
+/**
+ * What the remote branch shows. `confirmed`: it is at the prepared commit. `conflict`: it moved
+ * somewhere the reservation did not expect. `unknown`: it is still at the expected tip, or could
+ * not be read.
+ */
 export const FactoryPublicationObservation = Schema.Struct({
   status: Schema.Literals(["confirmed", "conflict", "unknown"]),
   remoteTip: Schema.optionalKey(Schema.NullOr(Schema.String)),
@@ -129,9 +144,21 @@ export class FactoryPublicationError extends Schema.TaggedError<FactoryPublicati
   }
 }
 
+/**
+ * Builds delivery commits in a private bare repository per reservation under the state
+ * directory, and pushes them. Git runs without system or global config, hooks, signing or
+ * credential helpers, so the user's environment cannot change the commit or see the token.
+ * `FactoryPublicationHost` chooses reservations; the boundary and preview publication read the
+ * stored artifacts.
+ */
 export class FactoryPublication extends Context.Service<
   FactoryPublication,
   {
+    /**
+     * Builds the commit for a reservation. Idempotent: the same input returns the stored result,
+     * and different input under the same id is a `reservation-conflict`. Refuses a candidate that
+     * changes or deletes a file its grant cannot write.
+     */
     readonly prepare: (input: {
       readonly reservation: FactoryPublicationReservation;
       readonly candidate: FactoryPublicationCandidate;
@@ -139,9 +166,15 @@ export class FactoryPublication extends Context.Service<
     readonly read: (
       reservationId: string,
     ) => Effect.Effect<FactoryPublicationArtifact, FactoryPublicationError>;
+    /** Reads the remote branch without writing. An unreadable remote is reported as `unknown`. */
     readonly inspect: (
       reservationId: string,
     ) => Effect.Effect<FactoryPublicationObservation, FactoryPublicationError>;
+    /**
+     * Pushes the prepared commit when the remote is still at the expected tip and the push is a
+     * fast-forward, leased on that tip, and reports what the remote shows afterwards. It never
+     * overwrites unexpected remote work. `beforeWrite` runs immediately before the push.
+     */
     readonly push: (input: {
       readonly reservationId: string;
       readonly beforeWrite?: Effect.Effect<void, FactoryPublicationError>;
@@ -167,7 +200,7 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const config = yield* ServerConfig;
+  const config = yield* ServerConfig.ServerConfig;
   const runner = yield* ProcessRunner.ProcessRunner;
   const sources = yield* FactorySource.FactorySource;
   const credentials = yield* GitHubCredentials.GitHubCredentials;
@@ -290,6 +323,8 @@ const make = Effect.gen(function* () {
     yield* fs.writeFileString(temporary, yield* encodeArtifact(artifact));
     yield* fs.rename(temporary, path.join(directory, "artifact.json"));
   });
+  // Duplicate paths are refused case-insensitively, and content must be canonical base64 that
+  // matches its digest.
   const validateFiles = Effect.fn(function* (
     files: ReadonlyArray<FactorySource.FactorySourceFile>,
   ) {
@@ -311,6 +346,8 @@ const make = Effect.gen(function* () {
       seen.add(file.path.toLowerCase());
     }
   });
+  // Copies the objects reachable from `revision` into the private repository as a pack, so it
+  // never borrows another object store through alternates.
   const importObjects = Effect.fn(function* (
     repository: string,
     objectDirectory: string,
@@ -335,6 +372,7 @@ const make = Effect.gen(function* () {
       yield* fs.rename(path.join(temporary, "import.idx"), `${destination}.idx`);
     }
   });
+  // The workspace's object directory, following a worktree's `.git` file to its common dir.
   const sourceObjects = Effect.fn(function* (workspaceRoot: string) {
     const workspace = yield* fs.realPath(workspaceRoot);
     const metadata = path.join(workspace, ".git");
@@ -354,6 +392,8 @@ const make = Effect.gen(function* () {
       : gitDirectory;
     return path.join(common, "objects");
   });
+  // Writes the tree of `base` with `files` replaced or added and `deletedPaths` removed, using a
+  // throwaway index.
   const overlayTree = Effect.fn(function* (
     repository: string,
     base: string,
@@ -427,6 +467,8 @@ const make = Effect.gen(function* () {
         )
       )
         return yield* new FactoryPublicationError({ reason: "invalid-input" });
+      // The input is stored before any Git work, so a retry after a crash resumes the same
+      // reservation and any other input under this id conflicts.
       const directory = yield* location(reservation.id);
       yield* fs.makeDirectory(directory, { recursive: true });
       const inputPath = path.join(directory, "reservation.json");
@@ -457,6 +499,8 @@ const make = Effect.gen(function* () {
         source.source.stagedPaths.some((name) => !factorySafeRelativePath(name))
       )
         return yield* new FactoryPublicationError({ reason: "source-invalid" });
+      // The grant is rechecked against the starting source: every changed or added file must be
+      // writable, and every starting file the candidate lacks must be a writable deletion.
       const startingFiles = new Map(source.files.map((file) => [file.path, file]));
       for (const file of candidate.files) {
         const before = startingFiles.get(file.path);
@@ -502,6 +546,8 @@ const make = Effect.gen(function* () {
           yield* sourceObjects(source.workspaceRoot),
           source.source.revision,
         );
+      // A later revision stacks a new commit on the previous one's, on the same branch and
+      // destination, so the pull request gains a commit instead of being rewritten.
       let previous: FactoryPublicationArtifact | undefined;
       if (reservation.previousReservationId !== undefined) {
         previous = yield* read(reservation.previousReservationId);
@@ -537,6 +583,7 @@ const make = Effect.gen(function* () {
         source.files,
         source.source.deletedPaths,
       );
+      // Only the selected paths enter the commit; other candidate changes stay unpublished.
       const selected = new Set(candidate.selectedPaths);
       const treeOid = yield* overlayTree(
         repository,
@@ -559,6 +606,8 @@ const make = Effect.gen(function* () {
           },
         },
       );
+      // The published manifest is read back from the committed tree, less the source's excluded
+      // paths, so its digest describes the commit rather than the request.
       const publishedFiles: Array<FactorySource.FactorySourceFile> = [];
       const listing = (yield* git(repository, ["ls-tree", "-rz", "--full-tree", treeOid], {
         binary: true,
@@ -630,6 +679,8 @@ const make = Effect.gen(function* () {
       destination.repository === ".."
     )
       return yield* new FactoryPublicationError({ reason: "unsupported-transport" });
+    // The token travels as a header scoped to this remote through the command's environment,
+    // never in a URL or a config file.
     const credential = yield* credentials
       .get(destination.host)
       .pipe(
@@ -712,6 +763,7 @@ const make = Effect.gen(function* () {
       )
         return FactoryPublicationObservation.make({ status: "conflict", remoteTip: tip });
       if (input.beforeWrite) yield* input.beforeWrite;
+      // A failed push is not an answer; the remote is read again and decides the outcome.
       yield* git(
         repository,
         [

@@ -8,6 +8,7 @@ import {
 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import type { ProviderAdapterV2RuntimePolicy } from "../orchestration-v2/ProviderAdapter.ts";
 import * as McpProviderSession from "../mcp/McpProviderSession.ts";
+import * as FactoryPrompts from "./FactoryPrompts.ts";
 
 const profile = {
   boundaryId: "assignment:thread",
@@ -27,6 +28,7 @@ const runtimePolicy: ProviderAdapterV2RuntimePolicy = {
     boundaryId: profile.boundaryId,
     workspacePath: profile.projectSnapshotPath,
     profile,
+    orchestrationInstructions: FactoryPrompts.managedCodexOrchestration,
   },
 };
 
@@ -43,6 +45,27 @@ it.effect(
       assert.equal(params.cwd, "/workspace");
       assert.equal(params.approvalPolicy, "never");
       assert.deepEqual(params.sandboxPolicy, { type: "externalSandbox", networkAccess: "enabled" });
+    }),
+);
+
+it.effect(
+  "managed Codex turns carry the factory orchestration guidance instead of the default",
+  () =>
+    Effect.gen(function* () {
+      const turn = (policy: ProviderAdapterV2RuntimePolicy) =>
+        buildCodexTurnStartParams({
+          nativeThreadId: "native-thread",
+          codexInput: [{ type: "text", text: "inspect" }],
+          runtimePolicy: policy,
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
+          hasT3Mcp: true,
+        });
+      const { confinement: _confinement, ...hostPolicy } = runtimePolicy;
+      const managed = (yield* turn(runtimePolicy)).additionalContext?.t3_code_orchestration?.value;
+      const ordinary = (yield* turn(hostPolicy)).additionalContext?.t3_code_orchestration?.value;
+      assert.equal(managed, FactoryPrompts.managedCodexOrchestration);
+      assert.notEqual(ordinary, managed);
+      assert.include(ordinary ?? "", "delegate_task");
     }),
 );
 

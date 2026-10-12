@@ -1,5 +1,12 @@
 import type { FactoryAssignment, FactorySnapshot } from "@t3tools/contracts";
 
+/**
+ * Whether a shared-work assignment is really the system manager's: its repository, project and
+ * manager all match, and the experiment or commissioned work record points back at this exact
+ * assignment. Revoked work still counts as owned, so access checks keep scoping the team to its
+ * record after authority is withdrawn. Use `factorySharedAssignmentEnabled` to ask whether the
+ * team may still work.
+ */
 export function factorySharedAssignmentOwned(
   state: FactorySnapshot,
   assignment: FactoryAssignment,
@@ -32,6 +39,12 @@ export function factorySharedAssignmentOwned(
   );
 }
 
+/**
+ * Whether an owned shared-work assignment may run now. The human can withdraw this at three
+ * levels: disabling the repository, disabling experiments, or revoking the work. A workflow restart
+ * that has not reached `ready` also disables it, because the team is stopped until the restart is
+ * prepared.
+ */
 export function factorySharedAssignmentEnabled(
   state: FactorySnapshot,
   assignment: FactoryAssignment,
@@ -51,6 +64,7 @@ export function factorySharedAssignmentEnabled(
   return !factoryWorkflowRestartPending(state, assignment.id);
 }
 
+/** Whether the assignment's latest workflow restart is still stopping, preparing or failed. */
 export function factoryWorkflowRestartPending(
   state: FactorySnapshot,
   assignmentId: FactoryAssignment["id"],

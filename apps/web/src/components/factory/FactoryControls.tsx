@@ -621,6 +621,17 @@ export function FactoryThreadControls({ threadRef }: { threadRef: ScopedThreadRe
   );
 }
 
+/** The role a managed thread holds in its assignment, named in the thread header. */
+function memberRole(
+  { assignment, auxiliary }: NonNullable<ReturnType<typeof factoryThreadMembership>>,
+  threadId: ThreadId,
+) {
+  if (auxiliary?.kind === "retrospective") return "Retrospective lead";
+  if (auxiliary?.kind === "delivery-review") return "Independent reviewer";
+  if (auxiliary?.kind === "diagnosis") return "Recovery diagnosis";
+  return assignment?.threadId === threadId ? "Implementation lead" : "Team member";
+}
+
 function ManagedThreadControls({
   environment,
   thread,
@@ -656,9 +667,7 @@ function ManagedThreadControls({
     >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs font-medium">
-          {assignment
-            ? `${auxiliary?.kind === "retrospective" ? "Retrospective lead" : auxiliary?.kind === "delivery-review" ? "Independent reviewer" : auxiliary?.kind === "diagnosis" ? "Recovery diagnosis" : assignment.threadId === thread.id ? "Implementation lead" : "Team member"} · ${manager.name}`
-            : manager.name}
+          {assignment ? `${memberRole(membership, thread.id)} · ${manager.name}` : manager.name}
         </span>
         {managerPause ? (
           <Badge size="sm" variant="warning">

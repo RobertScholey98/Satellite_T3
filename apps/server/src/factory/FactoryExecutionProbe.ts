@@ -1,3 +1,10 @@
+/**
+ * Node script run inside an execution profile's container when the profile is qualified. It
+ * drives Codex's own `command/exec` to prove that, from where the agent runs, `/runtime` is
+ * writable, the workspace, workflow and system paths are not, and no host authority (Docker
+ * socket, host credentials, ambient tokens) is reachable. Prints `factory-boundary-ok` only when
+ * every check passes.
+ */
 export const factoryExecutionProbe = String.raw`
 const { spawn } = require('node:child_process');
 const child = spawn('codex', ['app-server', '-c', 'approval_policy="never"', '-c', 'sandbox_mode="danger-full-access"'], { stdio: ['pipe', 'pipe', 'pipe'] });

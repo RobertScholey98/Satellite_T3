@@ -10,13 +10,19 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { authenticateMediaRequest } from "../auth/http.ts";
-import { FactoryPreviewEvidence } from "./FactoryPreviewEvidence.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryPreviewEvidence from "./FactoryPreviewEvidence.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 
+/**
+ * Serves sealed preview screenshots at `/api/factory/preview-evidence/<operationsDigest>/<index>`
+ * to clients with orchestration read access. Only bundles that a delivery revision records as its
+ * UX evidence are served, and the bytes are re-hashed on every request: a changed file is a 409,
+ * anything unknown is a 404.
+ */
 export const routeLayer = HttpRouter.use((router) =>
   Effect.gen(function* () {
-    const evidence = yield* FactoryPreviewEvidence;
-    const store = yield* FactoryStore;
+    const evidence = yield* FactoryPreviewEvidence.FactoryPreviewEvidence;
+    const store = yield* FactoryStore.FactoryStore;
     const fs = yield* FileSystem.FileSystem;
     const crypto = yield* Crypto.Crypto;
     yield* router.add(

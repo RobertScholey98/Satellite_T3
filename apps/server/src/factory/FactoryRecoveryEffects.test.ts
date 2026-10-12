@@ -21,10 +21,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as Satellite from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryRecoveryEffects from "./FactoryRecoveryEffects.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
@@ -120,9 +120,9 @@ const adapter = FactoryRecoveryEffects.layer.pipe(Layer.provide(FactoryControlAc
 const scenario = <A, E, R>(
   body: Effect.Effect<A, E, R>,
   options: {
-    stopTeam?: FactoryHandover["Service"]["stopTeam"];
-    inspect?: FactoryBoundaryExecution["Service"]["inspect"];
-    rebind?: FactoryBoundaryExecution["Service"]["rebind"];
+    stopTeam?: FactoryHandover.FactoryHandover["Service"]["stopTeam"];
+    inspect?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["inspect"];
+    rebind?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["rebind"];
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -165,7 +165,7 @@ const scenario = <A, E, R>(
       Effect.provide(adapter),
       Effect.provide(
         Layer.mergeAll(
-          Layer.mock(FactoryBoundaryExecution)({
+          Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({
             inspect:
               options.inspect ??
               (() => Effect.succeed({ qualification, sourceDigest: "unfinished-edits" })),
@@ -174,7 +174,7 @@ const scenario = <A, E, R>(
               (() => Effect.succeed({ ...qualification, profileId: "replacement-profile" })),
             prepare: () => Effect.die("Recovery cannot rebuild the starting source"),
           }),
-          Layer.mock(FactoryHandover)({
+          Layer.mock(FactoryHandover.FactoryHandover)({
             stopTeam:
               options.stopTeam ??
               ((input) =>
@@ -191,7 +191,7 @@ const scenario = <A, E, R>(
                     ),
                   )),
           }),
-          Layer.mock(FactoryExecution)({
+          Layer.mock(FactoryExecution.FactoryExecution)({
             assertSelectionFor: () => Effect.void,
             runtimePolicyFor: (threadId) =>
               Effect.gen(function* () {

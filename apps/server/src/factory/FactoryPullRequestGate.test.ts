@@ -18,7 +18,7 @@ import {
 } from "../pullRequest/PullRequestService.testkit.ts";
 import { BeforeGitHubMutation } from "../sourceControl/GitHubApi.ts";
 import * as Gate from "./FactoryPullRequestGate.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import { ready } from "./FactoryIntegration.testkit.ts";
 import { factoryMergeGroupForAssignment } from "./FactoryMergeOwnership.ts";
@@ -137,7 +137,9 @@ it.effect(
     }).pipe(
       Effect.provide(
         Gate.layer.pipe(
-          Layer.provide(Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) })),
+          Layer.provide(
+            Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+          ),
         ),
       ),
     );
@@ -155,7 +157,7 @@ const makeService = ({
     ...input,
     actionGate: Gate.layerActionGate.pipe(
       Layer.provide(
-        Layer.mock(FactoryStore)({
+        Layer.mock(FactoryStore.FactoryStore)({
           snapshot:
             typeof factorySnapshot === "function"
               ? Effect.sync(factorySnapshot)

@@ -11,16 +11,16 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Satellite from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { PullRequestService } from "../pullRequest/PullRequestService.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import type { ProviderMergeEvidence } from "../pullRequest/pullRequestMergeEvidence.ts";
-import { FactoryBoundaryExecution } from "./FactoryBoundaryExecution.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryDeliveryEffects from "./FactoryDeliveryEffects.ts";
-import { FactoryExecution } from "./FactoryExecution.ts";
-import { FactoryHandover } from "./FactoryHandover.ts";
-import { FactoryPublicationHost } from "./FactoryPublicationHost.ts";
+import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactoryHandover from "./FactoryHandover.ts";
+import * as FactoryPublicationHost from "./FactoryPublicationHost.ts";
 import * as FactoryService from "./FactoryService.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import {
   deliveryIds,
@@ -29,7 +29,7 @@ import {
   deliverySelection,
   reviewedDeliveryFixture,
 } from "./FactoryDelivery.testkit.ts";
-import { layerTestDependencies } from "./FactoryService.testkit.ts";
+import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const evidence: ProviderMergeEvidence = {
   headSha: "head",
@@ -99,7 +99,7 @@ const base = Layer.mergeAll(FactoryStore.layer, Threads.layer).pipe(
 );
 const services = FactoryService.layer.pipe(
   Layer.provideMerge(FactoryDeliveryEffects.layer.pipe(Layer.provide(FactoryControlAccess.layer))),
-  Layer.provide(layerTestDependencies),
+  Layer.provide(FactoryServiceTestkit.layerTestDependencies),
 );
 const encode = Schema.encodeSync(Schema.fromJsonString(FactorySnapshot));
 
@@ -146,12 +146,12 @@ it.effect(
       const seed = reviewedDeliveryFixture();
       yield* sql`INSERT INTO factory_state (id,revision,payload_json) VALUES(1,0,${encode(seed)})`;
       const dependencies = Layer.mergeAll(
-        Layer.mock(FactoryBoundaryExecution)({}),
-        Layer.mock(FactoryPublicationHost)({}),
-        Layer.mock(FactoryHandover)({}),
-        Layer.mock(FactorySource)({}),
-        Layer.mock(FactoryExecution)({}),
-        Layer.mock(PullRequestService)({
+        Layer.mock(FactoryBoundaryExecution.FactoryBoundaryExecution)({}),
+        Layer.mock(FactoryPublicationHost.FactoryPublicationHost)({}),
+        Layer.mock(FactoryHandover.FactoryHandover)({}),
+        Layer.mock(FactorySource.FactorySource)({}),
+        Layer.mock(FactoryExecution.FactoryExecution)({}),
+        Layer.mock(PullRequestService.PullRequestService)({
           detail: () => Effect.succeed(detail),
           inspectForMerge: () =>
             Ref.update(inspections, (count) => count + 1).pipe(Effect.andThen(Ref.get(remote))),

@@ -6,7 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as ServerConfig from "../config.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import * as Workflow from "./FactoryWorkflowExecution.ts";
 import { factoryDockerArguments } from "./FactoryExecutionProfile.ts";
 
@@ -40,7 +40,7 @@ it.effect(
       );
       const dependencies = Layer.mergeAll(
         ServerConfig.layerTest(root, root),
-        Layer.mock(FactorySource)({
+        Layer.mock(FactorySource.FactorySource)({
           readRevision: (_root, revision) =>
             Effect.succeed({
               files: revision === version.revision ? [oldFile] : [newFile, authoring, mechanics],

@@ -1,5 +1,12 @@
 import type { FactoryAssignment, FactoryAuxiliaryThread, FactoryRetro } from "@t3tools/contracts";
 
+/**
+ * Whether an auxiliary thread (a diagnosis, delivery review or retrospective) still serves the
+ * work it was started for. Access, model admission, execution and recovery all ask this before
+ * letting the thread act, so a thread whose incident, revision or retro has moved on loses its
+ * authority. Pass `retros` for retrospective threads; without them a retrospective is never
+ * current.
+ */
 export function factoryAuxiliaryIsCurrent(
   assignment: FactoryAssignment | undefined,
   auxiliary: FactoryAuxiliaryThread,
@@ -36,6 +43,7 @@ export function factoryAuxiliaryIsCurrent(
       incident.diagnosisThreadId === auxiliary.threadId
     );
   }
+  // A review is bound to the current revision and the exact candidate it was asked to review.
   const revision = assignment.delivery?.revisions.find(
     (entry) => entry.id === auxiliary.revisionId,
   );

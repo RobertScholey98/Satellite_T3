@@ -16,10 +16,10 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
-import { ProcessRunner } from "../processRunner.ts";
-import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as Boundary from "./FactoryBoundaryExecution.ts";
 import { prepareFactoryCodexLaunch } from "./FactoryCodexLaunch.ts";
 import {
@@ -30,10 +30,10 @@ import {
 } from "./FactoryDelivery.testkit.ts";
 import * as Execution from "./FactoryExecution.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
-import { FactorySource } from "./FactorySource.ts";
+import * as FactorySource from "./FactorySource.ts";
 import * as FactorySourceTestkit from "./FactorySource.testkit.ts";
 import { decide } from "./FactoryState.ts";
-import { FactoryStore } from "./FactoryStore.ts";
+import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 
 const profileId = "e4556207-a1c8-4b22-861c-4f835a64b713";
@@ -125,11 +125,11 @@ const setup = Effect.gen(function* () {
   const processes: string[] = [];
   const dependencies = Layer.mergeAll(
     Layer.succeed(ServerConfig.ServerConfig, config),
-    Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
-    Layer.mock(ProjectStoreV2)({}),
-    Layer.mock(ProjectionStoreV2)({}),
-    Layer.mock(ProviderInstanceRegistry)({}),
-    Layer.mock(ProcessRunner)({
+    Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+    Layer.mock(ProjectStore.ProjectStoreV2)({}),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+    Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+    Layer.mock(ProcessRunner.ProcessRunner)({
       run: (input) =>
         Effect.sync(() => {
           processes.push(input.command);
@@ -211,7 +211,7 @@ it.effect(
       const skillDigest = Buffer.from(
         yield* (yield* Crypto.Crypto).digest("SHA-256", skill),
       ).toString("hex");
-      const workflowSource = Layer.mock(FactorySource)({
+      const workflowSource = Layer.mock(FactorySource.FactorySource)({
         readRevision: () =>
           Effect.succeed({
             files: [
@@ -289,7 +289,7 @@ it.effect(
       };
       const dependencies = Layer.mergeAll(
         test.dependencies,
-        Layer.mock(FactorySource)({
+        Layer.mock(FactorySource.FactorySource)({
           readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
         }),
       );

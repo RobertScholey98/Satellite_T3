@@ -19,8 +19,8 @@ import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 
 import * as ServerConfig from "../config.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as GitHubCredentials from "../sourceControl/GitHubCredentials.ts";
 import * as FactoryPublication from "./FactoryPublication.ts";
@@ -146,7 +146,7 @@ const fixture = Effect.fn(function* () {
   const config = ServerConfig.layerTest(root, root);
   const sourceDependencies = Layer.mergeAll(
     config,
-    Layer.mock(ProjectStoreV2)({
+    Layer.mock(ProjectStore.ProjectStoreV2)({
       get: () =>
         Effect.succeed(
           Option.some({
@@ -165,7 +165,7 @@ const fixture = Effect.fn(function* () {
           }),
         ),
     }),
-    Layer.mock(ProjectionStoreV2)({ getThread: () => Effect.succeed(thread) }),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThread: () => Effect.succeed(thread) }),
   );
   const { source, artifact } = yield* Effect.gen(function* () {
     const source = yield* FactorySource.FactorySource;

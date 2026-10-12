@@ -10,6 +10,13 @@ export type FactoryIntegrationReadScope =
       readonly includeLeadCommunication: boolean;
     };
 
+/**
+ * The integration records a reader may see. The requester's project and manager and the
+ * integration team see an integration whole. A participant's project, manager or assignment
+ * sees only its own project's grants, capabilities and test patches, and messages to or from
+ * its assignments. An assignment reader sees messages only when it is the lead thread
+ * (`includeLeadCommunication`).
+ */
 export function scopeFactoryIntegration(
   state: FactorySnapshot,
   scope: FactoryIntegrationReadScope,
@@ -67,6 +74,7 @@ export function scopeFactoryIntegration(
       (completeVectors.has(entry.integrationId) || projectIds.has(entry.projectId)),
   );
   const capabilityIds = new Set(grants.map((entry) => entry.capabilityId));
+  // Resume targets name threads and runs across projects; only the host needs them.
   return {
     integrations: integrations.map((entry) => ({
       ...entry,

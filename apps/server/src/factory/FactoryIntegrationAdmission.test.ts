@@ -16,21 +16,18 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import {
-  ProjectionStoreV2,
-  ProjectionStoreThreadNotFoundError,
-} from "../orchestration-v2/ProjectionStore.ts";
-import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
-import { ProcessRunner } from "../processRunner.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as Runtime from "./FactoryExecution.ts";
 import { FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { integrationDigest } from "./FactoryIntegrationRuntime.ts";
 import { ready, integrated, api } from "./FactoryIntegration.testkit.ts";
 import { deliveryIds, deliveryNow, deliverySelection } from "./FactoryDelivery.testkit.ts";
-import { FactorySource } from "./FactorySource.ts";
-import { FactoryStore } from "./FactoryStore.ts";
-import { FactoryControlAccess } from "./FactoryControlAccess.ts";
+import * as FactorySource from "./FactorySource.ts";
+import * as FactoryStore from "./FactoryStore.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import {
   frozenMergeOperationFixture,
   startedMergeOperationFixture,
@@ -86,26 +83,28 @@ it.effect(
       };
       const dependencies = Layer.mergeAll(
         ServerConfig.layerTest(root, root),
-        Layer.mock(FactoryStore)({ snapshot: Effect.sync(() => state) }),
-        Layer.mock(ProjectStoreV2)({}),
-        Layer.mock(ProviderInstanceRegistry)({}),
-        Layer.mock(ProcessRunner)({}),
-        Layer.mock(FactorySource)({
+        Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+        Layer.mock(ProjectStore.ProjectStoreV2)({}),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+        Layer.mock(ProcessRunner.ProcessRunner)({}),
+        Layer.mock(FactorySource.FactorySource)({
           readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
         }),
-        Layer.mock(ProjectionStoreV2)({
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadShell: (id) =>
             Effect.succeed(id === child ? { ...liveThreadShell(id), ...thread } : null),
           getThread: (id) =>
             id === child
               ? Effect.succeed(thread)
-              : Effect.fail(new ProjectionStoreThreadNotFoundError({ threadId: id })),
+              : Effect.fail(
+                  new ProjectionStore.ProjectionStoreThreadNotFoundError({ threadId: id }),
+                ),
         }),
       );
       yield* Effect.gen(function* () {
         const config = yield* ServerConfig.ServerConfig;
         const runtime = yield* Runtime.FactoryExecution;
-        const access = yield* FactoryControlAccess;
+        const access = yield* FactoryControlAccess.FactoryControlAccess;
         const profileId = "13b2ac6e-1e20-466e-bbbf-c37c29f293da";
         const directory = path.join(config.stateDir, "factory", "execution", profileId);
         const { inputDigest: _ignored, ...manifestFields } = seed.manifest;

@@ -20,10 +20,10 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
-import { ServerConfig } from "../config.ts";
-import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
-import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
-import { ProcessRunner } from "../processRunner.ts";
+import * as ServerConfig from "../config.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import { factorySafeRelativePath } from "./FactoryBoundaryPaths.ts";
 import { admissibleFactorySourcePath } from "./FactoryExecutionProfile.ts";
 
@@ -53,19 +53,37 @@ const SourceManifest = Schema.Struct({
 });
 export type FactorySourceArtifact = typeof SourceManifest.Type;
 
+/**
+ * Captures the source an assignment starts from, as a host-side snapshot that the boundary
+ * seeds into the assignment volume. Reads go through the repository's own Git objects with hooks,
+ * global and system config, fsmonitor and lazy fetch disabled. Sensitive paths (credentials,
+ * keys, `.env`, `.git`) are excluded rather than copied, and a handover that changed one fails.
+ * Any change to HEAD or the index during a capture fails it. The original workspace is only read.
+ */
 export class FactorySource extends Context.Service<
   FactorySource,
   {
+    /**
+     * Captures a project's HEAD, or a handover thread's worktree including staged, unstaged and
+     * untracked work. The source id derives from `requestId`, so a repeat returns the stored
+     * source and a different request under the same id is a conflict. A handover workspace is
+     * read twice and must match, so a capture never mixes two edits.
+     */
     readonly capture: (
       input: typeof CaptureRequest.Type,
     ) => Effect.Effect<FactoryStartingSource, FactoryError>;
     readonly read: (id: FactorySourceId) => Effect.Effect<FactorySourceArtifact, FactoryError>;
+    /**
+     * Records files taken from a stopped assignment volume as a new handover source on top of
+     * `previousSourceId`, keeping its revision and index. Idempotent by `requestId`.
+     */
     readonly captureArtifact: (input: {
       readonly requestId: CommandId;
       readonly previousSourceId: FactorySourceId;
       readonly threadId: ThreadId;
       readonly files: ReadonlyArray<FactorySourceFile>;
     }) => Effect.Effect<FactoryStartingSource, FactoryError>;
+    /** Reads the admissible files of an exact committed revision, such as a pinned workflow. */
     readonly readRevision: (
       repositoryRoot: string,
       revision: string,
@@ -76,6 +94,10 @@ export class FactorySource extends Context.Service<
       },
       FactoryError
     >;
+    /**
+     * Fails unless the original workspace still matches the captured source, so a handover does
+     * not activate over work that moved on. A source captured from a volume never validates here.
+     */
     readonly validateCurrent: (id: FactorySourceId) => Effect.Effect<void, FactoryError>;
   }
 >()("t3/factory/FactorySource") {}
@@ -92,6 +114,10 @@ const preserve = (cause: unknown) =>
 const LIMIT = 256 * 1024 * 1024;
 type Entry = { readonly path: string; readonly oid: string; readonly mode: "100644" | "100755" };
 
+/**
+ * Normalizes CRLF to LF in valid UTF-8 text so a working file can be matched against its Git blob
+ * after a line-ending conversion on checkout. Binary or non-UTF-8 bytes are returned unchanged.
+ */
 export function factoryCanonicalText(bytes: Uint8Array): Uint8Array {
   if (bytes.includes(0)) return bytes;
   try {
@@ -109,10 +135,10 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
-  const runner = yield* ProcessRunner;
-  const config = yield* ServerConfig;
-  const projects = yield* ProjectStoreV2;
-  const projections = yield* ProjectionStoreV2;
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const config = yield* ServerConfig.ServerConfig;
+  const projects = yield* ProjectStore.ProjectStoreV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
   const mutex = yield* Semaphore.make(1);
   const platform = yield* HostProcessPlatform;
   const root = path.join(config.stateDir, "factory", "sources");
