@@ -38,6 +38,7 @@ import * as FactoryService from "./FactoryService.ts";
 import { FactorySource } from "./FactorySource.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("factory-recovery-project");
@@ -201,7 +202,7 @@ it.effect(
             VALUES (1, ${initial.revision}, ${encodeSnapshot(initial)})`;
           }
           return yield* body.pipe(
-            Effect.provide(FactoryService.layer),
+            Effect.provide(FactoryService.layer.pipe(Layer.provide(layerTestDependencies))),
             Effect.provideService(FactoryStore.FactoryStore, {
               ...store,
               finishEffect: (input) =>

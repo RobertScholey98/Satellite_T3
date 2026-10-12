@@ -44,9 +44,7 @@ import * as ProviderSwitchService from "../ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "../ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "../ProviderTurnStartService.ts";
 import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
-import type * as FactoryControlAccess from "../../factory/FactoryControlAccess.ts";
-import type * as FactoryExecution from "../../factory/FactoryExecution.ts";
-import * as FactoryExecutionTestkit from "../../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "../ThreadGovernance.ts";
 import * as RunExecutionService from "../RunExecutionService.ts";
 import * as RunFinalizationService from "../RunFinalizationService.ts";
 import * as ThreadTitleRegenerationService from "../ThreadTitleRegenerationService.ts";
@@ -262,9 +260,9 @@ export function layerWithRegistry<Error>(
     // as server startup does after a crash or restart.
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
-    // The factory gates the runtime consults. Defaults to an environment with no managers.
-    readonly factory?: Layer.Layer<
-      FactoryExecution.FactoryExecution | FactoryControlAccess.FactoryControlAccess,
+    // The thread governance the runtime consults. Defaults to no owner.
+    readonly governance?: Layer.Layer<
+      ThreadGovernance.ThreadGovernance,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
   } = {},
@@ -286,7 +284,7 @@ export function layerWithRegistry<Error>(
           Layer.provide(RuntimePolicy.layer),
         );
   const layerDatabase = options.databaseLayer ?? SqlitePersistence.layerMemory;
-  const layerFactory = options.factory ?? FactoryExecutionTestkit.layerUnmanaged;
+  const layerGovernance = options.governance ?? ThreadGovernance.layerUngoverned;
   // One queue shared by the adapters, the orchestrator, and the worker, like
   // runtimeLayer.ts; layer memoization keeps it a single instance.
   const layerContinuationRequests =
@@ -494,7 +492,7 @@ export function layerWithRegistry<Error>(
   ).pipe(
     Layer.provide(ProviderTurnStartServiceTestkit.layer),
     Layer.provide(NodeServices.layer),
-    Layer.provide(layerFactory),
+    Layer.provide(layerGovernance),
   );
 
   // Build the daemon from the exact worker instance exposed alongside the
@@ -522,7 +520,7 @@ export function layerWithRegistry<Error>(
               layerEventSinkProvided,
               IdAllocator.layer,
               layerServerSettings,
-              layerFactory,
+              layerGovernance,
             ),
           ),
         )

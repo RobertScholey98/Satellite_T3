@@ -6,7 +6,8 @@ watches their progress, and brings decisions to you. You stay in charge: teams
 work inside a file boundary you approve, PRs need your approval unless you grant
 more autonomy, and every pause, grant, and approval can be undone.
 
-Managers are available on web and desktop.
+Managers are available on web and desktop. They are in beta: turn on
+**Engineering managers** in **Settings → General** to create the first one.
 
 ## Before you start
 

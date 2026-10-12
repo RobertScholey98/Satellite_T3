@@ -172,15 +172,6 @@ it.effect(
     }),
 );
 
-it("uses actual human provenance and treats scheduled or unowned messages as automation", () => {
-  assert.equal(Access.factoryDirectionSender({ createdBy: "user" }), undefined);
-  assert.equal(Access.factoryDirectionSender({ createdBy: "system" }), null);
-  assert.equal(
-    Access.factoryDirectionSender({ createdBy: "user", senderThreadId: managerId }),
-    managerId,
-  );
-});
-
 it.effect("retains replaced lead membership while denying that lead and all descendants", () => {
   const replacementId = ThreadId.make("replacement");
   const replaced = {

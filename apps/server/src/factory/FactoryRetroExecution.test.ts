@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ServerConfig from "../config.ts";
+import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
@@ -31,11 +32,11 @@ import {
   factoryDockerArguments,
 } from "./FactoryExecutionProfile.ts";
 import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
+import * as FactoryThreadScope from "./FactoryThreadScope.ts";
 import * as FactoryModelAdmission from "./FactoryModelAdmission.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 import * as FactoryRetroEvidence from "./FactoryRetroEvidence.ts";
 import * as FactoryRetroExecution from "./FactoryRetroExecution.ts";
-import * as FactoryService from "./FactoryService.ts";
 import * as FactorySource from "./FactorySource.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 import { FactoryStore } from "./FactoryStore.ts";
@@ -525,9 +526,20 @@ it.effect(
       };
       const accepted: string[] = [];
       yield* Effect.gen(function* () {
-        const guard = yield* FactoryMcpGuard.FactoryMcpGuard;
-        yield* guard.authorize(invocation, "factory_snapshot");
-        yield* guard.authorize(invocation, "t3_thread_read", { threadId: deliveryIds.lead });
+        const policy = yield* McpToolAccess.CallerPolicy;
+        const authorize = (tool: string, payload?: unknown) =>
+          Effect.flatMap(policy.grant(invocation), (grant) => grant.authorize(tool, payload));
+        const scope = yield* FactoryThreadScope.make({
+          snapshot: () => Effect.die("unused"),
+          mergeGroupGet: () => Effect.die("unused"),
+          dispatch: (_actor, command) =>
+            Effect.sync(() => {
+              accepted.push(command.type);
+              return { revision: f.getState().revision };
+            }),
+        });
+        yield* authorize("factory_snapshot");
+        yield* authorize("t3_thread_read", { threadId: deliveryIds.lead });
         for (const [tool, payload] of [
           ["t3_thread_read", { threadId: deliveryIds.manager }],
           ["t3_thread_send", { threadId: deliveryIds.lead }],
@@ -537,7 +549,7 @@ it.effect(
           ["issue_create", {}],
         ] as const)
           assert.equal(
-            (yield* guard.authorize(invocation, tool, payload).pipe(Effect.flip)).code,
+            (yield* authorize(tool, payload).pipe(Effect.flip)).code,
             "capability_denied",
           );
         for (const command of [
@@ -555,10 +567,10 @@ it.effect(
           },
         ] as const)
           assert.equal(
-            (yield* guard.dispatch(invocation, command).pipe(Effect.flip)).code,
-            "capability_denied",
+            (yield* scope.threadDispatch(retroThread, command).pipe(Effect.flip)).code,
+            "permission-denied",
           );
-        yield* guard.dispatch(invocation, {
+        yield* scope.threadDispatch(retroThread, {
           type: "retro.team.submit",
           commandId: CommandId.make("report"),
           retroId: input.retroId,
@@ -579,24 +591,17 @@ it.effect(
             .retros.map((retro) => ({ ...retro, execution: { status: "stopped" } })),
         });
         assert.equal(
-          (yield* guard.authorize(invocation, "factory_snapshot").pipe(Effect.flip)).code,
+          (yield* authorize("factory_snapshot").pipe(Effect.flip)).code,
           "capability_denied",
         );
       }).pipe(
         Effect.provide(
-          FactoryMcpGuard.layer.pipe(
-            Layer.provide(
+          Layer.merge(FactoryMcpGuard.layer, FactoryControlAccess.layer).pipe(
+            Layer.provideMerge(
               Layer.mergeAll(
                 f.dependencies,
                 Layer.mock(FactoryExecution.FactoryExecution)({
                   runtimePolicyFor: () => Effect.succeed(f.original),
-                }),
-                Layer.mock(FactoryService.FactoryService)({
-                  dispatch: (_actor, command) =>
-                    Effect.sync(() => {
-                      accepted.push(command.type);
-                      return { revision: f.getState().revision };
-                    }),
                 }),
               ),
             ),

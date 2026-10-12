@@ -1,9 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
-import { RunId, ThreadId } from "@t3tools/contracts";
+import { MessageId, RunId, ThreadId } from "@t3tools/contracts";
 import * as Result from "effect/Result";
 import { decide } from "./FactoryState.ts";
 import { deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
 import { factoryCompletionEligibility } from "./FactoryRetros.ts";
+import { FACTORY_DELIVERED_MESSAGE_RETENTION } from "./FactoryCollaboration.ts";
 import { factoryDirectionBlocked, factoryExecutionBlocked } from "./FactoryControls.ts";
 import {
   factoryIntegrationAccessBlocked,
@@ -672,6 +673,57 @@ describe("integration assignments", () => {
           actor(deliveryIds.lead),
         ),
       ),
+    );
+  });
+  it("keeps the latest delivered integration messages and every undelivered one", () => {
+    const prepared = ready();
+    let state = prepared.state;
+    const send = () => {
+      const sent = apply(
+        state,
+        {
+          type: "integration.message.send",
+          commandId: id(),
+          integrationId: prepared.integrationId,
+          fromAssignmentId: integrated.assignment,
+          toAssignmentId: api.assignment,
+          text: "Status update.",
+        },
+        actor(integrated.lead),
+      );
+      state = sent.state;
+      return sent.result.integrationMessageId!;
+    };
+    const failed = send();
+    state = apply(
+      state,
+      { type: "integration.message.failed", commandId: id(), messageId: failed, reason: "Offline" },
+      host,
+    ).state;
+    const pending = send();
+    const delivered = Array.from({ length: FACTORY_DELIVERED_MESSAGE_RETENTION + 2 }, () => {
+      const messageId = send();
+      state = apply(
+        state,
+        {
+          type: "integration.message.recorded",
+          commandId: id(),
+          messageId,
+          recipientThreadId: api.lead,
+          deliveredMessageId: MessageId.make(`peer-${messageId}`),
+        },
+        host,
+      ).state;
+      return messageId;
+    });
+    assert.deepEqual(
+      state.integrationMessages.map((entry) => entry.id),
+      [failed, pending, ...delivered.slice(2)],
+    );
+    apply(
+      state,
+      { type: "integration.message.retry", commandId: id(), messageId: failed },
+      actor(integrated.lead),
     );
   });
   it("cannot complete successfully through generic human acceptance or publication", () => {

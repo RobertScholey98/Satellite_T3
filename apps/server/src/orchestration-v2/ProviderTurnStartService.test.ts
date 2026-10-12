@@ -38,9 +38,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import type { FactoryExecutionProfile } from "../factory/FactoryExecution.ts";
-import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -135,7 +133,7 @@ it("does not commit running state when inherited background routing cannot be re
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
-        FactoryExecutionTestkit.layerUnmanagedControls,
+        ThreadGovernance.layerUngoverned,
       ),
     ),
   );
@@ -161,7 +159,7 @@ it("does not commit running state when inherited background routing cannot be re
 function makeLocalCommandHarness(input: {
   readonly text: string;
   readonly executionBoundaryId?: string;
-  readonly factoryExecution?: FactoryExecutionProfile;
+  readonly confinement?: ThreadGovernance.ConfinedExecution;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
@@ -178,7 +176,7 @@ function makeLocalCommandHarness(input: {
   readonly writeFailure?: unknown;
   /** Loads the thread and starts the run, then fails every later state read. */
   readonly failReadsAfterRunning?: boolean;
-  readonly factoryDirection?: FactoryControlAccess["Service"]["assertDirection"];
+  readonly assertDirection?: ThreadGovernance.ThreadGovernance["Service"]["assertDirection"];
   readonly senderThreadId?: ThreadId;
   readonly beforeProviderThreadLoaded?: () => void;
   readonly startExecution?: RunExecutionService.RunExecutionServiceV2Shape["startRootRun"];
@@ -552,15 +550,13 @@ function makeLocalCommandHarness(input: {
               runtimeMode: "full-access",
               interactionMode: "default",
               cwd: null,
-              ...(input.factoryExecution === undefined
-                ? {}
-                : { factoryExecution: input.factoryExecution }),
+              ...(input.confinement === undefined ? {} : { confinement: input.confinement }),
             }),
         }),
-        input.factoryDirection === undefined
-          ? FactoryExecutionTestkit.layerUnmanagedControls
-          : Layer.mock(FactoryControlAccess)({
-              assertDirection: input.factoryDirection,
+        input.assertDirection === undefined
+          ? ThreadGovernance.layerUngoverned
+          : Layer.mock(ThreadGovernance.ThreadGovernance)({
+              assertDirection: input.assertDirection,
             }),
       ),
     ),
@@ -609,14 +605,16 @@ effectIt.effect(
   () =>
     Effect.gen(function* () {
       const parent = ThreadId.make("factory-parent");
-      const factoryDirection: FactoryControlAccess["Service"]["assertDirection"] = (input) =>
+      const assertDirection: ThreadGovernance.ThreadGovernance["Service"]["assertDirection"] = (
+        input,
+      ) =>
         input.senderThreadId === parent
           ? Effect.fail(new FactoryError({ code: "permission-denied" }))
           : Effect.void;
       const held = makeLocalCommandHarness({
         text: "Parent instruction",
         senderThreadId: parent,
-        factoryDirection,
+        assertDirection,
       });
       yield* held.start;
       expect(held.open).not.toHaveBeenCalled();
@@ -626,7 +624,7 @@ effectIt.effect(
       let admitted = false;
       const human = makeLocalCommandHarness({
         text: "Human guidance",
-        factoryDirection,
+        assertDirection,
         startExecution: (execution) =>
           Effect.gen(function* () {
             admitted = yield* execution.shouldStartProviderTurn!();
@@ -647,7 +645,7 @@ effectIt.effect("preserves the same queued run when takeover arrives during prov
     const harness = makeLocalCommandHarness({
       text: "Parent instruction",
       senderThreadId: ThreadId.make("factory-parent"),
-      factoryDirection: () =>
+      assertDirection: () =>
         blocked ? Effect.fail(new FactoryError({ code: "permission-denied" })) : Effect.void,
       beforeProviderThreadLoaded: () => {
         blocked = true;
@@ -678,7 +676,7 @@ effectIt.effect("reports an engineering-control failure at turn start as that fa
     const harness = makeLocalCommandHarness({
       text: "Parent instruction",
       senderThreadId: ThreadId.make("factory-parent"),
-      factoryDirection: () =>
+      assertDirection: () =>
         failing ? Effect.fail(new FactoryError({ code: "persistence" })) : Effect.void,
       startExecution: (execution) =>
         Effect.gen(function* () {
@@ -700,7 +698,7 @@ effectIt.effect("checks again at provider delivery after the last run-start chec
     const harness = makeLocalCommandHarness({
       text: "Parent instruction",
       senderThreadId: ThreadId.make("factory-parent"),
-      factoryDirection: () =>
+      assertDirection: () =>
         blocked ? Effect.fail(new FactoryError({ code: "permission-denied" })) : Effect.void,
       startExecution: (execution) =>
         Effect.gen(function* () {
@@ -721,15 +719,8 @@ effectIt.effect("checks again at provider delivery after the last run-start chec
 
 effectIt.effect("blocks a stale host context before opening a confined provider session", () =>
   Effect.gen(function* () {
-    const factoryExecution = {
-      boundaryId: "confined-current",
-      dockerContext: "default",
-      imageId: "sha256:approved",
-      projectSnapshotPath: "/captured",
-      workflowSnapshotPath: "/workflow",
-      runtimePath: "/runtime",
-    };
-    const stale = makeLocalCommandHarness({ text: "Continue", factoryExecution });
+    const confinement = { boundaryId: "confined-current", workspacePath: "/captured", profile: {} };
+    const stale = makeLocalCommandHarness({ text: "Continue", confinement });
     yield* stale.start;
     expect(stale.projection().runs.at(-1)?.status).toBe("failed");
     expect(stale.projection().turnItems.at(-1)).toMatchObject({
@@ -740,7 +731,7 @@ effectIt.effect("blocks a stale host context before opening a confined provider 
     expect(stale.open).not.toHaveBeenCalled();
     const current = makeLocalCommandHarness({
       text: "Continue",
-      factoryExecution,
+      confinement,
       executionBoundaryId: "confined-current",
       failReadsAfterRunning: true,
     });

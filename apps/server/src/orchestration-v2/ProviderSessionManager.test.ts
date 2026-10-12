@@ -1114,15 +1114,8 @@ it.effect("ProviderSessionManagerV2 rejects reuse across managed execution bound
           yield* makeThreadCreatedEvent({ idAllocator, threadId: sibling, now }),
         ],
       });
-      const factoryExecution = {
-        boundaryId: "assignment-one",
-        dockerContext: "local",
-        imageId: "sha256:verified",
-        projectSnapshotPath: "/project",
-        workflowSnapshotPath: "/workflow",
-        runtimePath: "/runtime",
-      };
-      const managed = { ...runtimePolicy, factoryExecution };
+      const confinement = { boundaryId: "assignment-one", workspacePath: "/project", profile: {} };
+      const managed = { ...runtimePolicy, confinement };
       const first = yield* manager.open({
         threadId,
         providerSessionId,
@@ -1145,7 +1138,7 @@ it.effect("ProviderSessionManagerV2 rejects reuse across managed execution bound
           threadId,
           runtimePolicy: {
             ...managed,
-            factoryExecution: { ...factoryExecution, boundaryId: "assignment-two" },
+            confinement: { ...confinement, boundaryId: "assignment-two" },
           },
         },
       ]) {
@@ -1203,14 +1196,7 @@ it.effect(
             modelSelection,
             runtimePolicy: {
               ...runtimePolicy,
-              factoryExecution: {
-                boundaryId,
-                dockerContext: "local",
-                imageId: "sha256:verified",
-                projectSnapshotPath: "/project",
-                workflowSnapshotPath: "/workflow",
-                runtimePath: "/runtime",
-              },
+              confinement: { boundaryId, workspacePath: "/project", profile: {} },
             },
           });
           stoppedSessions.push(providerSessionId);
@@ -4478,13 +4464,10 @@ it.effect.each([false, true])(
           runtimePolicy: managed
             ? {
                 ...runtimePolicy,
-                factoryExecution: {
+                confinement: {
                   boundaryId: "managed-retiring",
-                  dockerContext: "local",
-                  imageId: "sha256:verified",
-                  projectSnapshotPath: "/project",
-                  workflowSnapshotPath: "/workflow",
-                  runtimePath: "/runtime",
+                  workspacePath: "/project",
+                  profile: {},
                 },
               }
             : runtimePolicy,

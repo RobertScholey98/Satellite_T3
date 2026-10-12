@@ -24,6 +24,7 @@ import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
 import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 const projectId = ProjectId.make("boundary-service-web");
 const human = { kind: "human" } as const;
@@ -76,7 +77,7 @@ const runtime = Layer.mergeAll(FactoryStore.layer, ThreadManagement.layer).pipe(
   Layer.provideMerge(SatelliteTestLayer),
 );
 const layer = FactoryService.layer.pipe(
-  Layer.provide(Layer.mergeAll(sourceUnused, handoverUnused)),
+  Layer.provide(Layer.mergeAll(sourceUnused, handoverUnused, layerTestDependencies)),
   Layer.provideMerge(runtime),
   Layer.provide(providerExecution),
 );

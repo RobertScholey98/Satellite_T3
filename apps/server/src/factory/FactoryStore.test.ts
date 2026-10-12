@@ -138,6 +138,36 @@ describe("FactoryStore", () => {
     ),
   );
 
+  it.effect("reads the payload only when the revision changes", () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        let payloadReads = 0;
+        const counting = new Proxy(sql, {
+          apply: (target, thisArg, args) => {
+            const strings: unknown = args[0];
+            if (
+              Array.isArray(strings) &&
+              strings.join("?").includes("payload_json FROM factory_state")
+            )
+              payloadReads += 1;
+            return Reflect.apply(target, thisArg, args);
+          },
+        });
+        yield* migration;
+        yield* observationMigration;
+        const store = yield* openStore.pipe(Effect.provideService(SqlClient.SqlClient, counting));
+        yield* store.commit(createInput);
+        for (let read = 0; read < 5; read += 1) yield* store.snapshot;
+        assert.equal(payloadReads, 0);
+        yield* sql`UPDATE factory_state SET revision = revision + 1 WHERE id = 1`;
+        yield* store.snapshot;
+        yield* store.snapshot;
+        assert.equal(payloadReads, 1);
+      }),
+    ),
+  );
+
   it.effect("replays a command without changing identities, revision, or launch intent", () =>
     run(
       Effect.gen(function* () {

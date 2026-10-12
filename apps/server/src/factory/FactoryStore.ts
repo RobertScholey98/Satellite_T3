@@ -89,15 +89,22 @@ const storageError = (cause: unknown) =>
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const mutex = yield* Semaphore.make(1);
-  // Access checks read the state several times per turn; decode only when the row changes.
-  let decoded: { readonly json: string; readonly state: FactorySnapshot } | undefined;
+  // Access checks read the state several times per turn. Every write bumps `revision`, so an
+  // unchanged revision serves the cached state without reading or decoding the payload.
+  let decoded: { readonly revision: number; readonly state: FactorySnapshot } | undefined;
   const snapshot = Effect.gen(function* () {
-    const rows = yield* sql<{ readonly payload_json: string }>`
-      SELECT payload_json FROM factory_state WHERE id = 1
+    const heads = yield* sql<{ readonly revision: number }>`
+      SELECT revision FROM factory_state WHERE id = 1
     `;
-    const json = rows[0]?.payload_json;
-    if (json === undefined) return initialFactorySnapshot();
-    if (decoded?.json !== json) decoded = { json, state: yield* decodeSnapshot(json) };
+    const head = heads[0];
+    if (head === undefined) return initialFactorySnapshot();
+    if (decoded?.revision === head.revision) return decoded.state;
+    const rows = yield* sql<{ readonly revision: number; readonly payload_json: string }>`
+      SELECT revision, payload_json FROM factory_state WHERE id = 1
+    `;
+    const row = rows[0];
+    if (row === undefined) return initialFactorySnapshot();
+    decoded = { revision: row.revision, state: yield* decodeSnapshot(row.payload_json) };
     return decoded.state;
   }).pipe(Effect.mapError(storageError));
   const current = yield* SubscriptionRef.make(yield* snapshot);
@@ -177,9 +184,9 @@ const make = Effect.gen(function* () {
       VALUES (1, ${state.revision}, ${snapshotJson})
       ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, payload_json = excluded.payload_json
     `;
-    // The publish after commit reads this row back; keyed by its JSON, the cache skips the
-    // decode, and a rolled-back write simply misses.
-    decoded = { json: snapshotJson, state };
+    // The publish after commit reads this revision back from the cache. A rolled-back write
+    // leaves the older revision in the row, so the next read misses and reloads.
+    decoded = { revision: state.revision, state };
     yield* sql`
       INSERT INTO factory_commands (command_id, request_json, result_json)
       VALUES (${input.command.commandId}, ${request}, ${resultJson})

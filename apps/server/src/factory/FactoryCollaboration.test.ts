@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 import { decide, type FactoryActor, type FactoryAllocation } from "./FactoryState.ts";
 import { deliveryFixture, deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
 import {
+  FACTORY_DELIVERED_MESSAGE_RETENTION,
   factoryIncidentBlocked,
   factoryRequestParticipants,
   factoryRequestReconsiderable,
@@ -451,6 +452,65 @@ describe("cross-project collaboration", () => {
           now: deliveryNow,
         }),
       ),
+    );
+  });
+
+  it("keeps the latest delivered peer messages and every undelivered one", () => {
+    const opened = request();
+    const requestId = opened.result.requestId!;
+    const assigned = allocation();
+    let state = accept(opened.state, requestId, assigned).state;
+    const send = () => {
+      const sent = apply(
+        state,
+        {
+          type: "collaboration.message.send",
+          commandId: id(),
+          requestId,
+          fromAssignmentId: deliveryIds.assignment,
+          toAssignmentId: assigned.assignmentId,
+          text: "Status update.",
+        },
+        actor(deliveryIds.lead),
+      );
+      state = sent.state;
+      return sent.result.collaborationMessageId!;
+    };
+    const failed = send();
+    state = apply(
+      state,
+      {
+        type: "collaboration.message.failed",
+        commandId: id(),
+        messageId: failed,
+        reason: "Offline",
+      },
+      host,
+    ).state;
+    const pending = send();
+    const delivered = Array.from({ length: FACTORY_DELIVERED_MESSAGE_RETENTION + 2 }, () => {
+      const messageId = send();
+      state = apply(
+        state,
+        {
+          type: "collaboration.message.recorded",
+          commandId: id(),
+          messageId,
+          recipientThreadId: assigned.leadThreadId,
+          deliveredMessageId: MessageId.make(`peer-${messageId}`),
+        },
+        host,
+      ).state;
+      return messageId;
+    });
+    assert.deepEqual(
+      state.collaborationMessages.map((entry) => entry.id),
+      [failed, pending, ...delivered.slice(2)],
+    );
+    apply(
+      state,
+      { type: "collaboration.message.retry", commandId: id(), messageId: failed },
+      actor(deliveryIds.lead),
     );
   });
 

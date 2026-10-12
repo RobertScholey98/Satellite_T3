@@ -2456,6 +2456,24 @@ export function GeneralSettingsPanel() {
           }
         />
 
+        {/* A beta the server owns: off hides every way to create the first manager. */}
+        <SettingsRow
+          serverScoped
+          settingKeys={["engineeringManagersEnabled"]}
+          {...searchableSetting("engineering-managers")}
+          description="Create engineering managers that plan and run agent teams for a project. An environment that already has managers keeps them either way."
+          control={
+            <ScopedSwitch
+              settingKeys={["engineeringManagersEnabled"]}
+              checked={settings.engineeringManagersEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ engineeringManagersEnabled: Boolean(checked) })
+              }
+              aria-label="Engineering managers (beta)"
+            />
+          }
+        />
+
         {supportsAutoSettlement ? (
           <>
             <SettingsRow

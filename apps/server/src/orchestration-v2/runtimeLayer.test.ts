@@ -1,4 +1,4 @@
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -272,7 +272,7 @@ const layerTest = Layer.mergeAll(
   EffectOutbox.layer,
   ThreadCommandExecutor.layer,
 ).pipe(
-  Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+  Layer.provide(ThreadGovernance.layerUngoverned),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
@@ -285,7 +285,7 @@ const layerTest = Layer.mergeAll(
 );
 
 const layerLegacyImportTest = RuntimeLayer.layer.pipe(
-  Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+  Layer.provide(ThreadGovernance.layerUngoverned),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
@@ -325,7 +325,7 @@ const layerProjectDeletionTest = Layer.mergeAll(
       normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),
     }),
   ),
-  Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+  Layer.provide(ThreadGovernance.layerUngoverned),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),
@@ -470,7 +470,7 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
       subscribeChanges: Effect.never,
     }),
   ),
-  Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+  Layer.provide(ThreadGovernance.layerUngoverned),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),

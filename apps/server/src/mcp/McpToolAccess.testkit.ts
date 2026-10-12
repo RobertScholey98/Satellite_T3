@@ -13,8 +13,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import * as FactoryMcpGuard from "../factory/FactoryMcpGuard.ts";
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as McpToolAccess from "./McpToolAccess.ts";
+import * as ThreadGovernance from "../orchestration-v2/ThreadGovernance.ts";
 
 const EPOCH = DateTime.makeUnsafe("2026-01-01T00:00:00.000Z");
 
@@ -116,8 +116,6 @@ export const idleThreadProjection = (
   };
 };
 export const unmanagedFactoryLayer = Layer.merge(
-  Layer.mock(FactoryMcpGuard.FactoryMcpGuard)({
-    authorize: () => Effect.void,
-  }),
-  FactoryExecutionTestkit.layerUnmanaged,
+  McpToolAccess.layerOrdinaryCallers,
+  ThreadGovernance.layerUngoverned,
 );

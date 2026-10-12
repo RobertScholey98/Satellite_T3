@@ -202,7 +202,7 @@ export class ProviderSessionManagerV2 extends Context.Service<
 >()("t3/orchestration-v2/ProviderSessionManager/ProviderSessionManagerV2") {}
 
 interface LiveSessionEntry {
-  readonly factoryBoundaryId: string | undefined;
+  readonly confinementBoundaryId: string | undefined;
   readonly attachedThreadIds: ReadonlySet<ThreadId>;
   readonly loadedProviderThreadKeyByThread: ReadonlyMap<ThreadId, string>;
   /**
@@ -1878,8 +1878,8 @@ export const layerWithOptions = (
               const existing = (yield* Ref.get(sessions)).get(key);
               if (existing !== undefined) {
                 if (
-                  existing.factoryBoundaryId !== input.runtimePolicy.factoryExecution?.boundaryId ||
-                  (existing.factoryBoundaryId !== undefined &&
+                  existing.confinementBoundaryId !== input.runtimePolicy.confinement?.boundaryId ||
+                  (existing.confinementBoundaryId !== undefined &&
                     !existing.attachedThreadIds.has(input.threadId))
                 ) {
                   return yield* new ProviderSessionOpenError({
@@ -1999,7 +1999,7 @@ export const layerWithOptions = (
               const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
-                factoryBoundaryId: input.runtimePolicy.factoryExecution?.boundaryId,
+                confinementBoundaryId: input.runtimePolicy.confinement?.boundaryId,
                 attachedThreadIds: new Set([input.threadId]),
                 loadedProviderThreadKeyByThread: new Map(),
                 mcpCredentialIdByThread:
@@ -2009,7 +2009,7 @@ export const layerWithOptions = (
                 supportsMultipleProviderThreads:
                   // Managed boundaries own the whole provider process, even when
                   // the provider ordinarily supports sharing one across threads.
-                  input.runtimePolicy.factoryExecution === undefined &&
+                  input.runtimePolicy.confinement === undefined &&
                   runtime.providerSession.capabilities.sessions
                     .supportsMultipleProviderThreadsPerSession,
                 runtime,

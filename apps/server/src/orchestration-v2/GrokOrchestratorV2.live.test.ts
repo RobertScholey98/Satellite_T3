@@ -1,4 +1,4 @@
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -28,6 +28,7 @@ import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
 import * as ProviderInstanceRegistryHydration from "../provider/ProviderInstanceRegistryHydration.ts";
+import * as ConfinedCodexLaunch from "./Adapters/ConfinedCodexLaunch.ts";
 import * as ProviderEventLoggers from "../provider/ProviderEventLoggers.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 import * as OpenCodeServerLedger from "../provider/OpenCodeServerLedger.ts";
@@ -69,6 +70,7 @@ const layerBackgroundPolicy = BackgroundPolicy.layer.pipe(
   Layer.provide(layerServerSettings),
 );
 const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pipe(
+  Layer.provide(ConfinedCodexLaunch.layerUnconfined),
   Layer.provide(
     Layer.mergeAll(
       layerServerConfig.pipe(Layer.provide(layerPlatformTest)),
@@ -108,7 +110,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
 
 const layerLive = RuntimeLayer.layer.pipe(
   Layer.provide(ProviderTurnStartServiceTestkit.layer),
-  Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+  Layer.provide(ThreadGovernance.layerUngoverned),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStore),

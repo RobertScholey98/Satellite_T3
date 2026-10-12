@@ -18,7 +18,7 @@ import {
 } from "./ProviderAdapter.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as IdeaWorkspace from "../ideas/IdeaWorkspace.ts";
-import { FactoryExecution } from "../factory/FactoryExecution.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 /**
  * ERRORS
@@ -95,16 +95,16 @@ export const layerFromProjectStore = Layer.effect(
     const projects = yield* ProjectStore.ProjectStoreV2;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     const ideaWorkspace = yield* Effect.serviceOption(IdeaWorkspace.IdeaWorkspace);
-    const factory = yield* FactoryExecution;
+    const governance = yield* ThreadGovernance.ThreadGovernance;
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
-        // A fork is an ordinary thread, so only a subagent inherits its parent's factory policy.
+        // A fork is an ordinary thread, so only a subagent inherits its parent's confinement.
         const pendingParentThreadId =
           input.thread.lineage.relationshipToParent === "subagent"
             ? (input.thread.lineage.parentThreadId ?? undefined)
             : undefined;
-        const factoryExecution = yield* factory
-          .runtimePolicyFor(input.thread.id, pendingParentThreadId)
+        const confinement = yield* governance
+          .confinementFor(input.thread.id, pendingParentThreadId)
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -116,9 +116,9 @@ export const layerFromProjectStore = Layer.effect(
             ),
           );
         const instance = yield* providerInstances.getInstance(input.modelSelection.instanceId);
-        if (factoryExecution !== undefined) {
-          yield* factory
-            .assertSelectionFor(input.thread.id, input.modelSelection, pendingParentThreadId)
+        if (confinement !== undefined) {
+          yield* governance
+            .assertModelSelection(input.thread.id, input.modelSelection, pendingParentThreadId)
             .pipe(
               Effect.mapError(
                 (cause) =>
@@ -140,8 +140,8 @@ export const layerFromProjectStore = Layer.effect(
             runtimeMode: input.thread.runtimeMode,
             interactionMode: input.thread.interactionMode,
             purpose: input.thread.purpose,
-            cwd: factoryExecution.projectSnapshotPath,
-            factoryExecution,
+            cwd: confinement.workspacePath,
+            confinement,
             sandboxPolicy: { type: "externalSandbox", networkAccess: "enabled" },
             approvalPolicy: "never",
           });
@@ -218,7 +218,7 @@ export function layerWithOverride(
         resolve: (input) =>
           base.resolve(input).pipe(
             Effect.map((policy) =>
-              policy.factoryExecution !== undefined
+              policy.confinement !== undefined
                 ? policy
                 : ProviderAdapterV2RuntimePolicy.make({
                     ...policy,

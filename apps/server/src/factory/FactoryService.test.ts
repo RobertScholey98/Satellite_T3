@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 
+import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
@@ -29,6 +30,7 @@ import { FactoryExecution } from "./FactoryExecution.ts";
 import { layerUnavailable as boundaryUnavailable } from "./FactoryBoundaryExecution.testkit.ts";
 import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
 import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 const projectId = ProjectId.make("factory-service-project");
 const human = { kind: "human" } as const;
@@ -60,6 +62,7 @@ const runtime = Layer.mergeAll(
   boundaryUnavailable,
   sourceUnused,
   handoverUnused,
+  layerTestDependencies,
 ).pipe(Layer.provideMerge(SatelliteTestLayer));
 const layer = FactoryService.layer.pipe(Layer.provideMerge(runtime));
 
@@ -224,6 +227,53 @@ it.effect("creates ordinary durable threads once and records the owning lead's r
       assert.equal(completed.managers[0]!.wait?.kind, "execution-boundary");
     }).pipe(Effect.provide(layer), Effect.provide(execution));
   }),
+);
+
+it.effect("refuses the first manager while the beta is off and never strands existing ones", () =>
+  Effect.gen(function* () {
+    const secondProjectId = ProjectId.make("factory-service-second-project");
+    yield* recordProject({ projectId, title: "Web", workspaceRoot: "/project" });
+    yield* recordProject({ projectId: secondProjectId, title: "Api", workspaceRoot: "/api" });
+    const factory = yield* FactoryService.FactoryService;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const refused = yield* factory.dispatch(human, create).pipe(Effect.result);
+    assert.isTrue(Result.isFailure(refused));
+    if (Result.isFailure(refused))
+      assert.equal(
+        refused.failure.message,
+        "Engineering managers are off. Turn on Engineering managers in Settings → General.",
+      );
+    assert.deepEqual((yield* factory.snapshot({})).managers, []);
+
+    yield* settings.updateSettings({ engineeringManagersEnabled: true });
+    yield* factory.dispatch(human, create);
+    yield* settings.updateSettings({ engineeringManagersEnabled: false });
+    yield* factory.dispatch(human, {
+      ...create,
+      commandId: CommandId.make("factory-service-second-create"),
+      projectId: secondProjectId,
+    });
+    assert.sameMembers(
+      (yield* factory.snapshot({})).managers.map((manager) => manager.projectId),
+      [projectId, secondProjectId],
+    );
+  }).pipe(
+    Effect.provide(
+      FactoryService.layer.pipe(
+        Layer.provideMerge(
+          ServerSettings.layerTest({ engineeringManagersEnabled: false }).pipe(Layer.orDie),
+        ),
+        Layer.provideMerge(runtime),
+      ),
+    ),
+    Effect.provideService(FactoryExecution, {
+      qualify: () =>
+        Effect.succeed({ status: "unavailable", reason: "Start the local Docker engine." }),
+      assertSelectionFor: () => Effect.void,
+      assertDelegationFor: () => Effect.void,
+      runtimePolicyFor: () => Effect.die("An unavailable assignment must not launch."),
+    }),
+  ),
 );
 
 it.effect("persists an actionable wait without launching when confinement is unavailable", () =>

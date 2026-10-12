@@ -45,6 +45,7 @@ import { FactorySource } from "./FactorySource.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import { reviewedDeliveryFixture } from "./FactoryDelivery.testkit.ts";
 import { FactoryPreviewService } from "./FactoryPreviewService.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("controls-project");
@@ -225,6 +226,7 @@ const scenario = <A, E, R>(
         FactoryService.layer.pipe(
           Layer.provideMerge(
             Layer.mergeAll(
+              layerTestDependencies,
               options.previewReconcile === undefined
                 ? Layer.empty
                 : Layer.mock(FactoryPreviewService)({ reconcile: options.previewReconcile }),

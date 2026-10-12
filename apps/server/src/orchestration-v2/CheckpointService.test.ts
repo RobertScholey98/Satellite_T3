@@ -20,12 +20,10 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
-import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
-import * as FactoryExecution from "../factory/FactoryExecution.ts";
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as SatelliteTestRuntime from "./testkit/SatelliteTestRuntime.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import { OrchestratorV2 } from "./Orchestrator.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 
@@ -60,7 +58,7 @@ it.effect.each([false, true, "interrupt"] as const)(
           : Effect.succeed(true),
     );
     const layerTest = CheckpointService.layer.pipe(
-      Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+      Layer.provide(ThreadGovernance.layerUngoverned),
       Layer.provide(
         Layer.mergeAll(
           IdAllocator.layer,
@@ -138,7 +136,7 @@ it.effect("never checkpoints or restores the repository containing an owned idea
     const checkpoints = yield* CheckpointService.CheckpointServiceV2.pipe(
       Effect.provide(
         Layer.fresh(CheckpointService.layer).pipe(
-          Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+          Layer.provide(ThreadGovernance.layerUngoverned),
           Layer.provide(
             Layer.mergeAll(dependencies, Layer.succeed(ProjectionStoreV2, projections)),
           ),
@@ -221,39 +219,21 @@ it.effect.each(["managed", "unavailable", "ordinary", "unresolved", "lookup-fail
       Layer.provide(
         Layer.mergeAll(
           IdAllocator.layer,
-          Layer.mock(FactoryExecution.FactoryExecution)({
-            runtimePolicyFor: (requestedThreadId) => {
+          Layer.mock(ThreadGovernance.ThreadGovernance)({
+            confinementFor: (requestedThreadId) => {
               assert.equal(requestedThreadId, threadId);
               if (boundary !== "managed" && boundary !== "ordinary")
                 return Effect.fail(new FactoryError({ code: "execution-unavailable" }));
               return Effect.succeed(
                 boundary === "ordinary"
                   ? undefined
-                  : {
-                      boundaryId: "profile:thread",
-                      dockerContext: "local",
-                      imageId: "sha256:verified",
-                      projectSnapshotPath: cwd,
-                      workflowSnapshotPath: "/repo/.t3/userdata/factory/execution/profile/workflow",
-                      runtimePath: "/repo/.t3/userdata/factory/execution/profile/runtime",
-                    },
+                  : { boundaryId: "profile:thread", workspacePath: cwd, profile: {} },
               );
             },
-          }),
-          Layer.mock(FactoryControlAccess)({
-            membership: (id) =>
+            governs: () =>
               boundary === "lookup-failed"
                 ? Effect.fail(new FactoryError({ code: "execution-unavailable" }))
-                : Effect.succeed(
-                    boundary === "unresolved"
-                      ? undefined
-                      : {
-                          threadId: id,
-                          managerId: ThreadId.make("thread:manager"),
-                          projectId: ProjectId.make("project:factory-checkpoint"),
-                          ancestorThreadIds: [],
-                        },
-                  ),
+                : Effect.succeed(boundary !== "unresolved"),
           }),
           Layer.mock(CheckpointStore.CheckpointStore)({
             isGitRepository,

@@ -12,6 +12,7 @@ import {
   CheckpointId,
   CodexSettings,
   EnvironmentId,
+  FactoryError,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -69,6 +70,7 @@ import {
 } from "../ProviderAdapter.ts";
 import type { ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+import * as ConfinedCodexLaunch from "./ConfinedCodexLaunch.ts";
 import { makeReplayServerConfig, withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 
@@ -720,6 +722,7 @@ describe("CodexAdapterV2 process spawning", () => {
       });
       const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
         Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+        Effect.provide(ConfinedCodexLaunch.layerUnconfined),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(
           ProviderEventLoggers.ProviderEventLoggers,
@@ -779,7 +782,7 @@ describe("CodexAdapterV2 process spawning", () => {
           Layer.mergeAll(
             CodexAdapterV2.layerAppServerClientFactory,
             ServerConfig.layerTest(process.cwd(), { prefix: "t3-codex-binary-home-" }),
-          ),
+          ).pipe(Layer.provideMerge(ConfinedCodexLaunch.layerUnconfined)),
         ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(
@@ -1451,6 +1454,10 @@ const CODEX_TEST_RUNTIME_POLICY = ProviderAdapterV2RuntimePolicy.make({
   interactionMode: "default",
   cwd: "/workspace",
 });
+const unconfinedLaunch: ConfinedCodexLaunch.ConfinedCodexLaunch["Service"] = {
+  prepare: () => Effect.die("These sessions are never confined."),
+  assertActive: () => Effect.void,
+};
 
 function makeCodexTestAppThread(input: {
   readonly threadId: ThreadId;
@@ -1684,6 +1691,7 @@ describe("CodexAdapterV2 session initialize", () => {
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     runtimePolicy: ProviderAdapterV2RuntimePolicy = CODEX_TEST_RUNTIME_POLICY,
+    confinedLaunch: ConfinedCodexLaunch.ConfinedCodexLaunch["Service"] = unconfinedLaunch,
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -1721,6 +1729,7 @@ describe("CodexAdapterV2 session initialize", () => {
               ),
             ),
         },
+        confinedLaunch,
         crypto: yield* Crypto.Crypto,
         fileSystem: yield* FileSystem.FileSystem,
         path: yield* Path.Path,
@@ -1747,12 +1756,9 @@ describe("CodexAdapterV2 session initialize", () => {
   const replayPreamble = (nativeThreadId: string) =>
     codexReplayPreamble({ nativeThreadId, nativeTurnId: "unused", prompt: "unused" });
 
-  it.effect("rejects a managed startup revoked while its container handshake was pending", () =>
+  it.effect("rejects a confined startup revoked while its container handshake was pending", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "factory-start-fence-" });
-      const revocationPath = path.join(directory, "revoked.json");
+      const revoked = yield* Ref.make(false);
       const initializeAwaitingResponse = yield* Deferred.make<void>();
       const releaseInitialize = yield* Deferred.make<void>();
       const session = yield* openReplaySession(
@@ -1768,31 +1774,30 @@ describe("CodexAdapterV2 session initialize", () => {
             : Effect.void,
         {
           ...CODEX_TEST_RUNTIME_POLICY,
-          factoryExecution: {
-            boundaryId: "profile",
-            dockerContext: "local",
-            imageId: "sha256:approved",
-            projectSnapshotPath: directory,
-            workflowSnapshotPath: directory,
-            runtimePath: directory,
-            assignmentWorkspace: {
-              assignmentId: "assignment",
-              volumeName: "owned-volume",
-              grantEpoch: 0,
-              boundaryId: "baseline",
-              controlsPath: directory,
-              revocationPath,
-              workerUid: 65532,
-              workerGid: 65532,
-            },
-          },
+          confinement: { boundaryId: "profile", workspacePath: "/snapshot", profile: {} },
+        },
+        {
+          ...unconfinedLaunch,
+          assertActive: () =>
+            Ref.get(revoked).pipe(
+              Effect.flatMap((isRevoked) =>
+                isRevoked
+                  ? Effect.fail(
+                      new FactoryError({
+                        code: "execution-unavailable",
+                        detail: "This assignment's execution grant was withdrawn.",
+                      }),
+                    )
+                  : Effect.void,
+              ),
+            ),
         },
       );
       const starting = yield* session
         .ensureThread("thread-revoked")
         .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
       yield* Deferred.await(initializeAwaitingResponse);
-      yield* fs.writeFileString(revocationPath, "{}");
+      yield* Ref.set(revoked, true);
       yield* Deferred.succeed(releaseInitialize, undefined);
       const failure = yield* Fiber.join(starting);
       assert.equal(failure._tag, "ProviderAdapterEnsureThreadError");
@@ -1975,6 +1980,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         settings: DEFAULT_CODEX_SETTINGS,
         environment: {},
         clientFactory,
+        confinedLaunch: unconfinedLaunch,
         crypto: yield* Crypto.Crypto,
         fileSystem,
         path: yield* Path.Path,

@@ -51,6 +51,26 @@ const originActive = (state: FactorySnapshot, request: FactoryCrossProjectReques
       );
 };
 
+/** Delivered peer messages kept per conversation. Each also lives on in its recipient's thread. */
+export const FACTORY_DELIVERED_MESSAGE_RETENTION = 50;
+
+/**
+ * Drops the oldest delivered messages of one conversation beyond the retention cap. Pending and
+ * failed messages always stay, because delivery, recovery and retry act on them.
+ */
+export function retainDeliveredMessages<
+  M extends { readonly delivery: { readonly phase: string } },
+>(messages: readonly M[], inConversation: (message: M) => boolean): readonly M[] {
+  const delivered = (message: M) =>
+    inConversation(message) && message.delivery.phase === "delivered";
+  let excess = messages.filter(delivered).length - FACTORY_DELIVERED_MESSAGE_RETENTION;
+  return messages.filter((message) => {
+    if (excess <= 0 || !delivered(message)) return true;
+    excess -= 1;
+    return false;
+  });
+}
+
 export function factoryRequestParticipants(
   state: FactorySnapshot,
   request: FactoryCrossProjectRequest,
@@ -463,8 +483,9 @@ export function decideFactoryCollaboration(input: {
   ) =>
     accept(
       {
-        collaborationMessages: state.collaborationMessages.map((entry) =>
-          entry.id === message.id ? message : entry,
+        collaborationMessages: retainDeliveredMessages(
+          state.collaborationMessages.map((entry) => (entry.id === message.id ? message : entry)),
+          (entry) => entry.requestId === message.requestId,
         ),
       },
       { collaborationMessageId: message.id },

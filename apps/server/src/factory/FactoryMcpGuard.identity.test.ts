@@ -10,7 +10,11 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  type FactoryCommand,
+  type FactoryCommandResult,
+  type FactoryError,
   type FactorySnapshot,
+  type OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,12 +22,14 @@ import * as Result from "effect/Result";
 import * as Struct from "effect/Struct";
 
 import type { McpInvocationScope } from "../mcp/McpInvocationContext.ts";
+import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
-import * as FactoryService from "./FactoryService.ts";
+import * as FactoryControlAccess from "./FactoryControlAccess.ts";
+import * as FactoryThreadScope from "./FactoryThreadScope.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { decide, initialFactorySnapshot } from "./FactoryState.ts";
 
@@ -103,12 +109,23 @@ const invocation = (threadId: ThreadId): McpInvocationScope => ({
   },
   client: undefined,
 });
+/** The guard's per-call authorization and the service's thread-scoped reads, as one caller sees them. */
+interface ManagedCaller {
+  readonly authorize: (
+    caller: McpInvocationScope,
+    toolName: string,
+    payload?: unknown,
+  ) => Effect.Effect<void, OrchestratorMcpFailure>;
+  readonly snapshot: (caller: McpInvocationScope) => Effect.Effect<FactorySnapshot, FactoryError>;
+  readonly dispatch: (
+    caller: McpInvocationScope,
+    command: FactoryCommand,
+  ) => Effect.Effect<FactoryCommandResult, FactoryError>;
+}
+
 const scenario = <A, E>(
   snapshot: FactorySnapshot,
-  test: (
-    guard: FactoryMcpGuard.FactoryMcpGuard["Service"],
-    dispatches: string[],
-  ) => Effect.Effect<A, E>,
+  test: (guard: ManagedCaller, dispatches: string[]) => Effect.Effect<A, E>,
 ) => {
   const dispatches: string[] = [];
   const shells = new Map(
@@ -130,11 +147,31 @@ const scenario = <A, E>(
     ]),
   );
   const getThreadShell = (id: ThreadId) => Effect.succeed(shells.get(id) ?? null);
-  return FactoryMcpGuard.FactoryMcpGuard.pipe(
-    Effect.flatMap((guard) => test(guard, dispatches)),
+  return Effect.gen(function* () {
+    const policy = yield* McpToolAccess.CallerPolicy;
+    const scope = yield* FactoryThreadScope.make({
+      snapshot: () => Effect.succeed(snapshot),
+      mergeGroupGet: () => Effect.die("unused"),
+      dispatch: (_, command) =>
+        Effect.sync(() => {
+          dispatches.push(command.type);
+          return { revision: 1 };
+        }),
+    });
+    const threadOf = (caller: McpInvocationScope) => caller.thread!.threadId;
+    return yield* test(
+      {
+        authorize: (caller, toolName, payload) =>
+          Effect.flatMap(policy.grant(caller), (grant) => grant.authorize(toolName, payload)),
+        snapshot: (caller) => scope.threadSnapshot(threadOf(caller)),
+        dispatch: (caller, command) => scope.threadDispatch(threadOf(caller), command),
+      },
+      dispatches,
+    );
+  }).pipe(
     Effect.provide(
-      FactoryMcpGuard.layer.pipe(
-        Layer.provide(
+      Layer.merge(FactoryMcpGuard.layer, FactoryControlAccess.layer).pipe(
+        Layer.provideMerge(
           Layer.mergeAll(
             Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.succeed(snapshot) }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({ getThreadShell }),
@@ -149,14 +186,6 @@ const scenario = <A, E>(
                   workflowSnapshotPath: "/readonly-workflow",
                   runtimePath: "/runtime",
                   inspection: { sourceDigest: "bytes", evidencePath: "/evidence" },
-                }),
-            }),
-            Layer.mock(FactoryService.FactoryService)({
-              snapshot: () => Effect.succeed(snapshot),
-              dispatch: (_, command) =>
-                Effect.sync(() => {
-                  dispatches.push(command.type);
-                  return { revision: 1 };
                 }),
             }),
           ),
@@ -216,7 +245,7 @@ it.effect(
         ])
           assert.equal(
             (yield* guard.dispatch(caller, command).pipe(Effect.flip))._tag,
-            "OrchestratorMcpFailure",
+            "FactoryError",
           );
         assert.deepStrictEqual(dispatches, []);
         yield* guard.dispatch(caller, {
@@ -262,7 +291,7 @@ it.effect("retired leads and their descendants cannot escape through direct MCP 
               operation: { kind: "write", path: "src/app.ts", content: "change" },
             })
             .pipe(Effect.flip))._tag,
-          "OrchestratorMcpFailure",
+          "FactoryError",
         );
       }
       assert.deepStrictEqual(dispatches, []);

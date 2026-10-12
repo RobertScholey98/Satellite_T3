@@ -1,9 +1,4 @@
-import {
-  FactoryError,
-  type FactorySnapshot,
-  type OrchestrationV2ConversationMessage,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { FactoryError, type FactorySnapshot, type ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -24,19 +19,6 @@ import {
   factoryExecutionBlocked,
   type FactoryControlMembership,
 } from "./FactoryControls.ts";
-
-export function factoryDirectionSender(
-  message: Pick<
-    OrchestrationV2ConversationMessage,
-    "createdBy" | "senderThreadId" | "scheduledTaskId"
-  >,
-): ThreadId | null | undefined {
-  return message.createdBy === "user" &&
-    message.senderThreadId === undefined &&
-    message.scheduledTaskId === undefined
-    ? undefined
-    : (message.senderThreadId ?? null);
-}
 
 export class FactoryControlAccess extends Context.Service<
   FactoryControlAccess,

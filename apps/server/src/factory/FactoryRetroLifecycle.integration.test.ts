@@ -40,6 +40,7 @@ import { FactoryRetroExecution } from "./FactoryRetroExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
 import { FactorySource } from "./FactorySource.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 // #41: one directly assigned, single-project delivery from onboarding to its follow-up ticket.
 // Commands go through FactoryService and every effect runs on its real workers; only the
@@ -329,6 +330,7 @@ it.effect(
           ).pipe(Layer.provide(FactoryControlAccess.layer)),
         ),
         Layer.provide(externalBoundaries),
+        Layer.provide(layerTestDependencies),
       );
 
       yield* Effect.gen(function* () {

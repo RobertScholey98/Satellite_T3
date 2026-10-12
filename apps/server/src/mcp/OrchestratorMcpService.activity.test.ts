@@ -24,7 +24,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "../orchestration-v2/ThreadGovernance.ts";
 
 const environmentId = EnvironmentId.make("environment-mcp-orchestrator-detail");
 const projectId = ProjectId.make("project-mcp-orchestrator-detail");
@@ -130,7 +130,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        FactoryExecutionTestkit.layerUnmanaged,
+        ThreadGovernance.layerUngoverned,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) =>
@@ -196,7 +196,7 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        FactoryExecutionTestkit.layerUnmanaged,
+        ThreadGovernance.layerUngoverned,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) =>
@@ -319,7 +319,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        FactoryExecutionTestkit.layerUnmanaged,
+        ThreadGovernance.layerUngoverned,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) => {
@@ -418,7 +418,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        FactoryExecutionTestkit.layerUnmanaged,
+        ThreadGovernance.layerUngoverned,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) => {
             if (threadId === parentThreadId) return Effect.succeed(parentProjection);

@@ -9,12 +9,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { prepareFactoryCodexLaunch } from "./FactoryCodexLaunch.ts";
-import {
-  admissibleFactorySourcePath,
-  FACTORY_CODEX_IMAGE,
-  factoryContainerEndpoint,
-} from "./FactoryExecutionProfile.ts";
+import * as ConfinedCodexLaunch from "../orchestration-v2/Adapters/ConfinedCodexLaunch.ts";
+import { layerConfinedLaunch, prepareFactoryCodexLaunch } from "./FactoryCodexLaunch.ts";
+import { admissibleFactorySourcePath, FACTORY_CODEX_IMAGE } from "./FactoryExecutionProfile.ts";
 
 const settings = Schema.decodeUnknownSync(CodexSettings);
 const readJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
@@ -122,7 +119,7 @@ it.effect(
         environment: {},
         containerName: "factory-missing",
       }).pipe(Effect.flip);
-      assert.equal(failure._tag, "FactoryCodexLaunchError");
+      assert.equal(failure._tag, "ConfinedCodexLaunchError");
       assert.include(failure.detail, "file-based Codex");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -155,13 +152,75 @@ it.effect("keeps the factory refusal that stopped a launch as its cause", () =>
       environment: {},
       containerName: "factory-stopped-retro",
     }).pipe(Effect.flip);
-    assert.equal(failure._tag, "FactoryCodexLaunchError");
+    assert.equal(failure._tag, "ConfinedCodexLaunchError");
     assert.equal(
       failure.detail,
       "This retrospective runtime has stopped. Its evidence remains available.",
     );
     assert.deepInclude(failure.cause, { _tag: "FactoryError", code: "execution-unavailable" });
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("launches and fences a confinement from the profile it carries", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped();
+    const revocationPath = path.join(root, "authority", "revoked.json");
+    yield* fs.makeDirectory(path.dirname(revocationPath));
+    const profile = {
+      boundaryId: "profile:thread",
+      dockerContext: "owned-context",
+      imageId: "sha256:verified",
+      projectSnapshotPath: path.join(root, "project"),
+      workflowSnapshotPath: path.join(root, "workflow"),
+      runtimePath: path.join(root, "runtime"),
+      assignmentWorkspace: {
+        assignmentId: "assignment",
+        volumeName: "owned-volume",
+        grantEpoch: 0,
+        boundaryId: "baseline",
+        controlsPath: root,
+        revocationPath,
+        workerUid: 65532,
+        workerGid: 65532,
+      },
+    };
+    const confinement = {
+      boundaryId: profile.boundaryId,
+      workspacePath: profile.projectSnapshotPath,
+      profile,
+    };
+    const launcher = yield* ConfinedCodexLaunch.ConfinedCodexLaunch;
+    const launch = yield* launcher.prepare({
+      confinement,
+      settings: settings({ homePath: path.join(root, "empty") }),
+      environment: { OPENAI_API_KEY: "model-test" },
+    });
+    const containerName = launch.args[launch.args.indexOf("--name") + 1] ?? "";
+    assert.match(containerName, /^satellite-factory-/);
+    assert.deepEqual(launch.cleanup, {
+      command: "docker",
+      args: ["--context", "owned-context", "rm", "--force", containerName],
+    });
+    yield* launcher.assertActive(confinement);
+    yield* fs.writeFileString(revocationPath, "{}");
+    assert.include(
+      (yield* launcher.assertActive(confinement).pipe(Effect.flip)).message,
+      "execution grant was withdrawn",
+    );
+    const unreadable = { ...confinement, profile: { boundaryId: 1 } };
+    assert.equal(
+      (yield* launcher.assertActive(unreadable).pipe(Effect.flip)).code,
+      "execution-unavailable",
+    );
+    assert.equal(
+      (yield* launcher
+        .prepare({ confinement: unreadable, settings: settings({}), environment: {} })
+        .pipe(Effect.flip))._tag,
+      "ConfinedCodexLaunchError",
+    );
+  }).pipe(Effect.scoped, Effect.provide(layerConfinedLaunch), Effect.provide(NodeServices.layer)),
 );
 
 it("excludes credential paths and traversal while retaining ordinary tracked project instructions", () => {
@@ -184,11 +243,11 @@ it("excludes credential paths and traversal while retaining ordinary tracked pro
   ])
     assert.isTrue(admissibleFactorySourcePath(path), path);
   assert.equal(
-    factoryContainerEndpoint("http://127.0.0.1:4000/mcp"),
+    ConfinedCodexLaunch.confinedCodexEndpoint("http://127.0.0.1:4000/mcp"),
     "http://host.docker.internal:4000/mcp",
   );
   assert.equal(
-    factoryContainerEndpoint("https://environment.example/mcp"),
+    ConfinedCodexLaunch.confinedCodexEndpoint("https://environment.example/mcp"),
     "https://environment.example/mcp",
   );
 });

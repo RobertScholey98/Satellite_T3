@@ -22,10 +22,9 @@ import * as Schema from "effect/Schema";
 
 import { parseTurnDiffFilesFromNumstat } from "../checkpointing/Diffs.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
-import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
-import * as FactoryExecution from "../factory/FactoryExecution.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 const CHECKPOINT_REFS_PREFIX = "refs/t3/orchestration-v2/checkpoints";
 const ROOT_CHECKPOINT_SCOPE_NAME = "root";
@@ -253,8 +252,7 @@ export const layer: Layer.Layer<
   | CheckpointStore.CheckpointStore
   | Crypto.Crypto
   | IdAllocator.IdAllocatorV2
-  | FactoryExecution.FactoryExecution
-  | FactoryControlAccess.FactoryControlAccess
+  | ThreadGovernance.ThreadGovernance
 > = Layer.effect(
   CheckpointServiceV2,
   Effect.gen(function* () {
@@ -264,29 +262,26 @@ export const layer: Layer.Layer<
       checkpointRefForScopeOrdinal(input).pipe(Effect.provideService(Crypto.Crypto, crypto));
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const projections = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
-    const factory = yield* FactoryExecution.FactoryExecution;
-    const factoryControls = yield* FactoryControlAccess.FactoryControlAccess;
+    const governance = yield* ThreadGovernance.ThreadGovernance;
     const workspaceLocks = yield* KeyedLock.make<string>();
     const withWorkspaceLock = <A, E, R>(cwd: string, effect: Effect.Effect<A, E, R>) =>
       workspaceLocks.withLock(cwd, effect);
 
-    const isFactoryScope = (threadId: ThreadId) =>
-      factory.runtimePolicyFor(threadId).pipe(
-        Effect.map((profile) => profile !== undefined),
-        // Paused, held or cancelled factory threads still work in factory snapshots.
-        Effect.catch(() =>
-          factoryControls.membership(threadId).pipe(Effect.map((member) => member !== undefined)),
-        ),
+    const isConfinedScope = (threadId: ThreadId) =>
+      governance.confinementFor(threadId).pipe(
+        Effect.map((confinement) => confinement !== undefined),
+        // Paused, held or cancelled governed threads still work in their confined snapshots.
+        Effect.catch(() => governance.governs(threadId)),
         // A failed lookup must not silently turn off checkpoints for ordinary threads.
         Effect.catch((cause) =>
-          Effect.logWarning("Could not resolve the factory checkpoint scope", {
+          Effect.logWarning("Could not resolve the governed checkpoint scope", {
             threadId,
             cause,
           }).pipe(Effect.as(false)),
         ),
       );
     const isExcludedScope = Effect.fnUntraced(function* (scope: OrchestrationV2CheckpointScope) {
-      if (yield* isFactoryScope(scope.threadId)) return true;
+      if (yield* isConfinedScope(scope.threadId)) return true;
       return yield* Option.isNone(projections)
         ? Effect.succeed(false)
         : projections.value.getThread(scope.threadId).pipe(
@@ -296,7 +291,7 @@ export const layer: Layer.Layer<
     });
     const isGitCheckpointable = (scope: OrchestrationV2CheckpointScope) =>
       Effect.gen(function* () {
-        // Owned idea directories and factory snapshots may sit under a checkout's development home.
+        // Owned idea directories and confined snapshots may sit under a checkout's development home.
         // Git discovery must never turn that directory into a snapshot of the containing project.
         if (yield* isExcludedScope(scope)) return false;
         return yield* checkpointStore.isGitRepository(scope.cwd);

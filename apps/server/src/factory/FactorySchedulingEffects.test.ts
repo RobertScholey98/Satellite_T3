@@ -274,7 +274,7 @@ const fixture = Effect.fn(function* (count = 2) {
     Effect.provide(FactorySchedulingEffects.layer.pipe(Layer.provide(dependencies))),
   );
   const write = (state: FactorySnapshot) =>
-    sql`UPDATE factory_state SET revision=${state.revision},payload_json=${encode(state)} WHERE id=1`;
+    sql`UPDATE factory_state SET revision=revision+1,payload_json=${encode(state)} WHERE id=1`;
   const notify = Effect.gen(function* () {
     for (const pending of yield* store.pending)
       if (pending.intent.type === "schedule.notify") yield* effects.handle(pending);

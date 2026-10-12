@@ -162,7 +162,7 @@ const saveSnapshot = (state: FactorySnapshot) =>
     const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO factory_state (id, revision, payload_json)
       VALUES (1, ${state.revision}, ${encodeSnapshot(state)})
-      ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, payload_json = excluded.payload_json`;
+      ON CONFLICT(id) DO UPDATE SET revision = factory_state.revision + 1, payload_json = excluded.payload_json`;
   });
 
 const admissionLayer = FactoryModelAdmission.layer.pipe(
@@ -253,7 +253,8 @@ const orchestrationLayer = ProviderReplayHarness.layerWithRegistry(
   {
     databaseLayer: SqlitePersistence.layerMemory,
     runEffectWorker: false,
-    factory: Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls).pipe(
+    governance: FactoryExecution.layerThreadGovernance.pipe(
+      Layer.provide(Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls)),
       Layer.orDie,
     ),
   },
@@ -458,7 +459,7 @@ describe("factory model admission", () => {
         modelSelection: workerModel,
       });
       assert.equal(authorizedChild.cwd, "/managed/project");
-      assert.isDefined(authorizedChild.factoryExecution);
+      assert.isDefined(authorizedChild.confinement);
       const error = yield* runtime
         .resolve({ thread: lead, modelSelection: outsideModel })
         .pipe(Effect.flip);
@@ -471,21 +472,28 @@ describe("factory model admission", () => {
         modelSelection: outsideModel,
       });
       assert.equal(ordinary.cwd, "/ordinary-worktree");
-      assert.isUndefined(ordinary.factoryExecution);
+      assert.isUndefined(ordinary.confinement);
     }).pipe(
       Effect.provide(
         Layer.merge(
           orchestrationLayer,
           RuntimePolicy.layerFromProjectStore.pipe(
             Layer.provide(
-              executionFor({
-                boundaryId: "qualified:lead",
-                dockerContext: "local",
-                imageId: "sha256:verified",
-                projectSnapshotPath: "/managed/project",
-                workflowSnapshotPath: "/managed/workflow",
-                runtimePath: "/managed/lead",
-              }),
+              FactoryExecution.layerThreadGovernance.pipe(
+                Layer.provide(
+                  Layer.merge(
+                    executionFor({
+                      boundaryId: "qualified:lead",
+                      dockerContext: "local",
+                      imageId: "sha256:verified",
+                      projectSnapshotPath: "/managed/project",
+                      workflowSnapshotPath: "/managed/workflow",
+                      runtimePath: "/managed/lead",
+                    }),
+                    FactoryExecutionTestkit.layerUnmanagedControls,
+                  ),
+                ),
+              ),
             ),
             Layer.provide(
               Layer.mergeAll(
@@ -798,6 +806,9 @@ const productionFactoryLayer = FactoryExecution.layer.pipe(
   Layer.provide(persistedStores),
   Layer.provide(NodeServices.layer),
 );
+const productionGovernanceLayer = FactoryExecution.layerThreadGovernance.pipe(
+  Layer.provide(productionFactoryLayer),
+);
 const unmanagedOrchestrationLayer = Layer.merge(
   ProviderReplayHarness.layerWithRegistry(
     { name: "factory-unmanaged-lineage" },
@@ -805,11 +816,11 @@ const unmanagedOrchestrationLayer = Layer.merge(
     {
       databaseLayer: SqlitePersistence.layerMemory,
       runEffectWorker: false,
-      factory: productionFactoryLayer.pipe(Layer.orDie),
+      governance: productionGovernanceLayer.pipe(Layer.orDie),
     },
   ),
   RuntimePolicy.layerFromProjectStore.pipe(
-    Layer.provide(productionFactoryLayer),
+    Layer.provide(productionGovernanceLayer),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
@@ -855,7 +866,7 @@ describe("ordinary threads with factory services and no manager", () => {
         modelSelection: leadModel,
       });
       assert.equal(policy.cwd, "/ordinary-worktree");
-      assert.isUndefined(policy.factoryExecution);
+      assert.isUndefined(policy.confinement);
     }).pipe(Effect.provide(unmanagedOrchestrationLayer)),
   );
 });

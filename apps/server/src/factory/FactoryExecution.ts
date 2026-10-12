@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import { ServerConfig } from "../config.ts";
 import { ProjectStoreV2 } from "../orchestration-v2/ProjectStore.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import * as ThreadGovernance from "../orchestration-v2/ThreadGovernance.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import { FactoryStore } from "./FactoryStore.ts";
@@ -527,4 +528,32 @@ export const layer = Layer.effect(FactoryExecution, make).pipe(
   Layer.provide(FactoryWorkflowExecution.layer),
   Layer.provide(FactoryModelAdmission.layer),
   Layer.provideMerge(FactoryControlAccess.layer),
+);
+
+/** Engineering managers' rules as orchestration's thread governance. */
+export const layerThreadGovernance = Layer.effect(
+  ThreadGovernance.ThreadGovernance,
+  Effect.gen(function* () {
+    const execution = yield* FactoryExecution;
+    const controls = yield* FactoryControlAccess.FactoryControlAccess;
+    return ThreadGovernance.ThreadGovernance.of({
+      governs: (threadId) =>
+        controls.membership(threadId).pipe(Effect.map((member) => member !== undefined)),
+      assertDirection: controls.assertDirection,
+      confinementFor: (threadId, pendingParentThreadId) =>
+        execution.runtimePolicyFor(threadId, pendingParentThreadId).pipe(
+          Effect.map((profile) =>
+            profile === undefined
+              ? undefined
+              : {
+                  boundaryId: profile.boundaryId,
+                  workspacePath: profile.projectSnapshotPath,
+                  profile,
+                },
+          ),
+        ),
+      assertModelSelection: execution.assertSelectionFor,
+      assertDelegatedModel: execution.assertDelegationFor,
+    });
+  }),
 );

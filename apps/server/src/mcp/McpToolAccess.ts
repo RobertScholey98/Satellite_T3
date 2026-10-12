@@ -4,12 +4,15 @@ import {
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
-import type * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
-import type { Tool, Toolkit } from "effect/ai";
+import type { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import {
   DispatchModeLimit,
@@ -299,8 +302,97 @@ export class HandlersLayer<Tools extends Record<string, Tool.Any>, EX = never, R
   }
 }
 
-const checkedHandlers = <Handlers>(declarations: Declarations<Handlers>): Handlers =>
-  Struct.map(declarations, checkedHandler);
+/**
+ * What one caller may reach on `/mcp` beyond the declarations' own checks. A
+ * feature that confines some threads, such as engineering managers, grants
+ * them its own tools and refuses the rest.
+ */
+export interface CallerGrant {
+  /** Whether tools annotated with `grantedOnly` are listed and callable. */
+  readonly grantedTools: boolean;
+  /** Runs before every handler; a refusal fails the call with its message. */
+  readonly authorize: (
+    toolName: string,
+    params: unknown,
+  ) => Effect.Effect<void, OrchestratorMcpFailure>;
+}
+
+export const ordinaryGrant: CallerGrant = { grantedTools: false, authorize: () => Effect.void };
+
+/** Decides each caller's grant once per `/mcp` request. */
+export class CallerPolicy extends Context.Service<
+  CallerPolicy,
+  { readonly grant: (scope: McpInvocationContext.McpInvocationScope) => Effect.Effect<CallerGrant> }
+>()("t3/mcp/McpToolAccess/CallerPolicy") {}
+
+/** Every caller is ordinary: no granted tools, nothing refused. For tests without a confining feature. */
+export const layerOrdinaryCallers = Layer.succeed(CallerPolicy, {
+  grant: () => Effect.succeed(ordinaryGrant),
+});
+
+/** Set by `provideCaller`. `tools/list` reads it synchronously, so it is resolved up front. */
+const CurrentGrant = Context.Reference<CallerGrant | undefined>(
+  "t3/mcp/McpToolAccess/CurrentGrant",
+  { defaultValue: () => undefined },
+);
+
+/**
+ * Runs `effect` as `scope`: the invocation context and the grant the policy
+ * gives it. The `/mcp` auth middleware wraps every request in this.
+ */
+export const provideCaller =
+  (scope: McpInvocationContext.McpInvocationScope) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    CallerPolicy.pipe(
+      Effect.flatMap((policy) => policy.grant(scope)),
+      Effect.flatMap((grant) =>
+        effect.pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provideService(CurrentGrant, grant),
+        ),
+      ),
+    );
+
+/**
+ * An `McpSchema.EnabledWhen` predicate that lists and admits a tool only to
+ * callers whose grant includes it. MCP evaluates it synchronously inside the
+ * request's fiber, which is why the grant is resolved before the request runs.
+ */
+export const grantedOnly: McpSchema.EnabledWhen["Service"] = () => {
+  const fiber = Fiber.getCurrent();
+  return fiber !== undefined && Context.get(fiber.context, CurrentGrant)?.grantedTools === true;
+};
+
+const unauthenticated = new OrchestratorMcpFailure({
+  code: "capability_denied",
+  message: "An authenticated MCP caller is required.",
+});
+
+/** Refuses a call outside the caller's grant before its handler runs. */
+const authorizeCall = (toolName: string, params: unknown) =>
+  Effect.gen(function* () {
+    const grant = yield* CurrentGrant;
+    if (grant !== undefined) return yield* grant.authorize(toolName, params);
+    // Only in-process callers skip `provideCaller`; one without a scope has no identity at all.
+    if (Option.isNone(yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext)))
+      return yield* unauthenticated;
+  });
+
+type AnyHandler = (params: unknown, context: unknown) => Effect.Effect<unknown, unknown, unknown>;
+
+const checkedHandlers = <Handlers>(declarations: Declarations<Handlers>): Handlers => {
+  const handlers = Struct.map(declarations, checkedHandler) as Record<string, AnyHandler>;
+  // Each handler keeps its type and gains only an `OrchestratorMcpFailure`,
+  // which every `/mcp` tool's failure schema declares.
+  return Object.fromEntries(
+    Object.entries(handlers).map(([name, handle]) => [
+      name,
+      (params: unknown, context: unknown) =>
+        // @effect-diagnostics-next-line anyUnknownInErrorContext:off - the cast below restores each type.
+        authorizeCall(name, params).pipe(Effect.andThen(handle(params, context))),
+    ]),
+  ) as Handlers;
+};
 
 /** `Toolkit.toLayer` for handlers that all declare their access. */
 export const toLayer = <Tools extends Record<string, Tool.Any>, EX = never, RX = never>(

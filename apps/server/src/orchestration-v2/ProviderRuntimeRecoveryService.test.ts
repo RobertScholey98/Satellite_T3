@@ -18,7 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -31,7 +31,7 @@ it.effect("leaves durable effects for the worker after runtime reconciliation", 
   Effect.gen(function* () {
     const runs = yield* Ref.make(0);
     const layer = ProviderRuntimeRecovery.layer.pipe(
-      Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Layer.provide(ThreadGovernance.layerUngoverned),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -73,7 +73,7 @@ it.effect("reads recovery projections only for threads that need runtime recover
   const recoveryThreadId = ThreadId.make("thread_recovery_candidate");
   const projectionReads = vi.fn<(threadId: ThreadId) => void>();
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -152,7 +152,7 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
     nodes: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -205,7 +205,7 @@ it.effect("preserves async questions across startup and shutdown", () => {
   } as unknown as OrchestrationV2ThreadProjection;
   const commitCommand = vi.fn(() => Effect.die("an async question needs no process-loss write"));
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -254,7 +254,7 @@ it.effect("uses the same reconciliation path to cancel runtime requests during s
     nodes: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -338,7 +338,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
-      Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Layer.provide(ThreadGovernance.layerUngoverned),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -485,7 +485,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
-      Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Layer.provide(ThreadGovernance.layerUngoverned),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -552,7 +552,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -618,7 +618,7 @@ it.effect("closes a secret request card's form when its run is recovered", () =>
     ],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -694,7 +694,7 @@ it.effect("holds accepted queued work without cancelling its execution state aft
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
@@ -805,7 +805,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
-      Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Layer.provide(ThreadGovernance.layerUngoverned),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -991,7 +991,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
-      Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Layer.provide(ThreadGovernance.layerUngoverned),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -1149,7 +1149,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
-      Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Layer.provide(ThreadGovernance.layerUngoverned),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -1280,7 +1280,7 @@ it.effect(
       ],
     } as unknown as OrchestrationV2ThreadProjection;
     const layer = ProviderRuntimeRecovery.layer.pipe(
-      Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Layer.provide(ThreadGovernance.layerUngoverned),
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.mergeAll(
@@ -1442,7 +1442,7 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
     ],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(

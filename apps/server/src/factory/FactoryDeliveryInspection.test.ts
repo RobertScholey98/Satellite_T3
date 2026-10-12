@@ -29,6 +29,7 @@ import {
   deliverySelection,
   reviewedDeliveryFixture,
 } from "./FactoryDelivery.testkit.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 const evidence: ProviderMergeEvidence = {
   headSha: "head",
@@ -98,6 +99,7 @@ const base = Layer.mergeAll(FactoryStore.layer, Threads.layer).pipe(
 );
 const services = FactoryService.layer.pipe(
   Layer.provideMerge(FactoryDeliveryEffects.layer.pipe(Layer.provide(FactoryControlAccess.layer))),
+  Layer.provide(layerTestDependencies),
 );
 const encode = Schema.encodeSync(Schema.fromJsonString(FactorySnapshot));
 

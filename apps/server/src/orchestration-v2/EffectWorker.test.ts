@@ -1,7 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
-  ProjectId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -31,8 +30,7 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
@@ -59,14 +57,8 @@ it.effect(
           recoverDelegatedTask: (childThreadId) =>
             Ref.update(recovered, (ids) => [...ids, childThreadId]),
         },
-        factoryControls: Layer.mock(FactoryControlAccess)({
-          membership: (id) =>
-            Effect.succeed({
-              threadId: id,
-              managerId: ThreadId.make("factory-manager"),
-              projectId: ProjectId.make("factory-project"),
-              ancestorThreadIds: [],
-            }),
+        governance: Layer.mock(ThreadGovernance.ThreadGovernance)({
+          governs: () => Effect.succeed(true),
         }),
       });
       const executor = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
@@ -133,7 +125,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
-  readonly factoryControls?: Layer.Layer<FactoryControlAccess>;
+  readonly governance?: Layer.Layer<ThreadGovernance.ThreadGovernance>;
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const layerDependencies = Layer.mergeAll(
@@ -203,7 +195,7 @@ function layerExecutorFor(input: {
     Layer.provide(
       Layer.mergeAll(
         layerDependencies,
-        input.factoryControls ?? FactoryExecutionTestkit.layerUnmanagedControls,
+        input.governance ?? ThreadGovernance.layerUngoverned,
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},

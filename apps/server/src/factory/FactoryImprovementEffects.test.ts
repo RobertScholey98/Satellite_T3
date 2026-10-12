@@ -141,7 +141,7 @@ const fixture = Effect.fn(function* () {
       if (pending.intent.type === "improvement.notify") yield* effects.handle(pending);
   });
   const write = (state: FactorySnapshot) =>
-    sql`UPDATE factory_state SET revision=${state.revision},payload_json=${encode(state)} WHERE id=1`;
+    sql`UPDATE factory_state SET revision=revision+1,payload_json=${encode(state)} WHERE id=1`;
   const messages = threads
     .getThreadRecords(systemId, ["messages"])
     .pipe(Effect.map((records) => records.messages));

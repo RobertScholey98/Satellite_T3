@@ -9,6 +9,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PullRequestActionGate from "../pullRequest/PullRequestActionGate.ts";
 import { FactoryStore } from "./FactoryStore.ts";
 import {
   factoryMergeGroupForAssignment,
@@ -221,7 +222,7 @@ export const layer = Layer.effect(
  * supplies its uncached host reads. `beforeMutation` repeats the decision at the host's mutation
  * boundary, after any queueing.
  */
-export const authorizeFactoryPullRequestAction = <E>(
+const authorizeFactoryPullRequestAction = <E>(
   gate: FactoryPullRequestGate["Service"],
   input: {
     readonly request: PullRequestActionInput;
@@ -315,3 +316,14 @@ export const authorizeFactoryPullRequestAction = <E>(
       beforeMutation: Effect.asVoid(authorize),
     };
   }).pipe(Effect.withSpan("FactoryPullRequestGate.authorizeAction"));
+
+/** Managed delivery as the pull-request service's action gate. */
+export const layerActionGate = Layer.effect(
+  PullRequestActionGate.PullRequestActionGate,
+  Effect.gen(function* () {
+    const gate = yield* FactoryPullRequestGate;
+    return PullRequestActionGate.PullRequestActionGate.of({
+      authorize: (input) => authorizeFactoryPullRequestAction(gate, input),
+    });
+  }),
+).pipe(Layer.provide(layer));

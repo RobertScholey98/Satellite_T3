@@ -28,7 +28,7 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
-import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -91,7 +91,7 @@ export const layerExecutor: Layer.Layer<
   | ThreadTitleRegenerationService.ThreadTitleRegenerationService
   | ThreadManagementService.ThreadManagementService
   | ServerSettings.ServerSettingsService
-  | FactoryControlAccess.FactoryControlAccess
+  | ThreadGovernance.ThreadGovernance
 > = Layer.effect(
   OrchestrationEffectExecutorV2,
   Effect.gen(function* () {
@@ -106,7 +106,7 @@ export const layerExecutor: Layer.Layer<
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
-    const factory = yield* FactoryControlAccess.FactoryControlAccess;
+    const governance = yield* ThreadGovernance.ThreadGovernance;
     return OrchestrationEffectExecutorV2.of({
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
@@ -114,9 +114,9 @@ export const layerExecutor: Layer.Layer<
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
             return Effect.gen(function* () {
-              // Factory reconciliation decides whether a managed lead resumes. A
-              // managed delegated child is not continued and owes its parent a result.
-              if ((yield* factory.membership(effect.threadId)) !== undefined)
+              // The owner of a governed thread decides whether its lead resumes. A
+              // governed delegated child is not continued and owes its parent a result.
+              if (yield* governance.governs(effect.threadId))
                 return yield* threads.recoverDelegatedTask(effect.threadId, sourceRunId);
               yield* continueRestartedRun({ threadId: effect.threadId, sourceRunId });
             }).pipe(

@@ -30,6 +30,7 @@ import { FactoryHandover } from "./FactoryHandover.ts";
 import * as FactoryService from "./FactoryService.ts";
 import { FactorySource } from "./FactorySource.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 const projectId = ProjectId.make("commission-web");
 const human = { kind: "human" } as const;
@@ -155,6 +156,7 @@ const scenario = <A, E, R>(
         Layer.provideMerge(runtime),
         Layer.provide(
           Layer.mergeAll(
+            layerTestDependencies,
             execution,
             Layer.mock(FactoryBoundaryExecution)({
               approve: () => Effect.succeed(boundary),

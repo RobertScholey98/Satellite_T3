@@ -30,6 +30,7 @@ import * as Stream from "effect/Stream";
 
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
+import * as ThreadGovernance from "../orchestration-v2/ThreadGovernance.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
@@ -75,28 +76,33 @@ import type { FactoryWorkflowContext } from "./FactoryWorkflow.ts";
 import type { FactoryIntegrationContext } from "./FactoryIntegration.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
 import { ServerActivation, forkParked } from "../serverActivation.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { type FactoryControlContext } from "./FactoryControls.ts";
+import * as FactoryThreadScope from "./FactoryThreadScope.ts";
+
+/** The service before its thread-scoped reads, which `FactoryThreadScope` builds from it. */
+interface FactoryServiceCore {
+  readonly snapshot: (query: FactoryQuery) => Effect.Effect<FactorySnapshot, FactoryError>;
+  readonly mergeGroupGet: (
+    query: FactoryMergeGroupQuery,
+  ) => Effect.Effect<FactoryMergeGroupRead, FactoryError>;
+  readonly changes: (query: FactoryQuery) => Stream.Stream<FactorySnapshot>;
+  readonly dispatch: (
+    actor: Exclude<FactoryActor, { readonly kind: "system" }>,
+    command: FactoryCommand,
+  ) => Effect.Effect<FactoryCommandResult, FactoryError>;
+  readonly drain: Effect.Effect<void>;
+  readonly recover: Effect.Effect<void, FactoryError>;
+  readonly reconcileProject: (
+    projectId: ProjectId,
+    triggerId: string,
+  ) => Effect.Effect<void, FactoryError>;
+  readonly observe: (event: OrchestrationV2StoredEvent) => Effect.Effect<void, FactoryError>;
+}
 
 export class FactoryService extends Context.Service<
   FactoryService,
-  {
-    readonly snapshot: (query: FactoryQuery) => Effect.Effect<FactorySnapshot, FactoryError>;
-    readonly mergeGroupGet: (
-      query: FactoryMergeGroupQuery,
-    ) => Effect.Effect<FactoryMergeGroupRead, FactoryError>;
-    readonly changes: (query: FactoryQuery) => Stream.Stream<FactorySnapshot>;
-    readonly dispatch: (
-      actor: Exclude<FactoryActor, { readonly kind: "system" }>,
-      command: FactoryCommand,
-    ) => Effect.Effect<FactoryCommandResult, FactoryError>;
-    readonly drain: Effect.Effect<void>;
-    readonly recover: Effect.Effect<void, FactoryError>;
-    readonly reconcileProject: (
-      projectId: ProjectId,
-      triggerId: string,
-    ) => Effect.Effect<void, FactoryError>;
-    readonly observe: (event: OrchestrationV2StoredEvent) => Effect.Effect<void, FactoryError>;
-  }
+  FactoryServiceCore & FactoryThreadScope.FactoryThreadScope
 >()("t3/factory/FactoryService") {}
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -218,28 +224,34 @@ export const layer = Layer.effect(
     const reconciliation = yield* FactoryReconciliation.FactoryReconciliation;
     const recoveryReconciliation =
       yield* FactoryRecoveryReconciliation.FactoryRecoveryReconciliation;
-    const deliveryEffects = yield* Effect.serviceOption(
-      FactoryDeliveryEffects.FactoryDeliveryEffects,
-    );
-    const previews = yield* Effect.serviceOption(FactoryPreviewService.FactoryPreviewService);
-    const retros = yield* Effect.serviceOption(FactoryRetroEffects.FactoryRetroEffects);
-    const scheduling = yield* Effect.serviceOption(
-      FactorySchedulingEffects.FactorySchedulingEffects,
-    );
-    const improvements = yield* Effect.serviceOption(
-      FactoryImprovementEffects.FactoryImprovementEffects,
-    );
-    const workflows = yield* Effect.serviceOption(FactoryWorkflowEffects.FactoryWorkflowEffects);
-    const collaboration = yield* Effect.serviceOption(
-      FactoryCollaborationEffects.FactoryCollaborationEffects,
-    );
-    const integrations = yield* Effect.serviceOption(
-      FactoryIntegrationEffects.FactoryIntegrationEffects,
-    );
-    const merges = yield* Effect.serviceOption(FactoryMergeEffects.FactoryMergeEffects);
-    const mergeOperations = yield* Effect.serviceOption(
-      FactoryMergeOperationEffects.FactoryMergeOperationEffects,
-    );
+    const deliveryEffects = yield* FactoryDeliveryEffects.FactoryDeliveryEffects;
+    const previews = yield* FactoryPreviewService.FactoryPreviewService;
+    const retros = yield* FactoryRetroEffects.FactoryRetroEffects;
+    const scheduling = yield* FactorySchedulingEffects.FactorySchedulingEffects;
+    const improvements = yield* FactoryImprovementEffects.FactoryImprovementEffects;
+    const workflows = yield* FactoryWorkflowEffects.FactoryWorkflowEffects;
+    const collaboration = yield* FactoryCollaborationEffects.FactoryCollaborationEffects;
+    const integrations = yield* FactoryIntegrationEffects.FactoryIntegrationEffects;
+    const merges = yield* FactoryMergeEffects.FactoryMergeEffects;
+    const mergeOperations = yield* FactoryMergeOperationEffects.FactoryMergeOperationEffects;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
+    // The beta switch gates only the first manager. Once one exists, its work stays controllable
+    // and new managers may join it, so turning the switch off never strands or weakens a team.
+    const admitCreation = (command: FactoryCommand) =>
+      command.type !== "manager.create" && command.type !== "system.create"
+        ? Effect.void
+        : Effect.gen(function* () {
+            const settings = yield* serverSettings.getSettings.pipe(
+              Effect.mapError((cause) => new FactoryError({ code: "persistence", cause })),
+            );
+            if (settings.engineeringManagersEnabled || (yield* store.snapshot).managers.length > 0)
+              return;
+            return yield* new FactoryError({
+              code: "invalid-state",
+              detail:
+                "Engineering managers are off. Turn on Engineering managers in Settings → General.",
+            });
+          });
     const commands = yield* Semaphore.make(1);
     const commandLocks = new Map<
       CommandId,
@@ -355,9 +367,7 @@ export const layer = Layer.effect(
           return;
         }
         if (assignment.scheduling) {
-          if (Option.isNone(scheduling))
-            return yield* new FactoryError({ code: "execution-unavailable" });
-          yield* scheduling.value.beforeLaunch(assignment, profile.projectSnapshotPath).pipe(
+          yield* scheduling.beforeLaunch(assignment, profile.projectSnapshotPath).pipe(
             Effect.tapError((cause) =>
               Effect.sync(() => {
                 schedulingHold = cause;
@@ -705,29 +715,22 @@ export const layer = Layer.effect(
     );
     const deliveryWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
-        if (Option.isNone(deliveryEffects) && Option.isNone(previews)) return;
-        if (Option.isSome(previews))
-          yield* previews.value.reconcile.pipe(
-            logFailure("Factory preview shutdown remains pending"),
-          );
+        yield* previews.reconcile.pipe(logFailure("Factory preview shutdown remains pending"));
         yield* drainIntents(
           (type) => type.startsWith("delivery."),
-          keepPending("Factory delivery remains pending", (entry) => {
-            const handler =
-              entry.intent.type === "delivery.preview.start" ||
-              entry.intent.type === "delivery.preview.stop"
-                ? previews
-                : deliveryEffects;
-            return Option.isNone(handler) ? Effect.void : handler.value.handle(entry);
-          }),
+          keepPending("Factory delivery remains pending", (entry) =>
+            entry.intent.type === "delivery.preview.start" ||
+            entry.intent.type === "delivery.preview.stop"
+              ? previews.handle(entry)
+              : deliveryEffects.handle(entry),
+          ),
           enqueue(worker, controlWorker, oversightWorker, retroWorker),
         );
       }),
     );
     const retroWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
-        if (Option.isNone(retros)) return;
-        yield* retros.value.reconcile.pipe(
+        yield* retros.reconcile.pipe(
           logFailure("Factory retrospective reconciliation remains pending"),
         );
         yield* drainIntents(
@@ -736,7 +739,7 @@ export const layer = Layer.effect(
             type.startsWith("retro.") ||
             type.startsWith("followup."),
           keepPending("Factory retrospective work remains pending", (entry) =>
-            retros.value.handle(entry),
+            retros.handle(entry),
           ),
           enqueue(worker, controlWorker, oversightWorker, deliveryWorker),
         );
@@ -744,57 +747,50 @@ export const layer = Layer.effect(
     );
     const schedulingWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
-        if (Option.isNone(scheduling)) return;
-        const reconcile = scheduling.value.reconcile.pipe(
+        const reconcile = scheduling.reconcile.pipe(
           logFailure("Factory scheduling reconciliation failed"),
         );
         yield* reconcile;
         yield* drainIntents(
           (type) => type.startsWith("schedule."),
-          keepPending("Factory scheduling remains pending", (entry) =>
-            scheduling.value.handle(entry),
-          ),
+          keepPending("Factory scheduling remains pending", (entry) => scheduling.handle(entry)),
           reconcile,
         );
       }),
     );
     const improvementWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
-        if (Option.isNone(improvements)) return;
-        const reconcile = improvements.value.reconcile.pipe(
+        const reconcile = improvements.reconcile.pipe(
           logFailure("Factory improvement intake remains pending"),
         );
         yield* reconcile;
         yield* drainIntents(
           (type) => type.startsWith("improvement.") || type === "system.launch",
           keepPending("Factory improvement work remains pending", (entry) =>
-            improvements.value.handle(entry),
+            improvements.handle(entry),
           ),
           reconcile,
         );
       }),
     );
     const workflowWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
-      Option.isNone(workflows)
-        ? Effect.void
-        : drainIntents(
-            (type) => type.startsWith("workflow."),
-            keepPending("Factory workflow operation remains pending", (entry) =>
-              workflows.value.handle(entry),
-            ),
-          ),
+      drainIntents(
+        (type) => type.startsWith("workflow."),
+        keepPending("Factory workflow operation remains pending", (entry) =>
+          workflows.handle(entry),
+        ),
+      ),
     );
     const collaborationWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
-        if (Option.isNone(collaboration)) return;
-        const reconcile = collaboration.value.reconcile.pipe(
+        const reconcile = collaboration.reconcile.pipe(
           logFailure("Factory collaboration reconciliation remains pending"),
         );
         yield* reconcile;
         yield* drainIntents(
           (type) => type.startsWith("collaboration.") || type.startsWith("incident."),
           keepPending("Factory collaboration work remains pending", (entry) =>
-            collaboration.value.handle(entry),
+            collaboration.handle(entry),
           ),
           reconcile.pipe(Effect.andThen(enqueue(worker, controlWorker))),
         );
@@ -868,11 +864,10 @@ export const layer = Layer.effect(
     });
     const integrationStopWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
       Effect.gen(function* () {
-        if (Option.isNone(integrations)) return;
         for (const entry of (yield* store.pending).filter(
           (entry) => entry.intent.type === "integration.stop",
         ))
-          yield* integrations.value.handle(entry).pipe(
+          yield* integrations.handle(entry).pipe(
             Effect.catch((cause) =>
               Effect.logError("Factory integration shutdown remains pending", {
                 effectId: entry.id,
@@ -883,33 +878,26 @@ export const layer = Layer.effect(
       }),
     );
     const integrationWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
-      Option.isNone(integrations)
-        ? Effect.void
-        : drainIntents(
-            (type) => type.startsWith("integration.") && type !== "integration.stop",
-            keepPending("Factory integration work remains pending", (entry) =>
-              entry.intent.type === "integration.thread.create"
-                ? createIntegrationThread(entry)
-                : integrations.value.handle(entry),
-            ),
-            enqueue(worker, controlWorker),
-          ),
+      drainIntents(
+        (type) => type.startsWith("integration.") && type !== "integration.stop",
+        keepPending("Factory integration work remains pending", (entry) =>
+          entry.intent.type === "integration.thread.create"
+            ? createIntegrationThread(entry)
+            : integrations.handle(entry),
+        ),
+        enqueue(worker, controlWorker),
+      ),
     );
     const mergeWorker: DrainableWorker<void> = yield* makeDrainableWorker((_wake: void) =>
-      Option.isNone(merges) && Option.isNone(mergeOperations)
-        ? Effect.void
-        : drainIntents(
-            (type) =>
-              (Option.isSome(merges) && type.startsWith("merge.group.")) ||
-              (Option.isSome(mergeOperations) && type.startsWith("merge.operation.")),
-            keepPending("Factory shared delivery remains pending", (entry) => {
-              const executor = entry.intent.type.startsWith("merge.operation.")
-                ? mergeOperations
-                : merges;
-              return Option.isNone(executor) ? Effect.void : executor.value.handle(entry);
-            }),
-            enqueue(worker, controlWorker),
-          ),
+      drainIntents(
+        (type) => type.startsWith("merge.group.") || type.startsWith("merge.operation."),
+        keepPending("Factory shared delivery remains pending", (entry) =>
+          entry.intent.type.startsWith("merge.operation.")
+            ? mergeOperations.handle(entry)
+            : merges.handle(entry),
+        ),
+        enqueue(worker, controlWorker),
+      ),
     );
     const wake = Effect.all(
       [
@@ -932,34 +920,31 @@ export const layer = Layer.effect(
     );
     if ((yield* ServerActivation) === undefined) yield* wake;
     else yield* forkParked(wake);
-    if (Option.isSome(scheduling)) yield* scheduling.value.watch(wake);
-    if (Option.isSome(improvements)) yield* improvements.value.watch(wake);
-    if (Option.isSome(collaboration))
-      yield* forkParked(
-        store.changes.pipe(
-          Stream.changesWith((left, right) => left.revision === right.revision),
-          Stream.runForEach(() => collaborationWorker.enqueue(undefined)),
-        ),
-      );
-    if (Option.isSome(integrations))
-      yield* forkParked(
-        store.changes.pipe(
-          Stream.changesWith((left, right) => left.revision === right.revision),
-          Stream.runForEach(() =>
-            Effect.all(
-              [integrationWorker.enqueue(undefined), integrationStopWorker.enqueue(undefined)],
-              { discard: true },
-            ),
+    yield* scheduling.watch(wake);
+    yield* improvements.watch(wake);
+    yield* forkParked(
+      store.changes.pipe(
+        Stream.changesWith((left, right) => left.revision === right.revision),
+        Stream.runForEach(() => collaborationWorker.enqueue(undefined)),
+      ),
+    );
+    yield* forkParked(
+      store.changes.pipe(
+        Stream.changesWith((left, right) => left.revision === right.revision),
+        Stream.runForEach(() =>
+          Effect.all(
+            [integrationWorker.enqueue(undefined), integrationStopWorker.enqueue(undefined)],
+            { discard: true },
           ),
         ),
-      );
-    if (Option.isSome(merges) || Option.isSome(mergeOperations))
-      yield* forkParked(
-        store.changes.pipe(
-          Stream.changesWith((left, right) => left.revision === right.revision),
-          Stream.runForEach(() => mergeWorker.enqueue(undefined)),
-        ),
-      );
+      ),
+    );
+    yield* forkParked(
+      store.changes.pipe(
+        Stream.changesWith((left, right) => left.revision === right.revision),
+        Stream.runForEach(() => mergeWorker.enqueue(undefined)),
+      ),
+    );
     const drain = Effect.gen(function* () {
       for (;;) {
         const progress = workerProgress;
@@ -996,12 +981,12 @@ export const layer = Layer.effect(
         (entry) =>
           entry.id === command.messageId &&
           entry.role === "user" &&
-          FactoryControlAccess.factoryDirectionSender(entry) === undefined,
+          ThreadGovernance.directionSender(entry) === undefined,
       );
       return message === undefined ? {} : { guidance: { messageId: message.id, target } };
     });
 
-    const service = FactoryService.of({
+    const service: FactoryServiceCore = {
       snapshot: (query) => store.snapshot.pipe(Effect.map(scopedSnapshot(query))),
       mergeGroupGet: Effect.fn("FactoryService.mergeGroupGet")(function* (query) {
         const state = yield* store.snapshot;
@@ -1015,30 +1000,17 @@ export const layer = Layer.effect(
             detail: "This merge group is unavailable in the current environment.",
           });
         const operationReadiness = factoryMergeOperationReadiness(state, group.id);
-        const runtimeAvailable = Option.isSome(mergeOperations);
         return {
           group,
           readiness: {
             ...factoryMergeGroupReadiness(state, group.id),
-            canRequestMerge: runtimeAvailable && operationReadiness.canStart,
+            canRequestMerge: operationReadiness.canStart,
           },
           currentReview:
             state.mergeGroupReviews.find((entry) => entry.id === group.currentReviewId) ?? null,
           integrationLeadThreadId: assignment.threadId,
           operation: latestFactoryMergeOperation(state, group.id) ?? null,
-          operationReadiness: runtimeAvailable
-            ? operationReadiness
-            : {
-                ...operationReadiness,
-                canStart: false,
-                canRetry: false,
-                canReconcile: false,
-                canStop: false,
-                reasons: [
-                  ...operationReadiness.reasons,
-                  "Coordinated merge execution is unavailable in this environment.",
-                ],
-              },
+          operationReadiness,
         };
       }),
       changes: (query) => store.changes.pipe(Stream.map(scopedSnapshot(query))),
@@ -1167,7 +1139,7 @@ export const layer = Layer.effect(
         if (
           event.type === "message.updated" &&
           event.payload.role === "user" &&
-          FactoryControlAccess.factoryDirectionSender(event.payload) === undefined
+          ThreadGovernance.directionSender(event.payload) === undefined
         ) {
           const membership = yield* controls.membership(event.threadId).pipe(Effect.result);
           if (Result.isFailure(membership) && membership.failure.code !== "execution-unavailable")
@@ -1286,24 +1258,6 @@ export const layer = Layer.effect(
         let workflowContext: FactoryWorkflowContext = {};
         let integrationContext: FactoryIntegrationContext = {};
         if (
-          (command.type === "merge.group.start" || command.type.startsWith("merge.operation.")) &&
-          Option.isNone(mergeOperations)
-        )
-          return yield* new FactoryError({
-            code: "execution-unavailable",
-            detail: "This environment has no coordinated merge runtime.",
-          });
-        if (command.type.startsWith("merge.group.") && Option.isNone(merges))
-          return yield* new FactoryError({
-            code: "execution-unavailable",
-            detail: "This environment has no qualified shared review runtime.",
-          });
-        if (command.type.startsWith("integration.") && Option.isNone(integrations))
-          return yield* new FactoryError({
-            code: "execution-unavailable",
-            detail: "This environment has no qualified integration runtime.",
-          });
-        if (
           actor.kind === "thread" &&
           (command.type === "integration.file.mutate" || command.type === "integration.verify")
         ) {
@@ -1312,30 +1266,10 @@ export const layer = Layer.effect(
           if (membership?.assignmentId)
             integrationContext = { integrationActorAssignmentId: membership.assignmentId };
         }
-        if (
-          Option.isNone(collaboration) &&
-          (command.type.startsWith("collaboration.") || command.type.startsWith("incident."))
-        )
-          return yield* new FactoryError({
-            code: "execution-unavailable",
-            detail: "This environment has no qualified cross-project coordination runtime.",
-          });
-        if (Option.isSome(workflows))
-          workflowContext = yield* workflows.value.context(actor, command);
-        else if (
-          command.type.startsWith("shared.") ||
-          command.type.startsWith("workflow.") ||
-          command.type.startsWith("experiment.")
-        )
-          return yield* new FactoryError({
-            code: "execution-unavailable",
-            detail: "This environment has no qualified workflow adoption runtime.",
-          });
-        if (Option.isSome(improvements))
-          improvementContext = yield* improvements.value.context(actor, command);
-        if (Option.isSome(retros)) retroContext = yield* retros.value.context(actor, command);
-        if (Option.isSome(scheduling))
-          schedulingContext = yield* scheduling.value.context(actor, command);
+        workflowContext = yield* workflows.context(actor, command);
+        improvementContext = yield* improvements.context(actor, command);
+        retroContext = yield* retros.context(actor, command);
+        schedulingContext = yield* scheduling.context(actor, command);
         if (command.type === "assignment.wait" && command.wait.kind === "review") {
           const assignment = snapshot.assignments.find(
             (entry) => entry.id === command.assignmentId,
@@ -1443,23 +1377,10 @@ export const layer = Layer.effect(
           ...(allocation === undefined ? {} : { allocation }),
         });
         if (Result.isFailure(preflight)) {
-          if (schedulingContext.schedulingAdmission && Option.isSome(scheduling))
-            yield* scheduling.value.release(schedulingContext.schedulingAdmission.candidateId);
+          if (schedulingContext.schedulingAdmission)
+            yield* scheduling.release(schedulingContext.schedulingAdmission.candidateId);
           return yield* preflight.failure;
         }
-        if (
-          preflight.success.effects.some(
-            (effect) =>
-              effect.type.startsWith("delivery.") &&
-              (effect.type.startsWith("delivery.preview.")
-                ? Option.isNone(previews)
-                : Option.isNone(deliveryEffects)),
-          )
-        )
-          return yield* new FactoryError({
-            code: "execution-unavailable",
-            detail: "This environment has no qualified delivery runtime for that action.",
-          });
         for (const assignment of snapshot.assignments) {
           const next = preflight.success.state.assignments.find(
             (entry) => entry.id === assignment.id,
@@ -1567,23 +1488,21 @@ export const layer = Layer.effect(
                 const candidateId = schedulingContext.schedulingAdmission?.candidateId;
                 if (
                   candidateId &&
-                  Option.isSome(scheduling) &&
                   !(yield* store.snapshot).assignments.some(
                     (entry) => entry.scheduling?.candidateId === candidateId,
                   )
                 )
-                  yield* scheduling.value.release(candidateId);
+                  yield* scheduling.release(candidateId);
                 return yield* cause;
               }),
             ),
           );
         yield* wake;
-        if (command.type === "delivery.preview.stop" && Option.isSome(previews))
-          yield* previews.value.reconcile;
+        if (command.type === "delivery.preview.stop") yield* previews.reconcile;
         return result;
       }, commands.withPermits(1)),
-    });
-    return FactoryService.of({
+    };
+    const core: FactoryServiceCore = {
       ...service,
       dispatch: (actor, command) => {
         if (
@@ -1610,19 +1529,6 @@ export const layer = Layer.effect(
             Effect.gen(function* () {
               const receipt = yield* store.findReceipt({ actor, command });
               if (receipt !== undefined) return receipt;
-              if (
-                Option.isNone(collaboration) &&
-                (command.type.startsWith("collaboration.") || command.type.startsWith("incident."))
-              )
-                return yield* new FactoryError({
-                  code: "execution-unavailable",
-                  detail: "This environment has no qualified cross-project coordination runtime.",
-                });
-              if (command.type.startsWith("integration.") && Option.isNone(integrations))
-                return yield* new FactoryError({
-                  code: "execution-unavailable",
-                  detail: "This environment has no qualified integration runtime.",
-                });
               const context: FactoryControlContext = yield* controlContext(command);
               const result = yield* store.commit({
                 actor,
@@ -1631,19 +1537,21 @@ export const layer = Layer.effect(
                 now: yield* nowIso,
               });
               yield* wake;
-              if (Option.isSome(previews))
-                yield* previews.value.reconcile.pipe(
-                  Effect.catch((cause) =>
-                    Effect.logError("Factory preview shutdown remains pending after control", {
-                      cause,
-                    }),
-                  ),
-                );
+              yield* previews.reconcile.pipe(
+                Effect.catch((cause) =>
+                  Effect.logError("Factory preview shutdown remains pending after control", {
+                    cause,
+                  }),
+                ),
+              );
               return result;
             }),
           );
         if (command.type !== "assignment.file.mutate" && command.type !== "assignment.verify")
-          return withCommand(command.commandId, service.dispatch(actor, command));
+          return withCommand(
+            command.commandId,
+            admitCreation(command).pipe(Effect.andThen(service.dispatch(actor, command))),
+          );
         return withCommand(
           command.commandId,
           Effect.gen(function* () {
@@ -1668,7 +1576,8 @@ export const layer = Layer.effect(
           }),
         );
       },
-    });
+    };
+    return FactoryService.of({ ...core, ...(yield* FactoryThreadScope.make(core)) });
   }),
 ).pipe(
   Layer.provide(FactoryControlEffects.layer),

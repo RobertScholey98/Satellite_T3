@@ -95,8 +95,7 @@ import {
 } from "./McpInvocationContext.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import * as FactoryExecution from "../factory/FactoryExecution.ts";
-import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
+import * as ThreadGovernance from "../orchestration-v2/ThreadGovernance.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -850,8 +849,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-  const factoryExecution = yield* FactoryExecution.FactoryExecution;
-  const factoryControls = yield* FactoryControlAccess.FactoryControlAccess;
+  const governance = yield* ThreadGovernance.ThreadGovernance;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
@@ -1792,8 +1790,8 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const managed =
           parent !== undefined
-            ? (yield* factoryExecution
-                .runtimePolicyFor(parent.thread.id)
+            ? (yield* governance
+                .confinementFor(parent.thread.id)
                 .pipe(
                   Effect.mapError(() =>
                     failure(
@@ -1993,7 +1991,7 @@ const make = Effect.gen(function* () {
         // delegated. All of them are checked before anything is stopped.
         const assertStoppable = (threadId: ThreadId): Effect.Effect<void, OrchestratorMcpFailure> =>
           Effect.gen(function* () {
-            yield* factoryControls
+            yield* governance
               .assertDirection({
                 threadId,
                 senderThreadId: scope.thread.threadId,
@@ -2552,6 +2550,5 @@ export const layer: Layer.Layer<
   | ScheduledTaskService.ScheduledTaskService
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
-  | FactoryExecution.FactoryExecution
-  | FactoryControlAccess.FactoryControlAccess
+  | ThreadGovernance.ThreadGovernance
 > = Layer.effect(OrchestratorMcpService, make);

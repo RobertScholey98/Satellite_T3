@@ -1,11 +1,15 @@
-import { isFactoryError, type CodexSettings } from "@t3tools/contracts";
+import { FactoryError, isFactoryError, type CodexSettings } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import * as ConfinedCodexLaunch from "../orchestration-v2/Adapters/ConfinedCodexLaunch.ts";
+import type { ConfinedExecution } from "../orchestration-v2/ThreadGovernance.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
-import { factoryDockerArguments, type FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
+import { factoryDockerArguments, FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 
 const ModelCredentials = Schema.Struct({
@@ -24,14 +28,9 @@ const ModelCredentials = Schema.Struct({
   last_refresh: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
-export class FactoryCodexLaunchError extends Schema.TaggedError<FactoryCodexLaunchError>()(
-  "FactoryCodexLaunchError",
-  { detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
-) {}
-
 const decodeCredentials = Schema.decodeUnknownEffect(Schema.fromJsonString(ModelCredentials));
 const encodeCredentials = Schema.encodeEffect(Schema.fromJsonString(ModelCredentials));
-const isLaunchError = Schema.is(FactoryCodexLaunchError);
+const isLaunchError = Schema.is(ConfinedCodexLaunch.ConfinedCodexLaunchError);
 
 export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
   function* (input: {
@@ -48,7 +47,7 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
     for (const directory of [profile.runtimePath, codexHome]) {
       yield* fs.makeDirectory(directory, { recursive: true });
       if (path.relative(directory, yield* fs.realPath(directory)) !== "") {
-        return yield* new FactoryCodexLaunchError({
+        return yield* new ConfinedCodexLaunch.ConfinedCodexLaunchError({
           detail: "The managed provider home must not contain filesystem links.",
         });
       }
@@ -93,7 +92,7 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
     if (yield* fs.exists(authPath)) yield* fs.remove(authPath);
     if (input.settings.setupMode === "managed") {
       if (!input.environment.ACCESS_TOKEN)
-        return yield* new FactoryCodexLaunchError({
+        return yield* new ConfinedCodexLaunch.ConfinedCodexLaunchError({
           detail: "The selected managed Codex model account is not available.",
         });
       environment.ACCESS_TOKEN = input.environment.ACCESS_TOKEN;
@@ -115,7 +114,7 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
           .readFileString(nativeAuth)
           .pipe(Effect.flatMap(decodeCredentials));
         if (!credentials.OPENAI_API_KEY && !credentials.tokens?.access_token) {
-          return yield* new FactoryCodexLaunchError({
+          return yield* new ConfinedCodexLaunch.ConfinedCodexLaunchError({
             detail: "The selected Codex account has no file-based model credential.",
           });
         }
@@ -127,7 +126,7 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
         environment.OPENAI_API_KEY = input.environment.OPENAI_API_KEY;
         args.push("--env", "OPENAI_API_KEY");
       } else {
-        return yield* new FactoryCodexLaunchError({
+        return yield* new ConfinedCodexLaunch.ConfinedCodexLaunchError({
           detail:
             "Discovery supports managed Codex sign-in or a file-based Codex model credential.",
         });
@@ -143,7 +142,7 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
   Effect.mapError((cause) =>
     isLaunchError(cause)
       ? cause
-      : new FactoryCodexLaunchError({
+      : new ConfinedCodexLaunch.ConfinedCodexLaunchError({
           // The factory's refusal is written for the user, such as a paused assignment.
           detail: isFactoryError(cause)
             ? (cause.detail ?? "The managed execution boundary is unavailable.")
@@ -151,4 +150,58 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
           cause,
         }),
   ),
+);
+
+const decodeProfile = Schema.decodeUnknownEffect(FactoryExecutionProfile);
+
+/** Runs a managed thread's Codex in its Docker boundary, as `ThreadGovernance` confined it. */
+export const layerConfinedLaunch = Layer.effect(
+  ConfinedCodexLaunch.ConfinedCodexLaunch,
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const crypto = yield* Crypto.Crypto;
+    const profileOf = (confinement: ConfinedExecution) =>
+      decodeProfile(confinement.profile).pipe(
+        Effect.mapError((cause) => new FactoryError({ code: "execution-unavailable", cause })),
+      );
+    return ConfinedCodexLaunch.ConfinedCodexLaunch.of({
+      prepare: (input) =>
+        Effect.gen(function* () {
+          const profile = yield* profileOf(input.confinement);
+          // Each session runs in its own named container.
+          const containerName = `satellite-factory-${yield* crypto.randomUUIDv4}`;
+          const launch = yield* prepareFactoryCodexLaunch({
+            profile,
+            settings: input.settings,
+            environment: input.environment,
+            containerName,
+          });
+          return {
+            ...launch,
+            cleanup: {
+              command: "docker",
+              args: ["--context", profile.dockerContext, "rm", "--force", containerName],
+            },
+          };
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.mapError((cause) =>
+            isLaunchError(cause)
+              ? cause
+              : new ConfinedCodexLaunch.ConfinedCodexLaunchError({
+                  detail: "The managed execution boundary is unavailable.",
+                  cause,
+                }),
+          ),
+        ),
+      assertActive: (confinement) =>
+        profileOf(confinement).pipe(
+          Effect.flatMap(assertFactoryProfileActive),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
+    });
+  }),
 );

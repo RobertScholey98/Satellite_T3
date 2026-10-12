@@ -40,6 +40,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import migration from "../persistence/Migrations/067_EngineeringFactory.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryMcpGuard from "./FactoryMcpGuard.ts";
+import { FactoryImprovementEvidence } from "./FactoryImprovementEvidence.ts";
 import { FactoryIntegrationExecution } from "./FactoryIntegrationExecution.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
@@ -52,6 +53,7 @@ import { layerUnused as sourceUnused } from "./FactorySource.testkit.ts";
 import { layerUnused as handoverUnused } from "./FactoryHandover.testkit.ts";
 import { sharedAccessFixture } from "./FactorySharedAccess.testkit.ts";
 import { frozenMergeOperationFixture } from "./FactoryMergeOperation.testkit.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const managerId = ThreadId.make("manager-web");
@@ -134,6 +136,16 @@ interface Scenario {
   readonly ticketReads: string[];
 }
 
+/**
+ * Whether a call was refused: an error result, or an MCP error before any
+ * handler ran, for a tool outside the caller's grant or parameters it rejects.
+ */
+const refused = (result: ReturnType<Scenario["call"]>) =>
+  result.pipe(
+    Effect.map((value) => value.isError === true),
+    Effect.catchTag("InvalidParams", () => Effect.succeed(true)),
+  );
+
 const scenario = <E, R>(
   test: (context: Scenario) => Effect.Effect<void, E, R>,
   heldWait?: FactoryWait,
@@ -190,7 +202,7 @@ const scenario = <E, R>(
         ),
       });
       const sql = yield* SqlClient.SqlClient;
-      yield* sql`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+      yield* sql`UPDATE factory_state SET revision = revision + 1, payload_json = ${payload} WHERE id = 1`;
     }
     if (withReviewer) {
       const state = yield* store.snapshot;
@@ -229,7 +241,7 @@ const scenario = <E, R>(
           status: "running",
         })),
       });
-      yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+      yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET revision = revision + 1, payload_json = ${payload} WHERE id = 1`;
     }
     if (withTickets) {
       const state = yield* store.snapshot;
@@ -295,7 +307,7 @@ const scenario = <E, R>(
               },
         ),
       });
-      yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+      yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET revision = revision + 1, payload_json = ${payload} WHERE id = 1`;
     }
     if (withReviewer === "retro") {
       const state = yield* store.snapshot;
@@ -357,7 +369,7 @@ const scenario = <E, R>(
           },
         ],
       });
-      yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+      yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET revision = revision + 1, payload_json = ${payload} WHERE id = 1`;
     }
     const ticketReads: string[] = [];
     const flags = { hostCalls: 0, missingProfile: false, unavailableStore: false };
@@ -614,12 +626,15 @@ const scenario = <E, R>(
       McpHttpServer.layerDeviceToolkit,
     ).pipe(
       Layer.provideMerge(McpServer.McpServer.layer),
-      Layer.provide(FactoryMcpGuard.layer.pipe(Layer.provide(FactoryService.layer))),
+      Layer.provideMerge(FactoryMcpGuard.layer),
+      Layer.provide(FactoryService.layer.pipe(Layer.provide(layerTestDependencies))),
+      Layer.provide(Layer.mock(FactoryImprovementEvidence)({})),
       Layer.provide(Layer.mergeAll(sourceUnused, handoverUnused)),
       Layer.provide(external),
     );
     yield* Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
+      const callers = yield* McpToolAccess.CallerPolicy;
       yield* test({
         store,
         flags,
@@ -633,10 +648,8 @@ const scenario = <E, R>(
           return caller === null
             ? result
             : result.pipe(
-                Effect.provideService(
-                  McpInvocationContext.McpInvocationContext,
-                  invocation(caller),
-                ),
+                McpToolAccess.provideCaller(invocation(caller)),
+                Effect.provideService(McpToolAccess.CallerPolicy, callers),
               );
         },
       });
@@ -698,7 +711,7 @@ describe("FactoryMcpGuard", () => {
               },
             ],
           });
-          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET revision = revision + 1, payload_json = ${payload} WHERE id = 1`;
           flags.missingProfile = true;
           const read = yield* call("factory_merge_group_get", { groupId });
           assert.isFalse(read.isError);
@@ -758,7 +771,8 @@ describe("FactoryMcpGuard", () => {
               Effect.flatMap((payload) =>
                 SqlClient.SqlClient.pipe(
                   Effect.flatMap(
-                    (sql) => sql`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`,
+                    (sql) =>
+                      sql`UPDATE factory_state SET revision = revision + 1, payload_json = ${payload} WHERE id = 1`,
                   ),
                 ),
               ),
@@ -801,9 +815,9 @@ describe("FactoryMcpGuard", () => {
             }),
           );
           assert.equal(incomplete._tag, "InvalidParams");
-          // This harness has no merge runtime, so its refusal shows the escalation reached the service.
           const escalated = yield* call("factory_merge_operation_action", { command: escalation });
-          assert.include(JSON.stringify(escalated.content), "no coordinated merge runtime");
+          assert.isFalse(escalated.isError);
+          assert.include(JSON.stringify(escalated.content), operation.id);
           yield* write({
             ...frozen,
             controls: [
@@ -880,7 +894,7 @@ describe("FactoryMcpGuard", () => {
               },
             ],
           });
-          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET revision = revision + 1, payload_json = ${payload} WHERE id = 1`;
           flags.missingProfile = true;
           const read = yield* call("factory_integration_get", { integrationId }, leadId);
           assert.isFalse(read.isError);
@@ -962,7 +976,7 @@ describe("FactoryMcpGuard", () => {
             nextCursor: null,
           });
           for (const caller of [leadId, childId, grandchildId, unmanagedId] as const)
-            assert.isTrue((yield* call("factory_collaboration_directory", {}, caller)).isError);
+            assert.isTrue(yield* refused(call("factory_collaboration_directory", {}, caller)));
           const payload = yield* encodeSnapshot({
             ...state,
             crossProjectRequests: [
@@ -999,7 +1013,7 @@ describe("FactoryMcpGuard", () => {
               },
             ],
           });
-          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json=${payload} WHERE id=1`;
+          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET revision=revision+1, payload_json=${payload} WHERE id=1`;
           const lead = yield* decodeFactorySnapshot(
             (yield* call("factory_snapshot", {}, leadId)).structuredContent,
           );
@@ -1036,7 +1050,7 @@ describe("FactoryMcpGuard", () => {
             const shared = sharedAccessFixture(yield* store.snapshot, true);
             const sql = yield* SqlClient.SqlClient;
             const payload = yield* encodeSnapshot(shared);
-            yield* sql`UPDATE factory_state SET payload_json = ${payload} WHERE id = 1`;
+            yield* sql`UPDATE factory_state SET revision = revision + 1, payload_json = ${payload} WHERE id = 1`;
             shells.set(managerId, {
               ...liveThreadShell(managerId),
               projectId: ProjectId.make("system-reference"),
@@ -1087,7 +1101,7 @@ describe("FactoryMcpGuard", () => {
             }
             assert.equal(flags.hostCalls, previousHostCalls);
             const missing = yield* encodeSnapshot({ ...shared, workflowExperiments: [] });
-            yield* sql`UPDATE factory_state SET payload_json = ${missing} WHERE id = 1`;
+            yield* sql`UPDATE factory_state SET revision = revision + 1, payload_json = ${missing} WHERE id = 1`;
             assert.isTrue((yield* call("factory_snapshot", {}, grandchildId)).isError);
           }),
         undefined,
@@ -1268,7 +1282,7 @@ describe("FactoryMcpGuard", () => {
               })),
             ],
           });
-          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET payload_json=${projected} WHERE id=1`;
+          yield* (yield* SqlClient.SqlClient)`UPDATE factory_state SET revision=revision+1, payload_json=${projected} WHERE id=1`;
           const response = yield* call("factory_improvement_snapshot", {}, systemId);
           const compact = yield* decodeImprovementSnapshot(response.structuredContent);
           assert.equal(compact.decisions.length, 5);
@@ -1349,8 +1363,7 @@ describe("FactoryMcpGuard", () => {
             "t3_thread_send",
             "t3_thread_wait",
           ]) {
-            const result = yield* call(name, { threadId: leadId }, systemId);
-            assert.isTrue(result.isError, name);
+            assert.isTrue(yield* refused(call(name, { threadId: leadId }, systemId)), name);
           }
           for (const command of [
             { type: "manager.pause", commandId: "system-pause-other", managerId },
@@ -1432,7 +1445,7 @@ describe("FactoryMcpGuard", () => {
           );
           for (const caller of [managerId, leadId, reviewerId, unmanagedId, "client"] as const)
             assert.isTrue(
-              (yield* call("factory_ticket_read", { candidateId: "api" }, caller)).isError,
+              yield* refused(call("factory_ticket_read", { candidateId: "api" }, caller)),
             );
           assert.deepEqual(ticketReads, ["own", "own", "own", "own", "other"]);
         }),
@@ -1720,7 +1733,7 @@ describe("FactoryMcpGuard", () => {
     scenario(({ call, flags }) =>
       Effect.gen(function* () {
         assert.isTrue(
-          (yield* call("host_effect", { actor: { kind: "human" }, threadId: unmanagedId })).isError,
+          yield* refused(call("host_effect", { actor: { kind: "human" }, threadId: unmanagedId })),
         );
         assert.isTrue((yield* call("host_effect", {}, managerId)).isError);
         assert.equal(flags.hostCalls, 0);
@@ -1760,8 +1773,8 @@ describe("FactoryMcpGuard", () => {
         const snapshot = decodeMembership(result.structuredContent);
         assert.deepEqual(snapshot.managers, [{ id: "manager-web" }]);
         assert.deepEqual(snapshot.assignments, [{ id: "assignment-web" }]);
-        assert.isTrue((yield* call("factory_snapshot", {}, "client")).isError);
-        assert.isTrue((yield* call("factory_snapshot", {}, unmanagedId)).isError);
+        assert.isTrue(yield* refused(call("factory_snapshot", {}, "client")));
+        assert.isTrue(yield* refused(call("factory_snapshot", {}, unmanagedId)));
       }),
     ),
   );
@@ -1776,8 +1789,7 @@ describe("FactoryMcpGuard", () => {
           report,
         };
         assert.isTrue(
-          (yield* call("factory_dispatch", { command, actor: { kind: "human" } }, "client"))
-            .isError,
+          yield* refused(call("factory_dispatch", { command, actor: { kind: "human" } }, "client")),
         );
         assert.isTrue(
           (yield* call("factory_dispatch", {
@@ -1866,20 +1878,22 @@ describe("FactoryMcpGuard", () => {
           assert.isTrue((yield* call("t3_thread_fork", { threadId: leadId }, caller)).isError);
         assert.isTrue((yield* call("host_effect", {}, leadId)).isError);
         assert.equal(flags.hostCalls, 0);
-        assert.isTrue((yield* call("factory_snapshot", {}, forkId)).isError);
+        assert.isTrue(yield* refused(call("factory_snapshot", {}, forkId)));
         assert.isTrue(
-          (yield* call(
-            "factory_dispatch",
-            {
-              command: {
-                type: "onboarding.report",
-                commandId: "report-from-fork",
-                assignmentId,
-                report,
+          yield* refused(
+            call(
+              "factory_dispatch",
+              {
+                command: {
+                  type: "onboarding.report",
+                  commandId: "report-from-fork",
+                  assignmentId,
+                  report,
+                },
               },
-            },
-            forkId,
-          )).isError,
+              forkId,
+            ),
+          ),
         );
         assert.deepEqual((yield* call("host_effect", {}, forkId)).structuredContent, {
           ran: true,

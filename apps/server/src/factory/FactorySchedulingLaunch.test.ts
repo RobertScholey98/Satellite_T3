@@ -18,6 +18,7 @@ import { FactorySchedulingEffects } from "./FactorySchedulingEffects.ts";
 import * as FactoryService from "./FactoryService.ts";
 import { FactorySource } from "./FactorySource.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 const runtime = Layer.mergeAll(FactoryStore.layer, ThreadManagement.layer).pipe(
   Layer.provideMerge(SatelliteLayer),
@@ -168,6 +169,7 @@ const scenario = (pauseBeforeRestoring: boolean) =>
         FactoryService.layer.pipe(
           Layer.provideMerge(
             Layer.mergeAll(
+              layerTestDependencies,
               Layer.mock(FactoryExecution)({
                 assertSelectionFor: () => Effect.void,
                 assertDelegationFor: () => Effect.void,

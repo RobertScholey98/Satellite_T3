@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { expect, it } from "vite-plus/test";
 
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
@@ -48,7 +48,7 @@ it("uses the thread provider for stale background work without provider threads"
     ],
   } as unknown as OrchestrationV2ThreadProjection;
   const layer = ProviderRuntimeRecovery.layer.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(

@@ -17,7 +17,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ServerSettings from "../serverSettings.ts";
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
 import { restartContinuationRun, continueRestartedRun } from "./RestartContinuation.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
@@ -26,7 +25,7 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
-import { FactoryControlAccess } from "../factory/FactoryControlAccess.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 const threadId = ThreadId.make("thread:restart");
 const runId = RunId.make("run:restart");
@@ -272,16 +271,10 @@ it.effect.each([
         Effect.provide(
           Layer.mergeAll(
             managed
-              ? Layer.mock(FactoryControlAccess)({
-                  membership: (id) =>
-                    Effect.succeed({
-                      threadId: id,
-                      managerId: ThreadId.make("manager"),
-                      projectId: ProjectId.make("restart-project"),
-                      ancestorThreadIds: [],
-                    }),
+              ? Layer.mock(ThreadGovernance.ThreadGovernance)({
+                  governs: () => Effect.succeed(true),
                 })
-              : FactoryExecutionTestkit.layerUnmanagedControls,
+              : ThreadGovernance.layerUngoverned,
             ServerSettings.layerTest({
               continueThreadsAfterServerUpdate: enabled,
               projectSettingsOverrides:
@@ -410,11 +403,11 @@ it.effect("one failing thread does not stop startup recovery for the others", ()
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
       Effect.provide(
         Layer.mergeAll(
-          Layer.mock(FactoryControlAccess)({
-            membership: (id) =>
+          Layer.mock(ThreadGovernance.ThreadGovernance)({
+            governs: (id) =>
               id === unresolved
                 ? Effect.fail(new FactoryError({ code: "execution-unavailable" }))
-                : Effect.succeed(undefined),
+                : Effect.succeed(false),
           }),
           ServerSettings.layerTest({}),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
@@ -470,7 +463,7 @@ it.effect("prepares no continuation for background work another provider thread 
     } as unknown as OrchestrationV2ThreadProjection;
     const writes: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0][] = [];
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-      Effect.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Effect.provide(ThreadGovernance.layerUngoverned),
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
@@ -499,7 +492,7 @@ it.effect("prepares no continuation for background work another provider thread 
       turnItems: [{ ...projection.turnItems[0]!, providerThreadId }],
     } as OrchestrationV2ThreadProjection;
     const ownRecovery = yield* ProviderRuntimeRecovery.make.pipe(
-      Effect.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Effect.provide(ThreadGovernance.layerUngoverned),
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
@@ -567,7 +560,7 @@ it.effect.each([
         const commits: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0][] = [];
         const writes: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0][] = [];
         const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-          Effect.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+          Effect.provide(ThreadGovernance.layerUngoverned),
           Effect.provide(
             Layer.mergeAll(
               ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
@@ -624,7 +617,7 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
     let projection = makeProjection();
     const commits: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0][] = [];
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-      Effect.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Effect.provide(ThreadGovernance.layerUngoverned),
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
@@ -863,7 +856,7 @@ it.effect("prepares later threads' continuations when one thread fails", () =>
     const brokenThreadId = ThreadId.make("thread:broken");
     const writes: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0][] = [];
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
-      Effect.provide(FactoryExecutionTestkit.layerUnmanagedControls),
+      Effect.provide(ThreadGovernance.layerUngoverned),
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),

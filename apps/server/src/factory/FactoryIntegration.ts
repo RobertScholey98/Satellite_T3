@@ -24,7 +24,11 @@ import {
   factoryProtectedPath,
   factoryRelativePath,
 } from "./FactoryBoundaryPaths.ts";
-import { factoryIncidentBlocked, factoryRequestParticipants } from "./FactoryCollaboration.ts";
+import {
+  factoryIncidentBlocked,
+  factoryRequestParticipants,
+  retainDeliveredMessages,
+} from "./FactoryCollaboration.ts";
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import { factorySamePullRequest } from "./FactoryRetros.ts";
 import { effectiveFactoryWorkflow } from "./FactoryWorkflow.ts";
@@ -1658,21 +1662,24 @@ export function decideFactoryIntegration(
         return fail("This integration message has no pending delivery.", "invalid-state");
       return accept(
         {
-          integrationMessages: state.integrationMessages.map((entry) =>
-            entry.id === message.id
-              ? {
-                  ...entry,
-                  delivery:
-                    command.type === "integration.message.failed"
-                      ? { phase: "failed", reason: command.reason }
-                      : {
-                          phase: "delivered",
-                          recipientThreadId: command.recipientThreadId,
-                          messageId: command.deliveredMessageId,
-                          deliveredAt: now,
-                        },
-                }
-              : entry,
+          integrationMessages: retainDeliveredMessages(
+            state.integrationMessages.map((entry) =>
+              entry.id === message.id
+                ? {
+                    ...entry,
+                    delivery:
+                      command.type === "integration.message.failed"
+                        ? { phase: "failed", reason: command.reason }
+                        : {
+                            phase: "delivered",
+                            recipientThreadId: command.recipientThreadId,
+                            messageId: command.deliveredMessageId,
+                            deliveredAt: now,
+                          },
+                  }
+                : entry,
+            ),
+            (entry) => entry.integrationId === message.integrationId,
           ),
         },
         { integrationMessageId: message.id },

@@ -4,8 +4,8 @@ import * as Layer from "effect/Layer";
 import { FactoryControlAccess } from "./FactoryControlAccess.ts";
 import { FactoryExecution } from "./FactoryExecution.ts";
 
-// The factory gates as an environment with no managers sees them: no thread is managed, so every
-// gate admits.
+// The factory's own gates as an environment with no managers sees them: no thread is managed, so
+// every gate admits. Core tests use `ThreadGovernance.layerUngoverned` instead.
 export const layerUnmanagedExecution = Layer.succeed(FactoryExecution, {
   runtimePolicyFor: () => Effect.succeed(undefined),
   assertSelectionFor: () => Effect.void,
@@ -18,6 +18,3 @@ export const layerUnmanagedControls = Layer.succeed(FactoryControlAccess, {
   assertExecution: () => Effect.void,
   assertDirection: () => Effect.void,
 });
-
-// Like the production `FactoryExecution.layer`, this also supplies the control gate.
-export const layerUnmanaged = Layer.merge(layerUnmanagedExecution, layerUnmanagedControls);

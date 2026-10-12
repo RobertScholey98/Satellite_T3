@@ -323,6 +323,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
   },
   {
+    id: "engineering-managers",
+    title: "Engineering managers (beta)",
+    to: "/settings/general",
+    searchTerms: ["factory agent teams delegate project delivery manager beta experimental"],
+    environmentOnly: true,
+    scope: "environment-defaults",
+  },
+  {
     id: "auto-settle-inactive-threads",
     title: "Auto-settle inactive threads",
     to: "/settings/general",

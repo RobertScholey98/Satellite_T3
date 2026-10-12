@@ -8,7 +8,6 @@ import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as FactoryPullRequestGate from "../factory/FactoryPullRequestGate.ts";
 import { BeforeGitHubMutation, GitHubApiRequestError } from "../sourceControl/GitHubApi.ts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -28,7 +27,7 @@ import {
   pullRequestProviderRequirement,
   resolvePullRequestAuthorFilter,
   type OrchestrationProjectShell,
-  FactoryError,
+  type FactoryError,
   type ProjectId,
   type PullRequestAction,
   type PullRequestActionInput,
@@ -94,6 +93,7 @@ import {
   type PullRequestProviderApi,
   PullRequestProviderError,
 } from "./PullRequestProvider.ts";
+import * as PullRequestActionGate from "./PullRequestActionGate.ts";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
 import * as ViewedFiles from "./pullRequestViewedFiles.ts";
@@ -707,7 +707,7 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
-  const factoryGate = yield* FactoryPullRequestGate.FactoryPullRequestGate;
+  const actionGate = yield* PullRequestActionGate.PullRequestActionGate;
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,
@@ -2016,13 +2016,18 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  const factoryRefusal = (error: FactoryError) =>
-    new PullRequestOperationError({ operation: "runAction", detail: error.message, cause: error });
+  // The gate writes its refusal for the user, so its reason is the detail.
+  const gateRefusal = (error: FactoryError) =>
+    new PullRequestOperationError({
+      operation: "runAction",
+      detail: error.detail ?? "The pull request's owner did not authorize this action.",
+      cause: error,
+    });
 
-  // Managed delivery is decided by the factory gate; this supplies the host reads it needs.
-  const authorizeFactoryAction = Effect.fn("PullRequestService.authorizeFactoryAction")(
+  // The action gate decides actions on owned pull requests; this supplies the host reads it needs.
+  const authorizeAction = Effect.fn("PullRequestService.authorizeAction")(
     function* (input: PullRequestActionInput, project: SupportedProject) {
-      return yield* FactoryPullRequestGate.authorizeFactoryPullRequestAction(factoryGate, {
+      return yield* actionGate.authorize({
         request: input,
         ref: {
           projectId: project.project.id,
@@ -2035,7 +2040,7 @@ export const make = Effect.gen(function* () {
       });
     },
     Effect.mapError((error: FactoryError | PullRequestError) =>
-      error._tag === "FactoryError" ? factoryRefusal(error) : error,
+      error._tag === "FactoryError" ? gateRefusal(error) : error,
     ),
   );
 
@@ -2160,11 +2165,11 @@ export const make = Effect.gen(function* () {
                 : Effect.succeed(false);
             return mergeSettings.pipe(
               Effect.flatMap((removeAgentCreditsOnMerge) =>
-                authorizeFactoryAction(input, project).pipe(
+                authorizeAction(input, project).pipe(
                   Effect.flatMap(({ requireConditionalMerge, beforeMutation }) => {
                     // A refusal at the mutation boundary travels through GitHub's request hook,
                     // which only carries transport errors. Keep it so the caller sees the
-                    // factory's reason instead of "Could not reach GitHub".
+                    // gate's reason instead of "Could not reach GitHub".
                     let refusal: FactoryError | undefined;
                     return project.api
                       .runAction({
@@ -2220,7 +2225,7 @@ export const make = Effect.gen(function* () {
                         Effect.mapError((error) =>
                           refusal === undefined
                             ? toPullRequestError("runAction")(error)
-                            : factoryRefusal(refusal),
+                            : gateRefusal(refusal),
                         ),
                         Effect.as(
                           project.api.kind === "azure-devops"

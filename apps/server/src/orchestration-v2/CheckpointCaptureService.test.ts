@@ -25,7 +25,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import { VcsProcessTimeoutError } from "@t3tools/contracts";
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointCaptureService from "./CheckpointCaptureService.ts";
 import * as EventSink from "./EventSink.ts";
@@ -273,7 +273,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
               IdAllocator.layer,
               refLookupFails
                 ? CheckpointService.layer.pipe(
-                    Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+                    Layer.provide(ThreadGovernance.layerUngoverned),
                     Layer.provide(
                       Layer.mergeAll(
                         IdAllocator.layer,

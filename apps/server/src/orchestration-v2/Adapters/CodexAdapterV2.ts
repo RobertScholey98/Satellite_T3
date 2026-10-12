@@ -1,11 +1,6 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { prepareCodexIdeaPolicy } from "../../ideas/CodexIdeaPolicy.ts";
-import { prepareFactoryCodexLaunch } from "../../factory/FactoryCodexLaunch.ts";
-import { assertFactoryProfileActive } from "../../factory/FactoryProfileAuthority.ts";
-import {
-  FACTORY_CONTAINER_WORKSPACE,
-  factoryContainerEndpoint,
-} from "../../factory/FactoryExecutionProfile.ts";
+import * as ConfinedCodexLaunch from "./ConfinedCodexLaunch.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -717,14 +712,14 @@ export function buildCodexTurnStartParams(input: {
 }) {
   return Effect.gen(function* () {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
-    // A factory-managed turn runs confined in its container, so Codex neither asks nor sandboxes.
-    const factoryManaged = input.runtimePolicy.factoryExecution !== undefined;
-    const approvalPolicy = factoryManaged
+    // A confined turn runs in its container, so Codex neither asks nor sandboxes.
+    const confined = input.runtimePolicy.confinement !== undefined;
+    const approvalPolicy = confined
       ? "never"
       : input.runtimePolicy.approvalPolicy === undefined
         ? runtimeModeDefaults.approvalPolicy
         : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
-    const sandboxPolicy = factoryManaged
+    const sandboxPolicy = confined
       ? { type: "externalSandbox" as const, networkAccess: "enabled" as const }
       : input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
@@ -749,7 +744,7 @@ export function buildCodexTurnStartParams(input: {
             {
               model: input.modelSelection.model,
               reasoningEffort: effort ?? "medium",
-              ...(factoryManaged ? { factoryManaged: true } : {}),
+              ...(confined ? { factoryManaged: true } : {}),
             },
             {
               browser: input.browserToolsAvailable ?? true,
@@ -775,7 +770,7 @@ export function buildCodexTurnStartParams(input: {
       threadId: input.nativeThreadId,
       input: input.codexInput,
       ...(additionalContext ? { additionalContext } : {}),
-      cwd: factoryManaged ? FACTORY_CONTAINER_WORKSPACE : input.runtimePolicy.cwd,
+      cwd: confined ? ConfinedCodexLaunch.CONFINED_CODEX_WORKSPACE : input.runtimePolicy.cwd,
       model: input.modelSelection.model,
       // Model catalogues can default summaries to "none". Request them on every
       // turn, including resumed threads, for T3's reasoning timeline.
@@ -1303,15 +1298,17 @@ export function codexThreadRuntimeParams(input: {
 } {
   const mcpSession =
     input.threadId === null ? undefined : McpProviderSession.readMcpProviderSession(input.threadId);
-  const factoryManaged = input.runtimePolicy?.factoryExecution !== undefined;
+  const confined = input.runtimePolicy?.confinement !== undefined;
   return {
     ...(input.runtimePolicy?.cwd == null
       ? {}
-      : { cwd: factoryManaged ? FACTORY_CONTAINER_WORKSPACE : input.runtimePolicy.cwd }),
+      : {
+          cwd: confined ? ConfinedCodexLaunch.CONFINED_CODEX_WORKSPACE : input.runtimePolicy.cwd,
+        }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
-      ...(factoryManaged
+      ...(confined
         ? {
             "agents.enabled": false,
             "features.multi_agent": false,
@@ -1323,8 +1320,8 @@ export function codexThreadRuntimeParams(input: {
         : {
             mcp_servers: {
               "t3-code": {
-                url: factoryManaged
-                  ? factoryContainerEndpoint(mcpSession.endpoint)
+                url: confined
+                  ? ConfinedCodexLaunch.confinedCodexEndpoint(mcpSession.endpoint)
                   : mcpSession.endpoint,
                 http_headers: {
                   Authorization: mcpSession.authorizationHeader,
@@ -1500,7 +1497,7 @@ export const layerAppServerClientFactory: Layer.Layer<
   | ProviderEventLoggers
   | FileSystem.FileSystem
   | Path.Path
-  | Crypto.Crypto
+  | ConfinedCodexLaunch.ConfinedCodexLaunch
 > = Layer.effect(
   CodexAppServerClientFactory,
   Effect.gen(function* () {
@@ -1508,40 +1505,35 @@ export const layerAppServerClientFactory: Layer.Layer<
     const { native: nativeEventLogger } = yield* ProviderEventLoggers;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const crypto = yield* Crypto.Crypto;
+    const confinedLaunch = yield* ConfinedCodexLaunch.ConfinedCodexLaunch;
 
     return CodexAppServerClientFactory.of({
       open: (input) =>
         Effect.gen(function* () {
           const scope = yield* Scope.Scope;
-          const factoryProfile = input.runtimePolicy.factoryExecution;
-          // A managed session runs in its own named container, removed when the session closes.
-          const factory =
-            factoryProfile === undefined
+          const confinement = input.runtimePolicy.confinement;
+          // A confined session runs in its own runtime, removed when the session closes.
+          const launch =
+            confinement === undefined
               ? undefined
-              : yield* Effect.gen(function* () {
-                  const containerName = `satellite-factory-${yield* crypto.randomUUIDv4}`;
-                  const launch = yield* prepareFactoryCodexLaunch({
-                    profile: factoryProfile,
+              : yield* confinedLaunch
+                  .prepare({
+                    confinement,
                     settings: input.settings,
                     environment: input.environment,
-                    containerName,
-                  });
-                  return { profile: factoryProfile, containerName, launch };
-                }).pipe(
-                  Effect.provideService(FileSystem.FileSystem, fileSystem),
-                  Effect.provideService(Path.Path, path),
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderAdapterOpenSessionError({
-                        driver: CODEX_PROVIDER,
-                        providerSessionId: input.providerSessionId,
-                        cause,
-                      }),
-                  ),
-                );
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapterOpenSessionError({
+                          driver: CODEX_PROVIDER,
+                          providerSessionId: input.providerSessionId,
+                          cause,
+                        }),
+                    ),
+                  );
           const ideaPolicy =
-            factoryProfile === undefined &&
+            confinement === undefined &&
             input.runtimePolicy.purpose === "idea" &&
             input.runtimePolicy.cwd !== null
               ? yield* prepareCodexIdeaPolicy({
@@ -1567,7 +1559,7 @@ export const layerAppServerClientFactory: Layer.Layer<
             ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
           };
           const command = yield* makeCodexAppServerSpawnCommand(
-            factory === undefined
+            launch === undefined
               ? {
                   command: input.settings.binaryPath || "codex",
                   args: [
@@ -1580,27 +1572,20 @@ export const layerAppServerClientFactory: Layer.Layer<
                   env: environment,
                 }
               : {
-                  command: factory.launch.command,
-                  args: factory.launch.args,
-                  env: factory.launch.environment,
+                  command: launch.command,
+                  args: launch.args,
+                  env: launch.environment,
                   extendEnv: false,
                 },
           );
-          if (factory !== undefined) {
+          if (launch !== undefined) {
             yield* Effect.addFinalizer(() =>
               spawner
                 .exitCode(
-                  ChildProcess.make(
-                    "docker",
-                    [
-                      "--context",
-                      factory.profile.dockerContext,
-                      "rm",
-                      "--force",
-                      factory.containerName,
-                    ],
-                    { env: factory.launch.environment, extendEnv: false },
-                  ),
+                  ChildProcess.make(launch.cleanup.command, launch.cleanup.args, {
+                    env: launch.environment,
+                    extendEnv: false,
+                  }),
                 )
                 .pipe(Effect.timeout("10 seconds"), Effect.ignore),
             );
@@ -1640,6 +1625,7 @@ export const layerAppServerClientFactory: Layer.Layer<
 
 export type CodexAdapterV2DriverEnv =
   | CodexAppServerClientFactory
+  | ConfinedCodexLaunch.ConfinedCodexLaunch
   | Crypto.Crypto
   | FileSystem.FileSystem
   | IdAllocatorV2
@@ -1652,6 +1638,7 @@ export const createCodexAdapterV2 = (
 ) =>
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
+    const confinedLaunch = yield* ConfinedCodexLaunch.ConfinedCodexLaunch;
     const continuationRequests = yield* ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1685,6 +1672,7 @@ export const createCodexAdapterV2 = (
       settings,
       environment: mergeProviderInstanceEnvironment(environment, hostEnvironment),
       clientFactory,
+      confinedLaunch,
       crypto,
       fileSystem,
       path,
@@ -1706,6 +1694,7 @@ const layer: Layer.Layer<
   ProviderAdapterV2,
   never,
   | CodexAppServerClientFactory
+  | ConfinedCodexLaunch.ConfinedCodexLaunch
   | Crypto.Crypto
   | FileSystem.FileSystem
   | Path.Path
@@ -1715,6 +1704,7 @@ const layer: Layer.Layer<
   ProviderAdapterV2,
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
+    const confinedLaunch = yield* ConfinedCodexLaunch.ConfinedCodexLaunch;
     const continuationRequests = yield* ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1728,6 +1718,7 @@ const layer: Layer.Layer<
       settings: DEFAULT_CODEX_SETTINGS,
       environment: hostEnvironment,
       clientFactory,
+      confinedLaunch,
       crypto,
       fileSystem,
       path,
@@ -1743,6 +1734,8 @@ export interface CodexAdapterV2Options {
   readonly settings: CodexSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
+  /** Checks a confined session's runtime before its handshake and each turn. */
+  readonly confinedLaunch: ConfinedCodexLaunch.ConfinedCodexLaunch["Service"];
   readonly onUsageLimits?: ServerProviderShape["applyUsageLimits"];
   /**
    * Resolves launch settings when each session opens, replacing `settings` and
@@ -1766,7 +1759,8 @@ export interface CodexAdapterV2Options {
 }
 
 export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): ProviderAdapterV2Shape {
-  const { clientFactory, crypto, fileSystem, path, idAllocator, serverConfig } = adapterOptions;
+  const { clientFactory, confinedLaunch, crypto, fileSystem, path, idAllocator, serverConfig } =
+    adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
 
   return ProviderAdapterV2.of({
@@ -1832,16 +1826,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         // starting their own; a failed handshake leaves the flag unset so the
         // next caller retries.
         const initializePermit = yield* Semaphore.make(1);
-        const checkFactoryAuthority = assertFactoryProfileActive(
-          input.runtimePolicy.factoryExecution,
-        ).pipe(
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-          Effect.mapError((cause) => toProtocolError(cause.message)),
-        );
+        const confinement = input.runtimePolicy.confinement;
+        const checkConfinement = (
+          confinement === undefined ? Effect.void : confinedLaunch.assertActive(confinement)
+        ).pipe(Effect.mapError((cause) => toProtocolError(cause.message)));
         const ensureInitialized = initializePermit.withPermit(
           Effect.gen(function* () {
-            yield* checkFactoryAuthority;
+            yield* checkConfinement;
             const alreadyInitialized = yield* Ref.get(initialized);
             if (alreadyInitialized) {
               return;
@@ -1865,7 +1856,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 }),
               );
             yield* client.notify("initialized", undefined);
-            yield* checkFactoryAuthority;
+            yield* checkConfinement;
             yield* Ref.set(initialized, true);
           }),
         );
@@ -6360,7 +6351,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
             ),
           startTurn: (turnInput) =>
             Effect.gen(function* () {
-              if (input.runtimePolicy.factoryExecution !== undefined)
+              if (input.runtimePolicy.confinement !== undefined)
                 yield* ensureInitialized.pipe(
                   Effect.mapError(
                     (cause) =>

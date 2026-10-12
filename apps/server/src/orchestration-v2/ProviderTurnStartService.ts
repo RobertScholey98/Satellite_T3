@@ -21,7 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
-import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -99,7 +99,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
-  | FactoryControlAccess.FactoryControlAccess
+  | ThreadGovernance.ThreadGovernance
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -114,9 +114,9 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
-    const factoryControls = yield* FactoryControlAccess.FactoryControlAccess;
+    const governance = yield* ThreadGovernance.ThreadGovernance;
 
-    const makeFactoryStartGuard =
+    const makeGovernanceStartGuard =
       (input: {
         readonly run: OrchestrationV2Run;
         readonly attempt: OrchestrationV2RunAttempt;
@@ -125,7 +125,7 @@ export const layer: Layer.Layer<
       }) =>
       (expectedStatus: "starting" | "running") =>
         Effect.gen(function* () {
-          const admitted = yield* factoryControls
+          const admitted = yield* governance
             .assertDirection({
               threadId: input.run.threadId,
               senderThreadId: input.senderThreadId,
@@ -188,7 +188,7 @@ export const layer: Layer.Layer<
       readonly inheritedBackgroundTurnItems: ReturnType<
         typeof RunExecutionService.selectInheritedBackgroundTurnItems
       >;
-      readonly factoryStartGuard: ReturnType<typeof makeFactoryStartGuard>;
+      readonly governanceStartGuard: ReturnType<typeof makeGovernanceStartGuard>;
     }) => {
       // Guards and background routing need live execution state, not a fresh
       // allocation of every completed message and tool output in the thread.
@@ -219,7 +219,7 @@ export const layer: Layer.Layer<
         shouldStartProviderTurn: () =>
           Effect.gen(function* () {
             if (!(yield* isCurrentAttemptInStatus("running"))) return false;
-            return yield* input.factoryStartGuard("running");
+            return yield* input.governanceStartGuard("running");
           }),
         shouldFinalizeRun: () =>
           projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
@@ -440,13 +440,13 @@ export const layer: Layer.Layer<
           });
         },
       );
-      const factoryStartGuard = makeFactoryStartGuard({
+      const governanceStartGuard = makeGovernanceStartGuard({
         run,
         attempt,
         rootNode,
-        senderThreadId: FactoryControlAccess.factoryDirectionSender(message),
+        senderThreadId: ThreadGovernance.directionSender(message),
       });
-      if (!(yield* factoryStartGuard("starting"))) return;
+      if (!(yield* governanceStartGuard("starting"))) return;
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
           message.text.trim().toLowerCase() === "/compact" && !projection.hasConversation;
@@ -591,7 +591,7 @@ export const layer: Layer.Layer<
         providerThreadId: providerThread.id,
         runOrdinal: run.ordinal,
         inheritedBackgroundTurnItems,
-        factoryStartGuard,
+        governanceStartGuard,
       });
       const { isCurrentAttemptInStatus } = runControls;
 
@@ -599,9 +599,7 @@ export const layer: Layer.Layer<
         thread: projection.thread,
         modelSelection: run.modelSelection,
       });
-      if (
-        providerThread.executionBoundaryId !== resolvedRuntimePolicy.factoryExecution?.boundaryId
-      ) {
+      if (providerThread.executionBoundaryId !== resolvedRuntimePolicy.confinement?.boundaryId) {
         yield* settleRunBeforeStart({
           signal: "execution-boundary-changed",
           status: "failed",
@@ -1282,7 +1280,7 @@ export const layer: Layer.Layer<
               }),
           });
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
-          if (!(yield* factoryStartGuard("running")))
+          if (!(yield* governanceStartGuard("running")))
             return yield* new ProviderAdapterTurnStartError({
               driver: session.driver,
               threadId: run.threadId,

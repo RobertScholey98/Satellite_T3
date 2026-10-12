@@ -21,7 +21,11 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as Satellite from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
-import { FactoryExecution, type FactoryExecutionProfile } from "./FactoryExecution.ts";
+import {
+  FactoryExecution,
+  layerThreadGovernance,
+  type FactoryExecutionProfile,
+} from "./FactoryExecution.ts";
 import * as FactoryExecutionTestkit from "./FactoryExecution.testkit.ts";
 import * as FactoryHandover from "./FactoryHandover.ts";
 
@@ -238,8 +242,10 @@ it.effect("same-model handover keeps conversation history in a fresh confined na
       assert.equal(continued.contextHandoffs.length, 1);
     }).pipe(
       Effect.provide(
-        Satellite.layerWithFactory(
-          Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls),
+        Satellite.layerWithGovernance(
+          layerThreadGovernance.pipe(
+            Layer.provide(Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls)),
+          ),
         ),
       ),
     );
@@ -343,8 +349,10 @@ it.effect(
         );
       }).pipe(
         Effect.provide(
-          Satellite.layerWithFactory(
-            Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls),
+          Satellite.layerWithGovernance(
+            layerThreadGovernance.pipe(
+              Layer.provide(Layer.merge(execution, FactoryExecutionTestkit.layerUnmanagedControls)),
+            ),
           ),
         ),
       );

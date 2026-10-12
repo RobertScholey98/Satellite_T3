@@ -1,4 +1,3 @@
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
 /**
  * Runs OpenCode 2 through the whole orchestrator with the real driver: the
  * driver probes the binary, spawns `opencode serve`, and routes to the 2.x
@@ -18,6 +17,7 @@ import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts
  * stand-in one) and a turn cut off by a killed server. Each step waits up to
  * `OPENCODE2_STEP_WAIT` seconds (120 by default).
  */
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -55,6 +55,7 @@ import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
 import * as ProviderInstanceRegistryHydration from "../provider/ProviderInstanceRegistryHydration.ts";
+import * as ConfinedCodexLaunch from "./Adapters/ConfinedCodexLaunch.ts";
 import * as ProviderEventLoggers from "../provider/ProviderEventLoggers.ts";
 import * as OpenCode2Client from "../provider/opencode2/OpenCode2Client.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
@@ -168,6 +169,7 @@ const layerBackgroundPolicy = BackgroundPolicy.layer.pipe(
   Layer.provide(layerServerSettings),
 );
 const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pipe(
+  Layer.provide(ConfinedCodexLaunch.layerUnconfined),
   Layer.provide(
     Layer.mergeAll(
       layerServerConfig.pipe(Layer.provide(layerPlatformTest)),
@@ -205,7 +207,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
   ),
 );
 const layerOrchestration = RuntimeLayer.layer.pipe(
-  Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+  Layer.provide(ThreadGovernance.layerUngoverned),
   Layer.provide(ProviderTurnStartServiceTestkit.layer),
   Layer.provide(layerMcpRegistry),
   Layer.provide(SqlitePersistence.layerMemory),

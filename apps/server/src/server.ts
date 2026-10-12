@@ -16,6 +16,7 @@ import * as CommitRecommendationService from "./git/CommitRecommendationService.
 import * as FactoryStore from "./factory/FactoryStore.ts";
 import * as FactoryPullRequestGate from "./factory/FactoryPullRequestGate.ts";
 import * as FactoryExecution from "./factory/FactoryExecution.ts";
+import * as FactoryCodexLaunch from "./factory/FactoryCodexLaunch.ts";
 import * as FactoryBoundaryExecution from "./factory/FactoryBoundaryExecution.ts";
 import * as FactorySource from "./factory/FactorySource.ts";
 import * as FactoryHandover from "./factory/FactoryHandover.ts";
@@ -376,7 +377,7 @@ const layerIssueService = IssueService.layer.pipe(
 );
 
 const layerPullRequestService = PullRequestService.layer.pipe(
-  Layer.provide(FactoryPullRequestGate.layer.pipe(Layer.provide(FactoryStore.layer))),
+  Layer.provide(FactoryPullRequestGate.layerActionGate.pipe(Layer.provide(FactoryStore.layer))),
   Layer.provide(PullRequestProviderRegistry.layer),
   // Where the viewed-file marks live for a host that keeps none of its own.
   Layer.provide(PullRequestFilesViewed.layer),
@@ -522,7 +523,7 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
 );
 
 const layerFactoryExecution = Layer.mergeAll(
-  FactoryExecution.layer,
+  FactoryExecution.layerThreadGovernance.pipe(Layer.provideMerge(FactoryExecution.layer)),
   FactoryBoundaryExecution.layer,
 ).pipe(
   Layer.provideMerge(FactoryWorkflowExecution.layer),
@@ -608,7 +609,8 @@ const layerFactoryServices = FactoryService.layer.pipe(
 
 const layerSatelliteFeatures = Layer.mergeAll(
   Layer.merge(FactoryMcpGuard.layer, FactoryObserver.layer).pipe(
-    Layer.provide(FactoryImprovementEvidence.layer),
+    // The factory MCP tools read investigation evidence directly.
+    Layer.provideMerge(FactoryImprovementEvidence.layer),
     Layer.provideMerge(layerFactoryServices),
     // Every factory layer above shares these. FactoryControlAccess comes from
     // layerFactoryExecution, which the runtime provides to this whole layer.
@@ -742,7 +744,11 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // through this layer. Built-in drivers come from `BUILT_IN_DRIVERS`;
   // `providerInstances` hydration merges `settings.providers.<kind>`
   // with explicit `providerInstances` entries on boot.
-  Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+  Layer.provideMerge(
+    ProviderInstanceRegistryHydration.layer.pipe(
+      Layer.provide(FactoryCodexLaunch.layerConfinedLaunch),
+    ),
+  ),
   Layer.provideMerge(
     Layer.mergeAll(
       AntigravityInstallation.AntigravityInstallation.layer,

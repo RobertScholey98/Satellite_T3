@@ -14,9 +14,6 @@ import {
   type OrchestrationV2UserInputQuestion,
   type RuntimeRequestId,
 } from "@t3tools/contracts";
-import type * as FactoryControlAccess from "../../factory/FactoryControlAccess.ts";
-import type * as FactoryExecution from "../../factory/FactoryExecution.ts";
-import * as FactoryExecutionTestkit from "../../factory/FactoryExecution.testkit.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import { IdeaNotebookStore } from "../../ideas/IdeaNotebookStore.ts";
@@ -26,6 +23,7 @@ import * as ProjectionStore from "../ProjectionStore.ts";
 import * as ProjectStore from "../ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import * as SatelliteOrchestration from "../SatelliteOrchestration.ts";
+import * as ThreadGovernance from "../ThreadGovernance.ts";
 import { layerWithRegistry } from "./ProviderReplayHarness.ts";
 import { CodexProviderCapabilitiesV2 } from "../Adapters/CodexAdapterV2.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -60,20 +58,16 @@ const stores = Layer.mergeAll(
 
 /**
  * Real V2 command receipts, event projection, and Satellite service views without provider
- * execution. The orchestration runtime consults the given factory gates.
+ * execution. The orchestration runtime consults the given thread governance.
  */
-export const layerWithFactory = (
-  factory: Layer.Layer<
-    FactoryExecution.FactoryExecution | FactoryControlAccess.FactoryControlAccess
-  >,
-) =>
+export const layerWithGovernance = (governance: Layer.Layer<ThreadGovernance.ThreadGovernance>) =>
   Layer.mergeAll(SatelliteOrchestration.layer, ProjectService.layer, ThreadSearch.layer).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         layerWithRegistry({ name: "satellite-feature-tests" }, registry, {
           databaseLayer: database,
           runEffectWorker: false,
-          factory,
+          governance,
         }),
         stores,
         McpSessionRegistryTestkit.layer,
@@ -107,7 +101,7 @@ export const layerWithFactory = (
   );
 
 /** The runtime for an environment with no managers. */
-export const layer = layerWithFactory(FactoryExecutionTestkit.layerUnmanaged);
+export const layer = layerWithGovernance(ThreadGovernance.layerUngoverned);
 
 export const recordProject = Effect.fn(function* (input: {
   readonly projectId: ProjectId;

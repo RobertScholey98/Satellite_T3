@@ -26,7 +26,7 @@ import {
   restartContinuationRun,
   restartPrepareCommandId,
 } from "./RestartContinuation.ts";
-import * as FactoryControlAccess from "../factory/FactoryControlAccess.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import {
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
@@ -190,15 +190,14 @@ export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
-  const factory = yield* FactoryControlAccess.FactoryControlAccess;
-  // Factory-managed work always records its restart intent; the factory decides
-  // whether it resumes. A failed lookup falls back to the per-project opt-in, and
-  // the effect worker checks membership again before continuing anything.
+  const governance = yield* ThreadGovernance.ThreadGovernance;
+  // Governed work always records its restart intent; its owner decides whether it
+  // resumes. A failed lookup falls back to the per-project opt-in, and the effect
+  // worker checks governance again before continuing anything.
   const isManaged = (threadId: ThreadId) =>
-    factory.membership(threadId).pipe(
-      Effect.map((member) => member !== undefined),
+    governance.governs(threadId).pipe(
       Effect.catch((cause) =>
-        Effect.logWarning("Could not resolve factory membership during runtime recovery", {
+        Effect.logWarning("Could not resolve thread governance during runtime recovery", {
           threadId,
           cause,
         }).pipe(Effect.as(false)),

@@ -26,7 +26,6 @@ ENV HOME=/runtime \\
 WORKDIR /workspace
 ENTRYPOINT ["codex", "app-server"]
 `;
-export const FACTORY_CONTAINER_WORKSPACE = "/workspace";
 
 export const FactoryExecutionProfile = Schema.Struct({
   boundaryId: Schema.String,
@@ -97,14 +96,6 @@ export const FactoryDeliveryExecutionHold = Schema.Struct({
   sourceDigest: Schema.String,
 });
 export type FactoryDeliveryExecutionHold = typeof FactoryDeliveryExecutionHold.Type;
-
-export function factoryContainerEndpoint(endpoint: string): string {
-  const url = new URL(endpoint);
-  if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-    url.hostname = "host.docker.internal";
-  }
-  return url.toString();
-}
 
 export function factoryDockerArguments(profile: FactoryExecutionProfile): Array<string> {
   return [

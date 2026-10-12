@@ -68,7 +68,6 @@ import {
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
-import * as FactoryMcpGuard from "../factory/FactoryMcpGuard.ts";
 import {
   FactoryToolkit,
   FactoryPreviewSnapshotTool,
@@ -165,6 +164,7 @@ const looksLikeProviderToken = (token: string) => token.length > 0 && !token.inc
 
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
+  const callers = yield* McpToolAccess.CallerPolicy;
   const clients = yield* Effect.serviceOption(McpClientAuthenticator);
   return Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -192,7 +192,8 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       });
     }
     return yield* httpEffect.pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      McpToolAccess.provideCaller(invocation),
+      Effect.provideService(McpToolAccess.CallerPolicy, callers),
       Effect.map(normalizeMcpHttpResponse),
     );
   }) satisfies McpAuthMiddleware;
@@ -614,8 +615,10 @@ const imageToolFailure =
       typeof firstFailure._tag === "string"
         ? firstFailure._tag
         : `${toolName}Error`;
-    const message =
-      typeof failureText === "string" || failures[0] === undefined
+    // An access refusal is written for the agent, whatever the tool's own failure text.
+    const message = isOrchestratorMcpFailure(firstFailure)
+      ? firstFailure.message
+      : typeof failureText === "string" || failures[0] === undefined
         ? undefined
         : failureText(failures[0].error);
     const result = new McpSchema.CallToolResult({
@@ -632,7 +635,7 @@ const imageToolFailure =
       content: [
         {
           type: "text",
-          text: typeof failureText === "string" ? failureText : (message ?? `${toolName} failed.`),
+          text: message ?? (typeof failureText === "string" ? failureText : `${toolName} failed.`),
         },
       ],
     });
@@ -753,7 +756,6 @@ const registerFactoryPreviewSnapshot = Effect.fn("McpHttpServer.registerFactoryP
   function* () {
     const previews = yield* FactoryPreviewService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
-    const guard = yield* FactoryMcpGuard.FactoryMcpGuard;
     const built = yield* FactoryPreviewSnapshotToolkit;
     yield* registerImageTool(
       FactoryPreviewSnapshotTool,
@@ -765,7 +767,6 @@ const registerFactoryPreviewSnapshot = Effect.fn("McpHttpServer.registerFactoryP
         effect.pipe(
           Effect.provideService(FactoryPreviewService, previews),
           Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
-          Effect.provideService(FactoryMcpGuard.FactoryMcpGuard, guard),
         ),
       "factory-preview",
       "Candidate app inspection failed.",
@@ -799,48 +800,6 @@ const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(funct
   );
 });
 
-const layerGuardedRegistry = Layer.effect(
-  McpServer.McpServer,
-  Effect.gen(function* () {
-    const server = yield* McpServer.McpServer;
-    const guard = yield* FactoryMcpGuard.FactoryMcpGuard;
-    return McpServer.McpServer.of({
-      ...server,
-      addTool: (registration) =>
-        server.addTool({
-          ...registration,
-          handle: (payload) =>
-            Effect.withFiber((fiber) => {
-              const invocation = Context.getOption(
-                fiber.context,
-                McpInvocationContext.McpInvocationContext,
-              );
-              if (Option.isNone(invocation)) {
-                return Effect.succeed(
-                  new McpSchema.CallToolResult({
-                    isError: true,
-                    content: [{ type: "text", text: "An authenticated MCP caller is required." }],
-                  }),
-                );
-              }
-              return guard.authorize(invocation.value, registration.tool.name, payload).pipe(
-                Effect.matchEffect({
-                  onFailure: (error) =>
-                    Effect.succeed(
-                      new McpSchema.CallToolResult({
-                        isError: true,
-                        content: [{ type: "text", text: error.message }],
-                      }),
-                    ),
-                  onSuccess: () => registration.handle(payload),
-                }),
-              );
-            }),
-        }),
-    });
-  }),
-);
-
 /**
  * `McpServer.toolkit` for handlers that declared their access (see
  * `McpToolAccess`). Every toolkit on `/mcp` registers through this.
@@ -848,25 +807,16 @@ const layerGuardedRegistry = Layer.effect(
 export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, RX>(
   toolkit: Toolkit.Toolkit<Tools>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
-): Layer.Layer<
-  never,
-  EX,
-  McpServer.McpServer | FactoryMcpGuard.FactoryMcpGuard | RX | Tool.HandlerServices<Tools>
-> =>
+): Layer.Layer<never, EX, McpServer.McpServer | RX | Tool.HandlerServices<Tools>> =>
   Layer.effectDiscard(McpServer.registerToolkit<Tools>(toolkit)).pipe(
     Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)),
-    Layer.provide(layerGuardedRegistry),
   );
 
 /** A hand-registered tool, also only with handlers that declared their access. */
 const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, EX, RX>(
   register: Effect.Effect<A, E, R>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
-) =>
-  Layer.effectDiscard(register).pipe(
-    Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)),
-    Layer.provide(layerGuardedRegistry),
-  );
+) => Layer.effectDiscard(register).pipe(Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)));
 
 export const layerFactoryToolkit = Layer.mergeAll(
   toolkitRegistration(FactoryToolkit, FactoryHandlers.layer),

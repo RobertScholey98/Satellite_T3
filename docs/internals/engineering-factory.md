@@ -8,9 +8,11 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
 
 - A managed thread runs only inside its Docker boundary.
   [`RuntimePolicyV2`](../../apps/server/src/orchestration-v2/RuntimePolicy.ts) asks
-  `FactoryExecution.runtimePolicyFor` about every thread. When that returns a policy, Codex starts
-  in the container through [`prepareFactoryCodexLaunch`](../../apps/server/src/factory/FactoryCodexLaunch.ts),
-  and every other driver is refused. Runtime-policy overrides skip managed threads. Never add a
+  `ThreadGovernance.confinementFor` about every thread, which the factory answers with
+  `FactoryExecution.runtimePolicyFor`. When that returns a confinement, Codex starts in the
+  container through `ConfinedCodexLaunch`, which the factory implements with
+  [`prepareFactoryCodexLaunch`](../../apps/server/src/factory/FactoryCodexLaunch.ts), and every
+  other driver is refused. Runtime-policy overrides skip managed threads. Never add a
   host fallback. A failed launch must surface as a failure.
 - The host never reads or writes an assignment volume directly. Volume access goes through
   [`FactoryVolumeHelper`](../../apps/server/src/factory/FactoryVolumeHelper.ts), which runs in a
@@ -49,7 +51,14 @@ record owns a thread. Every access check uses it.
 
 ## Gates in shared orchestration
 
-The factory checks shared paths as well as its own services:
+Shared code imports nothing from the factory. It asks seams that core owns, and the factory
+implements them:
+[`ThreadGovernance`](../../apps/server/src/orchestration-v2/ThreadGovernance.ts) for direction,
+confinement, model admission and restart ownership,
+[`ConfinedCodexLaunch`](../../apps/server/src/orchestration-v2/Adapters/ConfinedCodexLaunch.ts)
+for the container launch and its authority checks, and
+[`PullRequestActionGate`](../../apps/server/src/pullRequest/PullRequestActionGate.ts) for actions on
+managed PRs. These shared paths consult them:
 
 - [`Orchestrator`](../../apps/server/src/orchestration-v2/Orchestrator.ts) checks who may direct a
   thread.
@@ -77,10 +86,18 @@ handlers split into the core and Satellite layers in `ws.ts`. A single `toLayer`
 exceeds the compiler's instantiation limit. tsgo then drops the error and widens the server's
 requirements to `any` (TS377030), so a missing layer compiles again.
 
-The gates listed above are required services, so a missing gate layer is a compile error rather
-than a gate that silently switches off. Never read a gate through `Effect.serviceOption`. Tests
-that need no managers provide the unmanaged layers from
-[`FactoryExecution.testkit.ts`](../../apps/server/src/factory/FactoryExecution.testkit.ts).
+The seams are required services, so a missing factory layer is a compile error rather than a gate
+that silently switches off. `ThreadGovernance.test.ts` checks that each shared path still requires
+its seam. Never read a seam through `Effect.serviceOption`. Each seam has an admit-everything
+default (`layerUngoverned`, `layerUnconfined`, `layerUnmanaged`) for tests and compositions without
+managers. Only `server.ts` provides the factory's layers; providing a default inside a core
+composition layer would silently replace them.
+
+## State storage
+
+Known limit: factory state is one JSON row (`factory_state`) that every command rewrites and every
+subscribed client receives whole, because the decider works on the full snapshot; moving to an
+event log or normalized tables would need per-entity storage and client deltas.
 
 ## Deployment signal
 

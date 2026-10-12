@@ -30,6 +30,7 @@ import {
   deliveryNow,
   deliverySelection,
 } from "./FactoryDelivery.testkit.ts";
+import { layerTestDependencies } from "./FactoryService.testkit.ts";
 
 const api = {
   project: ProjectId.make("api"),
@@ -150,6 +151,7 @@ it.effect(
       const runtime = Service.layer.pipe(
         Layer.provideMerge(Integration.layer.pipe(Layer.provide(Access.layer))),
         Layer.provide(external),
+        Layer.provide(layerTestDependencies),
       );
       let refuseReceipt = true;
       const uncertainStore = Layer.succeed(Store.FactoryStore, {

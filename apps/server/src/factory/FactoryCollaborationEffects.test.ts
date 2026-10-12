@@ -239,7 +239,7 @@ it.effect("holds peer delivery during project pause and resumes the same durable
       ...paused,
       controls: paused.controls.filter((entry) => entry.kind !== "project-pause"),
     };
-    yield* sql`UPDATE factory_state SET payload_json=${encode(resumed)} WHERE id=1`;
+    yield* sql`UPDATE factory_state SET revision=revision+1, payload_json=${encode(resumed)} WHERE id=1`;
     yield* Effect.gen(function* () {
       const effects = yield* Collaboration.FactoryCollaborationEffects;
       yield* effects.handle(pending);
@@ -295,7 +295,7 @@ it.effect(
       assert.isTrue((yield* store.pending).some((entry) => entry.id === pending.id));
       const sql = yield* SqlClient.SqlClient;
       const paused = yield* store.snapshot;
-      yield* sql`UPDATE factory_state SET payload_json=${encode({ ...paused, controls: paused.controls.filter((entry) => entry.kind !== "manager-pause") })} WHERE id=1`;
+      yield* sql`UPDATE factory_state SET revision=revision+1, payload_json=${encode({ ...paused, controls: paused.controls.filter((entry) => entry.kind !== "manager-pause") })} WHERE id=1`;
       yield* deliver;
       assert.equal(
         (yield* threads.getThreadRecords(deliveryIds.manager, ["messages"])).messages.length,

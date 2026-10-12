@@ -23,7 +23,11 @@ const runtimePolicy: ProviderAdapterV2RuntimePolicy = {
   interactionMode: "default",
   approvalPolicy: "on-request",
   sandboxPolicy: { type: "dangerFullAccess" },
-  factoryExecution: profile,
+  confinement: {
+    boundaryId: profile.boundaryId,
+    workspacePath: profile.projectSnapshotPath,
+    profile,
+  },
 };
 
 it.effect(

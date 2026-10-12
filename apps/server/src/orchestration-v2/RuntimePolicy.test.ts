@@ -20,8 +20,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as IdeaWorkspace from "../ideas/IdeaWorkspace.ts";
-import * as FactoryExecution from "../factory/FactoryExecution.ts";
-import * as FactoryExecutionTestkit from "../factory/FactoryExecution.testkit.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 const projectId = ProjectId.make("project:runtime-policy");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -81,7 +80,7 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
   }) as ProviderInstance;
 
 const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
-  Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+  Layer.provide(ThreadGovernance.layerUngoverned),
   Layer.provide(
     Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
       getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
@@ -114,22 +113,19 @@ const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
   ),
 );
 
-const discoveryProfile = {
+const discoveryConfinement = {
   boundaryId: "discovery:runtime-policy",
-  dockerContext: "default",
-  imageId: "sha256:discovery-image",
-  projectSnapshotPath: "/state/discovery/project",
-  workflowSnapshotPath: "/state/discovery/workflow",
-  runtimePath: "/state/discovery/runtime",
-} satisfies FactoryExecution.FactoryExecutionProfile;
+  workspacePath: "/state/discovery/project",
+  profile: { owner: "discovery" },
+} satisfies ThreadGovernance.ConfinedExecution;
 
 const managedLayer = (driverKind: "codex" | "grok") =>
   RuntimePolicy.layerFromProjectStore.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(FactoryExecution.FactoryExecution)({
-          runtimePolicyFor: () => Effect.succeed(discoveryProfile),
-          assertSelectionFor: () => Effect.void,
+        Layer.mock(ThreadGovernance.ThreadGovernance)({
+          confinementFor: () => Effect.succeed(discoveryConfinement),
+          assertModelSelection: () => Effect.void,
         }),
         Layer.mock(ProjectStore.ProjectStoreV2)({
           get: () => Effect.die("managed execution must not read the writable checkout"),
@@ -153,8 +149,8 @@ it.effect("runs managed discovery from the qualified snapshot instead of its wor
       thread: makeThread({ now, worktreePath: "/writable-worktree" }),
       modelSelection,
     });
-    assert.equal(resolved.cwd, discoveryProfile.projectSnapshotPath);
-    assert.deepStrictEqual(resolved.factoryExecution, discoveryProfile);
+    assert.equal(resolved.cwd, discoveryConfinement.workspacePath);
+    assert.deepStrictEqual(resolved.confinement, discoveryConfinement);
     assert.deepStrictEqual(resolved.sandboxPolicy, {
       type: "externalSandbox",
       networkAccess: "enabled",
@@ -186,8 +182,8 @@ it.effect("preserves the managed boundary when a runtime override requests wider
       thread: makeThread({ now, worktreePath: "/writable-worktree" }),
       modelSelection,
     });
-    assert.equal(resolved.cwd, discoveryProfile.projectSnapshotPath);
-    assert.deepStrictEqual(resolved.factoryExecution, discoveryProfile);
+    assert.equal(resolved.cwd, discoveryConfinement.workspacePath);
+    assert.deepStrictEqual(resolved.confinement, discoveryConfinement);
     assert.deepStrictEqual(resolved.sandboxPolicy, {
       type: "externalSandbox",
       networkAccess: "enabled",
@@ -269,7 +265,7 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
 it.effect("uses the owned idea workspace and preserves its selected permissions", () => {
   const calls: ThreadId[] = [];
   const isolatedLayer = RuntimePolicy.layerFromProjectStore.pipe(
-    Layer.provide(FactoryExecutionTestkit.layerUnmanaged),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(IdeaWorkspace.IdeaWorkspace)({
@@ -309,19 +305,19 @@ it.effect("uses the owned idea workspace and preserves its selected permissions"
   }).pipe(Effect.provide(isolatedLayer));
 });
 
-it.effect("passes the parent to factory policy only for subagents, never for forks", () =>
+it.effect("passes the parent to thread governance only for subagents, never for forks", () =>
   Effect.gen(function* () {
     const parents: Array<ThreadId | undefined> = [];
     const layer = RuntimePolicy.layerFromProjectStore.pipe(
       Layer.provide(
         Layer.mergeAll(
-          Layer.mock(FactoryExecution.FactoryExecution)({
-            runtimePolicyFor: (_threadId, pendingParentThreadId) =>
+          Layer.mock(ThreadGovernance.ThreadGovernance)({
+            confinementFor: (_threadId, pendingParentThreadId) =>
               Effect.sync(() => {
                 parents.push(pendingParentThreadId);
-                return discoveryProfile;
+                return discoveryConfinement;
               }),
-            assertSelectionFor: () => Effect.void,
+            assertModelSelection: () => Effect.void,
           }),
           Layer.mock(ProjectStore.ProjectStoreV2)({
             get: () => Effect.die("managed execution must not read the writable checkout"),
