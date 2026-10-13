@@ -1,6 +1,5 @@
 import {
   AuthSettingsWriteScope,
-  issueReadyColumnIds,
   type FactoryManager,
   type FactoryProjectTracker,
   type IssueBoardSummary,
@@ -18,12 +17,34 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Textarea } from "../ui/textarea";
+import {
+  boardColumnRoleLabel,
+  triageColumnOptions,
+  type TriageColumnOption,
+} from "./FactoryTriageColumns";
 import { useFactoryCommand } from "./useFactoryCommand";
 
 function trackerSummary(destination: IssuePublicationDestination) {
   if (destination.kind === "azure")
     return `${destination.organization} / ${destination.project} · ${destination.workItemType} · ${destination.state} · ${destination.areaPath}`;
   return `${destination.host}/${destination.repository} · ${destination.triage.kind === "labels" ? `labels: ${destination.triage.labels.join(", ")}` : "connected Project triage column"}`;
+}
+
+/** Explains how to free a triage column when every column on the board already has a role. */
+function noTriageColumnMessage(boardTitle: string, columns: ReadonlyArray<TriageColumnOption>) {
+  const ready = columns
+    .filter((column) => column.role === "ready")
+    .map((column) => `“${column.title}”`);
+  const lead =
+    columns.length === 0
+      ? `${boardTitle} has no columns.`
+      : `Every column on ${boardTitle} already has a role.`;
+  // Ready needs at least one column, so freeing one is only possible when it has several.
+  const fix =
+    ready.length > 1
+      ? `In the Issues view, open Board settings → Column mapping and remove ${ready.slice(0, -1).join(", ")} or ${ready.at(-1)} from ${boardColumnRoleLabel.ready}, or add a triage column to the board.`
+      : "Add a triage column to the board.";
+  return `${lead} ${fix} Then select Load connected boards again.`;
 }
 
 export function FactoryTrackerSettings({
@@ -113,16 +134,9 @@ function TrackerForm({
   const matchingBoards = boards.filter(
     (board) => board.locator.kind === (kind === "github" ? "github-project" : "azure-board"),
   );
-  const blockedColumns = boardView?.board.mapping
-    ? [
-        ...issueReadyColumnIds(boardView.board.mapping),
-        boardView.board.mapping.inProgress,
-        boardView.board.mapping.inPullRequest,
-        boardView.board.mapping.completed,
-      ]
+  const columnOptions = boardView
+    ? triageColumnOptions(boardView.columns, boardView.board.mapping)
     : [];
-  const triageColumns =
-    boardView?.columns.filter((column) => !blockedColumns.includes(column.id)) ?? [];
   useEffect(() => {
     if (error) errorRef.current?.focus();
   }, [error]);
@@ -455,7 +469,7 @@ function TrackerForm({
             <Select
               value={columnId || null}
               disabled={disabled || !boardView}
-              items={triageColumns.map((column) => ({ value: column.id, label: column.title }))}
+              items={columnOptions.map((column) => ({ value: column.id, label: column.title }))}
               onValueChange={(value) => {
                 setColumnId(value ?? "");
                 setSaved(false);
@@ -469,17 +483,19 @@ function TrackerForm({
                 />
               </SelectTrigger>
               <SelectPopup>
-                {triageColumns.map((column) => (
-                  <SelectItem key={column.id} value={column.id}>
-                    {column.title}
+                {columnOptions.map((column) => (
+                  <SelectItem key={column.id} value={column.id} disabled={column.role !== null}>
+                    {column.role
+                      ? `${column.title} — used as ${boardColumnRoleLabel[column.role]}`
+                      : column.title}
                   </SelectItem>
                 ))}
               </SelectPopup>
             </Select>
           </div>
-          {boardView && triageColumns.length === 0 ? (
+          {boardView && columnOptions.every((column) => column.role !== null) ? (
             <p role="status" className="text-sm text-muted-foreground">
-              This board needs a separate triage column before it can receive follow-up tickets.
+              {noTriageColumnMessage(boardView.board.title, columnOptions)}
             </p>
           ) : null}
         </div>
