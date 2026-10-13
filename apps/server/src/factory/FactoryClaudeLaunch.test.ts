@@ -19,6 +19,7 @@ import { makeClaudeQueryOptions } from "../orchestration-v2/Adapters/ClaudeAdapt
 import { makeConfinedClaudeRuntime } from "../orchestration-v2/Adapters/ConfinedClaudeProcess.ts";
 import * as ConfinedProviderLaunch from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import { assertFactoryImageRunsClaude } from "./FactoryClaudeLaunch.ts";
 import * as FactoryConfinedLaunch from "./FactoryConfinedLaunch.ts";
 import { FACTORY_AGENT_DOCKERFILE, FACTORY_AGENT_IMAGE } from "./FactoryExecutionProfile.ts";
 
@@ -761,4 +762,39 @@ live(
       Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
     ),
   240_000,
+);
+
+live(
+  "the image check admits the pinned image and refuses a missing or label-less one",
+  () =>
+    Effect.gen(function* () {
+      const runner = yield* ProcessRunner.ProcessRunner;
+      const dockerContext = (yield* runner.run({
+        command: "docker",
+        args: ["context", "show"],
+      })).stdout.trim();
+      const check = (imageId: string) =>
+        assertFactoryImageRunsClaude({
+          boundaryId: "claude-image-check",
+          dockerContext,
+          imageId,
+          projectSnapshotPath: "/unused",
+          workflowSnapshotPath: "/unused",
+          runtimePath: "/unused",
+        });
+      yield* check(FACTORY_AGENT_IMAGE);
+      // The pinned Node base carries no providers label, like an image qualified before Claude.
+      const base = /^FROM (\S+)/m.exec(FACTORY_AGENT_DOCKERFILE)?.[1] ?? "";
+      if ((yield* runner.run({ command: "docker", args: ["image", "inspect", base] })).code !== 0)
+        yield* runner.run({ command: "docker", args: ["pull", base], timeout: "5 minutes" });
+      assert.equal(
+        (yield* check(base).pipe(Effect.flip)).detail,
+        "This managed runtime was prepared before Claude support and runs only Codex models. Choose a Codex model for it.",
+      );
+      assert.equal(
+        (yield* check(`sha256:${"0".repeat(64)}`).pipe(Effect.flip)).detail,
+        "The managed runtime's image is not available on this environment.",
+      );
+    }).pipe(Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer)))),
+  360_000,
 );
