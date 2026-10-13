@@ -268,24 +268,30 @@ export const layer = Layer.effect(
           });
     // Managed work runs only on providers the factory can confine, so a model policy never
     // approves another. An unknown instance cannot run at all and is left to admission.
-    const admitModels = (command: FactoryCommand) => {
-      const selections: ReadonlyArray<ModelSelection> =
-        command.type === "models.defaults.configure"
-          ? [
-              ...command.policy.approvedModels,
-              ...command.policy.preferences.map((preference) => preference.selection),
-            ]
-          : command.type === "manager.models.configure"
-            ? [
-                ...(command.overrides.approvedModels ?? []),
-                ...(command.overrides.preferences ?? []).map((preference) => preference.selection),
-              ]
-            : (command.type === "system.create" || command.type === "system.retry") &&
-                command.modelSelection !== undefined
-              ? [command.modelSelection]
-              : [];
-      return Effect.forEach(
-        selections,
+    // The models a command writes into a model policy.
+    const policyModels = (command: FactoryCommand): ReadonlyArray<ModelSelection> => {
+      switch (command.type) {
+        case "models.defaults.configure":
+          return [
+            ...command.policy.approvedModels,
+            ...command.policy.preferences.map((preference) => preference.selection),
+          ];
+        case "manager.models.configure":
+          return [
+            ...(command.overrides.approvedModels ?? []),
+            ...(command.overrides.preferences ?? []).map((preference) => preference.selection),
+          ];
+        case "system.create":
+          return [command.modelSelection];
+        case "system.retry":
+          return command.modelSelection === undefined ? [] : [command.modelSelection];
+        default:
+          return [];
+      }
+    };
+    const admitModels = (command: FactoryCommand) =>
+      Effect.forEach(
+        policyModels(command),
         (selection) =>
           providerInstances.getInstance(selection.instanceId).pipe(
             Effect.flatMap((instance) =>
@@ -302,7 +308,6 @@ export const layer = Layer.effect(
           ),
         { discard: true },
       );
-    };
     // `commands` serializes general dispatches and thread launches. Controls and boundary file
     // operations skip it, so they never queue behind a slow dispatch. `withCommand` serializes
     // concurrent calls with one command id, so the later call finds the first call's receipt.
