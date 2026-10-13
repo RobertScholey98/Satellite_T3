@@ -218,10 +218,6 @@ function ManagerForm({
       ),
     [settings, providers, activeSelection?.instanceId, activeSelection?.model],
   );
-  const previousWorkflow = manager?.workflow ?? environment.data?.managers[0]?.workflow;
-  const [repositoryRoot, setRepositoryRoot] = useState(previousWorkflow?.repositoryRoot ?? "");
-  const [revision, setRevision] = useState(previousWorkflow?.revision ?? "");
-  const validRevision = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(revision.trim());
   const [error, setError] = useState<string | null>(null);
   const submission = useRef<{ commandId: CommandId; content: string } | null>(null);
   const pending = useRef(false);
@@ -260,26 +256,24 @@ function ManagerForm({
     environment.canOperate &&
     (manager ? canEditSetup : !alreadyManaged) &&
     modelAvailable &&
-    name.trim().length > 0 &&
-    repositoryRoot.trim().length > 0 &&
-    validRevision;
+    name.trim().length > 0;
 
   const submit = async () => {
     if (!canSubmit || !activeSelection || pending.current) return;
     pending.current = true;
     onSavingChange(true);
     setError(null);
-    const fields = {
-      modelSelection: activeSelection,
-      workflow: { repositoryRoot: repositoryRoot.trim(), revision: revision.trim() },
-    };
     const command = manager
-      ? { type: "manager.retry-onboarding" as const, managerId: manager.id, ...fields }
+      ? {
+          type: "manager.retry-onboarding" as const,
+          managerId: manager.id,
+          modelSelection: activeSelection,
+        }
       : {
           type: "manager.create" as const,
           projectId: project.id,
           name: name.trim(),
-          ...fields,
+          modelSelection: activeSelection,
         };
     const content = JSON.stringify(command);
     if (submission.current?.content !== content) {
@@ -359,39 +353,9 @@ function ManagerForm({
               </p>
             )}
           </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor={`${formId}-workflow`}>Owned skills repository</Label>
-            <Input
-              id={`${formId}-workflow`}
-              value={repositoryRoot}
-              disabled={saving}
-              onChange={(event) => setRepositoryRoot(event.target.value)}
-              aria-describedby={`${formId}-workflow-help`}
-            />
-            <p id={`${formId}-workflow-help`} className="text-xs text-muted-foreground">
-              Use the repository path on {environment.label}. The approved version is pinned for
-              this manager's assignments.
-            </p>
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor={`${formId}-revision`}>Approved commit SHA</Label>
-            <Input
-              id={`${formId}-revision`}
-              value={revision}
-              disabled={saving}
-              onChange={(event) => setRevision(event.target.value.trim())}
-              aria-describedby={`${formId}-revision-help`}
-              aria-invalid={revision.trim().length > 0 && !validRevision}
-              autoCapitalize="none"
-              spellCheck={false}
-              required
-              pattern="([a-fA-F0-9]{40}|[a-fA-F0-9]{64})"
-            />
-            <p id={`${formId}-revision-help`} className="text-xs text-muted-foreground">
-              Enter the full 40- or 64-character hexadecimal SHA of a committed skills version.
-              Branch names and HEAD cannot pin an approved version.
-            </p>
-          </div>
+          <p className="text-xs text-muted-foreground">
+            Onboarding uses the latest commit of the skills repository set in Settings → General.
+          </p>
           {error ? (
             <p role="alert" className="text-sm text-destructive">
               {error}

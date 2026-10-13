@@ -25,7 +25,7 @@ import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
 
 const projectId = ProjectId.make("boundary-service-web");
 const human = { kind: "human" } as const;
-const workflow = { repositoryRoot: "/owned-workflow", revision: "approved-workflow" };
+const workflow = FactoryServiceTestkit.testSkills;
 const configuration = {
   protectedPaths: ["AGENTS.md", "eslint.config.js"],
   writablePaths: ["src/app.ts"],
@@ -93,7 +93,6 @@ const start = Effect.gen(function* () {
     commandId: CommandId.make("create-web"),
     projectId,
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
-    workflow,
   });
   yield* factory.drain;
   const snapshot = yield* factory.snapshot({ projectId });

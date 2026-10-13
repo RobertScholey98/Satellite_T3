@@ -509,7 +509,8 @@ export function FactoryAssignmentDialog({
             <section className="space-y-1 border-t border-border pt-4">
               <h3 className="text-sm font-medium">Recorded assignment baseline</h3>
               <p className="break-words text-xs text-muted-foreground">
-                Workflow: {manager.workflow.repositoryRoot} at {manager.workflow.revision}.
+                Skills: the latest commit of the skills repository set in Settings → General,
+                recorded when this assignment is commissioned.
               </p>
               <p className="text-xs text-muted-foreground">
                 Source is captured fresh when this assignment is prepared. Approved controls and
@@ -698,7 +699,7 @@ export function FactoryAssignmentDetailsDialog({
               </p>
             </section>
             <section className="space-y-2">
-              <h3 className="text-sm font-medium">Pinned workflow</h3>
+              <h3 className="text-sm font-medium">Skills commit</h3>
               <p className="break-words text-sm">{assignment.workflow.repositoryRoot}</p>
               <p className="break-all text-xs text-muted-foreground">
                 {assignment.workflow.revision}

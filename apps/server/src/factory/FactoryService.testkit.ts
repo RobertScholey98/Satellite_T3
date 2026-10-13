@@ -11,6 +11,7 @@ import * as FactoryMergeEffects from "./FactoryMergeEffects.ts";
 import * as FactoryMergeOperationEffects from "./FactoryMergeOperationEffects.ts";
 import * as FactoryPreviewService from "./FactoryPreviewService.ts";
 import * as FactoryRetroEffects from "./FactoryRetroEffects.ts";
+import * as FactorySkills from "./FactorySkills.ts";
 import * as FactorySchedulingEffects from "./FactorySchedulingEffects.ts";
 import * as FactoryWorkflowEffects from "./FactoryWorkflowEffects.ts";
 
@@ -18,17 +19,24 @@ const unused = Effect.die("This factory effect runtime is not part of the test."
 const leavePending = () => Effect.void;
 const noContext = () => Effect.succeed({});
 
+/** The commit `layerTestDependencies` reports at HEAD of the configured skills repository. */
+export const testSkills = { repositoryRoot: "C:/owned-skills", revision: "a".repeat(40) };
+
 /**
  * What `FactoryService.layer` needs beyond the factory core, for tests: inert effect runtimes
  * (their intents stay pending and their commands get no extra context) and server settings with
- * the engineering managers beta on. Provide a test's real services first; this layer only fills
- * the ones still missing.
+ * the engineering managers beta on, and a fixed skills commit. Provide a test's real services
+ * first; this layer only fills the ones still missing.
  */
 export const layerTestDependencies = Layer.mergeAll(
   Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
     getInstance: () => Effect.succeed(undefined),
   }),
   ServerSettings.layerTest({ engineeringManagersEnabled: true }).pipe(Layer.orDie),
+  Layer.succeed(FactorySkills.FactorySkills, {
+    head: Effect.succeed(testSkills),
+    validate: () => Effect.void,
+  }),
   Layer.succeed(FactoryDeliveryEffects.FactoryDeliveryEffects, { handle: leavePending }),
   Layer.succeed(FactoryPreviewService.FactoryPreviewService, {
     reconcile: Effect.void,

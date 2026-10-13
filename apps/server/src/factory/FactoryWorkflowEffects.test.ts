@@ -1,13 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import {
-  CommandId,
-  FactoryError,
-  FactorySnapshot,
-  FactorySourceId,
-  ThreadId,
-  type FactoryCommand,
-} from "@t3tools/contracts";
+import { CommandId, FactorySnapshot, ThreadId, type FactoryCommand } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -18,7 +11,6 @@ import * as Satellite from "../orchestration-v2/testkit/SatelliteTestRuntime.ts"
 import * as Access from "./FactoryControlAccess.ts";
 import * as Boundaries from "./FactoryBoundaryExecution.ts";
 import * as Execution from "./FactoryExecution.ts";
-import * as WorkflowExecution from "./FactoryWorkflowExecution.ts";
 import * as Handover from "./FactoryHandover.ts";
 import * as Workflows from "./FactoryWorkflowEffects.ts";
 import * as Store from "./FactoryStore.ts";
@@ -43,7 +35,7 @@ const fixture = Effect.fn(function* () {
   const root = yield* fs.makeTempDirectoryScoped();
   yield* Satellite.recordProject({
     projectId: deliveryIds.project,
-    title: "Workflow restart",
+    title: "Workflow effects",
     workspaceRoot: root,
   });
   const original = deliveryFixture();
@@ -136,20 +128,6 @@ const fixture = Effect.fn(function* () {
         decidedAt: deliveryNow,
       },
     ],
-    workflowReleases: [
-      {
-        id: "release",
-        repositoryId: "owned-library",
-        version: { repositoryRoot: "/owned-skills", revision: "c".repeat(40) },
-        snapshotDigest: "d".repeat(64),
-        proposalId: "proposal",
-        proposalRevision: "v1",
-        assignmentId: null,
-        provenance: "owned-codex-library",
-        baselineOrigin: "pstack-codex-adaptation",
-        registeredAt: deliveryNow,
-      },
-    ],
   };
   yield* sql`INSERT INTO factory_state (id,revision,payload_json) VALUES(1,${seed.revision},${encode(seed)})`;
   for (const threadId of [deliveryIds.manager, deliveryIds.lead, systemId])
@@ -168,12 +146,10 @@ const fixture = Effect.fn(function* () {
       creationSource: "server",
     });
   const calls: string[] = [];
-  let failPreparation = false;
   let loseAck = false;
   let failSend = false;
   const dependencies = Layer.mergeAll(
     Access.layer,
-    Layer.mock(WorkflowExecution.FactoryWorkflowExecution)({}),
     Layer.mock(Execution.FactoryExecution)({
       runtimePolicyFor: () =>
         Effect.succeed({
@@ -196,28 +172,6 @@ const fixture = Effect.fn(function* () {
       stop: () =>
         Effect.sync(() => {
           calls.push("boundary-stop");
-        }),
-      captureMigration: () =>
-        Effect.sync(() => {
-          calls.push("capture");
-          return {
-            ...seed.assignments[0]!.startingSource!,
-            id: FactorySourceId.make("preserved-source"),
-            origin: "handover" as const,
-            threadId: deliveryIds.lead,
-            sourceDigest: "preserved-candidate",
-            unstagedPaths: ["src/feature.ts"],
-          };
-        }),
-      prepare: (input) =>
-        Effect.gen(function* () {
-          calls.push("prepare");
-          assert.equal(input.startingSourceId, "preserved-source");
-          assert.equal(input.grant.epoch, 2);
-          assert.equal((yield* store.snapshot).assignments[0]!.workflow.revision, "c".repeat(40));
-          return failPreparation
-            ? { status: "unavailable" as const, reason: "Runtime unavailable" }
-            : { status: "qualified" as const, profileId: "fresh-profile", checkedAt: deliveryNow };
         }),
     }),
     Layer.succeed(Threads.ThreadManagementService, {
@@ -255,27 +209,15 @@ const fixture = Effect.fn(function* () {
     yield* effects.handle(pending!);
     return pending!;
   });
-  const restart = commit({
-    type: "workflow.restart",
-    commandId: CommandId.make("restart"),
-    releaseId: "release",
-    assignmentIds: [deliveryIds.assignment],
-    kind: "migration",
-    reason: "Explicit selection",
-  });
   return {
     store,
     threads,
     effects,
     commit,
     step,
-    restart,
     seed,
     root,
     calls,
-    failPreparation: (value: boolean) => {
-      failPreparation = value;
-    },
     loseAck: () => {
       loseAck = true;
     },
@@ -285,7 +227,7 @@ const fixture = Effect.fn(function* () {
   };
 });
 
-describe("workflow restart effects", () => {
+describe("workflow effects", () => {
   it.effect("resolves the real project root before checking shared repository ownership", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
@@ -297,8 +239,8 @@ describe("workflow restart effects", () => {
           commandId: CommandId.make("create-project-manager"),
           projectId: deliveryIds.project,
           modelSelection: deliverySelection,
-          workflow: f.seed.managers[0]!.workflow,
         },
+        f.seed.managers[0]!.workflow,
       );
       assert.equal(context.projectRepositoryRoot, yield* fs.realPath(f.root));
     }).pipe(Effect.scoped, Effect.provide(base)),
@@ -329,96 +271,10 @@ describe("workflow restart effects", () => {
         const state = yield* f.store.snapshot;
         assert.equal(state.sharedWorks[0]!.notification?.phase, "delivered");
         assert.equal(state.sharedWorks[0]!.lifecycle.phase, "authorized");
-        assert.equal(state.workflowAdoptions.length, 0);
         const messages = (yield* f.threads.getThreadRecords(systemId, ["messages"])).messages;
         assert.equal(messages.length, 1);
         assert.include(messages[0]!.text, "workId shared-work");
         assert.include(messages[0]!.text, "revision v1");
-      }).pipe(Effect.scoped, Effect.provide(base)),
-  );
-  it.effect(
-    "stops before capture, retains the existing wait and resumes once after a lost acknowledgement",
-    () =>
-      Effect.gen(function* () {
-        const f = yield* fixture();
-        yield* f.restart;
-        yield* f.step("workflow.restart.stop");
-        assert.deepEqual(f.calls, ["boundary-stop", "team-stop", "capture"]);
-        yield* f.step("workflow.restart.prepare");
-        const prepared = (yield* f.store.snapshot).assignments[0]!;
-        assert.deepEqual(prepared.wait, f.seed.assignments[0]!.wait);
-        assert.equal(prepared.threadId, deliveryIds.lead);
-        f.loseAck();
-        const pending = yield* f.step("workflow.restart.resume");
-        yield* f.effects.handle(pending);
-        assert.equal(f.calls.filter((call) => call === "resume").length, 1);
-        const migration = (yield* f.store.snapshot).workflowMigrations[0]!;
-        assert.equal(migration.lifecycle.phase, "ready");
-        assert.isTrue(
-          migration.lifecycle.phase === "ready" && migration.lifecycle.resume.phase === "delivered",
-        );
-        const records = yield* f.threads.getThreadRecords(deliveryIds.lead, ["messages"]);
-        assert.equal(records.messages.length, 1);
-        assert.include(records.messages[0]!.text, "c".repeat(40));
-      }).pipe(Effect.scoped, Effect.provide(base)),
-  );
-
-  it.effect(
-    "records a failed preparation and retries its step without recapturing or discarding work",
-    () =>
-      Effect.gen(function* () {
-        const f = yield* fixture();
-        yield* f.restart;
-        yield* f.step("workflow.restart.stop");
-        f.failPreparation(true);
-        yield* f.step("workflow.restart.prepare");
-        const failed = (yield* f.store.snapshot).workflowMigrations[0]!;
-        assert.equal(failed.lifecycle.phase, "failed");
-        assert.equal(f.calls.includes("resume"), false);
-        f.failPreparation(false);
-        yield* f.commit({
-          type: "workflow.restart.retry",
-          commandId: CommandId.make("retry"),
-          migrationId: failed.id,
-        });
-        yield* f.step("workflow.restart.prepare");
-        yield* f.step("workflow.restart.resume");
-        assert.equal(f.calls.filter((call) => call === "capture").length, 1);
-        assert.equal(f.calls.filter((call) => call === "prepare").length, 2);
-        assert.deepEqual(
-          (yield* f.store.snapshot).assignments[0]!.wait,
-          f.seed.assignments[0]!.wait,
-        );
-      }).pipe(Effect.scoped, Effect.provide(base)),
-  );
-
-  it.effect(
-    "rejects a receipt for a different migration without consuming the pending operation",
-    () =>
-      Effect.gen(function* () {
-        const f = yield* fixture();
-        yield* f.restart;
-        const pending = (yield* f.store.pending).find(
-          (entry) => entry.intent.type === "workflow.restart.stop",
-        )!;
-        const rejected = yield* f.store
-          .finishEffect({
-            id: pending.id,
-            now: deliveryNow,
-            failed: true,
-            command: {
-              type: "workflow.restart.failed",
-              commandId: CommandId.make("wrong-receipt"),
-              migrationId: "other-operation",
-              step: "stop",
-              reason: "Wrong receipt",
-            },
-          })
-          .pipe(Effect.flip);
-        assert.instanceOf(rejected, FactoryError);
-        assert.isTrue((yield* f.store.pending).some((entry) => entry.id === pending.id));
-        yield* f.step("workflow.restart.stop");
-        assert.equal((yield* f.store.snapshot).workflowMigrations[0]!.lifecycle.phase, "preparing");
       }).pipe(Effect.scoped, Effect.provide(base)),
   );
 });

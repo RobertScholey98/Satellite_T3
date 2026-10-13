@@ -25,6 +25,7 @@ import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryService from "./FactoryService.ts";
+import * as FactorySkills from "./FactorySkills.ts";
 import * as FactorySource from "./FactorySource.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryServiceTestkit from "./FactoryService.testkit.ts";
@@ -33,7 +34,7 @@ const projectId = ProjectId.make("commission-web");
 const human = { kind: "human" } as const;
 const now = "2026-10-10T12:00:00.000Z";
 const model = { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" };
-const workflow = { repositoryRoot: "/owned-workflow", revision: "approved-workflow" };
+const workflow = FactoryServiceTestkit.testSkills;
 const configuration = {
   protectedPaths: ["AGENTS.md"],
   writablePaths: ["src/app.ts"],
@@ -106,7 +107,6 @@ const start = Effect.gen(function* () {
     commandId: CommandId.make("manager"),
     projectId,
     modelSelection: model,
-    workflow,
   });
   yield* factory.drain;
   const first = yield* factory.snapshot({});
@@ -145,12 +145,19 @@ const scenario = <A, E, R>(
     readonly stop?: FactoryHandover.FactoryHandover["Service"]["stop"];
     readonly revoke?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["stop"];
     readonly mutate?: FactoryBoundaryExecution.FactoryBoundaryExecution["Service"]["mutate"];
+    readonly skillsHead?: FactorySkills.FactorySkills["Service"]["head"];
   },
 ) =>
   body.pipe(
     Effect.provide(
       FactoryService.layer.pipe(
         Layer.provideMerge(runtime),
+        Layer.provide(
+          Layer.succeed(FactorySkills.FactorySkills, {
+            head: options?.skillsHead ?? Effect.succeed(workflow),
+            validate: () => Effect.void,
+          }),
+        ),
         Layer.provide(
           Layer.mergeAll(
             FactoryServiceTestkit.layerTestDependencies,
@@ -261,6 +268,37 @@ it.effect(
         assert.equal((yield* (yield* FactoryStore.FactoryStore).pending).length, 0);
       }),
     ),
+);
+
+it.effect(
+  "pins each commission to the skills HEAD it was dispatched at, so a later commit reaches only new work",
+  () =>
+    Effect.gen(function* () {
+      const head = yield* Ref.make(workflow);
+      const moved = { ...workflow, revision: "b".repeat(40) };
+      yield* scenario(
+        Effect.gen(function* () {
+          const { factory, manager } = yield* start;
+          assert.deepStrictEqual(manager.workflow, workflow);
+          const first = yield* factory.dispatch(human, work(manager.id, "before-commit"));
+          yield* factory.drain;
+          yield* Ref.set(head, moved);
+          const second = yield* factory.dispatch(human, work(manager.id, "after-commit"));
+          yield* factory.drain;
+          const snapshot = yield* factory.snapshot({});
+          const pin = (id: string | undefined) =>
+            snapshot.assignments.find((entry) => entry.id === id)?.workflow;
+          assert.deepStrictEqual(pin(first.assignmentId), workflow);
+          assert.equal(
+            snapshot.assignments.find((entry) => entry.id === first.assignmentId)?.status,
+            "running",
+          );
+          assert.deepStrictEqual(pin(second.assignmentId), moved);
+          assert.deepStrictEqual(snapshot.managers[0]!.workflow, workflow);
+        }),
+        { skillsHead: Ref.get(head) },
+      );
+    }),
 );
 
 it.effect(

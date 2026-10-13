@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import { MessageId, RunId, ThreadId } from "@t3tools/contracts";
 import * as Result from "effect/Result";
 import { decide } from "./FactoryState.ts";
-import { deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
+import { deliveryIds, deliveryNow, deliverySkills } from "./FactoryDelivery.testkit.ts";
 import { factoryCompletionEligibility } from "./FactoryRetros.ts";
 import { FACTORY_DELIVERED_MESSAGE_RETENTION } from "./FactoryCollaboration.ts";
 import { factoryDirectionBlocked, factoryExecutionBlocked } from "./FactoryControls.ts";
@@ -41,6 +41,7 @@ describe("integration assignments", () => {
       };
       const taken = Result.getOrThrow(
         decide({
+          skills: deliverySkills,
           state: prepared.state,
           actor: { kind: "human" },
           command: { type: "thread.takeover", commandId: id(), threadId: assignment.threadId },
@@ -456,6 +457,7 @@ describe("integration assignments", () => {
     assert.isTrue(
       Result.isSuccess(
         decide({
+          skills: deliverySkills,
           state: prepared.state,
           command,
           actor: worker,

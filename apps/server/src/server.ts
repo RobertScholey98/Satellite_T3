@@ -19,6 +19,7 @@ import * as FactoryExecution from "./factory/FactoryExecution.ts";
 import * as FactoryConfinedLaunch from "./factory/FactoryConfinedLaunch.ts";
 import * as FactoryBoundaryExecution from "./factory/FactoryBoundaryExecution.ts";
 import * as FactorySource from "./factory/FactorySource.ts";
+import * as FactorySkills from "./factory/FactorySkills.ts";
 import * as FactoryHandover from "./factory/FactoryHandover.ts";
 import * as FactoryService from "./factory/FactoryService.ts";
 import * as FactoryObserver from "./factory/FactoryObserver.ts";
@@ -569,6 +570,7 @@ const layerFactoryServices = FactoryService.layer.pipe(
   Layer.provideMerge(FactoryCollaborationEffects.layer),
   Layer.provideMerge(FactoryWorkflowEffects.layer),
   Layer.provideMerge(FactoryImprovementEffects.layer),
+  Layer.provideMerge(FactorySkills.layer),
   Layer.provideMerge(
     FactoryDeliveryEffects.layer.pipe(
       Layer.provide(FactoryPublicationHost.layer),

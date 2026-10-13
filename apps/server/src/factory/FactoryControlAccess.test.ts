@@ -37,9 +37,9 @@ const state = Result.getOrThrow(
       commandId: CommandId.make("create-control-manager"),
       projectId,
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved" },
-      workflow: { repositoryRoot: "/skills", revision: "pinned" },
     },
     allocation: { managerThreadId: managerId, leadThreadId: leadId, assignmentId },
+    skills: { repositoryRoot: "/skills", revision: "pinned" },
     qualification: { status: "qualified", profileId: "profile", checkedAt: now },
   }),
 ).state;
@@ -68,7 +68,7 @@ const layer = (
   );
 
 it.effect(
-  "admits real shared teams across the manager workspace and holds migrations and disabled experiments",
+  "admits real shared teams across the manager workspace and holds disabled repositories and experiments",
   () => {
     const shared = sharedAccessFixture(state, true);
     const roster = new Map([
@@ -87,26 +87,6 @@ it.effect(
             ...entry,
             enabled: false,
           })),
-        },
-        {
-          ...shared,
-          workflowMigrations: [
-            {
-              id: "migration",
-              assignmentId,
-              releaseId: "release",
-              previousVersion: shared.assignments[0]!.workflow,
-              previousEpoch: 0,
-              preparedEpoch: null,
-              retainedAuthorityReason: null,
-              previousState: { status: "running" as const, wait: null },
-              kind: "migration" as const,
-              reason: "Human restart",
-              commandId: CommandId.make("restart"),
-              createdAt: now,
-              lifecycle: { phase: "stopping" as const },
-            },
-          ],
         },
       ])
         yield* Effect.gen(function* () {

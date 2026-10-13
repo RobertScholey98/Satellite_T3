@@ -39,7 +39,6 @@ const create = {
   commandId: CommandId.make("factory-service-create"),
   projectId,
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
-  workflow: { repositoryRoot: "/owned-workflow", revision: "pinned-commit" },
 };
 const qualification = {
   status: "qualified" as const,
@@ -320,7 +319,6 @@ it.effect("refuses a model policy or system manager on a provider it cannot conf
         commandId: CommandId.make("system-grok"),
         workspaceProjectId: projectId,
         modelSelection: grok,
-        workflow: create.workflow,
       },
       {
         type: "system.retry",
@@ -498,7 +496,7 @@ it.effect(
             type: "manager.retry-onboarding",
             commandId: CommandId.make("replace-after-partial-launch"),
             managerId: manager.id,
-            workflow: { ...create.workflow, revision: "different-commit" },
+            modelSelection: { ...create.modelSelection, model: "different-model" },
           })
           .pipe(Effect.result);
         assert.isTrue(Result.isFailure(replacement));

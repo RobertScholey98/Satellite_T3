@@ -17,6 +17,7 @@ import {
   type FactoryManager,
   type FactorySnapshot,
   type FactorySupportingWork,
+  type FactoryWorkflowVersion,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
@@ -27,7 +28,6 @@ import {
   factoryRelativePath,
 } from "./FactoryBoundaryPaths.ts";
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
-import { effectiveFactoryWorkflow } from "./FactoryWorkflow.ts";
 import type { FactoryActor, FactoryAllocation, FactoryDecision } from "./FactoryState.ts";
 
 // An assignment that can still collaborate: not cancelled, not complete, and either without a
@@ -406,6 +406,7 @@ export function decideFactoryCollaboration(input: {
   readonly command: FactoryDecisionCommand;
   readonly now: string;
   readonly allocation?: FactoryAllocation;
+  readonly skills?: FactoryWorkflowVersion;
 }): Result.Result<FactoryDecision, FactoryError> | undefined {
   const { state, actor, command, now } = input;
   if (!command.type.startsWith("collaboration.") && !command.type.startsWith("incident."))
@@ -747,7 +748,7 @@ export function decideFactoryCollaboration(input: {
           boundary,
           work,
           allocation: input.allocation,
-          workflow: effectiveFactoryWorkflow(state, manager),
+          skills: input.skills,
           policy,
           authorization: human
             ? { kind: "human", commandId: command.commandId }

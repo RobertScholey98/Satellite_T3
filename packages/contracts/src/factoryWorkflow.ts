@@ -9,15 +9,9 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { FactoryAssignmentId } from "./factoryControls.ts";
-import {
-  FactoryBoundaryConfiguration,
-  FactoryBoundaryId,
-  FactoryDiscoveryQualification,
-  FactoryWorkflowVersion,
-} from "./factoryBoundaries.ts";
-import { FactorySupportingWork, FactoryWait } from "./factoryOversight.ts";
+import { FactoryBoundaryConfiguration, FactoryBoundaryId } from "./factoryBoundaries.ts";
+import { FactorySupportingWork } from "./factoryOversight.ts";
 import { FactoryRetroEvidenceRef } from "./factoryRetros.ts";
-import { FactoryStartingSource } from "./factorySources.ts";
 import { FactoryModelPolicy, FactoryModelPolicyOverrides } from "./factoryModels.ts";
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(300));
@@ -119,86 +113,11 @@ export const FactorySharedAssignment = Schema.Union([
 ]);
 export type FactorySharedAssignment = typeof FactorySharedAssignment.Type;
 
-export const FactoryWorkflowRelease = Schema.Struct({
-  id: Id,
-  repositoryId: Id,
-  version: FactoryWorkflowVersion,
-  snapshotDigest: Id,
-  proposalId: Id,
-  proposalRevision: Id,
-  assignmentId: Schema.NullOr(FactoryAssignmentId),
-  provenance: Schema.Literal("owned-codex-library"),
-  baselineOrigin: Schema.Literal("pstack-codex-adaptation"),
-  registeredAt: IsoDateTime,
-});
-export type FactoryWorkflowRelease = typeof FactoryWorkflowRelease.Type;
-export const FactoryWorkflowAdoptionScope = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("default") }),
-  Schema.Struct({
-    kind: Schema.Literal("managers"),
-    managerIds: Schema.Array(ThreadId).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
-  }),
-]);
-export type FactoryWorkflowAdoptionScope = typeof FactoryWorkflowAdoptionScope.Type;
-export const FactoryWorkflowAdoption = Schema.Struct({
-  id: Id,
-  /** Null resets the scope to each manager's own approved workflow. */
-  releaseId: Schema.NullOr(Id),
-  scope: FactoryWorkflowAdoptionScope,
-  commandId: CommandId,
-  adoptedAt: IsoDateTime,
-});
-export type FactoryWorkflowAdoption = typeof FactoryWorkflowAdoption.Type;
-export const FactoryWorkflowOverride = Schema.Struct({ managerId: ThreadId, adoptionId: Id });
-export type FactoryWorkflowOverride = typeof FactoryWorkflowOverride.Type;
-
-export const FactoryWorkflowMigration = Schema.Struct({
-  id: Id,
-  assignmentId: FactoryAssignmentId,
-  /** Null restores the team on its current pinned version. */
-  releaseId: Schema.NullOr(Id),
-  previousVersion: FactoryWorkflowVersion,
-  previousEpoch: NonNegativeInt,
-  /** The profile the team last ran in. A cancelled restart's retro inspects with it. */
-  previousProfileId: Schema.optionalKey(TrimmedNonEmptyString),
-  preparedEpoch: Schema.NullOr(NonNegativeInt),
-  retainedAuthorityReason: Schema.NullOr(Text),
-  previousState: Schema.Struct({
-    status: Schema.Literals(["pending", "running", "waiting", "complete"]),
-    wait: Schema.NullOr(FactoryWait),
-  }),
-  kind: Schema.Literals(["migration", "trial", "restore"]),
-  reason: Text,
-  commandId: CommandId,
-  createdAt: IsoDateTime,
-  lifecycle: Schema.Union([
-    Schema.Struct({ phase: Schema.Literal("stopping") }),
-    Schema.Struct({ phase: Schema.Literal("preparing"), startingSource: FactoryStartingSource }),
-    Schema.Struct({
-      phase: Schema.Literal("failed"),
-      step: Schema.Literals(["stop", "prepare"]),
-      reason: Text,
-      startingSource: Schema.NullOr(FactoryStartingSource),
-    }),
-    Schema.Struct({
-      phase: Schema.Literal("ready"),
-      completedAt: IsoDateTime,
-      resume: Schema.Union([
-        Schema.Struct({ phase: Schema.Literal("pending") }),
-        Schema.Struct({ phase: Schema.Literal("failed"), reason: Text }),
-        Schema.Struct({ phase: Schema.Literal("delivered"), deliveredAt: IsoDateTime }),
-      ]),
-    }),
-  ]),
-});
-export type FactoryWorkflowMigration = typeof FactoryWorkflowMigration.Type;
-
 export const FactoryImprovementValidation = Schema.Struct({
   id: Id,
   proposalId: Id,
   proposalRevision: Id,
   assignmentId: Schema.NullOr(FactoryAssignmentId),
-  releaseId: Schema.NullOr(Id),
   outcome: Schema.Literals(["success", "failure", "insufficient-evidence"]),
   evidence: Schema.Array(FactoryRetroEvidenceRef).check(Schema.isMaxLength(100)),
   assessment: Text,
@@ -284,51 +203,11 @@ export const FactoryWorkflowCommand = Schema.Union([
     assessmentApproach: Text,
   }),
   Schema.Struct({
-    type: Schema.Literal("workflow.release.register"),
-    commandId: CommandId,
-    repositoryId: Id,
-    revision: Id,
-    proposalId: Id,
-    proposalRevision: Id,
-    assignmentId: FactoryAssignmentId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.adopt"),
-    commandId: CommandId,
-    releaseId: Schema.NullOr(Id),
-    scope: FactoryWorkflowAdoptionScope,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.override.clear"),
-    commandId: CommandId,
-    managerId: ThreadId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart"),
-    commandId: CommandId,
-    /** Omitted only for a restore, which keeps each team's current pinned version. */
-    releaseId: Schema.optionalKey(Id),
-    assignmentIds: AssignmentIds,
-    kind: FactoryWorkflowMigration.fields.kind,
-    reason: Text,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart.retry"),
-    commandId: CommandId,
-    migrationId: Id,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart.continue"),
-    commandId: CommandId,
-    migrationId: Id,
-  }),
-  Schema.Struct({
     type: Schema.Literal("improvement.validation.record"),
     commandId: CommandId,
     proposalId: Id,
     proposalRevision: Id,
     assignmentId: Schema.optionalKey(FactoryAssignmentId),
-    releaseId: Schema.optionalKey(Id),
     outcome: FactoryImprovementValidation.fields.outcome,
     evidence: FactoryImprovementValidation.fields.evidence,
     assessment: Text,
@@ -370,52 +249,10 @@ export const FactoryWorkflowHostCommand = Schema.Union([
     managerId: ThreadId,
     reason: Text,
   }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart.stopped"),
-    commandId: CommandId,
-    migrationId: Id,
-    expectedStateRevision: NonNegativeInt,
-    startingSource: FactoryStartingSource,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart.prepared"),
-    commandId: CommandId,
-    migrationId: Id,
-    expectedStateRevision: NonNegativeInt,
-    qualification: FactoryDiscoveryQualification,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart.failed"),
-    commandId: CommandId,
-    migrationId: Id,
-    step: Schema.Literals(["stop", "prepare", "resume"]),
-    reason: Text,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart.resumed"),
-    commandId: CommandId,
-    migrationId: Id,
-    profileId: Id,
-  }),
 ]);
 export type FactoryWorkflowHostCommand = typeof FactoryWorkflowHostCommand.Type;
 export const FactoryWorkflowEffectIntent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("workflow.work.notify"), workId: Id, managerId: ThreadId }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart.stop"),
-    migrationId: Id,
-    assignmentId: FactoryAssignmentId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart.prepare"),
-    migrationId: Id,
-    assignmentId: FactoryAssignmentId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("workflow.restart.resume"),
-    migrationId: Id,
-    assignmentId: FactoryAssignmentId,
-  }),
   Schema.Struct({
     type: Schema.Literal("workflow.revoke"),
     assignmentIds: AssignmentIds,

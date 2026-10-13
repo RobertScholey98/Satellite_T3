@@ -135,31 +135,6 @@ const settingsCommands: ReadonlyArray<FactoryCommand> = [
     maxPerInvestigation: 1,
   },
   {
-    type: "workflow.adopt",
-    commandId: CommandId.make("workflow-adopt"),
-    releaseId: "release",
-    scope: { kind: "default" },
-  },
-  { type: "workflow.override.clear", commandId: CommandId.make("workflow-clear"), managerId },
-  {
-    type: "workflow.restart",
-    commandId: CommandId.make("workflow-restart"),
-    releaseId: "release",
-    assignmentIds: [FactoryAssignmentId.make("assignment")],
-    kind: "trial",
-    reason: "Explicit trial",
-  },
-  {
-    type: "workflow.restart.retry",
-    commandId: CommandId.make("workflow-retry"),
-    migrationId: "migration",
-  },
-  {
-    type: "workflow.restart.continue",
-    commandId: CommandId.make("workflow-continue"),
-    migrationId: "migration",
-  },
-  {
     type: "workflow.models.apply",
     commandId: CommandId.make("workflow-models"),
     recommendationId: "recommendation",
@@ -169,7 +144,6 @@ const settingsCommands: ReadonlyArray<FactoryCommand> = [
     commandId: CommandId.make("system-create"),
     workspaceProjectId: ProjectId.make("web"),
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
-    workflow: { repositoryRoot: "/owned-workflow", revision: "approved-commit" },
   },
   { type: "system.retry", commandId: CommandId.make("system-retry"), managerId },
   {
@@ -303,7 +277,6 @@ const create: FactoryCommand = {
   commandId: CommandId.make("create"),
   projectId: ProjectId.make("web"),
   modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
-  workflow: { repositoryRoot: "/owned-workflow", revision: "approved-commit" },
 };
 
 describe("factory RPC authority", () => {
@@ -499,11 +472,6 @@ describe("factory RPC authority", () => {
           "shared.work.notify.retry",
           "shared.work.revoke",
           "experiment.configure",
-          "workflow.adopt",
-          "workflow.override.clear",
-          "workflow.restart",
-          "workflow.restart.retry",
-          "workflow.restart.continue",
           "workflow.models.apply",
           "system.create",
           "system.retry",

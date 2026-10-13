@@ -52,8 +52,8 @@ const createManager = (
     projectId: ProjectId.make(name),
     name,
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
-    workflow: { repositoryRoot: "/owned-skills", revision: "approved-commit" },
   },
+  skills: { repositoryRoot: "/owned-skills", revision: "approved-commit" },
   allocation: {
     managerThreadId: ThreadId.make(`manager-${name}`),
     leadThreadId: ThreadId.make(`lead-${name}`),

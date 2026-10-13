@@ -12,7 +12,12 @@ import {
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
 import { decide, type FactoryActor } from "./FactoryState.ts";
-import { deliveryFixture, deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
+import {
+  deliveryFixture,
+  deliveryIds,
+  deliveryNow,
+  deliverySkills,
+} from "./FactoryDelivery.testkit.ts";
 import { initialFactoryCompletion } from "./FactoryRetros.ts";
 
 export const api = {
@@ -44,6 +49,7 @@ export const run = (
   by: FactoryActor = human,
 ) =>
   decide({
+    skills: deliverySkills,
     state,
     command,
     actor: by,

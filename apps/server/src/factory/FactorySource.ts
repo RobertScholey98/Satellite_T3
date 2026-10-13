@@ -3,6 +3,7 @@ import {
   FactoryError,
   FactorySourceId,
   FactoryStartingSource,
+  type FactoryWorkflowVersion,
   ProjectId,
   ThreadId,
   isFactoryError,
@@ -95,6 +96,13 @@ export class FactorySource extends Context.Service<
       FactoryError
     >;
     /**
+     * The commit at HEAD of a skills repository, with its real path as the repository root.
+     * Fails with a reason the user can act on unless HEAD has a `skills/` directory.
+     */
+    readonly skillsHead: (
+      repositoryRoot: string,
+    ) => Effect.Effect<FactoryWorkflowVersion, FactoryError>;
+    /**
      * Fails unless the original workspace still matches the captured source, so a handover does
      * not activate over work that moved on. A source captured from a volume never validates here.
      */
@@ -165,11 +173,9 @@ const make = Effect.gen(function* () {
       mode,
     });
   });
-  const inspect = Effect.fn("FactorySource.inspect")(function* (
-    workspaceRoot: string,
-    handover: boolean,
-    pinnedRevision?: string,
-  ) {
+  // Opens a local repository for reads through its own Git objects only: hooks, global and
+  // system config, fsmonitor and lazy fetch are disabled.
+  const open = Effect.fn("FactorySource.open")(function* (workspaceRoot: string) {
     const workspace = yield* fs.realPath(workspaceRoot);
     const metadata = path.join(workspace, ".git");
     const info = yield* fs.stat(metadata);
@@ -242,6 +248,14 @@ const make = Effect.gen(function* () {
         );
       return binary ? Buffer.concat(chunks) : Buffer.from(result.stdout);
     });
+    return { workspace, indexPath, git };
+  });
+  const inspect = Effect.fn("FactorySource.inspect")(function* (
+    workspaceRoot: string,
+    handover: boolean,
+    pinnedRevision?: string,
+  ) {
+    const { workspace, indexPath, git } = yield* open(workspaceRoot);
     const headRevision = (yield* git(["rev-parse", "--verify", "HEAD^{commit}"])).toString().trim();
     const revision =
       pinnedRevision === undefined
@@ -701,7 +715,34 @@ const make = Effect.gen(function* () {
     const result = yield* inspect(repositoryRoot, false, revision);
     return { files: result.files, excludedPaths: result.excludedPaths };
   }, Effect.mapError(preserve));
-  return FactorySource.of({ capture, captureArtifact, read, readRevision, validateCurrent });
+  const skillsHead = Effect.fn("FactorySource.skillsHead")(function* (repositoryRoot: string) {
+    const repository = yield* open(repositoryRoot).pipe(
+      Effect.mapError(() => unavailable(`${repositoryRoot} is not a local Git repository.`)),
+    );
+    const revision = yield* repository.git(["rev-parse", "--verify", "HEAD^{commit}"]).pipe(
+      Effect.map((output) => output.toString().trim()),
+      Effect.mapError(() => unavailable(`${repositoryRoot} has no commit at HEAD.`)),
+    );
+    const skills = yield* repository.git([
+      "ls-tree",
+      "-d",
+      "--name-only",
+      revision,
+      "--",
+      "skills",
+    ]);
+    if (skills.toString().trim() !== "skills")
+      return yield* unavailable(`${repositoryRoot} has no committed skills directory at HEAD.`);
+    return { repositoryRoot: repository.workspace, revision };
+  }, Effect.mapError(preserve));
+  return FactorySource.of({
+    capture,
+    captureArtifact,
+    read,
+    readRevision,
+    skillsHead,
+    validateCurrent,
+  });
 });
 
 export const layer = Layer.effect(FactorySource, make);

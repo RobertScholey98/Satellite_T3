@@ -41,9 +41,7 @@ export function factorySharedAssignmentOwned(
 
 /**
  * Whether an owned shared-work assignment may run now. The human can withdraw this at three
- * levels: disabling the repository, disabling experiments, or revoking the work. A workflow restart
- * that has not reached `ready` also disables it, because the team is stopped until the restart is
- * prepared.
+ * levels: disabling the repository, disabling experiments, or revoking the work.
  */
 export function factorySharedAssignmentEnabled(
   state: FactorySnapshot,
@@ -53,24 +51,8 @@ export function factorySharedAssignmentEnabled(
   const purpose = assignment.sharedWork!;
   if (!state.sharedRepositories.some((entry) => entry.id === purpose.repositoryId && entry.enabled))
     return false;
-  if (purpose.kind === "experiment") {
-    if (!state.experimentConfigurations.at(-1)?.enabled) return false;
-  } else if (
-    !state.sharedWorks.some(
-      (entry) => entry.id === purpose.workId && entry.lifecycle.phase === "commissioned",
-    )
-  )
-    return false;
-  return !factoryWorkflowRestartPending(state, assignment.id);
-}
-
-/** Whether the assignment's latest workflow restart is still stopping, preparing or failed. */
-export function factoryWorkflowRestartPending(
-  state: FactorySnapshot,
-  assignmentId: FactoryAssignment["id"],
-): boolean {
-  const migration = state.workflowMigrations.findLast(
-    (entry) => entry.assignmentId === assignmentId,
+  if (purpose.kind === "experiment") return state.experimentConfigurations.at(-1)?.enabled === true;
+  return state.sharedWorks.some(
+    (entry) => entry.id === purpose.workId && entry.lifecycle.phase === "commissioned",
   );
-  return migration !== undefined && migration.lifecycle.phase !== "ready";
 }

@@ -1344,6 +1344,13 @@ export const ServerSettings = Schema.Struct({
   engineeringManagersEnabled: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  /**
+   * Path on this environment of the Git repository whose committed `skills/` managers and their
+   * teams use. Each new manager, onboarding run and assignment records its HEAD at that moment.
+   */
+  engineeringManagersSkillsRepository: TrimmedString.pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
   /** Whether the server-local Device panel setup flow has been completed. */
   deviceOnboardingCompleted: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   deviceHosts: SshDeviceHostConfigs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
@@ -1568,6 +1575,7 @@ export const ServerSettingsOperation = Schema.Literals([
   "write-secret",
   "write-file",
   "prepare-directory",
+  "validate",
 ]);
 export type ServerSettingsOperation = typeof ServerSettingsOperation.Type;
 
@@ -1578,12 +1586,15 @@ export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>
     operation: ServerSettingsOperation,
     providerInstanceId: Schema.optional(Schema.String),
     environmentVariable: Schema.optional(Schema.String),
+    /** A reason the user can act on, shown instead of the generic message. */
+    detail: Schema.optional(Schema.String),
     // Validation failures (e.g. a create colliding with an existing
     // instance) originate without an upstream defect.
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
+    if (this.detail !== undefined) return this.detail;
     const provider =
       this.providerInstanceId === undefined ? "" : ` for provider ${this.providerInstanceId}`;
     const variable =
@@ -1727,6 +1738,7 @@ export const ServerSettingsPatch = Schema.Struct({
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   engineeringManagersEnabled: Schema.optionalKey(Schema.Boolean),
+  engineeringManagersSkillsRepository: Schema.optionalKey(TrimmedString),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),

@@ -22,12 +22,13 @@ import {
   confirmMergeMember,
   mergeFrozenProof,
 } from "./FactoryMergeOperation.testkit.ts";
+import { deliverySkills } from "./FactoryDelivery.testkit.ts";
 
 const run = (
   state: FactorySnapshot,
   command: FactoryDecisionCommand,
   actor: FactoryActor = { kind: "system" },
-) => decide({ state, command, actor, now: deliveryNow });
+) => decide({ skills: deliverySkills, state, command, actor, now: deliveryNow });
 
 describe("durable shared merge operations", () => {
   it("records externally merged reviewed heads before freeze without inventing combined completion authority", () => {

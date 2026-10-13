@@ -32,12 +32,13 @@ import {
   reviewedMergeFixture,
   sealMergeReview,
 } from "./FactoryMerge.testkit.ts";
+import { deliverySkills } from "./FactoryDelivery.testkit.ts";
 
 const run = (
   state: FactorySnapshot,
   command: FactoryDecisionCommand,
   actor: FactoryActor = { kind: "human" },
-) => decide({ state, command, actor, now: deliveryNow });
+) => decide({ skills: deliverySkills, state, command, actor, now: deliveryNow });
 const approve = (fixture: ReturnType<typeof reviewedMergeFixture>) =>
   applyMerge(fixture.state, {
     type: "merge.group.approve",
@@ -95,6 +96,7 @@ describe("merge groups", () => {
       ],
     };
     const result = decide({
+      skills: deliverySkills,
       state,
       actor: { kind: "thread", threadId: deliveryIds.manager },
       now: deliveryNow,

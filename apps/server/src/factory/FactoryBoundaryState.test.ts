@@ -20,6 +20,7 @@ import migrateFactory from "../persistence/Migrations/067_EngineeringFactory.ts"
 import migrateBoundaries from "../persistence/Migrations/068_FactoryBoundaries.ts";
 import { decide } from "./FactoryState.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { deliverySkills } from "./FactoryDelivery.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("web");
@@ -67,8 +68,8 @@ const create = {
     commandId: CommandId.make("create-web"),
     projectId,
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
-    workflow,
   },
+  skills: workflow,
   allocation: { managerThreadId: managerId, leadThreadId: leadId, assignmentId },
   qualification: { status: "qualified" as const, profileId: "qualified-profile", checkedAt: now },
 };
@@ -308,7 +309,14 @@ describe("factory control baseline refresh", () => {
             { kind: "thread", threadId: managerId },
             { kind: "system" },
           ] as const) {
-            const denied = decide({ state, actor, command: refresh, now, boundary: refreshed });
+            const denied = decide({
+              skills: deliverySkills,
+              state,
+              actor,
+              command: refresh,
+              now,
+              boundary: refreshed,
+            });
             assert.isTrue(Result.isFailure(denied));
             if (Result.isFailure(denied)) assert.equal(denied.failure.code, "permission-denied");
           }
@@ -319,6 +327,7 @@ describe("factory control baseline refresh", () => {
             { ...refreshed, workflow: { ...workflow, revision: "other-workflow" } },
           ]) {
             const rejected = decide({
+              skills: deliverySkills,
               state,
               actor: human,
               command: refresh,
@@ -329,6 +338,7 @@ describe("factory control baseline refresh", () => {
             if (Result.isFailure(rejected)) assert.equal(rejected.failure.code, "invalid-state");
           }
           const decision = decide({
+            skills: deliverySkills,
             state,
             actor: human,
             command: refresh,

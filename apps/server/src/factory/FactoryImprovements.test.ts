@@ -18,6 +18,7 @@ import {
   deliveryIds,
   deliveryNow,
   deliverySelection,
+  deliverySkills,
 } from "./FactoryDelivery.testkit.ts";
 import {
   factoryImprovementBatchPlan,
@@ -39,7 +40,7 @@ const apply = (
   actor: FactoryActor = host,
   context: FactoryImprovementContext = {},
   now = deliveryNow,
-) => Result.getOrThrow(decide({ state, command, actor, now, ...context }));
+) => Result.getOrThrow(decide({ skills: deliverySkills, state, command, actor, now, ...context }));
 const creation = {
   threadId: managerId,
   qualification: {
@@ -53,7 +54,6 @@ const create = {
   commandId: CommandId.make("system-create"),
   workspaceProjectId: ProjectId.make("skills-workspace"),
   modelSelection: deliverySelection,
-  workflow: { repositoryRoot: "C:/skills", revision: "workflow" },
 } as const;
 const fixture = () => {
   const state = apply(deliveryFixture(), create, human, { systemManagerCreation: creation }).state;
@@ -254,6 +254,7 @@ describe("shared improvement authority and intake", () => {
       assert.isTrue(
         Result.isFailure(
           decide({
+            skills: deliverySkills,
             state,
             actor: human,
             now: deliveryNow,
@@ -291,6 +292,7 @@ describe("shared improvement authority and intake", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: created.state,
           command: { ...create, commandId: id() },
           actor: human,
@@ -302,6 +304,7 @@ describe("shared improvement authority and intake", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: base,
           command: create,
           actor: { kind: "thread", threadId: deliveryIds.manager },
@@ -323,7 +326,11 @@ describe("shared improvement authority and intake", () => {
       { type: "project.pause", commandId: id(), projectId: deliveryIds.project },
       { type: "improvement.configure", commandId: id(), ...factoryImprovementDefaults },
     ] satisfies FactoryDecisionCommand[])
-      assert.isTrue(Result.isFailure(decide({ state, command, actor: manager, now: deliveryNow })));
+      assert.isTrue(
+        Result.isFailure(
+          decide({ skills: deliverySkills, state, command, actor: manager, now: deliveryNow }),
+        ),
+      );
   });
   it("retains failed launch identity and requires the same pinned profile on retry", () => {
     let state = apply(deliveryFixture(), create, human, { systemManagerCreation: creation }).state;
@@ -339,6 +346,7 @@ describe("shared improvement authority and intake", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: human,
           now: deliveryNow,
@@ -346,17 +354,26 @@ describe("shared improvement authority and intake", () => {
             type: "system.retry",
             commandId: id(),
             managerId,
-            workflow: { repositoryRoot: "C:/other", revision: "other" },
+            modelSelection: { ...deliverySelection, model: "other-approved-model" },
           },
           systemManagerCreation: creation,
         }),
       ),
     );
-    assert.equal(
-      apply(state, { type: "system.retry", commandId: id(), managerId }, human, {
+    const retried = Result.getOrThrow(
+      decide({
+        state,
+        actor: human,
+        now: deliveryNow,
+        command: { type: "system.retry", commandId: id(), managerId },
+        skills: { repositoryRoot: "C:/skills", revision: "moved-on" },
         systemManagerCreation: creation,
-      }).effects[0]?.type,
-      "system.launch",
+      }),
+    );
+    assert.equal(retried.effects[0]?.type, "system.launch");
+    assert.deepEqual(
+      retried.state.managers.find((entry) => entry.id === managerId)?.workflow,
+      deliverySkills,
     );
   });
   it("preserves a pause during launch acknowledgement and restores the completed launch state on resume", () => {
@@ -464,6 +481,7 @@ describe("bounded improvement batches", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: manager,
           now: deliveryNow,
@@ -474,6 +492,7 @@ describe("bounded improvement batches", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: host,
           now: deliveryNow,
@@ -562,6 +581,7 @@ describe("bounded improvement batches", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: host,
           now: deliveryNow,
@@ -603,6 +623,7 @@ describe("bounded improvement batches", () => {
     }
     assert.equal(factoryImprovementNextDueAt(state, deliveryNow), "2026-10-11T00:00:00.000Z");
     const flushed = decide({
+      skills: deliverySkills,
       state,
       command: { type: "improvement.flush", commandId: id() },
       actor: human,
@@ -698,6 +719,7 @@ describe("bounded improvement batches", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: host,
           now: deliveryNow,
@@ -736,6 +758,7 @@ describe("proposal review", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: result.state,
           actor: manager,
           now: deliveryNow,
@@ -781,6 +804,7 @@ describe("proposal review", () => {
       manager,
     );
     const submitted = decide({
+      skills: deliverySkills,
       state: {
         ...written.state,
         managers: written.state.managers.map((entry) =>
@@ -837,6 +861,7 @@ describe("proposal review", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: result.state,
           actor: human,
           now: deliveryNow,
@@ -906,6 +931,7 @@ describe("proposal review", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: host,
           now: deliveryNow,
@@ -920,6 +946,7 @@ describe("proposal review", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: host,
           now: deliveryNow,
@@ -996,6 +1023,7 @@ describe("human control of retained evidence and escalations", () => {
     assert.equal(state.improvementIntakes[0]!.delivery.phase, "skipped");
     const open = (actor: FactoryActor, findingIds: string[]) =>
       decide({
+        skills: deliverySkills,
         state,
         actor,
         now: deliveryNow,
@@ -1063,7 +1091,9 @@ describe("human control of retained evidence and escalations", () => {
     assert.equal(factoryImprovementNextDueAt(state, deliveryNow), null);
     const flush = { type: "improvement.flush", commandId: id(), kind: "urgent" } as const;
     assert.isTrue(
-      Result.isFailure(decide({ state, actor: manager, now: deliveryNow, command: flush })),
+      Result.isFailure(
+        decide({ skills: deliverySkills, state, actor: manager, now: deliveryNow, command: flush }),
+      ),
     );
     const reviewed = apply(state, flush, human);
     const batch = reviewed.state.improvementBatches[0]!;
@@ -1076,6 +1106,7 @@ describe("human control of retained evidence and escalations", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: reviewed.state,
           actor: human,
           now: deliveryNow,
@@ -1106,6 +1137,7 @@ describe("human control of retained evidence and escalations", () => {
     );
     const decideAs = (state: FactorySnapshot, outcome: "accepted" | "rejected" | "deferred") =>
       decide({
+        skills: deliverySkills,
         state,
         actor: human,
         now: deliveryNow,
@@ -1150,6 +1182,7 @@ describe("system manager replacement", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           command: recreate,
           actor: human,
@@ -1211,7 +1244,9 @@ describe("system manager replacement", () => {
       uncertainty: "Scope unknown",
     } as const;
     assert.isTrue(
-      Result.isFailure(decide({ state, command: open, actor: manager, now: deliveryNow })),
+      Result.isFailure(
+        decide({ skills: deliverySkills, state, command: open, actor: manager, now: deliveryNow }),
+      ),
     );
     apply(state, open, { kind: "thread", threadId: replacementId });
     const flushed = apply(state, { type: "improvement.flush", commandId: id() }, human);

@@ -15,7 +15,12 @@ import {
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { decide, type FactoryActor, type FactoryAllocation } from "./FactoryState.ts";
-import { deliveryFixture, deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
+import {
+  deliveryFixture,
+  deliveryIds,
+  deliveryNow,
+  deliverySkills,
+} from "./FactoryDelivery.testkit.ts";
 import {
   FACTORY_DELIVERED_MESSAGE_RETENTION,
   factoryIncidentBlocked,
@@ -80,6 +85,7 @@ const apply = (
 ) =>
   Result.getOrThrow(
     decide({
+      skills: deliverySkills,
       state,
       command,
       actor: by,
@@ -257,7 +263,13 @@ describe("cross-project collaboration", () => {
     } as const;
     assert.isTrue(
       Result.isFailure(
-        decide({ state: accepted.state, actor: host, command: receipt, now: deliveryNow }),
+        decide({
+          skills: deliverySkills,
+          state: accepted.state,
+          actor: host,
+          command: receipt,
+          now: deliveryNow,
+        }),
       ),
     );
     const state: FactorySnapshot = {
@@ -320,6 +332,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: actor(deliveryIds.lead),
           now: deliveryNow,
@@ -351,6 +364,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: opened.state,
           actor: actor(deliveryIds.manager),
           now: deliveryNow,
@@ -381,6 +395,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: {
             kind: "thread",
@@ -410,7 +425,13 @@ describe("cross-project collaboration", () => {
     assert.equal(state.crossProjectRequests[0]?.originalLeadThreadId, deliveryIds.lead);
     assert.isTrue(
       Result.isFailure(
-        decide({ state, actor: actor(deliveryIds.lead), command: send, now: deliveryNow }),
+        decide({
+          skills: deliverySkills,
+          state,
+          actor: actor(deliveryIds.lead),
+          command: send,
+          now: deliveryNow,
+        }),
       ),
     );
     const sent = apply(state, send, actor(replacement));
@@ -446,6 +467,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: actor(replacement),
           command: { type: "collaboration.message.retry", commandId: id(), messageId },
@@ -540,7 +562,15 @@ describe("cross-project collaboration", () => {
       requestId,
     } as const;
     assert.isTrue(
-      Result.isFailure(decide({ state: deferred.state, actor: host, command, now: deliveryNow })),
+      Result.isFailure(
+        decide({
+          skills: deliverySkills,
+          state: deferred.state,
+          actor: host,
+          command,
+          now: deliveryNow,
+        }),
+      ),
     );
     const other = {
       ...deferred.state.assignments[0]!,
@@ -568,6 +598,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: reconsidered.state,
           actor: actor(receiverId),
           now: deliveryNow,
@@ -631,6 +662,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: changed,
           actor: actor(assigned.leadThreadId),
           command: acknowledge,
@@ -708,6 +740,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: second.state,
           actor: actor(receiverId),
           command: choose,
@@ -718,6 +751,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: second.state,
           actor: human,
           command: { ...choose, revision: first.state.collaborationDecisions[0]!.revision },
@@ -968,7 +1002,13 @@ describe("cross-project collaboration", () => {
     const met = { type: "incident.condition-met", commandId: id(), restrictionId } as const;
     assert.isTrue(
       Result.isFailure(
-        decide({ state: restricted.state, actor: host, command: met, now: deliveryNow }),
+        decide({
+          skills: deliverySkills,
+          state: restricted.state,
+          actor: host,
+          command: met,
+          now: deliveryNow,
+        }),
       ),
     );
     const decided = apply(restricted.state, {
@@ -990,6 +1030,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: decided.state,
           actor: actor(receiverId),
           command: { ...restrict, commandId: id() },
@@ -1013,6 +1054,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: second.state,
           actor: actor(receiverId),
           now: deliveryNow,
@@ -1047,6 +1089,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: accepted.state,
           actor: actor(deliveryIds.manager),
           command,
@@ -1063,6 +1106,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: restricted.state,
           actor: actor(receiverId),
           now: deliveryNow,
@@ -1269,6 +1313,7 @@ describe("cross-project collaboration", () => {
     const planId = proposed.result.planId!;
     const decide_ = (state: FactorySnapshot, by: FactoryActor, kind: "approve" | "decline") =>
       decide({
+        skills: deliverySkills,
         state,
         actor: by,
         now: deliveryNow,
@@ -1315,6 +1360,7 @@ describe("cross-project collaboration", () => {
     );
     const declined = Result.getOrThrow(
       decide({
+        skills: deliverySkills,
         state: managerPlan.state,
         actor: human,
         now: deliveryNow,
@@ -1378,6 +1424,7 @@ describe("cross-project collaboration", () => {
     };
     const respond = (by: FactoryActor, response: "accept" | "reconsider") =>
       decide({
+        skills: deliverySkills,
         state:
           response === "accept"
             ? stale
@@ -1473,6 +1520,7 @@ describe("cross-project collaboration", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: deferred.state,
           actor: actor(deliveryIds.lead),
           command: askAgain,

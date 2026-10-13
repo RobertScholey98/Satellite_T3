@@ -94,11 +94,7 @@ export function FactorySystemManagerSetup({
     options
       .get(activeSelection.instanceId)
       ?.some((entry) => entry.slug === activeSelection.model && !entry.isUnavailable);
-  const previous = manager?.workflow ?? environment.data?.managers[0]?.workflow;
   const [name, setName] = useState(manager?.name ?? "System manager");
-  const [repositoryRoot, setRepositoryRoot] = useState(previous?.repositoryRoot ?? "");
-  const [revision, setRevision] = useState(previous?.revision ?? "");
-  const validRevision = /^(?:[a-f\d]{40}|[a-f\d]{64})$/i.test(revision.trim());
   const alreadyCreated =
     !manager &&
     environment.data?.managers.some(
@@ -106,24 +102,20 @@ export function FactorySystemManagerSetup({
     );
   const pinned = manager?.threadStatus === "created";
   const disabled =
-    command.disabled ||
-    !project ||
-    (!pinned && !modelAvailable) ||
-    !name.trim() ||
-    !repositoryRoot.trim() ||
-    !validRevision ||
-    alreadyCreated;
+    command.disabled || !project || (!pinned && !modelAvailable) || !name.trim() || alreadyCreated;
   const submit = async () => {
     if (disabled || !project || !activeSelection) return;
-    const fields = {
-      modelSelection: activeSelection,
-      workflow: { repositoryRoot: repositoryRoot.trim(), revision: revision.trim() },
-    };
+    const modelSelection = activeSelection;
     if (
       await command.submit(
         manager
-          ? { type: "system.retry", managerId: manager.id, ...(pinned ? {} : fields) }
-          : { type: "system.create", workspaceProjectId: project.id, name: name.trim(), ...fields },
+          ? { type: "system.retry", managerId: manager.id, ...(pinned ? {} : { modelSelection }) }
+          : {
+              type: "system.create",
+              workspaceProjectId: project.id,
+              name: name.trim(),
+              modelSelection,
+            },
       )
     )
       onClose();
@@ -142,7 +134,7 @@ export function FactorySystemManagerSetup({
           </DialogTitle>
           <DialogDescription>
             A peer of your project managers on {environment.label}. It investigates shared workflow
-            problems and brings adoption decisions to you.
+            problems and brings proposed skill changes to you.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -209,45 +201,19 @@ export function FactorySystemManagerSetup({
                 </p>
               )}
             </div>
-            <div className="space-y-2">
-              <Label htmlFor={`${prefix}-repository`}>Owned skills repository</Label>
-              <Input
-                id={`${prefix}-repository`}
-                value={repositoryRoot}
-                disabled={command.disabled || pinned}
-                onChange={(event) => setRepositoryRoot(event.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                Repository path on {environment.label}. The existing skills remain your owned
-                source.
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor={`${prefix}-revision`}>Approved commit SHA</Label>
-              <Input
-                id={`${prefix}-revision`}
-                value={revision}
-                disabled={command.disabled || pinned}
-                onChange={(event) => setRevision(event.target.value)}
-                aria-invalid={!!revision.trim() && !validRevision}
-                spellCheck={false}
-                autoCapitalize="none"
-              />
-              <p className="text-xs text-muted-foreground">
-                Full 40- or 64-character hexadecimal commit SHA. The read-only workflow is pinned to
-                this version.
-              </p>
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Uses the latest commit of the skills repository set in Settings → General.
+            </p>
             {pinned ? (
               <p className="text-sm text-muted-foreground">
-                This existing conversation retains its approved model, workspace and workflow
-                revision. Retry resumes its pinned setup.
+                This existing conversation retains its approved model, workspace and skills commit.
+                Retry resumes its pinned setup.
               </p>
             ) : null}
             <p className="text-sm text-muted-foreground">
               Granted authority: investigate named evidence and recommend improvements. You retain
-              workflow adoption decisions. Project delivery priorities and permissions stay with you
-              and each project manager.
+              merges to the skills repository. Project delivery priorities and permissions stay with
+              you and each project manager.
             </p>
             {alreadyCreated ? (
               <p role="status" className="text-sm text-muted-foreground">

@@ -30,7 +30,7 @@ import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
 it.effect(
-  "qualifies a shared Markdown boundary, prepares the actual adopted workflow, and captures a stopped migration without restoring revoked permissions",
+  "qualifies a shared Markdown boundary and prepares each assignment on its own skills commit",
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -42,7 +42,7 @@ it.effect(
       const projectId = ProjectId.make("skills-project");
       const profileId = "a4556207-a1c8-4b22-861c-4f835a64b713";
       const workflow = { repositoryRoot: "/workflow", revision: "a".repeat(40) };
-      const adopted = { ...workflow, revision: "b".repeat(40) };
+      const newer = { ...workflow, revision: "b".repeat(40) };
       const file = Effect.fn(function* (name: string, text: string) {
         return {
           path: name,
@@ -52,7 +52,7 @@ it.effect(
         };
       });
       const instructions = yield* file("skills/implementation/SKILL.md", "old instructions");
-      const newInstructions = yield* file(instructions.path, "adopted instructions");
+      const newInstructions = yield* file(instructions.path, "newer instructions");
       const authoring = yield* file(
         "skills/writing-for-agents/SKILL.md",
         "Skill editing instructions",
@@ -63,7 +63,6 @@ it.effect(
       );
       const skill = yield* file("example/SKILL.md", "Original skill");
       const agents = yield* file("AGENTS.md", "Protected repository rules");
-      const unfinished = yield* file("notes/draft.md", "Work not selected for any PR");
       const initial = initialFactorySnapshot();
       let state: FactorySnapshot = {
         ...initial,
@@ -88,8 +87,6 @@ it.effect(
           },
         ],
       };
-      const invocations: ProcessRunner.ProcessRunInput[] = [];
-      let capturedFiles: ReadonlyArray<FactorySource.FactorySourceFile> = [];
       const sources = new Map<FactorySourceId, FactorySource.FactorySourceArtifact>();
       let volumeFiles: ReadonlyArray<FactorySource.FactorySourceFile> = [skill, agents];
       const dependencies = Layer.mergeAll(
@@ -98,7 +95,6 @@ it.effect(
         Layer.mock(ProcessRunner.ProcessRunner)({
           run: (input) =>
             Effect.sync(() => {
-              invocations.push(input);
               const stdout =
                 input.stdin === json({ kind: "capture" })
                   ? json({ files: volumeFiles, digest: "capture" })
@@ -129,19 +125,6 @@ it.effect(
             }),
           read: (id) =>
             sources.has(id) ? Effect.succeed(sources.get(id)!) : Effect.die("Missing source"),
-          captureArtifact: (input) =>
-            Effect.sync(() => {
-              capturedFiles = input.files;
-              const prior = sources.get(input.previousSourceId)!;
-              return {
-                ...prior.source,
-                id: FactorySourceId.make("migration-source"),
-                origin: "handover" as const,
-                threadId: input.threadId,
-                sourceDigest: "migrated",
-                fileCount: input.files.length,
-              };
-            }),
         }),
       );
       yield* Effect.gen(function* () {
@@ -216,7 +199,7 @@ it.effect(
           threadStatus: "created",
           launchStatus: "pending",
           qualification: { status: "unavailable", reason: "Preparing" },
-          workflow: adopted,
+          workflow: newer,
           authorization: { kind: "human", commandId: CommandId.make("authorized") },
           grant: {
             boundaryId: boundary.id,
@@ -247,10 +230,10 @@ it.effect(
             path.join(config.stateDir, "factory", "execution", prepared.profileId, "profile.json"),
           )
           .pipe(Effect.flatMap(decodeProfile));
-        assert.equal(assigned.workflow?.version.revision, adopted.revision);
+        assert.equal(assigned.workflow?.version.revision, newer.revision);
         assert.equal(
           yield* fs.readFileString(path.join(assigned.workflowSnapshotPath, instructions.path)),
-          "adopted instructions",
+          "newer instructions",
         );
         assert.equal(assigned.requiresSkillAuthoring, true);
         state = { ...state, assignments: [{ ...assignment, qualification: prepared }] };
@@ -379,60 +362,7 @@ it.effect(
             .pipe(Effect.flip)).code,
           "execution-unavailable",
         );
-        volumeFiles = [skill, agents, unfinished];
-        state = {
-          ...state,
-          assignments: [
-            {
-              ...state.assignments[0]!,
-              grant: { ...assignment.grant!, epoch: 1, controlChange: null },
-            },
-          ],
-          workflowMigrations: [
-            {
-              id: "migration",
-              assignmentId: assignment.id,
-              releaseId: "release",
-              previousVersion: adopted,
-              previousEpoch: 0,
-              preparedEpoch: null,
-              retainedAuthorityReason: null,
-              previousState: { status: "running", wait: null },
-              kind: "migration",
-              reason: "Adopt release",
-              commandId: CommandId.make("restart"),
-              createdAt: now,
-              lifecycle: { phase: "stopping" },
-            },
-          ],
-        };
-        yield* service.stop(assignment.id);
-        yield* service.captureMigration({
-          assignmentId: assignment.id,
-          migrationId: "migration",
-          expectedEpoch: 0,
-        });
-        assert.include(
-          capturedFiles.map((entry) => entry.path),
-          unfinished.path,
-        );
-        const capture = invocations.findLast((input) => input.stdin === json({ kind: "capture" }))!;
-        assert.isTrue(capture.args.some((arg) => arg.includes("target=/workspace,readonly")));
-        assert.isFalse(capture.args.some((arg) => arg.includes("target=/authority")));
-        assert.equal(state.assignments[0]!.grant!.epoch, 1);
-        assert.isNull(state.assignments[0]!.grant!.controlChange);
-        state = { ...state, workflowMigrations: [] };
-        assert.equal(
-          (yield* service
-            .captureMigration({
-              assignmentId: assignment.id,
-              migrationId: "migration",
-              expectedEpoch: 0,
-            })
-            .pipe(Effect.flip)).code,
-          "permission-denied",
-        );
-        // A new onboarding can use an adopted workflow while its manager retains an older pin.
+        // A new onboarding records a newer skills commit while its manager keeps an older pin.
         yield* fs.writeFileString(
           path.join(profile.projectSnapshotPath, "README.md"),
           "Project source",
@@ -454,16 +384,16 @@ it.effect(
           managers: [{ ...state.managers[0]!, role: "project", projectId, workflow }],
           assignments: [
             {
-              id: FactoryAssignmentId.make("adopted-onboarding"),
+              id: FactoryAssignmentId.make("newer-onboarding"),
               managerId,
-              threadId: ThreadId.make("adopted-onboarding-thread"),
+              threadId: ThreadId.make("newer-onboarding-thread"),
               projectId,
               kind: "onboarding",
               status: "complete",
               threadStatus: "created",
               launchStatus: "delivered",
               qualification: { status: "qualified", profileId, checkedAt: now },
-              workflow: adopted,
+              workflow: newer,
               grantedPolicy: initial.defaults,
               wait: null,
               report: null,
@@ -491,7 +421,7 @@ it.effect(
             ],
           },
         });
-        assert.deepEqual(approved.workflow, adopted);
+        assert.deepEqual(approved.workflow, newer);
         assert.deepEqual(state.managers[0]!.workflow, workflow);
       }).pipe(Effect.provide(Boundary.layer.pipe(Layer.provideMerge(dependencies))));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

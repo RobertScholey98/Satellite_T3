@@ -23,6 +23,7 @@ import {
   type FactoryActor,
   type FactoryDecision,
 } from "./FactoryState.ts";
+import { deliverySkills } from "./FactoryDelivery.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const projectId = ProjectId.make("project-web");
@@ -33,7 +34,6 @@ const modelSelection: ModelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
   model: "approved-model",
 };
-const workflow = { repositoryRoot: "C:/owned-skills", revision: "approved-commit" };
 const allocation = { managerThreadId: managerId, leadThreadId, assignmentId };
 const qualified = {
   status: "qualified",
@@ -58,13 +58,13 @@ const createCommand = (
   projectId,
   name: "Web engineering manager",
   modelSelection,
-  workflow,
   ...overrides,
 });
 
 const created = (qualification = qualified) =>
   Result.getOrThrow(
     decide({
+      skills: deliverySkills,
       state: initialFactorySnapshot(),
       actor: human,
       command: createCommand(),
@@ -78,7 +78,7 @@ const apply = (
   state: FactorySnapshot,
   command: FactoryDecisionCommand,
   actor: FactoryActor = human,
-) => Result.getOrThrow(decide({ state, actor, command, now }));
+) => Result.getOrThrow(decide({ skills: deliverySkills, state, actor, command, now }));
 
 const failureCode = (result: ReturnType<typeof decide>) => {
   if (Result.isSuccess(result)) return assert.fail("Expected the factory command to be rejected.");
@@ -202,6 +202,7 @@ describe("factory onboarding decisions", () => {
   it("preserves an actionable wait and starts nothing when discovery is not qualified", () => {
     const decision = Result.getOrThrow(
       decide({
+        skills: deliverySkills,
         state: initialFactorySnapshot(),
         actor: human,
         command: createCommand(),
@@ -223,6 +224,7 @@ describe("factory onboarding decisions", () => {
     assert.equal(
       failureCode(
         decide({
+          skills: deliverySkills,
           state: decision.state,
           actor: system,
           now,
@@ -240,6 +242,7 @@ describe("factory onboarding decisions", () => {
   it("fails closed when the environment supplies no qualification", () => {
     const decision = Result.getOrThrow(
       decide({
+        skills: deliverySkills,
         state: initialFactorySnapshot(),
         actor: human,
         command: createCommand(),
@@ -257,6 +260,7 @@ describe("factory onboarding decisions", () => {
     assert.equal(
       failureCode(
         decide({
+          skills: deliverySkills,
           state,
           actor: human,
           command: createCommand({
@@ -272,6 +276,7 @@ describe("factory onboarding decisions", () => {
     assert.equal(
       failureCode(
         decide({
+          skills: deliverySkills,
           state,
           actor: human,
           command: createCommand({
@@ -297,6 +302,7 @@ describe("factory onboarding decisions", () => {
     assert.equal(
       failureCode(
         decide({
+          skills: deliverySkills,
           state: initialFactorySnapshot(),
           actor,
           command: createCommand(),
@@ -310,6 +316,7 @@ describe("factory onboarding decisions", () => {
     assert.equal(
       failureCode(
         decide({
+          skills: deliverySkills,
           state,
           actor,
           now,
@@ -328,6 +335,7 @@ describe("factory onboarding decisions", () => {
   it("retries qualification with the original manager, lead, and assignment identities", () => {
     const blocked = Result.getOrThrow(
       decide({
+        skills: deliverySkills,
         state: initialFactorySnapshot(),
         actor: human,
         command: createCommand(),
@@ -337,6 +345,7 @@ describe("factory onboarding decisions", () => {
     );
     const retried = Result.getOrThrow(
       decide({
+        skills: deliverySkills,
         state: blocked.state,
         actor: human,
         now,
@@ -425,6 +434,7 @@ describe("factory onboarding decisions", () => {
     assert.equal(
       failureCode(
         decide({
+          skills: deliverySkills,
           state: first.state,
           actor: { kind: "thread", threadId: managerId },
           command,
@@ -491,6 +501,7 @@ describe("factory onboarding decisions", () => {
   it("repairs a blocked setup before any thread launches and keeps the assigned identities", () => {
     const first = Result.getOrThrow(
       decide({
+        skills: deliverySkills,
         state: initialFactorySnapshot(),
         actor: human,
         command: createCommand(),
@@ -510,9 +521,9 @@ describe("factory onboarding decisions", () => {
           type: "manager.retry-onboarding",
           commandId: CommandId.make("repair"),
           managerId,
-          workflow: repairedWorkflow,
           modelSelection: { ...modelSelection, model: "other-approved-model" },
         },
+        skills: repairedWorkflow,
       }),
     );
     assert.equal(repaired.state.managers[0]!.workflow.revision, repairedWorkflow.revision);
@@ -544,6 +555,7 @@ describe("factory onboarding decisions", () => {
     assert.equal(
       failureCode(
         decide({
+          skills: deliverySkills,
           state: failedLead.state,
           actor: human,
           now,
@@ -552,12 +564,28 @@ describe("factory onboarding decisions", () => {
             type: "manager.retry-onboarding",
             commandId: CommandId.make("replace-running-policy"),
             managerId,
-            workflow: repairedWorkflow,
+            modelSelection: { ...modelSelection, model: "other-approved-model" },
           },
         }),
       ),
       "invalid-state",
     );
+    // A launched setup keeps its commit even after the skills repository moves on.
+    const relaunched = Result.getOrThrow(
+      decide({
+        state: failedLead.state,
+        actor: human,
+        now,
+        qualification: qualified,
+        command: {
+          type: "manager.retry-onboarding",
+          commandId: CommandId.make("retry-launched-setup"),
+          managerId,
+        },
+        skills: { repositoryRoot: "C:/owned-skills", revision: "b".repeat(40) },
+      }),
+    );
+    assert.deepEqual(relaunched.state.assignments[0]!.workflow, repairedWorkflow);
   });
 
   it("keeps host acknowledgements outside the client command schema", () => {
@@ -576,6 +604,7 @@ describe("factory onboarding decisions", () => {
     assert.equal(
       failureCode(
         decide({
+          skills: deliverySkills,
           state: created().state,
           actor: human,
           now,

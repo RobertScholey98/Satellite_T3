@@ -10,6 +10,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -36,8 +37,8 @@ const createInput = {
     projectId: ProjectId.make("web"),
     name: "Web engineering manager",
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
-    workflow: { repositoryRoot: "C:/owned-skills", revision: "approved-commit" },
   },
+  skills: { repositoryRoot: "C:/owned-skills", revision: "approved-commit" },
   allocation: { managerThreadId: managerId, leadThreadId: leadId, assignmentId },
   qualification: { status: "qualified" as const, profileId: "discovery-v1", checkedAt: now },
   now,
@@ -537,5 +538,141 @@ describe("FactoryStore", () => {
           }),
         );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "loads state, receipts and outbox rows stored by the removed workflow release and restart features",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const store = yield* setup;
+          yield* store.commit(createInput);
+          const pinned = (yield* store.snapshot).assignments[0]!.workflow;
+          const [row] = yield* sql<{ readonly payload_json: string }>`
+            SELECT payload_json FROM factory_state WHERE id = 1`;
+          const stored = JSON.parse(row!.payload_json);
+          const release = {
+            id: "workflow-release:old",
+            repositoryId: "shared-repository:old",
+            version: { repositoryRoot: "C:/owned-skills", revision: "b".repeat(40) },
+            snapshotDigest: "c".repeat(64),
+            proposalId: "proposal",
+            proposalRevision: "v1",
+            assignmentId: null,
+            provenance: "owned-codex-library",
+            baselineOrigin: "pstack-codex-adaptation",
+            registeredAt: now,
+          };
+          const legacy = {
+            ...stored,
+            revision: stored.revision + 1,
+            workflowReleases: [release],
+            workflowAdoptions: [
+              {
+                id: "workflow-adoption:old",
+                releaseId: release.id,
+                scope: { kind: "default" },
+                commandId: "adopt-old",
+                adoptedAt: now,
+              },
+            ],
+            workflowOverrides: [{ managerId, adoptionId: "workflow-adoption:old" }],
+            workflowMigrations: [
+              {
+                id: "workflow-migration:old",
+                assignmentId,
+                releaseId: release.id,
+                previousVersion: pinned,
+                previousEpoch: 0,
+                preparedEpoch: null,
+                retainedAuthorityReason: null,
+                previousState: { status: "running", wait: null },
+                kind: "migration",
+                reason: "Adopt the release",
+                commandId: "restart-old",
+                createdAt: now,
+                lifecycle: { phase: "stopping" },
+              },
+            ],
+            improvementValidations: [
+              {
+                id: "validation:old",
+                proposalId: "proposal",
+                proposalRevision: "v1",
+                assignmentId: null,
+                releaseId: release.id,
+                outcome: "success",
+                evidence: [],
+                assessment: "Fewer corrections",
+                recommendedNextStep: "Keep it",
+                recordedAt: now,
+              },
+            ],
+          };
+          yield* sql`UPDATE factory_state SET revision = ${legacy.revision},
+            payload_json = ${JSON.stringify(legacy)} WHERE id = 1`;
+          const adopt = {
+            type: "workflow.adopt",
+            commandId: "adopt-old",
+            releaseId: release.id,
+            scope: { kind: "default" },
+          };
+          yield* sql`INSERT INTO factory_commands (command_id, request_json, result_json)
+            VALUES ('adopt-old', ${stableStringify({ actor: { kind: "human" }, command: adopt })},
+              ${JSON.stringify({ revision: 2, adoptionId: "workflow-adoption:old" })})`;
+          yield* sql`INSERT INTO factory_commands (command_id, request_json, result_json)
+            VALUES ('restart-old', '{}', ${JSON.stringify({
+              revision: 3,
+              migrationIds: ["workflow-migration:old"],
+              releaseId: release.id,
+            })})`;
+          yield* sql`INSERT INTO factory_outbox
+            (effect_id, command_id, payload_json, status, created_at)
+            VALUES ('restart-old:0', 'restart-old', ${JSON.stringify({
+              type: "workflow.restart.stop",
+              migrationId: "workflow-migration:old",
+              assignmentId,
+            })}, 'pending', ${now})`;
+
+          const reopened = yield* openStore;
+          const state = yield* reopened.snapshot;
+          assert.equal(state.revision, legacy.revision);
+          assert.deepEqual(state.managers[0]?.workflow, pinned);
+          assert.deepEqual(state.assignments[0]?.workflow, pinned);
+          assert.equal(state.improvementValidations[0]?.outcome, "success");
+          assert.isFalse("workflowReleases" in state);
+          assert.notInclude(
+            (yield* reopened.pending).map((effect) => effect.id),
+            "restart-old:0",
+          );
+          const [outbox] = yield* sql<{ readonly status: string }>`
+            SELECT status FROM factory_outbox WHERE effect_id = 'restart-old:0'`;
+          assert.equal(outbox?.status, "superseded");
+          // An old receipt still answers a replay of its exact request.
+          assert.deepEqual(
+            yield* reopened.findReceipt({
+              actor: { kind: "human" },
+              command: adopt as unknown as Parameters<typeof reopened.findReceipt>[0]["command"],
+            }),
+            { revision: 2 },
+          );
+          // The next command builds on the decoded state and writes it without the removed arrays.
+          yield* reopened.commit({
+            actor: { kind: "human" },
+            now,
+            command: {
+              type: "policy.defaults.configure",
+              commandId: CommandId.make("defaults-after-upgrade"),
+              defaults: state.defaults,
+            },
+          });
+          const [rewritten] = yield* sql<{ readonly payload_json: string }>`
+            SELECT payload_json FROM factory_state WHERE id = 1`;
+          assert.equal(JSON.parse(rewritten!.payload_json).revision, legacy.revision + 1);
+          assert.notInclude(rewritten!.payload_json, "workflowReleases");
+          assert.notInclude(rewritten!.payload_json, "workflowMigrations");
+        }),
+      ),
   );
 });

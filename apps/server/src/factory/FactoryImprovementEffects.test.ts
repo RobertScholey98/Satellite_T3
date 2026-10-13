@@ -25,6 +25,8 @@ import {
 } from "./FactoryDelivery.testkit.ts";
 
 const systemId = ThreadId.make("system-manager");
+// HEAD of the configured skills repository when these commands run.
+const skills = deliveryFixture().managers[0]!.workflow;
 const encode = Schema.encodeSync(Schema.fromJsonString(FactorySnapshot));
 const base = Layer.mergeAll(Store.layer, Threads.layer).pipe(
   Layer.provideMerge(Satellite.layer),
@@ -125,12 +127,12 @@ const fixture = Effect.fn(function* () {
       actor: { kind: "human" },
       now: deliveryNow,
       systemManagerCreation: { threadId: systemId, qualification },
+      skills,
       command: {
         type: "system.create",
         commandId: CommandId.make("create-system"),
         workspaceProjectId: deliveryIds.project,
         modelSelection: deliverySelection,
-        workflow: seed.managers[0]!.workflow,
       },
     });
     const launch = (yield* store.pending).find((entry) => entry.intent.type === "system.launch")!;
@@ -275,9 +277,15 @@ describe("FactoryImprovementEffects", () => {
         commandId: CommandId.make("retry-system"),
         managerId: systemId,
       };
-      const context = yield* f.effects.context({ kind: "human" }, command);
+      const context = yield* f.effects.context({ kind: "human" }, command, skills);
       assert.equal(f.qualifyCalls(), 0);
-      yield* f.store.commit({ actor: { kind: "human" }, now: deliveryNow, command, ...context });
+      yield* f.store.commit({
+        actor: { kind: "human" },
+        now: deliveryNow,
+        command,
+        skills,
+        ...context,
+      });
       f.failSend(false);
       for (const entry of yield* f.store.pending)
         if (entry.intent.type === "system.launch") yield* f.effects.handle(entry);
@@ -304,8 +312,14 @@ describe("FactoryImprovementEffects", () => {
         commandId: CommandId.make("retry-system"),
         managerId: systemId,
       };
-      const context = yield* f.effects.context({ kind: "human" }, command);
-      yield* f.store.commit({ actor: { kind: "human" }, now: deliveryNow, command, ...context });
+      const context = yield* f.effects.context({ kind: "human" }, command, skills);
+      yield* f.store.commit({
+        actor: { kind: "human" },
+        now: deliveryNow,
+        command,
+        skills,
+        ...context,
+      });
       f.failSend(false);
       for (const entry of yield* f.store.pending)
         if (entry.intent.type === "system.launch") yield* f.effects.handle(entry);
@@ -405,12 +419,17 @@ describe("FactoryImprovementEffects", () => {
           commandId: CommandId.make("replace-system"),
           workspaceProjectId: deliveryIds.project,
           modelSelection: deliverySelection,
-          workflow: deliveryFixture().managers[0]!.workflow,
         };
-        const context = yield* f.effects.context({ kind: "human" }, command);
+        const context = yield* f.effects.context({ kind: "human" }, command, skills);
         const replacementId = context.systemManagerCreation!.threadId;
         assert.notEqual(replacementId, systemId);
-        yield* f.store.commit({ actor: { kind: "human" }, now: deliveryNow, command, ...context });
+        yield* f.store.commit({
+          actor: { kind: "human" },
+          now: deliveryNow,
+          command,
+          skills,
+          ...context,
+        });
         f.failSend(false);
         for (const entry of yield* f.store.pending)
           if (entry.intent.type === "system.launch") yield* f.effects.handle(entry);

@@ -27,7 +27,6 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Textarea } from "../ui/textarea";
 import { factoryModelLabel } from "./FactoryModelPolicyDialog";
 import { FactorySharedRepositoryForm } from "./FactorySharedRepositoryForm";
-import { FactoryWorkflowAdoption } from "./FactoryWorkflowAdoption";
 import { useFactoryCommand } from "./useFactoryCommand";
 
 type Props = {
@@ -236,7 +235,7 @@ function ExperimentSettings({ environment }: Pick<Props, "environment">) {
       <p className="text-sm text-muted-foreground">
         When enabled, the system manager can commission isolated candidate authoring and inspection
         for named investigations. These teams cannot publish PRs, create tracker tickets or change
-        the adopted workflow. Live trials still require your selected-team approval.
+        the skills repository.
       </p>
       <label className="flex items-start gap-2 text-sm">
         <Checkbox checked={enabled} disabled={command.disabled} onCheckedChange={setEnabled} />
@@ -444,7 +443,7 @@ export function FactoryWorkflowDialog({
   const permission = useEnvironmentScope(environment.environmentId, AuthSettingsWriteScope);
   const command = useFactoryCommand(environment, permission);
   const [view, setView] = useState<
-    "work" | "repositories" | "adoption" | "experiments" | "validation" | "models"
+    "work" | "repositories" | "experiments" | "validation" | "models"
   >("work");
   const [limit, setLimit] = useState(50);
   const data = environment.data;
@@ -452,7 +451,6 @@ export function FactoryWorkflowDialog({
   const views = [
     { value: "work", label: "Implementation plans" },
     { value: "repositories", label: "Owned repositories" },
-    { value: "adoption", label: "Workflow releases and adoption" },
     { value: "experiments", label: "Isolated experiments" },
     { value: "validation", label: "Outcome validation" },
     { value: "models", label: "Model recommendations" },
@@ -469,8 +467,8 @@ export function FactoryWorkflowDialog({
         <DialogHeader>
           <DialogTitle>Shared workflow delivery</DialogTitle>
           <DialogDescription>
-            {manager.name} coordinates approved implementation; you retain work authority, live
-            trial, adoption and standing model decisions.
+            {manager.name} coordinates approved implementation; you retain work authority, merges to
+            the skills repository and standing model decisions.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -510,7 +508,8 @@ export function FactoryWorkflowDialog({
                 <p className="text-sm text-muted-foreground">
                   Accepting a proposal does not grant repository access. Review the system manager's
                   exact immutable work plan here. Implementation and PR review belong to its
-                  delegated team; adoption is separate.
+                  delegated team. Once its PR merges into the skills repository, new assignments use
+                  it.
                 </p>
                 {works.slice(0, limit).map((work) => (
                   <WorkPlan
@@ -621,13 +620,6 @@ export function FactoryWorkflowDialog({
                 </details>
               </div>
             ) : null}
-            {view === "adoption" ? (
-              <FactoryWorkflowAdoption
-                environment={environment}
-                canOpenThread={canOpenThread}
-                onOpenThread={onOpenThread}
-              />
-            ) : null}
             {view === "experiments" ? (
               <div className="space-y-4">
                 <ExperimentSettings
@@ -680,7 +672,7 @@ export function FactoryWorkflowDialog({
                 <p className="text-sm text-muted-foreground">
                   The system manager records whether available evidence supports the expected
                   benefit. Implementation can finish while validation remains insufficient.
-                  Assessments do not add a PR gate or automatically roll back adoption.
+                  Assessments do not add a PR gate or revert a merged change.
                 </p>
                 {data.improvementValidations
                   .toReversed()
@@ -700,7 +692,6 @@ export function FactoryWorkflowDialog({
                       <p className="break-all text-xs text-muted-foreground">
                         Proposal {validation.proposalId} · revision {validation.proposalRevision}
                         {validation.assignmentId ? ` · assignment ${validation.assignmentId}` : ""}
-                        {validation.releaseId ? ` · release ${validation.releaseId}` : ""}
                       </p>
                       <ul className="space-y-1 text-xs text-muted-foreground">
                         {validation.evidence.map((ref) => (

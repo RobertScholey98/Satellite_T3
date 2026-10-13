@@ -13,12 +13,12 @@ import {
   decideFactoryCollaboration,
   reconcileFactoryRequestCancellation,
 } from "./FactoryCollaboration.ts";
+import { decideFactoryWorkflow, type FactoryWorkflowContext } from "./FactoryWorkflow.ts";
 import {
-  decideFactoryWorkflow,
-  effectiveFactoryWorkflow,
-  type FactoryWorkflowContext,
-} from "./FactoryWorkflow.ts";
-import { commissionFactoryAssignment } from "./FactoryAssignmentCommission.ts";
+  commissionFactoryAssignment,
+  factorySkillsPin,
+  type FactorySkillsContext,
+} from "./FactoryAssignmentCommission.ts";
 import {
   type FactoryAssignment,
   type FactoryAssignmentId,
@@ -126,10 +126,6 @@ export const initialFactorySnapshot = (): FactorySnapshot => ({
   sharedWorks: [],
   experimentConfigurations: [],
   workflowExperiments: [],
-  workflowReleases: [],
-  workflowAdoptions: [],
-  workflowOverrides: [],
-  workflowMigrations: [],
   improvementValidations: [],
   modelRecommendations: [],
   improvementConfigurations: [],
@@ -330,6 +326,7 @@ function decideCore(
     FactoryControlContext &
     FactoryImprovementContext &
     FactoryWorkflowContext &
+    FactorySkillsContext &
     FactoryDeliveryContext &
     FactoryRetroContext &
     FactorySchedulingContext &
@@ -812,7 +809,7 @@ function decideCore(
         boundary,
         work: command,
         allocation: input.allocation,
-        workflow: effectiveFactoryWorkflow(state, manager),
+        skills: input.skills,
         policy,
         now,
         controlAuthorizationId: command.commandId,
@@ -1211,6 +1208,8 @@ function decideCore(
       }
       // Without a qualified read-only boundary the manager is created blocked and nothing
       // launches; `manager.retry-onboarding` qualifies again.
+      const pin = factorySkillsPin(input.skills);
+      if (Result.isFailure(pin)) return Result.fail(pin.failure);
       const qualification = input.qualification ?? unavailableQualification;
       const wait = onboardingWait(qualification);
       const manager: Extract<FactoryManager, { readonly role: "project" }> = {
@@ -1220,7 +1219,7 @@ function decideCore(
         projectId: command.projectId,
         name: command.name ?? "Engineering manager",
         modelSelection: command.modelSelection,
-        workflow: command.workflow,
+        workflow: pin.success,
         overrides: {},
         status: wait === null ? "onboarding" : "blocked",
         threadStatus: "pending",
@@ -1239,7 +1238,7 @@ function decideCore(
         threadStatus: "pending",
         launchStatus: "pending",
         qualification,
-        workflow: effectiveFactoryWorkflow(state, manager),
+        workflow: pin.success,
         grantedPolicy: effectivePolicy(state, manager),
         wait,
         report: null,
@@ -1281,15 +1280,15 @@ function decideCore(
         return fail("invalid-state");
       }
       // Once the manager or lead thread exists it was launched with this setup, so its
-      // workflow, model and qualified profile can no longer change.
-      if (
-        (command.workflow !== undefined || command.modelSelection !== undefined) &&
-        (manager.threadStatus === "created" || assignment.threadStatus === "created")
-      )
-        return fail("invalid-state");
+      // skills commit, model and qualified profile can no longer change. Before that, a retry
+      // is a new onboarding run on the current skills commit.
+      const launched = manager.threadStatus === "created" || assignment.threadStatus === "created";
+      if (command.modelSelection !== undefined && launched) return fail("invalid-state");
+      const pin = launched ? Result.succeed(assignment.workflow) : factorySkillsPin(input.skills);
+      if (Result.isFailure(pin)) return Result.fail(pin.failure);
       const qualification = input.qualification ?? assignment.qualification;
       if (
-        (manager.threadStatus === "created" || assignment.threadStatus === "created") &&
+        launched &&
         (qualification.status !== "qualified" ||
           assignment.qualification.status !== "qualified" ||
           qualification.profileId !== assignment.qualification.profileId)
@@ -1298,7 +1297,7 @@ function decideCore(
       const wait = onboardingWait(qualification);
       const updatedManager: typeof manager = {
         ...manager,
-        workflow: command.workflow ?? manager.workflow,
+        workflow: pin.success,
         modelSelection: command.modelSelection ?? manager.modelSelection,
         status: wait === null ? "onboarding" : "blocked",
         wait,
@@ -1306,10 +1305,7 @@ function decideCore(
       };
       const updatedAssignment: FactoryAssignment = {
         ...assignment,
-        workflow:
-          command.workflow === undefined
-            ? assignment.workflow
-            : effectiveFactoryWorkflow(state, updatedManager),
+        workflow: pin.success,
         qualification,
         status: wait === null ? "pending" : "waiting",
         wait,

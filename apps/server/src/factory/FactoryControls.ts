@@ -18,10 +18,7 @@ import * as Result from "effect/Result";
 
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 import { factoryAuxiliaryIsCurrent } from "./FactoryAuxiliary.ts";
-import {
-  factorySharedAssignmentEnabled,
-  factoryWorkflowRestartPending,
-} from "./FactoryWorkflowOwnership.ts";
+import { factorySharedAssignmentEnabled } from "./FactoryWorkflowOwnership.ts";
 
 /** Where a thread sits in the factory, as `FactoryControlAccess` resolves it from lineage. */
 export interface FactoryControlMembership {
@@ -51,7 +48,7 @@ export interface FactoryControlContext {
 /**
  * The reason a factory thread may not run now, or `undefined` when it may. Every path that
  * starts or continues managed work asks this: manager retirement, incidents, concluded
- * implementation, workflow restarts, authority holds, cancellation and pauses. A manager pause
+ * implementation, authority holds, cancellation and pauses. A manager pause
  * stops only the manager's own thread; its teams keep working within their grants.
  *
  * The current retrospective thread of an assignment is exempt from the assignment-level checks,
@@ -83,10 +80,8 @@ export const factoryExecutionBlocked = (
   const completion = assignment?.completion;
   if (!retrospective && completion !== undefined && completion.phase !== "collecting")
     return "Implementation has concluded. Its retrospective uses a separate read-only conversation.";
-  if (!retrospective && assignment && factoryWorkflowRestartPending(state, assignment.id))
-    return "This team is stopped while its explicitly selected workflow restart is prepared.";
   if (!retrospective && assignment?.wait?.kind === "authority")
-    return "This team's authority is held. A workflow restart does not restore permission to work.";
+    return "This team's authority is held until the human restores permission to work.";
   if (
     !retrospective &&
     assignment?.sharedWork &&

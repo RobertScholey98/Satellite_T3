@@ -22,6 +22,7 @@ import { isFactoryModelApproved, resolveFactoryModelPolicy } from "./FactoryMode
 import { preserveFactoryManagerPauses } from "./FactoryControls.ts";
 import type { FactoryActor, FactoryDecision } from "./FactoryState.ts";
 import { factorySharedAssignmentOwned } from "./FactoryWorkflowOwnership.ts";
+import { factorySkillsPin, type FactorySkillsContext } from "./FactoryAssignmentCommission.ts";
 
 /**
  * Host qualification for `system.create` and `system.retry`, gathered by
@@ -243,12 +244,13 @@ export function factoryImprovementNextDueAt(state: FactorySnapshot, now: string)
  * assignments it owns through shared work, and anything else from it is refused.
  */
 export function decideFactoryImprovements(
-  input: FactoryImprovementContext & {
-    readonly state: FactorySnapshot;
-    readonly actor: FactoryActor;
-    readonly command: FactoryDecisionCommand;
-    readonly now: string;
-  },
+  input: FactoryImprovementContext &
+    FactorySkillsContext & {
+      readonly state: FactorySnapshot;
+      readonly actor: FactoryActor;
+      readonly command: FactoryDecisionCommand;
+      readonly now: string;
+    },
 ): Result.Result<FactoryDecision, FactoryError> | undefined {
   const { state, actor, command, now } = input;
   const recognized =
@@ -383,6 +385,8 @@ export function decideFactoryImprovements(
         )
       )
         return fail("Select an approved system-manager model.");
+      const pin = factorySkillsPin(input.skills);
+      if (Result.isFailure(pin)) return Result.fail(pin.failure);
       const qualification = creation.qualification;
       const created: FactoryManager = {
         id: creation.threadId,
@@ -393,7 +397,7 @@ export function decideFactoryImprovements(
         qualification,
         name: command.name ?? "System manager",
         modelSelection: command.modelSelection,
-        workflow: command.workflow,
+        workflow: pin.success,
         overrides: {},
         status: qualification.status === "qualified" ? "onboarding" : "blocked",
         threadStatus: "pending",
@@ -480,12 +484,12 @@ export function decideFactoryImprovements(
       const creation = input.systemManagerCreation;
       if (!creation || creation.threadId !== manager.threadId)
         return fail("Retry requires host qualification for the same manager.", "invalid-state");
-      // Once its thread exists the manager's workspace and model are pinned, so a retry can only
-      // relaunch the same qualified profile.
+      // Once its thread exists the manager's workspace, model and skills commit are pinned, so a
+      // retry can only relaunch the same qualified profile. Before that it records the current
+      // skills commit.
       if (
         manager.threadStatus === "created" &&
-        (command.workflow !== undefined ||
-          command.modelSelection !== undefined ||
+        (command.modelSelection !== undefined ||
           creation.qualification.status !== "qualified" ||
           manager.qualification.status !== "qualified" ||
           creation.qualification.profileId !== manager.qualification.profileId)
@@ -494,6 +498,11 @@ export function decideFactoryImprovements(
           "A created system-manager thread retains its pinned workspace and model.",
           "invalid-state",
         );
+      const pin =
+        manager.threadStatus === "created"
+          ? Result.succeed(manager.workflow)
+          : factorySkillsPin(input.skills);
+      if (Result.isFailure(pin)) return Result.fail(pin.failure);
       const modelSelection = command.modelSelection ?? manager.modelSelection;
       if (
         !isFactoryModelApproved(
@@ -510,7 +519,7 @@ export function decideFactoryImprovements(
       const updated: FactoryManager = {
         ...manager,
         qualification,
-        workflow: command.workflow ?? manager.workflow,
+        workflow: pin.success,
         modelSelection,
         status: qualification.status === "qualified" ? "onboarding" : "blocked",
         wait:

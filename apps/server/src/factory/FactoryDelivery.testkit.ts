@@ -38,9 +38,11 @@ export const deliveryActors = {
 export const deliveryEvidence = [
   { label: "code", location: "candidate://revision/src/feature.ts" },
 ];
+/** HEAD of the skills repository that fixture commands record as their pin. */
+export const deliverySkills = { repositoryRoot: "C:/skills", revision: "workflow" };
 export const deliveryFixture = (): FactorySnapshot => {
   const state = initialFactorySnapshot();
-  const workflow = { repositoryRoot: "C:/skills", revision: "workflow" };
+  const workflow = deliverySkills;
   const assignment: FactoryAssignment = {
     id: deliveryIds.assignment,
     managerId: deliveryIds.manager,
@@ -116,7 +118,10 @@ export const applyDelivery = (
   command: FactoryDecisionCommand,
   actor: FactoryActor = deliveryActors.lead,
   context: FactoryDeliveryContext = {},
-) => Result.getOrThrow(decide({ state, command, actor, now: deliveryNow, ...context }));
+) =>
+  Result.getOrThrow(
+    decide({ skills: deliverySkills, state, command, actor, now: deliveryNow, ...context }),
+  );
 export const deliveryCommand = {
   commandId: CommandId.make("command"),
   assignmentId: deliveryIds.assignment,

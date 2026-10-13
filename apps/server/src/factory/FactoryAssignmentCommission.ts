@@ -16,6 +16,25 @@ import { initialFactoryOversight } from "./FactoryOversight.ts";
 import { resolveFactoryModelPolicy, selectFactoryModel } from "./FactoryModelPolicy.ts";
 import type { FactoryAllocation } from "./FactoryState.ts";
 
+export const factorySkillsRequired = "Set the skills repository in Settings → General first.";
+
+/**
+ * The skills repository's HEAD, which the service reads once per command that creates a manager
+ * or assignment. Whatever the command creates records it as its pinned `workflow`.
+ */
+export interface FactorySkillsContext {
+  readonly skills?: FactoryWorkflowVersion;
+}
+
+/** The pin a command records, or the refusal that sends the human to the setting. */
+export function factorySkillsPin(
+  skills: FactoryWorkflowVersion | undefined,
+): Result.Result<FactoryWorkflowVersion, FactoryError> {
+  return skills === undefined
+    ? Result.fail(new FactoryError({ code: "invalid-state", detail: factorySkillsRequired }))
+    : Result.succeed(skills);
+}
+
 /**
  * Builds a new pending assignment from approved supporting work. Every path that creates an
  * assignment (state transitions, collaboration, workflow and integration) goes through here so
@@ -29,7 +48,7 @@ export function commissionFactoryAssignment(input: {
   readonly boundary: FactoryBoundary;
   readonly work: FactorySupportingWork;
   readonly allocation: FactoryAllocation | undefined;
-  readonly workflow: FactoryWorkflowVersion;
+  readonly skills: FactorySkillsContext["skills"];
   readonly policy: FactoryPolicy;
   readonly authorization: NonNullable<FactoryAssignment["authorization"]>;
   readonly controlAuthorizationId: CommandId | string;
@@ -49,6 +68,8 @@ export function commissionFactoryAssignment(input: {
   ) {
     return Result.fail(new FactoryError({ code: "invalid-state" }));
   }
+  const pin = factorySkillsPin(input.skills);
+  if (Result.isFailure(pin)) return Result.fail(pin.failure);
   const modelPolicy = resolveFactoryModelPolicy(
     state.modelDefaults,
     manager.modelOverrides,
@@ -88,7 +109,7 @@ export function commissionFactoryAssignment(input: {
       status: "unavailable",
       reason: "Preparing the assignment's approved execution environment.",
     },
-    workflow: input.workflow,
+    workflow: pin.success,
     grantedPolicy: input.policy,
     grant: {
       boundaryId: boundary.id,

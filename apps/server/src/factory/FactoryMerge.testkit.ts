@@ -9,7 +9,7 @@ import * as Result from "effect/Result";
 import { decide, type FactoryActor } from "./FactoryState.ts";
 import { factoryMergeGroupEvidence } from "./FactoryMerge.ts";
 import { verified, integrated, api } from "./FactoryIntegration.testkit.ts";
-import { deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
+import { deliveryIds, deliveryNow, deliverySkills } from "./FactoryDelivery.testkit.ts";
 
 export { integrated, api, deliveryIds, deliveryNow };
 let sequence = 0;
@@ -18,7 +18,7 @@ export const applyMerge = (
   state: FactorySnapshot,
   command: FactoryDecisionCommand,
   actor: FactoryActor = { kind: "human" },
-) => Result.getOrThrow(decide({ state, command, actor, now: deliveryNow }));
+) => Result.getOrThrow(decide({ skills: deliverySkills, state, command, actor, now: deliveryNow }));
 
 export function mergeFixture() {
   const base = verified();

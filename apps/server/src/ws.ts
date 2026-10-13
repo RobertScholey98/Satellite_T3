@@ -3,6 +3,7 @@ import {
   IDEA_WS_METHODS,
   IdeaOperationError,
   ORCHESTRATION_WS_METHODS,
+  ServerSettingsError,
 } from "@t3tools/contracts";
 import * as FactoryService from "./factory/FactoryService.ts";
 import { IdeaNotebookStore } from "./ideas/IdeaNotebookStore.ts";
@@ -1158,6 +1159,7 @@ const layerWsRpc = (
 
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
+      const factory = yield* FactoryService.FactoryService;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -1950,6 +1952,18 @@ const layerWsRpc = (
           serverSettings.getSettings.pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
         [WS_METHODS.serverUpdateSettings]: ({ patch, providerInstanceMutation }) =>
           Effect.gen(function* () {
+            const skillsRepository = patch.engineeringManagersSkillsRepository;
+            if (skillsRepository)
+              yield* factory.validateSkillsRepository(skillsRepository).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ServerSettingsError({
+                      settingsPath: skillsRepository,
+                      operation: "validate",
+                      detail: error.message,
+                    }),
+                ),
+              );
             const deviceHosts = patch.deviceHosts
               ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
                   Effect.provide(deviceHostContext),

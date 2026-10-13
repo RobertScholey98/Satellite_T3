@@ -48,7 +48,8 @@ const model = {
   model: "approved-complex-lead",
   options: [{ id: "reasoningEffort", value: "high" }],
 };
-const workflow = { repositoryRoot: "/owned-skills", revision: "a".repeat(40) };
+// The commission records the skills commit the test service reports.
+const workflow = FactoryServiceTestkit.testSkills;
 const boundaryId = FactoryBoundaryId.make("factory-recovery-boundary");
 const source: FactoryStartingSource = {
   id: FactorySourceId.make("factory-recovery-source"),

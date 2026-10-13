@@ -189,8 +189,8 @@ const make = Effect.gen(function* () {
           return yield* unavailable();
       } else {
         const state = yield* store.snapshot;
-        // A workflow restart or integration re-preparation withdraws the current qualification,
-        // so the retro inspects with the profile the team last ran in.
+        // Integration re-preparation withdraws the current qualification, so the retro inspects
+        // with the profile the integration team last ran in.
         const qualifiedProfileId =
           assignment.qualification.status === "qualified"
             ? assignment.qualification.profileId
@@ -284,10 +284,7 @@ const make = Effect.gen(function* () {
             files: final?.files ?? starting.files,
             sourceDigest: final?.sourceDigest ?? starting.source.sourceDigest,
             sourceBasis: final ? ("final-candidate" as const) : ("starting-snapshot" as const),
-            profileId:
-              qualifiedProfileId ??
-              state.workflowMigrations.findLast((entry) => entry.assignmentId === assignment.id)
-                ?.previousProfileId,
+            profileId: qualifiedProfileId,
           };
         });
         if (!source.profileId || !/^[a-f0-9-]{36}$/.test(source.profileId))

@@ -34,10 +34,6 @@ import {
   FactoryExperimentConfiguration,
   FactoryWorkflowExperiment,
   FactorySharedAssignment,
-  FactoryWorkflowRelease,
-  FactoryWorkflowAdoption,
-  FactoryWorkflowOverride,
-  FactoryWorkflowMigration,
   FactoryImprovementValidation,
   FactoryModelRecommendation,
   FactoryWorkflowCommand,
@@ -373,18 +369,6 @@ export const FactorySnapshot = Schema.Struct({
   workflowExperiments: Schema.Array(FactoryWorkflowExperiment).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
-  workflowReleases: Schema.Array(FactoryWorkflowRelease).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
-  workflowAdoptions: Schema.Array(FactoryWorkflowAdoption).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
-  workflowOverrides: Schema.Array(FactoryWorkflowOverride).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
-  workflowMigrations: Schema.Array(FactoryWorkflowMigration).pipe(
-    Schema.withDecodingDefault(Effect.succeed([])),
-  ),
   improvementValidations: Schema.Array(FactoryImprovementValidation).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
@@ -473,14 +457,12 @@ export const FactoryCommand = Schema.Union([
     workspaceProjectId: ProjectId,
     name: Schema.optionalKey(TrimmedNonEmptyString),
     modelSelection: ModelSelection,
-    workflow: FactoryWorkflowVersion,
   }),
   Schema.Struct({
     type: Schema.Literal("system.retry"),
     commandId: CommandId,
     managerId: ThreadId,
     modelSelection: Schema.optionalKey(ModelSelection),
-    workflow: Schema.optionalKey(FactoryWorkflowVersion),
   }),
   FactorySchedulingCommand,
   FactoryRetroCommand,
@@ -557,7 +539,6 @@ export const FactoryCommand = Schema.Union([
     projectId: ProjectId,
     name: Schema.optionalKey(TrimmedNonEmptyString),
     modelSelection: ModelSelection,
-    workflow: FactoryWorkflowVersion,
   }),
   Schema.Struct({
     type: Schema.Literal("manager.configure"),
@@ -569,7 +550,6 @@ export const FactoryCommand = Schema.Union([
     type: Schema.Literal("manager.retry-onboarding"),
     commandId: CommandId,
     managerId: ThreadId,
-    workflow: Schema.optionalKey(FactoryWorkflowVersion),
     modelSelection: Schema.optionalKey(ModelSelection),
   }),
   Schema.Struct({
@@ -715,11 +695,8 @@ export const FactoryCommandResult = Schema.Struct({
   repositoryId: Schema.optionalKey(TrimmedNonEmptyString),
   workId: Schema.optionalKey(TrimmedNonEmptyString),
   experimentId: Schema.optionalKey(TrimmedNonEmptyString),
-  releaseId: Schema.optionalKey(TrimmedNonEmptyString),
-  adoptionId: Schema.optionalKey(TrimmedNonEmptyString),
   validationId: Schema.optionalKey(TrimmedNonEmptyString),
   recommendationId: Schema.optionalKey(TrimmedNonEmptyString),
-  migrationIds: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
   revision: NonNegativeInt,
   intakeId: Schema.optionalKey(TrimmedNonEmptyString),
   batchId: Schema.optionalKey(TrimmedNonEmptyString),

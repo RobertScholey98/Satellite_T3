@@ -184,7 +184,7 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
   return {
     // A manager sees its own assignments; a team sees only its assignment. Lists are cut to
     // records of those assignments or their projects; the system manager also sees its shared
-    // repositories and the environment's workflow adoption records.
+    // repositories and experiment settings.
     threadSnapshot: (threadId) =>
       Effect.gen(function* () {
         const { manager, assignment } = yield* managedCaller(threadId);
@@ -205,7 +205,6 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
             ? entry.managerId === manager.id
             : entry.id === assignment?.sharedWork?.repositoryId,
         );
-        const repositoryIds = new Set(repositories.map((entry) => entry.id));
         const boundaryIds = new Set([
           ...ownedAssignments.flatMap((entry) => (entry.grant ? [entry.grant.boundaryId] : [])),
           ...repositories.map((entry) => entry.boundaryId),
@@ -259,17 +258,6 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
             : [],
           workflowExperiments: snapshot.workflowExperiments.filter((entry) =>
             systemManager ? entry.managerId === manager.id : entry.assignmentId === assignment?.id,
-          ),
-          workflowReleases: snapshot.workflowReleases.filter((entry) =>
-            systemManager
-              ? repositoryIds.has(entry.repositoryId)
-              : entry.version.revision === assignment?.workflow.revision &&
-                entry.version.repositoryRoot === assignment.workflow.repositoryRoot,
-          ),
-          workflowAdoptions: systemManager ? snapshot.workflowAdoptions : [],
-          workflowOverrides: systemManager ? snapshot.workflowOverrides : [],
-          workflowMigrations: snapshot.workflowMigrations.filter((entry) =>
-            assignmentIds.has(entry.assignmentId),
           ),
           improvementValidations: snapshot.improvementValidations.filter(
             (entry) =>
@@ -654,7 +642,6 @@ export const make = Effect.fn("FactoryThreadScope.make")(function* (core: {
             "shared.work.propose",
             "shared.work.commission",
             "experiment.commission",
-            "workflow.release.register",
             "improvement.validation.record",
             "workflow.models.recommend",
             "retro.manager.submit",

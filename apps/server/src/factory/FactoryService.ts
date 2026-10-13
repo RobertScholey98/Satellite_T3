@@ -37,6 +37,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import * as FactorySource from "./FactorySource.ts";
+import * as FactorySkills from "./FactorySkills.ts";
 import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { decide, type FactoryActor } from "./FactoryState.ts";
@@ -87,6 +88,8 @@ import * as FactoryPrompts from "./FactoryPrompts.ts";
 interface FactoryServiceCore {
   /** The unscoped state, narrowed to one project when the query names one. */
   readonly snapshot: (query: FactoryQuery) => Effect.Effect<FactorySnapshot, FactoryError>;
+  /** Refuses a skills repository path that is not a Git repository with `skills/` at HEAD. */
+  readonly validateSkillsRepository: (repositoryRoot: string) => Effect.Effect<void, FactoryError>;
   readonly mergeGroupGet: (
     query: FactoryMergeGroupQuery,
   ) => Effect.Effect<FactoryMergeGroupRead, FactoryError>;
@@ -131,8 +134,8 @@ export class FactoryService extends Context.Service<
 
 const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
-// A project view keeps that project's records and drops environment-wide ones: improvements,
-// model recommendations, and workflow releases, adoptions and overrides.
+// A project view keeps that project's records and drops environment-wide ones: improvements
+// and model recommendations.
 const scopedSnapshot =
   (query: FactoryQuery) =>
   (snapshot: FactorySnapshot): FactorySnapshot => {
@@ -171,10 +174,6 @@ const scopedSnapshot =
       ),
       experimentConfigurations: [],
       workflowExperiments: snapshot.workflowExperiments.filter(inProject),
-      workflowReleases: [],
-      workflowAdoptions: [],
-      workflowOverrides: [],
-      workflowMigrations: snapshot.workflowMigrations.filter(inProject),
       improvementValidations: [],
       modelRecommendations: [],
       improvementConfigurations: [],
@@ -228,6 +227,7 @@ export const layer = Layer.effect(
     const execution = yield* FactoryExecution.FactoryExecution;
     const boundaries = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
     const sources = yield* FactorySource.FactorySource;
+    const skillsRepository = yield* FactorySkills.FactorySkills;
     const handovers = yield* FactoryHandover.FactoryHandover;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const projects = yield* ProjectService.ProjectService;
@@ -1020,6 +1020,7 @@ export const layer = Layer.effect(
 
     const service: FactoryServiceCore = {
       snapshot: (query) => store.snapshot.pipe(Effect.map(scopedSnapshot(query))),
+      validateSkillsRepository: (repositoryRoot) => skillsRepository.validate(repositoryRoot),
       mergeGroupGet: Effect.fn("FactoryService.mergeGroupGet")(function* (query) {
         const state = yield* store.snapshot;
         const group = state.mergeGroups.find((entry) => entry.id === query.groupId);
@@ -1246,6 +1247,16 @@ export const layer = Layer.effect(
                 assignmentId: FactoryAssignmentId.make(yield* randomUuidV4),
               }
             : undefined;
+        // Whatever this command creates records the skills repository's HEAD as of now. One read
+        // serves the qualification, preflight and commit, so they all agree on the commit.
+        const skills =
+          allocation !== undefined ||
+          command.type === "manager.retry-onboarding" ||
+          command.type === "system.create" ||
+          command.type === "system.retry" ||
+          command.type === "shared.repository.register"
+            ? yield* skillsRepository.head
+            : undefined;
         const reportTarget =
           command.type === "assignment.commission" || command.type === "assignment.handover"
             ? command.scope.noPrTarget
@@ -1304,8 +1315,8 @@ export const layer = Layer.effect(
           if (membership?.assignmentId)
             integrationContext = { integrationActorAssignmentId: membership.assignmentId };
         }
-        workflowContext = yield* workflows.context(actor, command);
-        improvementContext = yield* improvements.context(actor, command);
+        workflowContext = yield* workflows.context(actor, command, skills);
+        improvementContext = yield* improvements.context(actor, command, skills);
         retroContext = yield* retros.context(actor, command);
         schedulingContext = yield* scheduling.context(actor, command);
         if (command.type === "assignment.wait" && command.wait.kind === "review") {
@@ -1420,6 +1431,7 @@ export const layer = Layer.effect(
           ...workflowContext,
           ...integrationContext,
           ...(allocation === undefined ? {} : { allocation }),
+          ...(skills === undefined ? {} : { skills }),
         });
         if (Result.isFailure(preflight)) {
           if (schedulingContext.schedulingAdmission)
@@ -1458,9 +1470,26 @@ export const layer = Layer.effect(
           command.type === "manager.retry-onboarding"
             ? snapshot.assignments.find((entry) => entry.managerId === command.managerId)
             : undefined;
+        const onboarding =
+          requested === undefined
+            ? undefined
+            : preflight.success.state.assignments.find(
+                (entry) =>
+                  entry.kind === "onboarding" &&
+                  entry.managerId ===
+                    (command.type === "manager.create"
+                      ? allocation?.managerThreadId
+                      : "managerId" in command
+                        ? command.managerId
+                        : undefined),
+              );
+        // A retry before launch moves onboarding to the current skills commit, which needs a
+        // fresh qualification just like a new model does.
         const replacingSetup =
           command.type === "manager.retry-onboarding" &&
-          (command.workflow !== undefined || command.modelSelection !== undefined);
+          (command.modelSelection !== undefined ||
+            onboarding?.workflow.revision !== previousAssignment?.workflow.revision ||
+            onboarding?.workflow.repositoryRoot !== previousAssignment?.workflow.repositoryRoot);
         // The decider refuses a new setup once launch recorded a thread. A launch can create the
         // thread before recording it, so the threads themselves must not exist either.
         if (replacingSetup && requested !== undefined && previousAssignment !== undefined) {
@@ -1475,30 +1504,17 @@ export const layer = Layer.effect(
               return yield* new FactoryError({ code: "invalid-state" });
           }
         }
-        const onboarding =
-          requested === undefined
-            ? undefined
-            : preflight.success.state.assignments.find(
-                (entry) =>
-                  entry.kind === "onboarding" &&
-                  entry.managerId ===
-                    (command.type === "manager.create"
-                      ? allocation?.managerThreadId
-                      : "managerId" in command
-                        ? command.managerId
-                        : undefined),
-              );
         // Onboarding qualifies its read-only boundary, reusing an earlier qualification when the
         // retry keeps the same setup.
         const qualification =
-          requested?.projectId == null
+          requested?.projectId == null || onboarding === undefined
             ? undefined
             : !replacingSetup && previousAssignment?.qualification.status === "qualified"
               ? previousAssignment.qualification
               : yield* execution.qualify({
                   projectId: requested.projectId,
                   modelSelection: requested.modelSelection,
-                  workflow: onboarding?.workflow ?? requested.workflow,
+                  workflow: onboarding.workflow,
                 });
         const boundary =
           command.type === "manager.approve-onboarding"
@@ -1525,6 +1541,7 @@ export const layer = Layer.effect(
             ...workflowContext,
             ...integrationContext,
             ...(allocation === undefined ? {} : { allocation }),
+            ...(skills === undefined ? {} : { skills }),
             ...(qualification === undefined ? {} : { qualification }),
             ...(boundary === undefined ? {} : { boundary }),
           })

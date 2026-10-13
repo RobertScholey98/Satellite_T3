@@ -7,18 +7,17 @@ import {
   type FactoryDecisionCommand,
   type FactoryEffectIntent,
   type FactoryExperimentSettings,
-  type FactoryManager,
   type FactorySharedRepository,
   type FactorySharedWork,
   type FactorySnapshot,
   type FactorySupportingWork,
-  type FactoryWorkflowMigration,
-  type FactoryWorkflowRelease,
-  type FactoryWorkflowVersion,
   type CommandId,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
-import { commissionFactoryAssignment } from "./FactoryAssignmentCommission.ts";
+import {
+  commissionFactoryAssignment,
+  type FactorySkillsContext,
+} from "./FactoryAssignmentCommission.ts";
 import {
   factoryPathWithin,
   factoryPathsChangeSkills,
@@ -27,10 +26,6 @@ import {
 } from "./FactoryBoundaryPaths.ts";
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import { isFactoryModelApproved, resolveFactoryModelPolicy } from "./FactoryModelPolicy.ts";
-import {
-  factorySharedAssignmentEnabled,
-  factorySharedAssignmentOwned,
-} from "./FactoryWorkflowOwnership.ts";
 import type { FactoryActor, FactoryAllocation, FactoryDecision } from "./FactoryState.ts";
 
 /**
@@ -45,32 +40,6 @@ export interface FactoryWorkflowContext {
     readonly boundary: FactoryBoundary;
     readonly repositoryRoot: string;
   };
-  /** The verified snapshot of the committed revision for `workflow.release.register`. */
-  readonly workflowRelease?: {
-    readonly version: FactoryWorkflowVersion;
-    readonly snapshotDigest: string;
-  };
-}
-
-/**
- * The workflow version a manager's new assignments pin. A per-manager override wins over the
- * latest default adoption; an adoption with a null release, or no adoption at all, falls back to
- * the manager's own approved workflow. Running delivery teams keep their pinned version until the
- * human selects them for `workflow.restart`.
- */
-export function effectiveFactoryWorkflow(
-  state: FactorySnapshot,
-  manager: FactoryManager,
-): FactoryWorkflowVersion {
-  const override = state.workflowOverrides.find((entry) => entry.managerId === manager.id);
-  const adoption =
-    override === undefined
-      ? state.workflowAdoptions.findLast((entry) => entry.scope.kind === "default")
-      : state.workflowAdoptions.find((entry) => entry.id === override.adoptionId);
-  return (
-    state.workflowReleases.find((entry) => entry.id === adoption?.releaseId)?.version ??
-    manager.workflow
-  );
 }
 
 /** The latest experiment configuration. Experiments stay disabled until the human enables them. */
@@ -133,19 +102,20 @@ function validWork(boundary: FactoryBoundary, work: FactorySupportingWork): bool
 
 /**
  * Decides the system manager's workflow-improvement commands: shared repositories and work,
- * isolated experiments, workflow releases, adoption and restarts, validations and model
- * recommendations. Returns `undefined` for any other command so `decide` tries the next decider.
+ * isolated experiments, validations and model recommendations. Shared work ends at its PR merge:
+ * the next commission picks the merged skills up from the repository's HEAD. Returns `undefined` for any other command so `decide` tries the next decider.
  * `workflow.models.apply` also falls through, because `decide` applies it by re-deciding the
  * recommended model configuration as a human command.
  */
 export function decideFactoryWorkflow(
-  input: FactoryWorkflowContext & {
-    readonly state: FactorySnapshot;
-    readonly actor: FactoryActor;
-    readonly command: FactoryDecisionCommand;
-    readonly now: string;
-    readonly allocation?: FactoryAllocation;
-  },
+  input: FactoryWorkflowContext &
+    FactorySkillsContext & {
+      readonly state: FactorySnapshot;
+      readonly actor: FactoryActor;
+      readonly command: FactoryDecisionCommand;
+      readonly now: string;
+      readonly allocation?: FactoryAllocation;
+    },
 ): Result.Result<FactoryDecision, FactoryError> | undefined {
   const { state, actor, command, now } = input;
   if (
@@ -198,18 +168,6 @@ export function decideFactoryWorkflow(
         entry.revision === revision &&
         entry.outcome === "accepted",
     );
-  // A release from a project-scoped proposal reaches only those projects, never the default.
-  const releaseReaches = (
-    release: FactoryWorkflowRelease,
-    projectIds: "all" | readonly (string | null | undefined)[],
-  ) => {
-    const scope = proposal(release.proposalId, release.proposalRevision)?.content.scope;
-    return (
-      scope?.kind !== "projects" ||
-      (projectIds !== "all" &&
-        projectIds.every((id) => scope.projectIds.some((projectId) => projectId === id)))
-    );
-  };
   const repositoryFor = (id: string) =>
     state.sharedRepositories.find((entry) => entry.id === id && entry.managerId === manager?.id);
   // Withdrawing authority bumps each live team's grant epoch, so anything prepared under the old
@@ -265,7 +223,7 @@ export function decideFactoryWorkflow(
       boundary,
       work,
       allocation: input.allocation,
-      workflow: effectiveFactoryWorkflow(state, manager),
+      skills: input.skills,
       policy: {
         ...resolveManagerPolicy(state.defaults, manager.overrides),
         delivery: "human-approval",
@@ -636,586 +594,10 @@ export function decideFactoryWorkflow(
         [prepare(assignment)],
       );
     }
-    case "workflow.release.register": {
-      if (!canCoordinate)
-        return fail("Only the human or active system manager can register an owned release.");
-      const repository = repositoryFor(command.repositoryId);
-      const qualified = input.workflowRelease;
-      if (
-        !repository ||
-        repository.kind !== "skills" ||
-        !qualified ||
-        qualified.version.repositoryRoot !== repository.repositoryRoot ||
-        qualified.version.revision !== command.revision ||
-        !/^[a-f0-9]{40,64}$/i.test(command.revision) ||
-        !proposal(command.proposalId, command.proposalRevision)
-      )
-        return fail(
-          "The host must identify the exact committed owned workflow snapshot.",
-          "invalid-state",
-        );
-      // A release is the exact commit the human approved and merged for this proposal's work.
-      const delivered = state.assignments.find(
-        (entry) =>
-          entry.id === command.assignmentId &&
-          entry.sharedWork?.kind === "implementation" &&
-          entry.sharedWork.repositoryId === repository.id &&
-          factorySharedAssignmentOwned(state, entry),
-      );
-      const plan = state.sharedWorks.find(
-        (entry) =>
-          delivered?.sharedWork?.kind === "implementation" &&
-          entry.id === delivered.sharedWork.workId,
-      )?.plan;
-      if (
-        !delivered ||
-        plan?.proposalId !== command.proposalId ||
-        plan.proposalRevision !== command.proposalRevision ||
-        !delivered.delivery?.revisions.some(
-          (revision) =>
-            revision.merge?.status === "merged" &&
-            revision.approval?.expectedHeadSha.toLowerCase() === command.revision.toLowerCase(),
-        )
-      )
-        return fail(
-          "A release must be the merged commit approved for this proposal's implementation.",
-          "invalid-state",
-        );
-      const existing = state.workflowReleases.find(
-        (entry) =>
-          entry.repositoryId === repository.id && entry.version.revision === command.revision,
-      );
-      // Registering the same commit again returns the existing release.
-      if (existing) return accepted({}, { releaseId: existing.id });
-      const release = {
-        id: `workflow-release:${command.commandId}`,
-        repositoryId: repository.id,
-        version: qualified.version,
-        snapshotDigest: qualified.snapshotDigest,
-        proposalId: command.proposalId,
-        proposalRevision: command.proposalRevision,
-        assignmentId: command.assignmentId,
-        provenance: "owned-codex-library" as const,
-        baselineOrigin: "pstack-codex-adaptation" as const,
-        registeredAt: now,
-      };
-      return accepted(
-        { workflowReleases: [...state.workflowReleases, release] },
-        { releaseId: release.id },
-      );
-    }
-    case "workflow.adopt": {
-      if (!human) return fail("Workflow adoption always requires a human decision.");
-      // A null release resets the scope to each manager's own approved workflow.
-      const release = state.workflowReleases.find((entry) => entry.id === command.releaseId);
-      if (
-        command.releaseId !== null &&
-        (!release || !acceptedProposal(release.proposalId, release.proposalRevision))
-      )
-        return fail("Select a committed release linked to an accepted proposal.", "invalid-state");
-      if (
-        command.scope.kind === "managers" &&
-        (new Set(command.scope.managerIds).size !== command.scope.managerIds.length ||
-          command.scope.managerIds.some((id) => !state.managers.some((entry) => entry.id === id)))
-      )
-        return fail("Select existing managers once.", "invalid-state");
-      if (
-        release &&
-        !releaseReaches(
-          release,
-          command.scope.kind === "default"
-            ? "all"
-            : command.scope.managerIds.map(
-                (id) => state.managers.find((entry) => entry.id === id)?.projectId,
-              ),
-        )
-      )
-        return fail(
-          "A project-scoped release can only be adopted by those projects' managers.",
-          "invalid-state",
-        );
-      const adoption = {
-        id: `workflow-adoption:${command.commandId}`,
-        releaseId: release?.id ?? null,
-        scope: command.scope,
-        commandId: command.commandId,
-        adoptedAt: now,
-      };
-      // A manager-scoped adoption replaces those managers' overrides. A default adoption leaves
-      // existing overrides in place, so it reaches only managers without one.
-      const ids = command.scope.kind === "managers" ? command.scope.managerIds : [];
-      return accepted(
-        {
-          workflowAdoptions: [...state.workflowAdoptions, adoption],
-          workflowOverrides: [
-            ...state.workflowOverrides.filter((entry) => !ids.includes(entry.managerId)),
-            ...ids.map((managerId) => ({ managerId, adoptionId: adoption.id })),
-          ],
-        },
-        { adoptionId: adoption.id },
-      );
-    }
-    case "workflow.override.clear": {
-      if (!human) return fail("Only the human changes workflow adoption overrides.");
-      if (!state.managers.some((entry) => entry.id === command.managerId))
-        return fail("Manager not found.", "manager-not-found");
-      return accepted({
-        workflowOverrides: state.workflowOverrides.filter(
-          (entry) => entry.managerId !== command.managerId,
-        ),
-      });
-    }
-    // A restart moves each selected team through stopping, preparing and ready, then resumes it.
-    // The host reports each step with a receipt below. Only an assignment's latest migration is
-    // current, and a team cannot start another restart until its last one has resumed.
-    case "workflow.restart": {
-      if (!human)
-        return fail(
-          "Live trials and active-assignment migration require explicit human selection.",
-        );
-      // A restore restarts each team on its own pinned version, so held work can resume
-      // without moving onto another release.
-      const release = state.workflowReleases.find((entry) => entry.id === command.releaseId);
-      const assignments = command.assignmentIds.map((id) =>
-        state.assignments.find((entry) => entry.id === id),
-      );
-      if (
-        (command.kind === "restore"
-          ? command.releaseId !== undefined
-          : !release ||
-            !acceptedProposal(release.proposalId, release.proposalRevision) ||
-            !releaseReaches(
-              release,
-              assignments.map((entry) => entry?.projectId),
-            )) ||
-        new Set(command.assignmentIds).size !== command.assignmentIds.length
-      )
-        return fail(
-          "Select an approved exact workflow release, or a restore, and distinct active assignments.",
-          "invalid-state",
-        );
-      if (
-        assignments.some(
-          (entry) =>
-            !entry ||
-            entry.kind === "onboarding" ||
-            !entry.grant ||
-            entry.outcome !== undefined ||
-            entry.status === "complete" ||
-            entry.preparation !== "ready" ||
-            (entry.completion !== undefined && entry.completion.phase !== "collecting") ||
-            state.workflowMigrations.some(
-              (migration) =>
-                migration.assignmentId === entry.id &&
-                (migration.lifecycle.phase !== "ready" ||
-                  migration.lifecycle.resume.phase !== "delivered"),
-            ),
-        )
-      )
-        return fail(
-          "Only current delivery teams with no pending conclusion or restart can migrate.",
-          "invalid-state",
-        );
-      const migrations: FactoryWorkflowMigration[] = assignments.map((entry) => ({
-        id: `workflow-migration:${command.commandId}:${entry!.id}`,
-        assignmentId: entry!.id,
-        releaseId: release?.id ?? null,
-        previousVersion: entry!.workflow,
-        previousEpoch: entry!.grant!.epoch,
-        ...(entry!.qualification.status === "qualified"
-          ? { previousProfileId: entry!.qualification.profileId }
-          : {}),
-        preparedEpoch: null,
-        retainedAuthorityReason: entry!.wait?.kind === "authority" ? entry!.wait.reason : null,
-        previousState: { status: entry!.status, wait: entry!.wait },
-        kind: command.kind,
-        reason: command.reason,
-        commandId: command.commandId,
-        createdAt: now,
-        lifecycle: { phase: "stopping" },
-      }));
-      return accepted(
-        {
-          workflowMigrations: [...state.workflowMigrations, ...migrations],
-          assignments: state.assignments.map((entry) =>
-            command.assignmentIds.includes(entry.id)
-              ? {
-                  ...entry,
-                  status: "waiting",
-                  wait: {
-                    kind: "execution-boundary",
-                    reason: "Stopping the team for its explicitly selected workflow restart.",
-                  },
-                  updatedAt: now,
-                }
-              : entry,
-          ),
-        },
-        { migrationIds: migrations.map((entry) => entry.id) },
-        migrations.map((entry) => ({
-          type: "workflow.restart.stop",
-          migrationId: entry.id,
-          assignmentId: entry.assignmentId,
-        })),
-      );
-    }
-    case "workflow.restart.continue": {
-      if (!human) return fail("Only the human can continue with the current reduced permissions.");
-      const migration = state.workflowMigrations.find((entry) => entry.id === command.migrationId);
-      const assignment = state.assignments.find((entry) => entry.id === migration?.assignmentId);
-      const owner = state.managers.find((entry) => entry.id === assignment?.managerId);
-      if (
-        !migration ||
-        !assignment?.grant ||
-        !owner ||
-        migration.lifecycle.phase !== "ready" ||
-        migration.lifecycle.resume.phase === "delivered" ||
-        assignment.outcome !== undefined ||
-        assignment.status === "complete" ||
-        assignment.wait?.kind !== "authority" ||
-        state.workflowMigrations.findLast((entry) => entry.assignmentId === assignment.id)?.id !==
-          migration.id
-      )
-        return fail(
-          "Select a current prepared restart held for an explicit authority decision.",
-          "invalid-state",
-        );
-      // Continuing lifts the hold but grants nothing back. The grant must be the one the profile
-      // was prepared for, and current shared-work and model permissions must still admit the team.
-      if (
-        assignment.grant.epoch !== migration.preparedEpoch ||
-        assignment.qualification.status !== "qualified"
-      )
-        return fail(
-          "Current grants changed after preparation. Prepare the selected workflow again before continuing.",
-          "stale-revision",
-        );
-      if (
-        (assignment.sharedWork !== undefined &&
-          !factorySharedAssignmentEnabled(state, assignment)) ||
-        !assignment.modelSelection ||
-        !assignment.modelPolicy ||
-        !isFactoryModelApproved(assignment.modelPolicy, assignment.modelSelection) ||
-        !isFactoryModelApproved(
-          resolveFactoryModelPolicy(
-            state.modelDefaults,
-            owner.modelOverrides,
-            owner.modelSelection,
-          ),
-          assignment.modelSelection,
-        )
-      )
-        return fail(
-          "Restore the required current repository, work, experiment and model permissions before continuing.",
-        );
-      // The team returns to the wait it had before the restart, except an authority hold, which
-      // this decision clears, and a dependency wait whose dependencies are now usable.
-      const previousWait = migration.previousState.wait;
-      const wait =
-        previousWait?.kind === "authority"
-          ? null
-          : previousWait?.kind === "dependency" &&
-              previousWait.dependencyIds.every((id) =>
-                state.dependencies.some((entry) => entry.id === id && entry.state === "usable"),
-              )
-            ? null
-            : previousWait;
-      return accepted(
-        {
-          workflowMigrations: state.workflowMigrations.map((entry) =>
-            entry.id === migration.id
-              ? {
-                  ...entry,
-                  retainedAuthorityReason: null,
-                  lifecycle: { ...migration.lifecycle, resume: { phase: "pending" } },
-                }
-              : entry,
-          ),
-          assignments: state.assignments.map((entry) =>
-            entry.id === assignment.id
-              ? { ...entry, status: wait === null ? "running" : "waiting", wait, updatedAt: now }
-              : entry,
-          ),
-        },
-        { migrationIds: [migration.id], assignmentId: assignment.id },
-        [
-          {
-            type: "workflow.restart.resume",
-            migrationId: migration.id,
-            assignmentId: assignment.id,
-          },
-        ],
-      );
-    }
-    case "workflow.restart.retry": {
-      if (!human) return fail("The human retries a failed workflow restart.");
-      const migration = state.workflowMigrations.find((entry) => entry.id === command.migrationId);
-      if (!migration) return fail("Restart not found.", "invalid-state");
-      const assignment = state.assignments.find((entry) => entry.id === migration.assignmentId);
-      if (
-        !assignment?.grant ||
-        assignment.outcome !== undefined ||
-        assignment.status === "complete" ||
-        state.workflowMigrations.findLast((entry) => entry.assignmentId === assignment.id)?.id !==
-          migration.id
-      )
-        return fail("Only the current active restart can retry.", "invalid-state");
-      const phase = migration.lifecycle;
-      // If the grant changed after preparation, even a ready restart goes back to preparing on a
-      // fresh epoch, so the team never resumes on a profile prepared for an older grant.
-      const needsPreparation =
-        phase.phase === "ready" &&
-        phase.resume.phase !== "delivered" &&
-        assignment.grant.epoch !== migration.preparedEpoch;
-      const next =
-        needsPreparation && assignment.startingSource
-          ? { phase: "preparing" as const, startingSource: assignment.startingSource }
-          : phase.phase === "failed"
-            ? phase.step === "stop"
-              ? { phase: "stopping" as const }
-              : phase.startingSource
-                ? { phase: "preparing" as const, startingSource: phase.startingSource }
-                : undefined
-            : phase.phase === "ready" && phase.resume.phase === "failed"
-              ? { ...phase, resume: { phase: "pending" as const } }
-              : undefined;
-      if (!next)
-        return fail("Only a recorded failed restart step can be retried.", "invalid-state");
-      const type =
-        next.phase === "stopping"
-          ? "workflow.restart.stop"
-          : next.phase === "preparing"
-            ? "workflow.restart.prepare"
-            : "workflow.restart.resume";
-      const rebase =
-        next.phase === "preparing" && assignment.grant.epoch !== migration.preparedEpoch;
-      const preparedEpoch = rebase ? assignment.grant.epoch + 1 : migration.preparedEpoch;
-      // Remember a current authority hold, so preparation finishing does not release the team.
-      const retainedAuthorityReason =
-        assignment.wait?.kind === "authority"
-          ? assignment.wait.reason
-          : migration.retainedAuthorityReason;
-      return accepted(
-        {
-          workflowMigrations: state.workflowMigrations.map((entry) =>
-            entry.id === migration.id
-              ? { ...entry, lifecycle: next, preparedEpoch, retainedAuthorityReason }
-              : entry,
-          ),
-          ...(rebase
-            ? {
-                assignments: state.assignments.map((entry) =>
-                  entry.id === assignment.id
-                    ? {
-                        ...entry,
-                        grant: { ...assignment.grant!, epoch: preparedEpoch! },
-                        qualification: {
-                          status: "unavailable" as const,
-                          reason: "Preparing the selected workflow with current tightened grants.",
-                        },
-                      }
-                    : entry,
-                ),
-              }
-            : {}),
-        },
-        { migrationIds: [migration.id] },
-        [{ type, migrationId: migration.id, assignmentId: migration.assignmentId }],
-      );
-    }
-    case "workflow.restart.stopped":
-    case "workflow.restart.prepared":
-    case "workflow.restart.failed":
-    case "workflow.restart.resumed": {
-      if (!host) return fail("Only the host records workflow restart execution.");
-      const migration = state.workflowMigrations.find((entry) => entry.id === command.migrationId);
-      const assignment = state.assignments.find((entry) => entry.id === migration?.assignmentId);
-      const version =
-        migration?.releaseId === null
-          ? migration.previousVersion
-          : state.workflowReleases.find((entry) => entry.id === migration?.releaseId)?.version;
-      if (!migration || !assignment || !assignment.grant || !version)
-        return fail("Restart source is unavailable.", "invalid-state");
-      if (
-        state.workflowMigrations.findLast((entry) => entry.assignmentId === assignment.id)?.id !==
-        migration.id
-      )
-        return fail("A newer restart supersedes this receipt.", "stale-revision");
-      // Stop and prepare receipts carry the revision the host read its evidence at; any change
-      // since then makes the evidence stale.
-      if ("expectedStateRevision" in command && command.expectedStateRevision !== state.revision)
-        return fail("Restart evidence changed before recording.", "stale-revision");
-      const record = (
-        lifecycle: FactoryWorkflowMigration["lifecycle"],
-        updated: FactoryAssignment = assignment,
-        effects: readonly FactoryEffectIntent[] = [],
-        metadata: Pick<
-          FactoryWorkflowMigration,
-          "preparedEpoch" | "retainedAuthorityReason"
-        > = migration,
-      ) =>
-        accepted(
-          {
-            workflowMigrations: state.workflowMigrations.map((entry) =>
-              entry.id === migration.id
-                ? {
-                    ...entry,
-                    lifecycle,
-                    preparedEpoch: metadata.preparedEpoch,
-                    retainedAuthorityReason: metadata.retainedAuthorityReason,
-                  }
-                : entry,
-            ),
-            assignments: state.assignments.map((entry) =>
-              entry.id === updated.id ? updated : entry,
-            ),
-          },
-          { migrationIds: [migration.id], assignmentId: assignment.id },
-          effects,
-        );
-      // A failure for a step the migration has already left is a replay and changes nothing.
-      // Failure and resume receipts land even for concluded work; stop and prepare receipts do not.
-      if (command.type === "workflow.restart.failed") {
-        if (command.step === "resume")
-          return migration.lifecycle.phase === "ready" &&
-            migration.lifecycle.resume.phase !== "delivered"
-            ? record({
-                ...migration.lifecycle,
-                resume: { phase: "failed", reason: command.reason },
-              })
-            : accepted();
-        if (
-          (command.step === "stop" && migration.lifecycle.phase !== "stopping") ||
-          (command.step === "prepare" && migration.lifecycle.phase !== "preparing")
-        )
-          return accepted();
-        return record(
-          {
-            phase: "failed",
-            step: command.step,
-            reason: command.reason,
-            startingSource:
-              migration.lifecycle.phase === "preparing" ? migration.lifecycle.startingSource : null,
-          },
-          // Concluded work keeps its status; only the migration records the failure.
-          assignment.outcome !== undefined || assignment.status === "complete"
-            ? assignment
-            : {
-                ...assignment,
-                status: "waiting",
-                wait: { kind: "execution-boundary", reason: command.reason },
-                updatedAt: now,
-              },
-          [],
-          {
-            preparedEpoch: migration.preparedEpoch,
-            retainedAuthorityReason:
-              assignment.wait?.kind === "authority"
-                ? assignment.wait.reason
-                : migration.retainedAuthorityReason,
-          },
-        );
-      }
-      if (command.type === "workflow.restart.resumed") {
-        if (
-          migration.lifecycle.phase !== "ready" ||
-          assignment.qualification.status !== "qualified" ||
-          assignment.qualification.profileId !== command.profileId
-        )
-          return fail("The resumed profile does not match this restart.", "stale-revision");
-        return record({ ...migration.lifecycle, resume: { phase: "delivered", deliveredAt: now } });
-      }
-      if (assignment.outcome !== undefined || assignment.status === "complete")
-        return fail("Concluded work cannot restart.", "invalid-state");
-      // The stopped team's work is captured as a fresh handover source for its own lead. The
-      // assignment then pins the new version and a new grant epoch, so its old profile no longer
-      // qualifies.
-      if (command.type === "workflow.restart.stopped") {
-        if (
-          migration.lifecycle.phase !== "stopping" ||
-          command.startingSource.projectId !== assignment.projectId ||
-          command.startingSource.origin !== "handover" ||
-          command.startingSource.threadId !== assignment.threadId ||
-          command.startingSource.id === assignment.startingSource?.id
-        )
-          return fail("The stopped team's source or grant changed.", "stale-revision");
-        return record(
-          { phase: "preparing", startingSource: command.startingSource },
-          {
-            ...assignment,
-            workflow: version,
-            startingSource: command.startingSource,
-            grant: { ...assignment.grant, epoch: assignment.grant.epoch + 1 },
-            preparation: "preparing",
-            qualification: {
-              status: "unavailable",
-              reason: "Preparing the selected workflow profile.",
-            },
-            status: "waiting",
-            wait: {
-              kind: "execution-boundary",
-              reason: "Preparing the selected workflow profile.",
-            },
-            updatedAt: now,
-          },
-          [
-            {
-              type: "workflow.restart.prepare",
-              migrationId: migration.id,
-              assignmentId: assignment.id,
-            },
-          ],
-          {
-            preparedEpoch: assignment.grant.epoch + 1,
-            retainedAuthorityReason:
-              assignment.wait?.kind === "authority"
-                ? assignment.wait.reason
-                : migration.retainedAuthorityReason,
-          },
-        );
-      }
-      if (
-        migration.lifecycle.phase !== "preparing" ||
-        assignment.grant.epoch !== migration.preparedEpoch ||
-        command.qualification.status !== "qualified"
-      )
-        return fail(
-          "The new workflow profile has not been qualified for this grant.",
-          "stale-revision",
-        );
-      // Prepared: the team gets back its pre-restart status and wait, unless an authority hold is
-      // current or was retained, in which case it waits for `workflow.restart.continue`.
-      return record(
-        { phase: "ready", completedAt: now, resume: { phase: "pending" } },
-        {
-          ...assignment,
-          qualification: command.qualification,
-          preparation: "ready",
-          status:
-            assignment.wait?.kind === "authority" || migration.retainedAuthorityReason !== null
-              ? "waiting"
-              : migration.previousState.status,
-          wait:
-            assignment.wait?.kind === "authority"
-              ? assignment.wait
-              : migration.retainedAuthorityReason !== null
-                ? { kind: "authority", reason: migration.retainedAuthorityReason }
-                : migration.previousState.wait,
-          updatedAt: now,
-        },
-        [
-          {
-            type: "workflow.restart.resume",
-            migrationId: migration.id,
-            assignmentId: assignment.id,
-          },
-        ],
-      );
-    }
     case "improvement.validation.record": {
       if (!canCoordinate || !acceptedProposal(command.proposalId, command.proposalRevision))
         return fail("Validation needs its exact accepted shared proposal and authorized reviewer.");
-      // A named implementation or release must come from this same proposal revision.
+      // A named implementation must come from this same proposal revision.
       if (
         command.assignmentId !== undefined &&
         !state.assignments.some(
@@ -1232,22 +614,11 @@ export function decideFactoryWorkflow(
         )
       )
         return fail("The implementation must belong to this proposal.");
-      if (
-        command.releaseId !== undefined &&
-        !state.workflowReleases.some(
-          (entry) =>
-            entry.id === command.releaseId &&
-            entry.proposalId === command.proposalId &&
-            entry.proposalRevision === command.proposalRevision,
-        )
-      )
-        return fail("The release must belong to this proposal.");
       const validation = {
         id: `validation:${command.commandId}`,
         proposalId: command.proposalId,
         proposalRevision: command.proposalRevision,
         assignmentId: command.assignmentId ?? null,
-        releaseId: command.releaseId ?? null,
         outcome: command.outcome,
         evidence: command.evidence,
         assessment: command.assessment,

@@ -62,9 +62,9 @@ const fixture = () => {
         commandId,
         projectId,
         modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved" },
-        workflow: { repositoryRoot: "C:/skills", revision: "pinned" },
       },
       allocation: { managerThreadId: managerId, leadThreadId: leadId, assignmentId },
+      skills: { repositoryRoot: "C:/skills", revision: "pinned" },
       qualification: { status: "qualified", profileId: "profile", checkedAt: now },
     }),
   );
@@ -105,7 +105,7 @@ const failure = (
 };
 
 describe("Factory controls", () => {
-  it("keeps withdrawn authority held after a workflow restart becomes ready", () => {
+  it("holds a shared team whose authority was withdrawn but not its system manager", () => {
     const shared = sharedAccessFixture(fixture());
     const held: FactorySnapshot = {
       ...shared,
@@ -143,7 +143,7 @@ describe("Factory controls", () => {
       commandId: CommandId.make("retire-system"),
       managerId,
     } as const;
-    const reason = "Replace it with a manager on the new workflow";
+    const reason = "Replace it with a new system manager";
     assert.strictEqual(
       failure(shared, { ...retire, reason }, { kind: "thread", threadId: managerId }),
       "permission-denied",
@@ -215,13 +215,13 @@ describe("Factory controls", () => {
           commandId: CommandId.make("recreate"),
           projectId,
           modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved" },
-          workflow: { repositoryRoot: "C:/skills", revision: "pinned" },
         },
         allocation: {
           managerThreadId: ThreadId.make("manager-2"),
           leadThreadId: ThreadId.make("lead-2"),
           assignmentId: FactoryAssignmentId.make("assignment-2"),
         },
+        skills: { repositoryRoot: "C:/skills", revision: "pinned" },
         qualification: { status: "qualified", profileId: "profile-2", checkedAt: now },
       }),
     );

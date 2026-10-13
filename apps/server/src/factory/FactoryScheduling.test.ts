@@ -19,7 +19,12 @@ import {
   factoryScheduleWorkDigest,
   type FactorySchedulingContext,
 } from "./FactoryScheduling.ts";
-import { deliveryFixture, deliveryIds, deliveryNow } from "./FactoryDelivery.testkit.ts";
+import {
+  deliveryFixture,
+  deliveryIds,
+  deliveryNow,
+  deliverySkills,
+} from "./FactoryDelivery.testkit.ts";
 
 const issue = {
   hostKind: "github" as const,
@@ -48,7 +53,10 @@ const apply = (
   command: FactoryDecisionCommand,
   actor: FactoryActor = { kind: "system" },
   context: FactorySchedulingContext = {},
-) => Result.getOrThrow(decide({ state, command, actor, ...context, now: deliveryNow }));
+) =>
+  Result.getOrThrow(
+    decide({ skills: deliverySkills, state, command, actor, ...context, now: deliveryNow }),
+  );
 const id = () => CommandId.make(`schedule-${++sequence}`);
 const fixture = () => {
   const base = deliveryFixture();
@@ -148,6 +156,7 @@ const commission = (
   context: FactorySchedulingContext = { schedulingAdmission: admission(state) },
 ) =>
   decide({
+    skills: deliverySkills,
     state,
     actor: manager,
     command: {
@@ -439,6 +448,7 @@ describe("factory scheduling authority", () => {
       assert.isTrue(
         Result.isFailure(
           decide({
+            skills: deliverySkills,
             state,
             actor: { kind: "system" },
             command: {
@@ -454,6 +464,7 @@ describe("factory scheduling authority", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: manager,
           command: {
@@ -469,6 +480,7 @@ describe("factory scheduling authority", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state,
           actor: { kind: "system" },
           command: {
@@ -521,11 +533,14 @@ describe("factory scheduling authority", () => {
       expectedStateRevision: held.revision,
     };
     assert.isTrue(
-      Result.isFailure(decide({ state: held, actor: manager, command, now: deliveryNow })),
+      Result.isFailure(
+        decide({ skills: deliverySkills, state: held, actor: manager, command, now: deliveryNow }),
+      ),
     );
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: held,
           actor: { kind: "system" },
           command: { ...command, expectedStateRevision: state.revision },
@@ -639,6 +654,7 @@ describe("factory scheduling authority", () => {
       authorizationMessageId?: MessageId,
     ) =>
       decide({
+        skills: deliverySkills,
         state,
         actor: manager,
         command: {
@@ -669,6 +685,7 @@ describe("factory scheduling authority", () => {
     assert.isTrue(Result.isFailure(commission(committed)));
     // The same human request cannot authorize another ticket.
     const reused = decide({
+      skills: deliverySkills,
       state: committed,
       actor: manager,
       command: {
@@ -765,6 +782,7 @@ describe("factory scheduling authority", () => {
     const state = fixture();
     assert.isTrue(Result.isFailure(commission(state, {})));
     const result = decide({
+      skills: deliverySkills,
       state,
       actor: { kind: "human" },
       command: {
@@ -832,11 +850,20 @@ describe("factory scheduling authority", () => {
     const lead = { kind: "thread" as const, threadId: deliveryIds.lead };
     assert.isTrue(
       Result.isFailure(
-        decide({ state, command: track, actor: lead, ...observed, now: deliveryNow }),
+        decide({
+          skills: deliverySkills,
+          state,
+          command: track,
+          actor: lead,
+          ...observed,
+          now: deliveryNow,
+        }),
       ),
     );
     assert.isTrue(
-      Result.isFailure(decide({ state, command: track, actor: manager, now: deliveryNow })),
+      Result.isFailure(
+        decide({ skills: deliverySkills, state, command: track, actor: manager, now: deliveryNow }),
+      ),
     );
     const tracked = apply(state, track, manager, observed);
     const candidate = tracked.state.scheduleCandidates.find((entry) => entry.issue.number === 2)!;
@@ -903,6 +930,7 @@ describe("factory scheduling authority", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: dismissed.state,
           actor: manager,
           command: {

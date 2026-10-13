@@ -279,8 +279,8 @@ export function FactoryPolicyDialog({
             >
               <Input id={`${prefix}-shared`} value="Investigate and recommend" readOnly />
               <p className="text-sm text-muted-foreground">
-                Workflow-wide changes come to you for human review. This setting never grants
-                autonomous adoption.
+                Workflow-wide changes come to you for human review. A skill change applies only once
+                you merge it into the skills repository.
               </p>
             </PolicyField>
             <PolicyField

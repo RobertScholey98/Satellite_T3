@@ -235,8 +235,8 @@ export function FactorySharedRepositoryForm({
           </SelectPopup>
         </Select>
         <p className="text-xs text-muted-foreground">
-          Integrity verifies scope and protected files for instruction libraries. Workflow adoption
-          has no mandatory quality-testing gate.
+          Integrity verifies scope and protected files for instruction libraries. Skill changes
+          reach new assignments once merged and have no mandatory quality-testing gate.
         </p>
       </div>
       {verification === "gates" ? (

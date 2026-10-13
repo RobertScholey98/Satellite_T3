@@ -5,6 +5,7 @@ import {
   factorySystemManager,
   type FactoryAssignment,
   type FactoryCommand,
+  type FactoryWorkflowVersion,
   type FactorySnapshot,
   type ThreadId,
   isFactoryError,
@@ -20,17 +21,17 @@ import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as Boundaries from "./FactoryBoundaryExecution.ts";
 import * as Execution from "./FactoryExecution.ts";
-import * as WorkflowExecution from "./FactoryWorkflowExecution.ts";
 import * as Handover from "./FactoryHandover.ts";
 import * as Access from "./FactoryControlAccess.ts";
 import * as FactoryStore from "./FactoryStore.ts";
-import { effectiveFactoryWorkflow, type FactoryWorkflowContext } from "./FactoryWorkflow.ts";
+import { type FactoryWorkflowContext } from "./FactoryWorkflow.ts";
+import { factorySkillsPin } from "./FactoryAssignmentCommission.ts";
 import type { FactoryActor } from "./FactoryState.ts";
 
 /**
  * The host side of the workflow decider. `FactoryService` asks it for the facts a command needs
  * before deciding, and the effect worker hands it the decider's workflow intents: notifying the
- * system manager of authorized shared work, stopping revoked teams, and running each restart step.
+ * system manager of authorized shared work and stopping revoked teams.
  */
 export class FactoryWorkflowEffects extends Context.Service<
   FactoryWorkflowEffects,
@@ -44,6 +45,7 @@ export class FactoryWorkflowEffects extends Context.Service<
     readonly context: (
       actor: FactoryActor,
       command: FactoryCommand,
+      skills: FactoryWorkflowVersion | undefined,
     ) => Effect.Effect<FactoryWorkflowContext, FactoryError>;
     /**
      * Runs one pending workflow intent and records its receipt. Safe to replay: intents that no
@@ -64,7 +66,6 @@ const make = Effect.gen(function* () {
   const store = yield* FactoryStore.FactoryStore;
   const boundaries = yield* Boundaries.FactoryBoundaryExecution;
   const execution = yield* Execution.FactoryExecution;
-  const workflows = yield* WorkflowExecution.FactoryWorkflowExecution;
   const handovers = yield* Handover.FactoryHandover;
   const access = yield* Access.FactoryControlAccess;
   const threads = yield* Threads.ThreadManagementService;
@@ -74,6 +75,7 @@ const make = Effect.gen(function* () {
   const context = Effect.fn("FactoryWorkflowEffects.context")(function* (
     actor: FactoryActor,
     command: FactoryCommand,
+    skills: FactoryWorkflowVersion | undefined,
   ): Effect.fn.Return<FactoryWorkflowContext, FactoryError> {
     if (command.type === "manager.create") {
       if (actor.kind !== "human") return yield* new FactoryError({ code: "permission-denied" });
@@ -88,7 +90,6 @@ const make = Effect.gen(function* () {
     }
     if (
       command.type !== "shared.repository.register" &&
-      command.type !== "workflow.release.register" &&
       command.type !== "shared.work.commission" &&
       command.type !== "experiment.commission"
     )
@@ -114,7 +115,9 @@ const make = Effect.gen(function* () {
       const repositoryRoot = yield* fs
         .realPath(project.value.workspaceRoot)
         .pipe(Effect.mapError(failure));
-      const workflow = effectiveFactoryWorkflow(state, manager);
+      const pin = factorySkillsPin(skills);
+      if (Result.isFailure(pin)) return yield* pin.failure;
+      const workflow = pin.success;
       const qualification = yield* execution.qualify({
         projectId: command.projectId,
         modelSelection: manager.modelSelection,
@@ -133,16 +136,6 @@ const make = Effect.gen(function* () {
         configuration: command.configuration,
       });
       return { sharedRepository: { boundary, repositoryRoot } };
-    }
-    if (command.type === "workflow.release.register") {
-      const repository = state.sharedRepositories.find(
-        (entry) =>
-          entry.id === command.repositoryId && entry.managerId === manager.id && entry.enabled,
-      );
-      if (!repository) return yield* new FactoryError({ code: "permission-denied" });
-      const version = { repositoryRoot: repository.repositoryRoot, revision: command.revision };
-      const snapshot = yield* workflows.snapshot({ version, requireSkillAuthoring: true });
-      return { workflowRelease: { version, snapshotDigest: snapshot.digest } };
     }
     const scope =
       command.type === "experiment.commission"
@@ -250,7 +243,7 @@ const make = Effect.gen(function* () {
               threadId: manager.threadId,
               messageId,
               commandId: CommandId.make(`factory-shared-work:${work.id}:notify`),
-              text: `The human authorized shared work ${work.id} against proposal ${work.plan.proposalId}, revision ${work.plan.proposalRevision}. Task: ${work.plan.work.title.slice(0, 3000)}. Read its exact immutable plan and current authority in factory_snapshot, then commission its implementation lead with shared.work.commission and workId ${work.id} when available. Your team owns implementation, internal review and delivery. This authorization grants neither live workflow adoption nor broader changes.`,
+              text: `The human authorized shared work ${work.id} against proposal ${work.plan.proposalId}, revision ${work.plan.proposalRevision}. Task: ${work.plan.work.title.slice(0, 3000)}. Read its exact immutable plan and current authority in factory_snapshot, then commission its implementation lead with shared.work.commission and workId ${work.id} when available. Your team owns implementation, internal review and delivery. This authorization grants nothing beyond this plan.`,
               modelSelection: manager.modelSelection,
               attachments: [],
               mode: "auto",
@@ -298,160 +291,6 @@ const make = Effect.gen(function* () {
       }
       yield* store.retireEffect(pending.id);
       return;
-    }
-    if (
-      intent.type !== "workflow.restart.stop" &&
-      intent.type !== "workflow.restart.prepare" &&
-      intent.type !== "workflow.restart.resume"
-    )
-      return;
-    const state = yield* store.snapshot;
-    const migration = state.workflowMigrations.find(
-      (entry) => entry.id === intent.migrationId && entry.assignmentId === intent.assignmentId,
-    );
-    const assignment = state.assignments.find((entry) => entry.id === intent.assignmentId);
-    const step =
-      intent.type === "workflow.restart.stop"
-        ? "stop"
-        : intent.type === "workflow.restart.prepare"
-          ? "prepare"
-          : "resume";
-    if (
-      !migration ||
-      !assignment ||
-      (step === "stop"
-        ? migration.lifecycle.phase !== "stopping"
-        : step === "prepare"
-          ? migration.lifecycle.phase !== "preparing"
-          : migration.lifecycle.phase !== "ready" || migration.lifecycle.resume.phase !== "pending")
-    ) {
-      yield* store.retireEffect(pending.id);
-      return;
-    }
-    const messageId = MessageId.make(`factory-workflow-restart:${migration.id}`);
-    // A lead that cannot be directed yet keeps the resume pending instead of failing it.
-    if (step === "resume" && !(yield* accepted(assignment.threadId, messageId))) {
-      const permitted = yield* access
-        .assertDirection({ threadId: assignment.threadId, senderThreadId: assignment.managerId })
-        .pipe(Effect.result);
-      if (Result.isFailure(permitted)) return;
-    }
-    yield* store.beginEffect(pending.id);
-    const result = yield* Effect.gen(function* () {
-      if (step === "stop") {
-        yield* stopTeam(state, assignment, pending.id);
-        const startingSource = yield* boundaries.captureMigration({
-          assignmentId: assignment.id,
-          migrationId: migration.id,
-          expectedEpoch: migration.previousEpoch,
-        });
-        yield* store.finishEffect({
-          id: pending.id,
-          now: yield* nowIso,
-          command: {
-            type: "workflow.restart.stopped",
-            commandId: CommandId.make(`${pending.id}:stopped`),
-            migrationId: migration.id,
-            expectedStateRevision: (yield* store.snapshot).revision,
-            startingSource,
-          },
-        });
-      } else if (step === "prepare") {
-        if (!assignment.grant || !assignment.startingSource)
-          return yield* new FactoryError({ code: "invalid-state" });
-        const qualification = yield* boundaries.prepare({
-          assignmentId: assignment.id,
-          threadId: assignment.threadId,
-          boundaryId: assignment.grant.boundaryId,
-          grant: assignment.grant,
-          startingSourceId: assignment.startingSource.id,
-        });
-        if (qualification.status !== "qualified")
-          return yield* new FactoryError({
-            code: "execution-unavailable",
-            detail: qualification.reason,
-          });
-        yield* store.finishEffect({
-          id: pending.id,
-          now: yield* nowIso,
-          command: {
-            type: "workflow.restart.prepared",
-            commandId: CommandId.make(`${pending.id}:prepared`),
-            migrationId: migration.id,
-            expectedStateRevision: (yield* store.snapshot).revision,
-            qualification,
-          },
-        });
-      } else {
-        if (assignment.qualification.status !== "qualified" || !assignment.modelSelection)
-          return yield* new FactoryError({ code: "execution-unavailable" });
-        const profileId = assignment.qualification.profileId;
-        if (!(yield* accepted(assignment.threadId, messageId))) {
-          const profile = yield* execution.runtimePolicyFor(assignment.threadId);
-          if (!profile) return yield* new FactoryError({ code: "execution-unavailable" });
-          yield* access.assertDirection({
-            threadId: assignment.threadId,
-            senderThreadId: assignment.managerId,
-          });
-          yield* execution.assertSelectionFor(assignment.threadId, assignment.modelSelection);
-          yield* threads.dispatch({
-            type: "thread.metadata.update",
-            commandId: CommandId.make(`${pending.id}:workspace`),
-            threadId: assignment.threadId,
-            worktreePath: profile.projectSnapshotPath,
-          });
-          yield* threads
-            .sendToThread({
-              projectId: assignment.projectId,
-              threadId: assignment.threadId,
-              commandId: CommandId.make(`${pending.id}:resume`),
-              messageId,
-              senderThreadId: assignment.managerId,
-              text: `The human authorized a workflow ${migration.kind} for this assignment. The previous provider session and its team have stopped. Start with workflow ${assignment.workflow.revision} at /workflow and read its applicable instructions before continuing. Preserved candidate work is at /workspace. Your durable assignment, scope, PRs, review decisions, waits, and recovery allowances are unchanged. Use factory_snapshot to read current state and resume only work permitted by its current controls. Do not repeat a completed publication or treat this restart as new approval.`,
-              modelSelection: assignment.modelSelection,
-              attachments: [],
-              mode: "auto",
-              createdBy: "system",
-              creationSource: "server",
-            })
-            .pipe(
-              Effect.catch((cause) =>
-                accepted(assignment.threadId, messageId).pipe(
-                  Effect.flatMap((recorded) => (recorded ? Effect.void : Effect.fail(cause))),
-                ),
-              ),
-            );
-        }
-        yield* store.finishEffect({
-          id: pending.id,
-          now: yield* nowIso,
-          command: {
-            type: "workflow.restart.resumed",
-            commandId: CommandId.make(`${pending.id}:resumed`),
-            migrationId: migration.id,
-            profileId,
-          },
-        });
-      }
-    }).pipe(Effect.mapError(failure), Effect.result);
-    if (Result.isFailure(result)) {
-      // The snapshot moved while the step ran. Record nothing rather than a failure against
-      // state the step did not see.
-      if (result.failure.code === "stale-revision") return;
-      yield* store.finishEffect({
-        id: pending.id,
-        now: yield* nowIso,
-        failed: true,
-        command: {
-          type: "workflow.restart.failed",
-          commandId: CommandId.make(`${pending.id}:failed`),
-          migrationId: migration.id,
-          step,
-          reason:
-            result.failure.detail ??
-            `Workflow ${step} could not finish. Preserved work remains available; retry this operation.`,
-        },
-      });
     }
   }, Effect.mapError(failure));
   return FactoryWorkflowEffects.of({ context, handle });

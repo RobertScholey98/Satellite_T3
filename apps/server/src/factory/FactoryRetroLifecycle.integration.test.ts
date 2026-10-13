@@ -51,7 +51,7 @@ const projectId = ProjectId.make("retro-lifecycle");
 const human = { kind: "human" } as const;
 const now = "2026-10-10T12:00:00.000Z";
 const model = { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" };
-const workflow = { repositoryRoot: "/owned-workflow", revision: "approved-workflow" };
+const workflow = FactoryServiceTestkit.testSkills;
 const configuration = {
   protectedPaths: ["AGENTS.md"],
   writablePaths: ["src/app.ts"],
@@ -348,7 +348,6 @@ it.effect(
           commandId: id("manager"),
           projectId,
           modelSelection: model,
-          workflow,
         });
         const onboarding = (yield* store.snapshot).assignments[0]!;
         yield* run(

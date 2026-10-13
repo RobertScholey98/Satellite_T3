@@ -4,7 +4,6 @@ import {
   FactoryError,
   FactoryVerification,
   CommandId,
-  type FactoryStartingSource,
   type FactoryAssignmentGrant,
   type FactoryAssignmentId,
   type FactoryBoundaryConfiguration,
@@ -105,15 +104,6 @@ export class FactoryBoundaryExecution extends Context.Service<
       | undefined,
       FactoryError
     >;
-    /**
-     * Captures a stopped workspace as the starting source for the assignment's workflow
-     * migration. The workspace must already be revoked, and is mounted read-only.
-     */
-    readonly captureMigration: (input: {
-      readonly assignmentId: FactoryAssignmentId;
-      readonly migrationId: string;
-      readonly expectedEpoch: number;
-    }) => Effect.Effect<FactoryStartingSource, FactoryError>;
     /**
      * Captures the workspace as a delivery candidate for the selected paths. Keyed by the
      * command: a replay returns the stored candidate, and a replay with other paths is refused.
@@ -779,16 +769,14 @@ const make = Effect.gen(function* () {
 
   /**
    * Admits an operation on the assignment's current grant from live state. Refuses an ended,
-   * stopped, onboarding or unauthorized assignment, a paused project, an open incident, and a
-   * workflow migration in progress. `resuming` skips the project-pause check, `preparing` admits
-   * the migration being prepared, and `releasingSuspension` skips the incident check so a pause
-   * can be lifted while the incident's own marker keeps holding execution.
+   * stopped, onboarding or unauthorized assignment, a paused project and an open incident.
+   * `resuming` skips the project-pause check, and `releasingSuspension` skips the incident check so
+   * a pause can be lifted while the incident's own marker keeps holding execution.
    */
   const current = Effect.fn("FactoryBoundaryExecution.current")(function* (
     assignmentId: FactoryAssignmentId,
     expectedEpoch?: number,
     resuming = false,
-    preparing = false,
     releasingSuspension = false,
   ) {
     const state = yield* store.snapshot;
@@ -802,26 +790,7 @@ const make = Effect.gen(function* () {
       return yield* denied();
     const incident = factoryIncidentBlocked(state, assignmentId, "execution");
     if (incident !== undefined && !releasingSuspension) return yield* unavailable(incident);
-    const migration = state.workflowMigrations.find(
-      (entry) => entry.assignmentId === assignmentId && entry.lifecycle.phase !== "ready",
-    );
-    if (
-      migration &&
-      (!preparing ||
-        migration.lifecycle.phase !== "preparing" ||
-        assignment.grant.epoch !== migration.preparedEpoch)
-    )
-      return yield* denied();
-    const admissionState =
-      migration && preparing
-        ? {
-            ...state,
-            workflowMigrations: state.workflowMigrations.filter(
-              (entry) => entry.id !== migration.id,
-            ),
-          }
-        : state;
-    if (assignment.sharedWork && !factorySharedAssignmentEnabled(admissionState, assignment))
+    if (assignment.sharedWork && !factorySharedAssignmentEnabled(state, assignment))
       return yield* denied();
     if (
       !resuming &&
@@ -987,111 +956,6 @@ const make = Effect.gen(function* () {
       ),
     ).toString("hex");
   });
-  const captureMigration = Effect.fn("FactoryBoundaryExecution.captureMigration")(
-    function* (input: Parameters<FactoryBoundaryExecution["Service"]["captureMigration"]>[0]) {
-      const admitted = Effect.gen(function* () {
-        const state = yield* store.snapshot;
-        const migration = state.workflowMigrations.find(
-          (entry) =>
-            entry.id === input.migrationId &&
-            entry.assignmentId === input.assignmentId &&
-            entry.previousEpoch === input.expectedEpoch,
-        );
-        const assignment = state.assignments.find((entry) => entry.id === input.assignmentId);
-        if (
-          !migration ||
-          (migration.lifecycle.phase !== "stopping" &&
-            !(migration.lifecycle.phase === "failed" && migration.lifecycle.step === "stop")) ||
-          !assignment?.grant ||
-          assignment.grant.epoch < input.expectedEpoch ||
-          assignment.qualification.status !== "qualified" ||
-          !assignment.startingSource
-        )
-          return yield* denied();
-        return assignment;
-      });
-      const assignment = yield* admitted;
-      if (assignment.qualification.status !== "qualified" || !assignment.startingSource)
-        return yield* denied();
-      const qualification = assignment.qualification;
-      const sourceId = assignment.startingSource.id;
-      const recheck = Effect.gen(function* () {
-        const fresh = yield* admitted;
-        if (
-          fresh.threadId !== assignment.threadId ||
-          fresh.startingSource?.id !== sourceId ||
-          fresh.qualification.status !== "qualified" ||
-          fresh.qualification.profileId !== qualification.profileId
-        )
-          return yield* denied();
-      });
-      const profile = yield* readProfile(assignment.qualification.profileId);
-      const workspace = profile.assignmentWorkspace;
-      if (
-        !workspace ||
-        profile.inspection ||
-        workspace.assignmentId !== input.assignmentId ||
-        workspace.grantEpoch !== input.expectedEpoch ||
-        workspace.boundaryId !== assignment.grant?.boundaryId ||
-        !(yield* fs.exists(workspace.revocationPath))
-      )
-        return yield* denied();
-      // Not through `helper`, which refuses a revoked workspace: this capture runs only after
-      // revocation, against a read-only mount of the volume.
-      const captureName = `satellite-factory-migration-${yield* crypto.randomUUIDv4}`;
-      const capture = yield* docker(
-        profile,
-        [
-          "run",
-          "--name",
-          captureName,
-          "--rm",
-          "--interactive",
-          "--pull",
-          "never",
-          "--network",
-          "none",
-          "--read-only",
-          "--cap-drop",
-          "ALL",
-          "--security-opt",
-          "no-new-privileges",
-          "--memory",
-          "1g",
-          "--pids-limit",
-          "32",
-          "--mount",
-          `type=volume,source=${workspace.volumeName},target=/workspace,readonly,volume-nocopy`,
-          "--entrypoint",
-          "node",
-          profile.imageId,
-          "-e",
-          factoryVolumeHelper,
-        ],
-        json({ kind: "capture" }),
-      ).pipe(
-        Effect.flatMap(decodeCapture),
-        Effect.ensuring(docker(profile, ["rm", "--force", captureName]).pipe(Effect.ignore)),
-      );
-      const files = capture.files
-        .filter((file) => file.path !== "SATELLITE_DISCOVERY.md")
-        .map((file) => ({ ...file, mode: file.mode ?? ("100644" as const) }));
-      yield* candidateDigest(files);
-      // The migration or assignment can change while the capture runs, so admission is checked
-      // again on both sides of storing the source.
-      yield* recheck;
-      const source = yield* sources.captureArtifact({
-        requestId: CommandId.make(`factory-migration:${input.migrationId}`),
-        previousSourceId: assignment.startingSource.id,
-        threadId: assignment.threadId,
-        files,
-      });
-      yield* recheck;
-      return source;
-    },
-    mutex.withPermit,
-    Effect.mapError(preserve),
-  );
   const readCandidate = Effect.fn("FactoryBoundaryExecution.readCandidate")(function* (
     candidateId: string,
   ) {
@@ -1702,7 +1566,7 @@ const make = Effect.gen(function* () {
             request: `remove-runtime-probe:${temporaryPath}`,
           });
         // `profile.json` is written last; its presence is what a replay treats as prepared.
-        yield* current(input.assignmentId, input.grant.epoch, false, true);
+        yield* current(input.assignmentId, input.grant.epoch);
         yield* publish(directory, "profile", profile);
         return {
           status: "qualified" as const,
@@ -2070,7 +1934,7 @@ const make = Effect.gen(function* () {
       if (!Number.isSafeInteger(input.generation) || input.generation < 0) return yield* denied();
       const profile = yield* assignmentProfile(input.assignmentId);
       if (profile === undefined) return;
-      const { grant } = yield* current(input.assignmentId, undefined, true, false, true);
+      const { grant } = yield* current(input.assignmentId, undefined, true, true);
       if (
         profile.assignmentWorkspace!.grantEpoch !== grant.epoch ||
         profile.assignmentWorkspace!.boundaryId !== grant.boundaryId
@@ -2086,7 +1950,7 @@ const make = Effect.gen(function* () {
       if (previous.state === "resumed") return;
       yield* drain(profile);
       yield* docker(profile, ["volume", "inspect", profile.assignmentWorkspace!.volumeName]);
-      yield* current(input.assignmentId, grant.epoch, true, false, true);
+      yield* current(input.assignmentId, grant.epoch, true, true);
       if (yield* fs.exists(profile.assignmentWorkspace!.revocationPath)) return yield* denied();
       yield* writeSuspension(profile, { generation: input.generation, state: "resumed" });
     },
@@ -2271,7 +2135,6 @@ const make = Effect.gen(function* () {
     setIncidentHold,
     setDeliveryHold,
     captureCandidate,
-    captureMigration,
     readCandidate,
     finalizeCandidate,
     verifyCandidate: (input) => verify(input, input.candidateId),

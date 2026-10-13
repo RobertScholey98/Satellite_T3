@@ -204,15 +204,9 @@ const FACTORY_COMMAND_SCOPES: Record<
   "system.retry": settings,
   "thread.handback": operate,
   "thread.takeover": operate,
-  "workflow.adopt": settings,
   "workflow.models.apply": settings,
   "workflow.models.decline": settings,
   "workflow.models.recommend": operate,
-  "workflow.override.clear": settings,
-  "workflow.release.register": operate,
-  "workflow.restart": settings,
-  "workflow.restart.continue": settings,
-  "workflow.restart.retry": settings,
 };
 
 export function clientRpcRequiredScopes(

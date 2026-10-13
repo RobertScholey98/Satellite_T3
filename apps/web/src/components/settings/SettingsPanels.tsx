@@ -88,6 +88,8 @@ import {
 } from "./useScopedSettings";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { EngineeringManagersSkillsRepository } from "./EngineeringManagersSkillsRepository";
+import { useFactoryEnvironments } from "../../state/factory";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
@@ -2195,6 +2197,8 @@ export function GeneralSettingsPanel() {
   // needs exactly one environment.
   const environmentId = environment?.environmentId ?? null;
   const isEnvironmentScope = scope.environmentIds.length === 1 && environmentId !== null;
+  // The skills repository row shows once managers are on or already exist on this environment.
+  const factoryEnvironments = useFactoryEnvironments();
   const hasServerTargets = connectedEnvironments.length > 0;
   const [backgroundActivityDialogOpen, setBackgroundActivityDialogOpen] = useState(false);
   const mixedResponseStreamingMode = useScopedSettingsMixed(["responseStreamingMode"]);
@@ -2473,6 +2477,11 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+        {isEnvironmentScope &&
+        (settings.engineeringManagersEnabled ||
+          factoryEnvironments.some((entry) => entry.environmentId === environmentId)) ? (
+          <EngineeringManagersSkillsRepository environmentId={environmentId} />
+        ) : null}
 
         {supportsAutoSettlement ? (
           <>

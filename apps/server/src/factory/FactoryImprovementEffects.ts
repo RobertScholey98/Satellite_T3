@@ -5,6 +5,7 @@ import {
   ThreadId,
   factorySystemManager,
   type FactoryCommand,
+  type FactoryWorkflowVersion,
   isFactoryError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -19,6 +20,7 @@ import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Access from "./FactoryControlAccess.ts";
 import * as Execution from "./FactoryExecution.ts";
+import { factorySkillsPin } from "./FactoryAssignmentCommission.ts";
 import {
   factoryImprovementBatchPlan,
   factoryImprovementConfiguration,
@@ -40,12 +42,14 @@ export class FactoryImprovementEffects extends Context.Service<
   FactoryImprovementEffects,
   {
     /**
-     * Qualifies the system manager's environment for `system.create` and `system.retry`. A retry
-     * after the thread exists reuses its qualified profile.
+     * Qualifies the system manager's environment for `system.create` and `system.retry` on the
+     * `skills` commit the service read for the command. A retry after the thread exists reuses its
+     * qualified profile and keeps its commit.
      */
     readonly context: (
       actor: FactoryActor,
       command: FactoryCommand,
+      skills: FactoryWorkflowVersion | undefined,
     ) => Effect.Effect<FactoryImprovementContext, FactoryError>;
     /**
      * Takes in every escalated or retro-concluded finding whose current version is not yet in
@@ -73,7 +77,11 @@ const make = Effect.gen(function* () {
   const threads = yield* Threads.ThreadManagementService;
   const execution = yield* Execution.FactoryExecution;
   const access = yield* Access.FactoryControlAccess;
-  const context = Effect.fn(function* (actor: FactoryActor, command: FactoryCommand) {
+  const context = Effect.fn(function* (
+    actor: FactoryActor,
+    command: FactoryCommand,
+    skills: FactoryWorkflowVersion | undefined,
+  ) {
     if (command.type !== "system.create" && command.type !== "system.retry") return {};
     if (actor.kind !== "human") return yield* new FactoryError({ code: "permission-denied" });
     const state = yield* store.snapshot;
@@ -88,17 +96,21 @@ const make = Effect.gen(function* () {
     if (command.type === "system.retry" && manager?.id !== command.managerId)
       return yield* new FactoryError({ code: "invalid-state" });
     const threadId = manager?.threadId ?? ThreadId.make(yield* randomUuidV4);
-    const qualification =
-      manager?.threadStatus === "created" && manager.qualification.status === "qualified"
-        ? manager.qualification
-        : yield* execution.qualify({
-            projectId:
-              command.type === "system.create"
-                ? command.workspaceProjectId
-                : manager!.workspaceProjectId,
-            modelSelection: command.modelSelection ?? manager!.modelSelection,
-            workflow: command.workflow ?? manager!.workflow,
-          });
+    if (manager?.threadStatus === "created" && manager.qualification.status === "qualified")
+      return { systemManagerCreation: { threadId, qualification: manager.qualification } };
+    // A created thread keeps the skills commit it launched with; otherwise this run records
+    // the current one.
+    const pin =
+      manager?.threadStatus === "created"
+        ? Result.succeed(manager.workflow)
+        : factorySkillsPin(skills);
+    if (Result.isFailure(pin)) return yield* pin.failure;
+    const qualification = yield* execution.qualify({
+      projectId:
+        command.type === "system.create" ? command.workspaceProjectId : manager!.workspaceProjectId,
+      modelSelection: command.modelSelection ?? manager!.modelSelection,
+      workflow: pin.success,
+    });
     return { systemManagerCreation: { threadId, qualification } };
   }, Effect.mapError(error));
 
@@ -230,13 +242,13 @@ const make = Effect.gen(function* () {
               creationSource: "server",
               text: [
                 `You are the system manager ${manager.id}. The human is your manager. You and project engineering managers are peers with different remits.`,
-                `Your workspace is a read-only reference snapshot. Owned workflow ${manager.workflow.revision} is pinned at /workflow. You do not own project priorities, implementation, PR review, or managers' permissions.`,
+                `Your workspace is a read-only reference snapshot. The skills repository is mounted at /workflow, pinned to commit ${manager.workflow.revision}. You do not own project priorities, implementation, PR review, or managers' permissions.`,
                 "Investigate shared engineering workflow problems using the bounded evidence batches delivered here. Use factory_improvement_snapshot for the improvement backlog and factory_improvement_record for a complete named proposal, investigation, decision or feedback record. Preserve original finding routes, project context, containment, uncertainty and conflicting evidence. Similar local fixes can indicate a shared cause, but do not assume that one project's convention belongs everywhere.",
                 "Open or update a named investigation with factory_dispatch. Link only relevant finding IDs. Use factory_investigation_read to request bounded details for a linked finding and retain its provenance. Do not read unrelated project history or follow arbitrary evidence paths and URLs.",
-                "Use proposal.write and proposal.submit to bring a concrete version to human review. Explain the scope, exclusions, expected benefit, tradeoffs, uncertainty and requested adoption decision. An assessment approach is optional. Tests, benchmarks, and cross-project trials are not prerequisites for the human to decide. Acceptance of a proposal does not itself implement or adopt a change.",
-                "For shared skills or workflow tooling, use shared.work.propose with an exact implementation plan in a human-registered owned repository. Wait for separate human authorization of that plan. When its authorization notification arrives, use shared.work.commission with the exact workId to create the implementation lead. Your team owns implementation, review and the complete PR process; you do not author the change or review its PR. The team sends its retrospective after completion. Project-specific changes stay with their project manager.",
+                "Use proposal.write and proposal.submit to bring a concrete version to human review. Explain the scope, exclusions, expected benefit, tradeoffs, uncertainty and the decision you request. An assessment approach is optional. Tests, benchmarks, and cross-project trials are not prerequisites for the human to decide. Acceptance of a proposal does not itself implement a change.",
+                "For shared skills or workflow tooling, use shared.work.propose with an exact implementation plan in a human-registered owned repository. Wait for separate human authorization of that plan. When its authorization notification arrives, use shared.work.commission with the exact workId to create the implementation lead. Your team owns implementation, review and the complete PR process; you do not author the change or review its PR. Shared work ends when its PR merges. Merging into the skills repository set in Settings is how a skill change is adopted: every assignment commissioned afterwards uses the new commit, while running teams keep theirs. The team sends its retrospective after completion. Project-specific changes stay with their project manager.",
                 "For application changes needed by an investigation, use collaboration.request.create with that investigation as its origin and the application's manager as receiver. That peer manager owns acceptance, project priorities and its implementation team. Coordinate shared trade-offs through collaboration.decision.raise; you cannot commission work directly inside another manager's project or override their restrictions.",
-                "Use writing-for-agents for every skill creation or edit, including isolated experiments. Experiments require the explicit experiment setting and remain bounded candidate work and inspection. Live trials, workflow adoption and standing model preference changes require human decisions. A registered workflow release identifies a committed owned version; it does not authorize adoption. Pstack is provenance, not an upstream subscription.",
+                "Use writing-for-agents for every skill creation or edit, including isolated experiments. Experiments require the explicit experiment setting and remain bounded candidate work and inspection. Merging skill changes and standing model preference changes require human decisions.",
                 "Record improvement.validation.record against the exact proposal revision when evidence becomes available. Success, failure and insufficient evidence need a recommended next step. Validation can remain open after implementation completes and never adds a PR gate. Record standing model recommendations with workflow.models.recommend for human review; choosing an already-approved model for an individual team remains autonomous.",
                 "Track recurrence and useful or noisy outcomes. Proposal count is not success. Do not poll, solicit unbounded reports, invent escalations, or wake project managers without a concrete evidence request. Wait for a new batch or the human when no investigation has actionable work.",
               ].join("\n\n"),

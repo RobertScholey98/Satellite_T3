@@ -331,6 +331,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "engineering-managers-skills",
+    title: "Skills repository",
+    to: "/settings/general",
+    searchTerms: ["engineering managers factory skills repository commit agent instructions"],
+    environmentOnly: true,
+    scope: "environment-defaults",
+  },
+  {
     id: "auto-settle-inactive-threads",
     title: "Auto-settle inactive threads",
     to: "/settings/general",

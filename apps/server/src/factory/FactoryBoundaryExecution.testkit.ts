@@ -9,7 +9,6 @@ export const layerUnavailable = Layer.succeed(FactoryBoundaryExecution.FactoryBo
   setIncidentHold: unexpected,
   setDeliveryHold: unexpected,
   captureCandidate: unexpected,
-  captureMigration: unexpected,
   readCandidate: unexpected,
   finalizeCandidate: unexpected,
   verifyCandidate: unexpected,

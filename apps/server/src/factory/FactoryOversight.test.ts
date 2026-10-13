@@ -22,6 +22,7 @@ import * as Schema from "effect/Schema";
 import { decide, initialFactorySnapshot, type FactoryActor } from "./FactoryState.ts";
 import { initialFactoryOversight, type FactoryOversightContext } from "./FactoryOversight.ts";
 import { initialFactoryCompletion } from "./FactoryRetros.ts";
+import { deliverySkills } from "./FactoryDelivery.testkit.ts";
 
 const now = "2026-10-10T12:00:00.000Z";
 const commandId = CommandId.make("command");
@@ -147,14 +148,14 @@ const apply = (
   command: FactoryDecisionCommand,
   actor: FactoryActor = human,
   context: FactoryOversightContext = {},
-) => Result.getOrThrow(decide({ state, actor, command, now, ...context }));
+) => Result.getOrThrow(decide({ skills: deliverySkills, state, actor, command, now, ...context }));
 const failure = (
   state: FactorySnapshot,
   command: FactoryDecisionCommand,
   actor: FactoryActor = human,
   context: FactoryOversightContext = {},
 ) => {
-  const result = decide({ state, actor, command, now, ...context });
+  const result = decide({ skills: deliverySkills, state, actor, command, now, ...context });
   if (Result.isSuccess(result)) throw new Error("Expected rejection");
   return result.failure.code;
 };
@@ -325,6 +326,7 @@ describe("Factory oversight", () => {
       assignmentId: supportId,
     };
     const expanded = decide({
+      skills: deliverySkills,
       state,
       actor: manager,
       command: { ...command, scope: { ...work.scope, description: "Different work" } },
@@ -332,7 +334,9 @@ describe("Factory oversight", () => {
       allocation,
     });
     assert.isTrue(Result.isFailure(expanded));
-    const result = Result.getOrThrow(decide({ state, actor: manager, command, now, allocation }));
+    const result = Result.getOrThrow(
+      decide({ skills: deliverySkills, state, actor: manager, command, now, allocation }),
+    );
     assert.strictEqual(result.state.dependencies[0]?.supportingAssignmentId, supportId);
     assert.strictEqual(result.state.dependencies[0]?.state, "commissioned");
     assert.deepStrictEqual(original(result.state), original(state));
@@ -340,6 +344,7 @@ describe("Factory oversight", () => {
     assert.isTrue(
       Result.isFailure(
         decide({
+          skills: deliverySkills,
           state: result.state,
           actor: manager,
           command,
@@ -632,6 +637,7 @@ describe("Factory oversight", () => {
     const cancelled = apply(fixture(), { type: "assignment.cancel", commandId, assignmentId });
     const takeover = Result.getOrThrow(
       decide({
+        skills: deliverySkills,
         state: fixture(),
         actor: human,
         now,
@@ -887,6 +893,7 @@ describe("Factory oversight", () => {
     assert.deepStrictEqual(original(escalated.state).grant, original(state).grant);
     const takeover = Result.getOrThrow(
       decide({
+        skills: deliverySkills,
         state,
         actor: human,
         now,

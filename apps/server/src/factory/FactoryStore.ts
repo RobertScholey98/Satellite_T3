@@ -13,6 +13,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -70,7 +71,7 @@ export class FactoryStore extends Context.Service<
       readonly command?: FactoryHostCommand;
       readonly now: string;
     }) => Effect.Effect<void, FactoryError>;
-    /** Outbox intents still pending, oldest first. */
+    /** Outbox intents still pending, oldest first. One that no longer decodes is retired. */
     readonly pending: Effect.Effect<ReadonlyArray<PendingFactoryEffect>, FactoryError>;
     /** Counts an attempt before host work starts; fails once the intent is no longer pending. */
     readonly beginEffect: (id: string) => Effect.Effect<void, FactoryError>;
@@ -308,11 +309,21 @@ const make = Effect.gen(function* () {
         readonly attempts: number;
       }>`SELECT effect_id, payload_json, attempts FROM factory_outbox
         WHERE status = 'pending' ORDER BY rowid`;
-      return yield* Effect.forEach(rows, (row) =>
-        decodeIntent(row.payload_json).pipe(
-          Effect.map((intent) => ({ id: row.effect_id, intent, attempts: row.attempts })),
-        ),
-      );
+      const pending: PendingFactoryEffect[] = [];
+      for (const row of rows) {
+        const intent = yield* decodeIntent(row.payload_json).pipe(Effect.option);
+        if (Option.isSome(intent)) {
+          pending.push({ id: row.effect_id, intent: intent.value, attempts: row.attempts });
+          continue;
+        }
+        // An intent of a removed kind, such as a step of the retired restart flow, never runs.
+        yield* Effect.logWarning("Retiring a factory effect that no longer decodes", {
+          effectId: row.effect_id,
+        });
+        yield* sql`UPDATE factory_outbox SET status = 'superseded'
+          WHERE effect_id = ${row.effect_id} AND status = 'pending'`;
+      }
+      return pending;
     }).pipe(Effect.mapError(storageError)),
     beginEffect: (id) =>
       Effect.gen(function* () {
@@ -458,26 +469,6 @@ const make = Effect.gen(function* () {
                         command.type === "workflow.work.notify.failed") &&
                       command.workId === intent.workId &&
                       command.managerId === intent.managerId
-                    );
-                  case "workflow.restart.stop":
-                    return (
-                      (command.type === "workflow.restart.stopped" ||
-                        (command.type === "workflow.restart.failed" && command.step === "stop")) &&
-                      command.migrationId === intent.migrationId
-                    );
-                  case "workflow.restart.prepare":
-                    return (
-                      (command.type === "workflow.restart.prepared" ||
-                        (command.type === "workflow.restart.failed" &&
-                          command.step === "prepare")) &&
-                      command.migrationId === intent.migrationId
-                    );
-                  case "workflow.restart.resume":
-                    return (
-                      (command.type === "workflow.restart.resumed" ||
-                        (command.type === "workflow.restart.failed" &&
-                          command.step === "resume")) &&
-                      command.migrationId === intent.migrationId
                     );
                   case "assignment.conclude":
                     return (

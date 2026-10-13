@@ -3,6 +3,7 @@ import {
   type FactoryAssignment,
   type FactoryAssignmentId,
   type FactoryBoundary,
+  type FactoryWorkflowVersion,
   type FactoryCommandResult,
   type FactoryDecisionCommand,
   type FactoryEffectIntent,
@@ -31,7 +32,6 @@ import {
 } from "./FactoryCollaboration.ts";
 import { resolveManagerPolicy } from "./FactoryPolicy.ts";
 import { factorySamePullRequest } from "./FactoryRetros.ts";
-import { effectiveFactoryWorkflow } from "./FactoryWorkflow.ts";
 import type { FactoryActor, FactoryAllocation, FactoryDecision } from "./FactoryState.ts";
 
 /**
@@ -540,6 +540,7 @@ export function decideFactoryIntegration(
     readonly command: FactoryDecisionCommand;
     readonly now: string;
     readonly allocation?: FactoryAllocation;
+    readonly skills?: FactoryWorkflowVersion;
   },
 ): Result.Result<FactoryDecision, FactoryError> | undefined {
   const { state, actor, command, now } = input;
@@ -1025,7 +1026,7 @@ export function decideFactoryIntegration(
           ...(command.modelSelection ? { modelSelection: command.modelSelection } : {}),
         },
         allocation: input.allocation,
-        workflow: effectiveFactoryWorkflow(state, manager),
+        skills: input.skills,
         policy: resolveManagerPolicy(state.defaults, manager.overrides),
         authorization: human
           ? { kind: "human", commandId: command.commandId }

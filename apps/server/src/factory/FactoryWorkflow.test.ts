@@ -3,13 +3,11 @@ import {
   CommandId,
   FactoryAssignmentId,
   FactoryBoundaryId,
-  FactorySourceId,
   MessageId,
   ProjectId,
   ThreadId,
   type FactoryBoundary,
   type FactoryDecisionCommand,
-  type FactoryDeliveryRevision,
   type FactorySnapshot,
 } from "@t3tools/contracts";
 import * as Result from "effect/Result";
@@ -20,11 +18,8 @@ import {
   deliveryNow,
   deliverySelection,
 } from "./FactoryDelivery.testkit.ts";
-import {
-  effectiveFactoryWorkflow,
-  factoryExperimentSettings,
-  type FactoryWorkflowContext,
-} from "./FactoryWorkflow.ts";
+import { factoryExperimentSettings, type FactoryWorkflowContext } from "./FactoryWorkflow.ts";
+import type { FactorySkillsContext } from "./FactoryAssignmentCommission.ts";
 import {
   factorySharedAssignmentOwned,
   factorySharedAssignmentEnabled,
@@ -35,6 +30,8 @@ const host = { kind: "system" } as const;
 const managerId = ThreadId.make("system-manager");
 const manager = { kind: "thread", threadId: managerId } as const;
 const projectId = ProjectId.make("skills-project");
+// HEAD of the configured skills repository when these commands are decided.
+const skills = { repositoryRoot: "C:/skills", revision: "e".repeat(40) };
 let sequence = 0;
 const commandId = () => CommandId.make(`workflow-${++sequence}`);
 const allocation = (): FactoryAllocation => ({
@@ -46,8 +43,8 @@ const apply = (
   state: FactorySnapshot,
   command: FactoryDecisionCommand,
   actor: FactoryActor = human,
-  context: FactoryWorkflowContext & { allocation?: FactoryAllocation } = {},
-) => Result.getOrThrow(decide({ state, command, actor, now: deliveryNow, ...context }));
+  context: FactoryWorkflowContext & FactorySkillsContext & { allocation?: FactoryAllocation } = {},
+) => Result.getOrThrow(decide({ state, command, actor, now: deliveryNow, skills, ...context }));
 const boundary: FactoryBoundary = {
   id: FactoryBoundaryId.make("shared-boundary"),
   projectId,
@@ -192,72 +189,6 @@ const commissionFrom = (state: FactorySnapshot) => {
 const commission = () => commissionFrom(fixture());
 const implementation = (state: FactorySnapshot) =>
   state.assignments.findLast((entry) => entry.sharedWork?.kind === "implementation");
-// Records that the human approved and merged `head` for the latest shared implementation.
-const mergeHead = (state: FactorySnapshot, head: string): FactorySnapshot => {
-  const target = implementation(state)!;
-  const revision: FactoryDeliveryRevision = {
-    id: `merged-${head}`,
-    operationId: `merged-${head}`,
-    selectedPaths: [],
-    commitMessage: "Improve instructions",
-    grantEpoch: target.grant!.epoch,
-    boundaryId: boundary.id,
-    workflowRevision: target.workflow.revision,
-    startingSourceId: "source",
-    status: "published",
-    reviews: [],
-    approval: {
-      expectedHeadSha: head,
-      bundleDigest: "bundle",
-      ruleVersion: null,
-      authority: "human",
-      commandId: commandId(),
-      approvedAt: deliveryNow,
-    },
-    merge: { operationId: "merge", status: "merged", requestedAt: deliveryNow },
-    createdAt: deliveryNow,
-  };
-  return {
-    ...state,
-    assignments: state.assignments.map((entry) =>
-      entry.id === target.id
-        ? {
-            ...entry,
-            delivery: {
-              directionHeld: false,
-              readiness: [],
-              retroFindings: [],
-              ...entry.delivery,
-              revisions: [...(entry.delivery?.revisions ?? []), revision],
-            },
-          }
-        : entry,
-    ),
-  };
-};
-const registerCommand = (state: FactorySnapshot, revision: string) =>
-  ({
-    type: "workflow.release.register",
-    commandId: commandId(),
-    repositoryId: state.sharedRepositories[0]!.id,
-    revision,
-    proposalId: "proposal",
-    proposalRevision: "proposal-v1",
-    assignmentId: implementation(state)!.id,
-  }) as const;
-const releaseContext = (revision: string) => ({
-  workflowRelease: {
-    version: { repositoryRoot: "C:/skills", revision },
-    snapshotDigest: `digest-${revision}`,
-  },
-});
-const release = (state: FactorySnapshot, revision = "c".repeat(40)) => {
-  const delivered = mergeHead(
-    implementation(state) ? state : commissionFrom(state).state,
-    revision,
-  );
-  return apply(delivered, registerCommand(delivered, revision), manager, releaseContext(revision));
-};
 
 describe("owned workflow authority", () => {
   it("requires exact separate human work authority and commissions the real system manager's team once", () => {
@@ -309,58 +240,73 @@ describe("owned workflow authority", () => {
     );
   });
 
-  it("adopts only for future assignments, preserves overrides and rejects manager rollout", () => {
-    const original = fixture();
-    const registered = release(original);
-    const command = {
-      type: "workflow.adopt",
-      commandId: commandId(),
-      releaseId: registered.result.releaseId!,
-      scope: { kind: "default" },
-    } as const;
-    assert.isTrue(
-      Result.isFailure(
-        decide({ state: registered.state, command, actor: manager, now: deliveryNow }),
-      ),
-    );
-    const adopted = apply(registered.state, command).state;
-    assert.equal(effectiveFactoryWorkflow(adopted, adopted.managers[0]!).revision, "c".repeat(40));
-    assert.deepEqual(adopted.assignments[0]?.workflow, original.assignments[0]?.workflow);
-    const override = apply(adopted, {
-      ...command,
-      commandId: commandId(),
-      scope: { kind: "managers", managerIds: [managerId] },
-    }).state;
-    const second = release(override, "d".repeat(40));
-    const newer = apply(second.state, {
-      ...command,
-      commandId: commandId(),
-      releaseId: second.result.releaseId!,
-    }).state;
-    assert.equal(effectiveFactoryWorkflow(newer, newer.managers.at(-1)!).revision, "c".repeat(40));
-    const cleared = apply(newer, {
-      type: "workflow.override.clear",
-      commandId: commandId(),
-      managerId,
-    }).state;
-    assert.equal(
-      effectiveFactoryWorkflow(cleared, cleared.managers.at(-1)!).revision,
-      "d".repeat(40),
-    );
-    const proposed = propose(cleared);
+  it("records the skills commit at commission, and a later commit reaches only the next commission", () => {
+    const first = commission();
+    const team = implementation(first.state)!;
+    assert.deepEqual(team.workflow, skills);
+    const moved = { repositoryRoot: "C:/skills", revision: "f".repeat(40) };
+    const proposed = propose(first.state);
     const authorized = apply(proposed.state, {
       type: "shared.work.authorize",
       commandId: commandId(),
       workId: proposed.result.workId!,
     });
-    const created = apply(
+    const next = apply(
       authorized.state,
       { type: "shared.work.commission", commandId: commandId(), workId: proposed.result.workId! },
       manager,
-      { allocation: allocation() },
+      { allocation: allocation(), skills: moved },
     );
-    assert.equal(created.state.assignments.at(-1)?.workflow.revision, "d".repeat(40));
-    assert.deepEqual(created.state.assignments[0]?.workflow, original.assignments[0]?.workflow);
+    assert.deepEqual(next.state.assignments.at(-1)?.workflow, moved);
+    assert.deepEqual(
+      next.state.assignments.find((entry) => entry.id === team.id)?.workflow,
+      skills,
+    );
+  });
+
+  it("refuses to commission or create a manager until the skills repository is set", () => {
+    const proposed = propose(fixture());
+    const authorized = apply(proposed.state, {
+      type: "shared.work.authorize",
+      commandId: commandId(),
+      workId: proposed.result.workId!,
+    });
+    const unpinned = [
+      decide({
+        state: authorized.state,
+        command: {
+          type: "shared.work.commission",
+          commandId: commandId(),
+          workId: proposed.result.workId!,
+        },
+        actor: manager,
+        now: deliveryNow,
+        allocation: allocation(),
+      }),
+      decide({
+        state: authorized.state,
+        command: {
+          type: "manager.create",
+          commandId: commandId(),
+          projectId: ProjectId.make("another-application"),
+          modelSelection: deliverySelection,
+        },
+        actor: human,
+        now: deliveryNow,
+        allocation: {
+          managerThreadId: ThreadId.make("unpinned-manager"),
+          leadThreadId: ThreadId.make("unpinned-onboarding"),
+          assignmentId: FactoryAssignmentId.make("unpinned-onboarding-assignment"),
+        },
+      }),
+    ];
+    for (const decision of unpinned) {
+      if (Result.isSuccess(decision)) return assert.fail("Expected the missing setting to refuse.");
+      assert.equal(
+        decision.failure.detail,
+        "Set the skills repository in Settings → General first.",
+      );
+    }
   });
 
   it("wakes the manager once authorized and preserves a late delivery acknowledgment after commissioning", () => {
@@ -422,49 +368,43 @@ describe("owned workflow authority", () => {
     assert.equal(lateFailure.state.sharedWorks[0]?.notification?.phase, "delivered");
   });
 
-  it("uses the adopted default for new onboarding while retaining setup fallback and exclusive shared ownership", () => {
-    const registered = release(fixture());
-    const adopted = apply(registered.state, {
-      type: "workflow.adopt",
-      commandId: commandId(),
-      releaseId: registered.result.releaseId!,
-      scope: { kind: "default" },
-    }).state;
-    const newManagerId = ThreadId.make("new-project-manager");
+  it("records the current skills commit for new onboarding while keeping exclusive shared ownership", () => {
+    const state = fixture();
     const create = {
       type: "manager.create",
       commandId: commandId(),
       projectId: ProjectId.make("another-application"),
       modelSelection: deliverySelection,
-      workflow: { repositoryRoot: "C:/legacy-skills", revision: "a".repeat(40) },
     } as const;
     const fresh = {
-      managerThreadId: newManagerId,
+      managerThreadId: ThreadId.make("new-project-manager"),
       leadThreadId: ThreadId.make("new-onboarding"),
       assignmentId: FactoryAssignmentId.make("new-onboarding-assignment"),
     };
-    const created = apply(adopted, create, human, { allocation: fresh });
-    assert.deepEqual(created.state.managers.at(-1)?.workflow, create.workflow);
-    assert.equal(created.state.assignments.at(-1)?.workflow.revision, "c".repeat(40));
+    const created = apply(state, create, human, { allocation: fresh });
+    assert.deepEqual(created.state.managers.at(-1)?.workflow, skills);
+    assert.deepEqual(created.state.assignments.at(-1)?.workflow, skills);
     assert.isTrue(
       Result.isFailure(
         decide({
-          state: adopted,
+          state,
           command: { ...create, commandId: commandId(), projectId },
           actor: human,
           now: deliveryNow,
           allocation: fresh,
+          skills,
         }),
       ),
     );
     assert.isTrue(
       Result.isFailure(
         decide({
-          state: adopted,
+          state,
           command: { ...create, commandId: commandId() },
           actor: human,
           now: deliveryNow,
           allocation: fresh,
+          skills,
           projectRepositoryRoot: "C:/skills",
         }),
       ),
@@ -620,325 +560,6 @@ describe("owned workflow authority", () => {
         }),
       ),
     );
-  });
-
-  it("restarts only the selected assignment with a fresh epoch and durable resume receipt", () => {
-    const registered = release(fixture());
-    const old = registered.state.assignments[0]!;
-    const restarted = apply(registered.state, {
-      type: "workflow.restart",
-      commandId: commandId(),
-      releaseId: registered.result.releaseId!,
-      assignmentIds: [old.id],
-      kind: "trial",
-      reason: "Try selected workflow",
-    });
-    const migrationId = restarted.result.migrationIds![0]!;
-    assert.equal(restarted.state.workflowMigrations[0]?.lifecycle.phase, "stopping");
-    assert.equal(restarted.state.workflowMigrations[0]?.previousProfileId, "profile");
-    assert.deepEqual(restarted.state.assignments[0]?.workflow, old.workflow);
-    const stopped = apply(
-      restarted.state,
-      {
-        type: "workflow.restart.stopped",
-        commandId: commandId(),
-        migrationId,
-        expectedStateRevision: restarted.state.revision,
-        startingSource: {
-          ...old.startingSource!,
-          id: FactorySourceId.make("captured-migration-source"),
-          origin: "handover",
-          threadId: old.threadId,
-        },
-      },
-      host,
-    );
-    assert.equal(stopped.state.assignments[0]?.grant?.epoch, old.grant!.epoch + 1);
-    assert.equal(stopped.state.assignments[0]?.workflow.revision, "c".repeat(40));
-    assert.equal(stopped.state.assignments[0]?.threadId, old.threadId);
-    assert.deepEqual(stopped.state.assignments[0]?.oversight, old.oversight);
-    const prepared = apply(
-      stopped.state,
-      {
-        type: "workflow.restart.prepared",
-        commandId: commandId(),
-        migrationId,
-        expectedStateRevision: stopped.state.revision,
-        qualification: { status: "qualified", profileId: "fresh-profile", checkedAt: deliveryNow },
-      },
-      host,
-    );
-    assert.equal(prepared.effects[0]?.type, "workflow.restart.resume");
-    const resumed = apply(
-      prepared.state,
-      {
-        type: "workflow.restart.resumed",
-        commandId: commandId(),
-        migrationId,
-        profileId: "fresh-profile",
-      },
-      host,
-    );
-    assert.deepEqual(resumed.state.workflowMigrations[0]?.lifecycle, {
-      phase: "ready",
-      completedAt: deliveryNow,
-      resume: { phase: "delivered", deliveredAt: deliveryNow },
-    });
-  });
-
-  it("preserves a human decision wait through restart failure and retry", () => {
-    const registered = release(fixture());
-    const state: FactorySnapshot = {
-      ...registered.state,
-      assignments: registered.state.assignments.map((entry) => ({
-        ...entry,
-        status: "waiting",
-        wait: { kind: "human-decision", reason: "Review the existing PR" },
-      })),
-    };
-    const assignment = state.assignments[0]!;
-    const started = apply(state, {
-      type: "workflow.restart",
-      commandId: commandId(),
-      releaseId: registered.result.releaseId!,
-      assignmentIds: [assignment.id],
-      kind: "migration",
-      reason: "Use approved instructions",
-    });
-    const migrationId = started.result.migrationIds![0]!;
-    const failed = apply(
-      started.state,
-      {
-        type: "workflow.restart.failed",
-        commandId: commandId(),
-        migrationId,
-        step: "stop",
-        reason: "Container unavailable",
-      },
-      host,
-    );
-    const retried = apply(failed.state, {
-      type: "workflow.restart.retry",
-      commandId: commandId(),
-      migrationId,
-    });
-    assert.equal(retried.effects[0]?.type, "workflow.restart.stop");
-    const stopped = apply(
-      retried.state,
-      {
-        type: "workflow.restart.stopped",
-        commandId: commandId(),
-        migrationId,
-        expectedStateRevision: retried.state.revision,
-        startingSource: {
-          ...assignment.startingSource!,
-          id: FactorySourceId.make("restart-wait-source"),
-          origin: "handover",
-          threadId: assignment.threadId,
-        },
-      },
-      host,
-    );
-    const prepared = apply(
-      stopped.state,
-      {
-        type: "workflow.restart.prepared",
-        commandId: commandId(),
-        migrationId,
-        expectedStateRevision: stopped.state.revision,
-        qualification: {
-          status: "qualified",
-          profileId: "waiting-profile",
-          checkedAt: deliveryNow,
-        },
-      },
-      host,
-    );
-    assert.equal(prepared.state.assignments[0]?.status, "waiting");
-    assert.deepEqual(prepared.state.assignments[0]?.wait, assignment.wait);
-    assert.deepEqual(prepared.state.assignments[0]?.delivery, assignment.delivery);
-    assert.deepEqual(prepared.state.assignments[0]?.oversight, assignment.oversight);
-  });
-
-  it("records a late restart failure without reopening work that completed meanwhile", () => {
-    const registered = release(fixture());
-    const assignment = registered.state.assignments[0]!;
-    const started = apply(registered.state, {
-      type: "workflow.restart",
-      commandId: commandId(),
-      releaseId: registered.result.releaseId!,
-      assignmentIds: [assignment.id],
-      kind: "migration",
-      reason: "Use approved instructions",
-    });
-    const completed: FactorySnapshot = {
-      ...started.state,
-      assignments: started.state.assignments.map((entry) => ({
-        ...entry,
-        status: "complete",
-        wait: null,
-      })),
-    };
-    const failed = apply(
-      completed,
-      {
-        type: "workflow.restart.failed",
-        commandId: commandId(),
-        migrationId: started.result.migrationIds![0]!,
-        step: "stop",
-        reason: "Container unavailable",
-      },
-      host,
-    );
-    assert.equal(failed.state.workflowMigrations[0]?.lifecycle.phase, "failed");
-    assert.equal(failed.state.assignments[0]?.status, "complete");
-    assert.isNull(failed.state.assignments[0]?.wait);
-  });
-
-  it("keeps tightened grants and the authority wait when revocation races stop and preparation", () => {
-    const registered = release(fixture());
-    const old = registered.state.assignments[0]!;
-    const started = apply(registered.state, {
-      type: "workflow.restart",
-      commandId: commandId(),
-      releaseId: registered.result.releaseId!,
-      assignmentIds: [old.id],
-      kind: "migration",
-      reason: "Migrate",
-    });
-    const migrationId = started.result.migrationIds![0]!;
-    const tightened: FactorySnapshot = {
-      ...started.state,
-      revision: started.state.revision + 1,
-      assignments: started.state.assignments.map((entry) => ({
-        ...entry,
-        grant: { ...entry.grant!, epoch: 5, sourcePaths: [] },
-        wait: { kind: "authority", reason: "Source permission removed" },
-      })),
-    };
-    const stoppedCommand = {
-      type: "workflow.restart.stopped",
-      commandId: commandId(),
-      migrationId,
-      expectedStateRevision: started.state.revision,
-      startingSource: {
-        ...old.startingSource!,
-        id: FactorySourceId.make("revocation-source"),
-        origin: "handover",
-        threadId: old.threadId,
-      },
-    } as const;
-    assert.isTrue(
-      Result.isFailure(
-        decide({ state: tightened, command: stoppedCommand, actor: host, now: deliveryNow }),
-      ),
-    );
-    const stopped = apply(
-      tightened,
-      { ...stoppedCommand, commandId: commandId(), expectedStateRevision: tightened.revision },
-      host,
-    );
-    assert.equal(stopped.state.workflowMigrations[0]?.previousEpoch, old.grant!.epoch);
-    assert.equal(stopped.state.workflowMigrations[0]?.preparedEpoch, 6);
-    assert.deepEqual(stopped.state.assignments[0]?.grant?.sourcePaths, []);
-    const retightened: FactorySnapshot = {
-      ...stopped.state,
-      revision: stopped.state.revision + 1,
-      assignments: stopped.state.assignments.map((entry) => ({
-        ...entry,
-        grant: { ...entry.grant!, epoch: 7 },
-        wait: { kind: "authority", reason: "Additional authority withdrawn" },
-      })),
-    };
-    const stalePrepare = {
-      type: "workflow.restart.prepared",
-      commandId: commandId(),
-      migrationId,
-      expectedStateRevision: retightened.revision,
-      qualification: { status: "qualified", profileId: "stale-profile", checkedAt: deliveryNow },
-    } as const;
-    assert.isTrue(
-      Result.isFailure(
-        decide({ state: retightened, command: stalePrepare, actor: host, now: deliveryNow }),
-      ),
-    );
-    const failed = apply(
-      retightened,
-      {
-        type: "workflow.restart.failed",
-        commandId: commandId(),
-        migrationId,
-        step: "prepare",
-        reason: "Grant changed",
-      },
-      host,
-    );
-    const retried = apply(failed.state, {
-      type: "workflow.restart.retry",
-      commandId: commandId(),
-      migrationId,
-    });
-    assert.equal(retried.state.workflowMigrations[0]?.preparedEpoch, 8);
-    assert.deepEqual(retried.state.assignments[0]?.grant?.sourcePaths, []);
-    const prepared = apply(
-      retried.state,
-      {
-        ...stalePrepare,
-        commandId: commandId(),
-        expectedStateRevision: retried.state.revision,
-        qualification: { ...stalePrepare.qualification, profileId: "current-profile" },
-      },
-      host,
-    );
-    assert.deepEqual(prepared.state.assignments[0]?.wait, {
-      kind: "authority",
-      reason: "Additional authority withdrawn",
-    });
-    assert.equal(prepared.state.assignments[0]?.grant?.epoch, 8);
-    const continueCommand = {
-      type: "workflow.restart.continue",
-      commandId: commandId(),
-      migrationId,
-    } as const;
-    assert.isTrue(
-      Result.isFailure(
-        decide({
-          state: prepared.state,
-          command: continueCommand,
-          actor: manager,
-          now: deliveryNow,
-        }),
-      ),
-    );
-    const continued = apply(prepared.state, continueCommand);
-    assert.equal(continued.state.assignments[0]?.wait, null);
-    assert.deepEqual(continued.state.assignments[0]?.grant, prepared.state.assignments[0]?.grant);
-    assert.equal(continued.effects[0]?.type, "workflow.restart.resume");
-    const changedAgain: FactorySnapshot = {
-      ...prepared.state,
-      assignments: prepared.state.assignments.map((entry) => ({
-        ...entry,
-        grant: { ...entry.grant!, epoch: 9 },
-      })),
-    };
-    assert.isTrue(
-      Result.isFailure(
-        decide({
-          state: changedAgain,
-          command: { ...continueCommand, commandId: commandId() },
-          actor: human,
-          now: deliveryNow,
-        }),
-      ),
-    );
-    const reprepare = apply(changedAgain, {
-      type: "workflow.restart.retry",
-      commandId: commandId(),
-      migrationId,
-    });
-    assert.equal(reprepare.effects[0]?.type, "workflow.restart.prepare");
-    assert.equal(reprepare.state.assignments[0]?.grant?.epoch, 10);
-    assert.deepEqual(reprepare.state.assignments[0]?.grant?.sourcePaths, []);
   });
 
   it("keeps standing model recommendations scoped and requires exact human application", () => {
@@ -1119,229 +740,6 @@ describe("owned workflow authority", () => {
     );
   });
 
-  it("registers a release only from the merged commit the human approved for that proposal", () => {
-    const delivered = commission().state;
-    const approved = "c".repeat(40);
-    const rejected = (state: FactorySnapshot, revision: string) =>
-      Result.isFailure(
-        decide({
-          state,
-          command: registerCommand(state, revision),
-          actor: manager,
-          now: deliveryNow,
-          ...releaseContext(revision),
-        }),
-      );
-    assert.isTrue(rejected(delivered, approved));
-    const merged = mergeHead(delivered, approved);
-    assert.isTrue(rejected(merged, "e".repeat(40)));
-    const otherProposal: FactorySnapshot = {
-      ...merged,
-      sharedWorks: merged.sharedWorks.map((entry) => ({
-        ...entry,
-        plan: { ...entry.plan, proposalRevision: "proposal-v0" },
-      })),
-    };
-    assert.isTrue(rejected(otherProposal, approved));
-    const registered = apply(
-      merged,
-      registerCommand(merged, approved),
-      manager,
-      releaseContext(approved),
-    );
-    assert.equal(registered.state.workflowReleases[0]?.version.revision, approved);
-    assert.equal(registered.state.workflowReleases[0]?.assignmentId, implementation(merged)!.id);
-  });
-
-  it("resets a default adoption back to each manager's own workflow", () => {
-    const registered = release(fixture());
-    const adopted = apply(registered.state, {
-      type: "workflow.adopt",
-      commandId: commandId(),
-      releaseId: registered.result.releaseId!,
-      scope: { kind: "default" },
-    }).state;
-    const system = adopted.managers.find((entry) => entry.role === "system")!;
-    assert.equal(effectiveFactoryWorkflow(adopted, system).revision, "c".repeat(40));
-    const reset = apply(adopted, {
-      type: "workflow.adopt",
-      commandId: commandId(),
-      releaseId: null,
-      scope: { kind: "default" },
-    }).state;
-    assert.deepEqual(effectiveFactoryWorkflow(reset, system), system.workflow);
-    assert.isTrue(
-      Result.isFailure(
-        decide({
-          state: adopted,
-          command: {
-            type: "workflow.adopt",
-            commandId: commandId(),
-            releaseId: null,
-            scope: { kind: "default" },
-          },
-          actor: manager,
-          now: deliveryNow,
-        }),
-      ),
-    );
-  });
-
-  it("keeps a project-scoped release away from the default and other projects", () => {
-    const registered = release(fixture());
-    const scoped: FactorySnapshot = {
-      ...registered.state,
-      improvementProposals: registered.state.improvementProposals.map((entry) => ({
-        ...entry,
-        content: {
-          ...entry.content,
-          scope: { kind: "projects", projectIds: [deliveryIds.project] },
-        },
-      })),
-    };
-    const releaseId = registered.result.releaseId!;
-    const projectManager = scoped.managers.find((entry) => entry.role === "project")!;
-    const adopt = (scope: Extract<FactoryDecisionCommand, { type: "workflow.adopt" }>["scope"]) =>
-      decide({
-        state: scoped,
-        command: { type: "workflow.adopt", commandId: commandId(), releaseId, scope },
-        actor: human,
-        now: deliveryNow,
-      });
-    assert.isTrue(Result.isFailure(adopt({ kind: "default" })));
-    assert.isTrue(Result.isFailure(adopt({ kind: "managers", managerIds: [managerId] })));
-    assert.isTrue(Result.isSuccess(adopt({ kind: "managers", managerIds: [projectManager.id] })));
-    assert.isTrue(
-      Result.isFailure(
-        decide({
-          state: scoped,
-          command: {
-            type: "workflow.restart",
-            commandId: commandId(),
-            releaseId,
-            assignmentIds: [implementation(scoped)!.id],
-            kind: "trial",
-            reason: "Try elsewhere",
-          },
-          actor: human,
-          now: deliveryNow,
-        }),
-      ),
-    );
-  });
-
-  it("restores a re-enabled experiment on its own pinned version without another release", () => {
-    const state = apply(fixture(), {
-      type: "experiment.configure",
-      commandId: commandId(),
-      enabled: true,
-      maxConcurrent: 1,
-      maxPerInvestigation: 1,
-    }).state;
-    const created = apply(
-      state,
-      {
-        type: "experiment.commission",
-        commandId: commandId(),
-        repositoryId: state.sharedRepositories[0]!.id,
-        investigationId: "investigation",
-        work: {
-          ...work,
-          scope: {
-            ...work.scope,
-            requiresPullRequest: false,
-            noPrTarget: { kind: "report-received", recipientThreadId: managerId },
-          },
-        },
-        expectedBenefit: "Learn",
-        assessmentApproach: "Inspect candidate",
-      },
-      manager,
-      { allocation: allocation() },
-    );
-    const assignmentId = created.result.assignmentId!;
-    const configure = (enabled: boolean) =>
-      ({
-        type: "experiment.configure",
-        commandId: commandId(),
-        enabled,
-        maxConcurrent: 1,
-        maxPerInvestigation: 1,
-      }) as const;
-    const running: FactorySnapshot = {
-      ...created.state,
-      assignments: created.state.assignments.map((entry) =>
-        entry.id === assignmentId ? { ...entry, preparation: "ready", status: "running" } : entry,
-      ),
-    };
-    const held = apply(running, configure(false)).state;
-    const restore = {
-      type: "workflow.restart",
-      commandId: commandId(),
-      assignmentIds: [assignmentId],
-      kind: "restore",
-      reason: "Authority restored",
-    } as const;
-    assert.isTrue(
-      Result.isFailure(
-        decide({
-          state: held,
-          command: { ...restore, releaseId: "workflow-release:any" },
-          actor: human,
-          now: deliveryNow,
-        }),
-      ),
-    );
-    const started = apply(held, restore);
-    const migrationId = started.result.migrationIds![0]!;
-    const before = held.assignments.find((entry) => entry.id === assignmentId)!;
-    const stopped = apply(
-      started.state,
-      {
-        type: "workflow.restart.stopped",
-        commandId: commandId(),
-        migrationId,
-        expectedStateRevision: started.state.revision,
-        startingSource: {
-          ...held.assignments[0]!.startingSource!,
-          id: FactorySourceId.make("restore-source"),
-          origin: "handover",
-          projectId: before.projectId,
-          threadId: before.threadId,
-        },
-      },
-      host,
-    );
-    const prepared = apply(
-      stopped.state,
-      {
-        type: "workflow.restart.prepared",
-        commandId: commandId(),
-        migrationId,
-        expectedStateRevision: stopped.state.revision,
-        qualification: { status: "qualified", profileId: "restored", checkedAt: deliveryNow },
-      },
-      host,
-    );
-    const restored = prepared.state.assignments.find((entry) => entry.id === assignmentId)!;
-    assert.deepEqual(restored.workflow, before.workflow);
-    assert.equal(restored.wait?.kind, "authority");
-    const continueCommand = {
-      type: "workflow.restart.continue",
-      commandId: commandId(),
-      migrationId,
-    } as const;
-    assert.isTrue(
-      Result.isFailure(
-        decide({ state: prepared.state, command: continueCommand, actor: human, now: deliveryNow }),
-      ),
-    );
-    const reenabled = apply(prepared.state, configure(true)).state;
-    const resumed = apply(reenabled, continueCommand);
-    assert.equal(resumed.state.assignments.find((entry) => entry.id === assignmentId)?.wait, null);
-    assert.equal(resumed.effects[0]?.type, "workflow.restart.resume");
-  });
-
   it("marks every protected-control plan as able to weaken rules", () => {
     const proposed = propose(fixture());
     assert.isTrue(proposed.state.sharedWorks[0]!.plan.weakensRules);
@@ -1363,7 +761,7 @@ describe("system manager replacement", () => {
       type: "manager.retire",
       commandId: commandId(),
       managerId,
-      reason: "Replace with a manager on the new workflow",
+      reason: "Replace with a new system manager",
     }).state;
     assert.equal(
       state.assignments.find((entry) => entry.id === retiredTeam.id)?.outcome?.kind,
@@ -1381,7 +779,6 @@ describe("system manager replacement", () => {
           commandId: commandId(),
           workspaceProjectId: projectId,
           modelSelection: deliverySelection,
-          workflow: boundary.workflow,
         },
         systemManagerCreation: {
           threadId: replacementId,
@@ -1391,6 +788,7 @@ describe("system manager replacement", () => {
             checkedAt: deliveryNow,
           },
         },
+        skills,
       }),
     );
     assert.deepEqual(
