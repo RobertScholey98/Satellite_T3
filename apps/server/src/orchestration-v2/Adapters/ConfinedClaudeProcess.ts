@@ -58,19 +58,34 @@ export interface ConfinedClaudeRuntime {
    * SDK keeps no stderr for a process it did not spawn. Waits for the output of an exited process.
    */
   readonly stderrTail: Effect.Effect<string>;
-  /** Removes the runtime at most once, ignoring failures such as an already-removed one. */
+  /**
+   * Removes the runtime at most once. Docker accepts an already-removed one, so a failure or
+   * timeout means the container may still run, and is logged when first awaited.
+   */
   readonly remove: Effect.Effect<void>;
 }
 
 export function makeConfinedClaudeRuntime(launch: ConfinedProcess): ConfinedClaudeRuntime {
-  let removal: Promise<void> | undefined;
+  let removal:
+    | Promise<{
+        readonly timedOut: boolean;
+        readonly code: string | number | undefined;
+        readonly stderr: string;
+      } | null>
+    | undefined;
+  let removalReported = false;
   const remove = () =>
-    (removal ??= new Promise<void>((resolve) => {
+    (removal ??= new Promise((resolve) => {
       NodeChildProcess.execFile(
         launch.cleanup.command,
         [...launch.cleanup.args],
         { env: launch.cleanup.environment, timeout: 10_000, windowsHide: true },
-        () => resolve(),
+        (error, _stdout, stderr) =>
+          resolve(
+            error === null
+              ? null
+              : { timedOut: error.killed === true, code: error.code, stderr: stderr.trim() },
+          ),
       );
     }));
   let stderr = "";
@@ -112,6 +127,15 @@ export function makeConfinedClaudeRuntime(launch: ConfinedProcess): ConfinedClau
       Effect.timeoutOption("2 seconds"),
       Effect.map(() => stderr.trim()),
     ),
-    remove: Effect.promise(remove),
+    remove: Effect.promise(remove).pipe(
+      Effect.flatMap((failure) => {
+        if (failure === null || removalReported) return Effect.void;
+        removalReported = true;
+        return Effect.logWarning("orchestration-v2.claude-confined-runtime-removal-failed", {
+          runtime: launch.name,
+          ...failure,
+        });
+      }),
+    ),
   };
 }
