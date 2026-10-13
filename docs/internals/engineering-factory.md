@@ -9,11 +9,16 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
 - A managed thread runs only inside its Docker boundary.
   [`RuntimePolicyV2`](../../apps/server/src/orchestration-v2/RuntimePolicy.ts) asks
   `ThreadGovernance.confinementFor` about every thread, which the factory answers with
-  `FactoryExecution.runtimePolicyFor`. When that returns a confinement, Codex starts in the
-  container through `ConfinedProviderLaunch`, which the factory implements with
+  `FactoryExecution.runtimePolicyFor`. When that returns a confinement, Codex or Claude starts in
+  the container through `ConfinedProviderLaunch`, which the factory implements with
   [`prepareFactoryLaunch`](../../apps/server/src/factory/FactoryConfinedLaunch.ts), and every
-  other driver is refused. Runtime-policy overrides skip managed threads. Never add a
-  host fallback. A failed launch must surface as a failure.
+  other driver is refused (`isConfinableProviderDriver` in the contracts). Runtime-policy
+  overrides skip managed threads. Never add a host fallback. A failed launch must surface as a
+  failure.
+- Host provider configuration never shapes the boundary: binary paths, launch arguments, host
+  settings and host skills stay outside. Only one model credential crosses, through `--env`. A
+  Claude file sign-in contributes its access token only; a container that refreshed the refresh
+  token would sign the host's Claude Code out.
 - The host never reads or writes an assignment volume directly. Volume access goes through
   [`FactoryVolumeHelper`](../../apps/server/src/factory/FactoryVolumeHelper.ts), which runs in a
   short-lived container with no network and a read-only root.
@@ -25,11 +30,18 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
   mounted read-only. [`factoryProtectedPath`](../../apps/server/src/factory/FactoryBoundaryPaths.ts)
   covers configuration files, agent instructions, and files that tools load without an explicit
   import. An agent can write one of these only with a control-change grant.
-- Native Codex subagents are disabled. They would run in the same container, but `spawn_agent`
-  accepts any catalog model and reasoning effort, even when its schema hides those arguments. That
-  choice never reaches [`FactoryModelAdmission`](../../apps/server/src/factory/FactoryModelAdmission.ts),
-  so teams delegate with `delegate_task`. When you bump `FACTORY_AGENT_IMAGE`, rerun the live probe
-  in `FactoryCodexLaunch.test.ts`.
+- Native subagents are disabled for both providers. They would run in the same container, but
+  Codex's `spawn_agent` accepts any catalog model and reasoning effort, even when its schema hides
+  those arguments, and Claude's `Agent` tool and `Workflow` scripts take a model too. That choice
+  never reaches [`FactoryModelAdmission`](../../apps/server/src/factory/FactoryModelAdmission.ts),
+  so teams delegate with `delegate_task`. When you bump `FACTORY_AGENT_IMAGE`, rerun the live
+  probes in `FactoryCodexLaunch.test.ts` and `FactoryClaudeLaunch.test.ts`: a new CLI can add
+  agent tools.
+- Profiles pin the image they qualified with, so a bump never changes an existing runtime. The
+  image's `satellite.factory.providers` label says which drivers it can run, and a Claude launch
+  on an older image is refused with a clear message.
+- A managed Claude thread cannot be forked. The Agent SDK reads transcripts only from the host's
+  Claude config directory, and a managed thread's transcripts live in its runtime.
 - The model credential is inside the container, and the container has network access. A shell
   command can still call a model directly. The model policy governs supported delegation paths
   only. Do not describe it as spend enforcement.

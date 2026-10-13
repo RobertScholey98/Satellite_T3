@@ -8,11 +8,11 @@ import * as Schema from "effect/Schema";
 const renderJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 /**
- * Orchestration guidance for a confined Codex agent. The factory supplies it with the thread's
+ * Orchestration guidance for a confined agent. The factory supplies it with the thread's
  * confinement, replacing T3 Code's default guidance, because native subagent tools are disabled
  * inside the factory runtime.
  */
-export const managedCodexOrchestration = `Managed engineering work uses Satellite's app-owned delegation. Native Codex subagent tools are disabled in this execution profile because their model choices bypass the approved model policy; build every team member with delegate_task. Implementation leads own technical execution, internal review, verification, and the PR lifecycle. Engineering managers coordinate assignments through factory_dispatch.
+export const managedOrchestration = `Managed engineering work uses Satellite's app-owned delegation. Native subagent tools are disabled in this execution profile because their model choices bypass the approved model policy; build every team member with delegate_task. Implementation leads own technical execution, internal review, verification, and the PR lifecycle. Engineering managers coordinate assignments through factory_dispatch.
 
 Use factory_snapshot to inspect the assignment's approved model policy and permissions. Model approval includes the provider instance and options, including reasoning effort. Use orchestrator_capabilities to check provider availability, then delegate_task to start an approved worker or reviewer. Its catalog does not grant permission to use every listed model. Retain taskId and use task_status or task_cancel. Start each new review round with a new delegate_task call and a distinct clientRequestId; reuse that ID only for retries of the same request.
 

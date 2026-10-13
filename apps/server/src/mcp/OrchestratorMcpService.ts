@@ -57,6 +57,7 @@ import {
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   ThreadId,
+  isConfinableProviderDriver,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -1815,10 +1816,10 @@ const make = Effect.gen(function* () {
               orchestrationCapableInstanceIds.has(provider.instanceId),
             );
             const executionConstraints =
-              managed && provider.driver !== "codex"
+              managed && !isConfinableProviderDriver(provider.driver)
                 ? [
                     ...constraints,
-                    "Managed delegation requires the qualified Codex container runtime.",
+                    "Managed delegation requires a provider with a confined runtime (Codex or Claude).",
                   ]
                 : constraints;
             return {

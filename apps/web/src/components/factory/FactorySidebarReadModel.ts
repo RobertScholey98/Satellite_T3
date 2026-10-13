@@ -1,6 +1,7 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   factorySystemManager,
+  isConfinableProviderDriver,
   type EnvironmentId,
   type FactoryManager,
   type FactorySnapshot,
@@ -61,13 +62,13 @@ export function factoryCanCreateManager(
 }
 
 /**
- * Managers and their teams run only on Codex (`FactoryExecution.qualify`), so manager setup
- * offers Codex instances alone.
+ * Managers and their teams run only on providers the factory can confine
+ * (`FactoryExecution.qualify`), so manager setup offers those instances alone.
  */
 export function factoryManagerProviders(
   providers: readonly ServerProvider[],
 ): readonly ServerProvider[] {
-  return providers.filter((provider) => provider.driver === "codex");
+  return providers.filter((provider) => isConfinableProviderDriver(provider.driver));
 }
 
 /**

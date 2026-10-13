@@ -269,25 +269,26 @@ describe("factory manager providers", () => {
     slashCommands: [],
     skills: [],
   });
-  const claudeDefault = {
-    instanceId: ProviderInstanceId.make("claudeAgent"),
-    model: "claude-fable-5",
+  const grokDefault = {
+    instanceId: ProviderInstanceId.make("grok"),
+    model: "grok-5",
   };
 
-  it("defaults a manager to Codex even when the project prefers another provider", () => {
+  it("offers Codex and Claude managers and defaults away from an unconfinable provider", () => {
     const providers = factoryManagerProviders([
+      provider("grok", "grok-5"),
       provider("claudeAgent", "claude-fable-5"),
       provider("codex", "gpt-5.6"),
     ]);
-    expect(providers.map((entry) => entry.driver)).toEqual(["codex"]);
-    expect(resolveDefaultProviderModelSelection(providers, claudeDefault)).toEqual({
-      instanceId: "codex",
-      model: "gpt-5.6",
+    expect(providers.map((entry) => entry.driver)).toEqual(["claudeAgent", "codex"]);
+    expect(resolveDefaultProviderModelSelection(providers, grokDefault)).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-fable-5",
     });
   });
 
-  it("offers no model without a Codex provider", () => {
-    const providers = factoryManagerProviders([provider("claudeAgent", "claude-fable-5")]);
-    expect(resolveDefaultProviderModelSelection(providers, claudeDefault)).toBeNull();
+  it("offers no model without a Codex or Claude provider", () => {
+    const providers = factoryManagerProviders([provider("grok", "grok-5")]);
+    expect(resolveDefaultProviderModelSelection(providers, grokDefault)).toBeNull();
   });
 });

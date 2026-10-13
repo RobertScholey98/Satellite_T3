@@ -1,5 +1,6 @@
 import {
   FactoryError,
+  isConfinableProviderDriver,
   isFactoryError,
   type FactoryDiscoveryQualification,
   type FactoryWorkflowVersion,
@@ -159,15 +160,15 @@ const make = Effect.gen(function* () {
   const qualify = Effect.fn("FactoryExecution.qualify")(
     function* (input: Parameters<FactoryExecution["Service"]["qualify"]>[0]) {
       const instance = yield* providers.getInstance(input.modelSelection.instanceId);
-      if (instance?.driverKind !== "codex" || !instance.enabled) {
+      if (!isConfinableProviderDriver(instance?.driverKind) || !instance?.enabled) {
         return yield* new QualificationError({
-          detail: "Discovery currently requires an enabled Codex provider.",
+          detail: "Discovery requires an enabled Codex or Claude provider.",
         });
       }
       const provider = yield* instance.snapshot.getSnapshot;
       if (provider.auth?.status !== "authenticated") {
         return yield* new QualificationError({
-          detail: "Sign in to the selected Codex model account before starting discovery.",
+          detail: "Sign in to the selected provider before starting discovery.",
         });
       }
       const project = yield* projects.get(input.projectId);
@@ -579,7 +580,7 @@ export const layerThreadGovernance = Layer.effect(
                   boundaryId: profile.boundaryId,
                   workspacePath: profile.projectSnapshotPath,
                   profile,
-                  orchestrationInstructions: FactoryPrompts.managedCodexOrchestration,
+                  orchestrationInstructions: FactoryPrompts.managedOrchestration,
                 },
           ),
         ),

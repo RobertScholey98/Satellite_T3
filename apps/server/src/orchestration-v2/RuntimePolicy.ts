@@ -1,4 +1,5 @@
 import {
+  isConfinableProviderDriver,
   ModelSelection,
   OrchestrationV2AppThread,
   ProjectId,
@@ -129,11 +130,12 @@ export const layerFromProjectStore = Layer.effect(
                   }),
               ),
             );
-          if (instance?.driverKind !== "codex") {
+          if (!isConfinableProviderDriver(instance?.driverKind)) {
             return yield* new RuntimePolicyResolveError({
               projectId: input.thread.projectId,
               providerInstanceId: input.modelSelection.instanceId,
-              cause: "Managed execution currently requires the qualified Codex container runtime.",
+              cause:
+                "Managed execution requires a provider with a confined runtime (Codex or Claude).",
             });
           }
           return ProviderAdapterV2RuntimePolicy.make({

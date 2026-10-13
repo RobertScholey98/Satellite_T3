@@ -337,7 +337,7 @@ function ManagerForm({
           <div className="grid gap-1.5">
             <Label>Manager and onboarding model</Label>
             <p className="text-xs text-muted-foreground">
-              Engineering managers and their teams run on Codex.
+              Engineering managers and their teams run on Codex or Claude.
             </p>
             {activeSelection ? (
               <ProviderModelPicker
@@ -355,7 +355,7 @@ function ManagerForm({
               />
             ) : (
               <p role="status" className="text-sm text-muted-foreground">
-                Enable and sign in to a Codex provider on {environment.label} first.
+                Enable and sign in to a Codex or Claude provider on {environment.label} first.
               </p>
             )}
           </div>

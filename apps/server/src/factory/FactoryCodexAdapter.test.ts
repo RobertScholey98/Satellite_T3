@@ -28,7 +28,7 @@ const runtimePolicy: ProviderAdapterV2RuntimePolicy = {
     boundaryId: profile.boundaryId,
     workspacePath: profile.projectSnapshotPath,
     profile,
-    orchestrationInstructions: FactoryPrompts.managedCodexOrchestration,
+    orchestrationInstructions: FactoryPrompts.managedOrchestration,
   },
 };
 
@@ -63,7 +63,7 @@ it.effect(
       const { confinement: _confinement, ...hostPolicy } = runtimePolicy;
       const managed = (yield* turn(runtimePolicy)).additionalContext?.t3_code_orchestration?.value;
       const ordinary = (yield* turn(hostPolicy)).additionalContext?.t3_code_orchestration?.value;
-      assert.equal(managed, FactoryPrompts.managedCodexOrchestration);
+      assert.equal(managed, FactoryPrompts.managedOrchestration);
       assert.notEqual(ordinary, managed);
       assert.include(ordinary ?? "", "delegate_task");
     }),

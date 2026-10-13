@@ -119,7 +119,7 @@ const discoveryConfinement = {
   profile: { owner: "discovery" },
 } satisfies ThreadGovernance.ConfinedExecution;
 
-const managedLayer = (driverKind: "codex" | "grok") =>
+const managedLayer = (driverKind: "codex" | "claudeAgent" | "grok") =>
   RuntimePolicy.layerFromProjectStore.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -159,6 +159,20 @@ it.effect("runs managed discovery from the qualified snapshot instead of its wor
   }).pipe(Effect.provide(managedLayer("codex"))),
 );
 
+it.effect("runs a managed Claude thread in the same confined runtime", () =>
+  Effect.gen(function* () {
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const now = yield* DateTime.now;
+    const resolved = yield* policy.resolve({
+      thread: makeThread({ now, worktreePath: "/writable-worktree" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "test-model" },
+    });
+    assert.equal(resolved.cwd, discoveryConfinement.workspacePath);
+    assert.deepStrictEqual(resolved.confinement, discoveryConfinement);
+    assert.equal(resolved.approvalPolicy, "never");
+  }).pipe(Effect.provide(managedLayer("claudeAgent"))),
+);
+
 it.effect("rejects a managed runtime when the selected driver cannot enforce discovery", () =>
   Effect.gen(function* () {
     const policy = yield* RuntimePolicy.RuntimePolicyV2;
@@ -171,6 +185,10 @@ it.effect("rejects a managed runtime when the selected driver cannot enforce dis
       .pipe(Effect.flip);
     assert.equal(failure._tag, "RuntimePolicyResolveError");
     assert.equal(failure.providerInstanceId, grokInstanceId);
+    assert.equal(
+      failure.cause,
+      "Managed execution requires a provider with a confined runtime (Codex or Claude).",
+    );
   }).pipe(Effect.provide(managedLayer("grok"))),
 );
 

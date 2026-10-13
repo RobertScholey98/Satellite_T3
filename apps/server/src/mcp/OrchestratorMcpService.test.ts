@@ -799,6 +799,7 @@ describe("OrchestratorMcpService provider resolution", () => {
   const projectId = ProjectId.make("project:mcp-providers");
   const codexInstanceId = ProviderInstanceId.make("codex");
   const antigravityInstanceId = ProviderInstanceId.make("antigravity");
+  const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
 
   const scope: McpInvocationScope = {
     environmentId: EnvironmentId.make("environment:mcp-providers"),
@@ -1056,18 +1057,22 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.isFalse(capabilities.features.batchThreadCreation);
         assert.isFalse(capabilities.features.scheduledTasks);
         assert.equal(capabilities.features.maxBatchThreads, 0);
-        assert.isTrue(
-          capabilities.providers.find(
-            (provider) => provider.providerInstanceId === codexInstanceId,
-          )!.canRunChildTask,
+        assert.deepStrictEqual(
+          capabilities.providers.map((provider) => [
+            provider.providerInstanceId,
+            provider.canRunChildTask,
+            provider.constraints,
+          ]),
+          [
+            [codexInstanceId, true, []],
+            [claudeInstanceId, true, []],
+            [
+              antigravityInstanceId,
+              false,
+              ["Managed delegation requires a provider with a confined runtime (Codex or Claude)."],
+            ],
+          ],
         );
-        const unsupported = capabilities.providers.find(
-          (provider) => provider.providerInstanceId === antigravityInstanceId,
-        )!;
-        assert.isFalse(unsupported.canRunChildTask);
-        assert.deepStrictEqual(unsupported.constraints, [
-          "Managed delegation requires the qualified Codex container runtime.",
-        ]);
       }).pipe(
         Effect.provide(
           OrchestratorMcpService.layer.pipe(
@@ -1094,12 +1099,17 @@ describe("OrchestratorMcpService provider resolution", () => {
                     model: "gpt-5.4",
                   }),
                   providerSnapshot({
+                    instanceId: claudeInstanceId,
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    model: "claude-opus-5-5",
+                  }),
+                  providerSnapshot({
                     instanceId: antigravityInstanceId,
                     driver: ProviderDriverKind.make("antigravity"),
                     model: "ant-model",
                   }),
                 ]),
-                adapterRegistryLayer([codexInstanceId, antigravityInstanceId]),
+                adapterRegistryLayer([codexInstanceId, claudeInstanceId, antigravityInstanceId]),
                 Layer.mock(ProjectService.ProjectService)({}),
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -1363,7 +1373,6 @@ describe("OrchestratorMcpService provider resolution", () => {
 
   it.effect("re-probes an unavailable target once before refusing it", () =>
     Effect.gen(function* () {
-      const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
       const claudeDriver = ProviderDriverKind.make("claudeAgent");
       const task = {
         id: taskId,
