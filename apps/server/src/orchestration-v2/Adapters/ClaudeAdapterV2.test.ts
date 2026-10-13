@@ -8789,6 +8789,134 @@ describe("ClaudeAdapterV2 confined sessions", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
+  it.effect("prompts a confined runtime without host attachment paths or host skills", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-confined-prompt-" });
+      const attachmentsDir = path.join(root, "attachments");
+      const hostHome = path.join(root, "claude-home");
+      yield* fs.makeDirectory(path.join(hostHome, "skills", "host-skill"), { recursive: true });
+      yield* fs.writeFileString(
+        path.join(hostHome, "skills", "host-skill", "SKILL.md"),
+        "---\nname: host-skill\ndescription: Exists only on the host.\n---\n",
+      );
+      const offered: Array<SDKUserMessage> = [];
+      const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+        instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        settings: { ...DEFAULT_CLAUDE_SETTINGS, homePath: hostHome },
+        environment: {},
+        attachmentsDir,
+        fileSystem: fs,
+        path,
+        crypto: yield* Crypto.Crypto,
+        idAllocator,
+        confinedLaunch: {
+          prepare: () =>
+            Effect.succeed({
+              name: "prompt-runtime",
+              command: process.execPath,
+              args: [],
+              environment: {},
+              cleanup: {
+                command: process.execPath,
+                args: ["-e", ""],
+                environment: { SystemRoot: process.env.SystemRoot },
+              },
+            }),
+          assertActive: () => Effect.void,
+          checkCredential: () => Effect.void,
+        },
+        queryRunner: {
+          allocateSessionId: Effect.succeed(CONFINED_NATIVE_SESSION),
+          open: () =>
+            Effect.succeed({
+              messages: Stream.never,
+              offer: (message) => Effect.sync(() => void offered.push(message)),
+              setModel: () => Effect.void,
+              setPermissionMode: () => Effect.void,
+              interrupt: Effect.void,
+              close: Effect.void,
+            }),
+          forkSession: () => Effect.die("unused"),
+          subagentLaunchToolUseId: () => Effect.succeed(null),
+          assertComplete: Effect.void,
+        },
+      });
+      const threadId = ThreadId.make("thread-claude-confined-prompt");
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-confined-prompt"),
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      const image = ChatImageAttachment.make({
+        type: "image",
+        id: ChatAttachmentId.make(
+          "thread-claude-confined-prompt-12345678-1234-1234-1234-123456789abc",
+        ),
+        name: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 4,
+      });
+      yield* fs.makeDirectory(
+        path.dirname(path.join(attachmentsDir, attachmentRelativePath(image)!)),
+        {
+          recursive: true,
+        },
+      );
+      yield* fs.writeFile(
+        path.join(attachmentsDir, attachmentRelativePath(image)!),
+        Uint8Array.from([1, 2, 3, 4]),
+      );
+      const attemptId = RunAttemptId.make("attempt-confined-prompt");
+      yield* runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId,
+          providerThread,
+          now: yield* DateTime.now,
+          attemptId,
+          text: "Use $host-skill on this image.",
+          attachments: [image],
+          runtimePolicy: confinedPolicy,
+        }),
+      );
+      yield* runtime.steerTurn({
+        threadId,
+        runId: RunId.make(`run-${attemptId}`),
+        providerThread,
+        providerTurnId: idAllocator.derive.providerTurn({
+          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        }),
+        message: {
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make("message-confined-prompt-steer"),
+          text: "Then $host-skill again.",
+          attachments: [image],
+        },
+      });
+      const imageBlock = {
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: "AQIDBA==" },
+      } as const;
+      assert.deepEqual(
+        offered.map((message) => message.message.content),
+        [
+          [imageBlock, { type: "text", text: "Ultrathink:\nUse $host-skill on this image." }],
+          [imageBlock, { type: "text", text: "Ultrathink:\nThen $host-skill again." }],
+        ],
+      );
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
   it.effect("reports why a confined runtime stopped from the end of its stderr", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

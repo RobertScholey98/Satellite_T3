@@ -1379,6 +1379,8 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
   readonly attachmentsDir: string;
   readonly fileSystem: FileSystem.FileSystem;
   readonly skillNames?: ReadonlySet<string>;
+  /** Whether the prompt names each attachment's host path. */
+  readonly attachmentPaths: boolean;
 }) {
   if (input.attachments.length === 0) {
     return makeClaudeUserMessage({
@@ -1392,11 +1394,13 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
   // The model's tools cannot dereference inlined pixels. Appending the
   // on-disk path is what lets a turn like "include this screenshot in the
   // PR" copy the actual file (the query grants attachmentsDir for reads).
-  const textWithAttachmentPaths = providerMessageTextWithAttachmentPaths({
-    text: input.text,
-    attachments: input.attachments,
-    attachmentsDir: input.attachmentsDir,
-  });
+  const textWithAttachmentPaths = input.attachmentPaths
+    ? providerMessageTextWithAttachmentPaths({
+        text: input.text,
+        attachments: input.attachments,
+        attachmentsDir: input.attachmentsDir,
+      })
+    : input.text;
 
   const dispatch =
     input.skillNames === undefined
@@ -3100,6 +3104,14 @@ export function makeClaudeAdapterV2(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
     );
+  // What a prompt may name on the host. A confined runtime has neither the host's skills nor its
+  // attachment paths; its images are inlined.
+  const hostPromptReferences = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+    runtimePolicy.confinement === undefined
+      ? userInvocableSkillNames(runtimePolicy.cwd).pipe(
+          Effect.map((skillNames) => ({ skillNames, attachmentPaths: true })),
+        )
+      : Effect.succeed({ attachmentPaths: false });
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
@@ -7462,10 +7474,7 @@ export function makeClaudeAdapterV2(
                     attachments: turnInput.message.attachments,
                     attachmentsDir,
                     fileSystem,
-                    // Host skills do not exist in a confined runtime.
-                    ...(turnInput.runtimePolicy.confinement === undefined
-                      ? { skillNames: yield* userInvocableSkillNames(turnInput.runtimePolicy.cwd) }
-                      : {}),
+                    ...(yield* hostPromptReferences(turnInput.runtimePolicy)),
                     uuid: promptUuid,
                   });
             const querySession = yield* openQuery(turnInput, nativeThreadId);
@@ -7675,7 +7684,7 @@ export function makeClaudeAdapterV2(
               priority: "now",
               attachmentsDir,
               fileSystem,
-              skillNames: yield* userInvocableSkillNames(currentTurn.input.runtimePolicy.cwd),
+              ...(yield* hostPromptReferences(currentTurn.input.runtimePolicy)),
             });
             yield* Ref.update(steeredTurns, (current) => {
               const next = new Set(current);
