@@ -69,7 +69,7 @@ export function makeConfinedClaudeRuntime(launch: ConfinedProcess): ConfinedClau
   let removal:
     | Promise<{
         readonly timedOut: boolean;
-        readonly code: string | number | undefined;
+        readonly code: string | number | null | undefined;
         readonly stderr: string;
       } | null>
     | undefined;

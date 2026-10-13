@@ -308,12 +308,10 @@ it.effect("refuses a config directory whose settings set up another backend", ()
   Effect.gen(function* () {
     const { fs, path, configDir, launch } = yield* fixture;
     const settingsFile = path.join(configDir, "settings.json");
-    const refusal = (contents: string) =>
-      fs.writeFileString(settingsFile, contents).pipe(
-        Effect.andThen(launch({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" })),
-        Effect.flip,
-        Effect.map((failure) => failure.detail),
-      );
+    const refusal = Effect.fnUntraced(function* (contents: string) {
+      yield* fs.writeFileString(settingsFile, contents);
+      return (yield* launch({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" }).pipe(Effect.flip)).detail;
+    });
     assert.deepEqual(
       [
         yield* refusal('{"env":{"ANTHROPIC_BASE_URL":"https://gateway.example.com"}}'),
