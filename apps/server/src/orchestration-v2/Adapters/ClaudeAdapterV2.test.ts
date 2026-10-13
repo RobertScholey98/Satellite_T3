@@ -14,6 +14,7 @@ import {
   ChatImageAttachment,
   ClaudeSettings,
   EnvironmentId,
+  FactoryError,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -68,7 +69,9 @@ import {
 } from "../ProviderAdapter.ts";
 import type { ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import { makeProviderFailure } from "../ProviderFailure.ts";
+import { buildRuntimeInstructions } from "../../provider/RuntimeInstructions.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import * as ConfinedProviderLaunch from "./ConfinedProviderLaunch.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
@@ -1110,6 +1113,10 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
       ServerConfig.layerTest(process.cwd(), {
         prefix: "t3-claude-binary-path-",
       }),
+    ),
+    Effect.provideService(
+      ConfinedProviderLaunch.ConfinedProviderLaunch,
+      ConfinedProviderLaunch.unconfined,
     ),
     Effect.provideService(ClaudeAdapterV2.ClaudeAgentSdkQueryRunner, {
       allocateSessionId: Effect.succeed("native-thread-claude-binary-path"),
@@ -8397,5 +8404,307 @@ describe("ClaudeAdapterV2 query message stream", () => {
       yield* Scope.close(scope, Exit.void);
       assert.isTrue(closed);
     }),
+  );
+});
+
+describe("ClaudeAdapterV2 confined sessions", () => {
+  const confinement = {
+    boundaryId: "assignment:thread",
+    workspacePath: "C:/state/project",
+    profile: {},
+    orchestrationInstructions: "Build every team member with delegate_task.",
+  };
+  const confinedPolicy = ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    cwd: confinement.workspacePath,
+    confinement,
+    sandboxPolicy: { type: "externalSandbox", networkAccess: "enabled" },
+    approvalPolicy: "never",
+  });
+  const hostSettings = {
+    ...DEFAULT_CLAUDE_SETTINGS,
+    binaryPath: "/host/bin/claude",
+    launchArgs: "--permission-mode plan --mcp-config /host/privileged.json",
+  };
+
+  it.effect("runs a managed turn's CLI in its runtime with the factory's tools and guidance", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-confined-" });
+      const removals = path.join(root, "removals.log");
+      const launch = {
+        command: process.execPath,
+        args: [
+          "-e",
+          "process.stdout.write(JSON.stringify({ argv: process.argv.slice(1), launch: process.env.LAUNCH_ONLY ?? null, host: process.env.HOST_SECRET ?? null }))",
+          "--",
+          "launch-arg",
+        ],
+        environment: { LAUNCH_ONLY: "from-launch", SystemRoot: process.env.SystemRoot },
+        cleanup: {
+          command: process.execPath,
+          args: [
+            "-e",
+            `require("node:fs").appendFileSync(${JSON.stringify(removals)}, "removed\\n")`,
+          ],
+        },
+      };
+      const prepared: Array<string> = [];
+      const output = yield* Effect.scoped(
+        Effect.gen(function* () {
+          let openedOptions: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined;
+          const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+            instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+            settings: hostSettings,
+            environment: { HOST_SECRET: "host" },
+            attachmentsDir: path.join(root, "attachments"),
+            fileSystem: fs,
+            path,
+            crypto: yield* Crypto.Crypto,
+            idAllocator: yield* IdAllocator.IdAllocatorV2,
+            confinedLaunch: {
+              prepare: (request) =>
+                Effect.sync(() => {
+                  prepared.push(request.driver);
+                  return launch;
+                }),
+              assertActive: () => Effect.void,
+            },
+            queryRunner: {
+              allocateSessionId: Effect.succeed("native-thread-confined"),
+              open: (input) =>
+                Effect.sync(() => {
+                  openedOptions = input.options;
+                  return {
+                    messages: Stream.never,
+                    offer: () => Effect.void,
+                    setModel: () => Effect.void,
+                    setPermissionMode: () => Effect.void,
+                    interrupt: Effect.void,
+                    close: Effect.void,
+                  };
+                }),
+              forkSession: () => Effect.die("unused"),
+              subagentLaunchToolUseId: () => Effect.succeed(null),
+              assertComplete: Effect.void,
+            },
+          });
+          const threadId = ThreadId.make("thread-claude-confined");
+          McpProviderSession.setMcpProviderSession({
+            environmentId: EnvironmentId.make("environment-confined"),
+            threadId,
+            providerSessionId: "mcp-session-confined",
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            endpoint: "http://127.0.0.1:43123/mcp",
+            authorizationHeader: "Bearer scoped-token",
+            browserToolsAvailable: false,
+          });
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
+          );
+          const runtime = yield* adapter.openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make("provider-session-confined"),
+            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+            runtimePolicy: confinedPolicy,
+          });
+          const providerThread = yield* runtime.ensureThread({
+            threadId,
+            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+            runtimePolicy: confinedPolicy,
+          });
+          yield* runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId,
+              providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-confined"),
+              text: "Start the assignment.",
+              attachments: [],
+              runtimePolicy: confinedPolicy,
+            }),
+          );
+          const options = openedOptions!;
+          assert.deepEqual(prepared, ["claudeAgent"]);
+          assert.isUndefined(options.cwd);
+          assert.isUndefined(options.additionalDirectories);
+          assert.isUndefined(options.env);
+          assert.equal(options.pathToClaudeCodeExecutable, "claude");
+          assert.equal(options.permissionMode, "bypassPermissions");
+          assert.deepEqual(options.extraArgs, { "thinking-display": "summarized" });
+          assert.deepEqual(options.settingSources, ["user", "project"]);
+          assert.deepEqual(options.disallowedTools, [
+            "Agent",
+            "Task",
+            "Workflow",
+            "SendMessage",
+            "ListAgents",
+          ]);
+          assert.deepEqual(options.mcpServers?.["t3-code"], {
+            type: "http",
+            url: "http://host.docker.internal:43123/mcp",
+            headers: { Authorization: "Bearer scoped-token" },
+            timeout: ClaudeAdapterV2.CLAUDE_T3_MCP_TOOL_TIMEOUT_MS,
+          });
+          assert.deepEqual(options.systemPrompt, {
+            type: "preset",
+            preset: "claude_code",
+            append:
+              buildRuntimeInstructions({ harness: "Claude Code" }) +
+              "Build every team member with delegate_task.",
+          });
+          const child = options.spawnClaudeCodeProcess!({
+            command: "/host/bin/claude",
+            args: ["--output-format", "stream-json"],
+            cwd: "C:/host/project",
+            env: { HOST_SECRET: "sdk" },
+            signal: new AbortController().signal,
+          });
+          return yield* Effect.callback<string>((resume) => {
+            let stdout = "";
+            child.stdout.on("data", (chunk) => (stdout += chunk));
+            child.once("exit", () => resume(Effect.succeed(stdout)));
+          });
+        }),
+      );
+      assert.deepEqual(JSON.parse(output), {
+        argv: ["launch-arg", "--output-format", "stream-json"],
+        launch: "from-launch",
+        host: null,
+      });
+      assert.equal(yield* fs.readFileString(removals), "removed\n");
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it("keeps an unconfined query's host directories, executable and launch arguments", () => {
+    const options = ClaudeAdapterV2.makeClaudeQueryOptions({
+      modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+      nativeThreadId: "native-thread-host",
+      resume: false,
+      cwd: "/host/project",
+      attachmentsDir: "/host/attachments",
+      settings: hostSettings,
+      environment: { HOST_SECRET: "host" },
+    });
+    assert.equal(options.cwd, "/host/project");
+    assert.deepEqual(options.additionalDirectories, ["/host/project", "/host/attachments"]);
+    assert.deepEqual(options.env, { HOST_SECRET: "host" });
+    assert.equal(options.pathToClaudeCodeExecutable, "/host/bin/claude");
+    assert.equal(options.permissionMode, "plan");
+    assert.equal(options.extraArgs?.["mcp-config"], "/host/privileged.json");
+    assert.isUndefined(options.settingSources);
+    assert.isUndefined(options.disallowedTools);
+    assert.isUndefined(options.spawnClaudeCodeProcess);
+  });
+
+  it.effect("checks the confinement before each turn and launches nothing once it is revoked", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const prepared: Array<string> = [];
+      const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+        instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        settings: DEFAULT_CLAUDE_SETTINGS,
+        environment: {},
+        attachmentsDir: yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-revoked-" }),
+        fileSystem: fs,
+        path: yield* Path.Path,
+        crypto: yield* Crypto.Crypto,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        confinedLaunch: {
+          prepare: (request) => Effect.die(`unexpected ${request.driver} launch`),
+          assertActive: () =>
+            Effect.sync(() => prepared.push("checked")).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new FactoryError({
+                    code: "execution-unavailable",
+                    detail: "This assignment's execution grant was withdrawn.",
+                  }),
+                ),
+              ),
+            ),
+        },
+        queryRunner: {
+          allocateSessionId: Effect.succeed("native-thread-revoked"),
+          open: () => Effect.die("unused"),
+          forkSession: () => Effect.die("unused"),
+          subagentLaunchToolUseId: () => Effect.succeed(null),
+          assertComplete: Effect.void,
+        },
+      });
+      const threadId = ThreadId.make("thread-claude-revoked");
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-revoked"),
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      const failure = yield* runtime
+        .startTurn(
+          makeClaudeTestTurnInput({
+            threadId,
+            providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-revoked"),
+            text: "Continue.",
+            attachments: [],
+            runtimePolicy: confinedPolicy,
+          }),
+        )
+        .pipe(Effect.flip);
+      assert.equal(failure._tag, "ProviderAdapterTurnStartError");
+      assert.include(String(failure.cause), "execution grant was withdrawn");
+      assert.deepEqual(prepared, ["checked"]);
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect("refuses to fork a managed thread from host transcripts", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+        instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        settings: DEFAULT_CLAUDE_SETTINGS,
+        environment: {},
+        attachmentsDir: yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-confined-fork-" }),
+        fileSystem: fs,
+        path: yield* Path.Path,
+        crypto: yield* Crypto.Crypto,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        queryRunner: {
+          allocateSessionId: Effect.succeed("native-thread-confined-fork"),
+          open: () => Effect.die("unused"),
+          forkSession: () => Effect.die("A managed fork must not read host transcripts."),
+          subagentLaunchToolUseId: () => Effect.succeed(null),
+          assertComplete: Effect.void,
+        },
+      });
+      const threadId = ThreadId.make("thread-claude-confined-fork");
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-confined-fork"),
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      const sourceProviderThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      const failure = yield* runtime
+        .forkThread({
+          sourceProviderThread,
+          targetThreadId: ThreadId.make("thread-claude-confined-fork-target"),
+        })
+        .pipe(Effect.flip);
+      assert.equal(failure._tag, "ProviderAdapterForkThreadError");
+      assert.include(String(failure.cause), "A managed Claude thread cannot be forked.");
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 });

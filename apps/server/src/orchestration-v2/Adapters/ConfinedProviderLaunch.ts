@@ -69,13 +69,12 @@ export class ConfinedProviderLaunch extends Context.Service<
  * No owner: nothing is confined, so a launch is refused. For tests and compositions without
  * engineering managers; the server provides the factory's implementation instead.
  */
-export const layerUnconfined = Layer.succeed(
-  ConfinedProviderLaunch,
-  ConfinedProviderLaunch.of({
-    prepare: () =>
-      Effect.fail(
-        new ConfinedLaunchError({ detail: "No owner can launch a confined provider session." }),
-      ),
-    assertActive: () => Effect.void,
-  }),
-);
+export const unconfined = ConfinedProviderLaunch.of({
+  prepare: () =>
+    Effect.fail(
+      new ConfinedLaunchError({ detail: "No owner can launch a confined provider session." }),
+    ),
+  assertActive: () => Effect.void,
+});
+
+export const layerUnconfined = Layer.succeed(ConfinedProviderLaunch, unconfined);
