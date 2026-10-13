@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as FactoryCollaborationEffects from "./FactoryCollaborationEffects.ts";
 import * as FactoryDeliveryEffects from "./FactoryDeliveryEffects.ts";
@@ -24,6 +25,9 @@ const noContext = () => Effect.succeed({});
  * the ones still missing.
  */
 export const layerTestDependencies = Layer.mergeAll(
+  Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+    getInstance: () => Effect.succeed(undefined),
+  }),
   ServerSettings.layerTest({ engineeringManagersEnabled: true }).pipe(Layer.orDie),
   Layer.succeed(FactoryDeliveryEffects.FactoryDeliveryEffects, { handle: leavePending }),
   Layer.succeed(FactoryPreviewService.FactoryPreviewService, {

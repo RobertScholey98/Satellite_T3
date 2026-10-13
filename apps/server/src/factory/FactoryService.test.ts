@@ -5,6 +5,7 @@ import {
   FactoryError,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   RunId,
   ThreadId,
@@ -21,6 +22,8 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SatelliteTestRuntime from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
+import type { ProviderInstance } from "../provider/ProviderDriver.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
@@ -285,6 +288,80 @@ it.effect("refuses the first manager while the beta is off and never strands exi
       assertSelectionFor: () => Effect.void,
       assertDelegationFor: () => Effect.void,
       runtimePolicyFor: () => Effect.die("An unavailable assignment must not launch."),
+    }),
+  ),
+);
+
+it.effect("refuses a model policy or system manager on a provider it cannot confine", () =>
+  Effect.gen(function* () {
+    const factory = yield* FactoryService.FactoryService;
+    const grok = { instanceId: ProviderInstanceId.make("grok"), model: "grok-4" };
+    const claude = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-sonnet-4-6",
+    };
+    const refusals: Array<string> = [];
+    for (const command of [
+      {
+        type: "models.defaults.configure",
+        commandId: CommandId.make("defaults-grok"),
+        policy: { approvedModels: [claude, grok], preferences: [] },
+      },
+      {
+        type: "manager.models.configure",
+        commandId: CommandId.make("manager-grok"),
+        managerId: ThreadId.make("manager"),
+        overrides: {
+          preferences: [{ role: "worker", complexity: "small", selection: grok }],
+        },
+      },
+      {
+        type: "system.create",
+        commandId: CommandId.make("system-grok"),
+        workspaceProjectId: projectId,
+        modelSelection: grok,
+        workflow: create.workflow,
+      },
+      {
+        type: "system.retry",
+        commandId: CommandId.make("system-retry-grok"),
+        managerId: ThreadId.make("system"),
+        modelSelection: grok,
+      },
+    ] as const)
+      refusals.push((yield* factory.dispatch(human, command).pipe(Effect.flip)).message);
+    assert.deepEqual(
+      refusals,
+      Array.from(
+        { length: 4 },
+        () => "Managed execution requires a provider with a confined runtime (Codex or Claude).",
+      ),
+    );
+    yield* factory.dispatch(human, {
+      type: "models.defaults.configure",
+      commandId: CommandId.make("defaults-claude"),
+      policy: { approvedModels: [claude], preferences: [] },
+    });
+    assert.deepEqual((yield* factory.snapshot({})).modelDefaults?.approvedModels, [claude]);
+  }).pipe(
+    Effect.provide(
+      FactoryService.layer.pipe(
+        Layer.provideMerge(
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getInstance: (instanceId) =>
+              Effect.succeed({
+                driverKind: ProviderDriverKind.make(instanceId === "grok" ? "grok" : "claudeAgent"),
+              } as ProviderInstance),
+          }),
+        ),
+        Layer.provideMerge(runtime),
+      ),
+    ),
+    Effect.provideService(FactoryExecution.FactoryExecution, {
+      qualify: () => Effect.die("A refused policy must not qualify."),
+      assertSelectionFor: () => Effect.void,
+      assertDelegationFor: () => Effect.void,
+      runtimePolicyFor: () => Effect.die("A refused policy must not launch."),
     }),
   ),
 );

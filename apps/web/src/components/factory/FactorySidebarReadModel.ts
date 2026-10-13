@@ -63,7 +63,7 @@ export function factoryCanCreateManager(
 
 /**
  * Managers and their teams run only on providers the factory can confine
- * (`FactoryExecution.qualify`), so manager setup offers those instances alone.
+ * (`FactoryExecution.qualify`), so manager setup and model policies offer those instances alone.
  */
 export function factoryManagerProviders(
   providers: readonly ServerProvider[],

@@ -32,6 +32,7 @@ import {
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { factoryManagerProviders } from "./FactorySidebarReadModel";
 import { useFactoryCommand } from "./useFactoryCommand";
 
 export function FactorySystemManagerSetup({
@@ -52,9 +53,13 @@ export function FactorySystemManagerSetup({
   const [projectId, setProjectId] = useState(manager?.workspaceProjectId ?? choices[0]?.id ?? null);
   const project = choices.find((entry) => entry.id === projectId);
   const settings = useEnvironmentSettings(environment.environmentId);
-  const providers =
+  const environmentProviders =
     useAtomValue(serverEnvironment.providersValueAtom(environment.environmentId)) ??
     EMPTY_SERVER_PROVIDERS;
+  const providers = useMemo(
+    () => factoryManagerProviders(environmentProviders),
+    [environmentProviders],
+  );
   const entries = useMemo(
     () =>
       sortProviderInstanceEntries(
@@ -200,7 +205,7 @@ export function FactorySystemManagerSetup({
                 />
               ) : (
                 <p role="status" className="text-sm text-muted-foreground">
-                  Configure an available provider on this environment first.
+                  Enable and sign in to a Codex or Claude provider on this environment first.
                 </p>
               )}
             </div>

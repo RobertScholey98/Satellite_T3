@@ -13,7 +13,9 @@ import {
   type FactoryMergeGroupRead,
   type OrchestrationV2StoredEvent,
   type FactoryHostCommand,
+  type ModelSelection,
   type ProjectId,
+  isConfinableProviderDriver,
   isFactoryError,
 } from "@t3tools/contracts";
 import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -31,6 +33,7 @@ import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
 import * as ThreadGovernance from "../orchestration-v2/ThreadGovernance.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
 import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import * as FactorySource from "./FactorySource.ts";
@@ -245,6 +248,7 @@ export const layer = Layer.effect(
     const merges = yield* FactoryMergeEffects.FactoryMergeEffects;
     const mergeOperations = yield* FactoryMergeOperationEffects.FactoryMergeOperationEffects;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
+    const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     // The beta switch gates only the first manager. Once one exists, its work stays controllable
     // and new managers may join it, so turning the switch off never strands or weakens a team.
     const admitCreation = (command: FactoryCommand) =>
@@ -262,6 +266,43 @@ export const layer = Layer.effect(
                 "Engineering managers are off. Turn on Engineering managers in Settings → General.",
             });
           });
+    // Managed work runs only on providers the factory can confine, so a model policy never
+    // approves another. An unknown instance cannot run at all and is left to admission.
+    const admitModels = (command: FactoryCommand) => {
+      const selections: ReadonlyArray<ModelSelection> =
+        command.type === "models.defaults.configure"
+          ? [
+              ...command.policy.approvedModels,
+              ...command.policy.preferences.map((preference) => preference.selection),
+            ]
+          : command.type === "manager.models.configure"
+            ? [
+                ...(command.overrides.approvedModels ?? []),
+                ...(command.overrides.preferences ?? []).map((preference) => preference.selection),
+              ]
+            : (command.type === "system.create" || command.type === "system.retry") &&
+                command.modelSelection !== undefined
+              ? [command.modelSelection]
+              : [];
+      return Effect.forEach(
+        selections,
+        (selection) =>
+          providerInstances.getInstance(selection.instanceId).pipe(
+            Effect.flatMap((instance) =>
+              instance === undefined || isConfinableProviderDriver(instance.driverKind)
+                ? Effect.void
+                : Effect.fail(
+                    new FactoryError({
+                      code: "invalid-state",
+                      detail:
+                        "Managed execution requires a provider with a confined runtime (Codex or Claude).",
+                    }),
+                  ),
+            ),
+          ),
+        { discard: true },
+      );
+    };
     // `commands` serializes general dispatches and thread launches. Controls and boundary file
     // operations skip it, so they never queue behind a slow dispatch. `withCommand` serializes
     // concurrent calls with one command id, so the later call finds the first call's receipt.
@@ -1553,7 +1594,10 @@ export const layer = Layer.effect(
         if (command.type !== "assignment.file.mutate" && command.type !== "assignment.verify")
           return withCommand(
             command.commandId,
-            admitCreation(command).pipe(Effect.andThen(service.dispatch(actor, command))),
+            admitCreation(command).pipe(
+              Effect.andThen(admitModels(command)),
+              Effect.andThen(service.dispatch(actor, command)),
+            ),
           );
         return withCommand(
           command.commandId,

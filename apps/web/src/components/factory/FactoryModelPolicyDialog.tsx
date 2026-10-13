@@ -41,6 +41,7 @@ import {
 } from "../ui/dialog";
 import { Label } from "../ui/label";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import { factoryManagerProviders } from "./FactorySidebarReadModel";
 
 export function factoryModelKey(selection: ModelSelection) {
   return JSON.stringify([
@@ -71,9 +72,13 @@ export function FactoryModelPolicyDialog({
 }) {
   const prefix = useId();
   const settings = useEnvironmentSettings(environment.environmentId);
-  const providers =
+  const environmentProviders =
     useAtomValue(serverEnvironment.providersValueAtom(environment.environmentId)) ??
     EMPTY_SERVER_PROVIDERS;
+  const providers = useMemo(
+    () => factoryManagerProviders(environmentProviders),
+    [environmentProviders],
+  );
   const entries = useMemo(
     () =>
       sortProviderInstanceEntries(
@@ -339,7 +344,7 @@ export function FactoryModelPolicyDialog({
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  Configure an available provider to add approved models.
+                  Enable and sign in to a Codex or Claude provider to add approved models.
                 </p>
               )}
               <p className="text-xs text-muted-foreground">
