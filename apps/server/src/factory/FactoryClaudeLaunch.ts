@@ -169,7 +169,14 @@ const lockFactoryClaudeUserConfiguration = Effect.fnUntraced(function* (runtimeP
   const sources = path.join(path.dirname(runtimePath), ".claude-user");
   yield* fs.makeDirectory(path.join(sources, "commands"), { recursive: true });
   yield* fs.makeDirectory(path.join(sources, "agents"), { recursive: true });
-  yield* fs.writeFileString(path.join(sources, "settings.json"), "{}");
+  // Every runtime of the profile mounts this file, so a launch never truncates it under another.
+  yield* fs
+    .writeFileString(path.join(sources, "settings.json"), "{}", { flag: "wx" })
+    .pipe(
+      Effect.catchTag("PlatformError", (error) =>
+        error.reason._tag === "AlreadyExists" ? Effect.void : Effect.fail(error),
+      ),
+    );
   const locks = yield* Effect.forEach(LOCKED_USER_CONFIGURATION, (entry) =>
     // Whatever an earlier process left there, even a directory where the file belongs, would
     // stop Docker mounting over it.

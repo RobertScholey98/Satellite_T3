@@ -244,6 +244,18 @@ it.effect("replaces user-scope configuration an earlier process left with empty 
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("leaves the profile's settings source in place for the runtimes that mount it", () =>
+  Effect.gen(function* () {
+    const { fs, path, root, launch } = yield* fixture;
+    const source = path.join(root, ".claude-user", "settings.json");
+    yield* launch({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" });
+    assert.equal(yield* fs.readFileString(source), "{}");
+    yield* fs.writeFileString(source, '{"mounted":"elsewhere"}');
+    yield* launch({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" });
+    assert.equal(yield* fs.readFileString(source), '{"mounted":"elsewhere"}');
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect("keeps the cause when the file sign-in cannot be decoded", () =>
   Effect.gen(function* () {
     const { fs, path, configDir, launch } = yield* fixture;
