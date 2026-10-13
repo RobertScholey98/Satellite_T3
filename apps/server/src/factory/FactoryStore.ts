@@ -71,7 +71,7 @@ export class FactoryStore extends Context.Service<
       readonly command?: FactoryHostCommand;
       readonly now: string;
     }) => Effect.Effect<void, FactoryError>;
-    /** Outbox intents still pending, oldest first. One that no longer decodes is retired. */
+    /** Outbox intents still pending, oldest first. A step of the removed restart flow is retired. */
     readonly pending: Effect.Effect<ReadonlyArray<PendingFactoryEffect>, FactoryError>;
     /** Counts an attempt before host work starts; fails once the intent is no longer pending. */
     readonly beginEffect: (id: string) => Effect.Effect<void, FactoryError>;
@@ -108,6 +108,18 @@ export class FactoryStore extends Context.Service<
 const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(FactorySnapshot));
 const decodeResult = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryCommandResult));
 const decodeIntent = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryEffectIntent));
+// Steps of the removed workflow restart flow. A stored one can no longer run, so it retires.
+const decodeRemovedIntent = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      type: Schema.Literals([
+        "workflow.restart.stop",
+        "workflow.restart.prepare",
+        "workflow.restart.resume",
+      ]),
+    }),
+  ),
+);
 const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(FactorySnapshot));
 const encodeResult = Schema.encodeEffect(Schema.fromJsonString(FactoryCommandResult));
 const encodeIntent = Schema.encodeEffect(Schema.fromJsonString(FactoryEffectIntent));
@@ -311,17 +323,13 @@ const make = Effect.gen(function* () {
         WHERE status = 'pending' ORDER BY rowid`;
       const pending: PendingFactoryEffect[] = [];
       for (const row of rows) {
-        const intent = yield* decodeIntent(row.payload_json).pipe(Effect.option);
-        if (Option.isSome(intent)) {
-          pending.push({ id: row.effect_id, intent: intent.value, attempts: row.attempts });
+        if (Option.isSome(decodeRemovedIntent(row.payload_json))) {
+          yield* sql`UPDATE factory_outbox SET status = 'superseded'
+            WHERE effect_id = ${row.effect_id} AND status = 'pending'`;
           continue;
         }
-        // An intent of a removed kind, such as a step of the retired restart flow, never runs.
-        yield* Effect.logWarning("Retiring a factory effect that no longer decodes", {
-          effectId: row.effect_id,
-        });
-        yield* sql`UPDATE factory_outbox SET status = 'superseded'
-          WHERE effect_id = ${row.effect_id} AND status = 'pending'`;
+        const intent = yield* decodeIntent(row.payload_json);
+        pending.push({ id: row.effect_id, intent, attempts: row.attempts });
       }
       return pending;
     }).pipe(Effect.mapError(storageError)),

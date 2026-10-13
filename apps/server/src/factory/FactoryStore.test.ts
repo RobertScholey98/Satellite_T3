@@ -541,6 +541,28 @@ describe("FactoryStore", () => {
   );
 
   it.effect(
+    "fails the outbox read on an undecodable intent that is not a removed restart step",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const store = yield* setup;
+          yield* store.commit(createInput);
+          yield* sql`INSERT INTO factory_outbox
+          (effect_id, command_id, payload_json, status, created_at)
+          VALUES ('broken:0', 'create-web', ${JSON.stringify({
+            type: "thread.launch",
+            threadId: "missing-required-fields",
+          })}, 'pending', ${now})`;
+          assertFailure(yield* store.pending.pipe(Effect.result), "persistence");
+          const [outbox] = yield* sql<{ readonly status: string }>`
+          SELECT status FROM factory_outbox WHERE effect_id = 'broken:0'`;
+          assert.equal(outbox?.status, "pending");
+        }),
+      ),
+  );
+
+  it.effect(
     "loads state, receipts and outbox rows stored by the removed workflow release and restart features",
     () =>
       run(

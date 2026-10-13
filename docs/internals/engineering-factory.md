@@ -76,8 +76,9 @@ snapshot of its own commit at `/workflow`, and delivery and publication refuse a
 also invalidate evidence it already captured. New work picks up the new commit instead.
 
 Older stored state can still carry the removed release, adoption, override and restart records.
-Decoding ignores those fields, and the store retires any pending outbox intent that no longer
-decodes.
+Decoding ignores those fields, and the store retires a pending outbox intent of a removed restart
+step. Any other pending intent that no longer decodes still fails the outbox read, so a broken
+contract stays visible instead of silently dropping work.
 
 ## Lineage
 
