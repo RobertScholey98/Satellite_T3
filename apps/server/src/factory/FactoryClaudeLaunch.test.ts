@@ -90,7 +90,7 @@ const fixture = Effect.gen(function* () {
 
 it.effect("passes only the file sign-in's access token and none of the host's environment", () =>
   Effect.gen(function* () {
-    const { fs, path, configDir, profile, launch } = yield* fixture;
+    const { fs, path, root, configDir, profile, launch } = yield* fixture;
     yield* fs.writeFileString(path.join(configDir, ".credentials.json"), signIn(3_600_000));
     const result = yield* launch({
       PATH: "allowed",
@@ -106,6 +106,12 @@ it.effect("passes only the file sign-in's access token and none of the host's en
     assert.deepEqual(result.args.slice(result.args.indexOf("--name")), [
       "--name",
       "factory-claude",
+      "--mount",
+      `type=bind,source=${path.join(root, ".claude-user", "settings.json")},target=/runtime/claude/settings.json,readonly`,
+      "--mount",
+      `type=bind,source=${path.join(root, ".claude-user", "commands")},target=/runtime/claude/commands,readonly`,
+      "--mount",
+      `type=bind,source=${path.join(root, ".claude-user", "agents")},target=/runtime/claude/agents,readonly`,
       "--env",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "--env",
@@ -215,6 +221,24 @@ it.effect("pins the image's Claude Code to the version the Agent SDK drives", ()
     );
     assert.isTrue(FACTORY_AGENT_IMAGE.endsWith(`-claude-${claudeCodeVersion}`));
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("replaces user-scope configuration an earlier process left with empty sources", () =>
+  Effect.gen(function* () {
+    const { fs, path, root, profile, launch } = yield* fixture;
+    const home = path.join(profile.runtimePath, "claude");
+    yield* fs.makeDirectory(path.join(home, "settings.json"), { recursive: true });
+    yield* fs.makeDirectory(path.join(home, "commands"), { recursive: true });
+    yield* fs.writeFileString(path.join(home, "commands", "probe.md"), "---\nmodel: opus\n---\n");
+    yield* fs.makeDirectory(path.join(home, "agents"), { recursive: true });
+    yield* fs.writeFileString(path.join(home, "agents", "probe.md"), "---\nmodel: opus\n---\n");
+    yield* launch({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" });
+    assert.deepEqual(yield* fs.readDirectory(home), []);
+    const sources = path.join(root, ".claude-user");
+    assert.equal(yield* fs.readFileString(path.join(sources, "settings.json")), "{}");
+    assert.deepEqual(yield* fs.readDirectory(path.join(sources, "commands")), []);
+    assert.deepEqual(yield* fs.readDirectory(path.join(sources, "agents")), []);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("keeps the cause when the file sign-in cannot be decoded", () =>
@@ -410,9 +434,17 @@ it.effect("launches Claude only from an image that runs it, and fences the confi
 const captureServer = Effect.acquireRelease(
   Effect.callback<{
     readonly server: NodeHttp.Server;
-    readonly requests: Array<{ readonly url: string; readonly body: string }>;
+    readonly requests: Array<{
+      readonly url: string;
+      readonly body: string;
+      readonly probeHeader: string | undefined;
+    }>;
   }>((resume) => {
-    const requests: Array<{ readonly url: string; readonly body: string }> = [];
+    const requests: Array<{
+      readonly url: string;
+      readonly body: string;
+      readonly probeHeader: string | undefined;
+    }> = [];
     const server = NodeHttp.createServer((request, response) => {
       let body = "";
       request.on("data", (chunk) => (body += chunk));
@@ -455,7 +487,12 @@ const captureServer = Effect.acquireRelease(
           response.end(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }));
           return;
         }
-        requests.push({ url: request.url ?? "", body });
+        const probeHeader = request.headers["x-probe"];
+        requests.push({
+          url: request.url ?? "",
+          body,
+          probeHeader: Array.isArray(probeHeader) ? probeHeader.join(",") : probeHeader,
+        });
         response.writeHead(400, { "content-type": "application/json" });
         response.end('{"type":"error","error":{"type":"invalid_request_error","message":"probe"}}');
       });
@@ -477,14 +514,9 @@ const decodeModelRequest = Schema.decodeEffect(
   ),
 );
 
-/**
- * Runs one prompt through the pinned image's Claude Code, launched as a managed thread's is,
- * against the capture server. Returns the CLI's init frame and its first model request.
- */
-const probeImageClaude = Effect.fn("probeImageClaude")(function* (input: {
+/** Prepares a managed Claude launch of the pinned image in a fresh runtime, as a thread's is. */
+const liveClaudeLaunch = Effect.fn("liveClaudeLaunch")(function* (input: {
   readonly name: string;
-  readonly prompt: string;
-  readonly user?: string;
   readonly prepareRuntime?: (
     runtimePath: string,
   ) => Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem>;
@@ -496,10 +528,7 @@ const probeImageClaude = Effect.fn("probeImageClaude")(function* (input: {
   yield* fs.makeDirectory(path.join(root, "workflow", "skills"), { recursive: true });
   const runtimePath = path.join(root, "runtime");
   if (input.prepareRuntime) yield* input.prepareRuntime(runtimePath);
-  const { server, requests } = yield* captureServer;
-  const address = server.address();
-  const port = typeof address === "object" && address !== null ? address.port : 0;
-  const launch = yield* FactoryConfinedLaunch.prepareFactoryLaunch({
+  return yield* FactoryConfinedLaunch.prepareFactoryLaunch({
     profile: {
       boundaryId: input.name,
       dockerContext: NodeChildProcess.execFileSync("docker", ["context", "show"], {
@@ -517,6 +546,24 @@ const probeImageClaude = Effect.fn("probeImageClaude")(function* (input: {
       environment: { ...process.env, ANTHROPIC_API_KEY: "unused" },
     },
   }).pipe(Effect.provide(ProcessRunner.layer));
+});
+
+/**
+ * Runs one prompt through the pinned image's Claude Code, launched as a managed thread's is,
+ * against the capture server. Returns the CLI's init frame and every model request it sent.
+ */
+const probeImageClaude = Effect.fn("probeImageClaude")(function* (input: {
+  readonly name: string;
+  readonly prompt: string;
+  readonly user?: string;
+  readonly prepareRuntime?: (
+    runtimePath: string,
+  ) => Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem>;
+}) {
+  const launch = yield* liveClaudeLaunch(input);
+  const { server, requests } = yield* captureServer;
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
   const entrypoint = launch.args.indexOf("--entrypoint");
   const runtime = makeConfinedClaudeRuntime({
     ...launch,
@@ -563,11 +610,16 @@ const probeImageClaude = Effect.fn("probeImageClaude")(function* (input: {
     return received;
   });
   yield* runtime.remove;
-  const modelRequest = requests.find((request) => request.url.startsWith("/v1/messages"));
-  assert.isDefined(modelRequest, yield* runtime.stderrTail);
   return {
     init: messages.find((message) => message.type === "system" && message.subtype === "init"),
-    request: yield* decodeModelRequest(modelRequest?.body ?? ""),
+    stderr: yield* runtime.stderrTail,
+    requests: yield* Effect.forEach(
+      requests.filter((request) => request.url.startsWith("/v1/messages")),
+      (request) =>
+        decodeModelRequest(request.body).pipe(
+          Effect.map((decoded) => ({ ...decoded, probeHeader: request.probeHeader })),
+        ),
+    ),
   };
 });
 
@@ -576,15 +628,17 @@ live(
   () =>
     Effect.gen(function* () {
       for (const user of [undefined, "65532:65532"]) {
-        const { init, request } = yield* probeImageClaude({
+        const { init, stderr, requests } = yield* probeImageClaude({
           name: `factory-claude-tool-probe-${user === undefined ? "root" : "worker"}`,
           prompt: "Start the assignment.",
           ...(user === undefined ? {} : { user }),
         });
         // IS_SANDBOX lets Claude Code bypass permissions as root, where discovery runs.
         assert.deepInclude(init, { cwd: "/workspace", permissionMode: "bypassPermissions" });
-        assert.equal(request.model, "claude-sonnet-4-6");
-        const offered = request.tools.map((tool) => tool.name);
+        const request = requests[0];
+        assert.isDefined(request, stderr);
+        assert.equal(request?.model, "claude-sonnet-4-6");
+        const offered = request?.tools.map((tool) => tool.name) ?? [];
         assert.deepEqual(
           offered.filter((name) => !name.startsWith("mcp__")),
           [
@@ -610,5 +664,71 @@ live(
         );
       }
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  240_000,
+);
+
+// What an agent could leave in the writable Claude home for a later process: a settings file that
+// sets the environment, and a command and an agent that pick their own model.
+const plantUserConfiguration = (runtimePath: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const home = `${runtimePath}/claude`;
+    yield* fs.makeDirectory(`${home}/commands`, { recursive: true });
+    yield* fs.makeDirectory(`${home}/agents`, { recursive: true });
+    yield* fs.writeFileString(
+      `${home}/settings.json`,
+      '{"env":{"ANTHROPIC_CUSTOM_HEADERS":"x-probe: settings-env"}}',
+    );
+    yield* fs.writeFileString(
+      `${home}/commands/probe.md`,
+      "---\nmodel: claude-opus-4-1\ndescription: Probe\n---\nSay hello.\n",
+    );
+    yield* fs.writeFileString(
+      `${home}/agents/probe.md`,
+      "---\nname: probe\nmodel: opus\ndescription: Probe\n---\nSay hello.\n",
+    );
+  });
+
+live(
+  "user configuration left in the Claude home cannot change a managed process's model or environment",
+  () =>
+    Effect.gen(function* () {
+      const settingsRun = yield* probeImageClaude({
+        name: "factory-claude-settings-probe",
+        prompt: "Start the assignment.",
+        prepareRuntime: plantUserConfiguration,
+      });
+      assert.isAbove(settingsRun.requests.length, 0, settingsRun.stderr);
+      for (const request of settingsRun.requests) {
+        assert.equal(request.model, "claude-sonnet-4-6");
+        assert.isUndefined(request.probeHeader);
+      }
+      const commandRun = yield* probeImageClaude({
+        name: "factory-claude-command-probe",
+        prompt: "/probe",
+        prepareRuntime: plantUserConfiguration,
+      });
+      for (const request of commandRun.requests) assert.equal(request.model, "claude-sonnet-4-6");
+
+      const launch = yield* liveClaudeLaunch({ name: "factory-claude-home-write-probe" });
+      const runner = yield* ProcessRunner.ProcessRunner;
+      const written = yield* runner.run({
+        command: launch.command,
+        args: [
+          ...launch.args.slice(0, launch.args.indexOf("--entrypoint")),
+          "--entrypoint",
+          "sh",
+          FACTORY_AGENT_IMAGE,
+          "-c",
+          "mkdir -p /runtime/claude/commands /runtime/claude/agents 2>/dev/null; for target in settings.json commands/probe.md agents/probe.md; do (echo x > /runtime/claude/$target) 2>/dev/null && echo $target; done; echo checked",
+        ],
+        env: launch.hostEnvironment,
+        timeout: "60 seconds",
+      });
+      assert.equal(written.stdout.trim(), "checked");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    ),
   240_000,
 );

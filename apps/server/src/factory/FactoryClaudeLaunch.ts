@@ -145,6 +145,37 @@ export const assertFactoryImageRunsClaude = Effect.fn("assertFactoryImageRunsCla
     });
 });
 
+// User-scope Claude Code configuration that can change the model, its endpoint or what runs: a
+// settings file (env, hooks, apiKeyHelper, model) and command and agent definitions with `model:`
+// frontmatter. The per-thread Claude home is writable and outlives each process, so these are
+// mounted read-only from empty sources instead.
+const LOCKED_USER_CONFIGURATION = ["settings.json", "commands", "agents"] as const;
+
+/**
+ * Replaces the runtime's user-scope Claude configuration with read-only empty mounts. The sources
+ * sit beside the runtime directory, which is the only part a confined process can reach.
+ */
+const lockFactoryClaudeUserConfiguration = Effect.fnUntraced(function* (runtimePath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const sources = path.join(path.dirname(runtimePath), ".claude-user");
+  yield* fs.makeDirectory(path.join(sources, "commands"), { recursive: true });
+  yield* fs.makeDirectory(path.join(sources, "agents"), { recursive: true });
+  yield* fs.writeFileString(path.join(sources, "settings.json"), "{}");
+  return yield* Effect.forEach(LOCKED_USER_CONFIGURATION, (entry) =>
+    // Whatever an earlier process left there, even a directory where the file belongs, would
+    // stop Docker mounting over it.
+    fs
+      .remove(path.join(runtimePath, "claude", entry), { recursive: true, force: true })
+      .pipe(
+        Effect.as([
+          "--mount",
+          `type=bind,source=${path.join(sources, entry)},target=/runtime/claude/${entry},readonly`,
+        ]),
+      ),
+  ).pipe(Effect.map((mounts) => mounts.flat()));
+});
+
 /**
  * Claude's part of a factory launch. Refuses an image that cannot run Claude first, then passes
  * exactly one model credential through the Docker CLI's environment. Returns the `docker run`
@@ -158,8 +189,10 @@ export const prepareFactoryClaudeLaunch = Effect.fn("prepareFactoryClaudeLaunch"
   }) {
     yield* assertFactoryImageRunsClaude(input.profile);
     const credential = yield* resolveFactoryClaudeCredential(input);
+    const userConfiguration = yield* lockFactoryClaudeUserConfiguration(input.profile.runtimePath);
     return {
       args: [
+        ...userConfiguration,
         "--env",
         credential.name,
         // An OAuth sign-in would otherwise load the account's claude.ai connectors.
