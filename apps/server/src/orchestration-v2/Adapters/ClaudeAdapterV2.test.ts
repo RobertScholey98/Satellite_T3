@@ -45,6 +45,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { Tool } from "effect/ai";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -8577,6 +8578,311 @@ describe("ClaudeAdapterV2 confined sessions", () => {
         host: null,
       });
       assert.equal(yield* fs.readFileString(removals), "removed without the launch environment\n");
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  const CONFINED_NATIVE_SESSION = "native-thread-confined-lifecycle";
+  const confinedFrame = (frame: Record<string, unknown>) =>
+    ({ ...frame, session_id: CONFINED_NATIVE_SESSION }) as unknown as SDKMessage;
+  const confinedResult = (uuid: string, terminalReason: string) =>
+    confinedFrame({
+      type: "result",
+      subtype: "success",
+      duration_ms: 1,
+      duration_api_ms: 1,
+      is_error: false,
+      num_turns: 1,
+      result: "Done.",
+      stop_reason: "end_turn",
+      total_cost_usd: 0,
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+      modelUsage: {},
+      permission_denials: [],
+      uuid,
+      terminal_reason: terminalReason,
+    });
+
+  // Each launch's removal appends its name to a log, so a test sees which runtimes were removed.
+  const makeConfinedHarness = (
+    launches: ReadonlyArray<{ readonly name: string; readonly renewBy?: number }>,
+  ) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-confined-lifecycle-" });
+      const removals = path.join(root, "removals.log");
+      yield* fs.writeFileString(removals, "");
+      const processes: Array<Queue.Queue<SDKMessage>> = [];
+      const closed = yield* Deferred.make<void>();
+      const terminals =
+        yield* Queue.unbounded<Extract<ProviderAdapterV2Event, { type: "turn.terminal" }>>();
+      const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+        instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        settings: DEFAULT_CLAUDE_SETTINGS,
+        environment: {},
+        attachmentsDir: path.join(root, "attachments"),
+        fileSystem: fs,
+        path,
+        crypto: yield* Crypto.Crypto,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        confinedLaunch: {
+          prepare: () =>
+            Effect.sync(() => {
+              const launch = launches[processes.length]!;
+              return {
+                name: launch.name,
+                command: process.execPath,
+                args: [],
+                environment: {},
+                cleanup: {
+                  command: process.execPath,
+                  args: [
+                    "-e",
+                    `require("node:fs").appendFileSync(${JSON.stringify(removals)}, ${JSON.stringify(`${launch.name}\n`)})`,
+                  ],
+                  environment: { SystemRoot: process.env.SystemRoot },
+                },
+                ...(launch.renewBy === undefined ? {} : { renewBy: launch.renewBy }),
+              };
+            }),
+          assertActive: () => Effect.void,
+        },
+        queryRunner: {
+          allocateSessionId: Effect.succeed(CONFINED_NATIVE_SESSION),
+          open: () =>
+            Effect.gen(function* () {
+              const messages = yield* Queue.unbounded<SDKMessage>();
+              processes.push(messages);
+              return {
+                messages: Stream.fromQueue(messages),
+                offer: () => Effect.void,
+                setModel: () => Effect.void,
+                setPermissionMode: () => Effect.void,
+                interrupt: Effect.void,
+                close: Queue.shutdown(messages).pipe(
+                  Effect.andThen(Deferred.succeed(closed, undefined)),
+                ),
+              };
+            }),
+          forkSession: () => Effect.die("unused"),
+          subagentLaunchToolUseId: () => Effect.succeed(null),
+          assertComplete: Effect.void,
+        },
+      });
+      const threadId = ThreadId.make("thread-claude-confined-lifecycle");
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-confined-lifecycle"),
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      yield* runtime.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "turn.terminal" ? Queue.offer(terminals, event) : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
+      const startTurn = Effect.fn(function* (attempt: string) {
+        yield* runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId,
+            providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(attempt),
+            text: "Continue the assignment.",
+            attachments: [],
+            runtimePolicy: confinedPolicy,
+          }),
+        );
+      });
+      return { processes, closed, terminals, startTurn, removed: fs.readFileString(removals) };
+    });
+
+  it.effect("replaces a confined process once its sign-in is due for renewal", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeConfinedHarness([
+        { name: "first-runtime", renewBy: 60_000 },
+        { name: "second-runtime", renewBy: 7_260_000 },
+      ]);
+      yield* harness.startTurn("attempt-renewal-1");
+      yield* Queue.offer(harness.processes[0]!, confinedResult("result-renewal-1", "completed"));
+      assert.equal((yield* Queue.take(harness.terminals)).status, "completed");
+
+      yield* harness.startTurn("attempt-renewal-2");
+      assert.equal(harness.processes.length, 1);
+      yield* Queue.offer(harness.processes[0]!, confinedResult("result-renewal-2", "completed"));
+      assert.equal((yield* Queue.take(harness.terminals)).status, "completed");
+
+      yield* TestClock.adjust("1 minute");
+      yield* harness.startTurn("attempt-renewal-3");
+      assert.equal(harness.processes.length, 2);
+      assert.equal(yield* harness.removed, "first-runtime\n");
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect("closes a confined process whose sign-in failed so the next turn launches anew", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeConfinedHarness([
+        { name: "expired-runtime" },
+        { name: "renewed-runtime" },
+      ]);
+      yield* harness.startTurn("attempt-signed-out");
+      yield* Queue.offerAll(harness.processes[0]!, [
+        confinedFrame({
+          type: "assistant",
+          message: {
+            model: "claude-sonnet-4-6",
+            id: "msg_signed_out",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "Invalid API key" }],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          },
+          parent_tool_use_id: null,
+          error: "authentication_failed",
+          uuid: "assistant-signed-out",
+        }),
+        confinedResult("result-signed-out", "api_error"),
+      ]);
+      const terminal = yield* Queue.take(harness.terminals);
+      assert.equal(terminal.status, "failed");
+      if (terminal.status !== "failed") return;
+      assert.equal(
+        terminal.failure.message,
+        "Claude's sign-in expired inside the managed runtime. Open Claude Code on this machine to refresh it, or check this provider's CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY; the next turn picks it up.",
+      );
+      yield* Deferred.await(harness.closed);
+      yield* harness.startTurn("attempt-signed-in");
+      assert.equal(harness.processes.length, 2);
+      assert.equal(yield* harness.removed, "expired-runtime\n");
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect("reports why a confined runtime stopped from the end of its stderr", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-confined-stderr-" });
+      const terminals =
+        yield* Queue.unbounded<Extract<ProviderAdapterV2Event, { type: "turn.terminal" }>>();
+      const adapter = ClaudeAdapterV2.makeClaudeAdapterV2({
+        instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+        settings: DEFAULT_CLAUDE_SETTINGS,
+        environment: {},
+        attachmentsDir: path.join(root, "attachments"),
+        fileSystem: fs,
+        path,
+        crypto: yield* Crypto.Crypto,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        confinedLaunch: {
+          prepare: () =>
+            Effect.succeed({
+              name: "failing-runtime",
+              command: process.execPath,
+              args: [
+                "-e",
+                "process.stderr.write('docker: Error response from daemon: No such image: sha256:gone.\\n'); process.exit(125)",
+              ],
+              environment: { SystemRoot: process.env.SystemRoot },
+              cleanup: {
+                command: process.execPath,
+                args: ["-e", ""],
+                environment: { SystemRoot: process.env.SystemRoot },
+              },
+            }),
+          assertActive: () => Effect.void,
+        },
+        queryRunner: {
+          allocateSessionId: Effect.succeed(CONFINED_NATIVE_SESSION),
+          open: (input) =>
+            Effect.sync(() => {
+              const child = input.options.spawnClaudeCodeProcess!({
+                command: "claude",
+                args: [],
+                env: {},
+                signal: new AbortController().signal,
+              });
+              const exited = Effect.callback<never, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>(
+                (resume) => {
+                  child.once("exit", (code) =>
+                    resume(
+                      Effect.fail(
+                        new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                          method: "query",
+                          cause: new Error(`Claude Code process exited with code ${code}`),
+                        }),
+                      ),
+                    ),
+                  );
+                },
+              );
+              return {
+                messages: Stream.fromEffect(exited),
+                offer: () => Effect.void,
+                setModel: () => Effect.void,
+                setPermissionMode: () => Effect.void,
+                interrupt: Effect.void,
+                close: Effect.void,
+              };
+            }),
+          forkSession: () => Effect.die("unused"),
+          subagentLaunchToolUseId: () => Effect.succeed(null),
+          assertComplete: Effect.void,
+        },
+      });
+      const threadId = ThreadId.make("thread-claude-confined-stderr");
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-confined-stderr"),
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+        runtimePolicy: confinedPolicy,
+      });
+      yield* runtime.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "turn.terminal" ? Queue.offer(terminals, event) : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
+      yield* runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId,
+          providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-confined-stderr"),
+          text: "Start the assignment.",
+          attachments: [],
+          runtimePolicy: confinedPolicy,
+        }),
+      );
+      const terminal = yield* Queue.take(terminals);
+      assert.equal(terminal.status, "failed");
+      if (terminal.status !== "failed") return;
+      assert.equal(
+        terminal.failure.message,
+        "Claude's managed runtime stopped: docker: Error response from daemon: No such image: sha256:gone.",
+      );
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 

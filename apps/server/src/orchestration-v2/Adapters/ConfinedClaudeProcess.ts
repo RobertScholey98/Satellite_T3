@@ -18,14 +18,24 @@ export const CLAUDE_CONFINED_DISALLOWED_TOOLS: ReadonlyArray<string> = [
   "ListAgents",
 ];
 
+const STDERR_TAIL_LENGTH = 4_096;
+
 /** One Claude Code process in a confined runtime, and the runtime's removal. */
 export interface ConfinedClaudeRuntime {
+  readonly name: string;
+  /** When the runtime's credential needs a new launch, in epoch milliseconds. */
+  readonly renewBy: number | undefined;
   /**
    * Starts the Agent SDK's Claude Code process in the runtime. The SDK's command, working
    * directory and environment describe the host, so only its CLI arguments cross into the
    * container. The runtime is removed when the process exits or fails to start.
    */
   readonly spawn: (options: SpawnOptions) => SpawnedProcess;
+  /**
+   * The end of the process's stderr, where Docker and Claude Code explain a failed start. The
+   * SDK keeps no stderr for a process it did not spawn. Waits for the output of an exited process.
+   */
+  readonly stderrTail: Effect.Effect<string>;
   /** Removes the runtime at most once, ignoring failures such as an already-removed one. */
   readonly remove: Effect.Effect<void>;
 }
@@ -41,7 +51,12 @@ export function makeConfinedClaudeRuntime(launch: ConfinedProcess): ConfinedClau
         () => resolve(),
       );
     }));
+  let stderr = "";
+  let exited = false;
+  const closed = Promise.withResolvers<void>();
   return {
+    name: launch.name,
+    renewBy: launch.renewBy,
     spawn: (options) => {
       const child = NodeChildProcess.spawn(launch.command, [...launch.args, ...options.args], {
         env: launch.environment,
@@ -49,12 +64,25 @@ export function makeConfinedClaudeRuntime(launch: ConfinedProcess): ConfinedClau
         windowsHide: true,
         signal: options.signal,
       });
-      // The SDK reads only stdout, so stderr is drained to keep a chatty runtime from blocking.
-      child.stderr.resume();
-      child.once("exit", () => void remove());
-      child.once("error", () => void remove());
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk: string) => {
+        stderr = (stderr + chunk).slice(-STDERR_TAIL_LENGTH);
+      });
+      child.once("exit", () => {
+        exited = true;
+        void remove();
+      });
+      child.once("close", () => closed.resolve());
+      child.once("error", () => {
+        closed.resolve();
+        void remove();
+      });
       return child;
     },
+    stderrTail: Effect.promise(() => (exited ? closed.promise : Promise.resolve())).pipe(
+      Effect.timeoutOption("2 seconds"),
+      Effect.map(() => stderr.trim()),
+    ),
     remove: Effect.promise(remove),
   };
 }
