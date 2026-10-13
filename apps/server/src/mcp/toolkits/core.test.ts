@@ -152,6 +152,7 @@ it.effect("checks capability through the production registration", () =>
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
       ),
@@ -193,6 +194,7 @@ it.effect("returns a bounded public failure without serializing storage causes",
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -270,6 +272,7 @@ it.effect("returns an HTML render reference that Codex and Claude tool rows both
     Effect.provide(
       McpHttpServer.layerHtmlToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(PreviewBrowser.layer),
         Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-html-render-" })),
         Layer.provide(NodeServices.layer),
@@ -308,6 +311,7 @@ it.effect("returns invalid parameter errors through the production registration"
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
       ),
@@ -333,6 +337,7 @@ it.effect("keeps unexpected handler defects private through the production regis
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -451,6 +456,7 @@ it.effect("a client caller targets any thread within its ceiling and cannot act 
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -511,6 +517,7 @@ it.effect("a read-only client reads threads and is refused every write before it
     Effect.provide(
       McpHttpServer.layerThreadToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -564,6 +571,7 @@ it.effect("refuses act-as-caller tools to a client caller", () =>
     Effect.provide(
       McpHttpServer.layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
         Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
@@ -602,6 +610,7 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
     Effect.provide(
       McpHttpServer.layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
         Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
@@ -668,6 +677,7 @@ it.effect("a caller cannot interrupt a thread that runs above its own modes", ()
     Effect.provide(
       McpHttpServer.layerOrchestratorToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({

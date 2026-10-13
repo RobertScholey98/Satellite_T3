@@ -35,6 +35,7 @@ const CAPABILITIES: PullRequestCapabilities = {
     "approve-workflows",
   ],
   mergeMethods: ["merge", "squash", "rebase"],
+  conditionalMerge: true,
   updateMethods: ["merge", "rebase"],
   search: true,
   reactions: true,
@@ -585,6 +586,9 @@ export const make = Effect.gen(function* () {
         })
         .pipe(Effect.mapError(fail("setLabels"))),
 
+    inspectForMerge: (input) =>
+      cli.inspectForMerge(input).pipe(Effect.mapError(fail("inspectForMerge"))),
+
     runAction: (input) =>
       cli
         .runPullRequestAction({
@@ -593,6 +597,10 @@ export const make = Effect.gen(function* () {
           host: input.host,
           number: input.number,
           action: input.action,
+          ...(input.expectedHeadSha === undefined
+            ? {}
+            : { expectedHeadSha: input.expectedHeadSha }),
+          ...(input.requireConditionalMerge === true ? { requireConditionalMerge: true } : {}),
           ...(input.removeAgentCreditsOnMerge === true ? { removeAgentCreditsOnMerge: true } : {}),
           ...(input.stackNumber === undefined ? {} : { stackNumber: input.stackNumber }),
           ...(input.expectedStackHeads === undefined

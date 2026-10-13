@@ -21,6 +21,7 @@ import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
 import type { ProviderReplayGate } from "../testkit/ProviderReplayGate.testkit.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+import * as ConfinedProviderLaunch from "./ConfinedProviderLaunch.ts";
 
 export class CodexReplayTranscriptDecodeError extends Schema.TaggedError<CodexReplayTranscriptDecodeError>()(
   "CodexReplayTranscriptDecodeError",
@@ -223,6 +224,7 @@ export function layer(input: {
     Layer.provide(
       Layer.mergeAll(
         layerReplayClientFactory,
+        ConfinedProviderLaunch.layerUnconfined,
         layerServerConfig,
         NodeServices.layer,
         IdAllocator.layer,

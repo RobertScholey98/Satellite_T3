@@ -88,6 +88,7 @@ import {
 } from "./useScopedSettings";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { EngineeringManagersSkillsRepository } from "./EngineeringManagersSkillsRepository";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
@@ -2455,6 +2456,29 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+
+        {/* A beta the server owns: off hides every way to create the first manager. */}
+        <SettingsRow
+          serverScoped
+          settingKeys={["engineeringManagersEnabled"]}
+          {...searchableSetting("engineering-managers")}
+          description="Create engineering managers that plan and run agent teams for a project. An environment that already has managers keeps them either way."
+          control={
+            <ScopedSwitch
+              settingKeys={["engineeringManagersEnabled"]}
+              checked={settings.engineeringManagersEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ engineeringManagersEnabled: Boolean(checked) })
+              }
+              aria-label="Engineering managers (beta)"
+            />
+          }
+        />
+        {/* A saved repository stays visible with the beta off, so it can still be changed. */}
+        {isEnvironmentScope &&
+        (settings.engineeringManagersEnabled || settings.engineeringManagersSkillsRepository) ? (
+          <EngineeringManagersSkillsRepository environmentId={environmentId} />
+        ) : null}
 
         {supportsAutoSettlement ? (
           <>

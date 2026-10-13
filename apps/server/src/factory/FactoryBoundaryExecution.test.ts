@@ -1,0 +1,1415 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, it } from "@effect/vitest";
+import {
+  CommandId,
+  FactoryAssignmentId,
+  FactoryControlId,
+  FactorySourceId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type FactoryAssignment,
+  type FactorySnapshot,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+
+import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
+import {
+  factoryDockerArguments,
+  FACTORY_AGENT_IMAGE,
+  FactoryExecutionProfile,
+} from "./FactoryExecutionProfile.ts";
+import { initialFactorySnapshot } from "./FactoryState.ts";
+import * as FactoryStore from "./FactoryStore.ts";
+import * as FactorySource from "./FactorySource.ts";
+import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
+import { initialFactoryCompletion } from "./FactoryRetros.ts";
+
+const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeProfile = Schema.decodeUnknownEffect(Schema.fromJsonString(FactoryExecutionProfile));
+const decodeJournal = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      request: Schema.String,
+      before: Schema.NullOr(Schema.String),
+      after: Schema.NullOr(Schema.String),
+      complete: Schema.Boolean,
+    }),
+  ),
+);
+const live = process.env.SATELLITE_FACTORY_LIVE_TEST === "1" ? it.effect : it.effect.skip;
+
+live(
+  "confines real Codex workers and verifies frozen candidate source with adopted controls",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const crypto = yield* Crypto.Crypto;
+      const path = yield* Path.Path;
+      const runner = yield* ProcessRunner.ProcessRunner;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const docker = (args: ReadonlyArray<string>) =>
+        runner.run({ command: "docker", args, timeout: 30_000 });
+      const dockerContext = (yield* docker(["context", "show"])).stdout.trim();
+      const imageInspection = yield* docker([
+        "image",
+        "inspect",
+        FACTORY_AGENT_IMAGE,
+        "--format",
+        "{{.Id}}",
+      ]);
+      const imageId = imageInspection.stdout.trim();
+      let rejectDocker = false;
+      let loseMutationResponse = false;
+      let preparationBarrier:
+        | {
+            assignmentId: FactoryAssignmentId;
+            entered: Deferred.Deferred<void>;
+            release: Deferred.Deferred<void>;
+            stopping: Deferred.Deferred<void>;
+            volumeName: string | undefined;
+          }
+        | undefined;
+      const executionRunner = ProcessRunner.ProcessRunner.of({
+        run: (input) => {
+          if (rejectDocker && input.command === "docker")
+            return Effect.succeed({ ...imageInspection, code: null });
+          const barrier = preparationBarrier;
+          const preparationProbe =
+            barrier !== undefined &&
+            input.args?.includes(`satellite.factory.assignment=${barrier.assignmentId}`) &&
+            input.args.some((arg) => arg.includes("factory-writable-boundary-ok"));
+          if (preparationProbe)
+            barrier.volumeName = input.args
+              ?.find((arg) => arg.startsWith("type=volume,source="))
+              ?.split(",")[1]
+              ?.slice("source=".length);
+          const before = preparationProbe
+            ? Deferred.succeed(barrier.entered, undefined).pipe(
+                Effect.andThen(Deferred.await(barrier.release)),
+              )
+            : Effect.void;
+          return before.pipe(
+            Effect.andThen(runner.run(input)),
+            Effect.tap(() =>
+              barrier !== undefined &&
+              input.args?.includes("ps") &&
+              input.args.includes(`label=satellite.factory.assignment=${barrier.assignmentId}`)
+                ? Deferred.succeed(barrier.stopping, undefined)
+                : Effect.void,
+            ),
+            Effect.map((result) => {
+              if (loseMutationResponse && input.stdin?.includes('"kind":"mutate"')) {
+                loseMutationResponse = false;
+                return { ...result, code: null };
+              }
+              return result;
+            }),
+          );
+        },
+      });
+      const managerId = ThreadId.make("manager");
+      const projectId = ProjectId.make("boundary-fixture");
+      const profileId = yield* (yield* Crypto.Crypto).randomUUIDv4;
+      const now = "2026-10-10T12:00:00.000Z";
+      const workflow = { repositoryRoot: "/owned-workflow", revision: "a".repeat(40) };
+      const initial = initialFactorySnapshot();
+      const onboarding: FactoryAssignment = {
+        id: FactoryAssignmentId.make("onboarding"),
+        managerId,
+        threadId: ThreadId.make("onboarding-lead"),
+        projectId,
+        kind: "onboarding",
+        status: "complete",
+        threadStatus: "created",
+        launchStatus: "delivered",
+        qualification: { status: "qualified", profileId, checkedAt: now },
+        workflow,
+        grantedPolicy: initial.defaults,
+        wait: null,
+        report: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      let state: FactorySnapshot = {
+        ...initial,
+        managers: [
+          {
+            id: managerId,
+            threadId: managerId,
+            projectId,
+            role: "project",
+            name: "Fixture",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+            workflow,
+            overrides: {},
+            status: "onboarding",
+            threadStatus: "created",
+            launchStatus: "delivered",
+            wait: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        assignments: [onboarding],
+      };
+      const volumes: Array<string> = [];
+      const sources = new Map<FactorySourceId, FactorySource.FactorySourceArtifact>();
+      let head: FactorySource.FactorySourceArtifact | undefined;
+      yield* Effect.addFinalizer(() =>
+        Effect.forEach(
+          volumes,
+          (volume) =>
+            docker(["--context", dockerContext, "volume", "rm", "--force", volume]).pipe(
+              Effect.ignore,
+            ),
+          { discard: true },
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const execution = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+        const directory = path.join(config.stateDir, "factory", "execution", profileId);
+        const profile: FactoryExecutionProfile = {
+          boundaryId: profileId,
+          dockerContext,
+          imageId,
+          projectSnapshotPath: path.join(directory, "project"),
+          workflowSnapshotPath: path.join(directory, "workflow"),
+          runtimePath: path.join(directory, "sessions"),
+          sourceRevision: "b".repeat(40),
+        };
+        const fixture = new Map([
+          ["src/value.cjs", "module.exports = 1;"],
+          ["src/unassigned.cjs", "module.exports = 'outside assignment';"],
+          ["src/unapproved.cjs", "module.exports = 'outside baseline';"],
+          [
+            "tests/required.cjs",
+            "require('node:assert/strict').equal(require('../src/value.cjs'), 2);",
+          ],
+          ["package.json", '{"scripts":{"test":"node tests/required.cjs"}}'],
+          ["AGENTS.md", "Required tests cannot be weakened by source assignments."],
+        ]);
+        for (const [file, content] of fixture) {
+          const target = path.join(profile.projectSnapshotPath, file);
+          yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+          yield* fs.writeFileString(target, content);
+        }
+        yield* fs.makeDirectory(path.join(profile.workflowSnapshotPath, "skills"), {
+          recursive: true,
+        });
+        yield* fs.writeFileString(
+          path.join(profile.workflowSnapshotPath, "skills", "SKILL.md"),
+          "Owned immutable skill",
+        );
+        yield* fs.makeDirectory(
+          path.join(profile.workflowSnapshotPath, "skills", "writing-for-agents"),
+          { recursive: true },
+        );
+        for (const name of ["SKILL.md", "SKILL-MECHANICS.md"])
+          yield* fs.writeFileString(
+            path.join(profile.workflowSnapshotPath, "skills", "writing-for-agents", name),
+            "Approved authoring instructions",
+          );
+        yield* fs.writeFileString(path.join(directory, "profile.json"), json(profile));
+        const configuration = {
+          protectedPaths: ["tests/required.cjs"],
+          writablePaths: ["src/value.cjs", "src/unassigned.cjs"],
+          creatableDirectories: ["src"],
+          gates: [
+            {
+              id: "required",
+              label: "Required test",
+              executable: "/usr/local/bin/node",
+              args: ["/workspace/tests/required.cjs"],
+              cwd: ".",
+              timeoutMs: 10000,
+              protectedInputs: ["tests/required.cjs"],
+            },
+          ],
+        };
+        assert.equal(
+          (yield* execution
+            .approve({
+              managerId,
+              configuration: {
+                ...configuration,
+                gates: [{ ...configuration.gates[0]!, executable: "npm" }],
+              },
+            })
+            .pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        const boundary = yield* execution.approve({ managerId, configuration });
+        yield* fs.writeFileString(
+          path.join(profile.projectSnapshotPath, "src", "value.cjs"),
+          "module.exports = 99;",
+        );
+        assert.deepEqual(yield* execution.approve({ managerId, configuration }), boundary);
+        assert.equal(
+          yield* fs.readFileString(
+            path.join(
+              config.stateDir,
+              "factory",
+              "boundaries",
+              boundary.id,
+              "source",
+              "src",
+              "value.cjs",
+            ),
+          ),
+          "module.exports = 1;",
+        );
+        rejectDocker = true;
+        assert.equal(
+          (yield* execution.approve({ managerId, configuration }).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        rejectDocker = false;
+        assert.include(boundary.protectedPaths, "package.json");
+        const assignment: FactoryAssignment = {
+          ...onboarding,
+          id: FactoryAssignmentId.make(`implementation-${profileId}`),
+          threadId: ThreadId.make("implementation-lead"),
+          kind: "implementation",
+          authorization: { kind: "human", commandId: CommandId.make("commission") },
+          status: "running",
+          grant: {
+            boundaryId: boundary.id,
+            epoch: 0,
+            sourcePaths: ["src/value.cjs"],
+            creatableDirectories: ["src"],
+            controlChange: null,
+          },
+        };
+        state = { ...state, boundaries: [boundary], assignments: [onboarding, assignment] };
+        const cancelledDuringPreparation: FactoryAssignment = {
+          ...assignment,
+          id: FactoryAssignmentId.make(`cancel-preparing-${profileId}`),
+          threadId: ThreadId.make("cancel-preparing-lead"),
+          qualification: { status: "unavailable", reason: "Preparing the workspace" },
+        };
+        state = { ...state, assignments: [...state.assignments, cancelledDuringPreparation] };
+        const prepareCancelled = {
+          assignmentId: cancelledDuringPreparation.id,
+          threadId: cancelledDuringPreparation.threadId,
+          boundaryId: boundary.id,
+          grant: cancelledDuringPreparation.grant!,
+        };
+        const barrier = {
+          assignmentId: cancelledDuringPreparation.id,
+          entered: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+          stopping: yield* Deferred.make<void>(),
+          volumeName: undefined as string | undefined,
+        };
+        preparationBarrier = barrier;
+        const preparing = yield* execution
+          .prepare(prepareCancelled)
+          .pipe(Effect.result, Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(barrier.entered);
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === cancelledDuringPreparation.id
+              ? {
+                  ...entry,
+                  outcome: {
+                    kind: "cancelled",
+                    controlId: FactoryControlId.make("cancel-preparing"),
+                  },
+                }
+              : entry,
+          ),
+        };
+        const stopping = yield* execution
+          .stop(cancelledDuringPreparation.id)
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.await(barrier.stopping);
+        assert.isUndefined(
+          stopping.pollUnsafe(),
+          "Stop cannot confirm while preparation still holds its operation permit",
+        );
+        yield* Deferred.succeed(barrier.release, undefined);
+        assert.equal((yield* Fiber.join(preparing))._tag, "Failure");
+        yield* Fiber.join(stopping);
+        preparationBarrier = undefined;
+        assert.isDefined(barrier.volumeName);
+        assert.notEqual((yield* docker(["volume", "inspect", barrier.volumeName!])).code, 0);
+        const cancelledProfileId = barrier.volumeName!.slice("satellite-factory-".length);
+        assert.isFalse(
+          yield* fs.exists(
+            path.join(config.stateDir, "factory", "execution", cancelledProfileId, "profile.json"),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const recreated = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+          assert.equal(
+            (yield* recreated.prepare(prepareCancelled).pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+        }).pipe(Effect.provide(FactoryBoundaryExecution.layer));
+        const qualification = yield* execution.prepare({
+          assignmentId: assignment.id,
+          threadId: assignment.threadId,
+          boundaryId: boundary.id,
+          grant: assignment.grant!,
+        });
+        if (qualification.status !== "qualified") return assert.fail(qualification.reason);
+        const prepared = yield* fs
+          .readFileString(
+            path.join(
+              config.stateDir,
+              "factory",
+              "execution",
+              qualification.profileId,
+              "profile.json",
+            ),
+          )
+          .pipe(Effect.flatMap(decodeProfile));
+        volumes.push(prepared.assignmentWorkspace!.volumeName);
+        state = { ...state, assignments: [onboarding, { ...assignment, qualification }] };
+        assert.deepEqual(
+          (yield* execution.prepare({
+            assignmentId: assignment.id,
+            threadId: assignment.threadId,
+            boundaryId: boundary.id,
+            grant: assignment.grant!,
+          })).status,
+          "qualified",
+        );
+        const failed = yield* execution.verify({ assignmentId: assignment.id, expectedEpoch: 0 });
+        assert.equal(failed.gates[0]?.status, "failed");
+        const worker = yield* docker([
+          ...factoryDockerArguments(prepared).slice(2),
+          "--entrypoint",
+          "node",
+          prepared.imageId,
+          "-e",
+          "require('node:fs').writeFileSync('/workspace/src/value.cjs', 'module.exports = 2;')",
+        ]);
+        assert.equal(worker.code, 0, worker.stderr);
+        const runningBeforePause = yield* docker([
+          ...factoryDockerArguments(prepared).slice(2),
+          "--detach",
+          "--entrypoint",
+          "node",
+          prepared.imageId,
+          "-e",
+          "setInterval(()=>{},1000)",
+        ]);
+        assert.equal(runningBeforePause.code, 0, runningBeforePause.stderr);
+        const pausedContainerId = runningBeforePause.stdout.trim();
+        const unaffected = yield* docker([
+          "run",
+          "--rm",
+          "--detach",
+          "--entrypoint",
+          "node",
+          prepared.imageId,
+          "-e",
+          "setInterval(()=>{},1000)",
+        ]);
+        assert.equal(unaffected.code, 0, unaffected.stderr);
+        const unaffectedId = unaffected.stdout.trim();
+        yield* Effect.addFinalizer(() =>
+          docker(["rm", "--force", pausedContainerId, unaffectedId]).pipe(Effect.ignore),
+        );
+        rejectDocker = true;
+        assert.equal(
+          (yield* execution
+            .suspend({ assignmentId: assignment.id, generation: 1 })
+            .pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.include(
+          (yield* assertFactoryProfileActive(prepared).pipe(Effect.flip)).detail!,
+          "paused",
+        );
+        rejectDocker = false;
+        yield* execution.suspend({ assignmentId: assignment.id, generation: 1 });
+        assert.notEqual((yield* docker(["inspect", pausedContainerId])).code, 0);
+        assert.equal(
+          (yield* docker([
+            "inspect",
+            "--format",
+            "{{.State.Running}}",
+            unaffectedId,
+          ])).stdout.trim(),
+          "true",
+        );
+        yield* Effect.gen(function* () {
+          const restarted = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+          assert.include(
+            (yield* restarted
+              .verify({ assignmentId: assignment.id, expectedEpoch: 0 })
+              .pipe(Effect.flip)).detail!,
+            "paused",
+          );
+          assert.include(
+            (yield* restarted
+              .mutate({
+                assignmentId: assignment.id,
+                expectedEpoch: 0,
+                commandId: CommandId.make("denied-while-paused"),
+                operation: { kind: "write", path: "src/value.cjs", content: "module.exports = 9;" },
+              })
+              .pipe(Effect.flip)).detail!,
+            "paused",
+          );
+          assert.include(
+            (yield* restarted
+              .prepare({
+                assignmentId: assignment.id,
+                threadId: assignment.threadId,
+                boundaryId: boundary.id,
+                grant: assignment.grant!,
+              })
+              .pipe(Effect.flip)).detail!,
+            "paused",
+          );
+          assert.equal(
+            (yield* restarted
+              .resume({ assignmentId: assignment.id, generation: 0 })
+              .pipe(Effect.flip)).code,
+            "invalid-state",
+          );
+          yield* restarted.resume({ assignmentId: assignment.id, generation: 1 });
+          yield* restarted.resume({ assignmentId: assignment.id, generation: 1 });
+          yield* restarted.suspend({ assignmentId: assignment.id, generation: 1 });
+          yield* assertFactoryProfileActive(prepared);
+          yield* restarted.suspend({ assignmentId: assignment.id, generation: 2 });
+          assert.equal(
+            (yield* restarted
+              .resume({ assignmentId: assignment.id, generation: 1 })
+              .pipe(Effect.flip)).code,
+            "invalid-state",
+          );
+          assert.equal(
+            (yield* restarted
+              .suspend({ assignmentId: assignment.id, generation: 1 })
+              .pipe(Effect.flip)).code,
+            "invalid-state",
+          );
+          assert.include(
+            (yield* assertFactoryProfileActive(prepared).pipe(Effect.flip)).detail!,
+            "paused",
+          );
+          yield* restarted.resume({ assignmentId: assignment.id, generation: 2 });
+          const incidentContainer = yield* docker([
+            "run",
+            "--detach",
+            "--label",
+            `satellite.factory.assignment=${assignment.id}`,
+            imageId,
+            "node",
+            "-e",
+            "setInterval(()=>{},1000)",
+          ]);
+          assert.equal(incidentContainer.code, 0, incidentContainer.stderr);
+          const incidentContainerId = incidentContainer.stdout.trim();
+          yield* Effect.addFinalizer(() =>
+            docker(["rm", "--force", incidentContainerId]).pipe(Effect.ignore),
+          );
+          state = {
+            ...state,
+            incidentRestrictions: ["live-incident-a", "live-incident-b"].map((id) => ({
+              id,
+              managerId: assignment.managerId,
+              projectId: assignment.projectId,
+              assignmentIds: [assignment.id],
+              activity: "execution" as const,
+              reason: "Production outage",
+              resumeCondition: {
+                kind: "assignment-concluded" as const,
+                assignmentId: assignment.id,
+              },
+              phase: "active" as const,
+              stop: { phase: "confirmed" as const },
+              resume: null,
+              createdAt: assignment.createdAt,
+              updatedAt: assignment.updatedAt,
+            })),
+          };
+          for (const restriction of state.incidentRestrictions)
+            yield* restarted.setIncidentHold({
+              assignmentId: assignment.id,
+              restrictionId: restriction.id,
+              held: true,
+            });
+          assert.notEqual((yield* docker(["inspect", incidentContainerId])).code, 0);
+          assert.equal(
+            (yield* docker([
+              "inspect",
+              "--format",
+              "{{.State.Running}}",
+              unaffectedId,
+            ])).stdout.trim(),
+            "true",
+          );
+          state = {
+            ...state,
+            incidentRestrictions: state.incidentRestrictions.map((entry) => ({
+              ...entry,
+              phase: "releasing" as const,
+            })),
+          };
+          yield* restarted.setIncidentHold({
+            assignmentId: assignment.id,
+            restrictionId: "live-incident-a",
+            held: false,
+          });
+          assert.include(
+            (yield* assertFactoryProfileActive(prepared).pipe(Effect.flip)).detail!,
+            "incident",
+          );
+          yield* restarted.setIncidentHold({
+            assignmentId: assignment.id,
+            restrictionId: "live-incident-b",
+            held: false,
+          });
+          yield* assertFactoryProfileActive(prepared);
+          state = { ...state, incidentRestrictions: [] };
+          const preserved = yield* restarted.verify({
+            assignmentId: assignment.id,
+            expectedEpoch: 0,
+          });
+          assert.equal(preserved.gates[0]?.status, "passed");
+          assert.equal(
+            state.assignments.find((entry) => entry.id === assignment.id)?.grant?.epoch,
+            0,
+          );
+        }).pipe(Effect.provide(FactoryBoundaryExecution.layer));
+        const narrowed = yield* docker([
+          ...factoryDockerArguments(prepared).slice(2),
+          "--entrypoint",
+          "node",
+          prepared.imageId,
+          "-e",
+          "const f=require('node:fs');for(const path of ['/workspace/src/unassigned.cjs','/workspace/src/unapproved.cjs']){let denied=false;try{f.writeFileSync(path,'forbidden')}catch(e){denied=e.code==='EACCES'}if(!denied)throw Error('existing file escaped grant')} ",
+        ]);
+        assert.equal(narrowed.code, 0, narrowed.stderr);
+        const passed = yield* execution.verify({ assignmentId: assignment.id, expectedEpoch: 0 });
+        assert.equal(passed.gates[0]?.status, "passed");
+        const freshId = FactorySourceId.make(yield* (yield* Crypto.Crypto).randomUUIDv4);
+        const freshFiles = yield* Effect.forEach(
+          [
+            ...fixture,
+            ["src/new-existing.cjs", "module.exports = 'fresh';"],
+            ["src/new-unassigned.cjs", "module.exports = 'unassigned';"],
+          ] as ReadonlyArray<readonly [string, string]>,
+          ([name, initialContent]) =>
+            Effect.gen(function* () {
+              // Read-only files outside the controls may move on without blocking new work.
+              const content =
+                name === "src/value.cjs"
+                  ? "module.exports = 2;"
+                  : name === "src/unapproved.cjs"
+                    ? "module.exports = 'changed outside the assignment';"
+                    : initialContent;
+              return {
+                path: name,
+                content: Buffer.from(content).toString("base64"),
+                digest: Buffer.from(
+                  yield* (yield* Crypto.Crypto).digest("SHA-256", Buffer.from(content)),
+                ).toString("hex"),
+                mode: name === "src/new-existing.cjs" ? ("100755" as const) : ("100644" as const),
+              };
+            }),
+        );
+        const freshArtifact: FactorySource.FactorySourceArtifact = {
+          source: {
+            id: freshId,
+            projectId,
+            revision: "c".repeat(40),
+            sourceDigest: "fresh-source-digest",
+            branch: "main",
+            origin: "project",
+            capturedAt: now,
+            fileCount: freshFiles.length,
+            stagedPaths: [],
+            unstagedPaths: [],
+            untrackedPaths: [],
+            deletedPaths: [],
+            excludedPaths: [],
+          },
+          request: { requestId: CommandId.make("fresh-source"), projectId },
+          workspaceRoot: "/original",
+          files: freshFiles,
+          indexFiles: freshFiles,
+          indexData: null,
+        };
+        sources.set(freshId, freshArtifact);
+        const freshAssignment: FactoryAssignment = {
+          ...assignment,
+          id: FactoryAssignmentId.make(`fresh-${profileId}`),
+          threadId: ThreadId.make("fresh-lead"),
+          startingSource: freshArtifact.source,
+          grant: { ...assignment.grant!, sourcePaths: ["src/value.cjs", "src/new-existing.cjs"] },
+        };
+        state = { ...state, assignments: [...state.assignments, freshAssignment] };
+        const freshInput = {
+          assignmentId: freshAssignment.id,
+          threadId: freshAssignment.threadId,
+          boundaryId: boundary.id,
+          grant: freshAssignment.grant!,
+          startingSourceId: freshId,
+        };
+        assert.equal(
+          (yield* execution
+            .prepare({
+              assignmentId: freshInput.assignmentId,
+              threadId: freshInput.threadId,
+              boundaryId: freshInput.boundaryId,
+              grant: freshInput.grant,
+            })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        const changedControls = freshFiles.map((file) =>
+          file.path === "package.json"
+            ? { ...file, content: Buffer.from("{}").toString("base64") }
+            : file,
+        );
+        sources.set(freshId, { ...freshArtifact, files: changedControls });
+        assert.include(
+          (yield* execution.prepare(freshInput).pipe(Effect.flip)).detail!,
+          "protected control package.json",
+        );
+        sources.set(freshId, { ...freshArtifact, indexFiles: changedControls });
+        assert.include(
+          (yield* execution.prepare(freshInput).pipe(Effect.flip)).detail!,
+          "protected control package.json",
+        );
+        // A committed control change blocks work until a human refreshes the baseline. The
+        // refreshed baseline then admits that work and its checks run the new controls.
+        const headChanges = new Map([
+          ["src/value.cjs", "module.exports = 3;"],
+          [
+            "tests/required.cjs",
+            "require('node:assert/strict').equal(require('../src/value.cjs'), 3);",
+          ],
+          ["package.json", "{}"],
+        ]);
+        const headFiles = yield* Effect.forEach(freshFiles, (file) =>
+          Effect.gen(function* () {
+            const content = headChanges.get(file.path);
+            if (content === undefined) return file;
+            const bytes = Buffer.from(content);
+            return {
+              ...file,
+              content: bytes.toString("base64"),
+              digest: Buffer.from(yield* crypto.digest("SHA-256", bytes)).toString("hex"),
+            };
+          }),
+        );
+        const headId = FactorySourceId.make(yield* crypto.randomUUIDv4);
+        head = {
+          ...freshArtifact,
+          source: {
+            ...freshArtifact.source,
+            id: headId,
+            revision: "d".repeat(40),
+            sourceDigest: "head-source-digest",
+          },
+          files: headFiles,
+          indexFiles: headFiles,
+        };
+        sources.set(headId, head);
+        const blockedAssignment: FactoryAssignment = {
+          ...assignment,
+          id: FactoryAssignmentId.make(`refresh-${profileId}`),
+          threadId: ThreadId.make("refresh-lead"),
+          startingSource: head.source,
+        };
+        state = {
+          ...state,
+          managers: state.managers.map((entry) => ({
+            ...entry,
+            boundaryId: boundary.id,
+            status: "active" as const,
+          })),
+          assignments: [...state.assignments, blockedAssignment],
+        };
+        const blockedInput = {
+          assignmentId: blockedAssignment.id,
+          threadId: blockedAssignment.threadId,
+          boundaryId: boundary.id,
+          grant: blockedAssignment.grant!,
+          startingSourceId: headId,
+        };
+        assert.include(
+          (yield* execution.prepare(blockedInput).pipe(Effect.flip)).detail!,
+          "refresh the control baseline",
+        );
+        const refreshCommand = { managerId, commandId: CommandId.make("refresh-baseline") };
+        const refreshed = yield* execution.refresh(refreshCommand);
+        assert.notEqual(refreshed.id, boundary.id);
+        assert.equal(refreshed.sourceRevision, "d".repeat(40));
+        assert.deepEqual(refreshed.controlPaths, [
+          "AGENTS.md",
+          "package.json",
+          "tests/required.cjs",
+        ]);
+        const refreshedControls = path.join(
+          config.stateDir,
+          "factory",
+          "boundaries",
+          refreshed.id,
+          "controls",
+        );
+        assert.equal(yield* fs.readFileString(path.join(refreshedControls, "package.json")), "{}");
+        assert.isFalse(yield* fs.exists(path.join(refreshedControls, "src", "unapproved.cjs")));
+        assert.deepEqual(yield* execution.refresh(refreshCommand), refreshed);
+        const rebound = { ...blockedAssignment.grant!, boundaryId: refreshed.id };
+        state = {
+          ...state,
+          managers: state.managers.map((entry) => ({ ...entry, boundaryId: refreshed.id })),
+          boundaries: [boundary, refreshed],
+          assignments: state.assignments.map((entry) =>
+            entry.id === blockedAssignment.id ? { ...entry, grant: rebound } : entry,
+          ),
+        };
+        const reboundQualification = yield* execution.prepare({
+          ...blockedInput,
+          boundaryId: refreshed.id,
+          grant: rebound,
+        });
+        if (reboundQualification.status !== "qualified")
+          return assert.fail(reboundQualification.reason);
+        volumes.push(
+          (yield* fs
+            .readFileString(
+              path.join(
+                config.stateDir,
+                "factory",
+                "execution",
+                reboundQualification.profileId,
+                "profile.json",
+              ),
+            )
+            .pipe(Effect.flatMap(decodeProfile))).assignmentWorkspace!.volumeName,
+        );
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === blockedAssignment.id
+              ? { ...entry, qualification: reboundQualification }
+              : entry,
+          ),
+        };
+        assert.equal(
+          (yield* execution.verify({ assignmentId: blockedAssignment.id, expectedEpoch: 0 }))
+            .gates[0]?.status,
+          "passed",
+        );
+        sources.set(freshId, freshArtifact);
+        const freshQualification = yield* execution.prepare(freshInput);
+        if (freshQualification.status !== "qualified")
+          return assert.fail(freshQualification.reason);
+        const freshProfile = yield* fs
+          .readFileString(
+            path.join(
+              config.stateDir,
+              "factory",
+              "execution",
+              freshQualification.profileId,
+              "profile.json",
+            ),
+          )
+          .pipe(Effect.flatMap(decodeProfile));
+        volumes.push(freshProfile.assignmentWorkspace!.volumeName);
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === freshAssignment.id
+              ? { ...entry, qualification: freshQualification }
+              : entry,
+          ),
+        };
+        assert.equal(freshProfile.sourceRevision, freshArtifact.source.revision);
+        assert.equal(freshProfile.startingSourceDigest, freshArtifact.source.sourceDigest);
+        const collectingState = state;
+        for (const phase of ["concluding", "concluded"] as const) {
+          state = {
+            ...collectingState,
+            assignments: collectingState.assignments.map((entry) =>
+              entry.id === freshAssignment.id
+                ? { ...entry, completion: { ...initialFactoryCompletion(entry.scope), phase } }
+                : entry,
+            ),
+          };
+          assert.equal(
+            (yield* execution
+              .verify({ assignmentId: freshAssignment.id, expectedEpoch: 0 })
+              .pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+          assert.equal(
+            (yield* execution
+              .mutate({
+                assignmentId: freshAssignment.id,
+                expectedEpoch: 0,
+                commandId: CommandId.make(`late-mutate:${phase}`),
+                operation: { kind: "write", path: "src/value.cjs", content: "module.exports=99;" },
+              })
+              .pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+        }
+        state = collectingState;
+        assert.equal(
+          (yield* execution.verify({ assignmentId: freshAssignment.id, expectedEpoch: 0 })).gates[0]
+            ?.status,
+          "passed",
+        );
+        const freshWorker = yield* docker([
+          ...factoryDockerArguments(freshProfile).slice(2),
+          "--entrypoint",
+          "node",
+          freshProfile.imageId,
+          "-e",
+          "const f=require('node:fs');if(require('/workspace/src/value.cjs')!==2)throw Error('stale source');f.accessSync('/workspace/src/new-existing.cjs',f.constants.X_OK);f.writeFileSync('/workspace/src/new-existing.cjs','updated');for(const p of ['new-unassigned','unapproved']){let denied=false;try{f.writeFileSync('/workspace/src/'+p+'.cjs','forbidden')}catch(e){denied=e.code==='EACCES'}if(!denied)throw Error('fresh existing file escaped grant')}",
+        ]);
+        assert.equal(freshWorker.code, 0, freshWorker.stderr);
+        for (const kind of ["create-only", "deleted-only"] as const) {
+          const captured = {
+            ...freshArtifact,
+            source: {
+              ...freshArtifact.source,
+              id: FactorySourceId.make(`${freshId}:${kind}`),
+              sourceDigest: `digest:${kind}`,
+            },
+            files:
+              kind === "create-only"
+                ? freshFiles
+                : freshFiles.filter((file) => file.path !== "src/value.cjs"),
+            indexFiles:
+              kind === "create-only"
+                ? freshFiles
+                : freshFiles.filter((file) => file.path !== "src/value.cjs"),
+          };
+          sources.set(captured.source.id, captured);
+          const narrow: FactoryAssignment = {
+            ...freshAssignment,
+            id: FactoryAssignmentId.make(`${freshAssignment.id}:${kind}`),
+            threadId: ThreadId.make(`lead:${kind}`),
+            startingSource: captured.source,
+            grant: {
+              boundaryId: boundary.id,
+              epoch: 0,
+              sourcePaths: kind === "create-only" ? [] : ["src/value.cjs"],
+              creatableDirectories: kind === "create-only" ? ["src"] : [],
+              controlChange: null,
+            },
+          };
+          state = { ...state, assignments: [...state.assignments, narrow] };
+          const qualified = yield* execution.prepare({
+            assignmentId: narrow.id,
+            threadId: narrow.threadId,
+            boundaryId: boundary.id,
+            grant: narrow.grant!,
+            startingSourceId: captured.source.id,
+          });
+          if (qualified.status !== "qualified") return assert.fail(qualified.reason);
+          const narrowProfile = yield* fs
+            .readFileString(
+              path.join(
+                config.stateDir,
+                "factory",
+                "execution",
+                qualified.profileId,
+                "profile.json",
+              ),
+            )
+            .pipe(Effect.flatMap(decodeProfile));
+          volumes.push(narrowProfile.assignmentWorkspace!.volumeName);
+          state = {
+            ...state,
+            assignments: state.assignments.map((entry) =>
+              entry.id === narrow.id ? { ...entry, qualification: qualified } : entry,
+            ),
+          };
+          const inspected = yield* docker([
+            ...factoryDockerArguments(narrowProfile).slice(2),
+            "--entrypoint",
+            "node",
+            narrowProfile.imageId,
+            "-e",
+            `const f=require('node:fs');if(f.readdirSync('/workspace/src').some(p=>p.startsWith('factory-runtime-probe-')))throw Error('probe leaked');${kind === "deleted-only" ? "if(f.existsSync('/workspace/src/value.cjs'))throw Error('deletion lost')" : "try{f.writeFileSync('/workspace/src/value.cjs','bad');throw Error('existing file exposed')}catch(e){if(e.code!=='EACCES')throw e}"}`,
+          ]);
+          assert.equal(inspected.code, 0, inspected.stderr);
+          yield* execution.mutate({
+            assignmentId: narrow.id,
+            expectedEpoch: 0,
+            commandId: CommandId.make(`create:${kind}`),
+            operation: {
+              kind: "create",
+              path: kind === "create-only" ? "src/new-component.cjs" : "src/value.cjs",
+              content: "module.exports = 2;",
+            },
+          });
+          assert.equal(
+            (yield* execution.verify({ assignmentId: narrow.id, expectedEpoch: 0 })).gates[0]
+              ?.status,
+            "passed",
+          );
+        }
+        assert.equal(
+          (yield* execution
+            .mutate({
+              assignmentId: freshAssignment.id,
+              expectedEpoch: 0,
+              commandId: CommandId.make("fresh-unassigned"),
+              operation: { kind: "write", path: "src/new-unassigned.cjs", content: "forbidden" },
+            })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        const create = {
+          assignmentId: assignment.id,
+          expectedEpoch: 0,
+          commandId: CommandId.make("create"),
+          operation: {
+            kind: "create" as const,
+            path: "src/created.cjs",
+            content: "module.exports = true;",
+          },
+        };
+        loseMutationResponse = true;
+        assert.equal(
+          (yield* execution.mutate(create).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        const journalDirectory = path.join(
+          path.dirname(path.dirname(prepared.assignmentWorkspace!.revocationPath)),
+          "journal",
+        );
+        const journalFile = path.join(
+          journalDirectory,
+          (yield* fs.readDirectory(journalDirectory)).find((entry) => entry.endsWith(".json"))!,
+        );
+        const journal = yield* fs.readFileString(journalFile).pipe(Effect.flatMap(decodeJournal));
+        yield* fs.writeFileString(journalFile, json({ ...journal, complete: false }));
+        yield* execution.mutate(create);
+        yield* execution.mutate(create);
+        const rename = {
+          ...create,
+          commandId: CommandId.make("rename"),
+          operation: { kind: "rename" as const, path: "src/created.cjs", to: "src/renamed.cjs" },
+        };
+        loseMutationResponse = true;
+        assert.equal(
+          (yield* execution.mutate(rename).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        yield* execution.mutate(rename);
+        const remove = {
+          ...create,
+          commandId: CommandId.make("delete"),
+          operation: { kind: "delete" as const, path: "src/renamed.cjs" },
+        };
+        loseMutationResponse = true;
+        assert.equal(
+          (yield* execution.mutate(remove).pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        yield* execution.mutate(remove);
+        for (const file of [
+          "src/new/AGENTS.md",
+          "src/new/package.json",
+          "src/new/eslint.config.js",
+          "src/../tests/required.cjs",
+          "/host/secret",
+          "tests/required.cjs",
+          "src/unassigned.cjs",
+          "src/unapproved.cjs",
+        ]) {
+          assert.equal(
+            (yield* execution
+              .mutate({
+                ...create,
+                commandId: CommandId.make(`denied-${file}`),
+                operation: { kind: "create", path: file, content: "forbidden" },
+              })
+              .pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+        }
+        assert.equal(
+          (yield* execution.mutate({ ...create, expectedEpoch: 1 }).pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        assert.equal(
+          yield* fs.readFileString(
+            path.join(prepared.assignmentWorkspace!.controlsPath, "tests", "required.cjs"),
+          ),
+          fixture.get("tests/required.cjs"),
+        );
+        const ruleAssignment: FactoryAssignment = {
+          ...assignment,
+          id: FactoryAssignmentId.make(`rule-${profileId}`),
+          threadId: ThreadId.make("rule-lead"),
+          kind: "rule-change",
+          authorization: { kind: "human", commandId: CommandId.make("rule-authorization") },
+          grant: {
+            boundaryId: boundary.id,
+            epoch: 0,
+            sourcePaths: [],
+            creatableDirectories: [],
+            controlChange: { authorizationId: "rule-authorization", paths: ["tests/required.cjs"] },
+          },
+        };
+        state = { ...state, assignments: [...state.assignments, ruleAssignment] };
+        const ruleQualification = yield* execution.prepare({
+          assignmentId: ruleAssignment.id,
+          threadId: ruleAssignment.threadId,
+          boundaryId: boundary.id,
+          grant: ruleAssignment.grant!,
+        });
+        if (ruleQualification.status !== "qualified") return assert.fail(ruleQualification.reason);
+        const ruleProfile = yield* fs
+          .readFileString(
+            path.join(
+              config.stateDir,
+              "factory",
+              "execution",
+              ruleQualification.profileId,
+              "profile.json",
+            ),
+          )
+          .pipe(Effect.flatMap(decodeProfile));
+        volumes.push(ruleProfile.assignmentWorkspace!.volumeName);
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === ruleAssignment.id ? { ...entry, qualification: ruleQualification } : entry,
+          ),
+        };
+        const weaken = {
+          assignmentId: ruleAssignment.id,
+          expectedEpoch: 0,
+          commandId: CommandId.make("candidate-rule-change"),
+          operation: {
+            kind: "write" as const,
+            path: "tests/required.cjs",
+            content: "process.exit(0);",
+          },
+        };
+        yield* execution.mutate(weaken);
+        // A rule change is verified with the controls it is authorized to change.
+        assert.equal(
+          (yield* execution.verify({ assignmentId: ruleAssignment.id, expectedEpoch: 0 })).gates[0]
+            ?.status,
+          "passed",
+        );
+        assert.equal(
+          (yield* execution.verify({ assignmentId: assignment.id, expectedEpoch: 0 })).gates[0]
+            ?.status,
+          "passed",
+        );
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === ruleAssignment.id
+              ? {
+                  ...entry,
+                  authorization: {
+                    kind: "manager" as const,
+                    commandId: CommandId.make("rule-authorization"),
+                    threadId: managerId,
+                  },
+                }
+              : entry,
+          ),
+        };
+        assert.equal(
+          (yield* execution
+            .mutate({ ...weaken, commandId: CommandId.make("manager-cannot-weaken") })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        const running = yield* docker([
+          ...factoryDockerArguments(prepared).slice(2),
+          "--detach",
+          "--entrypoint",
+          "node",
+          prepared.imageId,
+          "-e",
+          "const f=require('node:fs');const fd=f.openSync('/workspace/src/value.cjs','a');setInterval(()=>f.writeSync(fd,'\\n//live'),20)",
+        ]);
+        assert.equal(running.code, 0, running.stderr);
+        const containerId = running.stdout.trim();
+        assert.match(containerId, /^[a-f0-9]{64}$/);
+        yield* Effect.addFinalizer(() =>
+          docker(["rm", "--force", containerId]).pipe(Effect.ignore),
+        );
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === assignment.id
+              ? {
+                  ...entry,
+                  grant: { ...entry.grant!, epoch: 1, sourcePaths: [], creatableDirectories: [] },
+                }
+              : entry,
+          ),
+        };
+        yield* execution.stop(assignment.id);
+        assert.notEqual((yield* docker(["inspect", containerId])).code, 0);
+        assert.equal(
+          (yield* execution
+            .verify({ assignmentId: assignment.id, expectedEpoch: 0 })
+            .pipe(Effect.flip)).code,
+          "permission-denied",
+        );
+        assert.isTrue(yield* fs.exists(prepared.assignmentWorkspace!.revocationPath));
+        state = {
+          ...state,
+          assignments: state.assignments.map((entry) =>
+            entry.id === assignment.id ? { ...entry, grant: assignment.grant! } : entry,
+          ),
+        };
+        yield* Effect.gen(function* () {
+          const restarted = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+          assert.equal(
+            (yield* restarted
+              .verify({ assignmentId: assignment.id, expectedEpoch: 0 })
+              .pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+          assert.equal(
+            (yield* restarted
+              .resume({ assignmentId: assignment.id, generation: 2 })
+              .pipe(Effect.flip)).code,
+            "permission-denied",
+          );
+        }).pipe(Effect.provide(FactoryBoundaryExecution.layer));
+        yield* execution.suspend({ assignmentId: freshAssignment.id, generation: 1 });
+        assert.equal(
+          (yield* docker(["volume", "rm", freshProfile.assignmentWorkspace!.volumeName])).code,
+          0,
+        );
+        assert.equal(
+          (yield* execution
+            .resume({ assignmentId: freshAssignment.id, generation: 1 })
+            .pipe(Effect.flip)).code,
+          "execution-unavailable",
+        );
+        assert.include(
+          (yield* assertFactoryProfileActive(freshProfile).pipe(Effect.flip)).detail!,
+          "paused",
+        );
+      }).pipe(
+        Effect.provide(
+          FactoryBoundaryExecution.layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(
+                ServerConfig.layerTest(root, root),
+                Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+                Layer.succeed(ProcessRunner.ProcessRunner, executionRunner),
+                Layer.mock(FactorySource.FactorySource)({
+                  capture: () =>
+                    head === undefined
+                      ? Effect.die("Missing head fixture")
+                      : Effect.succeed(head.source),
+                  readRevision: (repositoryRoot) =>
+                    Effect.gen(function* () {
+                      if (head !== undefined && repositoryRoot === head.workspaceRoot)
+                        return { files: head.files, excludedPaths: [] };
+                      const files = [];
+                      for (const [name, text] of [
+                        ["skills/SKILL.md", "Owned immutable skill"],
+                        ["skills/writing-for-agents/SKILL.md", "Approved authoring instructions"],
+                        [
+                          "skills/writing-for-agents/SKILL-MECHANICS.md",
+                          "Approved authoring instructions",
+                        ],
+                      ]) {
+                        const bytes = Buffer.from(text!);
+                        files.push({
+                          path: name!,
+                          content: bytes.toString("base64"),
+                          digest: Buffer.from(
+                            yield* (yield* Crypto.Crypto).digest("SHA-256", bytes),
+                          ).toString("hex"),
+                          mode: "100644" as const,
+                        });
+                      }
+                      return { files, excludedPaths: [] };
+                    }).pipe(Effect.provideService(Crypto.Crypto, crypto), Effect.orDie),
+                  read: (id) =>
+                    sources.has(id)
+                      ? Effect.succeed(sources.get(id)!)
+                      : Effect.die("Missing source fixture"),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    ),
+  180000,
+);
+
+it.effect("a crash while recording an approved boundary leaves the approval retryable", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped();
+    const profileId = "0b6f3c1e-8d0a-4c4e-9f43-2f0f6a3c9e11";
+    const managerId = ThreadId.make("system-manager");
+    const workflow = { repositoryRoot: "/owned-workflow", revision: "a".repeat(40) };
+    const workflowBytes = Buffer.from("Owned immutable skill");
+    const workflowFile = {
+      path: "skills/SKILL.md",
+      content: workflowBytes.toString("base64"),
+      digest: Buffer.from(yield* (yield* Crypto.Crypto).digest("SHA-256", workflowBytes)).toString(
+        "hex",
+      ),
+      mode: "100644" as const,
+    };
+    const now = "2026-10-10T12:00:00.000Z";
+    const initial = initialFactorySnapshot();
+    const state: FactorySnapshot = {
+      ...initial,
+      managers: [
+        {
+          id: managerId,
+          threadId: managerId,
+          role: "system",
+          projectId: null,
+          workspaceProjectId: ProjectId.make("workspace"),
+          qualification: { status: "qualified", profileId, checkedAt: now },
+          name: "System",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+          workflow,
+          overrides: {},
+          status: "active",
+          threadStatus: "created",
+          launchStatus: "delivered",
+          wait: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
+    };
+    // Simulates a process crash halfway through the first write of the boundary record.
+    let crash = true;
+    const crashing = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (real) =>
+        FileSystem.FileSystem.of({
+          ...real,
+          writeFileString: (target, data, options) => {
+            if (!crash || !target.includes(`${path.sep}boundaries${path.sep}`))
+              return real.writeFileString(target, data, options);
+            crash = false;
+            return real
+              .writeFileString(target, data.slice(0, data.length / 2), options)
+              .pipe(Effect.andThen(Effect.die("crashed")));
+          },
+        }),
+      ),
+    );
+    const succeeded = {
+      stdout: "factory-writable-boundary-ok",
+      stderr: "",
+      code: ChildProcessSpawner.ExitCode(0),
+      timedOut: false,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      stdoutInvalidUtf8: false,
+      stderrInvalidUtf8: false,
+    };
+    yield* Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const directory = path.join(config.stateDir, "factory", "execution", profileId);
+      const profile = {
+        boundaryId: profileId,
+        dockerContext: "local",
+        imageId: "sha256:verified",
+        projectSnapshotPath: path.join(directory, "project"),
+        workflowSnapshotPath: path.join(directory, "workflow"),
+        runtimePath: path.join(directory, "sessions"),
+        sourceRevision: "b".repeat(40),
+      };
+      for (const [file, content] of [
+        ["src/value.cjs", "module.exports = 1;"],
+        ["tests/required.cjs", "require('../src/value.cjs');"],
+      ] as const) {
+        const target = path.join(profile.projectSnapshotPath, file);
+        yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+        yield* fs.writeFileString(target, content);
+      }
+      yield* fs.makeDirectory(path.join(profile.workflowSnapshotPath, "skills"), {
+        recursive: true,
+      });
+      yield* fs.writeFile(
+        path.join(profile.workflowSnapshotPath, workflowFile.path),
+        workflowBytes,
+      );
+      yield* fs.writeFileString(path.join(directory, "profile.json"), json(profile));
+      const execution = yield* FactoryBoundaryExecution.FactoryBoundaryExecution;
+      const approval = {
+        managerId,
+        projectId: ProjectId.make("shared-project"),
+        workflow,
+        qualification: { status: "qualified" as const, profileId, checkedAt: now },
+        configuration: {
+          protectedPaths: ["tests/required.cjs"],
+          writablePaths: ["src/value.cjs"],
+          creatableDirectories: ["src"],
+          gates: [
+            {
+              id: "required",
+              label: "Required test",
+              executable: "/usr/local/bin/node",
+              args: ["/workspace/tests/required.cjs"],
+              cwd: ".",
+              timeoutMs: 10000,
+              protectedInputs: ["tests/required.cjs"],
+            },
+          ],
+        },
+      };
+      assert.isTrue(Exit.isFailure(yield* execution.approveShared(approval).pipe(Effect.exit)));
+      assert.isFalse(crash);
+      const boundary = yield* execution.approveShared(approval);
+      assert.deepEqual(boundary.writablePaths, ["src/value.cjs"]);
+    }).pipe(
+      Effect.provide(
+        FactoryBoundaryExecution.layer.pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(
+              ServerConfig.layerTest(root, root),
+              Layer.mock(FactoryStore.FactoryStore)({ snapshot: Effect.sync(() => state) }),
+              Layer.succeed(
+                ProcessRunner.ProcessRunner,
+                ProcessRunner.ProcessRunner.of({ run: () => Effect.succeed(succeeded) }),
+              ),
+              Layer.mock(FactorySource.FactorySource)({
+                readRevision: () => Effect.succeed({ files: [workflowFile], excludedPaths: [] }),
+              }),
+            ),
+          ),
+          Layer.provide(crashing),
+        ),
+      ),
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

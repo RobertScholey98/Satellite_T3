@@ -42,6 +42,7 @@ import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import { LIVE_STREAM_MAX_ITEMS, LiveStreamBufferError } from "./LiveStreamBudget.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -2780,6 +2781,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           providerTurns: [{ providerThreadId, runAttemptId: attemptId, status: "running" }],
         } as unknown as OrchestrationV2ThreadProjection;
         const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+          Effect.provide(ThreadGovernance.layerUngoverned),
           Effect.provide(
             Layer.mergeAll(
               ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
@@ -2982,6 +2984,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       );
 
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+        Effect.provide(ThreadGovernance.layerUngoverned),
         Effect.provide(ServerSettings.layerTest()),
         Effect.provideService(
           EffectWorker.OrchestrationEffectWorkerV2,
@@ -3204,6 +3207,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       });
 
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+        Effect.provide(ThreadGovernance.layerUngoverned),
         Effect.provide(ServerSettings.layerTest()),
         Effect.provideService(
           EffectWorker.OrchestrationEffectWorkerV2,

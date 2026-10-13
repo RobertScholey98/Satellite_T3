@@ -2186,6 +2186,184 @@ layer("GitHubPullRequestCli.layer", (it) => {
     }),
   );
 
+  it.effect.each(["merge", "squash", "rebase"] as const)(
+    "atomically pins an approved %s merge without credit cleanup",
+    (mergeMethod) =>
+      Effect.gen(function* () {
+        route(["query PullRequestActionState", actionState({ autoMergeRequest: null })]);
+        const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+        yield* cli.runPullRequestAction({
+          cwd: "/w",
+          repository: "acme/web",
+          host: "github.com",
+          number: 7,
+          action: "merge",
+          mergeMethod,
+          expectedHeadSha: "abc123",
+          requireConditionalMerge: true,
+        });
+        expect(variablesOf("mergePullRequest(")).toEqual([
+          {
+            input: {
+              pullRequestId: "PR_7",
+              mergeMethod: mergeMethod.toUpperCase(),
+              expectedHeadOid: "abc123",
+            },
+          },
+        ]);
+        expect(variablesOf("query PullRequestMergeMessage")).toEqual([]);
+      }),
+  );
+
+  it.effect.each([
+    { state: { headRefOid: "new-head", autoMergeRequest: null }, reason: "head-changed" },
+    { state: { isMergeQueueEnabled: true, autoMergeRequest: null }, reason: "indirect-merge" },
+    {
+      state: { autoMergeRequest: { enabledAt: "2026-10-10T00:00:00Z" } },
+      reason: "indirect-merge",
+    },
+    { state: {}, reason: "indirect-merge" },
+  ])("refuses changed heads and non-conditional host merge paths %#", ({ state, reason }) =>
+    Effect.gen(function* () {
+      route(["query PullRequestActionState", actionState(state)]);
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+      const error = yield* cli
+        .runPullRequestAction({
+          cwd: "/w",
+          repository: "acme/web",
+          host: "github.com",
+          number: 7,
+          action: "merge",
+          expectedHeadSha: "abc123",
+          requireConditionalMerge: true,
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "GitHubConditionalMergeError", reason });
+      expect(variablesOf("mergePullRequest(")).toEqual([]);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toEqual([]);
+    }),
+  );
+
+  it.effect.each([
+    { action: "enable-auto-merge" as const, expectedHeadSha: "abc123" },
+    { action: "merge" as const },
+    { action: "merge" as const, expectedHeadSha: "abc123", stackNumber: 5 },
+  ])("rejects an unsupported conditional action before host reads %#", (action) =>
+    Effect.gen(function* () {
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+      const error = yield* cli
+        .runPullRequestAction({
+          cwd: "/w",
+          repository: "acme/web",
+          host: "github.com",
+          number: 7,
+          ...action,
+          requireConditionalMerge: true,
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "GitHubConditionalMergeError",
+        reason: "unsupported-request",
+      });
+      expect(mockedExecute).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("does not substitute a new merge-message revision for the approved head", () =>
+    Effect.gen(function* () {
+      const message = mergeMessage("Co-authored-by: Claude <noreply@anthropic.com>");
+      message.data.repository.pullRequest.headRefOid = "new-head";
+      route(
+        ["query PullRequestActionState", actionState({ autoMergeRequest: null })],
+        ["query PullRequestMergeMessage", message],
+      );
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+      const error = yield* cli
+        .runPullRequestAction({
+          cwd: "/w",
+          repository: "acme/web",
+          host: "github.com",
+          number: 7,
+          action: "merge",
+          expectedHeadSha: "abc123",
+          requireConditionalMerge: true,
+          removeAgentCreditsOnMerge: true,
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "GitHubConditionalMergeError",
+        reason: "changed-while-preparing",
+      });
+      expect(variablesOf("mergePullRequest(")).toEqual([]);
+    }),
+  );
+
+  it.effect("keeps the approved head when cleanup changes only the merge message", () =>
+    Effect.gen(function* () {
+      route(
+        ["query PullRequestActionState", actionState({ autoMergeRequest: null })],
+        [
+          "query PullRequestMergeMessage",
+          mergeMessage("Details\n\nCo-authored-by: Claude <noreply@anthropic.com>"),
+        ],
+      );
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+      yield* cli.runPullRequestAction({
+        cwd: "/w",
+        repository: "acme/web",
+        host: "github.com",
+        number: 7,
+        action: "merge",
+        expectedHeadSha: "abc123",
+        requireConditionalMerge: true,
+        removeAgentCreditsOnMerge: true,
+      });
+      expect(variablesOf("mergePullRequest(")).toEqual([
+        {
+          input: {
+            pullRequestId: "PR_7",
+            mergeMethod: "MERGE",
+            expectedHeadOid: "abc123",
+            commitBody: "Details",
+          },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("propagates the host's atomic refusal if the head moves after the last read", () =>
+    Effect.gen(function* () {
+      mockedExecute.mockImplementation((call) => {
+        if (call.kind === "graphql" && call.query.includes("query PullRequestActionState"))
+          return Effect.succeed(output(encodeJson(actionState({ autoMergeRequest: null }))));
+        return Effect.fail(
+          new GitHubApi.GitHubApiResponseError({
+            host: "github.com",
+            operation: "runPullRequestAction",
+            status: 200,
+            githubErrors: ["Head branch was modified"],
+          }),
+        );
+      });
+      const cli = yield* GitHubPullRequestCli.GitHubPullRequestCli;
+      const error = yield* cli
+        .runPullRequestAction({
+          cwd: "/w",
+          repository: "acme/web",
+          host: "github.com",
+          number: 7,
+          action: "merge",
+          expectedHeadSha: "abc123",
+          requireConditionalMerge: true,
+        })
+        .pipe(Effect.flip);
+      expect(error._tag).toBe("GitHubApiResponseError");
+      expect(variablesOf("mergePullRequest(")).toEqual([
+        { input: { pullRequestId: "PR_7", mergeMethod: "MERGE", expectedHeadOid: "abc123" } },
+      ]);
+    }),
+  );
+
   it.effect.each(["merge", "enable-auto-merge"] as const)(
     "removes agent credits from the proposed message for %s",
     (action) =>

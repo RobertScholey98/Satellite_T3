@@ -13,6 +13,41 @@ import * as IssueService from "./issues/IssueService.ts";
 import * as IssueHost from "./issues/IssueHost.ts";
 import * as IssueLifecycleReactor from "./issues/IssueLifecycleReactor.ts";
 import * as CommitRecommendationService from "./git/CommitRecommendationService.ts";
+import * as FactoryStore from "./factory/FactoryStore.ts";
+import * as FactoryPullRequestGate from "./factory/FactoryPullRequestGate.ts";
+import * as FactoryExecution from "./factory/FactoryExecution.ts";
+import * as FactoryConfinedLaunch from "./factory/FactoryConfinedLaunch.ts";
+import * as FactoryBoundaryExecution from "./factory/FactoryBoundaryExecution.ts";
+import * as FactorySource from "./factory/FactorySource.ts";
+import * as FactorySkills from "./factory/FactorySkills.ts";
+import * as FactoryHandover from "./factory/FactoryHandover.ts";
+import * as FactoryService from "./factory/FactoryService.ts";
+import * as FactoryObserver from "./factory/FactoryObserver.ts";
+import * as FactoryMcpGuard from "./factory/FactoryMcpGuard.ts";
+import * as FactoryPublication from "./factory/FactoryPublication.ts";
+import * as FactoryPublicationHost from "./factory/FactoryPublicationHost.ts";
+import * as FactoryDeliveryEffects from "./factory/FactoryDeliveryEffects.ts";
+import * as FactoryPreviewExecution from "./factory/FactoryPreviewExecution.ts";
+import * as FactoryPreviewEvidence from "./factory/FactoryPreviewEvidence.ts";
+import * as FactoryPreviewService from "./factory/FactoryPreviewService.ts";
+import * as FactoryPreviewHttp from "./factory/FactoryPreviewHttp.ts";
+import * as FactoryPreviewPublication from "./factory/FactoryPreviewPublication.ts";
+import * as FactoryRetroEffects from "./factory/FactoryRetroEffects.ts";
+import * as FactoryRetroExecution from "./factory/FactoryRetroExecution.ts";
+import * as FactoryRetroEvidence from "./factory/FactoryRetroEvidence.ts";
+import * as IssuePublication from "./issues/IssuePublication.ts";
+import * as IssuePublicationHost from "./issues/IssuePublicationHost.ts";
+import * as IssueScheduling from "./issues/IssueScheduling.ts";
+import * as FactoryImprovementEffects from "./factory/FactoryImprovementEffects.ts";
+import * as FactoryWorkflowEffects from "./factory/FactoryWorkflowEffects.ts";
+import * as FactoryCollaborationEffects from "./factory/FactoryCollaborationEffects.ts";
+import * as FactoryIntegrationEffects from "./factory/FactoryIntegrationEffects.ts";
+import * as FactoryIntegrationExecution from "./factory/FactoryIntegrationExecution.ts";
+import * as FactoryMergeEffects from "./factory/FactoryMergeEffects.ts";
+import * as FactoryMergeOperationEffects from "./factory/FactoryMergeOperationEffects.ts";
+import * as FactoryWorkflowExecution from "./factory/FactoryWorkflowExecution.ts";
+import * as FactoryImprovementEvidence from "./factory/FactoryImprovementEvidence.ts";
+import * as FactorySchedulingEffects from "./factory/FactorySchedulingEffects.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -284,16 +319,16 @@ const layerPersistence = Layer.empty.pipe(Layer.provideMerge(SqlitePersistence.l
 
 const layerVcsDriverRegistry = VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer));
 
+const layerSourceControlHosts = Layer.mergeAll(
+  AzureDevOpsCli.layer,
+  BitbucketApi.layer,
+  GitHubCli.layer,
+  GitLabCli.layer,
+  ForgejoCli.layer,
+);
+
 const layerSourceControlProviderRegistry = SourceControlProviderRegistry.layer.pipe(
-  Layer.provide(
-    Layer.mergeAll(
-      AzureDevOpsCli.layer,
-      BitbucketApi.layer,
-      GitHubCli.layer,
-      GitLabCli.layer,
-      ForgejoCli.layer,
-    ),
-  ),
+  Layer.provide(layerSourceControlHosts),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(layerVcsDriverRegistry),
 );
@@ -334,22 +369,16 @@ const layerRepositoryIdentityResolver = Layer.effect(
   }),
 ).pipe(Layer.provide(layerSourceControlProviderRegistry), Layer.provide(ProcessRunner.layer));
 
+const layerIssueHost = IssueHost.layer.pipe(Layer.provide(layerSourceControlHosts));
+
 const layerIssueService = IssueService.layer.pipe(
   Layer.provide(ProjectStore.layer),
-  Layer.provide(IssueHost.layer),
+  Layer.provide(layerIssueHost),
   Layer.provide(layerSourceControlProviderRegistry),
-  Layer.provide(
-    Layer.mergeAll(
-      GitHubCli.layer,
-      GitLabCli.layer,
-      AzureDevOpsCli.layer,
-      ForgejoCli.layer,
-      BitbucketApi.layer,
-    ),
-  ),
 );
 
 const layerPullRequestService = PullRequestService.layer.pipe(
+  Layer.provide(FactoryPullRequestGate.layerActionGate.pipe(Layer.provide(FactoryStore.layer))),
   Layer.provide(PullRequestProviderRegistry.layer),
   // Where the viewed-file marks live for a host that keeps none of its own.
   Layer.provide(PullRequestFilesViewed.layer),
@@ -494,7 +523,21 @@ const layerScheduledTaskWebhookOrigin = Layer.effect(
   }),
 );
 
+const layerFactoryExecution = Layer.mergeAll(
+  FactoryExecution.layerThreadGovernance.pipe(Layer.provideMerge(FactoryExecution.layer)),
+  FactoryBoundaryExecution.layer,
+).pipe(
+  Layer.provideMerge(FactoryWorkflowExecution.layer),
+  Layer.provideMerge(FactoryPublication.layer),
+  Layer.provideMerge(FactorySource.layer),
+  Layer.provideMerge(FactoryStore.layer),
+  Layer.provide(ProjectStore.layer),
+  Layer.provide(ProjectionStoreV2.layer),
+  Layer.provide(ProcessRunner.layer),
+);
+
 const layerOrchestrationV2Runtime = RuntimeLayer.layerProduction.pipe(
+  Layer.provideMerge(layerFactoryExecution),
   Layer.provide(layerScheduledTaskWebhookOrigin),
   Layer.provide(ProviderEventIngestor.layerAnalytics),
   Layer.provide(layerCheckpointStore),
@@ -514,7 +557,69 @@ const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
   Layer.provideMerge(layerOrchestrationV2Runtime),
 );
 
+const layerServerBrowser = ServerBrowser.layer.pipe(
+  Layer.provide(DesktopBrowserChannel.layer),
+  Layer.provide(PreviewBrowser.layer),
+);
+
+const layerFactoryServices = FactoryService.layer.pipe(
+  Layer.provideMerge(FactoryMergeOperationEffects.layer),
+  Layer.provideMerge(FactoryMergeEffects.layer),
+  Layer.provideMerge(FactoryIntegrationEffects.layer),
+  Layer.provideMerge(FactoryIntegrationExecution.layer),
+  Layer.provideMerge(FactoryCollaborationEffects.layer),
+  Layer.provideMerge(FactoryWorkflowEffects.layer),
+  Layer.provideMerge(FactoryImprovementEffects.layer),
+  Layer.provideMerge(FactorySkills.layer),
+  Layer.provideMerge(
+    FactoryDeliveryEffects.layer.pipe(
+      Layer.provide(FactoryPublicationHost.layer),
+      Layer.provide(FactoryPreviewPublication.layer),
+    ),
+  ),
+  Layer.provideMerge(
+    FactoryPreviewService.layer.pipe(
+      Layer.provideMerge(FactoryPreviewEvidence.layer),
+      Layer.provideMerge(FactoryPreviewExecution.layer),
+      Layer.provide(layerServerBrowser),
+    ),
+  ),
+  Layer.provideMerge(
+    FactorySchedulingEffects.layer.pipe(
+      Layer.provide(
+        IssueScheduling.layer.pipe(
+          Layer.provide(layerIssueHost),
+          Layer.provide(ProjectStore.layer),
+        ),
+      ),
+    ),
+  ),
+  Layer.provideMerge(
+    FactoryRetroEffects.layer.pipe(
+      Layer.provide(FactoryRetroExecution.layer),
+      Layer.provide(FactoryRetroEvidence.layer),
+      Layer.provide(
+        IssuePublication.layer.pipe(
+          Layer.provide(IssuePublicationHost.layer.pipe(Layer.provide(AzureDevOpsCli.layer))),
+          Layer.provide(layerIssueHost),
+          Layer.provide(ProjectStore.layer),
+        ),
+      ),
+    ),
+  ),
+);
+
 const layerSatelliteFeatures = Layer.mergeAll(
+  Layer.merge(FactoryMcpGuard.layer, FactoryObserver.layer).pipe(
+    // The factory MCP tools read investigation evidence directly.
+    Layer.provideMerge(FactoryImprovementEvidence.layer),
+    Layer.provideMerge(layerFactoryServices),
+    // Every factory layer above shares these. FactoryControlAccess comes from
+    // layerFactoryExecution, which the runtime provides to this whole layer.
+    Layer.provide(
+      Layer.mergeAll(FactoryHandover.layer, layerPullRequestService, ProcessRunner.layer),
+    ),
+  ),
   DocumentService.layer,
   RevdocService.layer,
   OpenWorkService.layer,
@@ -641,7 +746,11 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // through this layer. Built-in drivers come from `BUILT_IN_DRIVERS`;
   // `providerInstances` hydration merges `settings.providers.<kind>`
   // with explicit `providerInstances` entries on boot.
-  Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
+  Layer.provideMerge(
+    ProviderInstanceRegistryHydration.layer.pipe(
+      Layer.provide(FactoryConfinedLaunch.layerConfinedLaunch),
+    ),
+  ),
   Layer.provideMerge(
     Layer.mergeAll(
       AntigravityInstallation.AntigravityInstallation.layer,
@@ -733,6 +842,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAttachmentUploadRoute,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    FactoryPreviewHttp.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),
@@ -752,7 +862,7 @@ const layerMakeRoutes = Layer.mergeAll(
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(layerPullRequestService),
   // The stream route and the WebSocket RPCs share one browser.
-  Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
+  Layer.provide(layerServerBrowser),
   // Server browser tabs and HTML render previews install and run the same headless browser.
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(PreviewAutomationBroker.layer),

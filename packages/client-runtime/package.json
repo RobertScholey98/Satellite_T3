@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./factory": {
+      "types": "./src/factory.ts",
+      "default": "./src/factory.ts"
+    },
     "./commit-recommendation": {
       "types": "./src/commitRecommendation.ts",
       "default": "./src/commitRecommendation.ts"

@@ -1,6 +1,4 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
-import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -15,113 +13,32 @@ import * as TestClock from "effect/testing/TestClock";
 import type {
   OrchestrationProjectShell,
   ProjectId,
-  PullRequestReviewCapabilities,
-  PullRequestReviewerCapabilities,
   SourceControlProviderKind,
 } from "@t3tools/contracts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts/settings";
-import type { ServerSettings } from "@t3tools/contracts";
-import * as ServerSettingsService from "../serverSettings.ts";
-import { PullRequestOperationError } from "@t3tools/contracts";
+import { FactoryError, PullRequestOperationError } from "@t3tools/contracts";
 
-import * as ProjectService from "../project/ProjectService.ts";
-import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
-import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
-import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
-import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
 import * as ForgejoCli from "../sourceControl/ForgejoCli.ts";
+import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as ForgejoPullRequestProvider from "./ForgejoPullRequestProvider.ts";
+import * as PullRequestActionGate from "./PullRequestActionGate.ts";
+import { PullRequestProviderError, type PullRequestProviderApi } from "./PullRequestProvider.ts";
+import type * as PullRequestService from "./PullRequestService.ts";
 import {
-  PullRequestProviderError,
-  type ProviderChangeRequest,
-  type PullRequestProviderApi,
-} from "./PullRequestProvider.ts";
-import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
-import * as PullRequestService from "./PullRequestService.ts";
-import * as PullRequestReadCache from "./PullRequestReadCache.ts";
+  changeRequest,
+  fakeProvider,
+  FULL_REVIEW,
+  FULL_REVIEWERS,
+  hostedChangeRequest,
+  makeService,
+  project,
+} from "./PullRequestService.testkit.ts";
+import type { ProviderMergeEvidence } from "./pullRequestMergeEvidence.ts";
 import {
   FILE_REVISIONS_CACHE_CAPACITY,
   MAX_FILE_REVISION_PATHS,
 } from "./pullRequestViewedFiles.ts";
-
-function project(input: {
-  readonly id: string;
-  readonly title: string;
-  readonly workspaceRoot: string;
-  readonly repository?: string;
-  readonly provider?: string;
-  readonly host?: string;
-  readonly remoteUrl?: string;
-}): OrchestrationProjectShell {
-  // The host defaults from the provider, so a fixture only names one when the point of the
-  // test is two hosts of the same kind.
-  const host = input.host ?? (input.provider === "gitlab" ? "gitlab.com" : "github.com");
-  return {
-    id: input.id as ProjectId,
-    title: input.title,
-    workspaceRoot: input.workspaceRoot,
-    ...(input.repository
-      ? {
-          repositoryIdentity: {
-            canonicalKey: `${host}/${input.repository}`,
-            locator: {
-              source: "git-remote" as const,
-              remoteName: "origin",
-              remoteUrl: input.remoteUrl ?? `https://${host}/${input.repository}.git`,
-            },
-            provider: input.provider ?? "github",
-            displayName: input.repository,
-          },
-        }
-      : {}),
-    defaultModelSelection: null,
-    scripts: [],
-    createdAt: "2026-07-01T00:00:00Z",
-    updatedAt: "2026-07-01T00:00:00Z",
-  };
-}
-
-function changeRequest(number: number, updatedAt: string): ProviderChangeRequest {
-  return {
-    number,
-    title: `Change request ${number}`,
-    url: `https://host/pull/${number}`,
-    author: { login: "octocat", name: null, avatarUrl: null },
-    headBranch: `feat/${number}`,
-    baseBranch: "main",
-    state: "open",
-    isDraft: false,
-    mergeability: "mergeable",
-    additions: 1,
-    deletions: 0,
-    createdAt: "2026-07-01T00:00:00Z",
-    updatedAt,
-    reviewRequestLogins: [],
-    labels: [],
-  };
-}
-
-function hostedChangeRequest(body: string, additions = 1) {
-  return {
-    ...changeRequest(1, "2026-07-02T00:00:00Z"),
-    body,
-    additions,
-    changedFiles: 2,
-    mergedAt: null,
-    closedAt: null,
-    reviewers: [],
-    checks: [],
-    mergeCapabilities: { merge: true, squash: true, rebase: true },
-    viewerPermissions: {
-      actions: ["merge"] as const,
-      comment: true,
-      resolve: true,
-      verdicts: ["comment", "approve", "request-changes"] as const,
-      requestReviewers: true,
-    },
-  };
-}
 
 it.effect("caches narrow previews and invalidates them after refresh or mutation", () =>
   Effect.gen(function* () {
@@ -411,110 +328,197 @@ const requestFailed = new PullRequestProviderError({
   detail: "HTTP 404",
 });
 
-/** Everything a host could offer, so a fixture only narrows what its own test is about. */
-const FULL_REVIEW: PullRequestReviewCapabilities = {
-  inlineComment: true,
-  reply: true,
-  resolve: true,
-  verdicts: ["comment", "approve", "request-changes"],
+const mergeEvidence: ProviderMergeEvidence = {
+  headSha: "approved-head",
+  baseSha: "base",
+  baseBranch: "main",
+  state: "open",
+  isDraft: false,
+  mergeability: "mergeable",
+  mergeState: "CLEAN",
+  reviewDecision: "approved",
+  autoMergeEnabled: false,
+  mergeQueueEnabled: false,
+  checks: [],
+  reviews: [],
+  complete: true,
+  issues: [],
 };
 
-const FULL_REVIEWERS: PullRequestReviewerCapabilities = { request: true, listCandidates: true };
+it.effect(
+  "inspects merge evidence uncached on its canonical host under a verified credential",
+  () =>
+    Effect.gen(function* () {
+      const reads: unknown[] = [];
+      let verified = 0;
+      const provider = fakeProvider("github");
+      const service = yield* makeService({
+        projects: [
+          project({ id: "web", title: "Web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          {
+            ...provider,
+            capabilities: { ...provider.capabilities, conditionalMerge: true },
+            withVerifiedCredential: (_input, use) =>
+              Effect.suspend(() => {
+                verified++;
+                return use({
+                  accountId: "1",
+                  viewer: "viewer",
+                  credentialFingerprint: "credential",
+                });
+              }),
+            inspectForMerge: (input) =>
+              Effect.sync(() => {
+                reads.push(input);
+                return { ...mergeEvidence, headSha: `head-${reads.length}` };
+              }),
+          },
+        ],
+      });
+      const ref = {
+        projectId: "web" as ProjectId,
+        repository: "ACME/WEB",
+        host: "GITHUB.COM",
+        number: 7,
+      };
+      assert.strictEqual((yield* service.inspectForMerge(ref)).headSha, "head-1");
+      assert.strictEqual((yield* service.inspectForMerge(ref)).headSha, "head-2");
+      assert.strictEqual(verified, 2);
+      assert.deepStrictEqual(
+        reads,
+        [1, 2].map(() => ({ cwd: "/w", repository: "acme/web", host: "github.com", number: 7 })),
+      );
+    }),
+);
 
-/** A provider whose every call is supplied by the test; anything unset succeeds emptily. */
-function fakeProvider(
-  kind: SourceControlProviderKind,
-  overrides: Partial<PullRequestProviderApi> = {},
-): PullRequestProviderApi {
-  return {
-    kind,
-    capabilities: {
-      diff: true,
-      comment: true,
-      actions: ["merge", "ready", "draft", "close", "reopen"],
-      mergeMethods: ["merge"],
-      search: true,
-      reactions: true,
-      review: FULL_REVIEW,
-      reviewers: FULL_REVIEWERS,
-      edit: { changeRequest: true, comment: true },
-    },
-    getViewer: () => Effect.succeed("bilal"),
-    // A viewer who may do everything the host can, so a test only narrows what it is about.
-    getViewerPermissions: () =>
-      Effect.succeed({
-        actions: ["merge", "ready", "draft", "close", "reopen"],
-        comment: true,
-        resolve: true,
-        verdicts: ["comment", "approve", "request-changes"],
-        requestReviewers: true,
-      }),
-    listChangeRequests: () => Effect.succeed({ items: [], truncated: false, continues: true }),
-    getChangeRequest: () => Effect.die("unused"),
-    getChangeRequestActivity: () => Effect.die("unused"),
-    getDiff: () => Effect.die("unused"),
-    runAction: () => Effect.void,
-    updateChangeRequest: () => Effect.void,
-    comment: () => Effect.void,
-    updateComment: () => Effect.void,
-    submitReview: () => Effect.void,
-    replyToThread: () => Effect.void,
-    setThreadResolution: () => Effect.void,
-    setReaction: () => Effect.void,
-    listReviewerCandidates: () => Effect.succeed({ candidates: [], truncated: false }),
-    setReviewerRequest: () => Effect.void,
-    ...overrides,
-  };
-}
+it.effect("threads an approved head through the service independently of message cleanup", () =>
+  Effect.gen(function* () {
+    const calls: unknown[] = [];
+    const provider = fakeProvider("github");
+    const service = yield* makeService({
+      settings: { ...DEFAULT_SERVER_SETTINGS, removeAgentCreditsOnMerge: false },
+      projects: [project({ id: "web", title: "Web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        {
+          ...provider,
+          capabilities: { ...provider.capabilities, conditionalMerge: true },
+          runAction: (input) =>
+            Effect.sync(() => {
+              calls.push(input);
+            }),
+          getChangeRequest: () => Effect.succeed(hostedChangeRequest("body")),
+        },
+      ],
+    });
+    yield* service.runAction({
+      projectId: "web" as ProjectId,
+      repository: "acme/web",
+      number: 7,
+      action: "merge",
+      expectedHeadSha: "approved-head",
+    });
+    assert.deepStrictEqual(calls, [
+      {
+        cwd: "/w",
+        repository: "acme/web",
+        host: "github.com",
+        number: 7,
+        action: "merge",
+        expectedHeadSha: "approved-head",
+      },
+    ]);
+  }),
+);
 
-function makeService(input: {
-  readonly settings?: ServerSettings;
-  readonly projects: ReadonlyArray<OrchestrationProjectShell>;
-  readonly providers: ReadonlyArray<PullRequestProviderApi>;
-  readonly resolveHandle?: SourceControlProviderRegistry.SourceControlProviderRegistry["Service"]["resolveHandle"];
-  readonly resolveRepositoryIdentity?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]["resolve"];
-}) {
-  // Built into the test's own scope rather than provided call by call: the marks store owns a
-  // database, and `Effect.provide` would close it the moment the service was handed back.
-  return Effect.flatMap(
-    Layer.build(
-      Layer.mergeAll(
-        Layer.mock(ServerSettingsService.ServerSettingsService)({
-          getSettings: Effect.succeed(input.settings ?? DEFAULT_SERVER_SETTINGS),
+it.effect(
+  "refuses unqualified merge evidence and an expected head that the provider cannot enforce",
+  () =>
+    Effect.gen(function* () {
+      let mutations = 0;
+      const service = yield* makeService({
+        projects: [
+          project({ id: "web", title: "Web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          fakeProvider("github", {
+            runAction: () =>
+              Effect.sync(() => {
+                mutations++;
+              }),
+            getChangeRequest: () => Effect.succeed(hostedChangeRequest("body")),
+          }),
+        ],
+      });
+      const ref = { projectId: "web" as ProjectId, repository: "acme/web", number: 7 };
+      assert.strictEqual(
+        (yield* service.inspectForMerge(ref).pipe(Effect.flip))._tag,
+        "PullRequestOperationError",
+      );
+      assert.strictEqual(
+        (yield* service
+          .runAction({ ...ref, action: "merge", expectedHeadSha: "approved-head" })
+          .pipe(Effect.flip))._tag,
+        "PullRequestOperationError",
+      );
+      assert.strictEqual(mutations, 0);
+      yield* service.runAction({ ...ref, action: "merge" });
+      assert.strictEqual(mutations, 1);
+    }),
+);
+
+it.effect("reports the owner's reason when the gate refuses at the mutation boundary", () =>
+  Effect.gen(function* () {
+    const reason = "Merging waits for the human's approval of this exact head.";
+    const service = yield* makeService({
+      actionGate: Layer.succeed(
+        PullRequestActionGate.PullRequestActionGate,
+        PullRequestActionGate.PullRequestActionGate.of({
+          authorize: () =>
+            Effect.succeed({
+              requireConditionalMerge: false,
+              beforeMutation: Effect.fail(
+                new FactoryError({ code: "permission-denied", detail: reason }),
+              ),
+            }),
         }),
-        Layer.succeed(
-          PullRequestProviderRegistry.PullRequestProviderRegistry,
-          PullRequestProviderRegistry.fromProviders(input.providers),
-        ),
-        Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
-          resolveLink: () => undefined,
-          resolveHandle:
-            input.resolveHandle ?? (() => Effect.die("Unexpected provider refinement")),
-        }),
-        Layer.mock(ProjectService.ProjectService)({
-          listShells: (options) =>
-            Effect.succeed(
-              input.projects.filter((project) => options?.projectIds?.includes(project.id) ?? true),
-            ),
-          getShell: (projectId) =>
-            Effect.succeed(Option.fromNullishOr(input.projects.find((p) => p.id === projectId))),
-        }),
-        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-          resolve: input.resolveRepositoryIdentity ?? (() => Effect.succeed(null)),
-        }),
-        SourceControlRateLimit.layer,
-        // The real store over a database of its own, so the environment-kept marks are exercised
-        // through the SQL that holds them rather than through a stand-in that agrees with itself.
-        PullRequestFilesViewed.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
-        Layer.effect(PullRequestReadCache.PullRequestReadCache, PullRequestReadCache.make).pipe(
-          Layer.provide(KeyValueStore.layerMemory),
-          Layer.provide(NodeServices.layer),
-        ),
       ),
-    ),
-    (context) => Effect.provideContext(PullRequestService.make, context),
-  );
-}
+      projects: [project({ id: "web", title: "Web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakeProvider("github", {
+          // Like the GitHub client: run the hook before the write and wrap what it fails with.
+          runAction: () =>
+            Effect.gen(function* () {
+              const admitted = yield* GitHubApi.BeforeGitHubMutation;
+              if (admitted) yield* admitted;
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PullRequestProviderError({
+                    provider: "github",
+                    operation: "runAction",
+                    reason: "failed",
+                    detail: cause.message,
+                    cause,
+                  }),
+              ),
+            ),
+        }),
+      ],
+    });
+    const error = yield* service
+      .runAction({
+        projectId: "web" as ProjectId,
+        repository: "acme/web",
+        number: 7,
+        action: "close",
+      })
+      .pipe(Effect.flip);
+    assert.strictEqual(error._tag, "PullRequestOperationError");
+    assert.strictEqual(error._tag === "PullRequestOperationError" ? error.detail : null, reason);
+  }),
+);
 
 it.effect.each(["origin", "upstream", "unenriched"] as const)(
   "lists the fork by default when the project identity is %s and adds upstream on request",
@@ -7525,4 +7529,32 @@ it.effect.each([
       });
       assert.deepStrictEqual(calls, [expected]);
     }),
+);
+
+it.effect("carries actual merge commit evidence through detail without inventing a fallback", () =>
+  Effect.gen(function* () {
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakeProvider("github", {
+          getChangeRequest: ({ number }) =>
+            Effect.succeed({
+              ...hostedChangeRequest("Merged feature"),
+              number,
+              state: "merged" as const,
+              mergedAt: "2026-07-02T00:00:00Z",
+              headSha: "original-head",
+              ...(number === 1 ? { mergeCommitSha: "squashed-result" } : {}),
+            }),
+        }),
+      ],
+    });
+    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    const confirmed = yield* service.detail(ref);
+    assert.equal(confirmed.mergeCommitSha, "squashed-result");
+    assert.equal(confirmed.headSha, "original-head");
+    const missing = yield* service.detail({ ...ref, number: 2 });
+    assert.isUndefined(missing.mergeCommitSha);
+    assert.equal(missing.headSha, "original-head");
+  }),
 );

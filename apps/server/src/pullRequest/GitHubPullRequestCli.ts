@@ -1,4 +1,6 @@
 import { removeAgentCredits } from "./mergeMessage.ts";
+import { GitHubMergeEvidenceError, inspectGitHubMergeEvidence } from "./gitHubMergeEvidence.ts";
+import type { ProviderMergeEvidence } from "./pullRequestMergeEvidence.ts";
 import { KnownWorkflowRuns, makeChecksRevalidator } from "./gitHubConditionalChecks.ts";
 import { runGitHubStackAction, type GitHubStackActionError } from "./githubStackActions.ts";
 import * as Cause from "effect/Cause";
@@ -321,7 +323,34 @@ export class GitHubWorkflowApprovalHeadChangedError extends Schema.TaggedError<G
   }
 }
 
+const CONDITIONAL_MERGE_REFUSALS = {
+  "unsupported-request":
+    "A conditional merge requires one direct pull request merge and its approved head revision.",
+  "head-changed": "The pull request head changed after merge approval.",
+  "indirect-merge":
+    "Conditional merging requires a direct merge with no merge queue or standing auto-merge instruction.",
+  "changed-while-preparing": "The pull request changed while preparing its merge message.",
+} as const;
+
+export class GitHubConditionalMergeError extends Schema.TaggedError<GitHubConditionalMergeError>()(
+  "GitHubConditionalMergeError",
+  {
+    reason: Schema.Literals([
+      "unsupported-request",
+      "head-changed",
+      "indirect-merge",
+      "changed-while-preparing",
+    ]),
+  },
+) {
+  override get message(): string {
+    return CONDITIONAL_MERGE_REFUSALS[this.reason];
+  }
+}
+
 export type GitHubPullRequestCliError =
+  | GitHubConditionalMergeError
+  | GitHubMergeEvidenceError
   | GitHubStackActionError
   | GitHubApi.GitHubApiError
   | GitHubPullRequestReadError
@@ -723,10 +752,19 @@ export class GitHubPullRequestCli extends Context.Service<
       readonly action: PullRequestAction;
       readonly stackNumber?: number;
       readonly expectedStackHeads?: ReadonlyArray<PullRequestStackHead>;
+      readonly expectedHeadSha?: string;
+      readonly requireConditionalMerge?: boolean;
       readonly removeAgentCreditsOnMerge?: boolean;
       readonly mergeMethod?: PullRequestMergeMethod;
       readonly updateMethod?: PullRequestUpdateMethod;
     }) => Effect.Effect<void, GitHubPullRequestCliError>;
+
+    readonly inspectForMerge: (input: {
+      readonly cwd: string;
+      readonly repository: string;
+      readonly host: string;
+      readonly number: number;
+    }) => Effect.Effect<ProviderMergeEvidence, GitHubPullRequestCliError>;
 
     readonly commentOnPullRequest: (input: {
       readonly cwd: string;
@@ -1037,6 +1075,7 @@ query PullRequestActionState($owner: String!, $name: String!, $number: Int!, $he
       headRefOid
       isMergeQueueEnabled
       mergeStateStatus
+      autoMergeRequest { enabledAt }
       baseRef { compare(headRef: $headRef) { behindBy } }
     }
   }
@@ -1052,6 +1091,9 @@ const decodeActionStateResponse = Schema.decodeUnknownResult(
             headRefOid: Schema.String,
             isMergeQueueEnabled: Schema.optional(Schema.Boolean),
             mergeStateStatus: Schema.optional(Schema.NullOr(Schema.String)),
+            autoMergeRequest: Schema.optional(
+              Schema.NullOr(Schema.Struct({ enabledAt: Schema.NullOr(Schema.String) })),
+            ),
             baseRef: Schema.optional(
               Schema.NullOr(
                 Schema.Struct({ compare: Schema.NullOr(Schema.Struct({ behindBy: Schema.Int })) }),
@@ -2495,7 +2537,22 @@ export const make = Effect.gen(function* () {
       );
     },
 
+    inspectForMerge: (input) =>
+      inspectGitHubMergeEvidence({
+        host: input.host,
+        ...parseRepositorySelector(input.repository),
+        number: input.number,
+      }).pipe(Effect.provideService(GitHubApi.GitHubApi, api)),
+
     runPullRequestAction: (input) => {
+      if (
+        (input.requireConditionalMerge === true || input.expectedHeadSha !== undefined) &&
+        (input.action !== "merge" ||
+          input.stackNumber !== undefined ||
+          !input.expectedHeadSha?.trim())
+      ) {
+        return Effect.fail(new GitHubConditionalMergeError({ reason: "unsupported-request" }));
+      }
       if (input.stackNumber !== undefined)
         return runGitHubStackAction({ ...input, stackNumber: input.stackNumber }).pipe(
           Effect.provideService(GitHubApi.GitHubApi, api),
@@ -2642,8 +2699,18 @@ export const make = Effect.gen(function* () {
             },
           });
         }
+        if (input.expectedHeadSha !== undefined && state.headRefOid !== input.expectedHeadSha) {
+          return yield* new GitHubConditionalMergeError({ reason: "head-changed" });
+        }
+        if (
+          input.expectedHeadSha !== undefined &&
+          (state.isMergeQueueEnabled !== false ||
+            (input.requireConditionalMerge === true && state.autoMergeRequest !== null))
+        ) {
+          return yield* new GitHubConditionalMergeError({ reason: "indirect-merge" });
+        }
         let body: string | undefined;
-        let expectedHead: string | undefined;
+        let expectedHead: string | undefined = input.expectedHeadSha;
         if (input.removeAgentCreditsOnMerge === true && input.mergeMethod !== "rebase") {
           const message = yield* graphqlRead({
             cwd: input.cwd,
@@ -2659,12 +2726,18 @@ export const make = Effect.gen(function* () {
             },
             decode: decodeMergeMessage,
           });
+          if (
+            input.expectedHeadSha !== undefined &&
+            (message.headRefOid !== input.expectedHeadSha || message.isMergeQueueEnabled)
+          ) {
+            return yield* new GitHubConditionalMergeError({ reason: "changed-while-preparing" });
+          }
           // GitHub's merge queue chooses its own message and ignores custom text.
           if (!message.isMergeQueueEnabled) {
             const cleaned = removeAgentCredits(message.viewerMergeBodyText);
             if (cleaned !== message.viewerMergeBodyText) {
               body = cleaned;
-              expectedHead = message.headRefOid;
+              expectedHead ??= message.headRefOid;
             }
           }
         }

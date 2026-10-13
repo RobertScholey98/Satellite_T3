@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
@@ -151,6 +152,7 @@ const layerRuntime = (dbPath: string) => {
         normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),
       }),
     ),
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(McpSessionRegistryTestkit.layer),
     Layer.provideMerge(SqlitePersistence.layerFromPath(dbPath)),
     Layer.provide(layerCheckpointStore),

@@ -44,6 +44,7 @@ import * as ProviderSwitchService from "../ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "../ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "../ProviderTurnStartService.ts";
 import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
+import * as ThreadGovernance from "../ThreadGovernance.ts";
 import * as RunExecutionService from "../RunExecutionService.ts";
 import * as RunFinalizationService from "../RunFinalizationService.ts";
 import * as ThreadTitleRegenerationService from "../ThreadTitleRegenerationService.ts";
@@ -259,6 +260,11 @@ export function layerWithRegistry<Error>(
     // as server startup does after a crash or restart.
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
+    // The thread governance the runtime consults. Defaults to no owner.
+    readonly governance?: Layer.Layer<
+      ThreadGovernance.ThreadGovernance,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
@@ -278,6 +284,7 @@ export function layerWithRegistry<Error>(
           Layer.provide(RuntimePolicy.layer),
         );
   const layerDatabase = options.databaseLayer ?? SqlitePersistence.layerMemory;
+  const layerGovernance = options.governance ?? ThreadGovernance.layerUngoverned;
   // One queue shared by the adapters, the orchestrator, and the worker, like
   // runtimeLayer.ts; layer memoization keeps it a single instance.
   const layerContinuationRequests =
@@ -482,7 +489,11 @@ export function layerWithRegistry<Error>(
     layerEffectWorkerProvided,
     layerEventSinkProvided,
     layerContinuationWorkerProvided,
-  ).pipe(Layer.provide(ProviderTurnStartServiceTestkit.layer), Layer.provide(NodeServices.layer));
+  ).pipe(
+    Layer.provide(ProviderTurnStartServiceTestkit.layer),
+    Layer.provide(NodeServices.layer),
+    Layer.provide(layerGovernance),
+  );
 
   // Build the daemon from the exact worker instance exposed alongside the
   // orchestrator. Keeping this acquisition in the replay layer makes the
@@ -509,6 +520,7 @@ export function layerWithRegistry<Error>(
               layerEventSinkProvided,
               IdAllocator.layer,
               layerServerSettings,
+              layerGovernance,
             ),
           ),
         )

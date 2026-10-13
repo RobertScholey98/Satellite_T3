@@ -23,6 +23,7 @@ import * as ProjectionStore from "../ProjectionStore.ts";
 import * as ProjectStore from "../ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import * as SatelliteOrchestration from "../SatelliteOrchestration.ts";
+import * as ThreadGovernance from "../ThreadGovernance.ts";
 import { layerWithRegistry } from "./ProviderReplayHarness.ts";
 import { CodexProviderCapabilitiesV2 } from "../Adapters/CodexAdapterV2.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -48,10 +49,6 @@ const registry = Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
   list: () => Effect.succeed([]),
   get: (instanceId) => Effect.succeed(makeProviderAdapter(instanceId)),
 });
-const runtime = layerWithRegistry({ name: "satellite-feature-tests" }, registry, {
-  databaseLayer: database,
-  runEffectWorker: false,
-});
 const stores = Layer.mergeAll(
   EventStore.layer,
   ProjectionStore.layer,
@@ -59,39 +56,52 @@ const stores = Layer.mergeAll(
   IdeaNotebookStore.layer,
 ).pipe(Layer.provideMerge(database));
 
-/** Real V2 command receipts, event projection, and Satellite service views without provider execution. */
-export const layer = Layer.mergeAll(
-  SatelliteOrchestration.layer,
-  ProjectService.layer,
-  ThreadSearch.layer,
-).pipe(
-  Layer.provideMerge(
-    Layer.mergeAll(runtime, stores, McpSessionRegistryTestkit.layer, IdAllocator.layer),
-  ),
-  Layer.provide(
-    Layer.mergeAll(
-      Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
-        getAvailable: () =>
-          Effect.succeed({
-            repositoryIdentity: null,
-            faviconPath: null,
-            repositoryIdentityResolved: true,
-          }),
-        peek: () =>
-          Effect.succeed({
-            repositoryIdentity: null,
-            faviconPath: null,
-            repositoryIdentityResolved: true,
-          }),
-        invalidate: () => Effect.void,
-      }),
-      Layer.mock(WorkspacePaths.WorkspacePaths)({}),
-      Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
-        ensureTranscript: () => Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
-      }),
+/**
+ * Real V2 command receipts, event projection, and Satellite service views without provider
+ * execution. The orchestration runtime consults the given thread governance.
+ */
+export const layerWithGovernance = (governance: Layer.Layer<ThreadGovernance.ThreadGovernance>) =>
+  Layer.mergeAll(SatelliteOrchestration.layer, ProjectService.layer, ThreadSearch.layer).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        layerWithRegistry({ name: "satellite-feature-tests" }, registry, {
+          databaseLayer: database,
+          runEffectWorker: false,
+          governance,
+        }),
+        stores,
+        McpSessionRegistryTestkit.layer,
+        IdAllocator.layer,
+      ),
     ),
-  ),
-);
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
+          getAvailable: () =>
+            Effect.succeed({
+              repositoryIdentity: null,
+              faviconPath: null,
+              repositoryIdentityResolved: true,
+            }),
+          peek: () =>
+            Effect.succeed({
+              repositoryIdentity: null,
+              faviconPath: null,
+              repositoryIdentityResolved: true,
+            }),
+          invalidate: () => Effect.void,
+        }),
+        Layer.mock(WorkspacePaths.WorkspacePaths)({}),
+        Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
+          ensureTranscript: () =>
+            Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
+        }),
+      ),
+    ),
+  );
+
+/** The runtime for an environment with no managers. */
+export const layer = layerWithGovernance(ThreadGovernance.layerUngoverned);
 
 export const recordProject = Effect.fn(function* (input: {
   readonly projectId: ProjectId;

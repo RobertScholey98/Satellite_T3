@@ -3,6 +3,7 @@ import {
   type ModelSelection,
   type OrchestrationV2AppThread,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   type RuntimeMode,
   type ServerProvider,
@@ -19,6 +20,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as IdeaWorkspace from "../ideas/IdeaWorkspace.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 const projectId = ProjectId.make("project:runtime-policy");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -78,6 +80,7 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
   }) as ProviderInstance;
 
 const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
+  Layer.provide(ThreadGovernance.layerUngoverned),
   Layer.provide(
     Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
       getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
@@ -107,6 +110,111 @@ const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
           }),
         ),
     }),
+  ),
+);
+
+const discoveryConfinement = {
+  boundaryId: "discovery:runtime-policy",
+  workspacePath: "/state/discovery/project",
+  profile: { owner: "discovery" },
+} satisfies ThreadGovernance.ConfinedExecution;
+
+const managedLayer = (driverKind: "codex" | "claudeAgent" | "grok") =>
+  RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ThreadGovernance.ThreadGovernance)({
+          confinementFor: () => Effect.succeed(discoveryConfinement),
+          assertModelSelection: () => Effect.void,
+        }),
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: () => Effect.die("managed execution must not read the writable checkout"),
+        }),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: (instanceId) =>
+            Effect.succeed({
+              ...providerInstanceFor(instanceId),
+              driverKind: ProviderDriverKind.make(driverKind),
+            }),
+        }),
+      ),
+    ),
+  );
+
+it.effect("runs managed discovery from the qualified snapshot instead of its worktree", () =>
+  Effect.gen(function* () {
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const now = yield* DateTime.now;
+    const resolved = yield* policy.resolve({
+      thread: makeThread({ now, worktreePath: "/writable-worktree" }),
+      modelSelection,
+    });
+    assert.equal(resolved.cwd, discoveryConfinement.workspacePath);
+    assert.deepStrictEqual(resolved.confinement, discoveryConfinement);
+    assert.deepStrictEqual(resolved.sandboxPolicy, {
+      type: "externalSandbox",
+      networkAccess: "enabled",
+    });
+    assert.equal(resolved.approvalPolicy, "never");
+  }).pipe(Effect.provide(managedLayer("codex"))),
+);
+
+it.effect("runs a managed Claude thread in the same confined runtime", () =>
+  Effect.gen(function* () {
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const now = yield* DateTime.now;
+    const resolved = yield* policy.resolve({
+      thread: makeThread({ now, worktreePath: "/writable-worktree" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("claudeAgent"), model: "test-model" },
+    });
+    assert.equal(resolved.cwd, discoveryConfinement.workspacePath);
+    assert.deepStrictEqual(resolved.confinement, discoveryConfinement);
+    assert.equal(resolved.approvalPolicy, "never");
+  }).pipe(Effect.provide(managedLayer("claudeAgent"))),
+);
+
+it.effect("rejects a managed runtime when the selected driver cannot enforce discovery", () =>
+  Effect.gen(function* () {
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const now = yield* DateTime.now;
+    const failure = yield* policy
+      .resolve({
+        thread: makeThread({ now, worktreePath: "/writable-worktree" }),
+        modelSelection: { instanceId: grokInstanceId, model: "test-model" },
+      })
+      .pipe(Effect.flip);
+    assert.equal(failure._tag, "RuntimePolicyResolveError");
+    assert.equal(failure.providerInstanceId, grokInstanceId);
+    assert.equal(
+      failure.cause,
+      "Managed execution requires a provider with a confined runtime (Codex or Claude).",
+    );
+  }).pipe(Effect.provide(managedLayer("grok"))),
+);
+
+it.effect("preserves the managed boundary when a runtime override requests wider access", () =>
+  Effect.gen(function* () {
+    const policy = yield* RuntimePolicy.RuntimePolicyV2;
+    const now = yield* DateTime.now;
+    const resolved = yield* policy.resolve({
+      thread: makeThread({ now, worktreePath: "/writable-worktree" }),
+      modelSelection,
+    });
+    assert.equal(resolved.cwd, discoveryConfinement.workspacePath);
+    assert.deepStrictEqual(resolved.confinement, discoveryConfinement);
+    assert.deepStrictEqual(resolved.sandboxPolicy, {
+      type: "externalSandbox",
+      networkAccess: "enabled",
+    });
+    assert.equal(resolved.approvalPolicy, "never");
+  }).pipe(
+    Effect.provide(
+      RuntimePolicy.layerWithOverride({
+        cwd: "/writable-checkout",
+        approvalPolicy: "on-request",
+        sandboxPolicy: { type: "dangerFullAccess" },
+      }).pipe(Layer.provide(managedLayer("codex"))),
+    ),
   ),
 );
 
@@ -175,6 +283,7 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
 it.effect("uses the owned idea workspace and preserves its selected permissions", () => {
   const calls: ThreadId[] = [];
   const isolatedLayer = RuntimePolicy.layerFromProjectStore.pipe(
+    Layer.provide(ThreadGovernance.layerUngoverned),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(IdeaWorkspace.IdeaWorkspace)({
@@ -213,3 +322,48 @@ it.effect("uses the owned idea workspace and preserves its selected permissions"
     assert.deepStrictEqual(calls, [thread.id]);
   }).pipe(Effect.provide(isolatedLayer));
 });
+
+it.effect("passes the parent to thread governance only for subagents, never for forks", () =>
+  Effect.gen(function* () {
+    const parents: Array<ThreadId | undefined> = [];
+    const layer = RuntimePolicy.layerFromProjectStore.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ThreadGovernance.ThreadGovernance)({
+            confinementFor: (_threadId, pendingParentThreadId) =>
+              Effect.sync(() => {
+                parents.push(pendingParentThreadId);
+                return discoveryConfinement;
+              }),
+            assertModelSelection: () => Effect.void,
+          }),
+          Layer.mock(ProjectStore.ProjectStoreV2)({
+            get: () => Effect.die("managed execution must not read the writable checkout"),
+          }),
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getInstance: (instanceId) =>
+              Effect.succeed({
+                ...providerInstanceFor(instanceId),
+                driverKind: ProviderDriverKind.make("codex"),
+              }),
+          }),
+        ),
+      ),
+    );
+    const now = yield* DateTime.now;
+    const parentThreadId = ThreadId.make("thread:managed-lead");
+    const child = (relationshipToParent: "fork" | "subagent") => {
+      const thread = makeThread({ now, worktreePath: null });
+      return {
+        ...thread,
+        lineage: { parentThreadId, relationshipToParent, rootThreadId: parentThreadId },
+      };
+    };
+    yield* Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      yield* policy.resolve({ thread: child("fork"), modelSelection });
+      yield* policy.resolve({ thread: child("subagent"), modelSelection });
+    }).pipe(Effect.provide(layer));
+    assert.deepStrictEqual(parents, [undefined, parentThreadId]);
+  }),
+);

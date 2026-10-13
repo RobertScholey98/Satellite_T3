@@ -118,6 +118,33 @@ Use `vp run lint:mobile` for native mobile changes. SatelliteT3's
 The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
 Windows investigation beyond those default checks.
 
+### Factory boundary live tests
+
+The tests that prove factory confinement through a real Docker boundary are skipped unless
+enabled, and CI does not run them. Before merging changes under `apps/server/src/factory`, run
+them on a machine with a local Docker Linux engine:
+
+```sh
+SATELLITE_FACTORY_LIVE_TEST=1 SATELLITE_FACTORY_INTEGRATION_LIVE_TEST=1 vp test run \
+  apps/server/src/factory/FactoryBoundaryExecution.test.ts \
+  apps/server/src/factory/FactoryCandidateExecution.test.ts \
+  apps/server/src/factory/FactoryClaudeLaunch.test.ts \
+  apps/server/src/factory/FactoryCodexLaunch.test.ts \
+  apps/server/src/factory/FactoryExecutionQualification.test.ts \
+  apps/server/src/factory/FactoryIntegrationExecution.test.ts \
+  apps/server/src/factory/FactoryPreviewExecution.test.ts \
+  apps/server/src/factory/FactoryRecoveryExecution.test.ts \
+  apps/server/src/factory/FactoryRetroExecution.test.ts
+```
+
+They need the pinned runner image. Qualifying any project builds it, or build it directly:
+
+```sh
+node -e "import('./apps/server/src/factory/FactoryExecutionProfile.ts').then((m) => process.stdout.write(m.FACTORY_AGENT_DOCKERFILE))" | docker build -t satellite-factory-agent:codex-0.161.0-claude-2.1.276 -
+```
+
+The tests remove the containers and volumes they create.
+
 ### Unused code
 
 `vp run knip:check` checks unused files and dependencies across the repo, then

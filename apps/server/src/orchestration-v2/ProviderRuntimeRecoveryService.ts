@@ -21,7 +21,12 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { restartContinuationRun } from "./RestartContinuation.ts";
+import {
+  restartContinuationEffectId,
+  restartContinuationRun,
+  restartPrepareCommandId,
+} from "./RestartContinuation.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import {
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
@@ -185,6 +190,19 @@ export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const governance = yield* ThreadGovernance.ThreadGovernance;
+  // Governed work always records its restart intent; its owner decides whether it
+  // resumes. A failed lookup falls back to the per-project opt-in, and the effect
+  // worker checks governance again before continuing anything.
+  const isManaged = (threadId: ThreadId) =>
+    governance.governs(threadId).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not resolve thread governance during runtime recovery", {
+          threadId,
+          cause,
+        }).pipe(Effect.as(false)),
+      ),
+    );
   const reconcileProjection = Effect.fn("ProviderRuntimeRecoveryService.reconcileProjection")(
     function* (
       projection: ProjectionStore.ProjectionRuntimeRecoveryState,
@@ -655,7 +673,7 @@ export const make = Effect.gen(function* () {
       const effects: Array<EffectOutbox.PendingOrchestrationEffectV2> = continuationRun
         ? [
             {
-              id: `effect:restart-continuation:${continuationRun.id}`,
+              id: restartContinuationEffectId(continuationRun.id),
               commandId,
               threadId: projection.thread.id,
               request: { type: "provider-runtime.continue", sourceRunId: continuationRun.id },
@@ -737,21 +755,38 @@ export const make = Effect.gen(function* () {
       let closedRequests = 0;
       let retiredEffects = 0;
       for (const threadId of threadIds) {
-        const projection = yield* projections.getRuntimeRecoveryProjection(threadId).pipe(
-          Effect.mapError(
+        const result = yield* Effect.gen(function* () {
+          const projection = yield* projections.getRuntimeRecoveryProjection(threadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderRuntimeRecoveryError({
+                  operation: "read-projections",
+                  threadId,
+                  cause,
+                }),
+            ),
+          );
+          const enabled =
+            continueAfterRestart !== null &&
+            resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
+              .continueThreadsAfterServerUpdate;
+          return yield* reconcileProjection(
+            projection,
+            trigger,
+            enabled || (yield* isManaged(threadId)),
+          );
+        }).pipe(
+          // One failing thread must not stop recovery for the threads after it.
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
             (cause) =>
-              new ProviderRuntimeRecoveryError({
-                operation: "read-projections",
+              Effect.logWarning("Failed to reconcile a thread's provider runtime", {
                 threadId,
                 cause,
-              }),
+              }).pipe(Effect.as(undefined)),
           ),
         );
-        const enabled =
-          continueAfterRestart !== null &&
-          resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
-            .continueThreadsAfterServerUpdate;
-        const result = yield* reconcileProjection(projection, trigger, enabled);
+        if (result === undefined) continue;
         terminalizedRuns += result.terminalizedRuns;
         stoppedSessions += result.stoppedSessions;
         closedRequests += result.closedRequests;
@@ -783,18 +818,19 @@ export const make = Effect.gen(function* () {
         const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
         if (
           !resolveProjectSettings(enabled, projection.thread.projectId).settings
-            .continueThreadsAfterServerUpdate
+            .continueThreadsAfterServerUpdate &&
+          !(yield* isManaged(threadId))
         )
           return;
         const run = restartContinuationRun(projection);
         if (!run) return;
-        const commandId = CommandId.make(`command:restart-prepare:${run.id}`);
+        const commandId = restartPrepareCommandId(run.id);
         yield* eventSink.writeWithEffects({
           commandId,
           events: [],
           effects: [
             {
-              id: `effect:restart-continuation:${run.id}`,
+              id: restartContinuationEffectId(run.id),
               commandId,
               threadId,
               request: { type: "provider-runtime.continue", sourceRunId: run.id },

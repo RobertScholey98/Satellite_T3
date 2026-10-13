@@ -1,5 +1,11 @@
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
+  CLAUDE_CONFINED_TOOLS,
+  type ConfinedClaudeRuntime,
+  makeConfinedClaudeRuntime,
+} from "./ConfinedClaudeProcess.ts";
+import * as ConfinedProviderLaunch from "./ConfinedProviderLaunch.ts";
+import {
   dynamicToolTitle,
   formatReadToolLabel,
   formatSearchToolLabel,
@@ -25,6 +31,8 @@ import {
   type SDKRateLimitInfo,
   type SDKResultMessage,
   type SDKUserMessage,
+  type SpawnedProcess,
+  type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AskUserQuestionInput,
@@ -69,6 +77,7 @@ import {
 } from "@t3tools/contracts";
 
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Hex from "effect/encoding/Hex";
@@ -826,13 +835,23 @@ export function makeClaudeQueryOptions(input: {
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
   readonly supportedDialogKinds?: ClaudeQueryOptions["supportedDialogKinds"];
   readonly allowDangerouslySkipPermissions?: boolean;
+  /**
+   * Runs the CLI in a confined runtime. Host paths, host settings and launch arguments stay out
+   * of the query; the runtime supplies the workspace and the governor the orchestration guidance.
+   */
+  readonly confined?: {
+    readonly spawnClaudeCodeProcess: (options: SpawnOptions) => SpawnedProcess;
+    readonly orchestrationInstructions: string | undefined;
+  };
 }): ClaudeAgentSdkQueryOptions {
   const compiledSelection = compileClaudeModelSelection(input.modelSelection);
   const {
     "permission-mode": launchArgPermissionMode,
     "dangerously-skip-permissions": launchArgSkipPermissions,
     ...extraArgs
-  } = input.settings === undefined ? {} : parseCliArgs(input.settings.launchArgs).flags;
+  } = input.settings === undefined || input.confined !== undefined
+    ? {}
+    : parseCliArgs(input.settings.launchArgs).flags;
   const requestThinkingSummaries =
     compiledSelection.settings.alwaysThinkingEnabled !== false &&
     extraArgs["thinking-display"] !== "omitted";
@@ -860,6 +879,13 @@ export function makeClaudeQueryOptions(input: {
           ...(typeof querySettings === "object" && querySettings !== null ? querySettings : {}),
           autoCompactWindow: Number(input.settings.autoCompactWindow),
         } as ClaudeSdkSettings);
+  const systemPrompt = (orchestrationInstructions: string) => ({
+    type: "preset" as const,
+    preset: "claude_code" as const,
+    append:
+      buildRuntimeInstructions({ harness: "Claude Code" }) +
+      (input.mcpServers === undefined ? "" : orchestrationInstructions),
+  });
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
@@ -900,30 +926,47 @@ export function makeClaudeQueryOptions(input: {
     ...(input.supportedDialogKinds === undefined
       ? {}
       : { supportedDialogKinds: input.supportedDialogKinds }),
+    ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
+    systemPrompt: systemPrompt(T3_CODE_ORCHESTRATION_INSTRUCTIONS),
+    ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
+  };
+  if (input.confined !== undefined) {
+    // The runtime has no host paths, settings or environment. Its working directory is the
+    // confined workspace, and it runs the image's own Claude Code, so the SDK's required path is
+    // a placeholder.
+    return {
+      ...options,
+      tools: [...CLAUDE_CONFINED_TOOLS],
+      // Only this query's MCP servers, never the runtime's or the account's claude.ai connectors.
+      strictMcpConfig: true,
+      pathToClaudeCodeExecutable: "claude",
+      spawnClaudeCodeProcess: input.confined.spawnClaudeCodeProcess,
+      settingSources: ["user", "project"],
+      systemPrompt: systemPrompt(
+        input.confined.orchestrationInstructions ?? T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+      ),
+    };
+  }
+  const hostOptions = {
+    ...options,
     ...(input.settings?.binaryPath
       ? { pathToClaudeCodeExecutable: input.settings.binaryPath }
       : {}),
     ...(input.environment === undefined ? {} : { env: input.environment }),
-    ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
-    systemPrompt: {
-      type: "preset" as const,
-      preset: "claude_code" as const,
-      append:
-        buildRuntimeInstructions({ harness: "Claude Code" }) +
-        (input.mcpServers === undefined ? "" : T3_CODE_ORCHESTRATION_INSTRUCTIONS),
-    },
-    ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
   const additionalDirectories = [
     ...(input.cwd === null ? [] : [input.cwd]),
     ...(input.attachmentsDir === undefined ? [] : [input.attachmentsDir]),
   ];
   const withDirectories =
-    additionalDirectories.length === 0 ? options : { ...options, additionalDirectories };
+    additionalDirectories.length === 0 ? hostOptions : { ...hostOptions, additionalDirectories };
   return input.cwd === null ? withDirectories : { ...withDirectories, cwd: input.cwd };
 }
 
 export const CLAUDE_T3_MCP_TOOL_WILDCARD = "mcp__t3-code__*";
+
+const CLAUDE_CONFINED_SIGNED_OUT_MESSAGE =
+  "Claude's sign-in expired inside the managed runtime. Open Claude Code on this machine to refresh it, or check this provider's CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY; the next turn picks it up.";
 
 // Must stay in sync with the Tool.Readonly annotations on OrchestratorToolkit;
 // ClaudeAdapterV2.test.ts cross-checks this list against the toolkit.
@@ -966,6 +1009,7 @@ export function claudeMcpQueryOverrides(input: {
   readonly threadId: ThreadId;
   readonly readOnlySandbox: boolean;
   readonly allowedTools?: ReadonlyArray<string>;
+  readonly confined?: boolean;
 }): {
   readonly allowedTools?: ReadonlyArray<string>;
   readonly mcpServers?: ClaudeQueryOptions["mcpServers"];
@@ -982,7 +1026,13 @@ export function claudeMcpQueryOverrides(input: {
     mcpServers: {
       "t3-code": {
         type: "http",
-        url: session.endpoint,
+        url:
+          input.confined === true
+            ? ConfinedProviderLaunch.confinedEndpoint(session.endpoint)
+            : session.endpoint,
+        // A confined container sees the bearer in its own argv (/proc/1/cmdline) and in
+        // `docker inspect`. It authorizes only this thread's own MCP calls, which the agent can
+        // already make.
         headers: {
           Authorization: session.authorizationHeader,
         },
@@ -1327,6 +1377,8 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
   readonly attachmentsDir: string;
   readonly fileSystem: FileSystem.FileSystem;
   readonly skillNames?: ReadonlySet<string>;
+  /** Whether the prompt names each attachment's host path. */
+  readonly attachmentPaths: boolean;
 }) {
   if (input.attachments.length === 0) {
     return makeClaudeUserMessage({
@@ -1339,12 +1391,26 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
 
   // The model's tools cannot dereference inlined pixels. Appending the
   // on-disk path is what lets a turn like "include this screenshot in the
-  // PR" copy the actual file (the query grants attachmentsDir for reads).
-  const textWithAttachmentPaths = providerMessageTextWithAttachmentPaths({
-    text: input.text,
-    attachments: input.attachments,
-    attachmentsDir: input.attachmentsDir,
-  });
+  // PR" copy the actual file (the query grants attachmentsDir for reads). Without host paths,
+  // a file is only named, so the agent knows the user sent one it cannot read.
+  const textWithAttachmentPaths = input.attachmentPaths
+    ? providerMessageTextWithAttachmentPaths({
+        text: input.text,
+        attachments: input.attachments,
+        attachmentsDir: input.attachmentsDir,
+      })
+    : [
+        input.text,
+        ...input.attachments.flatMap((attachment) =>
+          attachment.type === "file"
+            ? [
+                `(The user attached ${attachment.name}; it is not available in this managed runtime.)`,
+              ]
+            : [],
+        ),
+      ]
+        .filter((text) => text.length > 0)
+        .join("\n\n");
 
   const dispatch =
     input.skillNames === undefined
@@ -3006,6 +3072,8 @@ export interface ClaudeAdapterV2Options {
   readonly crypto: Crypto.Crypto;
   readonly idAllocator: IdAllocator.IdAllocatorV2Shape;
   readonly queryRunner: ClaudeAgentSdkQueryRunnerShape;
+  /** Runs confined sessions; without it a confined session is refused. */
+  readonly confinedLaunch?: ConfinedProviderLaunch.ConfinedProviderLaunch["Service"];
   readonly scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>;
   readonly onUsageLimits?: ServerProviderShape["applyUsageLimits"];
   /** Sink for wake-turn continuation requests; defaults to dropping them. */
@@ -3020,6 +3088,7 @@ export function makeClaudeAdapterV2(
   adapterOptions: ClaudeAdapterV2Options,
 ): ProviderAdapter.ProviderAdapterV2Shape {
   const { attachmentsDir, fileSystem, path, crypto, idAllocator, queryRunner } = adapterOptions;
+  const confinedLaunch = adapterOptions.confinedLaunch ?? ConfinedProviderLaunch.unconfined;
   const continuationRequests = adapterOptions.continuationRequests ?? {
     offer: () => Effect.void,
   };
@@ -3045,12 +3114,25 @@ export function makeClaudeAdapterV2(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
     );
+  // What a prompt may name on the host. A confined runtime has neither the host's skills nor its
+  // attachment paths; its images are inlined.
+  const hostPromptReferences = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+    runtimePolicy.confinement === undefined
+      ? userInvocableSkillNames(runtimePolicy.cwd).pipe(
+          Effect.map((skillNames) => ({ skillNames, attachmentPaths: true })),
+        )
+      : Effect.succeed({ attachmentPaths: false });
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
     getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+    checkConfinedCredential: confinedLaunch.checkCredential({
+      driver: "claudeAgent",
+      settings: adapterOptions.settings,
+      environment: adapterOptions.environment,
+    }),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
         const sessionScope = yield* Effect.scope;
@@ -3067,6 +3149,9 @@ export function makeClaudeAdapterV2(
         const interruptedTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const steeredTurns = yield* Ref.make(new Set<OrchestrationV2ProviderTurn["id"]>());
         const queryContext = yield* Ref.make<ClaudeLiveQueryContext | null>(null);
+        // The runtime of the latest confined process. It can outlive its query's stream, so a
+        // replacement or the session's close awaits its removal.
+        const confinedRuntime = yield* Ref.make<ConfinedClaudeRuntime | null>(null);
         const openedNativeThreads = yield* Ref.make(new Set<string>());
         const latestPlanByKind = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact>());
         const planIdsByNativeItem = yield* Ref.make(
@@ -4025,6 +4110,8 @@ export function makeClaudeAdapterV2(
           // tracked tool call is a resume.
           if (
             resume.toolUseId === undefined ||
+            // Its transcripts live in the runtime, not the host session storage.
+            resume.context.input.runtimePolicy.confinement !== undefined ||
             !resume.context.toolCalls.has(resume.toolUseId) ||
             resume.context.subagentsByTaskId.has(resume.taskId) ||
             (yield* Ref.get(sessionSubagentsByTaskId)).has(resume.taskId)
@@ -5184,6 +5271,7 @@ export function makeClaudeAdapterV2(
 
         const finalizeActiveTurnAfterQueryExit = Effect.fnUntraced(function* (
           cause?: Cause.Cause<ClaudeAgentSdkQueryRunnerError>,
+          message?: string,
         ) {
           const context = yield* Ref.get(activeTurn);
           if (context === null) {
@@ -5200,6 +5288,7 @@ export function makeClaudeAdapterV2(
               : {
                   failure: makeProviderFailure({
                     cause: cause === undefined ? undefined : Cause.squash(cause),
+                    message,
                     class: "transport_error",
                   }),
                 }),
@@ -5761,10 +5850,13 @@ export function makeClaudeAdapterV2(
             if (message.parent_tool_use_id === null) {
               context.latestAssistantRateLimited = message.error === "rate_limit";
               if (message.error === "authentication_failed") {
-                context.authenticationFailureMessage = claudeSignedOutMessage({
-                  configDir: adapterOptions.environment.CLAUDE_CONFIG_DIR,
-                  cwd: path.resolve(context.input.runtimePolicy.cwd ?? "."),
-                });
+                context.authenticationFailureMessage =
+                  context.input.runtimePolicy.confinement === undefined
+                    ? claudeSignedOutMessage({
+                        configDir: adapterOptions.environment.CLAUDE_CONFIG_DIR,
+                        cwd: path.resolve(context.input.runtimePolicy.cwd ?? "."),
+                      })
+                    : CLAUDE_CONFINED_SIGNED_OUT_MESSAGE;
               }
             }
           }
@@ -6499,6 +6591,23 @@ export function makeClaudeAdapterV2(
               result: message,
               ...(terminalFailure === null ? {} : { failure: terminalFailure }),
             });
+            // A confined process keeps its launch credential, so only a new one can pick up a
+            // renewed sign-in. The next turn opens it.
+            if (
+              context.authenticationFailureMessage !== undefined &&
+              context.input.runtimePolicy.confinement !== undefined
+            ) {
+              liveQuery.stopping = true;
+              yield* Ref.update(queryContext, (current) =>
+                current?.query === input.query ? null : current,
+              );
+              // Nothing the closed process started can still report, as after a restart.
+              yield* clearWakeStateForNativeThread(liveQuery.nativeThreadId);
+              yield* resetBackgroundTaskStateForNativeThreadProcess(liveQuery.nativeThreadId, {
+                status: "idle",
+              });
+              yield* input.query.close.pipe(Effect.ignore);
+            }
           }
         });
 
@@ -7043,6 +7152,7 @@ export function makeClaudeAdapterV2(
           nativeThreadId: string,
         ) {
           const queryPolicy = claudeRuntimeQueryPolicyForRuntimePolicy(turnInput.runtimePolicy);
+          const confinement = turnInput.runtimePolicy.confinement;
           const mcpOverrides = claudeMcpQueryOverrides({
             threadId: turnInput.threadId,
             readOnlySandbox:
@@ -7050,6 +7160,7 @@ export function makeClaudeAdapterV2(
             ...(queryPolicy.allowedTools === undefined
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
+            confined: confinement !== undefined,
           });
           const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
@@ -7064,11 +7175,19 @@ export function makeClaudeAdapterV2(
           ) {
             return existing;
           }
+          const liveRuntime = yield* Ref.get(confinedRuntime);
+          // A confined process keeps the credential it was launched with, so one that expires is
+          // replaced first, unless that would end background work.
+          const renewalDue =
+            liveRuntime?.renewBy !== undefined &&
+            (yield* Clock.currentTimeMillis) >= liveRuntime.renewBy;
           if (
             existing !== null &&
             existing.nativeThreadId === nativeThreadId &&
             existing.queryPolicyKey === queryPolicyKey &&
-            existing.selectionKey === compiledSelection.queryIdentity
+            existing.selectionKey === compiledSelection.queryIdentity &&
+            (!renewalDue ||
+              (!existing.stopping && (yield* liveProcessRunsBackgroundWork(existing))))
           ) {
             // Claude can switch its own mode mid-session (EnterPlanMode), and
             // a denied ExitPlanMode leaves it there. Put the live process back
@@ -7094,6 +7213,20 @@ export function makeClaudeAdapterV2(
             return yield* new ClaudeBackgroundWorkBlocksQueryReplacementError();
           }
 
+          // Each process gets its own runtime, removed when the process ends, when a replacement
+          // opens, or when the session closes.
+          const runtime =
+            confinement === undefined
+              ? undefined
+              : makeConfinedClaudeRuntime(
+                  yield* confinedLaunch.prepare({
+                    driver: "claudeAgent",
+                    confinement,
+                    settings: adapterOptions.settings,
+                    environment: adapterOptions.environment,
+                  }),
+                );
+
           // openQuery owns one live process. Closing it for another native
           // thread kills that sibling's CLI; it can never emit a roster clear,
           // so drop its process-scoped Waiting/wake state immediately. Closing
@@ -7109,6 +7242,10 @@ export function makeClaudeAdapterV2(
               });
             }
           }
+          // Killing the Docker client does not stop its container everywhere, so the previous
+          // runtime is gone before another resumes the same session and workspace.
+          const previousRuntime = yield* Ref.getAndSet(confinedRuntime, runtime ?? null);
+          if (previousRuntime !== null) yield* previousRuntime.remove;
 
           const openedWithResume = (yield* Ref.get(openedNativeThreads)).has(nativeThreadId);
           // openedNativeThreads is per session instance and is lost when the
@@ -7140,6 +7277,14 @@ export function makeClaudeAdapterV2(
             canUseTool,
             onUserDialog,
             supportedDialogKinds: ["resume_return"],
+            ...(runtime === undefined || confinement === undefined
+              ? {}
+              : {
+                  confined: {
+                    spawnClaudeCodeProcess: runtime.spawn,
+                    orchestrationInstructions: confinement.orchestrationInstructions,
+                  },
+                }),
           });
           const querySession = yield* queryRunner
             .open({
@@ -7231,9 +7376,21 @@ export function makeClaudeAdapterV2(
                 const ownsLiveQuery = yield* Ref.modify(queryContext, (current) =>
                   current?.query === querySession ? [true, null] : [false, current],
                 );
+                const runtimeError =
+                  exit._tag === "Failure" && runtime !== undefined ? yield* runtime.stderrTail : "";
+                if (runtimeError !== "") {
+                  yield* Effect.logWarning("orchestration-v2.claude-confined-runtime-failed", {
+                    threadId: turnInput.threadId,
+                    runtime: runtime?.name,
+                    stderr: runtimeError,
+                  });
+                }
                 if (ownsLiveQuery) {
                   yield* finalizeActiveTurnAfterQueryExit(
                     exit._tag === "Failure" ? exit.cause : undefined,
+                    runtimeError === ""
+                      ? undefined
+                      : `Claude's managed runtime stopped: ${runtimeError}`,
                   );
                 }
               }),
@@ -7259,6 +7416,9 @@ export function makeClaudeAdapterV2(
               nativeTurnId,
             });
             const providerTurnOrdinal = turnInput.providerTurnOrdinal;
+            if (turnInput.runtimePolicy.confinement !== undefined) {
+              yield* confinedLaunch.assertActive(turnInput.runtimePolicy.confinement);
+            }
             const currentTurn = yield* Ref.get(activeTurn);
             if (currentTurn !== null) {
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
@@ -7330,7 +7490,7 @@ export function makeClaudeAdapterV2(
                     attachments: turnInput.message.attachments,
                     attachmentsDir,
                     fileSystem,
-                    skillNames: yield* userInvocableSkillNames(turnInput.runtimePolicy.cwd),
+                    ...(yield* hostPromptReferences(turnInput.runtimePolicy)),
                     uuid: promptUuid,
                   });
             const querySession = yield* openQuery(turnInput, nativeThreadId);
@@ -7540,7 +7700,7 @@ export function makeClaudeAdapterV2(
               priority: "now",
               attachmentsDir,
               fileSystem,
-              skillNames: yield* userInvocableSkillNames(currentTurn.input.runtimePolicy.cwd),
+              ...(yield* hostPromptReferences(currentTurn.input.runtimePolicy)),
             });
             yield* Ref.update(steeredTurns, (current) => {
               const next = new Set(current);
@@ -7568,6 +7728,8 @@ export function makeClaudeAdapterV2(
           if (existing !== null) {
             yield* existing.query.close.pipe(Effect.ignore);
           }
+          const runtime = yield* Ref.getAndSet(confinedRuntime, null);
+          if (runtime !== null) yield* runtime.remove;
           yield* Effect.yieldNow;
           yield* queryRunner.assertComplete.pipe(
             Effect.catchCause((cause) =>
@@ -7848,6 +8010,14 @@ export function makeClaudeAdapterV2(
                 });
               }
 
+              // The SDK reads transcripts only from the host's Claude config directory, and a
+              // confined thread's live in its runtime.
+              if (input.runtimePolicy.confinement !== undefined) {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "A managed Claude thread cannot be forked.",
+                });
+              }
               const sourceNativeThreadId = yield* getNativeThreadId(forkInput.sourceProviderThread);
               yield* closeLiveQueryForNativeThread(sourceNativeThreadId);
               const upToMessageId = yield* resolveClaudeForkUpToMessageId(forkInput);
@@ -7916,6 +8086,7 @@ export function makeClaudeAdapterV2(
 
 export type ClaudeAdapterV2DriverEnv =
   | ClaudeAgentSdkQueryRunner
+  | ConfinedProviderLaunch.ConfinedProviderLaunch
   | Crypto.Crypto
   | FileSystem.FileSystem
   | IdAllocator.IdAllocatorV2
@@ -7932,6 +8103,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const hostEnvironment = yield* HostProcessEnvironment;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const queryRunner = yield* ClaudeAgentSdkQueryRunner;
+    const confinedLaunch = yield* ConfinedProviderLaunch.ConfinedProviderLaunch;
     const serverConfig = yield* ServerConfig.ServerConfig;
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const baseEnvironment = mergeProviderInstanceEnvironment(environment, hostEnvironment);
@@ -7952,6 +8124,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       crypto,
       idAllocator,
       queryRunner,
+      confinedLaunch,
       continuationRequests,
       ...hooks,
     });

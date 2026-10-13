@@ -506,6 +506,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   providers: Schema.Array(OrchestratorMcpProviderCapability),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
+    nativeSubagents: Schema.optionalKey(Schema.Boolean),
     asyncPolling: Schema.Boolean,
     cancellation: Schema.Boolean,
     batchThreadCreation: Schema.Boolean,

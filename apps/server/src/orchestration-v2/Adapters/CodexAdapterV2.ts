@@ -1,5 +1,6 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { prepareCodexIdeaPolicy } from "../../ideas/CodexIdeaPolicy.ts";
+import * as ConfinedProviderLaunch from "./ConfinedProviderLaunch.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -711,12 +712,16 @@ export function buildCodexTurnStartParams(input: {
 }) {
   return Effect.gen(function* () {
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode);
-    const approvalPolicy =
-      input.runtimePolicy.approvalPolicy === undefined
+    // A confined turn runs in its container, so Codex neither asks nor sandboxes.
+    const confined = input.runtimePolicy.confinement !== undefined;
+    const approvalPolicy = confined
+      ? "never"
+      : input.runtimePolicy.approvalPolicy === undefined
         ? runtimeModeDefaults.approvalPolicy
         : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
-    const sandboxPolicy =
-      input.runtimePolicy.sandboxPolicy === undefined
+    const sandboxPolicy = confined
+      ? { type: "externalSandbox" as const, networkAccess: "enabled" as const }
+      : input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
     const selectedEffort = getModelSelectionStringOptionValue(
@@ -736,7 +741,11 @@ export function buildCodexTurnStartParams(input: {
     const additionalContext =
       input.hasT3Mcp === true
         ? buildCodexAdditionalContext(
-            { model: input.modelSelection.model, reasoningEffort: effort ?? "medium" },
+            {
+              model: input.modelSelection.model,
+              reasoningEffort: effort ?? "medium",
+              orchestrationInstructions: input.runtimePolicy.confinement?.orchestrationInstructions,
+            },
             {
               browser: input.browserToolsAvailable ?? true,
               device: input.deviceToolsAvailable ?? false,
@@ -761,7 +770,7 @@ export function buildCodexTurnStartParams(input: {
       threadId: input.nativeThreadId,
       input: input.codexInput,
       ...(additionalContext ? { additionalContext } : {}),
-      cwd: input.runtimePolicy.cwd,
+      cwd: confined ? ConfinedProviderLaunch.CONFINED_WORKSPACE : input.runtimePolicy.cwd,
       model: input.modelSelection.model,
       // Model catalogues can default summaries to "none". Request them on every
       // turn, including resumed threads, for T3's reasoning timeline.
@@ -1289,17 +1298,31 @@ export function codexThreadRuntimeParams(input: {
 } {
   const mcpSession =
     input.threadId === null ? undefined : McpProviderSession.readMcpProviderSession(input.threadId);
+  const confined = input.runtimePolicy?.confinement !== undefined;
   return {
-    ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
+    ...(input.runtimePolicy?.cwd == null
+      ? {}
+      : {
+          cwd: confined ? ConfinedProviderLaunch.CONFINED_WORKSPACE : input.runtimePolicy.cwd,
+        }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
       ...CODEX_THREAD_CONFIG,
+      ...(confined
+        ? {
+            "agents.enabled": false,
+            "features.multi_agent": false,
+            "features.multi_agent_v2": false,
+          }
+        : {}),
       ...(mcpSession === undefined
         ? {}
         : {
             mcp_servers: {
               "t3-code": {
-                url: mcpSession.endpoint,
+                url: confined
+                  ? ConfinedProviderLaunch.confinedEndpoint(mcpSession.endpoint)
+                  : mcpSession.endpoint,
                 http_headers: {
                   Authorization: mcpSession.authorizationHeader,
                 },
@@ -1470,7 +1493,11 @@ function isSensitiveCodexProtocolKey(key: string): boolean {
 export const layerAppServerClientFactory: Layer.Layer<
   CodexAppServerClientFactory,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | ProviderEventLoggers | FileSystem.FileSystem | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | ProviderEventLoggers
+  | FileSystem.FileSystem
+  | Path.Path
+  | ConfinedProviderLaunch.ConfinedProviderLaunch
 > = Layer.effect(
   CodexAppServerClientFactory,
   Effect.gen(function* () {
@@ -1478,13 +1505,38 @@ export const layerAppServerClientFactory: Layer.Layer<
     const { native: nativeEventLogger } = yield* ProviderEventLoggers;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const confinedLaunch = yield* ConfinedProviderLaunch.ConfinedProviderLaunch;
 
     return CodexAppServerClientFactory.of({
       open: (input) =>
         Effect.gen(function* () {
           const scope = yield* Scope.Scope;
+          const confinement = input.runtimePolicy.confinement;
+          // A confined session runs in its own runtime, removed when the session closes.
+          const launch =
+            confinement === undefined
+              ? undefined
+              : yield* confinedLaunch
+                  .prepare({
+                    driver: "codex",
+                    confinement,
+                    settings: input.settings,
+                    environment: input.environment,
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapterOpenSessionError({
+                          driver: CODEX_PROVIDER,
+                          providerSessionId: input.providerSessionId,
+                          cause,
+                        }),
+                    ),
+                  );
           const ideaPolicy =
-            input.runtimePolicy.purpose === "idea" && input.runtimePolicy.cwd !== null
+            confinement === undefined &&
+            input.runtimePolicy.purpose === "idea" &&
+            input.runtimePolicy.cwd !== null
               ? yield* prepareCodexIdeaPolicy({
                   cwd: input.runtimePolicy.cwd,
                   homePath: input.settings.homePath,
@@ -1507,17 +1559,38 @@ export const layerAppServerClientFactory: Layer.Layer<
             ...(ideaPolicy?.environment ?? input.environment),
             ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
           };
-          const command = yield* makeCodexAppServerSpawnCommand({
-            command: input.settings.binaryPath || "codex",
-            args: [
-              ...codexAppServerArgs(
-                resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
-              ),
-              ...(ideaPolicy?.args ?? []),
-            ],
-            ...(input.runtimePolicy.cwd === null ? {} : { cwd: input.runtimePolicy.cwd }),
-            env: environment,
-          });
+          const command = yield* makeCodexAppServerSpawnCommand(
+            launch === undefined
+              ? {
+                  command: input.settings.binaryPath || "codex",
+                  args: [
+                    ...codexAppServerArgs(
+                      resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+                    ),
+                    ...(ideaPolicy?.args ?? []),
+                  ],
+                  ...(input.runtimePolicy.cwd === null ? {} : { cwd: input.runtimePolicy.cwd }),
+                  env: environment,
+                }
+              : {
+                  command: launch.command,
+                  args: launch.args,
+                  env: launch.environment,
+                  extendEnv: false,
+                },
+          );
+          if (launch !== undefined) {
+            yield* Effect.addFinalizer(() =>
+              spawner
+                .exitCode(
+                  ChildProcess.make(launch.cleanup.command, launch.cleanup.args, {
+                    env: launch.cleanup.environment,
+                    extendEnv: false,
+                  }),
+                )
+                .pipe(Effect.timeout("10 seconds"), Effect.ignore),
+            );
+          }
           const handle = yield* spawner.spawn(command).pipe(
             Effect.provideService(Scope.Scope, scope),
             Effect.mapError(
@@ -1553,6 +1626,7 @@ export const layerAppServerClientFactory: Layer.Layer<
 
 export type CodexAdapterV2DriverEnv =
   | CodexAppServerClientFactory
+  | ConfinedProviderLaunch.ConfinedProviderLaunch
   | Crypto.Crypto
   | FileSystem.FileSystem
   | IdAllocatorV2
@@ -1565,9 +1639,11 @@ export const createCodexAdapterV2 = (
 ) =>
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
+    const confinedLaunch = yield* ConfinedProviderLaunch.ConfinedProviderLaunch;
     const continuationRequests = yield* ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const hostEnvironment = yield* HostProcessEnvironment;
     const idAllocator = yield* IdAllocatorV2;
     const serverConfig = yield* ServerConfig;
@@ -1597,8 +1673,10 @@ export const createCodexAdapterV2 = (
       settings,
       environment: mergeProviderInstanceEnvironment(environment, hostEnvironment),
       clientFactory,
+      confinedLaunch,
       crypto,
       fileSystem,
+      path,
       idAllocator,
       serverConfig,
       continuationRequests,
@@ -1616,14 +1694,22 @@ export const CodexAdapterV2Driver: ProviderAdapterDriver<CodexSettings, CodexAda
 const layer: Layer.Layer<
   ProviderAdapterV2,
   never,
-  CodexAppServerClientFactory | Crypto.Crypto | FileSystem.FileSystem | IdAllocatorV2 | ServerConfig
+  | CodexAppServerClientFactory
+  | ConfinedProviderLaunch.ConfinedProviderLaunch
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | Path.Path
+  | IdAllocatorV2
+  | ServerConfig
 > = Layer.effect(
   ProviderAdapterV2,
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
+    const confinedLaunch = yield* ConfinedProviderLaunch.ConfinedProviderLaunch;
     const continuationRequests = yield* ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     const hostEnvironment = yield* HostProcessEnvironment;
     const idAllocator = yield* IdAllocatorV2;
     const serverConfig = yield* ServerConfig;
@@ -1633,8 +1719,10 @@ const layer: Layer.Layer<
       settings: DEFAULT_CODEX_SETTINGS,
       environment: hostEnvironment,
       clientFactory,
+      confinedLaunch,
       crypto,
       fileSystem,
+      path,
       idAllocator,
       serverConfig,
       continuationRequests,
@@ -1647,6 +1735,8 @@ export interface CodexAdapterV2Options {
   readonly settings: CodexSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
+  /** Checks a confined session's runtime before its handshake and each turn. */
+  readonly confinedLaunch: ConfinedProviderLaunch.ConfinedProviderLaunch["Service"];
   readonly onUsageLimits?: ServerProviderShape["applyUsageLimits"];
   /**
    * Resolves launch settings when each session opens, replacing `settings` and
@@ -1656,6 +1746,7 @@ export interface CodexAdapterV2Options {
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   readonly crypto: Crypto.Crypto;
   readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
   readonly idAllocator: IdAllocatorV2Shape;
   readonly serverConfig: ServerConfig["Service"];
   /**
@@ -1669,7 +1760,8 @@ export interface CodexAdapterV2Options {
 }
 
 export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): ProviderAdapterV2Shape {
-  const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
+  const { clientFactory, confinedLaunch, crypto, fileSystem, path, idAllocator, serverConfig } =
+    adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
 
   return ProviderAdapterV2.of({
@@ -1735,8 +1827,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
         // starting their own; a failed handshake leaves the flag unset so the
         // next caller retries.
         const initializePermit = yield* Semaphore.make(1);
+        const confinement = input.runtimePolicy.confinement;
+        const checkConfinement = (
+          confinement === undefined ? Effect.void : confinedLaunch.assertActive(confinement)
+        ).pipe(Effect.mapError((cause) => toProtocolError(cause.message)));
         const ensureInitialized = initializePermit.withPermit(
           Effect.gen(function* () {
+            yield* checkConfinement;
             const alreadyInitialized = yield* Ref.get(initialized);
             if (alreadyInitialized) {
               return;
@@ -1760,6 +1857,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                 }),
               );
             yield* client.notify("initialized", undefined);
+            yield* checkConfinement;
             yield* Ref.set(initialized, true);
           }),
         );
@@ -6252,33 +6350,47 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                   }),
               ),
             ),
-          startTurn: (turnInput) => {
-            const goalCommand =
-              turnInput.message.attachments.length === 0 &&
-              turnInput.restartContinuationOfRunId === undefined
-                ? parseCodexGoalCommand(turnInput.message.text)
-                : null;
-            if (goalCommand !== null) return runGoalCommand(turnInput, goalCommand);
-            return Effect.gen(function* () {
-              yield* startNativeTurn(
-                turnInput,
+          startTurn: (turnInput) =>
+            Effect.gen(function* () {
+              if (input.runtimePolicy.confinement !== undefined)
+                yield* ensureInitialized.pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterTurnStartError({
+                        driver: CODEX_PROVIDER,
+                        threadId: turnInput.threadId,
+                        providerThreadId: turnInput.providerThread.id,
+                        runId: turnInput.runId,
+                        cause,
+                      }),
+                  ),
+                );
+              const goalCommand =
+                turnInput.message.attachments.length === 0 &&
                 turnInput.restartContinuationOfRunId === undefined
-                  ? yield* toCodexInput(turnInput)
-                  : [],
+                  ? parseCodexGoalCommand(turnInput.message.text)
+                  : null;
+              if (goalCommand !== null) return yield* runGoalCommand(turnInput, goalCommand);
+              return yield* Effect.gen(function* () {
+                yield* startNativeTurn(
+                  turnInput,
+                  turnInput.restartContinuationOfRunId === undefined
+                    ? yield* toCodexInput(turnInput)
+                    : [],
+                );
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapterTurnStartError({
+                      driver: CODEX_PROVIDER,
+                      threadId: turnInput.threadId,
+                      providerThreadId: turnInput.providerThread.id,
+                      runId: turnInput.runId,
+                      cause,
+                    }),
+                ),
               );
-            }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterTurnStartError({
-                    driver: CODEX_PROVIDER,
-                    threadId: turnInput.threadId,
-                    providerThreadId: turnInput.providerThread.id,
-                    runId: turnInput.runId,
-                    cause,
-                  }),
-              ),
-            );
-          },
+            }),
           steerTurn: (turnInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);

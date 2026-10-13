@@ -185,6 +185,8 @@ export interface CodexRuntimeInfo {
   readonly model: string;
   readonly modelName?: string | undefined;
   readonly reasoningEffort: string;
+  /** Replaces the T3 orchestration guidance, for a governor that owns delegation in its runtime. */
+  readonly orchestrationInstructions?: string | undefined;
 }
 
 /** Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`. */
@@ -215,7 +217,10 @@ export function buildCodexAdditionalContext(
   const tools = toolInstructions(toolsAvailable);
   // Separate keys keep each value under Codex's per-entry token cap.
   return {
-    t3_code_orchestration: { kind: "application", value: T3_CODE_ORCHESTRATION_INSTRUCTIONS },
+    t3_code_orchestration: {
+      kind: "application",
+      value: runtime.orchestrationInstructions ?? T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+    },
     t3_code_runtime: {
       kind: "application",
       value: buildRuntimeInstructions({ harness: "Codex", ...runtime }),

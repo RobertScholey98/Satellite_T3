@@ -261,6 +261,66 @@ beforeEach(() => {
   desktopConnections.length = 0;
 });
 
+it.live(
+  "keeps candidate operations on a dedicated server tab and rejects other origins and owners",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        desktopRendersNext = true;
+        const input = {
+          sessionId: "candidate",
+          threadId: testThread.threadId,
+          origin: "http://127.0.0.1:40123",
+        };
+        const opened = yield* browser.invokeRestricted({
+          ...input,
+          operation: "navigate",
+          input: { url: `${input.origin}/flow` },
+        });
+        expect(opened).toMatchObject({ available: true, url: `${input.origin}/flow` });
+        expect(desktopConnections).toHaveLength(0);
+        expect(contexts).toHaveLength(1);
+        yield* browser
+          .invokeRestricted({
+            ...input,
+            operation: "navigate",
+            input: { url: "http://127.0.0.1:9000/private" },
+          })
+          .pipe(Effect.asVoid, Effect.flip);
+        yield* browser
+          .invokeRestricted({
+            ...input,
+            threadId: ThreadId.make("foreign-reviewer"),
+            operation: "snapshot",
+            input: {},
+          })
+          .pipe(Effect.asVoid, Effect.flip);
+        expect(contexts[0]!.page.goto).toHaveBeenCalledTimes(1);
+        const snapshot = yield* browser.invokeRestricted({
+          ...input,
+          operation: "snapshot",
+          input: {},
+        });
+        expect(snapshot).toMatchObject({
+          url: `${input.origin}/flow`,
+          screenshot: { mimeType: "image/png" },
+        });
+        const broker = yield* Broker.PreviewAutomationBroker;
+        yield* Effect.yieldNow;
+        yield* broker
+          .invoke({
+            scope: asSession("factory-preview:candidate"),
+            operation: "snapshot",
+            input: {},
+          })
+          .pipe(Effect.asVoid, Effect.flip);
+        yield* browser.closeRestricted(input.sessionId);
+        expect(contexts[0]!.page.isClosed()).toBe(true);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
 it.live("readiness none responds immediately but takeover input waits for navigation commit", () =>
   Effect.scoped(
     Effect.gen(function* () {

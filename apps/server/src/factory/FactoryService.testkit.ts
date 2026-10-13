@@ -1,0 +1,93 @@
+import { FactoryError } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as FactoryCollaborationEffects from "./FactoryCollaborationEffects.ts";
+import * as FactoryDeliveryEffects from "./FactoryDeliveryEffects.ts";
+import * as FactoryImprovementEffects from "./FactoryImprovementEffects.ts";
+import * as FactoryIntegrationEffects from "./FactoryIntegrationEffects.ts";
+import * as FactoryMergeEffects from "./FactoryMergeEffects.ts";
+import * as FactoryMergeOperationEffects from "./FactoryMergeOperationEffects.ts";
+import * as FactoryPreviewService from "./FactoryPreviewService.ts";
+import * as FactoryRetroEffects from "./FactoryRetroEffects.ts";
+import * as FactorySkills from "./FactorySkills.ts";
+import * as FactorySchedulingEffects from "./FactorySchedulingEffects.ts";
+import * as FactoryWorkflowEffects from "./FactoryWorkflowEffects.ts";
+
+const unused = Effect.die("This factory effect runtime is not part of the test.");
+const leavePending = () => Effect.void;
+const noContext = () => Effect.succeed({});
+
+/** The commit `layerTestDependencies` reports at HEAD of the configured skills repository. */
+export const testSkills = { repositoryRoot: "C:/owned-skills", revision: "a".repeat(40) };
+
+/** A skills service whose HEAD is `head`. Settings writes are not part of factory tests. */
+export const skillsService = (head: FactorySkills.FactorySkills["Service"]["head"]) =>
+  FactorySkills.FactorySkills.of({
+    head,
+    updateSettings: () => Effect.die("Settings writes are not part of this test."),
+  });
+
+/** What `FactorySkills.head` answers while the skills repository setting is empty. */
+export const skillsUnset = Effect.fail(
+  new FactoryError({
+    code: "invalid-state",
+    detail: "Set the skills repository in Settings → General first.",
+  }),
+);
+
+/**
+ * What `FactoryService.layer` needs beyond the factory core, for tests: inert effect runtimes
+ * (their intents stay pending and their commands get no extra context) and server settings with
+ * the engineering managers beta on, and a fixed skills commit. Provide a test's real services
+ * first; this layer only fills the ones still missing.
+ */
+export const layerTestDependencies = Layer.mergeAll(
+  Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+    getInstance: () => Effect.succeed(undefined),
+  }),
+  ServerSettings.layerTest({ engineeringManagersEnabled: true }).pipe(Layer.orDie),
+  Layer.succeed(FactorySkills.FactorySkills, skillsService(Effect.succeed(testSkills))),
+  Layer.succeed(FactoryDeliveryEffects.FactoryDeliveryEffects, { handle: leavePending }),
+  Layer.succeed(FactoryPreviewService.FactoryPreviewService, {
+    reconcile: Effect.void,
+    handle: leavePending,
+    invoke: () => unused,
+    finish: () => unused,
+  }),
+  Layer.succeed(FactoryRetroEffects.FactoryRetroEffects, {
+    context: noContext,
+    reconcile: Effect.void,
+    handle: leavePending,
+  }),
+  Layer.succeed(FactorySchedulingEffects.FactorySchedulingEffects, {
+    context: noContext,
+    read: () => unused,
+    reconcile: Effect.void,
+    handle: leavePending,
+    beforeLaunch: () => Effect.void,
+    release: () => Effect.void,
+    watch: () => Effect.void,
+  }),
+  Layer.succeed(FactoryImprovementEffects.FactoryImprovementEffects, {
+    context: noContext,
+    reconcile: Effect.void,
+    handle: leavePending,
+    watch: () => Effect.void,
+  }),
+  Layer.succeed(FactoryWorkflowEffects.FactoryWorkflowEffects, {
+    context: noContext,
+    handle: leavePending,
+  }),
+  Layer.succeed(FactoryCollaborationEffects.FactoryCollaborationEffects, {
+    reconcile: Effect.void,
+    handle: leavePending,
+  }),
+  Layer.succeed(FactoryIntegrationEffects.FactoryIntegrationEffects, { handle: leavePending }),
+  Layer.succeed(FactoryMergeEffects.FactoryMergeEffects, { handle: leavePending }),
+  Layer.succeed(FactoryMergeOperationEffects.FactoryMergeOperationEffects, {
+    handle: leavePending,
+  }),
+);

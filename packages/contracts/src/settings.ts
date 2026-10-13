@@ -1337,6 +1337,20 @@ export const ServerSettings = Schema.Struct({
    * not also grant providers control of simulators and emulators.
    */
   enableDeviceSupport: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Beta: lets people create engineering managers on this server. It only gates the first one:
+   * once a manager exists, its work stays visible and controllable whatever this says.
+   */
+  engineeringManagersEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  /**
+   * Path on this environment of the Git repository whose committed `skills/` managers and their
+   * teams use. Each new manager, onboarding run and assignment records its HEAD at that moment.
+   */
+  engineeringManagersSkillsRepository: TrimmedString.pipe(
+    Schema.withDecodingDefault(Effect.succeed("")),
+  ),
   /** Whether the server-local Device panel setup flow has been completed. */
   deviceOnboardingCompleted: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   deviceHosts: SshDeviceHostConfigs.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
@@ -1587,6 +1601,20 @@ export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>
   }
 }
 
+/** The engineering managers skills repository a settings write named cannot be used. */
+export class SkillsRepositoryError extends Schema.TaggedError<SkillsRepositoryError>()(
+  "SkillsRepositoryError",
+  {
+    repositoryPath: Schema.String,
+    /** What is wrong with the repository, in words the user can act on. */
+    reason: Schema.String,
+  },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
 // ── Unified type ─────────────────────────────────────────────────────
 
 export type UnifiedSettings = ServerSettings & ClientSettings;
@@ -1719,6 +1747,8 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
+  engineeringManagersEnabled: Schema.optionalKey(Schema.Boolean),
+  engineeringManagersSkillsRepository: Schema.optionalKey(TrimmedString),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),

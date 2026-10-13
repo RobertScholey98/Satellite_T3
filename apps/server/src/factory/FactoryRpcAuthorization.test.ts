@@ -1,0 +1,517 @@
+import { assert, describe, it } from "@effect/vitest";
+import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  AuthSettingsWriteScope,
+  AuthSourceControlWriteScope,
+  CommandId,
+  FACTORY_WS_METHODS,
+  FactoryAssignmentId,
+  FactoryBoundaryId,
+  FactoryError,
+  type FactoryCommand,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  WsRpcGroup,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as RpcTest from "effect/rpc/RpcTest";
+
+import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
+
+const method = FACTORY_WS_METHODS.dispatchCommand;
+const group = WsRpcGroup.omit(
+  ...[...WsRpcGroup.requests.keys()].filter(
+    (tag): tag is Exclude<keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES, typeof method> =>
+      tag !== method,
+  ),
+);
+const managerId = ThreadId.make("manager-web");
+const settingsCommands: ReadonlyArray<FactoryCommand> = [
+  {
+    type: "merge.group.approve",
+    commandId: CommandId.make("merge-group-approve"),
+    groupId: "merge-group",
+    reviewId: "merge-review",
+    expectedDigest: "review-digest",
+  },
+  {
+    type: "merge.group.reject",
+    commandId: CommandId.make("merge-group-reject"),
+    groupId: "merge-group",
+    reviewId: "merge-review",
+    expectedDigest: "review-digest",
+    reason: "Correct the combined feature before delivery",
+  },
+  {
+    type: "integration.capability.configure",
+    commandId: CommandId.make("integration-capability"),
+    projectId: ProjectId.make("web"),
+    boundaryId: FactoryBoundaryId.make("boundary-web"),
+    paths: {
+      readPaths: ["src/app.ts"],
+      testPaths: ["tests/contract.ts"],
+      fixturePaths: [],
+      testDirectories: [],
+      fixtureDirectories: [],
+    },
+    coordinator: null,
+  },
+  {
+    type: "integration.capability.retry",
+    commandId: CommandId.make("integration-capability-retry"),
+    capabilityId: "capability",
+  },
+  {
+    type: "collaboration.decision.decide",
+    commandId: CommandId.make("collaboration-decision"),
+    decisionId: "decision",
+    revision: "decision-revision",
+    optionId: "prioritize-request",
+    reason: "Prioritize this dependency",
+  },
+  {
+    type: "collaboration.request.respond",
+    commandId: CommandId.make("collaboration-rule-change"),
+    requestId: "request",
+    response: {
+      kind: "accept",
+      support: {
+        kind: "commission",
+        work: {
+          title: "Review an explicit project rule change",
+          kind: "rule-change",
+          complexity: "standard",
+          sourcePaths: [],
+          creatableDirectories: [],
+          controlPaths: ["AGENTS.md"],
+          scope: {
+            description: "The exact separately authorized rule change",
+            completionCondition: "Human-reviewed PR merged",
+            requiresPullRequest: true,
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "shared.repository.register",
+    commandId: CommandId.make("shared-register"),
+    projectId: ProjectId.make("skills"),
+    kind: "skills",
+    configuration: {
+      protectedPaths: ["skills/example/SKILL.md"],
+      writablePaths: [],
+      creatableDirectories: [],
+      gates: [],
+      verification: "protected-integrity",
+    },
+  },
+  {
+    type: "shared.repository.configure",
+    commandId: CommandId.make("shared-configure"),
+    repositoryId: "skills",
+    enabled: false,
+  },
+  { type: "shared.work.authorize", commandId: CommandId.make("shared-authorize"), workId: "work" },
+  {
+    type: "shared.work.notify.retry",
+    commandId: CommandId.make("shared-notify-retry"),
+    workId: "work",
+  },
+  {
+    type: "shared.work.revoke",
+    commandId: CommandId.make("shared-revoke"),
+    workId: "work",
+    reason: "Authority withdrawn",
+  },
+  {
+    type: "experiment.configure",
+    commandId: CommandId.make("experiment-configure"),
+    enabled: true,
+    maxConcurrent: 1,
+    maxPerInvestigation: 1,
+  },
+  {
+    type: "workflow.models.apply",
+    commandId: CommandId.make("workflow-models"),
+    recommendationId: "recommendation",
+  },
+  {
+    type: "system.create",
+    commandId: CommandId.make("system-create"),
+    workspaceProjectId: ProjectId.make("web"),
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
+  },
+  { type: "system.retry", commandId: CommandId.make("system-retry"), managerId },
+  {
+    type: "improvement.configure",
+    commandId: CommandId.make("improvement-config"),
+    enabled: true,
+    routineThreshold: 10,
+    maxAgeHours: 24,
+    sampleEvery: 5,
+    maxBatchItems: 20,
+    maxSummaryChars: 16000,
+    routineBatchesPerDay: 2,
+    urgentBatchesPerDay: 4,
+  },
+  { type: "improvement.flush", commandId: CommandId.make("improvement-flush") },
+  {
+    type: "improvement.batch.retry",
+    commandId: CommandId.make("retry-evidence"),
+    batchId: "batch",
+  },
+  {
+    type: "proposal.decide",
+    commandId: CommandId.make("proposal-decision"),
+    proposalId: "proposal",
+    revision: "revision",
+    outcome: "accepted",
+    reason: "Review supports adoption",
+  },
+  {
+    type: "project.scheduling.configure",
+    commandId: CommandId.make("schedule-settings"),
+    projectId: ProjectId.make("web"),
+    boardId: "board",
+    enabled: true,
+    maxConcurrentAssignments: 1,
+    improvementRule: null,
+  },
+  {
+    type: "delivery.rules.configure",
+    commandId: CommandId.make("merge-rules"),
+    projectId: ProjectId.make("web"),
+    enabled: true,
+    kinds: ["implementation"],
+    allowedPaths: ["src"],
+    excludedPaths: ["src/security"],
+    allowEstablishedPatterns: true,
+  },
+  {
+    type: "delivery.preview.configure",
+    commandId: CommandId.make("preview-runtime"),
+    projectId: ProjectId.make("web"),
+    configuration: {
+      imageId: `sha256:${"a".repeat(64)}`,
+      executable: "/usr/local/bin/node",
+      args: ["/workspace/server.js"],
+      port: 3000,
+      data: "ephemeral",
+    },
+  },
+  {
+    type: "delivery.preview.publication.configure",
+    commandId: CommandId.make("preview-publication"),
+    projectId: ProjectId.make("web"),
+    enabled: true,
+  },
+  {
+    type: "policy.defaults.configure",
+    commandId: CommandId.make("defaults"),
+    defaults: {
+      delivery: "project-rule",
+      projectImprovements: "project-rule",
+      sharedWorkflow: "investigate-and-recommend",
+      authorizeRuleWeakening: true,
+      recoveryCycles: 3,
+    },
+  },
+  {
+    type: "assignments.extend-grant",
+    commandId: CommandId.make("extend"),
+    assignmentIds: [FactoryAssignmentId.make("assignment-web")],
+  },
+  {
+    type: "manager.configure",
+    commandId: CommandId.make("configure"),
+    managerId,
+    overrides: { delivery: "project-rule" },
+  },
+  { type: "manager.retire", commandId: CommandId.make("retire"), managerId },
+  {
+    type: "manager.approve-onboarding",
+    commandId: CommandId.make("approve"),
+    managerId,
+    configuration: {
+      protectedPaths: ["AGENTS.md"],
+      writablePaths: ["src/app.ts"],
+      creatableDirectories: ["src/features"],
+      gates: [],
+    },
+  },
+  { type: "manager.refresh-boundary", commandId: CommandId.make("refresh"), managerId },
+  {
+    type: "models.defaults.configure",
+    commandId: CommandId.make("models"),
+    policy: { approvedModels: [], preferences: [] },
+  },
+  {
+    type: "manager.models.configure",
+    commandId: CommandId.make("manager-models"),
+    managerId,
+    overrides: { approvedModels: [] },
+  },
+  {
+    type: "assignment.commission",
+    commandId: CommandId.make("rule-change"),
+    managerId,
+    title: "Change the lint rule",
+    kind: "rule-change",
+    complexity: "small",
+    scope: {
+      description: "Adjust one approved rule",
+      completionCondition: "Rule reviewed",
+      requiresPullRequest: true,
+    },
+    sourcePaths: [],
+    creatableDirectories: [],
+    controlPaths: ["eslint.config.js"],
+  },
+];
+const create: FactoryCommand = {
+  type: "manager.create",
+  commandId: CommandId.make("create"),
+  projectId: ProjectId.make("web"),
+  modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "approved-model" },
+};
+
+describe("factory RPC authority", () => {
+  it.effect(
+    "requires source-control write for shared submissions but permits stopping and reconciliation",
+    () =>
+      Effect.gen(function* () {
+        const handled: string[] = [];
+        const handler = group.toLayerHandler(method, ({ command }) =>
+          Effect.sync(() => {
+            handled.push(command.type);
+            return { revision: handled.length };
+          }),
+        );
+        const operator = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(handler, RpcAuthorization.layer([AuthOrchestrationOperateScope])),
+          ),
+        );
+        const writes: readonly FactoryCommand[] = [
+          {
+            type: "merge.group.start",
+            commandId: CommandId.make("start"),
+            groupId: "group",
+            reviewId: "review",
+            expectedDigest: "digest",
+          },
+          {
+            type: "merge.operation.retry",
+            commandId: CommandId.make("retry"),
+            operationId: "operation",
+          },
+          ...(["delivery.approve", "delivery.merge", "delivery.publish"] as const).map(
+            (type): FactoryCommand => {
+              const revision = {
+                commandId: CommandId.make(type),
+                assignmentId: FactoryAssignmentId.make("assignment"),
+                revisionId: "revision",
+              };
+              return type === "delivery.approve"
+                ? { ...revision, type, expectedHeadSha: "head", bundleDigest: "bundle" }
+                : type === "delivery.publish"
+                  ? { ...revision, type, title: "Feature", body: "Ready" }
+                  : { ...revision, type };
+            },
+          ),
+        ];
+        for (const command of writes) {
+          const error = yield* operator[method]({ command }).pipe(Effect.flip);
+          assert.equal(error._tag, "EnvironmentAuthorizationError");
+          if (error._tag === "EnvironmentAuthorizationError")
+            assert.equal(error.requiredPermission, AuthSourceControlWriteScope);
+        }
+        assert.isEmpty(handled);
+        yield* operator[method]({
+          command: {
+            type: "merge.operation.reconcile",
+            commandId: CommandId.make("observe"),
+            operationId: "operation",
+          },
+        });
+        yield* operator[method]({
+          command: {
+            type: "merge.operation.stop",
+            commandId: CommandId.make("stop"),
+            operationId: "operation",
+            reason: "Investigate the partial outcome",
+          },
+        });
+        const writer = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              handler,
+              RpcAuthorization.layer([AuthOrchestrationOperateScope, AuthSourceControlWriteScope]),
+            ),
+          ),
+        );
+        for (const command of writes) yield* writer[method]({ command });
+        assert.deepEqual(handled, [
+          "merge.operation.reconcile",
+          "merge.operation.stop",
+          "merge.group.start",
+          "merge.operation.retry",
+          "delivery.approve",
+          "delivery.merge",
+          "delivery.publish",
+        ]);
+      }).pipe(Effect.scoped),
+  );
+  it.effect(
+    "requires read authority for a consolidated merge review without requiring write authority",
+    () =>
+      Effect.gen(function* () {
+        const readMethod = FACTORY_WS_METHODS.getMergeGroup;
+        const readGroup = WsRpcGroup.omit(
+          ...[...WsRpcGroup.requests.keys()].filter(
+            (
+              tag,
+            ): tag is Exclude<
+              keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+              typeof readMethod
+            > => tag !== readMethod,
+          ),
+        );
+        let reads = 0;
+        const handler = readGroup.toLayerHandler(readMethod, () =>
+          Effect.gen(function* () {
+            reads += 1;
+            return yield* new FactoryError({
+              code: "invalid-state",
+              detail: "Unknown fixture group",
+            });
+          }),
+        );
+        const denied = yield* RpcTest.makeClient(readGroup).pipe(
+          Effect.provide(Layer.mergeAll(handler, RpcAuthorization.layer([]))),
+        );
+        assert.equal(
+          (yield* denied[readMethod]({ groupId: "missing" }).pipe(Effect.flip))._tag,
+          "EnvironmentAuthorizationError",
+        );
+        assert.equal(reads, 0);
+        const allowed = yield* RpcTest.makeClient(readGroup).pipe(
+          Effect.provide(
+            Layer.mergeAll(handler, RpcAuthorization.layer([AuthOrchestrationReadScope])),
+          ),
+        );
+        assert.equal(
+          (yield* allowed[readMethod]({ groupId: "missing" }).pipe(Effect.flip))._tag,
+          "FactoryError",
+        );
+        assert.equal(reads, 1);
+      }),
+  );
+  it.effect("lets an operator create a manager while denying authority-setting commands", () =>
+    Effect.gen(function* () {
+      const handled: string[] = [];
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(method, ({ command }) =>
+              Effect.sync(() => {
+                handled.push(command.type);
+                return { revision: handled.length };
+              }),
+            ),
+            RpcAuthorization.layer([AuthOrchestrationOperateScope]),
+          ),
+        ),
+      );
+      for (const command of settingsCommands) {
+        const error = yield* client[method]({ command }).pipe(Effect.flip);
+        assert.equal(error._tag, "EnvironmentAuthorizationError");
+        if (error._tag === "EnvironmentAuthorizationError")
+          assert.equal(error.requiredPermission, AuthSettingsWriteScope);
+      }
+      assert.deepStrictEqual(yield* client[method]({ command: create }), { revision: 1 });
+      assert.deepStrictEqual(handled, ["manager.create"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "allows all authority-setting commands when settings and operation scopes are present",
+    () =>
+      Effect.gen(function* () {
+        const handled: string[] = [];
+        const client = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(method, ({ command }) =>
+                Effect.sync(() => {
+                  handled.push(command.type);
+                  return { revision: handled.length };
+                }),
+              ),
+              RpcAuthorization.layer([AuthOrchestrationOperateScope, AuthSettingsWriteScope]),
+            ),
+          ),
+        );
+        for (const [index, command] of settingsCommands.entries()) {
+          assert.deepStrictEqual(yield* client[method]({ command }), { revision: index + 1 });
+        }
+        assert.deepStrictEqual(handled, [
+          "merge.group.approve",
+          "merge.group.reject",
+          "integration.capability.configure",
+          "integration.capability.retry",
+          "collaboration.decision.decide",
+          "collaboration.request.respond",
+          "shared.repository.register",
+          "shared.repository.configure",
+          "shared.work.authorize",
+          "shared.work.notify.retry",
+          "shared.work.revoke",
+          "experiment.configure",
+          "workflow.models.apply",
+          "system.create",
+          "system.retry",
+          "improvement.configure",
+          "improvement.flush",
+          "improvement.batch.retry",
+          "proposal.decide",
+          "project.scheduling.configure",
+          "delivery.rules.configure",
+          "delivery.preview.configure",
+          "delivery.preview.publication.configure",
+          "policy.defaults.configure",
+          "assignments.extend-grant",
+          "manager.configure",
+          "manager.retire",
+          "manager.approve-onboarding",
+          "manager.refresh-boundary",
+          "models.defaults.configure",
+          "manager.models.configure",
+          "assignment.commission",
+        ]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not let a settings-only token operate managers", () =>
+    Effect.gen(function* () {
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(method, () => Effect.succeed({ revision: 1 })),
+            RpcAuthorization.layer([AuthSettingsWriteScope]),
+          ),
+        ),
+      );
+      for (const command of [...settingsCommands, create]) {
+        const error = yield* client[method]({ command }).pipe(Effect.flip);
+        assert.equal(error._tag, "EnvironmentAuthorizationError");
+        if (error._tag === "EnvironmentAuthorizationError")
+          assert.equal(error.requiredPermission, AuthOrchestrationOperateScope);
+      }
+    }).pipe(Effect.scoped),
+  );
+});

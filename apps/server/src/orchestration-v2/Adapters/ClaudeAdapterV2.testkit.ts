@@ -30,6 +30,7 @@ import {
   resolveClaudeSdkExecutablePath,
 } from "../../provider/Drivers/ClaudeExecutable.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
+import * as ConfinedProviderLaunch from "./ConfinedProviderLaunch.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import { ProviderAdapterDriverCreateError } from "../ProviderAdapterDriver.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
@@ -996,6 +997,7 @@ function layerClaudeProviderAdapterRegistryReplay(
     Layer.provide(
       Layer.mergeAll(
         layerClaudeAgentSdkReplay(transcript, options),
+        ConfinedProviderLaunch.layerUnconfined,
         IdAllocator.layer,
         NodeServices.layer,
         layerServerConfig,

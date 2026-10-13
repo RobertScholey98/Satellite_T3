@@ -38,6 +38,7 @@ import type {
   SourceControlProviderKind,
 } from "@t3tools/contracts";
 import { SourceControlProviderKind as SourceControlProviderKindSchema } from "@t3tools/contracts";
+import type { ProviderMergeEvidence } from "./pullRequestMergeEvidence.ts";
 
 /**
  * The one failure shape every provider reports, so the service can decide what a failure means
@@ -233,6 +234,7 @@ export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   readonly body: string;
   readonly changedFiles: number;
   readonly mergedAt: string | null;
+  readonly mergeCommitSha?: string;
   readonly closedAt: string | null;
   readonly reviewers: ReadonlyArray<PullRequestActor>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
@@ -328,6 +330,9 @@ export interface ProviderRepositoryRef {
  * failing at call time.
  */
 export interface PullRequestProviderApi {
+  readonly inspectForMerge?: (
+    input: ProviderRepositoryRef & { readonly number: number },
+  ) => Effect.Effect<ProviderMergeEvidence, PullRequestProviderError>;
   readonly withVerifiedCredential?: <A, E, R>(
     input: { readonly cwd: string; readonly host: string },
     use: (identity: {
@@ -561,6 +566,9 @@ export interface PullRequestProviderApi {
       readonly action: PullRequestAction;
       readonly stackNumber?: number;
       readonly expectedStackHeads?: ReadonlyArray<PullRequestStackHead>;
+      readonly expectedHeadSha?: string;
+      /** Server-owned authority: require a direct, revision-conditional mutation. */
+      readonly requireConditionalMerge?: boolean;
       /** GitHub merge message cleanup; ignored by hosts without support. */
       readonly removeAgentCreditsOnMerge?: boolean;
       /** Meaningful for `merge` and `enable-auto-merge`; absent takes the host's own default. */

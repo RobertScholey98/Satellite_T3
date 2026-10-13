@@ -322,6 +322,7 @@ function makeProviderAdapter(
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
+    readonly beforeClose?: Effect.Effect<void>;
     /** Registers the process's closeCount finalizer before `beforeOpen` runs. */
     readonly spawnBeforeOpen?: boolean;
     /** Completed when a hanging scope close reaches its wedged finalizer. */
@@ -329,10 +330,14 @@ function makeProviderAdapter(
   } = {},
 ): ProviderAdapterV2Shape {
   const countClose = Effect.addFinalizer(() =>
-    Ref.update(state, (current) => ({
-      ...current,
-      closeCount: current.closeCount + 1,
-    })),
+    (options.beforeClose ?? Effect.void).pipe(
+      Effect.andThen(
+        Ref.update(state, (current) => ({
+          ...current,
+          closeCount: current.closeCount + 1,
+        })),
+      ),
+    ),
   );
   // Registered after countClose so it runs first on scope close, wedging the
   // close before the closeCount finalizer, like a provider process that never
@@ -466,6 +471,7 @@ function layerTest(input: {
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
+  readonly beforeClose?: Effect.Effect<void>;
   readonly spawnBeforeOpen?: boolean;
   readonly scopeCloseReached?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
@@ -493,6 +499,7 @@ function layerTest(input: {
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
       ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
+      ...(input.beforeClose === undefined ? {} : { beforeClose: input.beforeClose }),
       ...(input.spawnBeforeOpen === undefined ? {} : { spawnBeforeOpen: input.spawnBeforeOpen }),
       ...(input.scopeCloseReached === undefined
         ? {}
@@ -1085,6 +1092,128 @@ it.effect("ProviderSessionManagerV2 opens a duplicate session only once", () =>
       ),
     );
   }),
+);
+
+it.effect("ProviderSessionManagerV2 rejects reuse across managed execution boundaries", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("factory-boundary-owner");
+      const sibling = ThreadId.make("factory-boundary-sibling");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+          yield* makeThreadCreatedEvent({ idAllocator, threadId: sibling, now }),
+        ],
+      });
+      const confinement = { boundaryId: "assignment-one", workspacePath: "/project", profile: {} };
+      const managed = { ...runtimePolicy, confinement };
+      const first = yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy: managed,
+      });
+      assert.strictEqual(
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: managed,
+        }),
+        first,
+      );
+      for (const request of [
+        { threadId, runtimePolicy },
+        { threadId: sibling, runtimePolicy: managed },
+        {
+          threadId,
+          runtimePolicy: {
+            ...managed,
+            confinement: { ...confinement, boundaryId: "assignment-two" },
+          },
+        },
+      ]) {
+        const failure = yield* manager
+          .open({ ...request, providerSessionId, modelSelection })
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderSessionOpenError");
+      }
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })));
+  }),
+);
+
+it.effect(
+  "strict factory detach closes the dedicated runtime before switching profiles and is repeatable",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const threadId = ThreadId.make("factory-profile-switch");
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const stoppedSessions: ProviderSessionId[] = [];
+        for (const boundaryId of ["implementation", "held-planning"]) {
+          const providerSessionId = yield* ids.allocate.providerSession({
+            providerInstanceId: modelSelection.instanceId,
+            threadId,
+          });
+          const providerThread = makeProviderThread({
+            idAllocator: ids,
+            threadId,
+            providerSessionId,
+            now,
+          });
+          yield* sink.write({
+            events: [
+              {
+                id: yield* ids.allocate.event({ threadId }),
+                type: "provider-thread.updated",
+                threadId,
+                driver: CODEX_DRIVER,
+                occurredAt: now,
+                payload: providerThread,
+              },
+            ],
+          });
+          yield* manager.open({
+            threadId,
+            providerSessionId,
+            modelSelection,
+            runtimePolicy: {
+              ...runtimePolicy,
+              confinement: { boundaryId, workspacePath: "/project", profile: {} },
+            },
+          });
+          stoppedSessions.push(providerSessionId);
+          for (const oldSession of stoppedSessions)
+            yield* manager.detach({
+              threadId,
+              providerSessionId: oldSession,
+              awaitQuiescence: true,
+              revokeMcpCredential: true,
+            });
+          assert.equal((yield* Ref.get(state)).closeCount, stoppedSessions.length);
+          assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        }
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+        assert.equal((yield* Ref.get(state)).openCount, 2);
+      }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })), Effect.scoped);
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 cleans up an open interrupted mid-handshake", () =>
@@ -1772,7 +1901,14 @@ it.effect(
         assert.equal(resolved?.thread.threadId, threadId);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+          new Set([
+            "preview",
+            "orchestration",
+            "worktree",
+            "pull-requests",
+            "documents",
+            "commits",
+          ]),
         );
 
         yield* manager.close(providerSessionId);
@@ -1829,7 +1965,7 @@ it.effect(
         const resolved = yield* registry.resolve(token!);
         assert.deepEqual(
           resolved?.capabilities,
-          new Set(["orchestration", "worktree", "pull-requests"]),
+          new Set(["orchestration", "worktree", "pull-requests", "documents", "commits"]),
         );
 
         yield* manager.close(providerSessionId);
@@ -4205,6 +4341,158 @@ it.effect(
 
       yield* effect.pipe(
         Effect.provide(layerTest({ state, idleTimeoutMs: 1000, beforeUnload })),
+        Effect.scoped,
+      );
+    }),
+);
+
+it.effect(
+  "strict shared detach preserves peers, waits for unload, and retries failed teardown",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const failUnload = yield* Ref.make(true);
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const completed = yield* Ref.make(0);
+      const beforeUnload = Effect.gen(function* () {
+        if (yield* Ref.get(failUnload)) return yield* Effect.die("Provider unload failed");
+        yield* Deferred.succeed(entered, undefined);
+        yield* Deferred.await(release);
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const owner = ThreadId.make("strict-detach-owner");
+        const peer = ThreadId.make("strict-detach-peer");
+        const providerSessionId = ids.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        const providerThread = makeProviderThread({
+          idAllocator: ids,
+          threadId: owner,
+          providerSessionId,
+          now,
+        });
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: owner, now }),
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId: peer, now }),
+            {
+              id: yield* ids.allocate.event({ threadId: owner }),
+              type: "provider-thread.updated",
+              threadId: owner,
+              driver: CODEX_DRIVER,
+              occurredAt: now,
+              payload: providerThread,
+            },
+          ],
+        });
+        yield* manager.open({ threadId: owner, providerSessionId, modelSelection, runtimePolicy });
+        yield* manager.open({ threadId: peer, providerSessionId, modelSelection, runtimePolicy });
+        const stop = manager.detach({ providerSessionId, threadId: owner, awaitQuiescence: true });
+        const failed = yield* Effect.exit(stop);
+        assert.isTrue(Exit.isFailure(failed));
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+        yield* Ref.set(failUnload, false);
+        const first = yield* stop.pipe(
+          Effect.andThen(Ref.update(completed, (n) => n + 1)),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(entered);
+        const duplicate = yield* stop.pipe(
+          Effect.andThen(Ref.update(completed, (n) => n + 1)),
+          Effect.forkScoped,
+        );
+        yield* Effect.yieldNow;
+        assert.equal(yield* Ref.get(completed), 0);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(first);
+        yield* Fiber.join(duplicate);
+        assert.equal(yield* Ref.get(completed), 2);
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [
+          "native-thread",
+          "native-thread",
+        ]);
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        const peerRuntime = yield* manager.open({
+          threadId: peer,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        assert.equal(peerRuntime.providerSessionId, providerSessionId);
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+      }).pipe(
+        Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, beforeUnload })),
+        Effect.scoped,
+      );
+    }),
+);
+
+it.effect.each([false, true])(
+  "strict detach awaits an already retiring runtime (managed boundary: %s)",
+  (managed) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const completed = yield* Ref.make(false);
+      const beforeClose = Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const threadId = ThreadId.make("strict-exclusive-owner");
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now }),
+          ],
+        });
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: managed
+            ? {
+                ...runtimePolicy,
+                confinement: {
+                  boundaryId: "managed-retiring",
+                  workspacePath: "/project",
+                  profile: {},
+                },
+              }
+            : runtimePolicy,
+        });
+        const ordinary = yield* manager.close(providerSessionId).pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        const strict = yield* manager
+          .detach({ threadId, providerSessionId, awaitQuiescence: true })
+          .pipe(Effect.andThen(Ref.set(completed, true)), Effect.forkScoped);
+        yield* Effect.yieldNow;
+        assert.equal(yield* Ref.get(completed), false);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(ordinary);
+        yield* Fiber.join(strict);
+        assert.equal(yield* Ref.get(completed), true);
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            capabilities: managed ? CodexCapabilities : ExclusiveCapabilities,
+            beforeClose,
+          }),
+        ),
         Effect.scoped,
       );
     }),

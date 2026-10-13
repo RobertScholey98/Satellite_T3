@@ -19,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 import migration from "../persistence/Migrations/056_IssueBoards.ts";
 import snapshotMigration from "../persistence/Migrations/059_IssueBoardSnapshots.ts";
+import schedulingMigration from "../persistence/Migrations/071_IssueScheduling.ts";
 import { makeIssueService } from "./IssueService.ts";
 import { canonicalIssueKey, type IssueHostShape } from "./IssueHost.ts";
 
@@ -65,6 +66,7 @@ const project: OrchestrationProjectShell = {
 const setup = Effect.gen(function* () {
   yield* migration;
   yield* snapshotMigration;
+  yield* schedulingMigration;
   let column = "ready";
   let fail = false;
   let failReads = false;

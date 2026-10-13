@@ -30,6 +30,7 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 const threadId = ThreadId.make("thread:effect-worker-restart");
 const oldSessionId = ProviderSessionId.make("provider-session:effect-worker-restart:old");
@@ -40,6 +41,48 @@ const providerThreadId = ProviderThreadId.make("provider-thread:effect-worker-re
 const providerTurnId = ProviderTurnId.make("provider-turn:effect-worker-restart");
 const attemptId = RunAttemptId.make("run-attempt:effect-worker-restart");
 const runId = RunId.make("run:effect-worker-restart");
+
+it.effect(
+  "leaves a managed restart continuation to the factory and settles a delegated parent",
+  () =>
+    Effect.gen(function* () {
+      const timestamp = DateTime.formatIso(yield* DateTime.now);
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const recovered = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+      const layer = layerExecutorFor({
+        events,
+        continueAfterRestart: true,
+        threads: {
+          dispatch: () => Effect.die("A managed thread must not be continued here"),
+          recoverDelegatedTask: (childThreadId) =>
+            Ref.update(recovered, (ids) => [...ids, childThreadId]),
+        },
+        governance: Layer.mock(ThreadGovernance.ThreadGovernance)({
+          governs: () => Effect.succeed(true),
+        }),
+      });
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
+        Effect.provide(layer),
+      );
+      yield* executor.execute({
+        id: "effect:stale-managed-restart",
+        commandId: CommandId.make("stale-managed-restart"),
+        threadId,
+        request: { type: "provider-runtime.continue", sourceRunId: runId },
+        status: "running",
+        attemptCount: 1,
+        availableAt: timestamp,
+        leaseOwner: "test",
+        leaseExpiresAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: null,
+        lastError: null,
+      });
+      assert.deepStrictEqual(yield* Ref.get(events), []);
+      assert.deepStrictEqual(yield* Ref.get(recovered), [threadId]);
+    }),
+);
 
 function restartEffect(
   now: DateTime.Utc,
@@ -82,6 +125,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly governance?: Layer.Layer<ThreadGovernance.ThreadGovernance>;
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const layerDependencies = Layer.mergeAll(
@@ -151,6 +195,7 @@ function layerExecutorFor(input: {
     Layer.provide(
       Layer.mergeAll(
         layerDependencies,
+        input.governance ?? ThreadGovernance.layerUngoverned,
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},

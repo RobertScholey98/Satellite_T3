@@ -1,3 +1,4 @@
+import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
@@ -678,6 +679,7 @@ describe("orchestrator MCP toolkit", () => {
             McpHttpServer.layerThreadToolkit,
           ).pipe(
             Layer.provideMerge(McpServer.McpServer.layer),
+            Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
             Layer.provideMerge(layerOrchestration),
             Layer.provide(layerRegistry),
             Layer.provide(layerProviderRegistry),
@@ -3804,6 +3806,7 @@ describe("orchestrator MCP toolkit", () => {
         ]);
         const layerTest = McpHttpServer.layerOrchestratorToolkit.pipe(
           Layer.provideMerge(McpServer.McpServer.layer),
+          Layer.provide(McpToolAccessTestkit.unmanagedFactoryLayer),
           Layer.provideMerge(layerOrchestration),
           Layer.provide(
             CodexOrchestratorReplayHarness.makeProviderAdapterRegistryLayer(transcript),

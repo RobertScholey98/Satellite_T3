@@ -57,6 +57,7 @@ import {
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   ThreadId,
+  isConfinableProviderDriver,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -95,6 +96,7 @@ import {
 } from "./McpInvocationContext.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ThreadGovernance from "../orchestration-v2/ThreadGovernance.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -848,6 +850,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  const governance = yield* ThreadGovernance.ThreadGovernance;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
@@ -1786,6 +1789,19 @@ const make = Effect.gen(function* () {
     capabilities: (scope) =>
       Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
+        const managed =
+          parent !== undefined
+            ? (yield* governance
+                .confinementFor(parent.thread.id)
+                .pipe(
+                  Effect.mapError(() =>
+                    failure(
+                      "capability_denied",
+                      "The managed execution boundary could not be verified.",
+                    ),
+                  ),
+                )) !== undefined
+            : false;
         const providers = yield* loadProviders;
         const orchestrationCapableInstanceIds = yield* loadOrchestrationCapableInstanceIds();
         return {
@@ -1799,6 +1815,13 @@ const make = Effect.gen(function* () {
               provider,
               orchestrationCapableInstanceIds.has(provider.instanceId),
             );
+            const executionConstraints =
+              managed && !isConfinableProviderDriver(provider.driver)
+                ? [
+                    ...constraints,
+                    "Managed delegation requires a provider with a confined runtime (Codex or Claude).",
+                  ]
+                : constraints;
             return {
               providerInstanceId: provider.instanceId,
               driverKind: provider.driver,
@@ -1811,20 +1834,21 @@ const make = Effect.gen(function* () {
                     ? {}
                     : { options: model.capabilities.optionDescriptors }),
                 })) ?? [],
-              canRunChildTask: constraints.length === 0,
-              canRunCrossProviderChildTask: constraints.length === 0,
-              constraints: [...constraints],
+              canRunChildTask: executionConstraints.length === 0,
+              canRunCrossProviderChildTask: executionConstraints.length === 0,
+              constraints: [...executionConstraints],
             };
           }),
           features: {
             appOwnedSubagents: true,
+            ...(managed ? { nativeSubagents: false } : {}),
             asyncPolling: true,
             cancellation: true,
-            batchThreadCreation: true,
+            batchThreadCreation: !managed,
             threadManagement: true,
             incrementalThreadRead: true,
-            scheduledTasks: true,
-            maxBatchThreads: 20,
+            scheduledTasks: !managed,
+            maxBatchThreads: managed ? 0 : 20,
           },
         };
       }),
@@ -1968,6 +1992,12 @@ const make = Effect.gen(function* () {
         // delegated. All of them are checked before anything is stopped.
         const assertStoppable = (threadId: ThreadId): Effect.Effect<void, OrchestratorMcpFailure> =>
           Effect.gen(function* () {
+            yield* governance
+              .assertDirection({
+                threadId,
+                senderThreadId: scope.thread.threadId,
+              })
+              .pipe(Effect.mapError((error) => failure("task_not_cancellable", error.message)));
             const shell = yield* threadManagement
               .getThreadShell(threadId)
               .pipe(Effect.mapError(threadManagementFailure));
@@ -2521,4 +2551,5 @@ export const layer: Layer.Layer<
   | ScheduledTaskService.ScheduledTaskService
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
+  | ThreadGovernance.ThreadGovernance
 > = Layer.effect(OrchestratorMcpService, make);

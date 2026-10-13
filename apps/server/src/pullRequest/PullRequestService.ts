@@ -8,6 +8,7 @@ import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import { BeforeGitHubMutation, GitHubApiRequestError } from "../sourceControl/GitHubApi.ts";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -26,6 +27,8 @@ import {
   pullRequestProviderRequirement,
   resolvePullRequestAuthorFilter,
   type OrchestrationProjectShell,
+  type FactoryError,
+  isFactoryError,
   type ProjectId,
   type PullRequestAction,
   type PullRequestActionInput,
@@ -91,9 +94,11 @@ import {
   type PullRequestProviderApi,
   PullRequestProviderError,
 } from "./PullRequestProvider.ts";
+import * as PullRequestActionGate from "./PullRequestActionGate.ts";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
 import * as ViewedFiles from "./pullRequestViewedFiles.ts";
+import type { ProviderMergeEvidence } from "./pullRequestMergeEvidence.ts";
 
 export interface PullRequestMergeEvent extends PullRequestRef {
   readonly mergedAt: string;
@@ -280,6 +285,10 @@ export class PullRequestService extends Context.Service<
       input: PullRequestSetFilesViewedInput,
     ) => Effect.Effect<void, PullRequestError>;
     readonly runAction: (input: PullRequestActionInput) => Effect.Effect<void, PullRequestError>;
+    /** Uncached, complete host evidence bound to both revisions; unsupported hosts fail closed. */
+    readonly inspectForMerge: (
+      input: PullRequestRef,
+    ) => Effect.Effect<ProviderMergeEvidence, PullRequestError>;
     readonly update: (input: PullRequestUpdateInput) => Effect.Effect<void, PullRequestError>;
     readonly comment: (input: PullRequestCommentInput) => Effect.Effect<void, PullRequestError>;
     readonly updateComment: (
@@ -517,6 +526,20 @@ function toUnavailableError(error: PullRequestProviderError): PullRequestUnavail
   });
 }
 
+/**
+ * The action gate's refusal inside a provider failure. A refusal at the mutation boundary travels
+ * through GitHub's request hook as a transport error, so it is found through each `cause`; the
+ * caller then sees the gate's reason instead of "Could not reach GitHub".
+ */
+function gateRefusalIn(error: unknown): FactoryError | undefined {
+  let current = error;
+  while (typeof current === "object" && current !== null) {
+    if (isFactoryError(current)) return current;
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return undefined;
+}
+
 function toPullRequestError(
   operation: string,
 ): (error: PullRequestProviderError) => PullRequestError {
@@ -653,6 +676,9 @@ function withRateLimitBackoff(
       ? {}
       : { getFileRevisions: wrap("getFileRevisions", api.getFileRevisions) }),
     runAction: interactive("runAction", api.runAction),
+    ...(api.inspectForMerge === undefined
+      ? {}
+      : { inspectForMerge: interactive("inspectForMerge", api.inspectForMerge) }),
     ...(api.updateChangeRequest === undefined
       ? {}
       : {
@@ -696,6 +722,7 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
+  const actionGate = yield* PullRequestActionGate.PullRequestActionGate;
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,
@@ -1806,6 +1833,9 @@ export const make = Effect.gen(function* () {
             updatedAt: changeRequest.updatedAt,
             observedAt,
             mergedAt: changeRequest.mergedAt,
+            ...(changeRequest.mergeCommitSha
+              ? { mergeCommitSha: changeRequest.mergeCommitSha }
+              : {}),
             closedAt: changeRequest.closedAt,
             reviewers: changeRequest.reviewers,
             labels: changeRequest.labels,
@@ -2001,9 +2031,50 @@ export const make = Effect.gen(function* () {
       ),
     );
 
+  // The gate writes its refusal for the user, so its reason is the detail.
+  const gateRefusal = (error: FactoryError) =>
+    new PullRequestOperationError({
+      operation: "runAction",
+      detail: error.detail ?? "The pull request's owner did not authorize this action.",
+      cause: error,
+    });
+
+  // The action gate decides actions on owned pull requests; this supplies the host reads it needs.
+  const authorizeAction = Effect.fn("PullRequestService.authorizeAction")(
+    function* (input: PullRequestActionInput, project: SupportedProject) {
+      return yield* actionGate.authorize({
+        request: input,
+        ref: {
+          projectId: project.project.id,
+          host: project.host,
+          repository: project.repository,
+          number: input.number,
+        },
+        readDetail: detailUncached,
+        readStack: (ref) => stackUncached(ref, { includeDetails: false }),
+      });
+    },
+    Effect.mapError((error: FactoryError | PullRequestError) =>
+      error._tag === "FactoryError" ? gateRefusal(error) : error,
+    ),
+  );
+
   const runAction = (input: PullRequestActionInput): Effect.Effect<string, PullRequestError> =>
     requireProject(input).pipe(
       Effect.flatMap((project): Effect.Effect<string, PullRequestError> => {
+        // The provider checks the shape of a conditional merge; only a provider that claims
+        // conditional merging may be handed one.
+        if (
+          input.expectedHeadSha !== undefined &&
+          project.api.capabilities.conditionalMerge !== true
+        ) {
+          return Effect.fail(
+            new PullRequestOperationError({
+              operation: "runAction",
+              detail: "This action cannot atomically require the approved pull request head.",
+            }),
+          );
+        }
         if (
           input.stackNumber !== undefined &&
           (project.api.capabilities.stackActions !== true ||
@@ -2109,38 +2180,68 @@ export const make = Effect.gen(function* () {
                 : Effect.succeed(false);
             return mergeSettings.pipe(
               Effect.flatMap((removeAgentCreditsOnMerge) =>
-                project.api
-                  .runAction({
-                    cwd: project.project.workspaceRoot,
-                    repository: project.repository,
-                    host: project.host,
-                    number: input.number,
-                    action: input.action,
-                    ...(removeAgentCreditsOnMerge ? { removeAgentCreditsOnMerge: true } : {}),
-                    ...(input.stackNumber === undefined ? {} : { stackNumber: input.stackNumber }),
-                    ...(input.expectedStackHeads === undefined
-                      ? {}
-                      : { expectedStackHeads: input.expectedStackHeads }),
-                    ...(input.mergeMethod === undefined ? {} : { mergeMethod: input.mergeMethod }),
-                    ...(input.updateMethod === undefined
-                      ? {}
-                      : { updateMethod: input.updateMethod }),
-                  })
-                  .pipe(
-                    // Once the authorized provider action starts, a failure may leave partial
-                    // remote updates. Validation and permission failures above changed nothing.
-                    Effect.ensuring(
-                      input.stackNumber === undefined
-                        ? Effect.void
-                        : refreshAfterTurn(project.project.id),
-                    ),
-                    Effect.mapError(toPullRequestError("runAction")),
-                    Effect.as(
-                      project.api.kind === "azure-devops"
-                        ? input.repository.trim()
-                        : project.repository,
-                    ),
-                  ),
+                authorizeAction(input, project).pipe(
+                  Effect.flatMap(({ requireConditionalMerge, beforeMutation }) => {
+                    return project.api
+                      .runAction({
+                        cwd: project.project.workspaceRoot,
+                        repository: project.repository,
+                        host: project.host,
+                        number: input.number,
+                        action: input.action,
+                        ...(requireConditionalMerge ? { requireConditionalMerge: true } : {}),
+                        ...(input.expectedHeadSha === undefined
+                          ? {}
+                          : { expectedHeadSha: input.expectedHeadSha }),
+                        ...(removeAgentCreditsOnMerge ? { removeAgentCreditsOnMerge: true } : {}),
+                        ...(input.stackNumber === undefined
+                          ? {}
+                          : { stackNumber: input.stackNumber }),
+                        ...(input.expectedStackHeads === undefined
+                          ? {}
+                          : { expectedStackHeads: input.expectedStackHeads }),
+                        ...(input.mergeMethod === undefined
+                          ? {}
+                          : { mergeMethod: input.mergeMethod }),
+                        ...(input.updateMethod === undefined
+                          ? {}
+                          : { updateMethod: input.updateMethod }),
+                      })
+                      .pipe(
+                        Effect.provideService(
+                          BeforeGitHubMutation,
+                          beforeMutation.pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new GitHubApiRequestError({
+                                  host: project.host,
+                                  operation: "factory.merge.authorize",
+                                  cause,
+                                }),
+                            ),
+                          ),
+                        ),
+                        // Once the authorized provider action starts, a failure may leave partial
+                        // remote updates. Validation and permission failures above changed nothing.
+                        Effect.ensuring(
+                          input.stackNumber === undefined
+                            ? Effect.void
+                            : refreshAfterTurn(project.project.id),
+                        ),
+                        Effect.mapError((error) => {
+                          const refusal = gateRefusalIn(error);
+                          return refusal === undefined
+                            ? toPullRequestError("runAction")(error)
+                            : gateRefusal(refusal);
+                        }),
+                        Effect.as(
+                          project.api.kind === "azure-devops"
+                            ? input.repository.trim()
+                            : project.repository,
+                        ),
+                      );
+                  }),
+                ),
               ),
             );
           }),
@@ -3461,6 +3562,32 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const inspectForMerge: PullRequestService["Service"]["inspectForMerge"] = Effect.fn(
+    "PullRequestService.inspectForMerge",
+  )(function* (input) {
+    const project = yield* requireProject(input);
+    const inspect = project.api.inspectForMerge;
+    const verify = project.api.withVerifiedCredential;
+    if (
+      project.api.capabilities.conditionalMerge !== true ||
+      inspect === undefined ||
+      verify === undefined
+    ) {
+      return yield* new PullRequestOperationError({
+        operation: "inspectForMerge",
+        detail: "This host has no qualified revision-bound merge inspection.",
+      });
+    }
+    return yield* verify({ cwd: project.project.workspaceRoot, host: project.host }, () =>
+      inspect({
+        cwd: project.project.workspaceRoot,
+        repository: project.repository,
+        host: project.host,
+        number: input.number,
+      }),
+    ).pipe(Effect.mapError(toPullRequestError("inspectForMerge")));
+  });
+
   const credentialCached =
     <I extends PullRequestRef, Args extends ReadonlyArray<unknown>, A, E>(
       read: (input: I, ...args: Args) => Effect.Effect<A, E>,
@@ -3511,6 +3638,7 @@ export const make = Effect.gen(function* () {
     filesViewed: credentialCached(filesViewed),
     setFilesViewed,
     runAction: runActionAndInvalidate,
+    inspectForMerge,
     update: invalidatedByMutation(update),
     comment: invalidatedByMutation(comment),
     updateComment: invalidatedByMutation(updateComment),

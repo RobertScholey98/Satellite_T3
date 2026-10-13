@@ -1,4 +1,11 @@
-import { IDEA_WS_METHODS, IdeaOperationError, ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
+import {
+  FACTORY_WS_METHODS,
+  IDEA_WS_METHODS,
+  IdeaOperationError,
+  ORCHESTRATION_WS_METHODS,
+} from "@t3tools/contracts";
+import * as FactoryService from "./factory/FactoryService.ts";
+import * as FactorySkills from "./factory/FactorySkills.ts";
 import { IdeaNotebookStore } from "./ideas/IdeaNotebookStore.ts";
 import { DocumentService } from "./documents/DocumentService.ts";
 import { RevdocService } from "./revdoc/RevdocService.ts";
@@ -93,7 +100,9 @@ import {
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
   WS_METHODS,
+  WsCoreRpcGroup,
   WsRpcGroup,
+  WsSatelliteRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import {
@@ -1110,17 +1119,10 @@ const layerWsRpc = (
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
 ) =>
-  ServerWsRpcGroup.toLayer(
+  WsCoreRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
-      const ideaStore = yield* IdeaNotebookStore;
       const chatAttachments = yield* ChatAttachments.ChatAttachments;
-      const documents = yield* DocumentService;
-      const revdoc = yield* RevdocService;
-      const issues = yield* IssueService;
-      const openWork = yield* OpenWorkService;
-      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
-      const satelliteEngine = yield* OrchestrationEngineService;
 
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -1157,6 +1159,8 @@ const layerWsRpc = (
 
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
+      const factory = yield* FactoryService.FactoryService;
+      const factorySkills = yield* FactorySkills.FactorySkills;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -1418,7 +1422,7 @@ const layerWsRpc = (
         return result;
       });
 
-      const handlers = ServerWsRpcGroup.of({
+      const handlers = WsCoreRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
@@ -1955,9 +1959,10 @@ const layerWsRpc = (
                 )
               : undefined;
             const nextPatch = { ...patch, ...(deviceHosts ? { deviceHosts } : {}) };
-            const settings = yield* providerInstanceMutation === undefined
-              ? serverSettings.updateSettings(nextPatch)
-              : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
+            const settings = yield* factorySkills.updateSettings(
+              nextPatch,
+              providerInstanceMutation,
+            );
             return ServerSettings.redactServerSettingsForClient(settings);
           }),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) => sourceControlDiscovery.discover,
@@ -2212,92 +2217,6 @@ const layerWsRpc = (
                 }),
             ),
           ),
-        [IDEA_WS_METHODS.list]: (input) =>
-          ideaStore.list(input.projectId).pipe(
-            Effect.map((ideas) => ({ ideas })),
-            Effect.mapError((error) => new IdeaOperationError({ message: error.message })),
-          ),
-        [IDEA_WS_METHODS.get]: (input) =>
-          ideaStore.get(input.threadId).pipe(
-            Effect.map((notebook) => ({ notebook })),
-            Effect.mapError((error) => new IdeaOperationError({ message: error.message })),
-          ),
-        [IDEA_WS_METHODS.subscribeChanges]: () =>
-          Effect.gen(function* () {
-            const events = yield* satelliteEngine.subscribeDomainEvents;
-            return events.pipe(
-              Stream.filter(
-                (event) =>
-                  event.type === "idea.changed" ||
-                  event.type === "idea.purged" ||
-                  event.type === "thread.meta-updated" ||
-                  (event.type === "thread.activity-appended" &&
-                    event.payload.activity.kind === "user-input.resolved") ||
-                  (event.type === "thread.session-set" && event.payload.turnSettled === true) ||
-                  (event.type === "thread.message-sent" && event.payload.role === "user") ||
-                  (event.type === "thread.created" && event.payload.purpose === "idea"),
-              ),
-              Stream.mapEffect((event) =>
-                Effect.gen(function* () {
-                  const threadId = ThreadId.make(event.aggregateId);
-                  const notebook = yield* ideaStore.get(threadId);
-                  return notebook || event.type === "idea.purged"
-                    ? Option.some({
-                        threadId,
-                        revision: notebook?.revision ?? 0,
-                        purged: event.type === "idea.purged",
-                      })
-                    : Option.none();
-                }),
-              ),
-              Stream.filter(Option.isSome),
-              Stream.map((change) => change.value),
-              Stream.mapError((error) => new IdeaOperationError({ message: error.message })),
-            );
-          }).pipe(Stream.unwrap),
-        [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: (input) =>
-          projectionSnapshotQuery.getRequestLifecycle(input),
-        [WS_METHODS.revdocGet]: (input) => revdoc.get(input),
-        [WS_METHODS.revdocTestStart]: (input) => revdoc.startTesting(input),
-        [WS_METHODS.revdocStart]: (input) => revdoc.start(input),
-        [WS_METHODS.revdocCancel]: (input) => revdoc.cancel(input),
-        [WS_METHODS.revdocSave]: (input) => revdoc.save(input),
-        [WS_METHODS.revdocChanges]: (input) => revdoc.changes(input),
-        [WS_METHODS.revdocWorktrees]: (input) => revdoc.worktrees(input),
-        [WS_METHODS.documentsList]: (input) => documents.list(input),
-        [WS_METHODS.issuesList]: (input) => issues.list(input),
-        [WS_METHODS.issuesGet]: (input) => issues.get(input),
-        [WS_METHODS.issuesBoardsList]: (input) => issues.listBoards(input),
-        [WS_METHODS.issuesBoardsOpen]: (input) => issues.openBoard(input),
-        [WS_METHODS.issuesBoardsSubscribe]: (input) => issues.subscribeBoard(input),
-        [WS_METHODS.issuesBoardsConfigure]: (input) => issues.configureBoard(input),
-        [WS_METHODS.issuesBoardsDisconnect]: (input) => issues.disconnectBoard(input),
-        [WS_METHODS.issuesBoardsMove]: (input) => issues.move(input),
-        [WS_METHODS.issuesMovesRetry]: (input) => issues.retryMove(input),
-        [WS_METHODS.issuesAttemptsReserve]: (input) => issues.reserveAttempt(input),
-        [WS_METHODS.issuesAttemptsList]: (input) => issues.listAttempts(input),
-        [WS_METHODS.issuesAttemptsReceipts]: (input) => issues.listReceipts(input),
-        [WS_METHODS.issuesAttemptsIngest]: (input) => issues.ingestReceipts(input),
-        [WS_METHODS.issuesAttemptsSyncGenerations]: (input) => issues.syncAttemptGenerations(input),
-        [WS_METHODS.issuesAttemptsAcknowledge]: (input) => issues.acknowledgeReceipts(input),
-        [WS_METHODS.openWorkList]: (input) => openWork.list(input),
-        [WS_METHODS.openWorkTimeline]: (input) => openWork.timeline(input),
-        [WS_METHODS.openWorkLinkFolder]: (input) => openWork.linkFolder(input),
-        [WS_METHODS.openWorkUnlinkFolder]: (input) => openWork.unlinkFolder(input),
-        [WS_METHODS.openWorkAssignDocument]: (input) => openWork.assignDocument(input),
-        [WS_METHODS.openWorkFavoriteDocument]: (input) => openWork.favoriteDocument(input),
-        [WS_METHODS.openWorkFavorites]: (input) => openWork.favorites(input),
-        [WS_METHODS.openWorkReadLinkedDocument]: (input) => openWork.readLinkedDocument(input),
-        [WS_METHODS.documentsGet]: (input) => documents.get(input),
-        [WS_METHODS.documentsHistory]: (input) => documents.history(input),
-        [WS_METHODS.documentsPublish]: (input) =>
-          documents.publish(input, `session:${currentSessionId}`),
-        [WS_METHODS.documentsSaveDraft]: (input) =>
-          documents.saveDraft(input, `session:${currentSessionId}`),
-        [WS_METHODS.documentsSubmit]: (input) =>
-          documents.submit(input, `session:${currentSessionId}`),
-        [WS_METHODS.documentsRetry]: (input) =>
-          documents.retry(input, `session:${currentSessionId}`),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(
             Effect.mapError(
@@ -2761,6 +2680,115 @@ const layerWsRpc = (
     }),
   );
 
+// Satellite's RPCs get their own handler layer; `WsSatelliteRpcGroup` explains why.
+const layerSatelliteWsRpc = (currentSession: EnvironmentAuth.AuthenticatedSession) =>
+  WsSatelliteRpcGroup.toLayer(
+    Effect.gen(function* () {
+      const currentSessionId = currentSession.sessionId;
+      const ideaStore = yield* IdeaNotebookStore;
+      const documents = yield* DocumentService;
+      const factory = yield* FactoryService.FactoryService;
+      const revdoc = yield* RevdocService;
+      const issues = yield* IssueService;
+      const openWork = yield* OpenWorkService;
+      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const satelliteEngine = yield* OrchestrationEngineService;
+      return WsSatelliteRpcGroup.of({
+        [IDEA_WS_METHODS.list]: (input) =>
+          ideaStore.list(input.projectId).pipe(
+            Effect.map((ideas) => ({ ideas })),
+            Effect.mapError((error) => new IdeaOperationError({ message: error.message })),
+          ),
+        [IDEA_WS_METHODS.get]: (input) =>
+          ideaStore.get(input.threadId).pipe(
+            Effect.map((notebook) => ({ notebook })),
+            Effect.mapError((error) => new IdeaOperationError({ message: error.message })),
+          ),
+        [IDEA_WS_METHODS.subscribeChanges]: () =>
+          Effect.gen(function* () {
+            const events = yield* satelliteEngine.subscribeDomainEvents;
+            return events.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "idea.changed" ||
+                  event.type === "idea.purged" ||
+                  event.type === "thread.meta-updated" ||
+                  (event.type === "thread.activity-appended" &&
+                    event.payload.activity.kind === "user-input.resolved") ||
+                  (event.type === "thread.session-set" && event.payload.turnSettled === true) ||
+                  (event.type === "thread.message-sent" && event.payload.role === "user") ||
+                  (event.type === "thread.created" && event.payload.purpose === "idea"),
+              ),
+              Stream.mapEffect((event) =>
+                Effect.gen(function* () {
+                  const threadId = ThreadId.make(event.aggregateId);
+                  const notebook = yield* ideaStore.get(threadId);
+                  return notebook || event.type === "idea.purged"
+                    ? Option.some({
+                        threadId,
+                        revision: notebook?.revision ?? 0,
+                        purged: event.type === "idea.purged",
+                      })
+                    : Option.none();
+                }),
+              ),
+              Stream.filter(Option.isSome),
+              Stream.map((change) => change.value),
+              Stream.mapError((error) => new IdeaOperationError({ message: error.message })),
+            );
+          }).pipe(Stream.unwrap),
+        [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: (input) =>
+          projectionSnapshotQuery.getRequestLifecycle(input),
+        [FACTORY_WS_METHODS.getSnapshot]: (input) => factory.snapshot(input),
+        [FACTORY_WS_METHODS.getMergeGroup]: (input) => factory.mergeGroupGet(input),
+        [FACTORY_WS_METHODS.dispatchCommand]: (input) =>
+          factory.dispatch({ kind: "human" }, input.command),
+        [FACTORY_WS_METHODS.subscribe]: (input) => factory.changes(input),
+        [WS_METHODS.revdocGet]: (input) => revdoc.get(input),
+        [WS_METHODS.revdocTestStart]: (input) => revdoc.startTesting(input),
+        [WS_METHODS.revdocStart]: (input) => revdoc.start(input),
+        [WS_METHODS.revdocCancel]: (input) => revdoc.cancel(input),
+        [WS_METHODS.revdocSave]: (input) => revdoc.save(input),
+        [WS_METHODS.revdocChanges]: (input) => revdoc.changes(input),
+        [WS_METHODS.revdocWorktrees]: (input) => revdoc.worktrees(input),
+        [WS_METHODS.documentsList]: (input) => documents.list(input),
+        [WS_METHODS.issuesList]: (input) => issues.list(input),
+        [WS_METHODS.issuesGet]: (input) => issues.get(input),
+        [WS_METHODS.issuesBoardsList]: (input) => issues.listBoards(input),
+        [WS_METHODS.issuesBoardsOpen]: (input) => issues.openBoard(input),
+        [WS_METHODS.issuesBoardsSubscribe]: (input) => issues.subscribeBoard(input),
+        [WS_METHODS.issuesBoardsConfigure]: (input) => issues.configureBoard(input),
+        [WS_METHODS.issuesBoardsDisconnect]: (input) => issues.disconnectBoard(input),
+        [WS_METHODS.issuesBoardsMove]: (input) => issues.move(input),
+        [WS_METHODS.issuesMovesRetry]: (input) => issues.retryMove(input),
+        [WS_METHODS.issuesAttemptsReserve]: (input) => issues.reserveAttempt(input),
+        [WS_METHODS.issuesAttemptsList]: (input) => issues.listAttempts(input),
+        [WS_METHODS.issuesAttemptsReceipts]: (input) => issues.listReceipts(input),
+        [WS_METHODS.issuesAttemptsIngest]: (input) => issues.ingestReceipts(input),
+        [WS_METHODS.issuesAttemptsSyncGenerations]: (input) => issues.syncAttemptGenerations(input),
+        [WS_METHODS.issuesAttemptsAcknowledge]: (input) => issues.acknowledgeReceipts(input),
+        [WS_METHODS.openWorkList]: (input) => openWork.list(input),
+        [WS_METHODS.openWorkTimeline]: (input) => openWork.timeline(input),
+        [WS_METHODS.openWorkLinkFolder]: (input) => openWork.linkFolder(input),
+        [WS_METHODS.openWorkUnlinkFolder]: (input) => openWork.unlinkFolder(input),
+        [WS_METHODS.openWorkAssignDocument]: (input) => openWork.assignDocument(input),
+        [WS_METHODS.openWorkFavoriteDocument]: (input) => openWork.favoriteDocument(input),
+        [WS_METHODS.openWorkFavorites]: (input) => openWork.favorites(input),
+        [WS_METHODS.openWorkReadLinkedDocument]: (input) => openWork.readLinkedDocument(input),
+        [WS_METHODS.documentsGet]: (input) => documents.get(input),
+        [WS_METHODS.documentsHistory]: (input) => documents.history(input),
+        [WS_METHODS.documentsPublish]: (input) =>
+          documents.publish(input, `session:${currentSessionId}`),
+        [WS_METHODS.documentsSaveDraft]: (input) =>
+          documents.saveDraft(input, `session:${currentSessionId}`),
+        [WS_METHODS.documentsSubmit]: (input) =>
+          documents.submit(input, `session:${currentSessionId}`),
+        [WS_METHODS.documentsRetry]: (input) =>
+          documents.retry(input, `session:${currentSessionId}`),
+      });
+    }),
+  );
+
 // A defect in a handler's effect fails only its own request. RpcServer's default
 // sends a socket-level Defect frame instead, and the client ends every pending
 // request on the socket with it. DefectReporter logs these defects.
@@ -2776,6 +2804,8 @@ export const layer = Layer.unwrap(
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const documents = yield* DocumentService;
+    const factory = yield* FactoryService.FactoryService;
+    const factorySkills = yield* FactorySkills.FactorySkills;
     const revdoc = yield* RevdocService;
     const issues = yield* IssueService;
     const openWork = yield* OpenWorkService;
@@ -2833,12 +2863,15 @@ export const layer = Layer.unwrap(
           return httpEffect;
         }).pipe(
           Effect.provide(
-            layerWsRpc(
-              session,
-              clientOrigin,
-              clientAnalyticsProps,
-              previewAutomationBroker,
-              serverBrowser,
+            Layer.merge(
+              layerWsRpc(
+                session,
+                clientOrigin,
+                clientAnalyticsProps,
+                previewAutomationBroker,
+                serverBrowser,
+              ),
+              layerSatelliteWsRpc(session),
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees
@@ -2854,6 +2887,8 @@ export const layer = Layer.unwrap(
               Layer.provide(
                 Layer.mergeAll(
                   Layer.succeed(DocumentService, documents),
+                  Layer.succeed(FactoryService.FactoryService, factory),
+                  Layer.succeed(FactorySkills.FactorySkills, factorySkills),
                   Layer.succeed(RevdocService, revdoc),
                   Layer.succeed(IssueService, issues),
                   Layer.succeed(OpenWorkService, openWork),

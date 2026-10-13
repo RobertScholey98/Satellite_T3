@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  FactoryError,
   MessageId,
   ProjectId,
   ProviderDriverKind,
@@ -24,6 +25,7 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 
 const threadId = ThreadId.make("thread:restart");
 const runId = RunId.make("run:restart");
@@ -253,18 +255,26 @@ it.effect("does not continue a failed run that lost background work", () =>
 );
 
 it.effect.each([
-  [false, undefined],
-  [true, undefined],
-  [false, true],
-  [true, false],
+  [false, undefined, false],
+  [true, undefined, false],
+  [false, true, false],
+  [true, false, false],
+  [true, undefined, true],
+  [false, undefined, true],
+  [true, false, true],
 ] as const)(
-  "atomically records restart intent with cancellation when opt-in is %s and project override is %s",
-  ([enabled, projectOverride]) =>
+  "records restart intent for opt-in %s, project override %s, factory ownership %s",
+  ([enabled, projectOverride, managed]) =>
     Effect.gen(function* () {
       let committed: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0] | undefined;
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(
         Effect.provide(
           Layer.mergeAll(
+            managed
+              ? Layer.mock(ThreadGovernance.ThreadGovernance)({
+                  governs: () => Effect.succeed(true),
+                })
+              : ThreadGovernance.layerUngoverned,
             ServerSettings.layerTest({
               continueThreadsAfterServerUpdate: enabled,
               projectSettingsOverrides:
@@ -303,8 +313,10 @@ it.effect.each([
           (event) => event.type === "run.updated" && event.payload.status === "cancelled",
         ),
       );
-      assert.lengthOf(committed!.effects, (projectOverride ?? enabled) ? 1 : 0);
-      if (projectOverride ?? enabled)
+      // Managed work records its intent regardless of the opt-in; the factory decides.
+      const recorded = managed || (projectOverride ?? enabled);
+      assert.lengthOf(committed!.effects, recorded ? 1 : 0);
+      if (recorded)
         assert.deepEqual(committed!.effects[0]?.request, {
           type: "provider-runtime.continue",
           sourceRunId: runId,
@@ -370,6 +382,62 @@ it.effect("does not duplicate delivery and yields to newer user work or opt-out"
       ),
     );
     assert.lengthOf(commands, 1);
+    // The factory resumes managed work under its own controls, not the opt-in.
+    yield* continueRestartedRun({ threadId, sourceRunId: runId, managed: true }).pipe(
+      Effect.provide(
+        Layer.merge(
+          layerThreads,
+          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: false }),
+        ),
+      ),
+    );
+    assert.lengthOf(commands, 2);
+  }),
+);
+
+it.effect("one failing thread does not stop startup recovery for the others", () =>
+  Effect.gen(function* () {
+    const unreadable = ThreadId.make("thread:restart-unreadable");
+    const unresolved = ThreadId.make("thread:restart-unresolved");
+    const committed: Array<Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0]> = [];
+    const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.mock(ThreadGovernance.ThreadGovernance)({
+            governs: (id) =>
+              id === unresolved
+                ? Effect.fail(new FactoryError({ code: "execution-unavailable" }))
+                : Effect.succeed(false),
+          }),
+          ServerSettings.layerTest({}),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([unreadable, unresolved, threadId]),
+            getRuntimeRecoveryProjection: (id) =>
+              id === unreadable
+                ? Effect.die("unreadable projection")
+                : Effect.succeed(makeProjection()),
+          }),
+          Layer.mock(EventSink.EventSinkV2)({
+            commitCommand: (input) => {
+              committed.push(input);
+              return Effect.succeed({ committed: true, cancelledEffectCount: 0 } as never);
+            },
+          }),
+          IdAllocator.layer,
+          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({
+            runRecoveryOnce: Effect.succeed(false),
+          }),
+          Layer.mock(EffectOutbox.EffectOutboxV2)({
+            reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
+          }),
+        ),
+      ),
+    );
+    const summary = yield* recovery.reconcile("startup");
+    // The thread whose membership lookup failed is still cut, as an unmanaged thread.
+    assert.lengthOf(committed, 2);
+    assert.equal(summary.terminalizedRuns, 2);
+    assert.isTrue(committed.every((input) => input.effects.length === 0));
   }),
 );
 
@@ -395,6 +463,7 @@ it.effect("prepares no continuation for background work another provider thread 
     } as unknown as OrchestrationV2ThreadProjection;
     const writes: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0][] = [];
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+      Effect.provide(ThreadGovernance.layerUngoverned),
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
@@ -423,6 +492,7 @@ it.effect("prepares no continuation for background work another provider thread 
       turnItems: [{ ...projection.turnItems[0]!, providerThreadId }],
     } as OrchestrationV2ThreadProjection;
     const ownRecovery = yield* ProviderRuntimeRecovery.make.pipe(
+      Effect.provide(ThreadGovernance.layerUngoverned),
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
@@ -490,6 +560,7 @@ it.effect.each([
         const commits: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0][] = [];
         const writes: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0][] = [];
         const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+          Effect.provide(ThreadGovernance.layerUngoverned),
           Effect.provide(
             Layer.mergeAll(
               ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
@@ -546,6 +617,7 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
     let projection = makeProjection();
     const commits: Parameters<EventSink.EventSinkV2["Service"]["commitCommand"]>[0][] = [];
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+      Effect.provide(ThreadGovernance.layerUngoverned),
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
@@ -784,6 +856,7 @@ it.effect("prepares later threads' continuations when one thread fails", () =>
     const brokenThreadId = ThreadId.make("thread:broken");
     const writes: Parameters<EventSink.EventSinkV2["Service"]["writeWithEffects"]>[0][] = [];
     const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+      Effect.provide(ThreadGovernance.layerUngoverned),
       Effect.provide(
         Layer.mergeAll(
           ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),

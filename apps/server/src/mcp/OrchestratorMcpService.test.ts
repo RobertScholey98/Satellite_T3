@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  FactoryError,
   EnvironmentId,
   NodeId,
   type OrchestrationV2ThreadShell,
@@ -39,6 +40,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import * as ThreadGovernance from "../orchestration-v2/ThreadGovernance.ts";
 
 describe("OrchestratorMcpService", () => {
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
@@ -91,6 +93,7 @@ describe("OrchestratorMcpService", () => {
       } as unknown as OrchestrationV2ThreadProjection;
       let hasNestedWork = true;
       const layerDependencies = Layer.mergeAll(
+        ThreadGovernance.layerUngoverned,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -208,6 +211,7 @@ describe("OrchestratorMcpService", () => {
         turnItems: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        ThreadGovernance.layerUngoverned,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -291,6 +295,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        ThreadGovernance.layerUngoverned,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -367,6 +372,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        ThreadGovernance.layerUngoverned,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -446,6 +452,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        ThreadGovernance.layerUngoverned,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -532,6 +539,7 @@ describe("OrchestratorMcpService", () => {
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
       const layerDependencies = Layer.mergeAll(
+        ThreadGovernance.layerUngoverned,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -586,6 +594,7 @@ describe("OrchestratorMcpService", () => {
    */
   const cancelOverRaisedGrandchild = (child: {
     readonly deleted: boolean;
+    readonly takeover?: "child" | "grandchild";
     /** The grandchild passes the check, and its user raises it before the stop reaches it. */
     readonly raisedDuringStop?: boolean;
   }) =>
@@ -654,7 +663,9 @@ describe("OrchestratorMcpService", () => {
           // to full access.
           getThreadShell: (threadId) =>
             Effect.succeed(
-              threadId === grandchildThreadId && child.raisedDuringStop !== true
+              threadId === grandchildThreadId &&
+                child.raisedDuringStop !== true &&
+                child.takeover === undefined
                 ? liveThreadShell(threadId)
                 : threadId === childThreadId && child.deleted
                   ? null
@@ -695,6 +706,22 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(SecretRequests.SecretRequests)({}),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        child.takeover === undefined
+          ? ThreadGovernance.layerUngoverned
+          : Layer.mock(ThreadGovernance.ThreadGovernance)({
+              assertDirection: (input) => {
+                assert.strictEqual(input.senderThreadId, parentThreadId);
+                return input.threadId ===
+                  (child.takeover === "child" ? childThreadId : grandchildThreadId)
+                  ? Effect.fail(
+                      new FactoryError({
+                        code: "permission-denied",
+                        detail: "The user has taken over this thread.",
+                      }),
+                    )
+                  : Effect.void;
+              },
+            }),
       );
       const scope: McpInvocationScope = {
         environmentId: EnvironmentId.make("environment:mcp-cancel-grandchild"),
@@ -732,6 +759,18 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
+  it.effect("refuses parent cancellation before stopping a taken-over child or descendant", () =>
+    Effect.gen(function* () {
+      for (const takeover of ["child", "grandchild"] as const) {
+        assert.deepEqual(yield* cancelOverRaisedGrandchild({ deleted: false, takeover }), {
+          code: "task_not_cancellable",
+          dispatched: [],
+          stoppedBelow: false,
+        });
+      }
+    }),
+  );
+
   it.effect("reports a task under the child that its user raises while it is being stopped", () =>
     Effect.gen(function* () {
       const outcome = yield* cancelOverRaisedGrandchild({ deleted: false, raisedDuringStop: true });
@@ -760,6 +799,7 @@ describe("OrchestratorMcpService provider resolution", () => {
   const projectId = ProjectId.make("project:mcp-providers");
   const codexInstanceId = ProviderInstanceId.make("codex");
   const antigravityInstanceId = ProviderInstanceId.make("antigravity");
+  const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
 
   const scope: McpInvocationScope = {
     environmentId: EnvironmentId.make("environment:mcp-providers"),
@@ -912,6 +952,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           forkShadow,
         ];
         const layerDependencies = Layer.mergeAll(
+          ThreadGovernance.layerUngoverned,
           NodeServices.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -1006,6 +1047,80 @@ describe("OrchestratorMcpService provider resolution", () => {
   );
 
   it.effect(
+    "advertises managed app-owned delegation without native teams or unrelated creation",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const capabilities = yield* service.capabilities(scope);
+        assert.isTrue(capabilities.features.appOwnedSubagents);
+        assert.isFalse(capabilities.features.nativeSubagents);
+        assert.isFalse(capabilities.features.batchThreadCreation);
+        assert.isFalse(capabilities.features.scheduledTasks);
+        assert.equal(capabilities.features.maxBatchThreads, 0);
+        assert.deepStrictEqual(
+          capabilities.providers.map((provider) => [
+            provider.providerInstanceId,
+            provider.canRunChildTask,
+            provider.constraints,
+          ]),
+          [
+            [codexInstanceId, true, []],
+            [claudeInstanceId, true, []],
+            [
+              antigravityInstanceId,
+              false,
+              ["Managed delegation requires a provider with a confined runtime (Codex or Claude)."],
+            ],
+          ],
+        );
+      }).pipe(
+        Effect.provide(
+          OrchestratorMcpService.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                NodeServices.layer,
+                Layer.mock(ThreadGovernance.ThreadGovernance)({
+                  governs: () => Effect.succeed(false),
+                  assertDirection: () => Effect.void,
+                  confinementFor: () =>
+                    Effect.succeed({
+                      boundaryId: "factory:lead",
+                      workspacePath: "/managed/project",
+                      profile: {},
+                    }),
+                }),
+                Layer.mock(ThreadManagementService.ThreadManagementService)({
+                  getThreadRecords: () => Effect.succeed(parentProjection([])),
+                }),
+                providerRegistryLayer([
+                  providerSnapshot({
+                    instanceId: codexInstanceId,
+                    driver: ProviderDriverKind.make("codex"),
+                    model: "gpt-5.4",
+                  }),
+                  providerSnapshot({
+                    instanceId: claudeInstanceId,
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    model: "claude-opus-5-5",
+                  }),
+                  providerSnapshot({
+                    instanceId: antigravityInstanceId,
+                    driver: ProviderDriverKind.make("antigravity"),
+                    model: "ant-model",
+                  }),
+                ]),
+                adapterRegistryLayer([codexInstanceId, claudeInstanceId, antigravityInstanceId]),
+                Layer.mock(ProjectService.ProjectService)({}),
+                Layer.mock(SecretRequests.SecretRequests)({}),
+                Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+              ),
+            ),
+          ),
+        ),
+      ),
+  );
+
+  it.effect(
     "delegates to an Antigravity instance whose adapter resolves through the registry",
     () =>
       Effect.gen(function* () {
@@ -1032,6 +1147,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         };
         const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
         const layerDependencies = Layer.mergeAll(
+          ThreadGovernance.layerUngoverned,
           NodeServices.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             getThreadRecords: (threadId) =>
@@ -1129,6 +1245,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       };
       let delegated = false;
       const layerDependencies = Layer.mergeAll(
+        ThreadGovernance.layerUngoverned,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -1206,6 +1323,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         checkedAt: "2026-09-13T00:00:00.000Z",
       });
       const layerDependencies = Layer.mergeAll(
+        ThreadGovernance.layerUngoverned,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: () => Effect.succeed(parentProjection([])),
@@ -1255,7 +1373,6 @@ describe("OrchestratorMcpService provider resolution", () => {
 
   it.effect("re-probes an unavailable target once before refusing it", () =>
     Effect.gen(function* () {
-      const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
       const claudeDriver = ProviderDriverKind.make("claudeAgent");
       const task = {
         id: taskId,
@@ -1298,6 +1415,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       const probes = yield* Ref.make(0);
       const dispatched = yield* Ref.make(0);
       const layerDependencies = Layer.mergeAll(
+        ThreadGovernance.layerUngoverned,
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
@@ -1442,6 +1560,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
           let delegated = false;
           const layerDependencies = Layer.mergeAll(
+            ThreadGovernance.layerUngoverned,
             NodeServices.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadRecords: (threadId) =>
@@ -1616,6 +1735,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       OrchestratorMcpService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            ThreadGovernance.layerUngoverned,
             NodeServices.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
               getThreadShell: (threadId) =>
@@ -1683,6 +1803,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             OrchestratorMcpService.layer.pipe(
               Layer.provide(
                 Layer.mergeAll(
+                  ThreadGovernance.layerUngoverned,
                   NodeServices.layer,
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
                     getThreadShell: () => Effect.succeed(null),
@@ -1765,6 +1886,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             OrchestratorMcpService.layer.pipe(
               Layer.provide(
                 Layer.mergeAll(
+                  ThreadGovernance.layerUngoverned,
                   NodeServices.layer,
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
                     getThreadShell: (threadId) =>

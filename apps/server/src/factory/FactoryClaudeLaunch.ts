@@ -1,0 +1,275 @@
+import type { ClaudeSettings } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+
+import { CLAUDE_SDK_IDENTITY_VARIABLES } from "../orchestration-v2/Adapters/ConfinedClaudeProcess.ts";
+import { ConfinedLaunchError } from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
+import {
+  FACTORY_IMAGE_PROVIDERS_LABEL,
+  type FactoryExecutionProfile,
+} from "./FactoryExecutionProfile.ts";
+
+// Decoding keeps only the access token and its expiry. The refresh token never leaves the host:
+// a container that refreshed it would sign the host's Claude Code out. A file without a Claude
+// sign-in, such as one holding only MCP sign-ins, has no `claudeAiOauth`.
+const FileCredentials = Schema.Struct({
+  claudeAiOauth: Schema.optional(
+    Schema.Struct({ accessToken: Schema.String, expiresAt: Schema.Number }),
+  ),
+});
+const decodeFileCredentials = Schema.decodeUnknownEffect(Schema.fromJsonString(FileCredentials));
+
+const REFRESH_MARGIN_MS = 5 * 60 * 1_000;
+
+const NO_CREDENTIAL =
+  "Managed Claude needs a file-based Claude sign-in, or CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in the provider's environment.";
+
+// Claude Code reads these to reach another backend or endpoint. The container would either ignore
+// them or need their credentials, so a provider set up this way is refused rather than switched
+// to a different account.
+const OTHER_BACKENDS = [
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_USE_BEDROCK",
+  "CLAUDE_CODE_USE_VERTEX",
+  "CLAUDE_CODE_USE_FOUNDRY",
+  "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+  "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+  "CLAUDE_CODE_USE_MANTLE",
+  "CLAUDE_CODE_USE_GATEWAY",
+] as const;
+
+// Claude Code treats a `CLAUDE_CODE_USE_*` switch as on only for these values.
+const isSwitchedOn = (value: string) =>
+  ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+
+const otherBackend = (environment: Readonly<Record<string, unknown>>) =>
+  OTHER_BACKENDS.find((name) => {
+    const value = environment[name];
+    if (value === undefined || value === null || String(value).trim() === "") return false;
+    return name.startsWith("CLAUDE_CODE_USE_") ? isSwitchedOn(String(value)) : true;
+  });
+
+// Claude Code applies a settings file's `env` and `apiKeyHelper` as the process environment and
+// an API key source, so they choose a backend just as the environment does.
+const UserSettings = Schema.Struct({
+  env: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  apiKeyHelper: Schema.optional(Schema.Unknown),
+});
+const decodeUserSettings = Schema.decodeUnknownEffect(Schema.fromJsonString(UserSettings));
+
+/** The backend the selected config directory's `settings.json` switches to, if any. */
+const settingsBackend = Effect.fnUntraced(function* (input: {
+  readonly settings: ClaudeSettings;
+  readonly environment: NodeJS.ProcessEnv;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const file = path.join(
+    yield* resolveClaudeHomePath(input.settings, input.environment),
+    "settings.json",
+  );
+  const unreadable = (cause: unknown) =>
+    new ConfinedLaunchError({
+      detail: `Claude's settings file ${file} could not be read. Fix or remove it, then retry.`,
+      cause,
+    });
+  const contents = yield* fs.readFileString(file).pipe(
+    Effect.catchTags({
+      PlatformError: (error) =>
+        error.reason._tag === "NotFound"
+          ? Effect.succeed(undefined)
+          : Effect.fail(unreadable(error)),
+    }),
+  );
+  if (contents === undefined) return undefined;
+  const userSettings = yield* decodeUserSettings(contents).pipe(Effect.mapError(unreadable));
+  const backend = otherBackend(userSettings.env ?? {});
+  if (backend !== undefined) return backend;
+  return userSettings.apiKeyHelper === undefined || userSettings.apiKeyHelper === ""
+    ? undefined
+    : "apiKeyHelper";
+});
+
+const fileAccessToken = Effect.fnUntraced(function* (input: {
+  readonly settings: ClaudeSettings;
+  readonly environment: NodeJS.ProcessEnv;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const configDir = yield* resolveClaudeHomePath(input.settings, input.environment);
+  const file = path.join(configDir, ".credentials.json");
+  const unreadable = (cause: unknown) =>
+    new ConfinedLaunchError({
+      detail: `Claude's sign-in file ${file} could not be read. Open Claude Code on this machine to sign in again, then retry.`,
+      cause,
+    });
+  const credentials = yield* fs.readFileString(file).pipe(
+    Effect.catchTags({
+      PlatformError: (error) =>
+        error.reason._tag === "NotFound"
+          ? Effect.succeed(undefined)
+          : Effect.fail(unreadable(error)),
+    }),
+    Effect.flatMap((contents) =>
+      contents === undefined
+        ? Effect.succeed(undefined)
+        : decodeFileCredentials(contents).pipe(Effect.mapError(unreadable)),
+    ),
+  );
+  if (credentials?.claudeAiOauth === undefined)
+    return yield* new ConfinedLaunchError({ detail: NO_CREDENTIAL });
+  const renewBy = credentials.claudeAiOauth.expiresAt - REFRESH_MARGIN_MS;
+  if ((yield* Clock.currentTimeMillis) >= renewBy) {
+    return yield* new ConfinedLaunchError({
+      detail: "Open Claude Code on this machine to refresh its sign-in, then retry.",
+    });
+  }
+  return { value: credentials.claudeAiOauth.accessToken, renewBy };
+});
+
+/**
+ * The model credential a managed Claude launch passes into its runtime, first match wins: the
+ * provider environment's `ANTHROPIC_API_KEY`, its `CLAUDE_CODE_OAUTH_TOKEN`, or the access token
+ * of the selected config directory's file-based sign-in, which expires at `renewBy`. This is the
+ * host CLI's order, so managed and unmanaged threads use the same account. Never falls back to
+ * another credential, and refuses a provider whose environment or `settings.json` sets up
+ * another backend or an `apiKeyHelper`.
+ */
+export const resolveFactoryClaudeCredential = Effect.fn("resolveFactoryClaudeCredential")(
+  function* (input: {
+    readonly settings: ClaudeSettings;
+    readonly environment: NodeJS.ProcessEnv;
+  }) {
+    const backend = otherBackend(input.environment) ?? (yield* settingsBackend(input));
+    if (backend !== undefined)
+      return yield* new ConfinedLaunchError({
+        detail: `Managed Claude supports the Anthropic API with a Claude sign-in or API key; this provider uses ${backend}.`,
+      });
+    if (input.environment.ANTHROPIC_API_KEY)
+      return { name: "ANTHROPIC_API_KEY", value: input.environment.ANTHROPIC_API_KEY };
+    if (input.environment.CLAUDE_CODE_OAUTH_TOKEN)
+      return { name: "CLAUDE_CODE_OAUTH_TOKEN", value: input.environment.CLAUDE_CODE_OAUTH_TOKEN };
+    return { name: "CLAUDE_CODE_OAUTH_TOKEN", ...(yield* fileAccessToken(input)) };
+  },
+);
+
+/**
+ * Fails unless the profile's pinned image can run Claude. Profiles qualified before Claude support
+ * pin an image without `claude`, which would otherwise fail as a bare "not found" from Docker.
+ */
+export const assertFactoryImageRunsClaude = Effect.fn("assertFactoryImageRunsClaude")(function* (
+  profile: FactoryExecutionProfile,
+) {
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const dockerUnavailable = new ConfinedLaunchError({
+    detail: "Docker is not running on this environment. Start Docker, then retry.",
+  });
+  const output = yield* runner
+    .run({
+      command: "docker",
+      args: [
+        "--context",
+        profile.dockerContext,
+        "image",
+        "inspect",
+        profile.imageId,
+        "--format",
+        `{{index .Config.Labels "${FACTORY_IMAGE_PROVIDERS_LABEL}"}}`,
+      ],
+    })
+    .pipe(Effect.mapError(() => dockerUnavailable));
+  if (output.code !== 0)
+    return yield* /no such image/i.test(output.stderr)
+      ? new ConfinedLaunchError({
+          detail: "The managed runtime's image is not available on this environment.",
+        })
+      : dockerUnavailable;
+  if (!output.stdout.trim().split(/\s+/).includes("claudeAgent"))
+    return yield* new ConfinedLaunchError({
+      detail:
+        "This managed runtime was prepared before Claude support and runs only Codex models. Choose a Codex model for it.",
+    });
+});
+
+// User-scope Claude Code configuration that can change the model, its endpoint or what runs: a
+// settings file (env, hooks, apiKeyHelper, model) and command and agent definitions with `model:`
+// frontmatter. The per-thread Claude home is writable and outlives each process, so these are
+// mounted read-only from empty sources instead. The home is a mount of its own too: `/runtime` is
+// writable, and a mountpoint cannot be renamed aside to make room for a writable replacement.
+const LOCKED_USER_CONFIGURATION = ["settings.json", "commands", "agents"] as const;
+
+/**
+ * Replaces the runtime's user-scope Claude configuration with read-only empty mounts. The sources
+ * sit beside the runtime directory, which is the only part a confined process can reach.
+ */
+const lockFactoryClaudeUserConfiguration = Effect.fnUntraced(function* (runtimePath: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const sources = path.join(path.dirname(runtimePath), ".claude-user");
+  yield* fs.makeDirectory(path.join(sources, "commands"), { recursive: true });
+  yield* fs.makeDirectory(path.join(sources, "agents"), { recursive: true });
+  // Every runtime of the profile mounts this file, so a launch never truncates it under another.
+  yield* fs
+    .writeFileString(path.join(sources, "settings.json"), "{}", { flag: "wx" })
+    .pipe(
+      Effect.catchTag("PlatformError", (error) =>
+        error.reason._tag === "AlreadyExists" ? Effect.void : Effect.fail(error),
+      ),
+    );
+  const locks = yield* Effect.forEach(LOCKED_USER_CONFIGURATION, (entry) =>
+    // Whatever an earlier process left there, even a directory where the file belongs, would
+    // stop Docker mounting over it.
+    fs
+      .remove(path.join(runtimePath, "claude", entry), { recursive: true, force: true })
+      .pipe(
+        Effect.as([
+          "--mount",
+          `type=bind,source=${path.join(sources, entry)},target=/runtime/claude/${entry},readonly`,
+        ]),
+      ),
+  );
+  return [
+    "--mount",
+    `type=bind,source=${path.join(runtimePath, "claude")},target=/runtime/claude`,
+    ...locks.flat(),
+  ];
+});
+
+/**
+ * Claude's part of a factory launch. Refuses an image that cannot run Claude first, then passes
+ * exactly one model credential through the Docker CLI's environment. Returns the `docker run`
+ * arguments from the credential through the image, run as `claude`.
+ */
+export const prepareFactoryClaudeLaunch = Effect.fn("prepareFactoryClaudeLaunch")(
+  function* (input: {
+    readonly profile: FactoryExecutionProfile;
+    readonly settings: ClaudeSettings;
+    readonly environment: NodeJS.ProcessEnv;
+  }) {
+    yield* assertFactoryImageRunsClaude(input.profile);
+    const credential = yield* resolveFactoryClaudeCredential(input);
+    const userConfiguration = yield* lockFactoryClaudeUserConfiguration(input.profile.runtimePath);
+    return {
+      args: [
+        ...userConfiguration,
+        "--env",
+        credential.name,
+        // An OAuth sign-in would otherwise load the account's claude.ai connectors.
+        "--env",
+        "ENABLE_CLAUDEAI_MCP_SERVERS=false",
+        ...CLAUDE_SDK_IDENTITY_VARIABLES.flatMap((name) => ["--env", name]),
+        "--entrypoint",
+        "claude",
+        input.profile.imageId,
+      ],
+      environment: { [credential.name]: credential.value },
+      ...("renewBy" in credential ? { renewBy: credential.renewBy } : {}),
+    };
+  },
+);

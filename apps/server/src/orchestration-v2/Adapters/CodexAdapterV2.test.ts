@@ -12,6 +12,7 @@ import {
   CheckpointId,
   CodexSettings,
   EnvironmentId,
+  FactoryError,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -69,6 +70,7 @@ import {
 } from "../ProviderAdapter.ts";
 import type { ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+import * as ConfinedProviderLaunch from "./ConfinedProviderLaunch.ts";
 import { makeReplayServerConfig, withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 
@@ -720,6 +722,7 @@ describe("CodexAdapterV2 process spawning", () => {
       });
       const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
         Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+        Effect.provide(ConfinedProviderLaunch.layerUnconfined),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(
           ProviderEventLoggers.ProviderEventLoggers,
@@ -779,7 +782,7 @@ describe("CodexAdapterV2 process spawning", () => {
           Layer.mergeAll(
             CodexAdapterV2.layerAppServerClientFactory,
             ServerConfig.layerTest(process.cwd(), { prefix: "t3-codex-binary-home-" }),
-          ),
+          ).pipe(Layer.provideMerge(ConfinedProviderLaunch.layerUnconfined)),
         ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(
@@ -1451,6 +1454,11 @@ const CODEX_TEST_RUNTIME_POLICY = ProviderAdapterV2RuntimePolicy.make({
   interactionMode: "default",
   cwd: "/workspace",
 });
+const unconfinedLaunch: ConfinedProviderLaunch.ConfinedProviderLaunch["Service"] = {
+  prepare: () => Effect.die("These sessions are never confined."),
+  assertActive: () => Effect.void,
+  checkCredential: () => Effect.die("These sessions are never confined."),
+};
 
 function makeCodexTestAppThread(input: {
   readonly threadId: ThreadId;
@@ -1683,6 +1691,8 @@ describe("CodexAdapterV2 session initialize", () => {
   const openReplaySession = (
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
+    runtimePolicy: ProviderAdapterV2RuntimePolicy = CODEX_TEST_RUNTIME_POLICY,
+    confinedLaunch: ConfinedProviderLaunch.ConfinedProviderLaunch["Service"] = unconfinedLaunch,
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -1720,8 +1730,10 @@ describe("CodexAdapterV2 session initialize", () => {
               ),
             ),
         },
+        confinedLaunch,
         crypto: yield* Crypto.Crypto,
         fileSystem: yield* FileSystem.FileSystem,
+        path: yield* Path.Path,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         serverConfig: yield* makeReplayServerConfig(transcript.scenario).pipe(Effect.orDie),
       });
@@ -1729,14 +1741,14 @@ describe("CodexAdapterV2 session initialize", () => {
         threadId: ThreadId.make(`thread-${transcript.scenario}`),
         providerSessionId: ProviderSessionId.make(`provider-session-${transcript.scenario}`),
         modelSelection: CODEX_TEST_MODEL_SELECTION,
-        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        runtimePolicy,
       });
       return {
         ensureThread: (threadId: string) =>
           runtime.ensureThread({
             threadId: ThreadId.make(threadId),
             modelSelection: CODEX_TEST_MODEL_SELECTION,
-            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+            runtimePolicy,
           }),
         initializeRequests: () => initializeRequests,
       };
@@ -1744,6 +1756,58 @@ describe("CodexAdapterV2 session initialize", () => {
 
   const replayPreamble = (nativeThreadId: string) =>
     codexReplayPreamble({ nativeThreadId, nativeTurnId: "unused", prompt: "unused" });
+
+  it.effect("rejects a confined startup revoked while its container handshake was pending", () =>
+    Effect.gen(function* () {
+      const revoked = yield* Ref.make(false);
+      const initializeAwaitingResponse = yield* Deferred.make<void>();
+      const releaseInitialize = yield* Deferred.make<void>();
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: "factory-revoked-initialize",
+          entries: replayPreamble("revoked-thread").slice(0, 3),
+        }),
+        (entry) =>
+          entry.label === "initialize"
+            ? Deferred.succeed(initializeAwaitingResponse, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseInitialize)),
+              )
+            : Effect.void,
+        {
+          ...CODEX_TEST_RUNTIME_POLICY,
+          confinement: { boundaryId: "profile", workspacePath: "/snapshot", profile: {} },
+        },
+        {
+          ...unconfinedLaunch,
+          assertActive: () =>
+            Ref.get(revoked).pipe(
+              Effect.flatMap((isRevoked) =>
+                isRevoked
+                  ? Effect.fail(
+                      new FactoryError({
+                        code: "execution-unavailable",
+                        detail: "This assignment's execution grant was withdrawn.",
+                      }),
+                    )
+                  : Effect.void,
+              ),
+            ),
+        },
+      );
+      const starting = yield* session
+        .ensureThread("thread-revoked")
+        .pipe(Effect.flip, Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(initializeAwaitingResponse);
+      yield* Ref.set(revoked, true);
+      yield* Deferred.succeed(releaseInitialize, undefined);
+      const failure = yield* Fiber.join(starting);
+      assert.equal(failure._tag, "ProviderAdapterEnsureThreadError");
+      assert.include(String(failure.cause), "execution grant was withdrawn");
+      const retried = yield* session.ensureThread("thread-revoked").pipe(Effect.flip);
+      assert.include(String(retried.cause), "execution grant was withdrawn");
+      assert.equal(session.initializeRequests(), 1);
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
 
   it.effect("sends one initialize when two threads start on a fresh session at once", () =>
     Effect.gen(function* () {
@@ -1917,8 +1981,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         settings: DEFAULT_CODEX_SETTINGS,
         environment: {},
         clientFactory,
+        confinedLaunch: unconfinedLaunch,
         crypto: yield* Crypto.Crypto,
         fileSystem,
+        path: yield* Path.Path,
         idAllocator,
         serverConfig,
         continuationRequests: {

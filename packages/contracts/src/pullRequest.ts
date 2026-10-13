@@ -400,6 +400,8 @@ export const PullRequestCapabilities = Schema.Struct({
   actions: Schema.Array(PullRequestAction),
   /** Merge strategies the provider itself offers, before repository settings narrow them. */
   mergeMethods: Schema.Array(PullRequestMergeMethod),
+  /** Direct merge can atomically require the approved head revision. Queues are not covered. */
+  conditionalMerge: Schema.optional(Schema.Boolean),
   /**
    * How this host can bring a stale branch up to date. Absent where it cannot at all, which is
    * every host that has not said otherwise — so a provider that says nothing offers nothing.
@@ -859,6 +861,7 @@ export const PullRequestDetail = Schema.Struct({
   /** Server epoch milliseconds when the provider read started; preserved on cache hits. */
   observedAt: Schema.optional(Schema.Finite),
   mergedAt: Schema.NullOr(IsoDateTime),
+  mergeCommitSha: Schema.optional(TrimmedNonEmptyString),
   closedAt: Schema.NullOr(IsoDateTime),
   reviewers: Schema.Array(PullRequestActor),
   labels: Schema.Array(PullRequestLabel),
@@ -1079,6 +1082,8 @@ export const PullRequestActionInput = Schema.Struct({
   expectedStackHeads: Schema.optional(Schema.Array(PullRequestStackHead)),
   ...PullRequestRef.fields,
   action: PullRequestAction,
+  /** A direct merge must still have this head at the host's mutation boundary. */
+  expectedHeadSha: Schema.optional(TrimmedNonEmptyString),
   /**
    * Which strategy the merge uses, read for `merge` and for `enable-auto-merge` alike — a merge
    * the host performs later is still a merge, and the strategy is chosen when it is armed rather

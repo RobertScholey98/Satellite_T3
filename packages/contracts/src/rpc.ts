@@ -22,6 +22,15 @@ import {
 } from "./providerSetup.ts";
 import * as Schema from "effect/Schema";
 import {
+  FACTORY_WS_METHODS,
+  FactoryCommandResult,
+  FactoryDispatchInput,
+  FactoryError,
+  FactoryQuery,
+  FactorySnapshot,
+} from "./factory.ts";
+import { FactoryMergeGroupQuery, FactoryMergeGroupRead } from "./factoryMerge.ts";
+import {
   RevdocInput,
   RevdocStartInput,
   RevdocTestStartInput,
@@ -370,7 +379,12 @@ import {
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
-import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
+import {
+  ServerSettings,
+  ServerSettingsError,
+  ServerSettingsPatch,
+  SkillsRepositoryError,
+} from "./settings.ts";
 import {
   ScheduledTaskDeleteInput,
   ScheduledTaskDeleteResult,
@@ -843,7 +857,7 @@ const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
     providerInstanceMutation: Schema.optionalKey(ProviderInstanceMutation),
   }),
   success: ServerSettings,
-  error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+  error: Schema.Union([ServerSettingsError, SkillsRepositoryError, EnvironmentAuthorizationError]),
 });
 
 const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
@@ -1286,6 +1300,28 @@ const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
 });
 
 const revdocRpcError = Schema.Union([RevdocError, EnvironmentAuthorizationError]);
+const factoryRpcError = Schema.Union([FactoryError, EnvironmentAuthorizationError]);
+const WsFactoryGetSnapshotRpc = Rpc.make(FACTORY_WS_METHODS.getSnapshot, {
+  payload: FactoryQuery,
+  success: FactorySnapshot,
+  error: factoryRpcError,
+});
+const WsFactoryGetMergeGroupRpc = Rpc.make(FACTORY_WS_METHODS.getMergeGroup, {
+  payload: FactoryMergeGroupQuery,
+  success: FactoryMergeGroupRead,
+  error: factoryRpcError,
+});
+const WsFactoryDispatchCommandRpc = Rpc.make(FACTORY_WS_METHODS.dispatchCommand, {
+  payload: FactoryDispatchInput,
+  success: FactoryCommandResult,
+  error: factoryRpcError,
+});
+const WsFactorySubscribeRpc = Rpc.make(FACTORY_WS_METHODS.subscribe, {
+  payload: FactoryQuery,
+  success: FactorySnapshot,
+  error: factoryRpcError,
+  stream: true,
+});
 const WsRevdocGetRpc = Rpc.make(WS_METHODS.revdocGet, {
   payload: RevdocInput,
   success: RevdocDetail,
@@ -1956,7 +1992,17 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
-export const WsRpcGroup = RpcGroup.make(
+/**
+ * The RPCs Satellite adds to upstream's surface. The server implements them in
+ * their own handler layer: a single `toLayer` over every RPC exceeds the
+ * compiler's instantiation limit, which silently widens the server layer's
+ * requirements to `any`.
+ */
+export const WsSatelliteRpcGroup = RpcGroup.make(
+  WsFactoryGetSnapshotRpc,
+  WsFactoryGetMergeGroupRpc,
+  WsFactoryDispatchCommandRpc,
+  WsFactorySubscribeRpc,
   Rpc.make(ORCHESTRATION_WS_METHODS.getRequestLifecycle, {
     payload: OrchestrationGetRequestLifecycleInput,
     success: OrchestrationGetRequestLifecycleResult,
@@ -2095,6 +2141,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsDocumentsSubmitRpc,
   WsDocumentsRetryRpc,
   WsDocumentsHistoryRpc,
+).middleware(RpcScopeAuthorization);
+
+export const WsCoreRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2274,3 +2323,5 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
 ).middleware(RpcScopeAuthorization);
+
+export const WsRpcGroup = WsCoreRpcGroup.merge(WsSatelliteRpcGroup);

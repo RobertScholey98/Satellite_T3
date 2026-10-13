@@ -1,3 +1,4 @@
+import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as DeviceService from "../../../device/DeviceService.ts";
@@ -18,6 +19,7 @@ import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import * as IdeaPromotion from "../../../ideas/IdeaPromotion.ts";
 import * as IdeaRuntime from "../../../ideas/IdeaRuntime.ts";
 import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ThreadGovernance from "../../../orchestration-v2/ThreadGovernance.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
@@ -31,8 +33,21 @@ import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as PreviewBrowser from "../../../preview/PreviewBrowser.ts";
+import * as FactoryPreviewService from "../../../factory/FactoryPreviewService.ts";
+import * as FactoryImprovementEvidence from "../../../factory/FactoryImprovementEvidence.ts";
+import * as FactoryIntegrationExecution from "../../../factory/FactoryIntegrationExecution.ts";
+import * as FactorySchedulingEffects from "../../../factory/FactorySchedulingEffects.ts";
+import * as FactoryService from "../../../factory/FactoryService.ts";
+import * as McpToolAccess from "../../McpToolAccess.ts";
 
 const layerStubServices = Layer.mergeAll(
+  McpToolAccessTestkit.unmanagedFactoryLayer,
+  Layer.mock(FactoryPreviewService.FactoryPreviewService)({}),
+  Layer.mock(FactoryService.FactoryService)({}),
+  Layer.mock(FactorySchedulingEffects.FactorySchedulingEffects)({}),
+  Layer.mock(FactoryIntegrationExecution.FactoryIntegrationExecution)({}),
+  Layer.mock(FactoryImprovementEvidence.FactoryImprovementEvidence)({}),
+  ThreadGovernance.layerUngoverned,
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(DeviceService.DeviceService)({}),
@@ -73,6 +88,98 @@ const ToolsListPayload = Schema.fromJsonString(
   }),
 );
 const decodeToolsListPayload = Schema.decodeUnknownEffect(ToolsListPayload);
+
+/** Serves the production `/mcp` layer; `listAs` lists tools as a provider session of that thread. */
+const serveMcp = (callers: Layer.Layer<McpToolAccess.CallerPolicy>) =>
+  Effect.gen(function* () {
+    const layerRoutes = McpHttpServer.layer.pipe(
+      Layer.provide(McpSessionRegistry.layer),
+      Layer.provide(callers),
+    );
+    yield* HttpRouter.serve(layerRoutes, { disableListenLog: true, disableLogger: true }).pipe(
+      Layer.provide(
+        Layer.mock(ServerEnvironment.ServerEnvironment)({
+          getEnvironmentId: Effect.succeed("environment-scratch" as never),
+        }),
+      ),
+      Layer.provide(PreviewAutomationBroker.layer),
+      Layer.provide(PreviewBrowser.layer),
+      Layer.provide(layerStubServices),
+      Layer.build,
+    );
+    const httpClient = yield* HttpClient.HttpClient;
+    const listAs = (threadId: string) =>
+      Effect.gen(function* () {
+        const credential = yield* McpSessionRegistry.issueActiveMcpCredential({
+          threadId: ThreadId.make(threadId),
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        });
+        const headers = {
+          accept: "application/json, text/event-stream",
+          authorization: credential!.config.authorizationHeader,
+        };
+        const initResponse = yield* httpClient.post("/mcp", {
+          headers,
+          body: HttpBody.text(
+            `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"scratch","version":"1.0.0"}}}`,
+            "application/json",
+          ),
+        });
+        const sessionId = initResponse.headers["mcp-session-id"];
+        const listResponse = yield* httpClient.post("/mcp", {
+          headers: {
+            ...headers,
+            "mcp-protocol-version": "2025-06-18",
+            ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+          },
+          body: HttpBody.text(
+            `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
+            "application/json",
+          ),
+        });
+        const body = (yield* listResponse.text).match(/{.*}/s)![0];
+        return { body, tools: (yield* decodeToolsListPayload(body)).result.tools };
+      });
+    return { listAs };
+  });
+
+const layerHttpTest = Layer.mergeAll(
+  NodeHttpServer.layerTest,
+  ServerConfig.layerTest(process.cwd(), { prefix: "t3-worktree-mcp-" }).pipe(
+    Layer.provide(NodeServices.layer),
+  ),
+  NodeServices.layer,
+);
+
+it.effect("lists factory tools only to the sessions of governed threads", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { listAs } = yield* serveMcp(
+        Layer.succeed(McpToolAccess.CallerPolicy, {
+          grant: (scope) =>
+            Effect.succeed({
+              ...McpToolAccess.ordinaryGrant,
+              grantedTools: scope.thread?.threadId === "thread-managed",
+            }),
+        }),
+      );
+      const factoryTool = (name: string) => name.startsWith("factory_");
+      const ordinary = yield* listAs("thread-ordinary");
+      const managed = yield* listAs("thread-managed");
+      expect(ordinary.tools.filter((tool) => factoryTool(tool.name))).toEqual([]);
+      expect(
+        managed.tools.filter((tool) => factoryTool(tool.name)).map((tool) => tool.name),
+      ).toEqual(
+        expect.arrayContaining([
+          "factory_snapshot",
+          "factory_dispatch",
+          "factory_preview_snapshot",
+        ]),
+      );
+      expect(managed.tools.filter((tool) => !factoryTool(tool.name))).toEqual(ordinary.tools);
+    }),
+  ).pipe(Effect.provide(layerHttpTest)),
+);
 
 it.effect("production mcp layer lists worktree tools over http", () =>
   Effect.scoped(

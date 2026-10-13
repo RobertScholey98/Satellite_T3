@@ -1,3 +1,4 @@
+import * as ThreadGovernance from "./ThreadGovernance.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -128,6 +129,7 @@ const layerTest = Layer.mergeAll(RuntimeLayer.layer, RuntimeLayer.layerEventSink
       subscribeChanges: Effect.never,
     }),
   ),
+  Layer.provide(ThreadGovernance.layerUngoverned),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStoreTest),

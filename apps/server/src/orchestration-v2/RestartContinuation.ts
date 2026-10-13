@@ -8,6 +8,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
 
 import * as ServerSettings from "../serverSettings.ts";
@@ -20,6 +21,14 @@ import {
 } from "./RestartBackgroundNote.ts";
 
 const CONTINUE_PROMPT = "Continue where you left off.";
+
+/** The outbox effect recording a restart's intent to continue a run it cut. */
+export const restartContinuationEffectId = (runId: RunId) => `effect:restart-continuation:${runId}`;
+/** Graceful shutdown records that intent under this command; startup after a crash uses its own. */
+export const restartPrepareCommandId = (runId: RunId) =>
+  CommandId.make(`command:restart-prepare:${runId}`);
+export const restartContinuationMessageId = (runId: RunId) =>
+  MessageId.make(`message:restart-continuation:${runId}`);
 
 /**
  * Resume only an unfinished root turn. Leftover background work is cleaned up
@@ -88,20 +97,30 @@ export function restartContinuationRun(
 }
 
 export const continueRestartedRun = Effect.fn("RestartContinuation.continueRestartedRun")(
-  function* (input: { readonly threadId: ThreadId; readonly sourceRunId: RunId }) {
-    const settings = yield* ServerSettings.ServerSettingsService;
-    const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
-    if (!enabled) return;
+  function* (input: {
+    readonly threadId: ThreadId;
+    readonly sourceRunId: RunId;
+    /** Factory-managed work resumes under factory controls instead of the per-project opt-in. */
+    readonly managed?: boolean;
+  }) {
+    // Without readable settings there is no opt-in.
+    const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+    const enabled = Option.isNone(settings)
+      ? null
+      : yield* settings.value.getSettings.pipe(Effect.orElseSucceed(() => null));
+    if (!enabled && !input.managed) return;
     const threads = yield* ThreadManagementService.ThreadManagementService;
-    const messageId = MessageId.make(`message:restart-continuation:${input.sourceRunId}`);
+    const messageId = restartContinuationMessageId(input.sourceRunId);
     const projection = yield* threads.getThreadRecords(
       input.threadId,
       ["messages", "runs", "providerTurns", "attempts"],
       { messageIds: [messageId] },
     );
     if (
-      !resolveProjectSettings(enabled, projection.thread.projectId).settings
-        .continueThreadsAfterServerUpdate
+      !input.managed &&
+      (!enabled ||
+        !resolveProjectSettings(enabled, projection.thread.projectId).settings
+          .continueThreadsAfterServerUpdate)
     )
       return;
     if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) return;

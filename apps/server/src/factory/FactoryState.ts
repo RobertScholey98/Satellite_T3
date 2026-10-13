@@ -1,0 +1,1474 @@
+import {
+  decideFactoryMerge,
+  factoryMergeEnrollmentConflict,
+  reconcileFactoryMergeGroups,
+} from "./FactoryMerge.ts";
+import { decideFactoryMergeOperation } from "./FactoryMergeOperation.ts";
+import {
+  decideFactoryIntegration,
+  reconcileFactoryIntegrations,
+  type FactoryIntegrationContext,
+} from "./FactoryIntegration.ts";
+import {
+  decideFactoryCollaboration,
+  reconcileFactoryRequestCancellation,
+} from "./FactoryCollaboration.ts";
+import { decideFactoryWorkflow, type FactoryWorkflowContext } from "./FactoryWorkflow.ts";
+import {
+  commissionFactoryAssignment,
+  factorySkillsPin,
+  type FactorySkillsContext,
+} from "./FactoryAssignmentCommission.ts";
+import {
+  type FactoryAssignment,
+  type FactoryAssignmentId,
+  type FactoryBoundary,
+  type FactoryDecisionCommand,
+  type FactoryCommandResult,
+  type FactoryDiscoveryQualification,
+  type FactoryEffectIntent,
+  FactoryError,
+  factorySystemManager,
+  type FactoryManager,
+  type MessageId,
+  type FactoryModelPolicy,
+  type FactoryVerification,
+  type FactoryPolicy,
+  type FactorySnapshot,
+  type FactoryWait,
+  type ThreadId,
+} from "@t3tools/contracts";
+import * as Result from "effect/Result";
+import {
+  decideFactoryImprovements,
+  type FactoryImprovementContext,
+} from "./FactoryImprovements.ts";
+import { decideFactoryDelivery, type FactoryDeliveryContext } from "./FactoryDelivery.ts";
+import { decideFactoryRetros, type FactoryRetroContext } from "./FactoryRetros.ts";
+import {
+  decideFactoryControls,
+  factoryExecutionBlocked,
+  preserveFactoryManagerPauses,
+  type FactoryControlContext,
+} from "./FactoryControls.ts";
+import { constrainAssignmentPolicy, resolveManagerPolicy } from "./FactoryPolicy.ts";
+import {
+  decideFactoryScheduling,
+  validateFactorySchedulingCommission,
+  claimFactoryScheduleCandidate,
+  type FactorySchedulingContext,
+} from "./FactoryScheduling.ts";
+import {
+  decideFactoryOversight,
+  factorySupportingWorkMatches,
+  type FactoryOversightContext,
+} from "./FactoryOversight.ts";
+import {
+  constrainFactoryModelPolicy,
+  resolveFactoryModelPolicy,
+  isFactoryModelApproved,
+} from "./FactoryModelPolicy.ts";
+import {
+  factoryPathWithin,
+  factoryProtectedPath,
+  factoryRelativePath,
+} from "./FactoryBoundaryPaths.ts";
+
+/**
+ * Who issued a command. A `thread` is a managed thread acting through its scoped tools;
+ * `assignmentId` names the assignment it belongs to, which lets a lead's subagents act for it.
+ * `system` is the host recording effect receipts and observations; dispatch never accepts it.
+ */
+export type FactoryActor =
+  | { readonly kind: "human" }
+  | {
+      readonly kind: "thread";
+      readonly threadId: ThreadId;
+      readonly assignmentId?: FactoryAssignmentId;
+    }
+  | { readonly kind: "system" };
+
+/**
+ * Ids the service generates before deciding, so the decider stays pure. Commands that create a
+ * manager or assignment refuse without one. For a handover, `leadThreadId` is the human's thread.
+ */
+export interface FactoryAllocation {
+  readonly managerThreadId: ThreadId;
+  readonly leadThreadId: ThreadId;
+  readonly assignmentId: FactoryAssignmentId;
+}
+
+/** An accepted command. The store writes `effects` to the outbox in the same transaction. */
+export interface FactoryDecision {
+  readonly state: FactorySnapshot;
+  readonly result: FactoryCommandResult;
+  readonly effects: ReadonlyArray<FactoryEffectIntent>;
+}
+
+export const initialFactorySnapshot = (): FactorySnapshot => ({
+  revision: 0,
+  mergeGroups: [],
+  mergeOperations: [],
+  mergeGroupReviews: [],
+  integrationCapabilities: [],
+  integrations: [],
+  integrationGrants: [],
+  integrationPreparations: [],
+  integrationTestArtifacts: [],
+  integrationVerifications: [],
+  integrationMessages: [],
+  crossProjectRequests: [],
+  collaborationMessages: [],
+  collaborationPlans: [],
+  collaborationDecisions: [],
+  incidentRestrictions: [],
+  sharedRepositories: [],
+  sharedWorks: [],
+  experimentConfigurations: [],
+  workflowExperiments: [],
+  improvementValidations: [],
+  modelRecommendations: [],
+  improvementConfigurations: [],
+  improvementIntakes: [],
+  improvementBatches: [],
+  improvementInvestigations: [],
+  improvementProposals: [],
+  improvementDecisions: [],
+  improvementFeedback: [],
+  improvementRecurrences: [],
+  improvementEvidenceReads: [],
+  defaults: {
+    delivery: "human-approval",
+    projectImprovements: "create-tickets",
+    sharedWorkflow: "investigate-and-recommend",
+    authorizeRuleWeakening: false,
+    recoveryCycles: 1,
+  },
+  managers: [],
+  assignments: [],
+  boundaries: [],
+  controls: [],
+  guidance: [],
+  dependencies: [],
+  auxiliaryThreads: [],
+  mergeRules: [],
+  previewConfigurations: [],
+  previewPublicationPolicies: [],
+  retros: [],
+  findings: [],
+  followups: [],
+  projectTrackers: [],
+  schedulingConfigurations: [],
+  scheduleCandidates: [],
+});
+
+export const effectivePolicy = (
+  state: Pick<FactorySnapshot, "defaults">,
+  manager: Pick<FactoryManager, "overrides">,
+): FactoryPolicy => resolveManagerPolicy(state.defaults, manager.overrides);
+
+/**
+ * Clamps each open assignment's granted policy to its manager's current policy. This only
+ * narrows; widening takes `assignments.extend-grant`. A manager-authorized rule change (not an
+ * experiment) loses its control-change grant once rule weakening is off: the epoch bump makes the
+ * service stop its boundary, and the team waits for new authority. Human-authorized ones keep it.
+ */
+const reduceGrants = (
+  assignments: ReadonlyArray<FactoryAssignment>,
+  managers: ReadonlyArray<FactoryManager>,
+  defaults: FactoryPolicy,
+  now: string,
+) =>
+  assignments.map((assignment) => {
+    if (assignment.status === "complete") return assignment;
+    const manager = managers.find((entry) => entry.id === assignment.managerId);
+    if (manager === undefined) return assignment;
+    const grantedPolicy = constrainAssignmentPolicy(
+      assignment.grantedPolicy,
+      resolveManagerPolicy(defaults, manager.overrides),
+    );
+    const revokeControlChange =
+      assignment.authorization?.kind === "manager" &&
+      assignment.sharedWork?.kind !== "experiment" &&
+      assignment.grant?.controlChange != null &&
+      !grantedPolicy.authorizeRuleWeakening;
+    return {
+      ...assignment,
+      grantedPolicy,
+      ...(revokeControlChange
+        ? {
+            grant: {
+              ...assignment.grant!,
+              controlChange: null,
+              epoch: assignment.grant!.epoch + 1,
+            },
+            status: "waiting" as const,
+            wait: {
+              kind: "authority" as const,
+              reason:
+                "Permission for this rule-change assignment was withdrawn. A new, separately authorized task is required to change protected controls.",
+            },
+          }
+        : {}),
+      updatedAt: now,
+    };
+  });
+
+const unavailableQualification: FactoryDiscoveryQualification = {
+  status: "unavailable",
+  reason: "Configure and qualify a read-only execution boundary, then retry onboarding.",
+};
+
+const onboardingWait = (qualification: FactoryDiscoveryQualification): FactoryWait | null =>
+  qualification.status === "unavailable"
+    ? { kind: "execution-boundary", reason: qualification.reason }
+    : null;
+
+/** Launches the manager and onboarding lead threads still pending, once discovery qualifies. */
+const launchIntents = (
+  manager: Extract<FactoryManager, { readonly role: "project" }>,
+  assignment: FactoryAssignment,
+): ReadonlyArray<FactoryEffectIntent> => {
+  if (assignment.qualification.status !== "qualified") return [];
+  const shared = {
+    type: "thread.launch" as const,
+    managerId: manager.id,
+    assignmentId: assignment.id,
+    projectId: manager.projectId,
+    modelSelection: manager.modelSelection,
+    workflow: assignment.workflow,
+    profileId: assignment.qualification.profileId,
+  };
+  return [
+    ...(manager.launchStatus === "pending"
+      ? [{ ...shared, purpose: "manager" as const, threadId: manager.threadId }]
+      : []),
+    ...(assignment.launchStatus === "pending"
+      ? [{ ...shared, purpose: "onboarding" as const, threadId: assignment.threadId }]
+      : []),
+  ];
+};
+
+const preparationIntent = (assignment: FactoryAssignment): FactoryEffectIntent => ({
+  type: "assignment.prepare",
+  managerId: assignment.managerId,
+  assignmentId: assignment.id,
+  threadId: assignment.threadId,
+  projectId: assignment.projectId,
+});
+
+const implementationLaunch = (assignment: FactoryAssignment): ReadonlyArray<FactoryEffectIntent> =>
+  assignment.qualification.status === "qualified" && assignment.modelSelection !== undefined
+    ? [
+        {
+          type: "thread.launch",
+          purpose: "implementation",
+          managerId: assignment.managerId,
+          assignmentId: assignment.id,
+          threadId: assignment.threadId,
+          projectId: assignment.projectId,
+          modelSelection: assignment.modelSelection,
+          workflow: assignment.workflow,
+          profileId: assignment.qualification.profileId,
+        },
+      ]
+    : [];
+
+/**
+ * Clamps each open assignment's model policy to its manager's current pool. When a model the
+ * team could use is withdrawn, the grant epoch bumps, which stops the running boundary, and the
+ * team waits for authority unless it already waits on a human decision.
+ */
+const reduceModelGrants = (
+  state: FactorySnapshot,
+  managers: ReadonlyArray<FactoryManager>,
+  defaults: FactoryModelPolicy | undefined,
+) =>
+  state.assignments.map((assignment) => {
+    if (assignment.status === "complete" || assignment.modelPolicy === undefined) return assignment;
+    const manager = managers.find((entry) => entry.id === assignment.managerId);
+    if (!manager) return assignment;
+    const modelPolicy = constrainFactoryModelPolicy(
+      assignment.modelPolicy,
+      resolveFactoryModelPolicy(defaults, manager.modelOverrides, manager.modelSelection),
+    );
+    const reduced = assignment.modelPolicy.approvedModels.some(
+      (selection) => !isFactoryModelApproved(modelPolicy, selection),
+    );
+    return {
+      ...assignment,
+      modelPolicy,
+      ...(reduced && assignment.grant !== undefined
+        ? {
+            grant: { ...assignment.grant, epoch: assignment.grant.epoch + 1 },
+            status: "waiting" as const,
+            wait:
+              assignment.wait?.kind === "human-decision"
+                ? assignment.wait
+                : {
+                    kind: "authority" as const,
+                    reason:
+                      "The approved model pool was reduced. Execution stopped; review this assignment before granting a new confined run.",
+                  },
+          }
+        : {}),
+    };
+  });
+
+/**
+ * Decides one command against the full snapshot. Each feature decider claims the commands it
+ * owns and returns `undefined` for the rest, so the order here is part of the rules: guards that
+ * hold for every feature run before any decider, and the core manager and assignment lifecycle
+ * runs last. The optional inputs are facts the service verified outside the pure decider.
+ */
+function decideCore(
+  input: FactoryIntegrationContext &
+    FactoryControlContext &
+    FactoryImprovementContext &
+    FactoryWorkflowContext &
+    FactorySkillsContext &
+    FactoryDeliveryContext &
+    FactoryRetroContext &
+    FactorySchedulingContext &
+    FactoryOversightContext & {
+      readonly state: FactorySnapshot;
+      readonly actor: FactoryActor;
+      readonly command: FactoryDecisionCommand;
+      readonly now: string;
+      readonly allocation?: FactoryAllocation;
+      readonly qualification?: FactoryDiscoveryQualification;
+      readonly boundary?: FactoryBoundary;
+      readonly verification?: FactoryVerification;
+      readonly humanMessageVerified?: boolean;
+      readonly humanMessageId?: MessageId;
+      readonly handoverVerified?: boolean;
+    },
+): Result.Result<FactoryDecision, FactoryError> {
+  const requestedAssignmentId =
+    "assignmentId" in input.command ? input.command.assignmentId : undefined;
+  // Integration teams and experiments are refused here, before the feature deciders, so no
+  // single-assignment delivery or completion path can finish or publish them.
+  const integrationAssignment = input.state.assignments.find(
+    (entry) => entry.id === requestedAssignmentId && entry.integrationId !== undefined,
+  );
+  if (
+    integrationAssignment &&
+    (input.command.type.startsWith("delivery.") ||
+      input.command.type === "assignment.completion.plan" ||
+      input.command.type === "assignment.completion.waive" ||
+      input.command.type === "assignment.completion.accept" ||
+      input.command.type === "assignment.delivery.request" ||
+      input.command.type === "assignment.prepared" ||
+      input.command.type === "assignment.retry" ||
+      input.command.type === "assignment.file.mutate" ||
+      input.command.type === "assignment.verify")
+  ) {
+    return Result.fail(
+      new FactoryError({
+        code: "permission-denied",
+        detail:
+          "Integration teams deliver test evidence and owner patches. Their successful completion requires the shared merge action.",
+      }),
+    );
+  }
+  const experiment = input.state.assignments.find(
+    (entry) => entry.id === requestedAssignmentId && entry.sharedWork?.kind === "experiment",
+  );
+  if (
+    experiment &&
+    ((input.command.type.startsWith("delivery.") &&
+      input.command.type !== "delivery.impact.declare" &&
+      !input.command.type.startsWith("delivery.flow.")) ||
+      input.command.type === "followup.request" ||
+      (input.command.type === "assignment.delivery.request" &&
+        input.command.claim.kind === "pull-request"))
+  ) {
+    return Result.fail(
+      new FactoryError({
+        code: "permission-denied",
+        detail:
+          "Isolated experiments produce reports and evidence. Live publication requires a separate authorized implementation.",
+      }),
+    );
+  }
+  const mergeOperationDecision = decideFactoryMergeOperation(input);
+  if (mergeOperationDecision !== undefined) return mergeOperationDecision;
+  const mergeDecision = decideFactoryMerge(input);
+  if (mergeDecision !== undefined) return mergeDecision;
+  const integrationDecision = decideFactoryIntegration(input);
+  if (integrationDecision !== undefined) return integrationDecision;
+  const collaborationDecision = decideFactoryCollaboration(input);
+  if (collaborationDecision !== undefined) return collaborationDecision;
+  const workflowDecision = decideFactoryWorkflow(input);
+  if (workflowDecision !== undefined) return workflowDecision;
+  if (input.command.type === "workflow.models.apply") {
+    const command = input.command;
+    const recommendation = input.state.modelRecommendations.find(
+      (entry) => entry.id === command.recommendationId,
+    );
+    if (
+      input.actor.kind !== "human" ||
+      !recommendation ||
+      recommendation.applied !== null ||
+      recommendation.declined !== undefined ||
+      !input.state.improvementDecisions.some(
+        (entry) =>
+          entry.proposalId === recommendation.proposalId &&
+          entry.revision === recommendation.proposalRevision &&
+          entry.outcome === "accepted",
+      )
+    ) {
+      return Result.fail(
+        new FactoryError({
+          code: "permission-denied",
+          detail: "Only the human can apply an accepted exact model recommendation once.",
+        }),
+      );
+    }
+    // Applying re-decides as the matching configure command under the same command id, so grant
+    // reduction and the system manager pause apply unchanged. `applied` makes it one-shot.
+    const target = recommendation.target;
+    const configured = decide({
+      ...input,
+      command:
+        target.kind === "default"
+          ? {
+              type: "models.defaults.configure",
+              commandId: command.commandId,
+              policy: target.policy,
+            }
+          : {
+              type: "manager.models.configure",
+              commandId: command.commandId,
+              managerId: target.managerId,
+              overrides: target.overrides,
+            },
+    });
+    return Result.map(configured, (value) => ({
+      ...value,
+      result: { ...value.result, recommendationId: recommendation.id },
+      state: {
+        ...value.state,
+        modelRecommendations: value.state.modelRecommendations.map((entry) =>
+          entry.id === recommendation.id
+            ? { ...entry, applied: { commandId: command.commandId, appliedAt: input.now } }
+            : entry,
+        ),
+      },
+    }));
+  }
+  const improvementDecision = decideFactoryImprovements(input);
+  // Closing a system investigation withdraws the cross-project requests it raised.
+  if (improvementDecision !== undefined)
+    return Result.map(improvementDecision, (value) =>
+      reconcileFactoryRequestCancellation(value, input.now),
+    );
+  // A system manager whose model is outside the approved pool stays paused until the pool or
+  // its model changes; resuming it would run an unapproved model.
+  if (input.command.type === "manager.resume" || input.command.type === "control.retry") {
+    const retryControlId =
+      input.command.type === "control.retry" ? input.command.controlId : undefined;
+    const retryControl = input.state.controls.find((entry) => entry.id === retryControlId);
+    const requestedManagerId =
+      input.command.type === "manager.resume"
+        ? input.command.managerId
+        : retryControl?.kind === "manager-pause" && retryControl.resume !== undefined
+          ? retryControl.managerId
+          : undefined;
+    const manager = input.state.managers.find((entry) => entry.id === requestedManagerId);
+    if (
+      manager?.role === "system" &&
+      !isFactoryModelApproved(
+        resolveFactoryModelPolicy(
+          input.state.modelDefaults,
+          manager.modelOverrides,
+          manager.modelSelection,
+        ),
+        manager.modelSelection,
+      )
+    )
+      return Result.fail(
+        new FactoryError({
+          code: "permission-denied",
+          detail:
+            "Restore this system manager's model to its approved pool before explicitly resuming it.",
+        }),
+      );
+  }
+  const controlDecision = decideFactoryControls(input);
+  if (controlDecision !== undefined)
+    return Result.map(controlDecision, (value) =>
+      reconcileFactoryRequestCancellation(value, input.now),
+    );
+  const schedulingDecision = decideFactoryScheduling(input);
+  if (schedulingDecision !== undefined) return schedulingDecision;
+  const retroDecision = decideFactoryRetros(input);
+  if (retroDecision !== undefined) return retroDecision;
+  const oversightDecision = decideFactoryOversight(input);
+  if (oversightDecision !== undefined) return oversightDecision;
+  const deliveryDecision = decideFactoryDelivery(input);
+  if (deliveryDecision !== undefined) return deliveryDecision;
+  const { state, actor, command, now } = input;
+  const fail = (code: FactoryError["code"]) => Result.fail(new FactoryError({ code }));
+  // Every core acceptance bumps `revision` once here. Two things survive what a case writes: a
+  // manager under an active pause stays paused, with the written status kept as the status the
+  // resume restores, and an assignment with a recorded outcome keeps its status and wait.
+  const accepted = (
+    managers: ReadonlyArray<FactoryManager>,
+    assignments: ReadonlyArray<FactoryAssignment>,
+    result: Omit<FactoryCommandResult, "revision">,
+    effects: ReadonlyArray<FactoryEffectIntent> = [],
+    defaults: FactoryPolicy = state.defaults,
+    boundaries: ReadonlyArray<FactoryBoundary> = state.boundaries,
+    modelDefaults: FactoryModelPolicy | undefined = state.modelDefaults,
+  ): Result.Result<FactoryDecision, FactoryError> => {
+    const revision = state.revision + 1;
+    const preserved = preserveFactoryManagerPauses(state, managers);
+    return Result.succeed({
+      state: {
+        ...state,
+        revision,
+        ...preserved,
+        assignments: assignments.map((assignment) => {
+          const previous = state.assignments.find((entry) => entry.id === assignment.id);
+          return previous?.outcome === undefined
+            ? assignment
+            : {
+                ...assignment,
+                outcome: previous.outcome,
+                status: previous.status,
+                wait: previous.wait,
+              };
+        }),
+        defaults,
+        boundaries,
+        ...(modelDefaults === undefined ? {} : { modelDefaults }),
+      },
+      result: { ...result, revision },
+      effects,
+    });
+  };
+
+  // Runs after a model policy change. If the system manager's own model is no longer approved it
+  // is paused; if already paused with a resume in flight, the resume is dropped and the stop runs
+  // again. The pause shares the policy command's revision rather than adding its own.
+  const pauseRevokedSystemManager = (
+    decision: FactoryDecision,
+  ): Result.Result<FactoryDecision, FactoryError> => {
+    const manager = factorySystemManager(decision.state.managers);
+    if (
+      !manager ||
+      manager.status === "retired" ||
+      isFactoryModelApproved(
+        resolveFactoryModelPolicy(
+          decision.state.modelDefaults,
+          manager.modelOverrides,
+          manager.modelSelection,
+        ),
+        manager.modelSelection,
+      )
+    )
+      return Result.succeed(decision);
+    if (manager.status === "paused") {
+      const pause = decision.state.controls.find(
+        (entry) =>
+          entry.kind === "manager-pause" &&
+          entry.managerId === manager.id &&
+          entry.status === "active",
+      );
+      if (pause?.kind !== "manager-pause" || pause.resume === undefined)
+        return Result.succeed(decision);
+      const {
+        resume: _resume,
+        resumeThreadIds: _threads,
+        resumeQueues: _queues,
+        ...retained
+      } = pause;
+      const restarted = {
+        ...retained,
+        generation: pause.generation + 1,
+        stop: { status: "pending" as const },
+        requestedAt: now,
+        updatedAt: now,
+      };
+      return Result.succeed({
+        ...decision,
+        state: {
+          ...decision.state,
+          controls: decision.state.controls.map((entry) =>
+            entry.id === pause.id ? restarted : entry,
+          ),
+        },
+        effects: [
+          ...decision.effects,
+          { type: "control.stop", controlId: pause.id, generation: restarted.generation },
+        ],
+      });
+    }
+    const paused = decideFactoryControls({
+      state: decision.state,
+      actor: { kind: "human" },
+      command: { type: "manager.pause", commandId: command.commandId, managerId: manager.id },
+      now,
+    });
+    if (paused === undefined) return fail("invalid-state");
+    return Result.map(paused, (value) => ({
+      state: { ...value.state, revision: decision.state.revision },
+      result: decision.result,
+      effects: [...decision.effects, ...value.effects],
+    }));
+  };
+
+  // A manager whose execution is blocked (retired, paused or restricted) takes on no new work.
+  if (command.type === "assignment.commission" || command.type === "assignment.handover") {
+    const manager = state.managers.find((entry) => entry.id === command.managerId);
+    if (
+      manager?.role === "project" &&
+      factoryExecutionBlocked(state, {
+        threadId: manager.threadId,
+        managerId: manager.id,
+        projectId: manager.projectId,
+        ancestorThreadIds: [],
+      }) !== undefined
+    )
+      return fail("invalid-state");
+  }
+  if (
+    command.type === "assignment.retry" ||
+    command.type === "assignment.file.mutate" ||
+    command.type === "assignment.verify" ||
+    command.type === "onboarding.report"
+  ) {
+    const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
+    // An assignment with an outcome is finished; nothing may retry, edit or verify in it.
+    if (assignment?.outcome !== undefined) return fail("invalid-state");
+    if (
+      assignment &&
+      command.type !== "onboarding.report" &&
+      factoryExecutionBlocked(state, {
+        threadId: assignment.threadId,
+        managerId: assignment.managerId,
+        projectId: assignment.projectId,
+        assignmentId: assignment.id,
+        ancestorThreadIds: [],
+      }) !== undefined
+    )
+      return fail("invalid-state");
+  }
+
+  switch (command.type) {
+    case "models.defaults.configure": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      return accepted(
+        state.managers,
+        reduceModelGrants(state, state.managers, command.policy),
+        {},
+        [],
+        state.defaults,
+        state.boundaries,
+        command.policy,
+      ).pipe(Result.flatMap(pauseRevokedSystemManager));
+    }
+    case "manager.models.configure": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      if (!state.managers.some((entry) => entry.id === command.managerId))
+        return fail("manager-not-found");
+      const managers = state.managers.map((entry) =>
+        entry.id === command.managerId
+          ? { ...entry, modelOverrides: command.overrides, updatedAt: now }
+          : entry,
+      );
+      return accepted(managers, reduceModelGrants(state, managers, state.modelDefaults), {
+        managerId: command.managerId,
+      }).pipe(Result.flatMap(pauseRevokedSystemManager));
+    }
+    case "assignment.commission":
+    case "assignment.handover": {
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      if (!manager || manager.role !== "project") return fail("manager-not-found");
+      const boundary = state.boundaries.find((entry) => entry.id === manager.boundaryId);
+      if (manager.status !== "active" || !boundary) return fail("invalid-state");
+      const scheduling =
+        command.type === "assignment.commission" && command.candidateId !== undefined
+          ? validateFactorySchedulingCommission(state, command, input.schedulingAdmission)
+          : undefined;
+      if (scheduling && Result.isFailure(scheduling)) return Result.fail(scheduling.failure);
+      const schedulingCandidate =
+        scheduling && Result.isSuccess(scheduling) ? scheduling.success : undefined;
+      const dependency =
+        command.type === "assignment.commission" && command.dependencyId !== undefined
+          ? state.dependencies.find((entry) => entry.id === command.dependencyId)
+          : undefined;
+      const dependencyAssignment = state.assignments.find(
+        (entry) => entry.id === dependency?.assignmentId,
+      );
+      // An approved dependency authorizes its manager to commission exactly the supporting work
+      // it approved, while the assignment that asked for it is still open.
+      const dependencyAuthorized =
+        dependency?.state === "approved" &&
+        dependency.authorization?.managerId === manager.id &&
+        dependencyAssignment?.managerId === manager.id &&
+        dependencyAssignment.outcome === undefined &&
+        dependencyAssignment.status !== "complete" &&
+        factorySupportingWorkMatches(dependency.authorization.work, command);
+      if (
+        command.type === "assignment.commission" &&
+        command.dependencyId !== undefined &&
+        !dependencyAuthorized
+      )
+        return fail("permission-denied");
+      // The human may commission directly. The manager thread may commission only on a verified
+      // direct human message, an approved dependency, or an admitted schedule candidate.
+      if (
+        actor.kind !== "human" &&
+        (actor.kind !== "thread" ||
+          actor.threadId !== manager.threadId ||
+          command.type !== "assignment.commission" ||
+          ((!input.humanMessageVerified || input.humanMessageId === undefined) &&
+            !dependencyAuthorized &&
+            !schedulingCandidate))
+      )
+        return fail("permission-denied");
+      // One direct human request authorizes one commission; more work needs another request.
+      const authorizingMessageId =
+        actor.kind === "thread" && !dependencyAuthorized && !schedulingCandidate
+          ? input.humanMessageId
+          : undefined;
+      if (
+        authorizingMessageId !== undefined &&
+        state.assignments.some(
+          (entry) =>
+            (entry.authorization?.kind === "manager" &&
+              entry.authorization.messageId === authorizingMessageId) ||
+            (entry.scheduling?.authority.kind === "human" &&
+              entry.scheduling.authority.messageId === authorizingMessageId),
+        )
+      )
+        return Result.fail(
+          new FactoryError({
+            code: "permission-denied",
+            detail:
+              "That human request already authorized a commission. Ask the human before commissioning more work.",
+          }),
+        );
+      if (
+        command.type === "assignment.handover" &&
+        (actor.kind !== "human" || !input.handoverVerified)
+      )
+        return fail("permission-denied");
+      // Protected controls change only in a rule-change assignment, which the human authorizes
+      // unless policy lets the manager weaken rules. Source paths must sit inside the boundary's
+      // writable files or creatable directories and never touch a protected path.
+      const policy = effectivePolicy(state, manager);
+      const controls = command.controlPaths ?? [];
+      if (command.kind === "implementation" && controls.length > 0)
+        return fail("permission-denied");
+      if (
+        command.kind === "rule-change" &&
+        (controls.length === 0 || (actor.kind !== "human" && !policy.authorizeRuleWeakening))
+      )
+        return fail("permission-denied");
+      if (
+        controls.some(
+          (file) =>
+            !factoryRelativePath(file) ||
+            (!boundary.protectedPaths.includes(file) &&
+              !boundary.protectedCreatablePaths?.includes(file)),
+        )
+      )
+        return fail("permission-denied");
+      if (
+        command.creatableDirectories.some(
+          (directory) => !boundary.creatableDirectories.includes(directory),
+        )
+      )
+        return fail("permission-denied");
+      if (
+        command.sourcePaths.some(
+          (file) =>
+            !factoryRelativePath(file) ||
+            factoryProtectedPath(file) ||
+            boundary.protectedPaths.includes(file) ||
+            boundary.protectedCreatablePaths?.includes(file) ||
+            (!boundary.writablePaths.includes(file) &&
+              !boundary.creatableDirectories.some((directory) =>
+                factoryPathWithin(file, directory),
+              )),
+        )
+      )
+        return fail("permission-denied");
+      if (
+        command.sourcePaths.length === 0 &&
+        command.creatableDirectories.length === 0 &&
+        controls.length === 0
+      )
+        return fail("invalid-state");
+      const constructed = commissionFactoryAssignment({
+        state,
+        manager,
+        boundary,
+        work: command,
+        allocation: input.allocation,
+        skills: input.skills,
+        policy,
+        now,
+        controlAuthorizationId: command.commandId,
+        ...(command.type === "assignment.handover" ? { existingThreadId: command.threadId } : {}),
+        authorization:
+          actor.kind === "human" && !schedulingCandidate
+            ? { kind: "human", commandId: command.commandId }
+            : {
+                kind: "manager",
+                commandId: command.commandId,
+                threadId: manager.threadId,
+                ...(authorizingMessageId === undefined ? {} : { messageId: authorizingMessageId }),
+              },
+      });
+      if (Result.isFailure(constructed)) return Result.fail(constructed.failure);
+      const assignment: FactoryAssignment = {
+        ...constructed.success,
+        ...(schedulingCandidate
+          ? {
+              scheduling: {
+                candidateId: schedulingCandidate.id,
+                authority: input.schedulingAdmission!.authority,
+                issueAttempt: input.schedulingAdmission!.issueAttempt,
+              },
+            }
+          : {}),
+      };
+      const decision = accepted(
+        state.managers,
+        [...state.assignments, assignment],
+        { managerId: manager.id, assignmentId: assignment.id },
+        [preparationIntent(assignment)],
+      );
+      if (schedulingCandidate)
+        return Result.map(decision, (value) => ({
+          ...value,
+          state: claimFactoryScheduleCandidate(
+            value.state,
+            schedulingCandidate,
+            assignment.id,
+            input.schedulingAdmission!,
+            now,
+          ),
+          result: { ...value.result, candidateId: schedulingCandidate.id },
+        }));
+      return dependency === undefined
+        ? decision
+        : Result.map(decision, (value) => ({
+            ...value,
+            state: {
+              ...value.state,
+              dependencies: value.state.dependencies.map((entry) =>
+                entry.id === dependency.id
+                  ? {
+                      ...entry,
+                      state: "commissioned" as const,
+                      supportingAssignmentId: assignment.id,
+                      updatedAt: now,
+                    }
+                  : entry,
+              ),
+            },
+          }));
+    }
+    case "assignment.retry": {
+      const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
+      if (!assignment) return fail("assignment-not-found");
+      // A manager's id is its thread id. Retry only clears an environment failure; work that
+      // was already prepared relaunches without preparing again.
+      if (
+        actor.kind !== "human" &&
+        (actor.kind !== "thread" || actor.threadId !== assignment.managerId)
+      )
+        return fail("permission-denied");
+      if (
+        assignment.kind === "onboarding" ||
+        assignment.status !== "waiting" ||
+        assignment.wait?.kind !== "execution-boundary"
+      )
+        return fail("invalid-state");
+      const updated = { ...assignment, status: "pending" as const, wait: null, updatedAt: now };
+      return accepted(
+        state.managers,
+        state.assignments.map((entry) => (entry.id === updated.id ? updated : entry)),
+        { assignmentId: updated.id },
+        updated.preparation === "ready"
+          ? implementationLaunch(updated)
+          : [preparationIntent(updated)],
+      );
+    }
+    case "assignment.file.mutate":
+    case "assignment.verify": {
+      const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
+      if (!assignment) return fail("assignment-not-found");
+      if (
+        actor.kind !== "human" &&
+        (actor.kind !== "thread" ||
+          (actor.threadId !== assignment.threadId && actor.assignmentId !== assignment.id))
+      )
+        return fail("permission-denied");
+      // The caller names the grant epoch it holds, so an edit or check from before a grant
+      // change is refused. A held UI flow blocks both until the host releases it.
+      if (
+        assignment.kind === "onboarding" ||
+        assignment.preparation !== "ready" ||
+        assignment.status === "complete" ||
+        (assignment.delivery?.flow !== undefined &&
+          assignment.delivery.flow.status !== "released") ||
+        assignment.grant?.epoch !== command.expectedEpoch
+      )
+        return fail("invalid-state");
+      // The service decides once without the result to admit the call, runs the boundary
+      // operation, then commits; only a verification result is recorded.
+      if (command.type === "assignment.verify" && input.verification !== undefined) {
+        const verification = input.verification;
+        if (
+          verification.epoch !== assignment.grant.epoch ||
+          verification.boundaryId !== assignment.grant.boundaryId
+        )
+          return fail("invalid-state");
+        return accepted(
+          state.managers,
+          state.assignments.map((entry) =>
+            entry.id === assignment.id ? { ...entry, verification, updatedAt: now } : entry,
+          ),
+          { assignmentId: assignment.id, verification },
+        );
+      }
+      return accepted(state.managers, state.assignments, { assignmentId: assignment.id });
+    }
+    case "assignment.preparation.recorded":
+    case "assignment.prepared":
+    case "assignment.prepare.failed": {
+      if (actor.kind !== "system") return fail("permission-denied");
+      const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
+      if (!assignment || assignment.threadId !== command.threadId)
+        return fail("assignment-not-found");
+      if (assignment.kind === "onboarding") return fail("invalid-state");
+      // A preparation receipt that lands after the assignment left `pending` is a late arrival,
+      // not an error: it is accepted without changing anything.
+      if (assignment.status !== "pending")
+        return accepted(state.managers, state.assignments, { assignmentId: assignment.id });
+      if (command.type === "assignment.prepare.failed") {
+        return accepted(
+          state.managers,
+          state.assignments.map((entry) =>
+            entry.id === assignment.id
+              ? {
+                  ...entry,
+                  status: "waiting",
+                  wait: { kind: "execution-boundary", reason: command.reason },
+                  updatedAt: now,
+                }
+              : entry,
+          ),
+          { assignmentId: assignment.id },
+        );
+      }
+      // Once captured, the starting source is fixed; a retry prepares from the same source.
+      if (
+        command.startingSource !== undefined &&
+        command.startingSource.projectId !== assignment.projectId
+      )
+        return fail("invalid-state");
+      if (
+        command.startingSource !== undefined &&
+        assignment.startingSource !== undefined &&
+        command.startingSource.id !== assignment.startingSource.id
+      )
+        return fail("invalid-state");
+      if (command.type === "assignment.preparation.recorded") {
+        // Stages only move forward; repeating the current stage is a harmless replay.
+        const order = { stopping: 0, capturing: 1, preparing: 2, ready: 3 };
+        if (
+          assignment.preparation === undefined ||
+          order[command.stage] < order[assignment.preparation]
+        )
+          return fail("invalid-state");
+        return accepted(
+          state.managers,
+          state.assignments.map((entry) =>
+            entry.id === assignment.id
+              ? {
+                  ...entry,
+                  preparation: command.stage,
+                  ...(command.startingSource === undefined
+                    ? {}
+                    : { startingSource: command.startingSource }),
+                  updatedAt: now,
+                }
+              : entry,
+          ),
+          { assignmentId: assignment.id },
+        );
+      }
+      if (command.qualification.status !== "qualified") return fail("execution-unavailable");
+      if (
+        assignment.status !== "pending" ||
+        assignment.preparation !== "preparing" ||
+        assignment.startingSource?.id !== command.startingSource.id
+      )
+        return fail("invalid-state");
+      const updated: FactoryAssignment = {
+        ...assignment,
+        preparation: "ready",
+        status: "pending",
+        wait: null,
+        qualification: command.qualification,
+        startingSource: command.startingSource,
+        updatedAt: now,
+      };
+      return accepted(
+        state.managers,
+        state.assignments.map((entry) => (entry.id === updated.id ? updated : entry)),
+        { assignmentId: updated.id },
+        implementationLaunch(updated),
+      );
+    }
+    case "policy.defaults.configure": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      return accepted(
+        state.managers,
+        reduceGrants(state.assignments, state.managers, command.defaults, now),
+        {},
+        [],
+        command.defaults,
+      );
+    }
+    case "assignments.extend-grant": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      if (command.assignmentIds.length === 0) return fail("invalid-state");
+      // Widens each grant to its manager's current policy. Shared repository work always keeps
+      // human approval for delivery.
+      const selected = new Set(command.assignmentIds);
+      for (const id of selected) {
+        const assignment = state.assignments.find((entry) => entry.id === id);
+        if (assignment === undefined) return fail("assignment-not-found");
+        if (assignment.status === "complete") return fail("invalid-state");
+        if (!state.managers.some((entry) => entry.id === assignment.managerId))
+          return fail("manager-not-found");
+      }
+      return accepted(
+        state.managers,
+        state.assignments.map((assignment) => {
+          if (!selected.has(assignment.id)) return assignment;
+          const manager = state.managers.find((entry) => entry.id === assignment.managerId)!;
+          const policy = effectivePolicy(state, manager);
+          return {
+            ...assignment,
+            grantedPolicy:
+              assignment.sharedWork === undefined
+                ? policy
+                : { ...policy, delivery: "human-approval" as const },
+            updatedAt: now,
+          };
+        }),
+        {},
+      );
+    }
+    case "manager.approve-onboarding": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      if (manager === undefined) return fail("manager-not-found");
+      const onboarding = state.assignments.find(
+        (entry) => entry.managerId === manager.id && entry.kind === "onboarding",
+      );
+      if (
+        manager.role !== "project" ||
+        manager.boundaryId !== undefined ||
+        onboarding?.report == null ||
+        onboarding.qualification.status !== "qualified"
+      )
+        return fail("invalid-state");
+      // The service's preflight decides before the boundary is approved and has none yet; only
+      // the commit carries it.
+      if (input.boundary === undefined)
+        return accepted(state.managers, state.assignments, { managerId: manager.id });
+      const boundary = input.boundary;
+      // The boundary must be new and pinned to the workflow revision onboarding ran against.
+      if (
+        boundary.projectId !== manager.projectId ||
+        boundary.workflow.repositoryRoot !== onboarding.workflow.repositoryRoot ||
+        boundary.workflow.revision !== onboarding.workflow.revision ||
+        state.boundaries.some((entry) => entry.id === boundary.id)
+      )
+        return fail("invalid-state");
+      return accepted(
+        state.managers.map((entry) =>
+          entry.id === manager.id
+            ? { ...entry, boundaryId: boundary.id, status: "active", wait: null, updatedAt: now }
+            : entry,
+        ),
+        state.assignments,
+        { managerId: manager.id },
+        [],
+        state.defaults,
+        [...state.boundaries, boundary],
+      );
+    }
+    case "manager.refresh-boundary": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      if (manager === undefined) return fail("manager-not-found");
+      const previous = state.boundaries.find((entry) => entry.id === manager.boundaryId);
+      const boundary = input.boundary;
+      // A refresh adds a new boundary on the same workflow revision; it never moves the manager
+      // to another workflow. Older boundaries stay in the snapshot.
+      if (
+        manager.role !== "project" ||
+        previous === undefined ||
+        boundary === undefined ||
+        boundary.projectId !== manager.projectId ||
+        boundary.workflow.repositoryRoot !== previous.workflow.repositoryRoot ||
+        boundary.workflow.revision !== previous.workflow.revision ||
+        state.boundaries.some((entry) => entry.id === boundary.id)
+      )
+        return fail("invalid-state");
+      // Work that could not start against the old baseline is rebound and prepared again.
+      const blocked = new Set(
+        state.assignments
+          .filter(
+            (entry) =>
+              entry.managerId === manager.id &&
+              entry.kind !== "onboarding" &&
+              entry.integrationId === undefined &&
+              entry.outcome === undefined &&
+              entry.status === "waiting" &&
+              entry.wait?.kind === "execution-boundary" &&
+              entry.preparation !== "ready" &&
+              entry.grant?.boundaryId === previous.id,
+          )
+          .map((entry) => entry.id),
+      );
+      const assignments = state.assignments.map((entry) =>
+        blocked.has(entry.id) && entry.grant
+          ? {
+              ...entry,
+              grant: { ...entry.grant, boundaryId: boundary.id },
+              status: "pending" as const,
+              wait: null,
+              updatedAt: now,
+            }
+          : entry,
+      );
+      return accepted(
+        state.managers.map((entry) =>
+          entry.id === manager.id ? { ...entry, boundaryId: boundary.id, updatedAt: now } : entry,
+        ),
+        assignments,
+        { managerId: manager.id },
+        assignments.filter((entry) => blocked.has(entry.id)).map(preparationIntent),
+        state.defaults,
+        [...state.boundaries, boundary],
+      );
+    }
+    case "manager.create": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      // A shared workflow repository belongs to the system manager, and a project has at most
+      // one manager that is not retired.
+      if (
+        state.sharedRepositories.some(
+          (entry) =>
+            entry.projectId === command.projectId ||
+            (input.projectRepositoryRoot !== undefined &&
+              entry.repositoryRoot === input.projectRepositoryRoot),
+        )
+      )
+        return fail("project-already-managed");
+      if (
+        state.managers.some(
+          (manager) =>
+            manager.role === "project" &&
+            manager.projectId === command.projectId &&
+            manager.status !== "retired",
+        )
+      ) {
+        return fail("project-already-managed");
+      }
+      const allocation = input.allocation;
+      if (
+        allocation === undefined ||
+        allocation.managerThreadId === allocation.leadThreadId ||
+        state.managers.some(
+          (manager) =>
+            manager.threadId === allocation.managerThreadId ||
+            manager.threadId === allocation.leadThreadId,
+        ) ||
+        state.assignments.some(
+          (assignment) =>
+            assignment.id === allocation.assignmentId ||
+            assignment.threadId === allocation.leadThreadId ||
+            assignment.threadId === allocation.managerThreadId,
+        )
+      ) {
+        return fail("invalid-state");
+      }
+      // Without a qualified read-only boundary the manager is created blocked and nothing
+      // launches; `manager.retry-onboarding` qualifies again.
+      const pin = factorySkillsPin(input.skills);
+      if (Result.isFailure(pin)) return Result.fail(pin.failure);
+      const qualification = input.qualification ?? unavailableQualification;
+      const wait = onboardingWait(qualification);
+      const manager: Extract<FactoryManager, { readonly role: "project" }> = {
+        id: allocation.managerThreadId,
+        threadId: allocation.managerThreadId,
+        role: "project",
+        projectId: command.projectId,
+        name: command.name ?? "Engineering manager",
+        modelSelection: command.modelSelection,
+        workflow: pin.success,
+        overrides: {},
+        status: wait === null ? "onboarding" : "blocked",
+        threadStatus: "pending",
+        launchStatus: "pending",
+        wait,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const assignment: FactoryAssignment = {
+        id: allocation.assignmentId,
+        managerId: manager.id,
+        threadId: allocation.leadThreadId,
+        projectId: command.projectId,
+        kind: "onboarding",
+        status: wait === null ? "pending" : "waiting",
+        threadStatus: "pending",
+        launchStatus: "pending",
+        qualification,
+        workflow: pin.success,
+        grantedPolicy: effectivePolicy(state, manager),
+        wait,
+        report: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return accepted(
+        [...state.managers, manager],
+        [...state.assignments, assignment],
+        { managerId: manager.id, assignmentId: assignment.id },
+        launchIntents(manager, assignment),
+      );
+    }
+    case "manager.configure": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      if (manager === undefined) return fail("manager-not-found");
+      const managers = state.managers.map((entry) =>
+        entry.id === manager.id
+          ? { ...entry, overrides: command.overrides, updatedAt: now }
+          : entry,
+      );
+      return accepted(managers, reduceGrants(state.assignments, managers, state.defaults, now), {
+        managerId: manager.id,
+      });
+    }
+    case "manager.retry-onboarding": {
+      if (actor.kind !== "human") return fail("permission-denied");
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      if (manager === undefined) return fail("manager-not-found");
+      const assignment = state.assignments.find((entry) => entry.managerId === manager.id);
+      if (assignment === undefined) return fail("assignment-not-found");
+      if (
+        manager.role !== "project" ||
+        manager.status !== "blocked" ||
+        assignment.report !== null ||
+        assignment.wait?.kind !== "execution-boundary"
+      ) {
+        return fail("invalid-state");
+      }
+      // Once the manager or lead thread exists it was launched with this setup, so its
+      // skills commit, model and qualified profile can no longer change. Before that, a retry
+      // is a new onboarding run on the current skills commit.
+      const launched = manager.threadStatus === "created" || assignment.threadStatus === "created";
+      if (command.modelSelection !== undefined && launched) return fail("invalid-state");
+      const pin = launched ? Result.succeed(assignment.workflow) : factorySkillsPin(input.skills);
+      if (Result.isFailure(pin)) return Result.fail(pin.failure);
+      const qualification = input.qualification ?? assignment.qualification;
+      if (
+        launched &&
+        (qualification.status !== "qualified" ||
+          assignment.qualification.status !== "qualified" ||
+          qualification.profileId !== assignment.qualification.profileId)
+      )
+        return fail("invalid-state");
+      const wait = onboardingWait(qualification);
+      const updatedManager: typeof manager = {
+        ...manager,
+        workflow: pin.success,
+        modelSelection: command.modelSelection ?? manager.modelSelection,
+        status: wait === null ? "onboarding" : "blocked",
+        wait,
+        updatedAt: now,
+      };
+      const updatedAssignment: FactoryAssignment = {
+        ...assignment,
+        workflow: pin.success,
+        qualification,
+        status: wait === null ? "pending" : "waiting",
+        wait,
+        updatedAt: now,
+      };
+      return accepted(
+        state.managers.map((entry) => (entry.id === manager.id ? updatedManager : entry)),
+        state.assignments.map((entry) => (entry.id === assignment.id ? updatedAssignment : entry)),
+        { managerId: manager.id, assignmentId: assignment.id },
+        launchIntents(updatedManager, updatedAssignment),
+      );
+    }
+    case "onboarding.report": {
+      const assignment = state.assignments.find((entry) => entry.id === command.assignmentId);
+      if (assignment === undefined) return fail("assignment-not-found");
+      if (assignment.kind !== "onboarding") return fail("invalid-state");
+      if (
+        actor.kind !== "human" &&
+        (actor.kind !== "thread" || actor.threadId !== assignment.threadId)
+      ) {
+        return fail("permission-denied");
+      }
+      if (
+        assignment.threadStatus !== "created" ||
+        assignment.qualification.status !== "qualified"
+      ) {
+        return fail("invalid-state");
+      }
+      const manager = state.managers.find((entry) => entry.id === assignment.managerId);
+      if (manager === undefined) return fail("manager-not-found");
+      if (manager.boundaryId !== undefined) return fail("invalid-state");
+      // The report completes onboarding. The manager stays blocked until the human approves a
+      // boundary; the wait tells the human whether the report left project decisions open.
+      const wait: FactoryWait = {
+        kind:
+          command.report.unresolvedDecisions.length === 0 ? "execution-boundary" : "human-decision",
+        reason:
+          command.report.unresolvedDecisions.length === 0
+            ? "Onboarding findings are recorded. Configure an enforced delivery boundary before authorizing implementation."
+            : "Review the onboarding report and resolve its project decisions before authorizing implementation.",
+      };
+      return accepted(
+        state.managers.map((entry) =>
+          entry.id === manager.id && assignment.kind === "onboarding"
+            ? { ...entry, status: "blocked", wait, updatedAt: now }
+            : entry,
+        ),
+        state.assignments.map((entry) =>
+          entry.id === assignment.id
+            ? { ...entry, status: "complete", wait: null, report: command.report, updatedAt: now }
+            : entry,
+        ),
+        { managerId: manager.id, assignmentId: assignment.id },
+      );
+    }
+    case "thread.launch.started":
+    case "thread.launch.recorded": {
+      if (actor.kind !== "system") return fail("permission-denied");
+      const manager = state.managers.find((entry) => entry.threadId === command.threadId);
+      const assignment = state.assignments.find((entry) => entry.threadId === command.threadId);
+      if (manager === undefined && assignment === undefined) return fail("invalid-state");
+      const onboarding =
+        assignment ??
+        state.assignments.find(
+          (entry) => entry.managerId === manager?.id && entry.kind === "onboarding",
+        );
+      if (onboarding === undefined || onboarding.qualification.status !== "qualified") {
+        return fail("execution-unavailable");
+      }
+      // `started` means the thread exists; `recorded` means its first message was delivered,
+      // which is when an unreported assignment starts running.
+      const delivered = command.type === "thread.launch.recorded";
+      return accepted(
+        state.managers.map((entry) =>
+          entry.threadId === command.threadId
+            ? {
+                ...entry,
+                threadStatus: "created",
+                launchStatus: delivered ? "delivered" : entry.launchStatus,
+                updatedAt: now,
+              }
+            : entry,
+        ),
+        state.assignments.map((entry) =>
+          entry.threadId === command.threadId
+            ? {
+                ...entry,
+                threadStatus: "created",
+                launchStatus: delivered ? "delivered" : entry.launchStatus,
+                status: delivered && entry.report === null ? "running" : entry.status,
+                wait: delivered && entry.wait?.kind === "execution-boundary" ? null : entry.wait,
+                updatedAt: now,
+              }
+            : entry,
+        ),
+        {
+          ...(manager === undefined ? {} : { managerId: manager.id }),
+          ...(assignment === undefined
+            ? {}
+            : { managerId: assignment.managerId, assignmentId: assignment.id }),
+        },
+      );
+    }
+    case "thread.launch.failed": {
+      if (actor.kind !== "system") return fail("permission-denied");
+      const targetManager = state.managers.find((entry) => entry.threadId === command.threadId);
+      const assignment = state.assignments.find(
+        (entry) =>
+          entry.threadId === command.threadId ||
+          (entry.managerId === targetManager?.id && entry.kind === "onboarding"),
+      );
+      if (assignment === undefined) return fail("assignment-not-found");
+      const manager = state.managers.find((entry) => entry.id === assignment.managerId);
+      if (manager === undefined) return fail("manager-not-found");
+      const targetDelivered =
+        targetManager?.launchStatus === "delivered" ||
+        (assignment.threadId === command.threadId && assignment.launchStatus === "delivered");
+      // A failure after the thread's first message was delivered, or after onboarding
+      // reported, is stale and changes nothing.
+      if (targetDelivered || assignment.report !== null) {
+        return accepted(state.managers, state.assignments, {
+          managerId: manager.id,
+          assignmentId: assignment.id,
+        });
+      }
+      const wait: FactoryWait = { kind: "execution-boundary", reason: command.reason };
+      return accepted(
+        state.managers.map((entry) =>
+          entry.id === manager.id && assignment.kind === "onboarding"
+            ? { ...entry, status: "blocked", wait, updatedAt: now }
+            : entry,
+        ),
+        state.assignments.map((entry) =>
+          entry.id === assignment.id
+            ? { ...entry, status: "waiting", wait, updatedAt: now }
+            : entry,
+        ),
+        { managerId: manager.id, assignmentId: assignment.id },
+      );
+    }
+  }
+  return fail("invalid-state");
+}
+
+/**
+ * The factory's only state transition, used by the store's commit and by the service's
+ * preflight. Pure: the same snapshot, command and verified inputs give the same decision. After
+ * the command's own rules it refuses enrolling an assignment in a second merge group, then
+ * reconciles every integration and merge group so their derived state never lags a command.
+ */
+export function decide(
+  input: Parameters<typeof decideCore>[0],
+): Result.Result<FactoryDecision, FactoryError> {
+  return Result.flatMap(decideCore(input), (decision) => {
+    const conflict = factoryMergeEnrollmentConflict(input.state, decision.state);
+    if (conflict)
+      return Result.fail(new FactoryError({ code: "command-conflict", detail: conflict }));
+    return Result.succeed(
+      reconcileFactoryMergeGroups(
+        reconcileFactoryIntegrations(decision, input.now, input.state),
+        input.now,
+        input.state,
+      ),
+    );
+  });
+}

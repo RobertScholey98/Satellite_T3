@@ -1,5 +1,6 @@
 import { type EnvironmentId } from "@t3tools/contracts";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
+import { FactorySidebar, useFactorySidebarState } from "./factory/FactorySidebar";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
 import { setThreadChangeRequestSnapshot } from "./ThreadStatusIndicators";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
@@ -2644,6 +2645,14 @@ export default function Sidebar() {
           ),
     [scopedProjectGroup],
   );
+  const factorySidebar = useFactorySidebarState(projects, scopedProjectKeys);
+  const { managedThreadKeys, visibleThreadKeys: visibleFactoryThreadKeys } = factorySidebar;
+  // Subagent child threads live in the parent's Agents surface, not the
+  // sidebar roster (v2 models them as real threads with lineage).
+  const rosterThreads = useMemo(
+    () => filterSidebarV2VisibleThreads(threads, scopedProjectKeys),
+    [scopedProjectKeys, threads],
+  );
   // A persisted scope whose project is gone falls back to all projects, but
   // only after every catalog environment has a live project snapshot. Cached
   // or disconnected environments cannot establish that the project is gone.
@@ -2750,9 +2759,16 @@ export default function Sidebar() {
     // memo exactly at the next wake boundary.
     void snoozeWakeTick;
     const preciseNow = new Date().toISOString();
-    // Subagent child threads live in the parent's Agents surface, not the
-    // sidebar roster (v2 models them as real threads with lineage).
-    const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
+    // Factory-managed threads render in the factory section instead.
+    const visible =
+      managedThreadKeys.size === 0
+        ? rosterThreads
+        : rosterThreads.filter(
+            (thread) =>
+              !managedThreadKeys.has(
+                scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+              ),
+          );
     inboxReturns.observe(workingShelfEnabled ? threads : null);
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
@@ -2853,9 +2869,10 @@ export default function Sidebar() {
       snoozeNow: preciseNow,
     };
   }, [
+    managedThreadKeys,
     nowMinute,
     optimisticDrop,
-    scopedProjectKeys,
+    rosterThreads,
     serverConfigs,
     snoozeWakeTick,
     threads,
@@ -2866,15 +2883,43 @@ export default function Sidebar() {
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
+  const managedThreads = useMemo(
+    () =>
+      managedThreadKeys.size === 0
+        ? EMPTY_THREADS
+        : rosterThreads.filter(
+            (thread) =>
+              thread.deletedAt === null &&
+              managedThreadKeys.has(
+                scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+              ),
+          ),
+    [managedThreadKeys, rosterThreads],
+  );
+  // The factory section is hidden while searching, so its rows leave the keyboard order too.
+  const visibleManagedThreads = useMemo(() => {
+    if (isSearchingThreads || managedThreads.length === 0) return EMPTY_THREADS;
+    const byKey = new Map(
+      managedThreads.map((thread) => [
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        thread,
+      ]),
+    );
+    return visibleFactoryThreadKeys.flatMap((key) => {
+      const thread = byKey.get(key);
+      return thread ? [thread] : [];
+    });
+  }, [isSearchingThreads, managedThreads, visibleFactoryThreadKeys]);
   const searchableThreads = useMemo(
     () => [
+      ...managedThreads,
       ...pinnedThreads,
       ...activeThreads,
       ...workingThreads,
       ...snoozedThreads,
       ...settledThreads,
     ],
-    [activeThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads],
+    [activeThreads, managedThreads, pinnedThreads, settledThreads, snoozedThreads, workingThreads],
   );
   const searchEnvironmentIds = useConnectedEnvironmentIds();
   // useThreadSearch owns the debounce and the two-character floor.
@@ -3028,6 +3073,7 @@ export default function Sidebar() {
 
   const orderedThreads = useMemo(
     () => [
+      ...visibleManagedThreads,
       ...pinnedThreads,
       ...activeThreads,
       ...visibleWorkingThreads,
@@ -3035,6 +3081,7 @@ export default function Sidebar() {
       ...renderedSettledThreads,
     ],
     [
+      visibleManagedThreads,
       pinnedThreads,
       activeThreads,
       visibleWorkingThreads,
@@ -5112,6 +5159,16 @@ export default function Sidebar() {
           </SidebarGroup>
         }
       >
+        {!isSearchingThreads ? (
+          <FactorySidebar
+            state={factorySidebar}
+            projects={projects}
+            threads={threads}
+            scopedProjectKeys={scopedProjectKeys}
+            activeThreadKey={routeThreadKey}
+            onThreadActivate={navigateToThread}
+          />
+        ) : null}
         <SidebarGroup className="flex-1" role="presentation">
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (
@@ -5518,7 +5575,8 @@ export default function Sidebar() {
           ) : null}
           {!isSearchingThreads &&
           visibleDraftSessionCount === 0 &&
-          pinnedThreads.length +
+          managedThreads.length +
+            pinnedThreads.length +
             activeThreads.length +
             workingThreads.length +
             snoozedThreads.length +

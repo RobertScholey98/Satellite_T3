@@ -883,6 +883,7 @@ export type OrchestrationV2ProviderGoal = typeof OrchestrationV2ProviderGoal.Typ
 
 export const OrchestrationV2ProviderThread = Schema.Struct({
   id: ProviderThreadId,
+  executionBoundaryId: Schema.optional(Schema.String),
   driver: ProviderDriverKind,
   providerInstanceId: ProviderInstanceId,
   providerSessionId: Schema.NullOr(ProviderSessionId),
@@ -3002,6 +3003,7 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("queue.resume"),
     commandId: CommandId,
     threadId: ThreadId,
+    runIds: Schema.optionalKey(Schema.Array(RunId)),
   }),
   Schema.Struct({
     type: Schema.Literal("queued-run.reorder"),

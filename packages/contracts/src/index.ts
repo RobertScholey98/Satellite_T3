@@ -73,3 +73,24 @@ export * from "./secretRequest.ts";
 export * from "./clientRpcPermissions.ts";
 
 export * from "./satelliteOrchestration.ts";
+export * from "./factory.ts";
+export * from "./factoryScheduling.ts";
+export * from "./factoryImprovements.ts";
+export * from "./factoryControls.ts";
+export * from "./factoryOversight.ts";
+export * from "./factoryDelivery.ts";
+export * from "./factoryPreview.ts";
+export * from "./factoryModels.ts";
+export * from "./factorySources.ts";
+export * from "./factoryRetros.ts";
+export * from "./issuePublication.ts";
+export * from "./factoryImprovementEvidence.ts";
+export * from "./factoryImprovementSnapshot.ts";
+
+export * from "./factoryWorkflow.ts";
+
+export * from "./factoryCollaboration.ts";
+
+export * from "./factoryIntegration.ts";
+
+export * from "./factoryMerge.ts";

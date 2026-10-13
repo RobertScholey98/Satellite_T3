@@ -7,6 +7,7 @@ import * as NodePath from "node:path";
 import type { Browser, BrowserContext } from "playwright-core";
 
 import { sandboxDisabled } from "./PreviewBrowserHost.ts";
+import { restrictPreviewContext } from "./ServerBrowserOriginPolicy.ts";
 
 // Playwright needs its files on disk. createRequire also resolves it from a Node SEA executable.
 const requirePlaywright = NodeModule.createRequire(import.meta.url);
@@ -75,14 +76,22 @@ export class ServerBrowserContexts {
     return this.browser;
   }
 
-  contextFor(profileId: string, isolationKey?: string): Promise<BrowserContext> {
+  contextFor(
+    profileId: string,
+    isolationKey?: string,
+    restrictedOrigin?: string,
+  ): Promise<BrowserContext> {
     if (this.closing) return Promise.reject(new Error("The preview browser is closed."));
-    const key = JSON.stringify([profileId, isolationKey ?? null]);
+    const key = JSON.stringify([
+      profileId,
+      isolationKey ?? null,
+      ...(restrictedOrigin ? [restrictedOrigin] : []),
+    ]);
     const cached = this.contexts.get(key);
     if (cached) return cached;
     const cleared = this.clearing.get(key)?.catch(constVoid) ?? Promise.resolve();
     const pending = cleared
-      .then(() => this.createContext(profileId, isolationKey))
+      .then(() => this.createContext(profileId, isolationKey, restrictedOrigin))
       .then(async (context) => {
         context.on("close", () => {
           if (this.contexts.get(key) === pending) this.contexts.delete(key);
@@ -102,11 +111,16 @@ export class ServerBrowserContexts {
     return pending;
   }
 
-  private async createContext(profileId: string, isolationKey?: string) {
+  private async createContext(profileId: string, isolationKey?: string, restrictedOrigin?: string) {
     const contextOptions = { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 };
     if (isolationKey !== undefined || profileId === INCOGNITO_BROWSER_PROFILE_ID) {
       const browser = await this.sharedBrowser();
-      return browser.newContext(contextOptions);
+      const context = await browser.newContext({
+        ...contextOptions,
+        ...(restrictedOrigin ? { serviceWorkers: "block" as const, acceptDownloads: false } : {}),
+      });
+      if (restrictedOrigin) await restrictPreviewContext(context, restrictedOrigin);
+      return context;
     }
     const directory = this.profileDirectory(profileId);
     const options = await this.launchOptions();

@@ -64,6 +64,7 @@ import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
 import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistry.ts";
 import * as ProviderOrchestrationAdapterInfrastructure from "./ProviderOrchestrationAdapterInfrastructure.ts";
+import * as ConfinedProviderLaunch from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 
 const layerTestHttpClient = Layer.succeed(
   HttpClient.HttpClient,
@@ -231,6 +232,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     Layer.provideMerge(ResetCreditCoordinator.layerTest),
   );
   const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
+    Layer.provideMerge(ConfinedProviderLaunch.layerUnconfined),
     Layer.provideMerge(layerBase),
   );
 
@@ -611,6 +613,7 @@ describe("ProviderInstanceRegistry — all drivers slice", () => {
     Layer.provideMerge(ResetCreditCoordinator.layerTest),
   );
   const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
+    Layer.provideMerge(ConfinedProviderLaunch.layerUnconfined),
     Layer.provideMerge(layerBase),
   );
 

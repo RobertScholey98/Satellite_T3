@@ -13,6 +13,7 @@ import {
   buildSetFilesViewedGraphQlMutation,
   decodePullRequestActivityJson,
   decodePullRequestDetailJson,
+  decodePullRequestCoreJson,
   decodePullRequestFilesJson,
   decodePullRequestFilesViewedJson,
   decodePullRequestListJson,
@@ -2092,5 +2093,57 @@ describe("pull request watch fingerprints", () => {
     expect(replied.remarks).not.toBe(before.remarks);
     // A pull request GitHub had no answer for is left for a full read.
     expect(decode(null, pullRequest(base)).has(0)).toBe(false);
+  });
+});
+
+describe("confirmed merge commit decoding", () => {
+  const core = (fields: Record<string, unknown>) =>
+    JSON.stringify({
+      data: {
+        repository: {
+          mergeCommitAllowed: true,
+          squashMergeAllowed: true,
+          rebaseMergeAllowed: true,
+          pullRequest: {
+            number: 7,
+            title: "Merged feature",
+            url: "https://github.com/acme/web/pull/7",
+            headRefName: "feature",
+            baseRefName: "main",
+            headRefOid: "original-head",
+            createdAt: "2026-07-01T00:00:00Z",
+            updatedAt: "2026-07-02T00:00:00Z",
+            state: "MERGED",
+            mergedAt: "2026-07-02T00:00:00Z",
+            viewerCanUpdateBranch: false,
+            baseRef: null,
+            reviewRequests: { nodes: [] },
+            labels: { nodes: [] },
+            commits: { nodes: [] },
+            ...fields,
+          },
+        },
+      },
+    });
+  it("reads the actual resulting commit separately from the PR head", () => {
+    const result = expectSuccess(
+      decodePullRequestCoreJson(core({ mergeCommit: { oid: "squashed-commit" } })),
+    );
+    expect(result.state).toBe("merged");
+    expect(result.headSha).toBe("original-head");
+    expect(result.mergeCommitSha).toBe("squashed-commit");
+    expect(pullRequestCoreGraphQlQuery("github.com")).toContain("mergeCommit { oid }");
+  });
+  it("does not substitute the head for missing merge evidence or an open PR test merge", () => {
+    for (const fields of [
+      {},
+      { mergeCommit: null },
+      { mergeCommit: { oid: " " } },
+      { state: "OPEN", mergedAt: null, mergeCommit: { oid: "test-merge" } },
+    ]) {
+      const result = expectSuccess(decodePullRequestCoreJson(core(fields)));
+      expect(result.headSha).toBe("original-head");
+      expect(result).not.toHaveProperty("mergeCommitSha");
+    }
   });
 });
