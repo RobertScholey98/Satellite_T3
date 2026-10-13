@@ -508,7 +508,7 @@ const make = Effect.gen(function* () {
       .pipe(Effect.ensuring(docker(profile, ["rm", "--force", name]).pipe(Effect.ignore)));
     if (result.code !== 0 || result.stdout.trim() !== "factory-writable-boundary-ok")
       return yield* unavailable(
-        "The non-root Codex worker failed its actual source-write and protected-resource boundary probe. Check the local Docker engine and approved runner image.",
+        "The non-root worker failed its actual source-write and protected-resource boundary probe. Check the local Docker engine and approved runner image.",
       );
   });
 

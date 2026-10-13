@@ -1033,8 +1033,9 @@ export function claudeMcpQueryOverrides(input: {
           input.confined === true
             ? ConfinedProviderLaunch.confinedEndpoint(session.endpoint)
             : session.endpoint,
-        // The bearer reaches the container through argv. It authorizes only this thread's own
-        // MCP calls, which the agent can already make, and host argv is invisible inside.
+        // A confined container sees the bearer in its own argv (/proc/1/cmdline) and in
+        // `docker inspect`. It authorizes only this thread's own MCP calls, which the agent can
+        // already make.
         headers: {
           Authorization: session.authorizationHeader,
         },

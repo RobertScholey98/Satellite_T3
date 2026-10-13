@@ -16,9 +16,16 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
   overrides skip managed threads. Never add a host fallback. A failed launch must surface as a
   failure.
 - Host provider configuration never shapes the boundary: binary paths, launch arguments, host
-  settings and host skills stay outside. Only one model credential crosses, through `--env`. A
-  Claude file sign-in contributes its access token only; a container that refreshed the refresh
-  token would sign the host's Claude Code out.
+  settings, host skills and host attachment paths stay outside. Only one model credential
+  crosses, through `--env`, and a Claude provider set up for another backend is refused rather
+  than given a different account. A Claude file sign-in contributes its access token only; a
+  container that refreshed the refresh token would sign the host's Claude Code out. That token
+  expires, so the adapter replaces a process once the launch's `renewBy` passes.
+- A thread's runtime directory outlives each process and a thread can switch provider within its
+  pool, so every launch first removes each provider's credential file there. The Claude home in
+  it is writable, so its user-scope `settings.json`, `commands` and `agents` are mounted
+  read-only from empty sources beside the runtime directory; otherwise an agent could leave an
+  environment, hooks or a command's `model:` for the next process.
 - The host never reads or writes an assignment volume directly. Volume access goes through
   [`FactoryVolumeHelper`](../../apps/server/src/factory/FactoryVolumeHelper.ts), which runs in a
   short-lived container with no network and a read-only root.
@@ -34,9 +41,10 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
   Codex's `spawn_agent` accepts any catalog model and reasoning effort, even when its schema hides
   those arguments, and Claude's `Agent` tool and `Workflow` scripts take a model too. That choice
   never reaches [`FactoryModelAdmission`](../../apps/server/src/factory/FactoryModelAdmission.ts),
-  so teams delegate with `delegate_task`. When you bump `FACTORY_AGENT_IMAGE`, rerun the live
-  probes in `FactoryCodexLaunch.test.ts` and `FactoryClaudeLaunch.test.ts`: a new CLI can add
-  agent tools.
+  so teams delegate with `delegate_task`. Claude gets an allow-list of built-in tools, so a tool a
+  new CLI adds stays off until reviewed. When you bump `FACTORY_AGENT_IMAGE`, rerun the live
+  probes in `FactoryCodexLaunch.test.ts` and `FactoryClaudeLaunch.test.ts`; the Claude probe
+  asserts the exact tool list.
 - Profiles pin the image they qualified with, so a bump never changes an existing runtime. The
   image's `satellite.factory.providers` label says which drivers it can run, and a Claude launch
   on an older image is refused with a clear message.
@@ -44,7 +52,10 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
   Claude config directory, and a managed thread's transcripts live in its runtime.
 - The model credential is inside the container, and the container has network access. A shell
   command can still call a model directly. The model policy governs supported delegation paths
-  only. Do not describe it as spend enforcement.
+  only. Do not describe it as spend enforcement. Project-scope Claude configuration
+  (`/workspace/.claude/`) stays loadable: `.claude` is excluded from source snapshots, and an
+  agent that creates it in a writable workspace shows in the workspace diff and is blocked at
+  delivery by protected paths.
 
 ## Lineage
 

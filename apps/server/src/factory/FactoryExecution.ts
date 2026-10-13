@@ -309,11 +309,11 @@ const make = Effect.gen(function* () {
           "-e",
           factoryExecutionProbe,
         ],
-        "The Codex discovery container failed its filesystem and credential boundary probe.",
+        "The discovery container failed its filesystem and credential boundary probe.",
       );
       if (proof !== "factory-boundary-ok")
         return yield* new QualificationError({
-          detail: "The Codex discovery boundary probe did not complete.",
+          detail: "The discovery boundary probe did not complete.",
         });
       yield* fs.writeFileString(
         path.join(directory, "profile.json"),
@@ -532,8 +532,8 @@ const make = Effect.gen(function* () {
         )
           return yield* new FactoryError({ code: "execution-unavailable" });
       }
-      // Each thread gets its own provider home, so threads sharing a profile never share Codex
-      // state or credentials.
+      // Each thread gets its own provider homes, so threads sharing a profile never share
+      // provider state or credentials.
       const runtimePath = path.join(
         profile.runtimePath,
         Buffer.from(threadId).toString("base64url"),

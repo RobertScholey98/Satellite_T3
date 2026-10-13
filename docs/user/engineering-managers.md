@@ -18,9 +18,12 @@ The project's environment needs:
   - Codex accounts stored only in a native keyring need file-backed Codex
     authentication first.
   - Claude needs a file-based sign-in, or `CLAUDE_CODE_OAUTH_TOKEN` or
-    `ANTHROPIC_API_KEY` in the provider's environment. On macOS, where Claude
-    Code keeps its sign-in in the keychain, run `claude setup-token` and add the
-    token to the provider's environment as `CLAUDE_CODE_OAUTH_TOKEN`.
+    `ANTHROPIC_API_KEY` in the provider's environment. A file-based sign-in
+    renews only while Claude Code runs on this machine, so for managers that run
+    unattended, and on macOS, where Claude Code keeps its sign-in in the keychain,
+    run `claude setup-token` and add the token to the provider's environment as
+    `CLAUDE_CODE_OAUTH_TOKEN`. A Claude provider set up for Bedrock, Vertex,
+    Foundry or a custom API endpoint cannot run managed work.
 - A local Docker engine running Linux containers. Managed agents run only inside
   containers, without your Git credentials or the Docker socket. The first setup
   builds the runner image, which takes a few minutes.
@@ -194,9 +197,10 @@ repositories, pending evidence and unstarted work plans.
 - **Setup can't start**: check that Docker is running Linux containers and the
   selected Codex or Claude provider is signed in as described in
   [Before you start](#before-you-start).
-- **Claude asks you to refresh its sign-in**: open Claude Code on the same
-  machine so it renews its sign-in, then retry. A token from
-  `claude setup-token` avoids this.
+- **Claude asks you to refresh its sign-in, or says it expired inside the
+  managed runtime**: open Claude Code on the same machine so it renews its
+  sign-in. The next turn picks it up. A token from `claude setup-token` avoids
+  this.
 - **A runtime runs only Codex models**: it was set up before Claude support.
   Choose a Codex model for that work.
 - **Work is waiting on the execution boundary**: a protected control changed.
