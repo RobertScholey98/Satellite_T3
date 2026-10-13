@@ -8723,7 +8723,14 @@ describe("ClaudeAdapterV2 confined sessions", () => {
           }),
         );
       });
-      return { processes, closed, terminals, startTurn, removed: fs.readFileString(removals) };
+      return {
+        processes,
+        closed,
+        terminals,
+        startTurn,
+        hasPendingBackgroundWork: runtime.hasPendingBackgroundWork!,
+        removed: fs.readFileString(removals),
+      };
     });
 
   it.effect("replaces a confined process once its sign-in is due for renewal", () =>
@@ -8748,6 +8755,28 @@ describe("ClaudeAdapterV2 confined sessions", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 
+  const confinedSignedOut = confinedFrame({
+    type: "assistant",
+    message: {
+      model: "claude-sonnet-4-6",
+      id: "msg_signed_out",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "Invalid API key" }],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    },
+    parent_tool_use_id: null,
+    error: "authentication_failed",
+    uuid: "assistant-signed-out",
+  });
+
   it.effect("closes a confined process whose sign-in failed so the next turn launches anew", () =>
     Effect.gen(function* () {
       const harness = yield* makeConfinedHarness([
@@ -8756,27 +8785,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
       ]);
       yield* harness.startTurn("attempt-signed-out");
       yield* Queue.offerAll(harness.processes[0]!, [
-        confinedFrame({
-          type: "assistant",
-          message: {
-            model: "claude-sonnet-4-6",
-            id: "msg_signed_out",
-            type: "message",
-            role: "assistant",
-            content: [{ type: "text", text: "Invalid API key" }],
-            stop_reason: null,
-            stop_sequence: null,
-            usage: {
-              input_tokens: 1,
-              output_tokens: 1,
-              cache_creation_input_tokens: 0,
-              cache_read_input_tokens: 0,
-            },
-          },
-          parent_tool_use_id: null,
-          error: "authentication_failed",
-          uuid: "assistant-signed-out",
-        }),
+        confinedSignedOut,
         confinedResult("result-signed-out", "api_error"),
       ]);
       const terminal = yield* Queue.take(harness.terminals);
@@ -8790,6 +8799,74 @@ describe("ClaudeAdapterV2 confined sessions", () => {
       yield* harness.startTurn("attempt-signed-in");
       assert.equal(harness.processes.length, 2);
       assert.equal(yield* harness.removed, "expired-runtime\n");
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+  );
+
+  it.effect("drops the wake state of a confined process closed for a failed sign-in", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeConfinedHarness([{ name: "expired-runtime" }]);
+      const echoing = Effect.fnUntraced(function* (
+        frame: Record<string, unknown>,
+        attempt: string,
+      ) {
+        return confinedFrame({
+          ...frame,
+          user_message_uuid: yield* ClaudeAdapterV2.claudePromptUuid(RunAttemptId.make(attempt)),
+        });
+      });
+      const assistant = (uuid: string, text: string, error?: string) => ({
+        type: "assistant",
+        message: {
+          model: "claude-sonnet-4-6",
+          id: `msg_${uuid}`,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text }],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+        parent_tool_use_id: null,
+        ...(error === undefined ? {} : { error }),
+        uuid,
+      });
+      // The first turn's early echo teaches the adapter that this CLI echoes prompts early.
+      yield* harness.startTurn("attempt-echo");
+      yield* Queue.offerAll(harness.processes[0]!, [
+        yield* echoing(assistant("assistant-echo", "Started."), "attempt-echo"),
+        yield* echoing(
+          { ...confinedResult("result-echo", "completed"), uuid: "result-echo" },
+          "attempt-echo",
+        ),
+      ]);
+      assert.equal((yield* Queue.take(harness.terminals)).status, "completed");
+      assert.isFalse(yield* harness.hasPendingBackgroundWork);
+
+      // A wake turn that ran before the next prompt is held for its own continuation, then the
+      // prompt's turn fails to authenticate.
+      yield* harness.startTurn("attempt-signed-out");
+      yield* Queue.offerAll(harness.processes[0]!, [
+        yield* echoing(
+          {
+            ...confinedResult("result-wake", "completed"),
+            origin: { kind: "task-notification" },
+          },
+          "attempt-wake",
+        ),
+        yield* echoing(
+          assistant("assistant-signed-out", "Invalid API key", "authentication_failed"),
+          "attempt-signed-out",
+        ),
+        yield* echoing(confinedResult("result-signed-out", "api_error"), "attempt-signed-out"),
+      ]);
+      assert.equal((yield* Queue.take(harness.terminals)).status, "failed");
+      yield* Deferred.await(harness.closed);
+      assert.isFalse(yield* harness.hasPendingBackgroundWork);
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 

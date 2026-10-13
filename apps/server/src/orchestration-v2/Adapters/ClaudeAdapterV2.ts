@@ -6585,9 +6585,15 @@ export function makeClaudeAdapterV2(
               context.authenticationFailureMessage !== undefined &&
               context.input.runtimePolicy.confinement !== undefined
             ) {
+              liveQuery.stopping = true;
               yield* Ref.update(queryContext, (current) =>
                 current?.query === input.query ? null : current,
               );
+              // Nothing the closed process started can still report, as after a restart.
+              yield* clearWakeStateForNativeThread(liveQuery.nativeThreadId);
+              yield* resetBackgroundTaskStateForNativeThreadProcess(liveQuery.nativeThreadId, {
+                status: "idle",
+              });
               yield* input.query.close.pipe(Effect.ignore);
             }
           }
