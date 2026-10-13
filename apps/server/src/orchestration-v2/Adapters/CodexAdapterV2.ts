@@ -1584,7 +1584,7 @@ export const layerAppServerClientFactory: Layer.Layer<
               spawner
                 .exitCode(
                   ChildProcess.make(launch.cleanup.command, launch.cleanup.args, {
-                    env: launch.environment,
+                    env: launch.cleanup.environment,
                     extendEnv: false,
                   }),
                 )

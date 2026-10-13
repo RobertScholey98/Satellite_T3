@@ -65,8 +65,6 @@ export const prepareFactoryCodexLaunch = Effect.fn("prepareFactoryCodexLaunch")(
     "features.multi_agent_v2=false",
   ];
   const authPath = path.join(codexHome, "auth.json");
-  // A credential from an earlier launch must not outlive a change of account or setup mode.
-  if (yield* fs.exists(authPath)) yield* fs.remove(authPath);
   if (input.settings.setupMode === "managed") {
     if (!input.environment.ACCESS_TOKEN)
       return yield* new ConfinedLaunchError({

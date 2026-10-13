@@ -8435,6 +8435,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-claude-confined-" });
       const removals = path.join(root, "removals.log");
       const launch = {
+        name: "confined-runtime",
         command: process.execPath,
         args: [
           "-e",
@@ -8447,8 +8448,9 @@ describe("ClaudeAdapterV2 confined sessions", () => {
           command: process.execPath,
           args: [
             "-e",
-            `require("node:fs").appendFileSync(${JSON.stringify(removals)}, "removed\\n")`,
+            `require("node:fs").appendFileSync(${JSON.stringify(removals)}, "removed " + (process.env.LAUNCH_ONLY ?? "without the launch environment") + "\\n")`,
           ],
+          environment: { SystemRoot: process.env.SystemRoot },
         },
       };
       const prepared: Array<string> = [];
@@ -8574,7 +8576,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
         launch: "from-launch",
         host: null,
       });
-      assert.equal(yield* fs.readFileString(removals), "removed\n");
+      assert.equal(yield* fs.readFileString(removals), "removed without the launch environment\n");
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
   );
 

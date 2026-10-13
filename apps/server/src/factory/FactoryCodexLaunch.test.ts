@@ -209,13 +209,15 @@ it.effect("launches and fences a confinement from the profile it carries", () =>
       confinement,
       driver: "codex",
       settings: settings({ homePath: path.join(root, "empty") }),
-      environment: { OPENAI_API_KEY: "model-test" },
+      environment: { PATH: "host-path", OPENAI_API_KEY: "model-test" },
     });
     const containerName = launch.args[launch.args.indexOf("--name") + 1] ?? "";
     assert.match(containerName, /^satellite-factory-/);
+    assert.equal(launch.name, containerName);
     assert.deepEqual(launch.cleanup, {
       command: "docker",
       args: ["--context", "owned-context", "rm", "--force", containerName],
+      environment: { PATH: "host-path" },
     });
     yield* launcher.assertActive(confinement);
     yield* fs.writeFileString(revocationPath, "{}");

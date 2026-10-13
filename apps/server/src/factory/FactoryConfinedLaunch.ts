@@ -12,6 +12,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import { prepareFactoryClaudeLaunch } from "./FactoryClaudeLaunch.ts";
 import { prepareFactoryCodexLaunch } from "./FactoryCodexLaunch.ts";
 import {
+  FACTORY_PROVIDER_CREDENTIAL_FILES,
   factoryDockerArguments,
   FactoryExecutionProfile,
   makeFactoryProviderHomes,
@@ -84,6 +85,11 @@ export const prepareFactoryLaunch = Effect.fn("prepareFactoryLaunch")(
           : [[key, input.provider.environment[key]]],
       ),
     );
+    // A thread can switch provider within its approved pool, and its runtime directory outlives
+    // each launch, so no provider finds another's credential there. Codex writes its own anew.
+    for (const credential of FACTORY_PROVIDER_CREDENTIAL_FILES) {
+      yield* fs.remove(path.join(profile.runtimePath, credential), { force: true });
+    }
     const provider = yield* prepareProvider(profile, input.provider);
     return {
       command: "docker",
@@ -91,6 +97,8 @@ export const prepareFactoryLaunch = Effect.fn("prepareFactoryLaunch")(
       // Secrets ride `--env NAME`, which forwards the value from the Docker CLI's environment and
       // keeps it out of the argv.
       environment: { ...environment, ...provider.environment },
+      hostEnvironment: environment,
+      ...("renewBy" in provider ? { renewBy: provider.renewBy } : {}),
     };
   },
   Effect.mapError((cause) =>
@@ -126,12 +134,18 @@ export const layerConfinedLaunch = Layer.effect(
           const profile = yield* profileOf(confinement);
           // Each provider process runs in its own named container.
           const containerName = `satellite-factory-${yield* crypto.randomUUIDv4}`;
-          const launch = yield* prepareFactoryLaunch({ profile, containerName, provider });
+          const { hostEnvironment, ...launch } = yield* prepareFactoryLaunch({
+            profile,
+            containerName,
+            provider,
+          });
           return {
             ...launch,
+            name: containerName,
             cleanup: {
               command: "docker",
               args: ["--context", profile.dockerContext, "rm", "--force", containerName],
+              environment: hostEnvironment,
             },
           };
         }).pipe(

@@ -134,6 +134,8 @@ export type FactoryDeliveryExecutionHold = typeof FactoryDeliveryExecutionHold.T
 
 /** Provider homes under a runtime's `/runtime`, each with the workflow's skills mounted. */
 const FACTORY_PROVIDER_HOMES = ["codex", "claude"] as const;
+/** Model credentials a provider can keep in its home, relative to the runtime directory. */
+export const FACTORY_PROVIDER_CREDENTIAL_FILES = ["codex/auth.json", "claude/.credentials.json"];
 
 /**
  * Creates a runtime directory's provider homes before Docker mounts skills into them, so a

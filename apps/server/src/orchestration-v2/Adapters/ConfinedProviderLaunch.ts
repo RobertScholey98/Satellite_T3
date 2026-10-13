@@ -48,13 +48,21 @@ export type ConfinedLaunchRequest = ConfinedProvider & { readonly confinement: C
  * The command that starts a provider inside its runtime, up to the provider's own arguments.
  * Codex's ends with the image and its `-c` overrides, since the image's entrypoint is its app
  * server. Claude's ends with the image run as `claude`, and the adapter appends the Agent SDK's
- * CLI arguments. `cleanup` removes the runtime when the provider process ends.
+ * CLI arguments. `name` identifies the runtime in logs. `cleanup` removes the runtime when the
+ * provider process ends; its environment carries no provider credential. `renewBy` (epoch
+ * milliseconds) is when an expiring credential needs a new launch.
  */
 export interface ConfinedProcess {
+  readonly name: string;
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly environment: Record<string, string | undefined>;
-  readonly cleanup: { readonly command: string; readonly args: ReadonlyArray<string> };
+  readonly cleanup: {
+    readonly command: string;
+    readonly args: ReadonlyArray<string>;
+    readonly environment: Record<string, string | undefined>;
+  };
+  readonly renewBy?: number;
 }
 
 /**

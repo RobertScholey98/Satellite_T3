@@ -37,7 +37,7 @@ export function makeConfinedClaudeRuntime(launch: ConfinedProcess): ConfinedClau
       NodeChildProcess.execFile(
         launch.cleanup.command,
         [...launch.cleanup.args],
-        { env: launch.environment, timeout: 10_000, windowsHide: true },
+        { env: launch.cleanup.environment, timeout: 10_000, windowsHide: true },
         () => resolve(),
       );
     }));

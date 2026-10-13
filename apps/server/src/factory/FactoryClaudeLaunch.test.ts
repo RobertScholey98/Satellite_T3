@@ -4,7 +4,7 @@ import * as NodeHttp from "node:http";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
+import { ClaudeSettings, CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -24,6 +24,7 @@ import * as FactoryConfinedLaunch from "./FactoryConfinedLaunch.ts";
 import { FACTORY_AGENT_IMAGE } from "./FactoryExecutionProfile.ts";
 
 const settings = Schema.decodeUnknownSync(ClaudeSettings);
+const codexSettings = Schema.decodeUnknownSync(CodexSettings);
 // The test clock starts at the epoch, so these expiries are an hour and a minute away.
 const signIn = (expiresAt: number) =>
   JSON.stringify({
@@ -68,7 +69,7 @@ const fixture = Effect.gen(function* () {
     workflowSnapshotPath: path.join(root, "workflow"),
     runtimePath: path.join(root, "runtime"),
   };
-  const launch = (environment: NodeJS.ProcessEnv, homePath = configDir) =>
+  const launch = (environment: NodeJS.ProcessEnv, homePath = configDir, runner = claudeImage) =>
     FactoryConfinedLaunch.prepareFactoryLaunch({
       profile,
       containerName: "factory-claude",
@@ -81,7 +82,7 @@ const fixture = Effect.gen(function* () {
         }),
         environment,
       },
-    }).pipe(Effect.provideService(ProcessRunner.ProcessRunner, claudeImage));
+    }).pipe(Effect.provideService(ProcessRunner.ProcessRunner, runner));
   return { fs, path, root, configDir, profile, launch };
 });
 
@@ -136,6 +137,7 @@ it.effect("takes the provider environment's token, then its API key, then the fi
         Effect.map((result) => ({
           forwarded: result.args[result.args.indexOf("--env") + 1],
           environment: result.environment,
+          renewBy: result.renewBy,
         })),
       );
     assert.deepEqual(
@@ -143,15 +145,19 @@ it.effect("takes the provider environment's token, then its API key, then the fi
       {
         forwarded: "CLAUDE_CODE_OAUTH_TOKEN",
         environment: { CLAUDE_CODE_OAUTH_TOKEN: "setup-token" },
+        renewBy: undefined,
       },
     );
     assert.deepEqual(yield* credential({ ANTHROPIC_API_KEY: "api-key" }), {
       forwarded: "ANTHROPIC_API_KEY",
       environment: { ANTHROPIC_API_KEY: "api-key" },
+      renewBy: undefined,
     });
+    // The file sign-in is renewed five minutes before it expires.
     assert.deepEqual(yield* credential({}), {
       forwarded: "CLAUDE_CODE_OAUTH_TOKEN",
       environment: { CLAUDE_CODE_OAUTH_TOKEN: "file-access-token" },
+      renewBy: 3_300_000,
     });
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -183,6 +189,104 @@ it.effect("refuses without a credential instead of falling back to the host", ()
     assert.equal(
       (yield* launch({ CLAUDE_CONFIG_DIR: configDir }, elsewhere).pipe(Effect.flip)).detail,
       NO_CREDENTIAL,
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("keeps the cause when the file sign-in cannot be decoded", () =>
+  Effect.gen(function* () {
+    const { fs, path, configDir, launch } = yield* fixture;
+    const file = path.join(configDir, ".credentials.json");
+    yield* fs.writeFileString(file, '{"claudeAiOauth":{"accessToken":');
+    const failure = yield* launch({}).pipe(Effect.flip);
+    assert.equal(
+      failure.detail,
+      `Claude's sign-in file ${file} could not be read. Open Claude Code on this machine to sign in again, then retry.`,
+    );
+    assert.equal((failure.cause as { readonly _tag?: string })._tag, "SchemaError");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "refuses a provider set up for another backend instead of substituting a credential",
+  () =>
+    Effect.gen(function* () {
+      const { fs, path, configDir, launch } = yield* fixture;
+      yield* fs.writeFileString(path.join(configDir, ".credentials.json"), signIn(3_600_000));
+      const credentials = { ANTHROPIC_API_KEY: "api-key", CLAUDE_CODE_OAUTH_TOKEN: "setup-token" };
+      const refusals: Array<string> = [];
+      for (const backend of [
+        { ANTHROPIC_BASE_URL: "https://gateway.example.com" },
+        { ANTHROPIC_AUTH_TOKEN: "gateway-token" },
+        { CLAUDE_CODE_USE_BEDROCK: "1" },
+        { CLAUDE_CODE_USE_VERTEX: "true" },
+        { CLAUDE_CODE_USE_FOUNDRY: "yes" },
+      ])
+        refusals.push((yield* launch({ ...credentials, ...backend }).pipe(Effect.flip)).detail);
+      assert.deepEqual(
+        refusals,
+        [
+          "ANTHROPIC_BASE_URL",
+          "ANTHROPIC_AUTH_TOKEN",
+          "CLAUDE_CODE_USE_BEDROCK",
+          "CLAUDE_CODE_USE_VERTEX",
+          "CLAUDE_CODE_USE_FOUNDRY",
+        ].map(
+          (backend) =>
+            `Managed Claude supports the Anthropic API with a Claude sign-in or API key; this provider uses ${backend}.`,
+        ),
+      );
+      const switchedOff = yield* launch({ ...credentials, CLAUDE_CODE_USE_BEDROCK: "0" });
+      assert.deepEqual(switchedOff.environment, { CLAUDE_CODE_OAUTH_TOKEN: "setup-token" });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("leaves no Codex credential in a runtime that switches to Claude", () =>
+  Effect.gen(function* () {
+    const { fs, path, root, profile, launch } = yield* fixture;
+    const codexHome = path.join(root, "codex-home");
+    yield* fs.makeDirectory(codexHome);
+    yield* fs.writeFileString(path.join(codexHome, "auth.json"), '{"OPENAI_API_KEY":"codex-key"}');
+    const codexCredential = path.join(profile.runtimePath, "codex", "auth.json");
+    yield* FactoryConfinedLaunch.prepareFactoryLaunch({
+      profile,
+      containerName: "factory-codex",
+      provider: {
+        driver: "codex",
+        settings: codexSettings({ homePath: codexHome }),
+        environment: {},
+      },
+    }).pipe(Effect.provideService(ProcessRunner.ProcessRunner, claudeImage));
+    assert.equal(yield* fs.readFileString(codexCredential), '{"OPENAI_API_KEY":"codex-key"}');
+    yield* launch({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" });
+    assert.isFalse(yield* fs.exists(codexCredential));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("tells a stopped Docker engine apart from a missing image", () =>
+  Effect.gen(function* () {
+    const { launch } = yield* fixture;
+    const refusal = (stderr: string) =>
+      launch(
+        { CLAUDE_CODE_OAUTH_TOKEN: "setup-token" },
+        undefined,
+        ProcessRunner.ProcessRunner.of({
+          run: () =>
+            Effect.succeed({ ...inspection(""), stderr, code: ChildProcessSpawner.ExitCode(1) }),
+        }),
+      ).pipe(
+        Effect.flip,
+        Effect.map((failure) => failure.detail),
+      );
+    assert.equal(
+      yield* refusal("Error response from daemon: No such image: sha256:verified"),
+      "The managed runtime's image is not available on this environment.",
+    );
+    assert.equal(
+      yield* refusal(
+        "failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine; check if the path is correct and if the daemon is running",
+      ),
+      "Docker is not running on this environment. Start Docker, then retry.",
     );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -233,14 +337,16 @@ it.effect("launches Claude only from an image that runs it, and fences the confi
           driver: "claudeAgent",
           confinement,
           settings: settings({}),
-          environment: { CLAUDE_CODE_OAUTH_TOKEN: "setup-token" },
+          environment: { PATH: "host-path", CLAUDE_CODE_OAUTH_TOKEN: "setup-token" },
         });
       const launch = yield* prepare();
       const containerName = launch.args[launch.args.indexOf("--name") + 1] ?? "";
       assert.match(containerName, /^satellite-factory-/);
+      assert.equal(launch.name, containerName);
       assert.deepEqual(launch.cleanup, {
         command: "docker",
         args: ["--context", "owned-context", "rm", "--force", containerName],
+        environment: { PATH: "host-path" },
       });
       assert.deepEqual(inspected, [
         [
@@ -330,6 +436,7 @@ live(
       const entrypoint = launch.args.indexOf("--entrypoint");
       const probeLaunch = {
         ...launch,
+        name: "factory-claude-agent-tool-probe",
         args: [
           ...launch.args.slice(0, entrypoint),
           "--env",
@@ -339,6 +446,7 @@ live(
         cleanup: {
           command: "docker",
           args: ["rm", "--force", "factory-claude-agent-tool-probe"],
+          environment: launch.hostEnvironment,
         },
       };
       const sessionId = yield* (yield* Crypto.Crypto).randomUUIDv4;
