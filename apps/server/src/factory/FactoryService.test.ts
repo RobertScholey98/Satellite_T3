@@ -436,10 +436,10 @@ it.effect("a failed launch remains recoverable and its receipt does not claim su
       assert.deepStrictEqual(recovered.assignments[0]!.workflow, moved);
     }).pipe(
       Effect.provide(FactoryService.layer),
-      Effect.provideService(FactorySkills.FactorySkills, {
-        head: Effect.flatten(Ref.get(head)),
-        validate: () => Effect.void,
-      }),
+      Effect.provideService(
+        FactorySkills.FactorySkills,
+        FactoryServiceTestkit.skillsService(Effect.flatten(Ref.get(head))),
+      ),
       Effect.provideService(FactoryExecution.FactoryExecution, {
         qualify: () => Effect.succeed(qualification),
         assertSelectionFor: () => Effect.void,
@@ -568,10 +568,10 @@ it.effect(
       }).pipe(
         Effect.provide(FactoryService.layer),
         Effect.provideService(ThreadManagement.ThreadManagementService, interceptedThreads),
-        Effect.provideService(FactorySkills.FactorySkills, {
-          head: Effect.flatten(Ref.get(head)),
-          validate: () => Effect.void,
-        }),
+        Effect.provideService(
+          FactorySkills.FactorySkills,
+          FactoryServiceTestkit.skillsService(Effect.flatten(Ref.get(head))),
+        ),
         Effect.provideService(FactoryExecution.FactoryExecution, {
           qualify: () =>
             Ref.update(qualifications, (count) => count + 1).pipe(Effect.as(qualification)),

@@ -153,10 +153,10 @@ const scenario = <A, E, R>(
       FactoryService.layer.pipe(
         Layer.provideMerge(runtime),
         Layer.provide(
-          Layer.succeed(FactorySkills.FactorySkills, {
-            head: options?.skillsHead ?? Effect.succeed(workflow),
-            validate: () => Effect.void,
-          }),
+          Layer.succeed(
+            FactorySkills.FactorySkills,
+            FactoryServiceTestkit.skillsService(options?.skillsHead ?? Effect.succeed(workflow)),
+          ),
         ),
         Layer.provide(
           Layer.mergeAll(

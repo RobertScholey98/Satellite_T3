@@ -89,8 +89,6 @@ import * as FactoryPrompts from "./FactoryPrompts.ts";
 interface FactoryServiceCore {
   /** The unscoped state, narrowed to one project when the query names one. */
   readonly snapshot: (query: FactoryQuery) => Effect.Effect<FactorySnapshot, FactoryError>;
-  /** Refuses a skills repository path that is not a Git repository with `skills/` at HEAD. */
-  readonly validateSkillsRepository: (repositoryRoot: string) => Effect.Effect<void, FactoryError>;
   readonly mergeGroupGet: (
     query: FactoryMergeGroupQuery,
   ) => Effect.Effect<FactoryMergeGroupRead, FactoryError>;
@@ -1021,7 +1019,6 @@ export const layer = Layer.effect(
 
     const service: FactoryServiceCore = {
       snapshot: (query) => store.snapshot.pipe(Effect.map(scopedSnapshot(query))),
-      validateSkillsRepository: (repositoryRoot) => skillsRepository.validate(repositoryRoot),
       mergeGroupGet: Effect.fn("FactoryService.mergeGroupGet")(function* (query) {
         const state = yield* store.snapshot;
         const group = state.mergeGroups.find((entry) => entry.id === query.groupId);

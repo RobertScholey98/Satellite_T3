@@ -23,6 +23,13 @@ const noContext = () => Effect.succeed({});
 /** The commit `layerTestDependencies` reports at HEAD of the configured skills repository. */
 export const testSkills = { repositoryRoot: "C:/owned-skills", revision: "a".repeat(40) };
 
+/** A skills service whose HEAD is `head`. Settings writes are not part of factory tests. */
+export const skillsService = (head: FactorySkills.FactorySkills["Service"]["head"]) =>
+  FactorySkills.FactorySkills.of({
+    head,
+    updateSettings: () => Effect.die("Settings writes are not part of this test."),
+  });
+
 /** What `FactorySkills.head` answers while the skills repository setting is empty. */
 export const skillsUnset = Effect.fail(
   new FactoryError({
@@ -42,10 +49,7 @@ export const layerTestDependencies = Layer.mergeAll(
     getInstance: () => Effect.succeed(undefined),
   }),
   ServerSettings.layerTest({ engineeringManagersEnabled: true }).pipe(Layer.orDie),
-  Layer.succeed(FactorySkills.FactorySkills, {
-    head: Effect.succeed(testSkills),
-    validate: () => Effect.void,
-  }),
+  Layer.succeed(FactorySkills.FactorySkills, skillsService(Effect.succeed(testSkills))),
   Layer.succeed(FactoryDeliveryEffects.FactoryDeliveryEffects, { handle: leavePending }),
   Layer.succeed(FactoryPreviewService.FactoryPreviewService, {
     reconcile: Effect.void,

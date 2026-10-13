@@ -1,4 +1,12 @@
-import { FactoryError, type FactoryWorkflowVersion } from "@t3tools/contracts";
+import {
+  FactoryError,
+  type FactoryWorkflowVersion,
+  type ProviderInstanceMutation,
+  type ServerSettings as ServerSettingsValue,
+  type ServerSettingsError,
+  type ServerSettingsPatch,
+  SkillsRepositoryError,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,8 +26,14 @@ export class FactorySkills extends Context.Service<
   {
     /** The commit at HEAD of the configured repository now. Refuses a missing or unusable one. */
     readonly head: Effect.Effect<FactoryWorkflowVersion, FactoryError>;
-    /** Refuses a path that is not a Git repository with `skills/` at HEAD. */
-    readonly validate: (repositoryRoot: string) => Effect.Effect<void, FactoryError>;
+    /**
+     * Applies a client's settings write. A non-empty skills repository must be a Git repository
+     * with `skills/` committed at HEAD, and is stored as its real absolute path.
+     */
+    readonly updateSettings: (
+      patch: ServerSettingsPatch,
+      providerInstanceMutation?: ProviderInstanceMutation,
+    ) => Effect.Effect<ServerSettingsValue, ServerSettingsError | SkillsRepositoryError>;
   }
 >()("t3/factory/FactorySkills") {}
 
@@ -45,7 +59,30 @@ export const layer = Layer.effect(
           ),
         );
       }),
-      validate: (repositoryRoot) => sources.skillsHead(repositoryRoot).pipe(Effect.asVoid),
+      updateSettings: Effect.fn("FactorySkills.updateSettings")(function* (
+        patch: ServerSettingsPatch,
+        providerInstanceMutation?: ProviderInstanceMutation,
+      ) {
+        const requested = patch.engineeringManagersSkillsRepository;
+        const repository = requested
+          ? yield* sources.skillsHead(requested).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new SkillsRepositoryError({
+                    repositoryPath: requested,
+                    reason: cause.detail ?? cause.message,
+                  }),
+              ),
+            )
+          : undefined;
+        const next =
+          repository === undefined
+            ? patch
+            : { ...patch, engineeringManagersSkillsRepository: repository.repositoryRoot };
+        return yield* providerInstanceMutation === undefined
+          ? settings.updateSettings(next)
+          : settings.updateProviderInstance(providerInstanceMutation, next);
+      }),
     });
   }),
 );

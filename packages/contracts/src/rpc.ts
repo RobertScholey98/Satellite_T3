@@ -379,7 +379,12 @@ import {
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
-import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
+import {
+  ServerSettings,
+  ServerSettingsError,
+  ServerSettingsPatch,
+  SkillsRepositoryError,
+} from "./settings.ts";
 import {
   ScheduledTaskDeleteInput,
   ScheduledTaskDeleteResult,
@@ -852,7 +857,7 @@ const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
     providerInstanceMutation: Schema.optionalKey(ProviderInstanceMutation),
   }),
   success: ServerSettings,
-  error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
+  error: Schema.Union([ServerSettingsError, SkillsRepositoryError, EnvironmentAuthorizationError]),
 });
 
 const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {

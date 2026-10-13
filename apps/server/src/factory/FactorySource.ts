@@ -723,14 +723,13 @@ const make = Effect.gen(function* () {
       Effect.map((output) => output.toString().trim()),
       Effect.mapError(() => unavailable(`${repositoryRoot} has no commit at HEAD.`)),
     );
-    const skills = yield* repository.git([
-      "ls-tree",
-      "-d",
-      "--name-only",
-      revision,
-      "--",
-      "skills",
-    ]);
+    const skills = yield* repository
+      .git(["ls-tree", "-d", "--name-only", revision, "--", "skills"])
+      .pipe(
+        Effect.mapError(() =>
+          unavailable(`Git could not list the skills directory at HEAD of ${repositoryRoot}.`),
+        ),
+      );
     if (skills.toString().trim() !== "skills")
       return yield* unavailable(`${repositoryRoot} has no committed skills directory at HEAD.`);
     return { repositoryRoot: repository.workspace, revision };

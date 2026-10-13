@@ -1575,7 +1575,6 @@ export const ServerSettingsOperation = Schema.Literals([
   "write-secret",
   "write-file",
   "prepare-directory",
-  "validate",
 ]);
 export type ServerSettingsOperation = typeof ServerSettingsOperation.Type;
 
@@ -1586,15 +1585,12 @@ export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>
     operation: ServerSettingsOperation,
     providerInstanceId: Schema.optional(Schema.String),
     environmentVariable: Schema.optional(Schema.String),
-    /** A reason the user can act on, shown instead of the generic message. */
-    detail: Schema.optional(Schema.String),
     // Validation failures (e.g. a create colliding with an existing
     // instance) originate without an upstream defect.
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    if (this.detail !== undefined) return this.detail;
     const provider =
       this.providerInstanceId === undefined ? "" : ` for provider ${this.providerInstanceId}`;
     const variable =
@@ -1602,6 +1598,20 @@ export class ServerSettingsError extends Schema.TaggedError<ServerSettingsError>
         ? ""
         : ` and environment variable ${this.environmentVariable}`;
     return `Server settings ${this.operation} failed${provider}${variable} at ${this.settingsPath}.`;
+  }
+}
+
+/** The engineering managers skills repository a settings write named cannot be used. */
+export class SkillsRepositoryError extends Schema.TaggedError<SkillsRepositoryError>()(
+  "SkillsRepositoryError",
+  {
+    repositoryPath: Schema.String,
+    /** What is wrong with the repository, in words the user can act on. */
+    reason: Schema.String,
+  },
+) {
+  override get message(): string {
+    return this.reason;
   }
 }
 

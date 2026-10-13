@@ -3,9 +3,9 @@ import {
   IDEA_WS_METHODS,
   IdeaOperationError,
   ORCHESTRATION_WS_METHODS,
-  ServerSettingsError,
 } from "@t3tools/contracts";
 import * as FactoryService from "./factory/FactoryService.ts";
+import * as FactorySkills from "./factory/FactorySkills.ts";
 import { IdeaNotebookStore } from "./ideas/IdeaNotebookStore.ts";
 import { DocumentService } from "./documents/DocumentService.ts";
 import { RevdocService } from "./revdoc/RevdocService.ts";
@@ -1160,6 +1160,7 @@ const layerWsRpc = (
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
       const factory = yield* FactoryService.FactoryService;
+      const factorySkills = yield* FactorySkills.FactorySkills;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -1952,27 +1953,16 @@ const layerWsRpc = (
           serverSettings.getSettings.pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
         [WS_METHODS.serverUpdateSettings]: ({ patch, providerInstanceMutation }) =>
           Effect.gen(function* () {
-            const skillsRepository = patch.engineeringManagersSkillsRepository;
-            if (skillsRepository)
-              yield* factory.validateSkillsRepository(skillsRepository).pipe(
-                Effect.mapError(
-                  (error) =>
-                    new ServerSettingsError({
-                      settingsPath: skillsRepository,
-                      operation: "validate",
-                      detail: error.message,
-                    }),
-                ),
-              );
             const deviceHosts = patch.deviceHosts
               ? yield* remoteSshDeviceHosts(patch.deviceHosts).pipe(
                   Effect.provide(deviceHostContext),
                 )
               : undefined;
             const nextPatch = { ...patch, ...(deviceHosts ? { deviceHosts } : {}) };
-            const settings = yield* providerInstanceMutation === undefined
-              ? serverSettings.updateSettings(nextPatch)
-              : serverSettings.updateProviderInstance(providerInstanceMutation, nextPatch);
+            const settings = yield* factorySkills.updateSettings(
+              nextPatch,
+              providerInstanceMutation,
+            );
             return ServerSettings.redactServerSettingsForClient(settings);
           }),
         [WS_METHODS.serverDiscoverSourceControl]: (_input) => sourceControlDiscovery.discover,
@@ -2815,6 +2805,7 @@ export const layer = Layer.unwrap(
     const pullRequests = yield* PullRequestService.PullRequestService;
     const documents = yield* DocumentService;
     const factory = yield* FactoryService.FactoryService;
+    const factorySkills = yield* FactorySkills.FactorySkills;
     const revdoc = yield* RevdocService;
     const issues = yield* IssueService;
     const openWork = yield* OpenWorkService;
@@ -2897,6 +2888,7 @@ export const layer = Layer.unwrap(
                 Layer.mergeAll(
                   Layer.succeed(DocumentService, documents),
                   Layer.succeed(FactoryService.FactoryService, factory),
+                  Layer.succeed(FactorySkills.FactorySkills, factorySkills),
                   Layer.succeed(RevdocService, revdoc),
                   Layer.succeed(IssueService, issues),
                   Layer.succeed(OpenWorkService, openWork),

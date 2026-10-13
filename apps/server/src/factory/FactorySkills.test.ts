@@ -16,11 +16,14 @@ import * as FactorySource from "./FactorySource.ts";
 const skillsFor = (repositoryRoot: string) =>
   Effect.gen(function* () {
     const root = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped();
-    return yield* FactorySkills.FactorySkills.pipe(
+    return yield* Effect.all({
+      skills: FactorySkills.FactorySkills,
+      settings: ServerSettings.ServerSettingsService,
+    }).pipe(
       Effect.provide(
         FactorySkills.layer.pipe(
           Layer.provide(FactorySource.layer),
-          Layer.provide(
+          Layer.provideMerge(
             Layer.mergeAll(
               ServerConfig.layerTest(root, root),
               ServerSettings.layerTest({
@@ -36,7 +39,7 @@ const skillsFor = (repositoryRoot: string) =>
   });
 
 it.effect(
-  "reads HEAD of the skills repository for each command and refuses a path without committed skills",
+  "reads HEAD of the skills repository for each command and stores only a repository with committed skills",
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -65,7 +68,7 @@ it.effect(
         yield* git(directory, ["config", "user.email", "skills@example.invalid"]);
       }
 
-      const skills = yield* skillsFor(repository);
+      const { skills, settings } = yield* skillsFor(repository);
       const first = yield* commit(repository, "skills/review/SKILL.md", "Review carefully.");
       assert.deepStrictEqual(yield* skills.head, {
         repositoryRoot: yield* fs.realPath(repository),
@@ -74,25 +77,49 @@ it.effect(
       const second = yield* commit(repository, "skills/review/SKILL.md", "Review twice.");
       assert.notEqual(second, first);
       assert.equal((yield* skills.head).revision, second);
-      yield* skills.validate(repository);
+
+      // A relative path resolves against the server's working directory and is stored absolute.
+      const relative = path.relative(process.cwd(), repository);
+      assert.isFalse(path.isAbsolute(relative));
+      const saved = yield* skills.updateSettings({
+        engineeringManagersSkillsRepository: relative,
+      });
+      assert.equal(saved.engineeringManagersSkillsRepository, yield* fs.realPath(repository));
 
       const refusal = (repositoryRoot: string) =>
-        skills.validate(repositoryRoot).pipe(
-          Effect.flip,
-          Effect.map((error) => error.detail),
-        );
-      assert.equal(yield* refusal(plain), `${plain} is not a local Git repository.`);
+        skills
+          .updateSettings({ engineeringManagersSkillsRepository: repositoryRoot })
+          .pipe(Effect.flip);
+      const notGit = yield* refusal(plain);
+      assert.equal(notGit._tag, "SkillsRepositoryError");
+      if (notGit._tag === "SkillsRepositoryError") {
+        assert.equal(notGit.repositoryPath, plain);
+        assert.equal(notGit.reason, `${plain} is not a local Git repository.`);
+      }
       yield* commit(bare, "README.md", "No skills here.");
       // A skills directory on disk does not count until it is committed.
       yield* fs.makeDirectory(path.join(bare, "skills"));
       yield* fs.writeFileString(path.join(bare, "skills", "SKILL.md"), "Uncommitted.");
-      assert.equal(yield* refusal(bare), `${bare} has no committed skills directory at HEAD.`);
       assert.equal(
-        (yield* (yield* skillsFor(bare)).head.pipe(Effect.flip)).detail,
+        (yield* refusal(bare)).message,
+        `${bare} has no committed skills directory at HEAD.`,
+      );
+      assert.equal(
+        (yield* settings.getSettings).engineeringManagersSkillsRepository,
+        yield* fs.realPath(repository),
+      );
+      // Clearing the setting needs no repository.
+      assert.equal(
+        (yield* skills.updateSettings({ engineeringManagersSkillsRepository: "" }))
+          .engineeringManagersSkillsRepository,
+        "",
+      );
+      assert.equal(
+        (yield* (yield* skillsFor(bare)).skills.head.pipe(Effect.flip)).detail,
         `Set the skills repository in Settings → General first. ${bare} has no committed skills directory at HEAD.`,
       );
       assert.equal(
-        (yield* (yield* skillsFor("")).head.pipe(Effect.flip)).detail,
+        (yield* (yield* skillsFor("")).skills.head.pipe(Effect.flip)).detail,
         "Set the skills repository in Settings → General first.",
       );
     }).pipe(Effect.scoped, Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
