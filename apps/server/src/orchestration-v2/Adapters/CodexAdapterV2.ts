@@ -1,6 +1,6 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { prepareCodexIdeaPolicy } from "../../ideas/CodexIdeaPolicy.ts";
-import * as ConfinedCodexLaunch from "./ConfinedCodexLaunch.ts";
+import * as ConfinedProviderLaunch from "./ConfinedProviderLaunch.ts";
 import { historyResponseItems } from "../ContextHandoffBudget.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -770,7 +770,7 @@ export function buildCodexTurnStartParams(input: {
       threadId: input.nativeThreadId,
       input: input.codexInput,
       ...(additionalContext ? { additionalContext } : {}),
-      cwd: confined ? ConfinedCodexLaunch.CONFINED_CODEX_WORKSPACE : input.runtimePolicy.cwd,
+      cwd: confined ? ConfinedProviderLaunch.CONFINED_WORKSPACE : input.runtimePolicy.cwd,
       model: input.modelSelection.model,
       // Model catalogues can default summaries to "none". Request them on every
       // turn, including resumed threads, for T3's reasoning timeline.
@@ -1303,7 +1303,7 @@ export function codexThreadRuntimeParams(input: {
     ...(input.runtimePolicy?.cwd == null
       ? {}
       : {
-          cwd: confined ? ConfinedCodexLaunch.CONFINED_CODEX_WORKSPACE : input.runtimePolicy.cwd,
+          cwd: confined ? ConfinedProviderLaunch.CONFINED_WORKSPACE : input.runtimePolicy.cwd,
         }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
     config: {
@@ -1321,7 +1321,7 @@ export function codexThreadRuntimeParams(input: {
             mcp_servers: {
               "t3-code": {
                 url: confined
-                  ? ConfinedCodexLaunch.confinedCodexEndpoint(mcpSession.endpoint)
+                  ? ConfinedProviderLaunch.confinedEndpoint(mcpSession.endpoint)
                   : mcpSession.endpoint,
                 http_headers: {
                   Authorization: mcpSession.authorizationHeader,
@@ -1497,7 +1497,7 @@ export const layerAppServerClientFactory: Layer.Layer<
   | ProviderEventLoggers
   | FileSystem.FileSystem
   | Path.Path
-  | ConfinedCodexLaunch.ConfinedCodexLaunch
+  | ConfinedProviderLaunch.ConfinedProviderLaunch
 > = Layer.effect(
   CodexAppServerClientFactory,
   Effect.gen(function* () {
@@ -1505,7 +1505,7 @@ export const layerAppServerClientFactory: Layer.Layer<
     const { native: nativeEventLogger } = yield* ProviderEventLoggers;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const confinedLaunch = yield* ConfinedCodexLaunch.ConfinedCodexLaunch;
+    const confinedLaunch = yield* ConfinedProviderLaunch.ConfinedProviderLaunch;
 
     return CodexAppServerClientFactory.of({
       open: (input) =>
@@ -1518,6 +1518,7 @@ export const layerAppServerClientFactory: Layer.Layer<
               ? undefined
               : yield* confinedLaunch
                   .prepare({
+                    driver: "codex",
                     confinement,
                     settings: input.settings,
                     environment: input.environment,
@@ -1625,7 +1626,7 @@ export const layerAppServerClientFactory: Layer.Layer<
 
 export type CodexAdapterV2DriverEnv =
   | CodexAppServerClientFactory
-  | ConfinedCodexLaunch.ConfinedCodexLaunch
+  | ConfinedProviderLaunch.ConfinedProviderLaunch
   | Crypto.Crypto
   | FileSystem.FileSystem
   | IdAllocatorV2
@@ -1638,7 +1639,7 @@ export const createCodexAdapterV2 = (
 ) =>
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
-    const confinedLaunch = yield* ConfinedCodexLaunch.ConfinedCodexLaunch;
+    const confinedLaunch = yield* ConfinedProviderLaunch.ConfinedProviderLaunch;
     const continuationRequests = yield* ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1694,7 +1695,7 @@ const layer: Layer.Layer<
   ProviderAdapterV2,
   never,
   | CodexAppServerClientFactory
-  | ConfinedCodexLaunch.ConfinedCodexLaunch
+  | ConfinedProviderLaunch.ConfinedProviderLaunch
   | Crypto.Crypto
   | FileSystem.FileSystem
   | Path.Path
@@ -1704,7 +1705,7 @@ const layer: Layer.Layer<
   ProviderAdapterV2,
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
-    const confinedLaunch = yield* ConfinedCodexLaunch.ConfinedCodexLaunch;
+    const confinedLaunch = yield* ConfinedProviderLaunch.ConfinedProviderLaunch;
     const continuationRequests = yield* ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1735,7 +1736,7 @@ export interface CodexAdapterV2Options {
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
   /** Checks a confined session's runtime before its handshake and each turn. */
-  readonly confinedLaunch: ConfinedCodexLaunch.ConfinedCodexLaunch["Service"];
+  readonly confinedLaunch: ConfinedProviderLaunch.ConfinedProviderLaunch["Service"];
   readonly onUsageLimits?: ServerProviderShape["applyUsageLimits"];
   /**
    * Resolves launch settings when each session opens, replacing `settings` and

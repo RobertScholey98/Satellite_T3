@@ -10,8 +10,8 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
   [`RuntimePolicyV2`](../../apps/server/src/orchestration-v2/RuntimePolicy.ts) asks
   `ThreadGovernance.confinementFor` about every thread, which the factory answers with
   `FactoryExecution.runtimePolicyFor`. When that returns a confinement, Codex starts in the
-  container through `ConfinedCodexLaunch`, which the factory implements with
-  [`prepareFactoryCodexLaunch`](../../apps/server/src/factory/FactoryCodexLaunch.ts), and every
+  container through `ConfinedProviderLaunch`, which the factory implements with
+  [`prepareFactoryLaunch`](../../apps/server/src/factory/FactoryConfinedLaunch.ts), and every
   other driver is refused. Runtime-policy overrides skip managed threads. Never add a
   host fallback. A failed launch must surface as a failure.
 - The host never reads or writes an assignment volume directly. Volume access goes through
@@ -55,7 +55,7 @@ Shared code imports nothing from the factory. It asks seams that core owns, and 
 implements them:
 [`ThreadGovernance`](../../apps/server/src/orchestration-v2/ThreadGovernance.ts) for direction,
 confinement, model admission and restart ownership,
-[`ConfinedCodexLaunch`](../../apps/server/src/orchestration-v2/Adapters/ConfinedCodexLaunch.ts)
+[`ConfinedProviderLaunch`](../../apps/server/src/orchestration-v2/Adapters/ConfinedProviderLaunch.ts)
 for the container launch and its authority checks, and
 [`PullRequestActionGate`](../../apps/server/src/pullRequest/PullRequestActionGate.ts) for actions on
 managed PRs. These shared paths consult them:

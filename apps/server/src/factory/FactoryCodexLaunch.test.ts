@@ -9,8 +9,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import * as ConfinedCodexLaunch from "../orchestration-v2/Adapters/ConfinedCodexLaunch.ts";
-import * as FactoryCodexLaunch from "./FactoryCodexLaunch.ts";
+import * as ConfinedProviderLaunch from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
+import * as FactoryConfinedLaunch from "./FactoryConfinedLaunch.ts";
 import { admissibleFactorySourcePath, FACTORY_CODEX_IMAGE } from "./FactoryExecutionProfile.ts";
 
 const settings = Schema.decodeUnknownSync(CodexSettings);
@@ -57,12 +57,15 @@ it.effect(
         workflowSnapshotPath: path.join(root, "workflow"),
         runtimePath: path.join(root, "runtime"),
       };
-      const result = yield* FactoryCodexLaunch.prepareFactoryCodexLaunch({
+      const result = yield* FactoryConfinedLaunch.prepareFactoryLaunch({
         profile,
-        settings: settings({
-          homePath: home,
-          launchArgs: "--yolo -c mcp_servers.host.command=privileged",
-        }),
+        provider: {
+          driver: "codex",
+          settings: settings({
+            homePath: home,
+            launchArgs: "--yolo -c mcp_servers.host.command=privileged",
+          }),
+        },
         containerName: "factory-test",
         environment: {
           PATH: "allowed",
@@ -106,7 +109,7 @@ it.effect(
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
-      const failure = yield* FactoryCodexLaunch.prepareFactoryCodexLaunch({
+      const failure = yield* FactoryConfinedLaunch.prepareFactoryLaunch({
         profile: {
           boundaryId: "missing",
           dockerContext: "local",
@@ -115,11 +118,11 @@ it.effect(
           workflowSnapshotPath: root,
           runtimePath: path.join(root, "runtime"),
         },
-        settings: settings({ homePath: path.join(root, "empty") }),
+        provider: { driver: "codex", settings: settings({ homePath: path.join(root, "empty") }) },
         environment: {},
         containerName: "factory-missing",
       }).pipe(Effect.flip);
-      assert.equal(failure._tag, "ConfinedCodexLaunchError");
+      assert.equal(failure._tag, "ConfinedLaunchError");
       assert.include(failure.detail, "file-based Codex");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
@@ -131,7 +134,7 @@ it.effect("keeps the factory refusal that stopped a launch as its cause", () =>
     const root = yield* fs.makeTempDirectoryScoped();
     const stopPath = path.join(root, "retro-stopped");
     yield* fs.writeFileString(stopPath, "");
-    const failure = yield* FactoryCodexLaunch.prepareFactoryCodexLaunch({
+    const failure = yield* FactoryConfinedLaunch.prepareFactoryLaunch({
       profile: {
         boundaryId: "stopped-retro",
         dockerContext: "local",
@@ -148,11 +151,11 @@ it.effect("keeps the factory refusal that stopped a launch as its cause", () =>
           stopPath,
         },
       },
-      settings: settings({ homePath: path.join(root, "empty") }),
+      provider: { driver: "codex", settings: settings({ homePath: path.join(root, "empty") }) },
       environment: {},
       containerName: "factory-stopped-retro",
     }).pipe(Effect.flip);
-    assert.equal(failure._tag, "ConfinedCodexLaunchError");
+    assert.equal(failure._tag, "ConfinedLaunchError");
     assert.equal(
       failure.detail,
       "This retrospective runtime has stopped. Its evidence remains available.",
@@ -191,9 +194,10 @@ it.effect("launches and fences a confinement from the profile it carries", () =>
       workspacePath: profile.projectSnapshotPath,
       profile,
     };
-    const launcher = yield* ConfinedCodexLaunch.ConfinedCodexLaunch;
+    const launcher = yield* ConfinedProviderLaunch.ConfinedProviderLaunch;
     const launch = yield* launcher.prepare({
       confinement,
+      driver: "codex",
       settings: settings({ homePath: path.join(root, "empty") }),
       environment: { OPENAI_API_KEY: "model-test" },
     });
@@ -216,13 +220,18 @@ it.effect("launches and fences a confinement from the profile it carries", () =>
     );
     assert.equal(
       (yield* launcher
-        .prepare({ confinement: unreadable, settings: settings({}), environment: {} })
+        .prepare({
+          driver: "codex",
+          confinement: unreadable,
+          settings: settings({}),
+          environment: {},
+        })
         .pipe(Effect.flip))._tag,
-      "ConfinedCodexLaunchError",
+      "ConfinedLaunchError",
     );
   }).pipe(
     Effect.scoped,
-    Effect.provide(FactoryCodexLaunch.layerConfinedLaunch),
+    Effect.provide(FactoryConfinedLaunch.layerConfinedLaunch),
     Effect.provide(NodeServices.layer),
   ),
 );
@@ -247,11 +256,11 @@ it("excludes credential paths and traversal while retaining ordinary tracked pro
   ])
     assert.isTrue(admissibleFactorySourcePath(path), path);
   assert.equal(
-    ConfinedCodexLaunch.confinedCodexEndpoint("http://127.0.0.1:4000/mcp"),
+    ConfinedProviderLaunch.confinedEndpoint("http://127.0.0.1:4000/mcp"),
     "http://host.docker.internal:4000/mcp",
   );
   assert.equal(
-    ConfinedCodexLaunch.confinedCodexEndpoint("https://environment.example/mcp"),
+    ConfinedProviderLaunch.confinedEndpoint("https://environment.example/mcp"),
     "https://environment.example/mcp",
   );
 });
@@ -284,9 +293,9 @@ it.effect(
         },
       };
       const launch = () =>
-        FactoryCodexLaunch.prepareFactoryCodexLaunch({
+        FactoryConfinedLaunch.prepareFactoryLaunch({
           profile,
-          settings: settings({ homePath: path.join(root, "empty") }),
+          provider: { driver: "codex", settings: settings({ homePath: path.join(root, "empty") }) },
           environment: { OPENAI_API_KEY: "test-model-key" },
           containerName: "factory-paused",
         });
@@ -318,7 +327,7 @@ live(
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped();
-      const launch = yield* FactoryCodexLaunch.prepareFactoryCodexLaunch({
+      const launch = yield* FactoryConfinedLaunch.prepareFactoryLaunch({
         profile: {
           boundaryId: "native-subagent-probe",
           dockerContext: "local",
@@ -327,7 +336,7 @@ live(
           workflowSnapshotPath: root,
           runtimePath: path.join(root, "runtime"),
         },
-        settings: settings({ homePath: path.join(root, "empty") }),
+        provider: { driver: "codex", settings: settings({ homePath: path.join(root, "empty") }) },
         environment: { OPENAI_API_KEY: "unused" },
         containerName: "factory-native-subagent-probe",
       });

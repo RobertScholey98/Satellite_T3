@@ -16,7 +16,7 @@ import * as CommitRecommendationService from "./git/CommitRecommendationService.
 import * as FactoryStore from "./factory/FactoryStore.ts";
 import * as FactoryPullRequestGate from "./factory/FactoryPullRequestGate.ts";
 import * as FactoryExecution from "./factory/FactoryExecution.ts";
-import * as FactoryCodexLaunch from "./factory/FactoryCodexLaunch.ts";
+import * as FactoryConfinedLaunch from "./factory/FactoryConfinedLaunch.ts";
 import * as FactoryBoundaryExecution from "./factory/FactoryBoundaryExecution.ts";
 import * as FactorySource from "./factory/FactorySource.ts";
 import * as FactoryHandover from "./factory/FactoryHandover.ts";
@@ -746,7 +746,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // with explicit `providerInstances` entries on boot.
   Layer.provideMerge(
     ProviderInstanceRegistryHydration.layer.pipe(
-      Layer.provide(FactoryCodexLaunch.layerConfinedLaunch),
+      Layer.provide(FactoryConfinedLaunch.layerConfinedLaunch),
     ),
   ),
   Layer.provideMerge(

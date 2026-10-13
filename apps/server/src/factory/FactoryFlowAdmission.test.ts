@@ -21,7 +21,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as Boundary from "./FactoryBoundaryExecution.ts";
-import { prepareFactoryCodexLaunch } from "./FactoryCodexLaunch.ts";
+import { prepareFactoryLaunch } from "./FactoryConfinedLaunch.ts";
 import {
   deliveryActors,
   deliveryFixture,
@@ -332,11 +332,12 @@ it.effect(
         const resolved = yield* execution.runtimePolicyFor(deliveryIds.lead);
         assert.isDefined(resolved);
         const launch = (profile: FactoryExecutionProfile) =>
-          prepareFactoryCodexLaunch({
+          prepareFactoryLaunch({
             profile,
-            settings: decodeCodexSettings({
-              homePath: path.join(test.root, "no-auth"),
-            }),
+            provider: {
+              driver: "codex",
+              settings: decodeCodexSettings({ homePath: path.join(test.root, "no-auth") }),
+            },
             environment: { OPENAI_API_KEY: "test-model-key" },
             containerName: "held-planning",
           });

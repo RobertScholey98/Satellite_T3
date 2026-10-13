@@ -28,7 +28,7 @@ import * as CodexInstallation from "../provider/CodexInstallation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
 import * as ProviderInstanceRegistryHydration from "../provider/ProviderInstanceRegistryHydration.ts";
-import * as ConfinedCodexLaunch from "./Adapters/ConfinedCodexLaunch.ts";
+import * as ConfinedProviderLaunch from "./Adapters/ConfinedProviderLaunch.ts";
 import * as ProviderEventLoggers from "../provider/ProviderEventLoggers.ts";
 import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 import * as OpenCodeServerLedger from "../provider/OpenCodeServerLedger.ts";
@@ -70,7 +70,7 @@ const layerBackgroundPolicy = BackgroundPolicy.layer.pipe(
   Layer.provide(layerServerSettings),
 );
 const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pipe(
-  Layer.provide(ConfinedCodexLaunch.layerUnconfined),
+  Layer.provide(ConfinedProviderLaunch.layerUnconfined),
   Layer.provide(
     Layer.mergeAll(
       layerServerConfig.pipe(Layer.provide(layerPlatformTest)),

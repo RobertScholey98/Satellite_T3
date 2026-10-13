@@ -6,7 +6,7 @@ import type * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
 import type * as PullRequestActionGate from "../pullRequest/PullRequestActionGate.ts";
 import type * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import type * as CodexAdapterV2 from "./Adapters/CodexAdapterV2.ts";
-import type * as ConfinedCodexLaunch from "./Adapters/ConfinedCodexLaunch.ts";
+import type * as ConfinedProviderLaunch from "./Adapters/ConfinedProviderLaunch.ts";
 import type * as CheckpointService from "./CheckpointService.ts";
 import type * as EffectWorker from "./EffectWorker.ts";
 import type * as Orchestrator from "./Orchestrator.ts";
@@ -30,7 +30,7 @@ it("cannot compose a shared path without its governance", () => {
     true satisfies Requires<typeof OrchestratorMcpService.layer, ThreadGovernance>,
     true satisfies Requires<
       typeof CodexAdapterV2.layerAppServerClientFactory,
-      ConfinedCodexLaunch.ConfinedCodexLaunch
+      ConfinedProviderLaunch.ConfinedProviderLaunch
     >,
     true satisfies Requires<
       typeof PullRequestService.layer,

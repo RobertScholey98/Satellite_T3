@@ -35,7 +35,7 @@ import {
 } from "../providerMaintenance.ts";
 import { CodexDriver } from "./CodexDriver.ts";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
-import * as ConfinedCodexLaunch from "../../orchestration-v2/Adapters/ConfinedCodexLaunch.ts";
+import * as ConfinedProviderLaunch from "../../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../../orchestration-v2/ProviderAdapter.ts";
 import * as ProviderCredentialStore from "../ProviderCredentialStore.ts";
@@ -45,7 +45,7 @@ const layerTest = ServerConfig.layerTest(process.cwd(), {
 }).pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(IdAllocator.layer),
-  Layer.provideMerge(ConfinedCodexLaunch.layerUnconfined),
+  Layer.provideMerge(ConfinedProviderLaunch.layerUnconfined),
   Layer.provideMerge(
     Layer.mock(CodexAdapterV2.CodexAppServerClientFactory)({
       open: () => Effect.die("Maintenance resolution must not open a Codex session"),

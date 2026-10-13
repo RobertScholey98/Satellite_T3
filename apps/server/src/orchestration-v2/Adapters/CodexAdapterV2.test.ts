@@ -70,7 +70,7 @@ import {
 } from "../ProviderAdapter.ts";
 import type { ProviderContinuationRequest } from "../ProviderContinuationRequests.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
-import * as ConfinedCodexLaunch from "./ConfinedCodexLaunch.ts";
+import * as ConfinedProviderLaunch from "./ConfinedProviderLaunch.ts";
 import { makeReplayServerConfig, withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
 
@@ -722,7 +722,7 @@ describe("CodexAdapterV2 process spawning", () => {
       });
       const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
         Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
-        Effect.provide(ConfinedCodexLaunch.layerUnconfined),
+        Effect.provide(ConfinedProviderLaunch.layerUnconfined),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(
           ProviderEventLoggers.ProviderEventLoggers,
@@ -782,7 +782,7 @@ describe("CodexAdapterV2 process spawning", () => {
           Layer.mergeAll(
             CodexAdapterV2.layerAppServerClientFactory,
             ServerConfig.layerTest(process.cwd(), { prefix: "t3-codex-binary-home-" }),
-          ).pipe(Layer.provideMerge(ConfinedCodexLaunch.layerUnconfined)),
+          ).pipe(Layer.provideMerge(ConfinedProviderLaunch.layerUnconfined)),
         ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(
@@ -1454,7 +1454,7 @@ const CODEX_TEST_RUNTIME_POLICY = ProviderAdapterV2RuntimePolicy.make({
   interactionMode: "default",
   cwd: "/workspace",
 });
-const unconfinedLaunch: ConfinedCodexLaunch.ConfinedCodexLaunch["Service"] = {
+const unconfinedLaunch: ConfinedProviderLaunch.ConfinedProviderLaunch["Service"] = {
   prepare: () => Effect.die("These sessions are never confined."),
   assertActive: () => Effect.void,
 };
@@ -1691,7 +1691,7 @@ describe("CodexAdapterV2 session initialize", () => {
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     runtimePolicy: ProviderAdapterV2RuntimePolicy = CODEX_TEST_RUNTIME_POLICY,
-    confinedLaunch: ConfinedCodexLaunch.ConfinedCodexLaunch["Service"] = unconfinedLaunch,
+    confinedLaunch: ConfinedProviderLaunch.ConfinedProviderLaunch["Service"] = unconfinedLaunch,
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
