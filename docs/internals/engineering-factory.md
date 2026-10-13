@@ -53,10 +53,12 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
   Claude config directory, and a managed thread's transcripts live in its runtime.
 - The model credential is inside the container, and the container has network access. A shell
   command can still call a model directly. The model policy governs supported delegation paths
-  only. Do not describe it as spend enforcement. Project-scope Claude configuration
-  (`/workspace/.claude/`) stays loadable: `.claude` is excluded from source snapshots, and an
-  agent that creates it in a writable workspace shows in the workspace diff and is blocked at
-  delivery by protected paths.
+  only. Do not describe it as spend enforcement.
+- Project-scope Claude configuration (`/workspace/.claude/`) stays writable on purpose. It belongs
+  to the repository, and teams change it as project-level improvements, which deliver only with a
+  control-change grant. A skill an agent adds there loads in that run, including its `model:`
+  frontmatter. Do not make it read-only; that would also block granted control changes. The
+  user-scope Claude home is different: it is the factory's, so it is read-only.
 
 ## Lineage
 
