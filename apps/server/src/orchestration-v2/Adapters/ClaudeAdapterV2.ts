@@ -1,6 +1,6 @@
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
-  CLAUDE_CONFINED_DISALLOWED_TOOLS,
+  CLAUDE_CONFINED_TOOLS,
   type ConfinedClaudeRuntime,
   makeConfinedClaudeRuntime,
 } from "./ConfinedClaudeProcess.ts";
@@ -936,7 +936,12 @@ export function makeClaudeQueryOptions(input: {
     // a placeholder.
     return {
       ...options,
-      disallowedTools: [...CLAUDE_CONFINED_DISALLOWED_TOOLS, ...(input.disallowedTools ?? [])],
+      // A read-only policy narrows the managed tools further.
+      tools: isClaudeAgentSdkQueryToolList(selectedTools)
+        ? CLAUDE_CONFINED_TOOLS.filter((tool) => selectedTools.includes(tool))
+        : [...CLAUDE_CONFINED_TOOLS],
+      // Only this query's MCP servers, never the runtime's or the account's claude.ai connectors.
+      strictMcpConfig: true,
       pathToClaudeCodeExecutable: "claude",
       spawnClaudeCodeProcess: input.confined.spawnClaudeCodeProcess,
       settingSources: ["user", "project"],

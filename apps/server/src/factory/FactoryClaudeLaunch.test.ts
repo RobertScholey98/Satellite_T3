@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- the live probe runs the pinned image's Claude Code against a capture server.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeHttp from "node:http";
+import * as NodeModule from "node:module";
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -10,21 +11,22 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
 
 import { makeClaudeQueryOptions } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
-import {
-  CLAUDE_CONFINED_DISALLOWED_TOOLS,
-  makeConfinedClaudeRuntime,
-} from "../orchestration-v2/Adapters/ConfinedClaudeProcess.ts";
+import { makeConfinedClaudeRuntime } from "../orchestration-v2/Adapters/ConfinedClaudeProcess.ts";
 import * as ConfinedProviderLaunch from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as FactoryConfinedLaunch from "./FactoryConfinedLaunch.ts";
-import { FACTORY_AGENT_IMAGE } from "./FactoryExecutionProfile.ts";
+import { FACTORY_AGENT_DOCKERFILE, FACTORY_AGENT_IMAGE } from "./FactoryExecutionProfile.ts";
 
 const settings = Schema.decodeUnknownSync(ClaudeSettings);
 const codexSettings = Schema.decodeUnknownSync(CodexSettings);
+const decodeSdkPackage = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ claudeCodeVersion: Schema.String })),
+);
 // The test clock starts at the epoch, so these expiries are an hour and a minute away.
 const signIn = (expiresAt: number) =>
   JSON.stringify({
@@ -101,11 +103,17 @@ it.effect("passes only the file sign-in's access token and none of the host's en
       PATH: "allowed",
       CLAUDE_CODE_OAUTH_TOKEN: "file-access-token",
     });
-    assert.deepEqual(result.args.slice(-7), [
+    assert.deepEqual(result.args.slice(result.args.indexOf("--name")), [
       "--name",
       "factory-claude",
       "--env",
       "CLAUDE_CODE_OAUTH_TOKEN",
+      "--env",
+      "ENABLE_CLAUDEAI_MCP_SERVERS=false",
+      "--env",
+      "CLAUDE_CODE_ENTRYPOINT",
+      "--env",
+      "CLAUDE_AGENT_SDK_VERSION",
       "--entrypoint",
       "claude",
       "sha256:verified",
@@ -191,6 +199,22 @@ it.effect("refuses without a credential instead of falling back to the host", ()
       NO_CREDENTIAL,
     );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("pins the image's Claude Code to the version the Agent SDK drives", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const sdk = NodeModule.createRequire(import.meta.url).resolve("@anthropic-ai/claude-agent-sdk");
+    const { claudeCodeVersion } = yield* fs
+      .readFileString(path.join(path.dirname(sdk), "package.json"))
+      .pipe(Effect.flatMap(decodeSdkPackage));
+    assert.equal(
+      /@anthropic-ai\/claude-code@(\S+)/.exec(FACTORY_AGENT_DOCKERFILE)?.[1],
+      claudeCodeVersion,
+    );
+    assert.isTrue(FACTORY_AGENT_IMAGE.endsWith(`-claude-${claudeCodeVersion}`));
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect("keeps the cause when the file sign-in cannot be decoded", () =>
@@ -381,117 +405,210 @@ it.effect("launches Claude only from an image that runs it, and fences the confi
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+// A capture server stands in for the model and for an MCP server, so the probes record what Claude
+// would send without a real model request. Model requests are refused after they are recorded.
+const captureServer = Effect.acquireRelease(
+  Effect.callback<{
+    readonly server: NodeHttp.Server;
+    readonly requests: Array<{ readonly url: string; readonly body: string }>;
+  }>((resume) => {
+    const requests: Array<{ readonly url: string; readonly body: string }> = [];
+    const server = NodeHttp.createServer((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        if (request.url === "/mcp" && request.method !== "POST") {
+          response.writeHead(405);
+          response.end();
+          return;
+        }
+        if (request.url === "/mcp") {
+          const call = JSON.parse(body) as {
+            readonly id?: number;
+            readonly method: string;
+            readonly params?: { readonly protocolVersion?: string };
+          };
+          if (call.id === undefined) {
+            response.writeHead(202);
+            response.end();
+            return;
+          }
+          const result =
+            call.method === "initialize"
+              ? {
+                  protocolVersion: call.params?.protocolVersion,
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "probe", version: "1.0.0" },
+                }
+              : call.method === "tools/list"
+                ? {
+                    tools: [
+                      {
+                        name: "probe_tool",
+                        description: "Reports the probe.",
+                        inputSchema: { type: "object", properties: {} },
+                      },
+                    ],
+                  }
+                : {};
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }));
+          return;
+        }
+        requests.push({ url: request.url ?? "", body });
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end('{"type":"error","error":{"type":"invalid_request_error","message":"probe"}}');
+      });
+    });
+    server.listen(0, "0.0.0.0", () => resume(Effect.succeed({ server, requests })));
+  }),
+  ({ server }) =>
+    Effect.callback<void>((resume) => {
+      server.close(() => resume(Effect.void));
+    }),
+);
+
+const decodeModelRequest = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      model: Schema.String,
+      tools: Schema.Array(Schema.Struct({ name: Schema.String })),
+    }),
+  ),
+);
+
+/**
+ * Runs one prompt through the pinned image's Claude Code, launched as a managed thread's is,
+ * against the capture server. Returns the CLI's init frame and its first model request.
+ */
+const probeImageClaude = Effect.fn("probeImageClaude")(function* (input: {
+  readonly name: string;
+  readonly prompt: string;
+  readonly user?: string;
+  readonly prepareRuntime?: (
+    runtimePath: string,
+  ) => Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem>;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fs.makeTempDirectoryScoped();
+  yield* fs.makeDirectory(path.join(root, "project"));
+  yield* fs.makeDirectory(path.join(root, "workflow", "skills"), { recursive: true });
+  const runtimePath = path.join(root, "runtime");
+  if (input.prepareRuntime) yield* input.prepareRuntime(runtimePath);
+  const { server, requests } = yield* captureServer;
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  const launch = yield* FactoryConfinedLaunch.prepareFactoryLaunch({
+    profile: {
+      boundaryId: input.name,
+      dockerContext: NodeChildProcess.execFileSync("docker", ["context", "show"], {
+        encoding: "utf8",
+      }).trim(),
+      imageId: FACTORY_AGENT_IMAGE,
+      projectSnapshotPath: path.join(root, "project"),
+      workflowSnapshotPath: path.join(root, "workflow"),
+      runtimePath,
+    },
+    containerName: input.name,
+    provider: {
+      driver: "claudeAgent",
+      settings: settings({}),
+      environment: { ...process.env, ANTHROPIC_API_KEY: "unused" },
+    },
+  }).pipe(Effect.provide(ProcessRunner.layer));
+  const entrypoint = launch.args.indexOf("--entrypoint");
+  const runtime = makeConfinedClaudeRuntime({
+    ...launch,
+    name: input.name,
+    args: [
+      ...launch.args.slice(0, entrypoint),
+      "--env",
+      `ANTHROPIC_BASE_URL=http://host.docker.internal:${port}`,
+      ...(input.user === undefined ? [] : ["--user", input.user]),
+      ...launch.args.slice(entrypoint),
+    ],
+    cleanup: {
+      command: "docker",
+      args: ["rm", "--force", input.name],
+      environment: launch.hostEnvironment,
+    },
+  });
+  const sessionId = yield* (yield* Crypto.Crypto).randomUUIDv4;
+  const messages = yield* Effect.promise(async () => {
+    const received: Array<SDKMessage> = [];
+    const session = query({
+      prompt: input.prompt,
+      options: makeClaudeQueryOptions({
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-sonnet-4-6",
+        },
+        nativeThreadId: sessionId,
+        resume: false,
+        cwd: null,
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        mcpServers: {
+          "t3-code": { type: "http", url: `http://host.docker.internal:${port}/mcp` },
+        },
+        confined: { spawnClaudeCodeProcess: runtime.spawn, orchestrationInstructions: undefined },
+      }),
+    });
+    try {
+      for await (const message of session) received.push(message);
+    } catch {
+      // The capture server's refusal ends the run with an API error.
+    }
+    return received;
+  });
+  yield* runtime.remove;
+  const modelRequest = requests.find((request) => request.url.startsWith("/v1/messages"));
+  assert.isDefined(modelRequest, yield* runtime.stderrTail);
+  return {
+    init: messages.find((message) => message.type === "system" && message.subtype === "init"),
+    request: yield* decodeModelRequest(modelRequest?.body ?? ""),
+  };
+});
+
 live(
-  "the pinned image runs Claude as root with bypassed permissions and no agent tools",
+  "the pinned image offers managed Claude exactly its allowed tools, as root and as a worker",
   () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped();
-      yield* fs.makeDirectory(path.join(root, "project"));
-      yield* fs.makeDirectory(path.join(root, "workflow", "skills"), { recursive: true });
-      // A capture server stands in for the model, so the probe records the
-      // tools Claude would offer without spending on a real model request.
-      const requests: Array<{ readonly url: string; readonly body: string }> = [];
-      const server = yield* Effect.acquireRelease(
-        Effect.callback<NodeHttp.Server>((resume) => {
-          const server = NodeHttp.createServer((request, response) => {
-            let body = "";
-            request.on("data", (chunk) => (body += chunk));
-            request.on("end", () => {
-              requests.push({ url: request.url ?? "", body });
-              response.writeHead(400, { "content-type": "application/json" });
-              response.end(
-                '{"type":"error","error":{"type":"invalid_request_error","message":"probe"}}',
-              );
-            });
-          });
-          server.listen(0, "0.0.0.0", () => resume(Effect.succeed(server)));
-        }),
-        (server) =>
-          Effect.callback<void>((resume) => {
-            server.close(() => resume(Effect.void));
-          }),
-      );
-      const address = server.address();
-      const port = typeof address === "object" && address !== null ? address.port : 0;
-      const launch = yield* FactoryConfinedLaunch.prepareFactoryLaunch({
-        profile: {
-          boundaryId: "claude-agent-tool-probe",
-          dockerContext: NodeChildProcess.execFileSync("docker", ["context", "show"], {
-            encoding: "utf8",
-          }).trim(),
-          imageId: FACTORY_AGENT_IMAGE,
-          projectSnapshotPath: path.join(root, "project"),
-          workflowSnapshotPath: path.join(root, "workflow"),
-          runtimePath: path.join(root, "runtime"),
-        },
-        containerName: "factory-claude-agent-tool-probe",
-        provider: {
-          driver: "claudeAgent",
-          settings: settings({}),
-          environment: { ...process.env, ANTHROPIC_API_KEY: "unused" },
-        },
-      }).pipe(Effect.provide(ProcessRunner.layer));
-      const entrypoint = launch.args.indexOf("--entrypoint");
-      const probeLaunch = {
-        ...launch,
-        name: "factory-claude-agent-tool-probe",
-        args: [
-          ...launch.args.slice(0, entrypoint),
-          "--env",
-          `ANTHROPIC_BASE_URL=http://host.docker.internal:${port}`,
-          ...launch.args.slice(entrypoint),
-        ],
-        cleanup: {
-          command: "docker",
-          args: ["rm", "--force", "factory-claude-agent-tool-probe"],
-          environment: launch.hostEnvironment,
-        },
-      };
-      const sessionId = yield* (yield* Crypto.Crypto).randomUUIDv4;
-      const runtime = makeConfinedClaudeRuntime(probeLaunch);
-      const messages = yield* Effect.promise(async () => {
-        const received: Array<SDKMessage> = [];
-        const session = query({
+      for (const user of [undefined, "65532:65532"]) {
+        const { init, request } = yield* probeImageClaude({
+          name: `factory-claude-tool-probe-${user === undefined ? "root" : "worker"}`,
           prompt: "Start the assignment.",
-          options: makeClaudeQueryOptions({
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("claudeAgent"),
-              model: "claude-sonnet-4-6",
-            },
-            nativeThreadId: sessionId,
-            resume: false,
-            cwd: null,
-            permissionMode: "bypassPermissions",
-            allowDangerouslySkipPermissions: true,
-            confined: {
-              spawnClaudeCodeProcess: runtime.spawn,
-              orchestrationInstructions: undefined,
-            },
-          }),
+          ...(user === undefined ? {} : { user }),
         });
-        try {
-          for await (const message of session) received.push(message);
-        } catch {
-          // The capture server's refusal ends the run with an API error.
-        }
-        return received;
-      });
-      yield* runtime.remove;
-      const init = messages.find(
-        (message) => message.type === "system" && message.subtype === "init",
-      );
-      assert.deepInclude(init, { cwd: "/workspace", permissionMode: "bypassPermissions" });
-      const modelRequest = requests.find((request) => request.url.startsWith("/v1/messages"));
-      assert.isDefined(modelRequest);
-      const offered = (yield* Schema.decodeEffect(
-        Schema.fromJsonString(
-          Schema.Struct({ tools: Schema.Array(Schema.Struct({ name: Schema.String })) }),
-        ),
-      )(modelRequest?.body ?? "")).tools.map((tool) => tool.name);
-      assert.include(offered, "Bash");
-      for (const tool of CLAUDE_CONFINED_DISALLOWED_TOOLS) assert.notInclude(offered, tool);
+        // IS_SANDBOX lets Claude Code bypass permissions as root, where discovery runs.
+        assert.deepInclude(init, { cwd: "/workspace", permissionMode: "bypassPermissions" });
+        assert.equal(request.model, "claude-sonnet-4-6");
+        const offered = request.tools.map((tool) => tool.name);
+        assert.deepEqual(
+          offered.filter((name) => !name.startsWith("mcp__")),
+          [
+            "Bash",
+            "Edit",
+            "NotebookEdit",
+            "Read",
+            "Skill",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskOutput",
+            "TaskStop",
+            "TaskUpdate",
+            "WebFetch",
+            "WebSearch",
+            "Write",
+          ],
+        );
+        assert.deepEqual(
+          offered.filter((name) => name.startsWith("mcp__")),
+          ["mcp__t3-code__probe_tool"],
+        );
+      }
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  120_000,
+  240_000,
 );

@@ -5,6 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { CLAUDE_SDK_IDENTITY_VARIABLES } from "../orchestration-v2/Adapters/ConfinedClaudeProcess.ts";
 import { ConfinedLaunchError } from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
@@ -158,7 +159,17 @@ export const prepareFactoryClaudeLaunch = Effect.fn("prepareFactoryClaudeLaunch"
     yield* assertFactoryImageRunsClaude(input.profile);
     const credential = yield* resolveFactoryClaudeCredential(input);
     return {
-      args: ["--env", credential.name, "--entrypoint", "claude", input.profile.imageId],
+      args: [
+        "--env",
+        credential.name,
+        // An OAuth sign-in would otherwise load the account's claude.ai connectors.
+        "--env",
+        "ENABLE_CLAUDEAI_MCP_SERVERS=false",
+        ...CLAUDE_SDK_IDENTITY_VARIABLES.flatMap((name) => ["--env", name]),
+        "--entrypoint",
+        "claude",
+        input.profile.imageId,
+      ],
       environment: { [credential.name]: credential.value },
       ...("renewBy" in credential ? { renewBy: credential.renewBy } : {}),
     };

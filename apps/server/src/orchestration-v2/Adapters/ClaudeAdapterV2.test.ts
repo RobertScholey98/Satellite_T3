@@ -8440,7 +8440,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
         command: process.execPath,
         args: [
           "-e",
-          "process.stdout.write(JSON.stringify({ argv: process.argv.slice(1), launch: process.env.LAUNCH_ONLY ?? null, host: process.env.HOST_SECRET ?? null }))",
+          "process.stdout.write(JSON.stringify({ argv: process.argv.slice(1), launch: process.env.LAUNCH_ONLY ?? null, host: process.env.HOST_SECRET ?? null, entrypoint: process.env.CLAUDE_CODE_ENTRYPOINT ?? null }))",
           "--",
           "launch-arg",
         ],
@@ -8538,13 +8538,24 @@ describe("ClaudeAdapterV2 confined sessions", () => {
           assert.equal(options.permissionMode, "bypassPermissions");
           assert.deepEqual(options.extraArgs, { "thinking-display": "summarized" });
           assert.deepEqual(options.settingSources, ["user", "project"]);
-          assert.deepEqual(options.disallowedTools, [
-            "Agent",
-            "Task",
-            "Workflow",
-            "SendMessage",
-            "ListAgents",
+          assert.deepEqual(options.tools, [
+            "Bash",
+            "Edit",
+            "NotebookEdit",
+            "Read",
+            "Skill",
+            "TaskCreate",
+            "TaskGet",
+            "TaskList",
+            "TaskOutput",
+            "TaskStop",
+            "TaskUpdate",
+            "WebFetch",
+            "WebSearch",
+            "Write",
           ]);
+          assert.isUndefined(options.disallowedTools);
+          assert.isTrue(options.strictMcpConfig);
           assert.deepEqual(options.mcpServers?.["t3-code"], {
             type: "http",
             url: "http://host.docker.internal:43123/mcp",
@@ -8562,7 +8573,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
             command: "/host/bin/claude",
             args: ["--output-format", "stream-json"],
             cwd: "C:/host/project",
-            env: { HOST_SECRET: "sdk" },
+            env: { HOST_SECRET: "sdk", CLAUDE_CODE_ENTRYPOINT: "sdk-ts" },
             signal: new AbortController().signal,
           });
           return yield* Effect.callback<string>((resume) => {
@@ -8576,6 +8587,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
         argv: ["launch-arg", "--output-format", "stream-json"],
         launch: "from-launch",
         host: null,
+        entrypoint: "sdk-ts",
       });
       assert.equal(yield* fs.readFileString(removals), "removed without the launch environment\n");
     }).pipe(Effect.scoped, Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),

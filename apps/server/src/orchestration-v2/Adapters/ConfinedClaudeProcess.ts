@@ -5,18 +5,34 @@ import * as Effect from "effect/Effect";
 
 import type { ConfinedProcess } from "./ConfinedProviderLaunch.ts";
 
-// Tools that start or message agents. `Agent` (alias `Task`) takes its own model choice and
-// `Workflow` scripts choose models for the agents they spawn; `SendMessage` resumes agents and
-// reaches the account's other sessions, with `ListAgents` to find them. Those choices bypass
-// FactoryModelAdmission, so managed teams delegate through `delegate_task`. Rerun the live probe
-// in FactoryClaudeLaunch.test.ts when the factory image's Claude Code changes.
-export const CLAUDE_CONFINED_DISALLOWED_TOOLS: ReadonlyArray<string> = [
-  "Agent",
-  "Task",
-  "Workflow",
-  "SendMessage",
-  "ListAgents",
+// The built-in tools a managed team works with. An allow-list, so a tool a later Claude Code adds
+// stays off until it is reviewed. Agent tools (`Agent`, `Workflow`, `SendMessage`) choose models
+// that bypass FactoryModelAdmission, so teams delegate through `delegate_task`; scheduling,
+// worktree, remote and claude.ai account tools reach outside the assignment. MCP tools are not
+// built-ins and stay available. The live probe in FactoryClaudeLaunch.test.ts snapshots what the
+// image's Claude Code offers; rerun it when that version changes.
+export const CLAUDE_CONFINED_TOOLS: ReadonlyArray<string> = [
+  "Bash",
+  "Edit",
+  "NotebookEdit",
+  "Read",
+  "Skill",
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "TaskUpdate",
+  "WebFetch",
+  "WebSearch",
+  "Write",
 ];
+
+/**
+ * The Agent SDK's identifying variables, which carry no secret. The launch forwards them by name,
+ * and the spawner sets them from the SDK's environment.
+ */
+export const CLAUDE_SDK_IDENTITY_VARIABLES = ["CLAUDE_CODE_ENTRYPOINT", "CLAUDE_AGENT_SDK_VERSION"];
 
 const STDERR_TAIL_LENGTH = 4_096;
 
@@ -59,7 +75,14 @@ export function makeConfinedClaudeRuntime(launch: ConfinedProcess): ConfinedClau
     renewBy: launch.renewBy,
     spawn: (options) => {
       const child = NodeChildProcess.spawn(launch.command, [...launch.args, ...options.args], {
-        env: launch.environment,
+        env: {
+          ...launch.environment,
+          ...Object.fromEntries(
+            CLAUDE_SDK_IDENTITY_VARIABLES.flatMap((name) =>
+              options.env[name] === undefined ? [] : [[name, options.env[name]]],
+            ),
+          ),
+        },
         stdio: "pipe",
         windowsHide: true,
         signal: options.signal,
