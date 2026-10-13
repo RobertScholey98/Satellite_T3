@@ -60,6 +60,25 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
   frontmatter. Do not make it read-only; that would also block granted control changes. The
   user-scope Claude home is different: it is the factory's, so it is read-only.
 
+## Skills commits
+
+The skills repository is one environment setting, and Git history is its only versioning. The
+decider is pure, so [`FactoryService`](../../apps/server/src/factory/FactoryService.ts) reads HEAD
+once through [`FactorySkills`](../../apps/server/src/factory/FactorySkills.ts) for each command that
+creates a manager, onboarding run, system manager or assignment, and passes it as `skills` to
+qualification, preflight and commit alike. Whatever the command creates records that commit as
+its `workflow`. A deciding path that creates an assignment goes through
+`commissionFactoryAssignment`, which refuses without it.
+
+A running assignment never moves to a newer commit. Its runtime mounts the content-addressed
+snapshot of its own commit at `/workflow`, and delivery and publication refuse a revision whose
+`workflowRevision` differs from the assignment's. Changing instructions under a team mid-task would
+also invalidate evidence it already captured. New work picks up the new commit instead.
+
+Older stored state can still carry the removed release, adoption, override and restart records.
+Decoding ignores those fields, and the store retires any pending outbox intent that no longer
+decodes.
+
 ## Lineage
 
 [`resolveFactoryLineage`](../../apps/server/src/factory/FactoryLineage.ts) decides which factory

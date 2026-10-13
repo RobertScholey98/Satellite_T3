@@ -288,7 +288,7 @@ const make = Effect.gen(function* () {
             title: `Diagnosis: ${assignment.title ?? assignment.id}`,
             text: [
               `Independently diagnose recovery incident ${incident.id} for assignment ${assignment.id}, cycle ${intent.cycle}. Report to engineering manager ${assignment.managerId}.`,
-              `Read the frozen current workspace at /workspace and immutable assignment, grant, verification and recovery evidence at /evidence/assignment.json. Source digest ${sourceDigest}. The owned workflow is at /workflow.`,
+              `Read the frozen current workspace at /workspace and immutable assignment, grant, verification and recovery evidence at /evidence/assignment.json. Source digest ${sourceDigest}. The assignment's skills commit is at /workflow.`,
               `Prior lead ${assignment.threadId}. Reason: ${incident.reason}. Evidence: ${json(incident.evidence)}. Read the lead's conversation and relevant worker evidence through the approved read tools.`,
               "This is a read-only diagnosis. Identify the cause and propose a replan within existing scope and permissions. Do not implement, delegate implementation, run assignment verification, change controls, or start a PR.",
               `Use factory_dispatch auxiliary.report with threadId ${intent.threadId}, a concrete summary and evidence references. Preserve uncertainty. A recommendation does not authorize additional work.`,
@@ -359,7 +359,7 @@ const make = Effect.gen(function* () {
           text: [
             `You are the replacement lead for existing assignment ${assignment.id}, reporting to engineering manager ${assignment.managerId}. Prior lead ${intent.previousThreadId} and earlier leads ${json(assignment.previousLeadThreadIds ?? [])} retain their conversation evidence. Read them before continuing.`,
             `Scope: ${json(assignment.scope)}. Recovery plan: ${incident.plan}. Independent diagnosis ${diagnosis?.threadId}: ${json(diagnosis?.findings)}.`,
-            `Your /workspace is the same preserved candidate volume, including unfinished edits. The workflow remains pinned to ${assignment.workflow.revision} at /workflow. Current grant: ${json(assignment.grant)}. Model policy: ${json(assignment.modelPolicy)}. Recovery cycles used: ${assignment.oversight?.recovery.cyclesUsed}.`,
+            `Your /workspace is the same preserved candidate volume, including unfinished edits. The skills at /workflow stay pinned to commit ${assignment.workflow.revision}. Current grant: ${json(assignment.grant)}. Model policy: ${json(assignment.modelPolicy)}. Recovery cycles used: ${assignment.oversight?.recovery.cyclesUsed}.`,
             "Continue within this original assignment and its completion condition. You and your implementation team own code review, verification, and the complete PR process. The manager coordinates priorities and does not review PRs. Preserve existing PR links and decisions from the prior conversation.",
             "Use assignment.file.mutate for controlled file creation, rename and deletion, and assignment.verify for the adopted checks. Protected controls, approval waits, recovery limits and rule-change authority remain unchanged. Use approved models through delegate_task when useful.",
             "Report an out-of-scope dependency or unresolved decision rather than widening the task. Human PR approval is required unless the current delivery grant and project rule permit autonomous delivery. Conduct internal and manager retros after merge.",

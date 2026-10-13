@@ -29,12 +29,18 @@ The project's environment needs:
 - A local Docker engine running Linux containers. Managed agents run only inside
   containers, without your Git credentials or the Docker socket. The first setup
   builds the runner image, which takes a few minutes.
-- A Git repository of skills you own, pinned to an exact commit.
+- A Git repository of skills you own, with a committed `skills/` directory. Set
+  its path once in **Settings → General → Skills repository**.
 
 ## Create a manager
 
 Open **Project settings → Engineering manager** and choose **Create manager**.
-Pick the model and the skills repository commit. Each project has one manager.
+Pick the model. Each project has one manager.
+
+The manager, its onboarding and every assignment use the skills repository's
+latest commit at the moment they start. A running assignment keeps that commit
+until it finishes; the next one picks up whatever is committed then. To change
+the skills your teams use, commit or merge to the skills repository.
 
 The manager first runs an onboarding investigation on a read-only copy of the
 committed files (untracked files and credential paths are left out). Review its
@@ -186,9 +192,9 @@ proposes changes to your shared skills. Escalations reach it promptly; without
 one, they come to you. Escalations beyond the daily allowance in **Review
 settings** wait for the next day, or until you choose **Review escalations
 now**. You decide on every
-proposal and on adopting each workflow release. A deferred proposal stays open
-until you record another decision. **Workflow delivery** lets you adopt a release as the default
-or for one manager, and reset that choice later. To replace the system manager,
+proposal. A deferred proposal stays open until you record another decision. The
+system manager's team delivers skill changes as PRs to your skills repository;
+merging one is what puts it in front of new assignments. To replace the system manager,
 use **Retire system manager…** in **Shared improvements → Manager controls**
 and give a reason, then
 **Create system manager** in the sidebar; the new one takes over your shared
@@ -205,6 +211,9 @@ repositories, pending evidence and unstarted work plans.
   this.
 - **A runtime runs only Codex models**: it was set up before Claude support.
   Choose a Codex model for that work.
+- **Creating a manager or assigning work asks you to set the skills
+  repository**: set it in **Settings → General**. The path must be a Git
+  repository on that environment with `skills/` committed at HEAD.
 - **Work is waiting on the execution boundary**: a protected control changed.
   Review the change, then use **Refresh baseline**.
 - **A team stopped unexpectedly**: the manager opens a recovery incident and
