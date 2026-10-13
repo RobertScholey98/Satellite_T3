@@ -65,10 +65,12 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
 The skills repository is one environment setting, and Git history is its only versioning. The
 decider is pure, so [`FactoryService`](../../apps/server/src/factory/FactoryService.ts) reads HEAD
 once through [`FactorySkills`](../../apps/server/src/factory/FactorySkills.ts) for each command that
-creates a manager, onboarding run, system manager or assignment, and passes it as `skills` to
-qualification, preflight and commit alike. Whatever the command creates records that commit as
-its `workflow`. A deciding path that creates an assignment goes through
-`commissionFactoryAssignment`, which refuses without it.
+records a new pin, and passes it as `skills` to qualification, preflight and commit alike.
+[`factoryCommandRecordsSkills`](../../apps/server/src/factory/FactoryAssignmentCommission.ts) is
+the one list of those commands. A retry of a manager whose thread already launched is not on it:
+it keeps its recorded commit, so it still works after the setting is cleared or broken. Whatever
+a command creates records the commit as its `workflow`, and a decider handed no commit treats
+that as a broken invariant.
 
 A running assignment never moves to a newer commit. Its runtime mounts the content-addressed
 snapshot of its own commit at `/workflow`, and delivery and publication refuse a revision whose
