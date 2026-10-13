@@ -22,8 +22,10 @@ The project's environment needs:
     renews only while Claude Code runs on this machine, so for managers that run
     unattended, and on macOS, where Claude Code keeps its sign-in in the keychain,
     run `claude setup-token` and add the token to the provider's environment as
-    `CLAUDE_CODE_OAUTH_TOKEN`. A Claude provider set up for Bedrock, Vertex,
-    Foundry or a custom API endpoint cannot run managed work.
+    `CLAUDE_CODE_OAUTH_TOKEN`. As in Claude Code, `ANTHROPIC_API_KEY` wins when
+    both are set. A Claude provider set up for Bedrock, Vertex, Foundry, a
+    custom API endpoint or an `apiKeyHelper`, in its environment or its
+    `settings.json`, cannot run managed work.
 - A local Docker engine running Linux containers. Managed agents run only inside
   containers, without your Git credentials or the Docker socket. The first setup
   builds the runner image, which takes a few minutes.

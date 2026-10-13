@@ -48,6 +48,54 @@ const OTHER_BACKENDS = [
 const isSwitchedOn = (value: string) =>
   ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 
+const otherBackend = (environment: Readonly<Record<string, unknown>>) =>
+  OTHER_BACKENDS.find((name) => {
+    const value = environment[name];
+    if (value === undefined || value === null || String(value).trim() === "") return false;
+    return name.startsWith("CLAUDE_CODE_USE_") ? isSwitchedOn(String(value)) : true;
+  });
+
+// Claude Code applies a settings file's `env` and `apiKeyHelper` as the process environment and
+// an API key source, so they choose a backend just as the environment does.
+const UserSettings = Schema.Struct({
+  env: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  apiKeyHelper: Schema.optional(Schema.Unknown),
+});
+const decodeUserSettings = Schema.decodeUnknownEffect(Schema.fromJsonString(UserSettings));
+
+/** The backend the selected config directory's `settings.json` switches to, if any. */
+const settingsBackend = Effect.fnUntraced(function* (input: {
+  readonly settings: ClaudeSettings;
+  readonly environment: NodeJS.ProcessEnv;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const file = path.join(
+    yield* resolveClaudeHomePath(input.settings, input.environment),
+    "settings.json",
+  );
+  const unreadable = (cause: unknown) =>
+    new ConfinedLaunchError({
+      detail: `Claude's settings file ${file} could not be read. Fix or remove it, then retry.`,
+      cause,
+    });
+  const contents = yield* fs.readFileString(file).pipe(
+    Effect.catchTags({
+      PlatformError: (error) =>
+        error.reason._tag === "NotFound"
+          ? Effect.succeed(undefined)
+          : Effect.fail(unreadable(error)),
+    }),
+  );
+  if (contents === undefined) return undefined;
+  const userSettings = yield* decodeUserSettings(contents).pipe(Effect.mapError(unreadable));
+  const backend = otherBackend(userSettings.env ?? {});
+  if (backend !== undefined) return backend;
+  return userSettings.apiKeyHelper === undefined || userSettings.apiKeyHelper === ""
+    ? undefined
+    : "apiKeyHelper";
+});
+
 const fileAccessToken = Effect.fnUntraced(function* (input: {
   readonly settings: ClaudeSettings;
   readonly environment: NodeJS.ProcessEnv;
@@ -87,29 +135,26 @@ const fileAccessToken = Effect.fnUntraced(function* (input: {
 
 /**
  * The model credential a managed Claude launch passes into its runtime, first match wins: the
- * provider environment's `CLAUDE_CODE_OAUTH_TOKEN`, its `ANTHROPIC_API_KEY`, or the access token
+ * provider environment's `ANTHROPIC_API_KEY`, its `CLAUDE_CODE_OAUTH_TOKEN`, or the access token
  * of the selected config directory's file-based sign-in, which expires at `renewBy`. This is the
  * host CLI's order, so managed and unmanaged threads use the same account. Never falls back to
- * another credential, and refuses a provider set up for another backend.
+ * another credential, and refuses a provider whose environment or `settings.json` sets up
+ * another backend or an `apiKeyHelper`.
  */
 export const resolveFactoryClaudeCredential = Effect.fn("resolveFactoryClaudeCredential")(
   function* (input: {
     readonly settings: ClaudeSettings;
     readonly environment: NodeJS.ProcessEnv;
   }) {
-    const backend = OTHER_BACKENDS.find((name) => {
-      const value = input.environment[name];
-      if (value === undefined || value.trim() === "") return false;
-      return name.startsWith("CLAUDE_CODE_USE_") ? isSwitchedOn(value) : true;
-    });
+    const backend = otherBackend(input.environment) ?? (yield* settingsBackend(input));
     if (backend !== undefined)
       return yield* new ConfinedLaunchError({
         detail: `Managed Claude supports the Anthropic API with a Claude sign-in or API key; this provider uses ${backend}.`,
       });
-    if (input.environment.CLAUDE_CODE_OAUTH_TOKEN)
-      return { name: "CLAUDE_CODE_OAUTH_TOKEN", value: input.environment.CLAUDE_CODE_OAUTH_TOKEN };
     if (input.environment.ANTHROPIC_API_KEY)
       return { name: "ANTHROPIC_API_KEY", value: input.environment.ANTHROPIC_API_KEY };
+    if (input.environment.CLAUDE_CODE_OAUTH_TOKEN)
+      return { name: "CLAUDE_CODE_OAUTH_TOKEN", value: input.environment.CLAUDE_CODE_OAUTH_TOKEN };
     return { name: "CLAUDE_CODE_OAUTH_TOKEN", ...(yield* fileAccessToken(input)) };
   },
 );

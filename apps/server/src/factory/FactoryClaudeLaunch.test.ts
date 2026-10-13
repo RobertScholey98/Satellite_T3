@@ -145,7 +145,7 @@ it.effect("passes only the file sign-in's access token and none of the host's en
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("takes the provider environment's token, then its API key, then the file sign-in", () =>
+it.effect("takes the provider environment's API key, then its token, then the file sign-in", () =>
   Effect.gen(function* () {
     const { fs, path, configDir, launch } = yield* fixture;
     yield* fs.writeFileString(path.join(configDir, ".credentials.json"), signIn(3_600_000));
@@ -160,14 +160,14 @@ it.effect("takes the provider environment's token, then its API key, then the fi
     assert.deepEqual(
       yield* credential({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token", ANTHROPIC_API_KEY: "api-key" }),
       {
-        forwarded: "CLAUDE_CODE_OAUTH_TOKEN",
-        environment: { CLAUDE_CODE_OAUTH_TOKEN: "setup-token" },
+        forwarded: "ANTHROPIC_API_KEY",
+        environment: { ANTHROPIC_API_KEY: "api-key" },
         renewBy: undefined,
       },
     );
-    assert.deepEqual(yield* credential({ ANTHROPIC_API_KEY: "api-key" }), {
-      forwarded: "ANTHROPIC_API_KEY",
-      environment: { ANTHROPIC_API_KEY: "api-key" },
+    assert.deepEqual(yield* credential({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" }), {
+      forwarded: "CLAUDE_CODE_OAUTH_TOKEN",
+      environment: { CLAUDE_CODE_OAUTH_TOKEN: "setup-token" },
       renewBy: undefined,
     });
     // The file sign-in is renewed five minutes before it expires.
@@ -300,8 +300,41 @@ it.effect(
         ),
       );
       const switchedOff = yield* launch({ ...credentials, CLAUDE_CODE_USE_BEDROCK: "0" });
-      assert.deepEqual(switchedOff.environment, { CLAUDE_CODE_OAUTH_TOKEN: "setup-token" });
+      assert.deepEqual(switchedOff.environment, { ANTHROPIC_API_KEY: "api-key" });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("refuses a config directory whose settings set up another backend", () =>
+  Effect.gen(function* () {
+    const { fs, path, configDir, launch } = yield* fixture;
+    const settingsFile = path.join(configDir, "settings.json");
+    const refusal = (contents: string) =>
+      fs.writeFileString(settingsFile, contents).pipe(
+        Effect.andThen(launch({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" })),
+        Effect.flip,
+        Effect.map((failure) => failure.detail),
+      );
+    assert.deepEqual(
+      [
+        yield* refusal('{"env":{"ANTHROPIC_BASE_URL":"https://gateway.example.com"}}'),
+        yield* refusal('{"env":{"CLAUDE_CODE_USE_VERTEX":"1"}}'),
+        yield* refusal('{"apiKeyHelper":"/usr/local/bin/print-key"}'),
+        yield* refusal('{"env":'),
+      ],
+      [
+        "Managed Claude supports the Anthropic API with a Claude sign-in or API key; this provider uses ANTHROPIC_BASE_URL.",
+        "Managed Claude supports the Anthropic API with a Claude sign-in or API key; this provider uses CLAUDE_CODE_USE_VERTEX.",
+        "Managed Claude supports the Anthropic API with a Claude sign-in or API key; this provider uses apiKeyHelper.",
+        `Claude's settings file ${settingsFile} could not be read. Fix or remove it, then retry.`,
+      ],
+    );
+    yield* fs.writeFileString(
+      settingsFile,
+      '{"env":{"CLAUDE_CODE_USE_VERTEX":"0","DISABLE_TELEMETRY":"1"},"model":"opus"}',
+    );
+    const accepted = yield* launch({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" });
+    assert.deepEqual(accepted.environment, { CLAUDE_CODE_OAUTH_TOKEN: "setup-token" });
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("leaves no Codex credential in a runtime that switches to Claude", () =>
@@ -606,7 +639,8 @@ const liveClaudeLaunch = Effect.fn("liveClaudeLaunch")(function* (input: {
     containerName: input.name,
     provider: {
       driver: "claudeAgent",
-      settings: settings({}),
+      // An empty config directory, so the host's own Claude settings play no part.
+      settings: settings({ homePath: path.join(root, "claude-home") }),
       environment: { ...process.env, ANTHROPIC_API_KEY: "unused" },
     },
   }).pipe(Effect.provide(ProcessRunner.layer));
