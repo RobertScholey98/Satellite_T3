@@ -1,3 +1,4 @@
+import { FactoryError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -21,6 +22,14 @@ const noContext = () => Effect.succeed({});
 
 /** The commit `layerTestDependencies` reports at HEAD of the configured skills repository. */
 export const testSkills = { repositoryRoot: "C:/owned-skills", revision: "a".repeat(40) };
+
+/** What `FactorySkills.head` answers while the skills repository setting is empty. */
+export const skillsUnset = Effect.fail(
+  new FactoryError({
+    code: "invalid-state",
+    detail: "Set the skills repository in Settings → General first.",
+  }),
+);
 
 /**
  * What `FactoryService.layer` needs beyond the factory core, for tests: inert effect runtimes

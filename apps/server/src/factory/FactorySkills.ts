@@ -4,8 +4,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as ServerSettings from "../serverSettings.ts";
-import { factorySkillsRequired } from "./FactoryAssignmentCommission.ts";
 import * as FactorySource from "./FactorySource.ts";
+
+const factorySkillsRequired = "Set the skills repository in Settings → General first.";
 
 /**
  * The environment's skills repository, set in Settings → General. Committing to it is how a skill

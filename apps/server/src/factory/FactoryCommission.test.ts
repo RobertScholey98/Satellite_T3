@@ -271,10 +271,12 @@ it.effect(
 );
 
 it.effect(
-  "pins each commission to the skills HEAD it was dispatched at, so a later commit reaches only new work",
+  "pins each commission to the skills HEAD it was dispatched at, and refuses one without the setting",
   () =>
     Effect.gen(function* () {
-      const head = yield* Ref.make(workflow);
+      const head = yield* Ref.make<FactorySkills.FactorySkills["Service"]["head"]>(
+        Effect.succeed(workflow),
+      );
       const moved = { ...workflow, revision: "b".repeat(40) };
       yield* scenario(
         Effect.gen(function* () {
@@ -282,7 +284,7 @@ it.effect(
           assert.deepStrictEqual(manager.workflow, workflow);
           const first = yield* factory.dispatch(human, work(manager.id, "before-commit"));
           yield* factory.drain;
-          yield* Ref.set(head, moved);
+          yield* Ref.set(head, Effect.succeed(moved));
           const second = yield* factory.dispatch(human, work(manager.id, "after-commit"));
           yield* factory.drain;
           const snapshot = yield* factory.snapshot({});
@@ -295,8 +297,15 @@ it.effect(
           );
           assert.deepStrictEqual(pin(second.assignmentId), moved);
           assert.deepStrictEqual(snapshot.managers[0]!.workflow, workflow);
+
+          yield* Ref.set(head, FactoryServiceTestkit.skillsUnset);
+          const refused = yield* factory
+            .dispatch(human, work(manager.id, "without-setting"))
+            .pipe(Effect.flip);
+          assert.equal(refused.detail, "Set the skills repository in Settings → General first.");
+          assert.equal((yield* factory.snapshot({})).assignments.length, 3);
         }),
-        { skillsHead: Ref.get(head) },
+        { skillsHead: Effect.flatten(Ref.get(head)) },
       );
     }),
 );

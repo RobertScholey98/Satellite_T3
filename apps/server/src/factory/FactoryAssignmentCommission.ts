@@ -1,6 +1,8 @@
 import {
   FactoryError,
+  factorySystemManager,
   type FactoryAssignment,
+  type FactoryCommand,
   type FactoryBoundary,
   type FactoryManager,
   type FactoryPolicy,
@@ -16,8 +18,6 @@ import { initialFactoryOversight } from "./FactoryOversight.ts";
 import { resolveFactoryModelPolicy, selectFactoryModel } from "./FactoryModelPolicy.ts";
 import type { FactoryAllocation } from "./FactoryState.ts";
 
-export const factorySkillsRequired = "Set the skills repository in Settings → General first.";
-
 /**
  * The skills repository's HEAD, which the service reads once per command that creates a manager
  * or assignment. Whatever the command creates records it as its pinned `workflow`.
@@ -26,12 +26,65 @@ export interface FactorySkillsContext {
   readonly skills?: FactoryWorkflowVersion;
 }
 
-/** The pin a command records, or the refusal that sends the human to the setting. */
+/**
+ * Whether deciding `command` against `state` records a new skills pin, so the service must read
+ * the repository's HEAD first. A retry of a manager whose thread already launched keeps its
+ * recorded commit and so works whatever the setting holds now.
+ */
+export function factoryCommandRecordsSkills(
+  command: FactoryCommand,
+  state: FactorySnapshot,
+): boolean {
+  switch (command.type) {
+    case "manager.create":
+    case "assignment.commission":
+    case "assignment.handover":
+    case "integration.commission":
+    case "system.create":
+    case "shared.repository.register":
+      return true;
+    case "shared.work.commission":
+    case "experiment.commission":
+      return factorySystemManager(state.managers) !== undefined;
+    case "collaboration.request.respond": {
+      if (command.response.kind !== "accept" || command.response.support.kind !== "commission")
+        return false;
+      const request = state.crossProjectRequests.find((entry) => entry.id === command.requestId);
+      return state.managers.some((manager) => manager.id === request?.receiverManagerId);
+    }
+    case "manager.retry-onboarding": {
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      const assignment = state.assignments.find((entry) => entry.managerId === manager?.id);
+      return (
+        manager !== undefined &&
+        assignment !== undefined &&
+        manager.threadStatus !== "created" &&
+        assignment.threadStatus !== "created"
+      );
+    }
+    case "system.retry": {
+      const manager = state.managers.find((entry) => entry.id === command.managerId);
+      return manager !== undefined && manager.threadStatus !== "created";
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * The pin a command records. The service reads it for every command `factoryCommandRecordsSkills`
+ * names, so a missing one is a broken invariant rather than a missing setting.
+ */
 export function factorySkillsPin(
   skills: FactoryWorkflowVersion | undefined,
 ): Result.Result<FactoryWorkflowVersion, FactoryError> {
   return skills === undefined
-    ? Result.fail(new FactoryError({ code: "invalid-state", detail: factorySkillsRequired }))
+    ? Result.fail(
+        new FactoryError({
+          code: "invalid-state",
+          detail: "The command was decided without the skills commit it records.",
+        }),
+      )
     : Result.succeed(skills);
 }
 

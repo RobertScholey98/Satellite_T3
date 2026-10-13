@@ -264,7 +264,7 @@ describe("owned workflow authority", () => {
     );
   });
 
-  it("refuses to commission or create a manager until the skills repository is set", () => {
+  it("refuses to commission or create a manager without the skills commit it records", () => {
     const proposed = propose(fixture());
     const authorized = apply(proposed.state, {
       type: "shared.work.authorize",
@@ -301,10 +301,11 @@ describe("owned workflow authority", () => {
       }),
     ];
     for (const decision of unpinned) {
-      if (Result.isSuccess(decision)) return assert.fail("Expected the missing setting to refuse.");
+      if (Result.isSuccess(decision)) return assert.fail("Expected the missing commit to refuse.");
+      assert.equal(decision.failure.code, "invalid-state");
       assert.equal(
         decision.failure.detail,
-        "Set the skills repository in Settings → General first.",
+        "The command was decided without the skills commit it records.",
       );
     }
   });

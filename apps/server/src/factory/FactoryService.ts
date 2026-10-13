@@ -40,6 +40,7 @@ import * as FactorySource from "./FactorySource.ts";
 import * as FactorySkills from "./FactorySkills.ts";
 import * as FactoryHandover from "./FactoryHandover.ts";
 import * as FactoryStore from "./FactoryStore.ts";
+import { factoryCommandRecordsSkills } from "./FactoryAssignmentCommission.ts";
 import { decide, type FactoryActor } from "./FactoryState.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryControlEffects from "./FactoryControlEffects.ts";
@@ -1247,16 +1248,10 @@ export const layer = Layer.effect(
                 assignmentId: FactoryAssignmentId.make(yield* randomUuidV4),
               }
             : undefined;
-        // Whatever this command creates records the skills repository's HEAD as of now. One read
-        // serves the qualification, preflight and commit, so they all agree on the commit.
-        const skills =
-          allocation !== undefined ||
-          command.type === "manager.retry-onboarding" ||
-          command.type === "system.create" ||
-          command.type === "system.retry" ||
-          command.type === "shared.repository.register"
-            ? yield* skillsRepository.head
-            : undefined;
+        // One read serves the qualification, preflight and commit, so they all agree on the commit.
+        const skills = factoryCommandRecordsSkills(command, snapshot)
+          ? yield* skillsRepository.head
+          : undefined;
         const reportTarget =
           command.type === "assignment.commission" || command.type === "assignment.handover"
             ? command.scope.noPrTarget

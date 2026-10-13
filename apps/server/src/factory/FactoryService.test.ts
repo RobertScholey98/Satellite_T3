@@ -27,6 +27,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
+import * as FactorySkills from "./FactorySkills.ts";
 import * as FactoryBoundaryExecutionTestkit from "./FactoryBoundaryExecution.testkit.ts";
 import * as FactorySourceTestkit from "./FactorySource.testkit.ts";
 import * as FactoryHandoverTestkit from "./FactoryHandover.testkit.ts";
@@ -393,6 +394,10 @@ it.effect("persists an actionable wait without launching when confinement is una
 it.effect("a failed launch remains recoverable and its receipt does not claim success", () =>
   Effect.gen(function* () {
     const available = yield* Ref.make(false);
+    const head = yield* Ref.make<FactorySkills.FactorySkills["Service"]["head"]>(
+      Effect.succeed(FactoryServiceTestkit.testSkills),
+    );
+    const moved = { ...FactoryServiceTestkit.testSkills, revision: "b".repeat(40) };
     yield* Effect.gen(function* () {
       yield* SatelliteTestRuntime.recordProject({
         projectId,
@@ -405,6 +410,17 @@ it.effect("a failed launch remains recoverable and its receipt does not claim su
       const failed = yield* factory.snapshot({});
       assert.equal(failed.managers[0]!.status, "blocked");
       assert.equal(failed.managers[0]!.threadStatus, "pending");
+      // Nothing launched yet, so the retry is a new onboarding run on the current skills commit.
+      yield* Ref.set(head, FactoryServiceTestkit.skillsUnset);
+      const unset = yield* factory
+        .dispatch(human, {
+          type: "manager.retry-onboarding",
+          commandId: CommandId.make("retry-without-skills"),
+          managerId: failed.managers[0]!.id,
+        })
+        .pipe(Effect.flip);
+      assert.equal(unset.detail, "Set the skills repository in Settings → General first.");
+      yield* Ref.set(head, Effect.succeed(moved));
       yield* Ref.set(available, true);
       yield* factory.dispatch(human, {
         type: "manager.retry-onboarding",
@@ -416,8 +432,14 @@ it.effect("a failed launch remains recoverable and its receipt does not claim su
       assert.equal(recovered.managers[0]!.threadStatus, "created");
       assert.equal(recovered.assignments[0]!.threadStatus, "created");
       assert.equal(recovered.assignments[0]!.id, failed.assignments[0]!.id);
+      assert.deepStrictEqual(recovered.managers[0]!.workflow, moved);
+      assert.deepStrictEqual(recovered.assignments[0]!.workflow, moved);
     }).pipe(
-      Effect.provide(layer),
+      Effect.provide(FactoryService.layer),
+      Effect.provideService(FactorySkills.FactorySkills, {
+        head: Effect.flatten(Ref.get(head)),
+        validate: () => Effect.void,
+      }),
       Effect.provideService(FactoryExecution.FactoryExecution, {
         qualify: () => Effect.succeed(qualification),
         assertSelectionFor: () => Effect.void,
@@ -431,12 +453,13 @@ it.effect("a failed launch remains recoverable and its receipt does not claim su
             ),
           ),
       }),
+      Effect.provide(runtime),
     );
   }),
 );
 
 it.effect(
-  "recovers a rejected lead message without replacing the profile or resending the manager",
+  "recovers a rejected lead message on its recorded skills commit without replacing the profile or resending the manager",
   () =>
     Effect.gen(function* () {
       yield* SatelliteTestRuntime.recordProject({
@@ -450,6 +473,9 @@ it.effect(
       const qualifications = yield* Ref.make(0);
       const sends = yield* Ref.make<ReadonlyArray<ThreadManagement.ThreadManagementSendInput>>([]);
       const rejectLead = yield* Ref.make(true);
+      const head = yield* Ref.make<FactorySkills.FactorySkills["Service"]["head"]>(
+        Effect.succeed(FactoryServiceTestkit.testSkills),
+      );
       const interceptedThreads = {
         ...threads,
         sendToThread: (input: ThreadManagement.ThreadManagementSendInput) =>
@@ -502,6 +528,9 @@ it.effect(
         assert.isTrue(Result.isFailure(replacement));
         if (Result.isFailure(replacement)) assert.equal(replacement.failure.code, "invalid-state");
 
+        // The threads launched on their commit, so the retry needs no skills repository.
+        yield* Ref.set(head, FactoryServiceTestkit.skillsUnset);
+
         const retry = {
           type: "manager.retry-onboarding" as const,
           commandId: CommandId.make("retry-rejected-lead"),
@@ -516,6 +545,11 @@ it.effect(
         assert.equal(recovered.assignments[0]!.id, assignment.id);
         assert.equal(recovered.assignments[0]!.launchStatus, "delivered");
         assert.deepStrictEqual(recovered.assignments[0]!.qualification, qualification);
+        assert.deepStrictEqual(recovered.managers[0]!.workflow, FactoryServiceTestkit.testSkills);
+        assert.deepStrictEqual(
+          recovered.assignments[0]!.workflow,
+          FactoryServiceTestkit.testSkills,
+        );
         assert.equal(yield* Ref.get(qualifications), 1);
         const attempts = yield* Ref.get(sends);
         assert.equal(attempts.filter((attempt) => attempt.threadId === manager.threadId).length, 1);
@@ -534,6 +568,10 @@ it.effect(
       }).pipe(
         Effect.provide(FactoryService.layer),
         Effect.provideService(ThreadManagement.ThreadManagementService, interceptedThreads),
+        Effect.provideService(FactorySkills.FactorySkills, {
+          head: Effect.flatten(Ref.get(head)),
+          validate: () => Effect.void,
+        }),
         Effect.provideService(FactoryExecution.FactoryExecution, {
           qualify: () =>
             Ref.update(qualifications, (count) => count + 1).pipe(Effect.as(qualification)),

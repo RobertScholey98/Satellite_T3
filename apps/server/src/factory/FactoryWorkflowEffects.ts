@@ -25,7 +25,6 @@ import * as Handover from "./FactoryHandover.ts";
 import * as Access from "./FactoryControlAccess.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import { type FactoryWorkflowContext } from "./FactoryWorkflow.ts";
-import { factorySkillsPin } from "./FactoryAssignmentCommission.ts";
 import type { FactoryActor } from "./FactoryState.ts";
 
 /**
@@ -115,13 +114,11 @@ const make = Effect.gen(function* () {
       const repositoryRoot = yield* fs
         .realPath(project.value.workspaceRoot)
         .pipe(Effect.mapError(failure));
-      const pin = factorySkillsPin(skills);
-      if (Result.isFailure(pin)) return yield* pin.failure;
-      const workflow = pin.success;
+      if (skills === undefined) return yield* new FactoryError({ code: "invalid-state" });
       const qualification = yield* execution.qualify({
         projectId: command.projectId,
         modelSelection: manager.modelSelection,
-        workflow,
+        workflow: skills,
       });
       if (qualification.status !== "qualified")
         return yield* new FactoryError({
@@ -131,7 +128,7 @@ const make = Effect.gen(function* () {
       const boundary = yield* boundaries.approveShared({
         managerId: manager.id,
         projectId: command.projectId,
-        workflow,
+        workflow: skills,
         qualification,
         configuration: command.configuration,
       });

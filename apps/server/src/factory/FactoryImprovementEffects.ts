@@ -20,7 +20,6 @@ import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Access from "./FactoryControlAccess.ts";
 import * as Execution from "./FactoryExecution.ts";
-import { factorySkillsPin } from "./FactoryAssignmentCommission.ts";
 import {
   factoryImprovementBatchPlan,
   factoryImprovementConfiguration,
@@ -100,16 +99,13 @@ const make = Effect.gen(function* () {
       return { systemManagerCreation: { threadId, qualification: manager.qualification } };
     // A created thread keeps the skills commit it launched with; otherwise this run records
     // the current one.
-    const pin =
-      manager?.threadStatus === "created"
-        ? Result.succeed(manager.workflow)
-        : factorySkillsPin(skills);
-    if (Result.isFailure(pin)) return yield* pin.failure;
+    const workflow = manager?.threadStatus === "created" ? manager.workflow : skills;
+    if (workflow === undefined) return yield* new FactoryError({ code: "invalid-state" });
     const qualification = yield* execution.qualify({
       projectId:
         command.type === "system.create" ? command.workspaceProjectId : manager!.workspaceProjectId,
       modelSelection: command.modelSelection ?? manager!.modelSelection,
-      workflow: pin.success,
+      workflow,
     });
     return { systemManagerCreation: { threadId, qualification } };
   }, Effect.mapError(error));
