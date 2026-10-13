@@ -8964,7 +8964,18 @@ describe("ClaudeAdapterV2 confined sessions", () => {
           now: yield* DateTime.now,
           attemptId,
           text: "Use $host-skill on this image.",
-          attachments: [image],
+          attachments: [
+            image,
+            ChatFileAttachment.make({
+              type: "file",
+              id: ChatAttachmentId.make(
+                "thread-claude-confined-prompt-87654321-4321-4321-4321-cba987654321",
+              ),
+              name: "release-notes.pdf",
+              mimeType: "application/pdf",
+              sizeBytes: 4,
+            }),
+          ],
           runtimePolicy: confinedPolicy,
         }),
       );
@@ -8991,7 +9002,13 @@ describe("ClaudeAdapterV2 confined sessions", () => {
       assert.deepEqual(
         offered.map((message) => message.message.content),
         [
-          [imageBlock, { type: "text", text: "Ultrathink:\nUse $host-skill on this image." }],
+          [
+            imageBlock,
+            {
+              type: "text",
+              text: "Ultrathink:\nUse $host-skill on this image.\n\n(The user attached release-notes.pdf; it is not available in this managed runtime.)",
+            },
+          ],
           [imageBlock, { type: "text", text: "Ultrathink:\nThen $host-skill again." }],
         ],
       );

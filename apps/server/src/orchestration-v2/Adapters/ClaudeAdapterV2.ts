@@ -1391,14 +1391,26 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
 
   // The model's tools cannot dereference inlined pixels. Appending the
   // on-disk path is what lets a turn like "include this screenshot in the
-  // PR" copy the actual file (the query grants attachmentsDir for reads).
+  // PR" copy the actual file (the query grants attachmentsDir for reads). Without host paths,
+  // a file is only named, so the agent knows the user sent one it cannot read.
   const textWithAttachmentPaths = input.attachmentPaths
     ? providerMessageTextWithAttachmentPaths({
         text: input.text,
         attachments: input.attachments,
         attachmentsDir: input.attachmentsDir,
       })
-    : input.text;
+    : [
+        input.text,
+        ...input.attachments.flatMap((attachment) =>
+          attachment.type === "file"
+            ? [
+                `(The user attached ${attachment.name}; it is not available in this managed runtime.)`,
+              ]
+            : [],
+        ),
+      ]
+        .filter((text) => text.length > 0)
+        .join("\n\n");
 
   const dispatch =
     input.skillNames === undefined
