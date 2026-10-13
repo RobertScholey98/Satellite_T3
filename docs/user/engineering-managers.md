@@ -37,10 +37,11 @@ The project's environment needs:
 Open **Project settings → Engineering manager** and choose **Create manager**.
 Pick the model. Each project has one manager.
 
-The manager, its onboarding and every assignment use the skills repository's
-latest commit at the moment they start. A running assignment keeps that commit
-until it finishes; the next one picks up whatever is committed then. To change
-the skills your teams use, commit or merge to the skills repository.
+The manager, its onboarding and every assignment use the latest commit on the
+branch checked out in the skills repository at the moment they start. A running
+assignment keeps that commit until it finishes; the next one picks up whatever
+is committed then. To change the skills your teams use, commit to that branch,
+or pull a merged PR into it.
 
 The manager first runs an onboarding investigation on a read-only copy of the
 committed files (untracked files and credential paths are left out). Review its
@@ -193,8 +194,9 @@ one, they come to you. Escalations beyond the daily allowance in **Review
 settings** wait for the next day, or until you choose **Review escalations
 now**. You decide on every
 proposal. A deferred proposal stays open until you record another decision. The
-system manager's team delivers skill changes as PRs to your skills repository;
-merging one is what puts it in front of new assignments. To replace the system manager,
+system manager's team delivers skill changes as PRs to your skills repository.
+A merged PR reaches new assignments once you pull it into the branch checked out
+at the path in Settings. To replace the system manager,
 use **Retire system manager…** in **Shared improvements → Manager controls**
 and give a reason, then
 **Create system manager** in the sidebar; the new one takes over your shared

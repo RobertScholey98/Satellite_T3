@@ -291,11 +291,11 @@ const make = Effect.gen(function* () {
       yield* snapshot(project.value.workspaceRoot, projectRevision, profile.projectSnapshotPath);
       if (workflowRevision !== input.workflow.revision)
         return yield* new QualificationError({
-          detail: "The workflow did not resolve to its exact approved revision.",
+          detail: "The skills repository did not resolve to the recorded commit.",
         });
       if (!(yield* fs.exists(path.join(profile.workflowSnapshotPath, "skills")))) {
         return yield* new QualificationError({
-          detail: "The pinned workflow repository must contain a skills directory.",
+          detail: "The recorded skills commit must contain a skills directory.",
         });
       }
       yield* makeFactoryProviderHomes(fs, path, profile.runtimePath);

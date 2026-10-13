@@ -102,8 +102,9 @@ function validWork(boundary: FactoryBoundary, work: FactorySupportingWork): bool
 
 /**
  * Decides the system manager's workflow-improvement commands: shared repositories and work,
- * isolated experiments, validations and model recommendations. Shared work ends at its PR merge:
- * the next commission picks the merged skills up from the repository's HEAD. Returns `undefined` for any other command so `decide` tries the next decider.
+ * isolated experiments, validations and model recommendations. Shared work ends at its PR merge;
+ * commissions pick the merged skills up once they reach the skills repository's checked-out
+ * branch. Returns `undefined` for any other command so `decide` tries the next decider.
  * `workflow.models.apply` also falls through, because `decide` applies it by re-deciding the
  * recommended model configuration as a human command.
  */

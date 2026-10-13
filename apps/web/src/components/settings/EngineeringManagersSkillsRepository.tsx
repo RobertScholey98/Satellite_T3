@@ -53,7 +53,7 @@ export function EngineeringManagersSkillsRepository({
       serverScoped
       settingKeys={["engineeringManagersSkillsRepository"]}
       {...searchableSetting("engineering-managers-skills")}
-      description="Managers and their teams use the skills committed here. Each new assignment uses the latest commit."
+      description="Managers and their teams use the skills committed on the checked-out branch here. Each new assignment uses the latest commit."
       status={
         error ? (
           <span role="alert" className="text-destructive">

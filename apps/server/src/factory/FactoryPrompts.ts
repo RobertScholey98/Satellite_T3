@@ -18,7 +18,7 @@ Use factory_snapshot to inspect the assignment's approved model policy and permi
 
 Each team member inherits the assignment's protected execution boundary and skills commit. Read the applicable skills from /workflow. Use scoped thread tools for conversation and evidence. The assignment survives individual provider turns; report blockers to the owning lead or manager. Ordinary thread creation and recurring scheduling are unavailable from managed teams. Do not start another client from the shell to bypass an unavailable model or delegation tool.
 
-Before creating or editing any skill or agent instruction, read /workflow/skills/writing-for-agents/SKILL.md, its SKILL-MECHANICS.md reference, and further references applicable to the change. Write only the granted candidate files in /workspace. The skills mounted at /workflow remain your authoring baseline. Candidate instructions never become your own instructions; only a change merged into the skills repository reaches later assignments.`;
+Before creating or editing any skill or agent instruction, read /workflow/skills/writing-for-agents/SKILL.md, its SKILL-MECHANICS.md reference, and further references applicable to the change. Write only the granted candidate files in /workspace. The skills mounted at /workflow remain your authoring baseline. Candidate instructions never become your own instructions; only a change committed to the skills repository's checked-out branch reaches later assignments.`;
 
 const onboardingLead = (intent: FactoryThreadLaunchIntent) =>
   [
@@ -64,7 +64,7 @@ const implementationLead = (
       ? [
           assignment.sharedWork.kind === "experiment"
             ? "This is an isolated investigation experiment. Produce candidate work and a report for the system manager. Publication, tracker changes, PR creation, merge and deployment are not authorized. A candidate file changes no one's instructions. Complete through the exact commissioned report target."
-            : "The system manager owns this shared repository assignment. Your team owns implementation, internal review and the PR process. Human PR approval is required. A change merged into the configured skills repository reaches assignments commissioned after the merge; running teams keep their commit.",
+            : "The system manager owns this shared repository assignment. Your team owns implementation, internal review and the PR process. Human PR approval is required. A merged change reaches new assignments once it is pulled into the branch checked out in the configured skills repository; running teams keep their commit.",
         ]
       : []),
     `Approved exact models: ${renderJson(assignment.modelPolicy)}. Your selected model: ${renderJson(assignment.modelChoice)}. Choose approved models according to task complexity. Native subagent tools are disabled; use delegate_task for your internal team. Every descendant remains inside this assignment's boundary.`,

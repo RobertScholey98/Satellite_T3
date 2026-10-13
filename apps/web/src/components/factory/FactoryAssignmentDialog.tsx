@@ -507,10 +507,10 @@ export function FactoryAssignmentDialog({
               </section>
             ) : null}
             <section className="space-y-1 border-t border-border pt-4">
-              <h3 className="text-sm font-medium">Recorded assignment baseline</h3>
+              <h3 className="text-sm font-medium">Skills commit</h3>
               <p className="break-words text-xs text-muted-foreground">
-                Skills: the latest commit of the skills repository set in Settings → General,
-                recorded when this assignment is commissioned.
+                Commissioning records the latest commit on the branch checked out in the skills
+                repository set in Settings → General. The team keeps that commit until it finishes.
               </p>
               <p className="text-xs text-muted-foreground">
                 Source is captured fresh when this assignment is prepared. Approved controls and

@@ -631,7 +631,7 @@ export function FactoryImprovementsDialog({
               ) : (
                 <p className="py-4 text-sm text-muted-foreground">
                   No proposals yet. The system manager investigates evidence and brings concrete
-                  adoption decisions here.
+                  proposals here for your decision.
                 </p>
               )
             ) : null}

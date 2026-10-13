@@ -508,8 +508,8 @@ export function FactoryWorkflowDialog({
                 <p className="text-sm text-muted-foreground">
                   Accepting a proposal does not grant repository access. Review the system manager's
                   exact immutable work plan here. Implementation and PR review belong to its
-                  delegated team. Once its PR merges into the skills repository, new assignments use
-                  it.
+                  delegated team. Once its PR merges and is pulled into the skills repository's
+                  checked-out branch, new assignments use it.
                 </p>
                 {works.slice(0, limit).map((work) => (
                   <WorkPlan
