@@ -25,7 +25,8 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
   pool, so every launch first removes each provider's credential file there. The Claude home in
   it is writable, so its user-scope `settings.json`, `commands` and `agents` are mounted
   read-only from empty sources beside the runtime directory; otherwise an agent could leave an
-  environment, hooks or a command's `model:` for the next process.
+  environment, hooks or a command's `model:` for the next process. The home is a bind mount of
+  its own, because a mountpoint cannot be renamed aside to make room for a writable replacement.
 - The host never reads or writes an assignment volume directly. Volume access goes through
   [`FactoryVolumeHelper`](../../apps/server/src/factory/FactoryVolumeHelper.ts), which runs in a
   short-lived container with no network and a read-only root.

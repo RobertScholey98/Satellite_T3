@@ -108,6 +108,8 @@ it.effect("passes only the file sign-in's access token and none of the host's en
       "--name",
       "factory-claude",
       "--mount",
+      `type=bind,source=${path.join(profile.runtimePath, "claude")},target=/runtime/claude`,
+      "--mount",
       `type=bind,source=${path.join(root, ".claude-user", "settings.json")},target=/runtime/claude/settings.json,readonly`,
       "--mount",
       `type=bind,source=${path.join(root, ".claude-user", "commands")},target=/runtime/claude/commands,readonly`,
@@ -771,17 +773,20 @@ live(
       });
       for (const request of commandRun.requests) assert.equal(request.model, "claude-sonnet-4-6");
 
+      // As a worker would: rename the home aside, recreate it, then write the locked files.
       const launch = yield* liveClaudeLaunch({ name: "factory-claude-home-write-probe" });
       const runner = yield* ProcessRunner.ProcessRunner;
       const written = yield* runner.run({
         command: launch.command,
         args: [
           ...launch.args.slice(0, launch.args.indexOf("--entrypoint")),
+          "--user",
+          "65532:65532",
           "--entrypoint",
           "sh",
           FACTORY_AGENT_IMAGE,
           "-c",
-          "mkdir -p /runtime/claude/commands /runtime/claude/agents 2>/dev/null; for target in settings.json commands/probe.md agents/probe.md; do (echo x > /runtime/claude/$target) 2>/dev/null && echo $target; done; echo checked",
+          "mv /runtime/claude /runtime/claude-old 2>/dev/null && echo renamed; mkdir -p /runtime/claude/commands /runtime/claude/agents 2>/dev/null; for target in settings.json commands/probe.md agents/probe.md; do (echo x > /runtime/claude/$target) 2>/dev/null && echo $target; done; echo checked",
         ],
         env: launch.hostEnvironment,
         timeout: "60 seconds",
