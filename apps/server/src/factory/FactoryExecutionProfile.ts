@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { FactoryWorkflowVersion } from "@t3tools/contracts";
 
@@ -138,12 +139,15 @@ const FACTORY_PROVIDER_HOMES = ["codex", "claude"] as const;
  * Creates a runtime directory's provider homes before Docker mounts skills into them, so a
  * non-root `--user` worker never finds root-owned mountpoints. Returns their paths.
  */
-export const makeFactoryProviderHomes = (fs: FileSystem.FileSystem, runtimePath: string) =>
-  Effect.forEach(FACTORY_PROVIDER_HOMES, (home) =>
-    fs
-      .makeDirectory(`${runtimePath}/${home}`, { recursive: true })
-      .pipe(Effect.as(`${runtimePath}/${home}`)),
-  );
+export const makeFactoryProviderHomes = (
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  runtimePath: string,
+) =>
+  Effect.forEach(FACTORY_PROVIDER_HOMES, (home) => {
+    const directory = path.join(runtimePath, home);
+    return fs.makeDirectory(directory, { recursive: true }).pipe(Effect.as(directory));
+  });
 
 /**
  * The `docker run` arguments every confined runtime shares, up to but not including the image:

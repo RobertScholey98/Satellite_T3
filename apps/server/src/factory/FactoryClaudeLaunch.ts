@@ -48,30 +48,6 @@ const fileAccessToken = Effect.fnUntraced(function* (input: {
 });
 
 /**
- * Claude's part of a factory launch. Passes exactly one model credential through the Docker CLI's
- * environment, first match wins: the instance's `CLAUDE_CODE_OAUTH_TOKEN`, its
- * `ANTHROPIC_API_KEY`, or the access token of the selected config directory's file-based sign-in.
- * Returns the `docker run` arguments from the credential through the image, run as `claude`.
- */
-export const prepareFactoryClaudeLaunch = Effect.fn("prepareFactoryClaudeLaunch")(
-  function* (input: {
-    readonly profile: FactoryExecutionProfile;
-    readonly settings: ClaudeSettings;
-    readonly environment: NodeJS.ProcessEnv;
-  }) {
-    const credential = input.environment.CLAUDE_CODE_OAUTH_TOKEN
-      ? { name: "CLAUDE_CODE_OAUTH_TOKEN", value: input.environment.CLAUDE_CODE_OAUTH_TOKEN }
-      : input.environment.ANTHROPIC_API_KEY
-        ? { name: "ANTHROPIC_API_KEY", value: input.environment.ANTHROPIC_API_KEY }
-        : { name: "CLAUDE_CODE_OAUTH_TOKEN", value: yield* fileAccessToken(input) };
-    return {
-      args: ["--env", credential.name, "--entrypoint", "claude", input.profile.imageId],
-      environment: { [credential.name]: credential.value },
-    };
-  },
-);
-
-/**
  * Fails unless the profile's pinned image can run Claude. Profiles qualified before Claude support
  * pin an image without `claude`, which would otherwise fail as a bare "not found" from Docker.
  */
@@ -101,3 +77,29 @@ export const assertFactoryImageRunsClaude = Effect.fn("assertFactoryImageRunsCla
         "This managed runtime was prepared before Claude support and runs only Codex models. Choose a Codex model for it.",
     });
 });
+
+/**
+ * Claude's part of a factory launch. Passes exactly one model credential through the Docker CLI's
+ * environment, first match wins: the instance's `CLAUDE_CODE_OAUTH_TOKEN`, its
+ * `ANTHROPIC_API_KEY`, or the access token of the selected config directory's file-based sign-in.
+ * Refuses an image that cannot run Claude first. Returns the `docker run` arguments from the
+ * credential through the image, run as `claude`.
+ */
+export const prepareFactoryClaudeLaunch = Effect.fn("prepareFactoryClaudeLaunch")(
+  function* (input: {
+    readonly profile: FactoryExecutionProfile;
+    readonly settings: ClaudeSettings;
+    readonly environment: NodeJS.ProcessEnv;
+  }) {
+    yield* assertFactoryImageRunsClaude(input.profile);
+    const credential = input.environment.CLAUDE_CODE_OAUTH_TOKEN
+      ? { name: "CLAUDE_CODE_OAUTH_TOKEN", value: input.environment.CLAUDE_CODE_OAUTH_TOKEN }
+      : input.environment.ANTHROPIC_API_KEY
+        ? { name: "ANTHROPIC_API_KEY", value: input.environment.ANTHROPIC_API_KEY }
+        : { name: "CLAUDE_CODE_OAUTH_TOKEN", value: yield* fileAccessToken(input) };
+    return {
+      args: ["--env", credential.name, "--entrypoint", "claude", input.profile.imageId],
+      environment: { [credential.name]: credential.value },
+    };
+  },
+);

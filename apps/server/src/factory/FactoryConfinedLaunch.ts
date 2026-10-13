@@ -1,9 +1,4 @@
-import {
-  FactoryError,
-  isFactoryError,
-  type ClaudeSettings,
-  type CodexSettings,
-} from "@t3tools/contracts";
+import { FactoryError, isFactoryError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -14,7 +9,7 @@ import * as Schema from "effect/Schema";
 import * as ConfinedProviderLaunch from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 import type { ConfinedExecution } from "../orchestration-v2/ThreadGovernance.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { assertFactoryImageRunsClaude, prepareFactoryClaudeLaunch } from "./FactoryClaudeLaunch.ts";
+import { prepareFactoryClaudeLaunch } from "./FactoryClaudeLaunch.ts";
 import { prepareFactoryCodexLaunch } from "./FactoryCodexLaunch.ts";
 import {
   factoryDockerArguments,
@@ -25,6 +20,27 @@ import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 
 const isLaunchError = Schema.is(ConfinedProviderLaunch.ConfinedLaunchError);
 
+// Host configuration such as `binaryPath` or `launchArgs` never shapes the boundary.
+const prepareProvider = (
+  profile: FactoryExecutionProfile,
+  provider: ConfinedProviderLaunch.ConfinedProvider,
+) => {
+  switch (provider.driver) {
+    case "codex":
+      return prepareFactoryCodexLaunch({
+        profile,
+        settings: provider.settings,
+        environment: provider.environment,
+      });
+    case "claudeAgent":
+      return prepareFactoryClaudeLaunch({
+        profile,
+        settings: provider.settings,
+        environment: provider.environment,
+      });
+  }
+};
+
 /**
  * Builds the `docker` command that starts a provider inside a profile's boundary. Refuses a held
  * profile, reduces the host environment to what the Docker CLI needs, and leaves the provider's
@@ -34,10 +50,7 @@ export const prepareFactoryLaunch = Effect.fn("prepareFactoryLaunch")(
   function* (input: {
     readonly profile: FactoryExecutionProfile;
     readonly containerName: string;
-    readonly environment: NodeJS.ProcessEnv;
-    readonly provider:
-      | { readonly driver: "codex"; readonly settings: CodexSettings }
-      | { readonly driver: "claudeAgent"; readonly settings: ClaudeSettings };
+    readonly provider: ConfinedProviderLaunch.ConfinedProvider;
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -45,7 +58,7 @@ export const prepareFactoryLaunch = Effect.fn("prepareFactoryLaunch")(
     yield* assertFactoryProfileActive(profile);
     for (const directory of [
       profile.runtimePath,
-      ...(yield* makeFactoryProviderHomes(fs, profile.runtimePath)),
+      ...(yield* makeFactoryProviderHomes(fs, path, profile.runtimePath)),
     ]) {
       if (path.relative(directory, yield* fs.realPath(directory)) !== "") {
         return yield* new ConfinedProviderLaunch.ConfinedLaunchError({
@@ -66,22 +79,12 @@ export const prepareFactoryLaunch = Effect.fn("prepareFactoryLaunch")(
         "TEMP",
         "TMP",
       ].flatMap((key) =>
-        input.environment[key] === undefined ? [] : [[key, input.environment[key]]],
+        input.provider.environment[key] === undefined
+          ? []
+          : [[key, input.provider.environment[key]]],
       ),
     );
-    // Host configuration such as `binaryPath` or `launchArgs` never shapes the boundary.
-    const provider =
-      input.provider.driver === "codex"
-        ? yield* prepareFactoryCodexLaunch({
-            profile,
-            settings: input.provider.settings,
-            environment: input.environment,
-          })
-        : yield* prepareFactoryClaudeLaunch({
-            profile,
-            settings: input.provider.settings,
-            environment: input.environment,
-          });
+    const provider = yield* prepareProvider(profile, input.provider);
     return {
       command: "docker",
       args: [...factoryDockerArguments(profile), "--name", input.containerName, ...provider.args],
@@ -118,18 +121,12 @@ export const layerConfinedLaunch = Layer.effect(
         Effect.mapError((cause) => new FactoryError({ code: "execution-unavailable", cause })),
       );
     return ConfinedProviderLaunch.ConfinedProviderLaunch.of({
-      prepare: (request) =>
+      prepare: ({ confinement, ...provider }) =>
         Effect.gen(function* () {
-          const profile = yield* profileOf(request.confinement);
+          const profile = yield* profileOf(confinement);
           // Each provider process runs in its own named container.
           const containerName = `satellite-factory-${yield* crypto.randomUUIDv4}`;
-          const launch = yield* prepareFactoryLaunch({
-            profile,
-            containerName,
-            environment: request.environment,
-            provider: request,
-          });
-          if (request.driver === "claudeAgent") yield* assertFactoryImageRunsClaude(profile);
+          const launch = yield* prepareFactoryLaunch({ profile, containerName, provider });
           return {
             ...launch,
             cleanup: {

@@ -323,7 +323,7 @@ const make = Effect.gen(function* () {
           inspection: { sourceDigest: source.sourceDigest, evidencePath: sealed.directory },
           retro: { ...input, sourceBasis: source.sourceBasis, stopPath },
         });
-        yield* makeFactoryProviderHomes(fs, profile.runtimePath);
+        yield* makeFactoryProviderHomes(fs, path, profile.runtimePath);
         const proof = yield* runner.run({
           command: "docker",
           args: [

@@ -13,11 +13,11 @@ import * as Path from "effect/Path";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
 
+import { makeClaudeQueryOptions } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import {
   CLAUDE_CONFINED_DISALLOWED_TOOLS,
-  makeClaudeQueryOptions,
-  spawnConfinedClaudeCode,
-} from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+  makeConfinedClaudeRuntime,
+} from "../orchestration-v2/Adapters/ConfinedClaudeProcess.ts";
 import * as ConfinedProviderLaunch from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as FactoryConfinedLaunch from "./FactoryConfinedLaunch.ts";
@@ -37,6 +37,20 @@ const signIn = (expiresAt: number) =>
     oauthAccount: { emailAddress: "host@example.com" },
   });
 const live = process.env.SATELLITE_FACTORY_LIVE_TEST === "1" ? it.effect : it.effect.skip;
+const inspection = (stdout: string) => ({
+  stdout,
+  stderr: "",
+  code: ChildProcessSpawner.ExitCode(0),
+  timedOut: false,
+  stdoutTruncated: false,
+  stderrTruncated: false,
+  stdoutInvalidUtf8: false,
+  stderrInvalidUtf8: false,
+});
+// Answers the image label check as an image that runs Claude.
+const claudeImage = ProcessRunner.ProcessRunner.of({
+  run: () => Effect.succeed(inspection("codex claudeAgent\n")),
+});
 const NO_CREDENTIAL =
   "Managed Claude needs a file-based Claude sign-in, or CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in the provider's environment.";
 
@@ -58,7 +72,6 @@ const fixture = Effect.gen(function* () {
     FactoryConfinedLaunch.prepareFactoryLaunch({
       profile,
       containerName: "factory-claude",
-      environment,
       provider: {
         driver: "claudeAgent",
         settings: settings({
@@ -66,8 +79,9 @@ const fixture = Effect.gen(function* () {
           binaryPath: "/host/bin/claude",
           launchArgs: "--dangerously-skip-permissions --mcp-config /host/privileged.json",
         }),
+        environment,
       },
-    });
+    }).pipe(Effect.provideService(ProcessRunner.ProcessRunner, claudeImage));
   return { fs, path, root, configDir, profile, launch };
 });
 
@@ -209,16 +223,7 @@ it.effect("launches Claude only from an image that runs it, and fences the confi
       run: (input) =>
         Effect.sync(() => {
           inspected.push(input.args);
-          return {
-            stdout: labels,
-            stderr: "",
-            code: ChildProcessSpawner.ExitCode(0),
-            timedOut: false,
-            stdoutTruncated: false,
-            stderrTruncated: false,
-            stdoutInvalidUtf8: false,
-            stderrInvalidUtf8: false,
-          };
+          return inspection(labels);
         }),
     });
     yield* Effect.gen(function* () {
@@ -316,9 +321,12 @@ live(
           runtimePath: path.join(root, "runtime"),
         },
         containerName: "factory-claude-agent-tool-probe",
-        environment: { ...process.env, ANTHROPIC_API_KEY: "unused" },
-        provider: { driver: "claudeAgent", settings: settings({}) },
-      });
+        provider: {
+          driver: "claudeAgent",
+          settings: settings({}),
+          environment: { ...process.env, ANTHROPIC_API_KEY: "unused" },
+        },
+      }).pipe(Effect.provide(ProcessRunner.layer));
       const entrypoint = launch.args.indexOf("--entrypoint");
       const probeLaunch = {
         ...launch,
@@ -334,7 +342,7 @@ live(
         },
       };
       const sessionId = yield* (yield* Crypto.Crypto).randomUUIDv4;
-      const removed = Promise.withResolvers<void>();
+      const runtime = makeConfinedClaudeRuntime(probeLaunch);
       const messages = yield* Effect.promise(async () => {
         const received: Array<SDKMessage> = [];
         const session = query({
@@ -350,8 +358,7 @@ live(
             permissionMode: "bypassPermissions",
             allowDangerouslySkipPermissions: true,
             confined: {
-              spawnClaudeCodeProcess: (options) =>
-                spawnConfinedClaudeCode(probeLaunch, options, async () => removed.resolve()),
+              spawnClaudeCodeProcess: runtime.spawn,
               orchestrationInstructions: undefined,
             },
           }),
@@ -361,9 +368,9 @@ live(
         } catch {
           // The capture server's refusal ends the run with an API error.
         }
-        await removed.promise;
         return received;
       });
+      yield* runtime.remove;
       const init = messages.find(
         (message) => message.type === "system" && message.subtype === "init",
       );

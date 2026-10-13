@@ -877,7 +877,7 @@ const make = Effect.gen(function* () {
         const authority = path.join(profileDirectory, "authority");
         yield* fs.makeDirectory(authority, { recursive: true });
         yield* fs.makeDirectory(path.join(profileDirectory, "controls"), { recursive: true });
-        yield* makeFactoryProviderHomes(fs, path.join(profileDirectory, "runtime"));
+        yield* makeFactoryProviderHomes(fs, path, path.join(profileDirectory, "runtime"));
         const volumeName = `satellite-integration-${profileId}`;
         const profile: FactoryExecutionProfile = {
           ...coordinator.capability.profile,

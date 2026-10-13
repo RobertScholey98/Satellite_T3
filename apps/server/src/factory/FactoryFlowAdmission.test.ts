@@ -337,8 +337,8 @@ it.effect(
             provider: {
               driver: "codex",
               settings: decodeCodexSettings({ homePath: path.join(test.root, "no-auth") }),
+              environment: { OPENAI_API_KEY: "test-model-key" },
             },
-            environment: { OPENAI_API_KEY: "test-model-key" },
             containerName: "held-planning",
           });
         const started = yield* launch(resolved!);
@@ -353,6 +353,6 @@ it.effect(
         yield* launch({ ...resolved!, profileId }).pipe(Effect.flip);
         yield* fs.writeFileString(markerPath, json({ ...marker, state: "released" }));
         yield* launch(resolved!).pipe(Effect.flip);
-      }).pipe(Effect.provide(Execution.layer.pipe(Layer.provide(dependencies))));
+      }).pipe(Effect.provide(Execution.layer.pipe(Layer.provideMerge(dependencies))));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

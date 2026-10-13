@@ -291,7 +291,7 @@ const make = Effect.gen(function* () {
           detail: "The pinned workflow repository must contain a skills directory.",
         });
       }
-      yield* makeFactoryProviderHomes(fs, profile.runtimePath);
+      yield* makeFactoryProviderHomes(fs, path, profile.runtimePath);
       const proof = yield* run(
         "docker",
         [
@@ -531,7 +531,7 @@ const make = Effect.gen(function* () {
         profile.runtimePath,
         Buffer.from(threadId).toString("base64url"),
       );
-      yield* makeFactoryProviderHomes(fs, runtimePath);
+      yield* makeFactoryProviderHomes(fs, path, runtimePath);
       return {
         ...profile,
         workflow,

@@ -1,6 +1,8 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- the Agent SDK spawns Claude Code through a Node ChildProcess.
-import * as NodeChildProcess from "node:child_process";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
+import {
+  CLAUDE_CONFINED_DISALLOWED_TOOLS,
+  makeConfinedClaudeRuntime,
+} from "./ConfinedClaudeProcess.ts";
 import * as ConfinedProviderLaunch from "./ConfinedProviderLaunch.ts";
 import {
   dynamicToolTitle,
@@ -876,6 +878,13 @@ export function makeClaudeQueryOptions(input: {
           ...(typeof querySettings === "object" && querySettings !== null ? querySettings : {}),
           autoCompactWindow: Number(input.settings.autoCompactWindow),
         } as ClaudeSdkSettings);
+  const systemPrompt = (orchestrationInstructions: string) => ({
+    type: "preset" as const,
+    preset: "claude_code" as const,
+    append:
+      buildRuntimeInstructions({ harness: "Claude Code" }) +
+      (input.mcpServers === undefined ? "" : orchestrationInstructions),
+  });
   const options: ClaudeAgentSdkQueryOptions = {
     model: compiledSelection.apiModelId,
     tools: claudeAgentSdkQueryToolsForSdk(selectedTools),
@@ -893,14 +902,7 @@ export function makeClaudeQueryOptions(input: {
     ...threadIdentity,
     ...(input.resumeSessionAt === undefined ? {} : { resumeSessionAt: input.resumeSessionAt }),
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
-    ...(input.disallowedTools === undefined && input.confined === undefined
-      ? {}
-      : {
-          disallowedTools: [
-            ...(input.confined === undefined ? [] : CLAUDE_CONFINED_DISALLOWED_TOOLS),
-            ...(input.disallowedTools ?? []),
-          ],
-        }),
+    ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
     ...(input.allowDangerouslySkipPermissions === true
       ? { allowDangerouslySkipPermissions: true }
@@ -923,93 +925,42 @@ export function makeClaudeQueryOptions(input: {
     ...(input.supportedDialogKinds === undefined
       ? {}
       : { supportedDialogKinds: input.supportedDialogKinds }),
-    ...(input.confined !== undefined
-      ? {
-          // The SDK requires a path, but the confined spawner runs the image's own claude.
-          pathToClaudeCodeExecutable: "claude",
-          spawnClaudeCodeProcess: input.confined.spawnClaudeCodeProcess,
-          settingSources: ["user", "project"],
-        }
-      : input.settings?.binaryPath
-        ? { pathToClaudeCodeExecutable: input.settings.binaryPath }
-        : {}),
-    ...(input.environment === undefined || input.confined !== undefined
-      ? {}
-      : { env: input.environment }),
     ...(input.mcpServers === undefined ? {} : { mcpServers: input.mcpServers }),
-    systemPrompt: {
-      type: "preset" as const,
-      preset: "claude_code" as const,
-      append:
-        buildRuntimeInstructions({ harness: "Claude Code" }) +
-        (input.mcpServers === undefined
-          ? ""
-          : (input.confined?.orchestrationInstructions ?? T3_CODE_ORCHESTRATION_INSTRUCTIONS)),
-    },
+    systemPrompt: systemPrompt(T3_CODE_ORCHESTRATION_INSTRUCTIONS),
     ...(Object.keys(extraArgs).length === 0 ? {} : { extraArgs }),
   };
-  // The container has no host paths; its working directory is the confined workspace.
-  if (input.confined !== undefined) return options;
+  if (input.confined !== undefined) {
+    // The runtime has no host paths, settings or environment. Its working directory is the
+    // confined workspace, and it runs the image's own Claude Code, so the SDK's required path is
+    // a placeholder.
+    return {
+      ...options,
+      disallowedTools: [...CLAUDE_CONFINED_DISALLOWED_TOOLS, ...(input.disallowedTools ?? [])],
+      pathToClaudeCodeExecutable: "claude",
+      spawnClaudeCodeProcess: input.confined.spawnClaudeCodeProcess,
+      settingSources: ["user", "project"],
+      systemPrompt: systemPrompt(
+        input.confined.orchestrationInstructions ?? T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+      ),
+    };
+  }
+  const hostOptions = {
+    ...options,
+    ...(input.settings?.binaryPath
+      ? { pathToClaudeCodeExecutable: input.settings.binaryPath }
+      : {}),
+    ...(input.environment === undefined ? {} : { env: input.environment }),
+  };
   const additionalDirectories = [
     ...(input.cwd === null ? [] : [input.cwd]),
     ...(input.attachmentsDir === undefined ? [] : [input.attachmentsDir]),
   ];
   const withDirectories =
-    additionalDirectories.length === 0 ? options : { ...options, additionalDirectories };
+    additionalDirectories.length === 0 ? hostOptions : { ...hostOptions, additionalDirectories };
   return input.cwd === null ? withDirectories : { ...withDirectories, cwd: input.cwd };
 }
 
 export const CLAUDE_T3_MCP_TOOL_WILDCARD = "mcp__t3-code__*";
-
-// Tools that start or message agents. `Agent` (alias `Task`) takes its own model choice and
-// `Workflow` scripts choose models for the agents they spawn; `SendMessage` resumes agents and
-// reaches the account's other sessions, with `ListAgents` to find them. Those choices bypass
-// FactoryModelAdmission, so managed teams delegate through `delegate_task`. Rerun the live probe
-// in FactoryClaudeLaunch.test.ts when the factory image's Claude Code changes.
-export const CLAUDE_CONFINED_DISALLOWED_TOOLS: ReadonlyArray<string> = [
-  "Agent",
-  "Task",
-  "Workflow",
-  "SendMessage",
-  "ListAgents",
-];
-
-/**
- * Starts the Agent SDK's Claude Code process in a confined runtime. The SDK's command, working
- * directory and environment describe the host, so only its CLI arguments cross into the
- * container. `removeRuntime` runs when the process exits or fails to start.
- */
-export function spawnConfinedClaudeCode(
-  launch: ConfinedProviderLaunch.ConfinedProcess,
-  options: SpawnOptions,
-  removeRuntime: () => Promise<void>,
-): SpawnedProcess {
-  const child = NodeChildProcess.spawn(launch.command, [...launch.args, ...options.args], {
-    env: launch.environment,
-    stdio: "pipe",
-    windowsHide: true,
-    signal: options.signal,
-  });
-  // The SDK reads only stdout, so stderr is drained to keep a chatty runtime from blocking.
-  child.stderr.resume();
-  child.once("exit", () => void removeRuntime());
-  child.once("error", () => void removeRuntime());
-  return child;
-}
-
-/** Removes a confined runtime at most once, ignoring failures such as an already-removed one. */
-function confinedRuntimeRemoval(launch: ConfinedProviderLaunch.ConfinedProcess) {
-  let removal: Promise<void> | undefined;
-  return () =>
-    (removal ??= new Promise<void>((resolve) => {
-      NodeChildProcess.execFile(
-        launch.cleanup.command,
-        [...launch.cleanup.args],
-        { env: launch.environment, timeout: 10_000, windowsHide: true },
-        () => resolve(),
-      );
-    }));
-}
 
 // Must stay in sync with the Tool.Readonly annotations on OrchestratorToolkit;
 // ClaudeAdapterV2.test.ts cross-checks this list against the toolkit.
@@ -7202,11 +7153,10 @@ export function makeClaudeAdapterV2(
               settings: adapterOptions.settings,
               environment: adapterOptions.environment,
             });
-            const removeRuntime = confinedRuntimeRemoval(launch);
-            yield* Scope.addFinalizer(sessionScope, Effect.promise(removeRuntime));
+            const runtime = makeConfinedClaudeRuntime(launch);
+            yield* Scope.addFinalizer(sessionScope, runtime.remove);
             confined = {
-              spawnClaudeCodeProcess: (options) =>
-                spawnConfinedClaudeCode(launch, options, removeRuntime),
+              spawnClaudeCodeProcess: runtime.spawn,
               orchestrationInstructions: confinement.orchestrationInstructions,
             };
           }

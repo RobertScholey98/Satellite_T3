@@ -48,9 +48,12 @@ export const FactoryModelChoice = Schema.Struct({
 });
 export type FactoryModelChoice = typeof FactoryModelChoice.Type;
 
-// Drivers whose sessions the factory can run inside its execution boundary.
-const CONFINABLE_PROVIDER_DRIVERS: ReadonlySet<string> = new Set(["codex", "claudeAgent"]);
+/** Drivers whose sessions the factory can run inside its execution boundary. */
+export const CONFINABLE_PROVIDER_DRIVERS = ["codex", "claudeAgent"] as const;
+export type ConfinableProviderDriver = (typeof CONFINABLE_PROVIDER_DRIVERS)[number];
 
 /** Whether managed execution can run a provider of this driver kind. */
-export const isConfinableProviderDriver = (driver: string | undefined): boolean =>
-  driver !== undefined && CONFINABLE_PROVIDER_DRIVERS.has(driver);
+export const isConfinableProviderDriver = (
+  driver: string | undefined,
+): driver is ConfinableProviderDriver =>
+  CONFINABLE_PROVIDER_DRIVERS.some((confinable) => confinable === driver);

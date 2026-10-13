@@ -1,4 +1,9 @@
-import type { ClaudeSettings, CodexSettings, FactoryError } from "@t3tools/contracts";
+import type {
+  ClaudeSettings,
+  CodexSettings,
+  ConfinableProviderDriver,
+  FactoryError,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -23,19 +28,21 @@ export class ConfinedLaunchError extends Schema.TaggedError<ConfinedLaunchError>
   { detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
 ) {}
 
-export type ConfinedLaunchRequest =
-  | {
-      readonly driver: "codex";
-      readonly confinement: ConfinedExecution;
-      readonly settings: CodexSettings;
-      readonly environment: NodeJS.ProcessEnv;
-    }
-  | {
-      readonly driver: "claudeAgent";
-      readonly confinement: ConfinedExecution;
-      readonly settings: ClaudeSettings;
-      readonly environment: NodeJS.ProcessEnv;
-    };
+interface ConfinableProviderSettings {
+  readonly codex: CodexSettings;
+  readonly claudeAgent: ClaudeSettings;
+}
+
+/** A confinable provider instance: its driver, settings and environment. */
+export type ConfinedProvider = {
+  readonly [Driver in ConfinableProviderDriver]: {
+    readonly driver: Driver;
+    readonly settings: ConfinableProviderSettings[Driver];
+    readonly environment: NodeJS.ProcessEnv;
+  };
+}[ConfinableProviderDriver];
+
+export type ConfinedLaunchRequest = ConfinedProvider & { readonly confinement: ConfinedExecution };
 
 /**
  * The command that starts a provider inside its runtime, up to the provider's own arguments.

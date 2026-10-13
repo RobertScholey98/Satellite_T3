@@ -15,6 +15,8 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as FactoryConfinedLaunch from "./FactoryConfinedLaunch.ts";
 import { admissibleFactorySourcePath, FACTORY_AGENT_IMAGE } from "./FactoryExecutionProfile.ts";
 
+// prepareFactoryLaunch can inspect a Claude image, so its context includes a process runner.
+const services = ProcessRunner.layer.pipe(Layer.provideMerge(NodeServices.layer));
 const settings = Schema.decodeUnknownSync(CodexSettings);
 const readJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 /** Names of every tool a model request offers, including namespaced and deferred tools. */
@@ -67,14 +69,14 @@ it.effect(
             homePath: home,
             launchArgs: "--yolo -c mcp_servers.host.command=privileged",
           }),
+          environment: {
+            PATH: "allowed",
+            GH_TOKEN: "forbidden",
+            AWS_SECRET_ACCESS_KEY: "forbidden",
+            CODEX_HOME: home,
+          },
         },
         containerName: "factory-test",
-        environment: {
-          PATH: "allowed",
-          GH_TOKEN: "forbidden",
-          AWS_SECRET_ACCESS_KEY: "forbidden",
-          CODEX_HOME: home,
-        },
       });
       assert.deepEqual(
         yield* fs
@@ -101,7 +103,7 @@ it.effect(
         yield* fs.readFileString(path.join(profile.runtimePath, "codex", "config.toml")),
         "mcp_servers.host",
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(services)),
 );
 
 it.effect(
@@ -120,13 +122,16 @@ it.effect(
           workflowSnapshotPath: root,
           runtimePath: path.join(root, "runtime"),
         },
-        provider: { driver: "codex", settings: settings({ homePath: path.join(root, "empty") }) },
-        environment: {},
+        provider: {
+          driver: "codex",
+          settings: settings({ homePath: path.join(root, "empty") }),
+          environment: {},
+        },
         containerName: "factory-missing",
       }).pipe(Effect.flip);
       assert.equal(failure._tag, "ConfinedLaunchError");
       assert.include(failure.detail, "file-based Codex");
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(services)),
 );
 
 it.effect("keeps the factory refusal that stopped a launch as its cause", () =>
@@ -153,8 +158,11 @@ it.effect("keeps the factory refusal that stopped a launch as its cause", () =>
           stopPath,
         },
       },
-      provider: { driver: "codex", settings: settings({ homePath: path.join(root, "empty") }) },
-      environment: {},
+      provider: {
+        driver: "codex",
+        settings: settings({ homePath: path.join(root, "empty") }),
+        environment: {},
+      },
       containerName: "factory-stopped-retro",
     }).pipe(Effect.flip);
     assert.equal(failure._tag, "ConfinedLaunchError");
@@ -163,7 +171,7 @@ it.effect("keeps the factory refusal that stopped a launch as its cause", () =>
       "This retrospective runtime has stopped. Its evidence remains available.",
     );
     assert.deepInclude(failure.cause, { _tag: "FactoryError", code: "execution-unavailable" });
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.scoped, Effect.provide(services)),
 );
 
 it.effect("launches and fences a confinement from the profile it carries", () =>
@@ -299,8 +307,11 @@ it.effect(
       const launch = () =>
         FactoryConfinedLaunch.prepareFactoryLaunch({
           profile,
-          provider: { driver: "codex", settings: settings({ homePath: path.join(root, "empty") }) },
-          environment: { OPENAI_API_KEY: "test-model-key" },
+          provider: {
+            driver: "codex",
+            settings: settings({ homePath: path.join(root, "empty") }),
+            environment: { OPENAI_API_KEY: "test-model-key" },
+          },
           containerName: "factory-paused",
         });
       yield* fs.writeFileString(
@@ -321,7 +332,7 @@ it.effect(
       );
       yield* fs.writeFileString(profile.assignmentWorkspace.revocationPath, "{}");
       assert.include((yield* launch().pipe(Effect.flip)).detail, "withdrawn");
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(services)),
 );
 
 live(
@@ -340,8 +351,11 @@ live(
           workflowSnapshotPath: root,
           runtimePath: path.join(root, "runtime"),
         },
-        provider: { driver: "codex", settings: settings({ homePath: path.join(root, "empty") }) },
-        environment: { OPENAI_API_KEY: "unused" },
+        provider: {
+          driver: "codex",
+          settings: settings({ homePath: path.join(root, "empty") }),
+          environment: { OPENAI_API_KEY: "unused" },
+        },
         containerName: "factory-native-subagent-probe",
       });
       const managedConfig = launch.args.flatMap((value, index) =>
@@ -425,6 +439,6 @@ live(
       assert.include(tools, "exec");
       assert.notInclude(tools, "collaboration");
       assert.notInclude(tools, "spawn_agent");
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(services)),
   120_000,
 );
