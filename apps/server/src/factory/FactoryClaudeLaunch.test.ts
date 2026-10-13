@@ -339,6 +339,36 @@ it.effect("tells a stopped Docker engine apart from a missing image", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect("checks a provider's credential without inspecting or starting a runtime", () =>
+  Effect.gen(function* () {
+    const { fs, path, configDir } = yield* fixture;
+    const launcher = yield* ConfinedProviderLaunch.ConfinedProviderLaunch;
+    const check = (environment: NodeJS.ProcessEnv) =>
+      launcher.checkCredential({
+        driver: "claudeAgent",
+        settings: settings({ homePath: configDir }),
+        environment,
+      });
+    assert.equal((yield* check({}).pipe(Effect.flip)).detail, NO_CREDENTIAL);
+    yield* check({ CLAUDE_CODE_OAUTH_TOKEN: "setup-token" });
+    yield* fs.writeFileString(path.join(configDir, ".credentials.json"), signIn(3_600_000));
+    yield* check({});
+    yield* launcher.checkCredential({
+      driver: "codex",
+      settings: codexSettings({}),
+      environment: {},
+    });
+  }).pipe(
+    Effect.provide(
+      FactoryConfinedLaunch.layerConfinedLaunch.pipe(
+        Layer.provide(Layer.mock(ProcessRunner.ProcessRunner)({})),
+      ),
+    ),
+    Effect.scoped,
+    Effect.provide(NodeServices.layer),
+  ),
+);
+
 it.effect("launches Claude only from an image that runs it, and fences the confinement", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
+import { ConfinedLaunchError } from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { makeProviderAdapter } from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
@@ -271,4 +272,56 @@ it.effect(
         ),
       );
     }).pipe(Effect.scoped, Effect.provide(ProcessRunner.layer), Effect.provide(NodeServices.layer)),
+);
+
+it.effect("refuses a signed-in Claude provider whose credential a container cannot use", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped();
+    const claudeDriver = ProviderDriverKind.make("claudeAgent");
+    const claude: ProviderInstance = {
+      ...instance,
+      driverKind: claudeDriver,
+      orchestrationAdapter: {
+        ...makeProviderAdapter(instanceId, claudeDriver),
+        checkConfinedCredential: Effect.fail(
+          new ConfinedLaunchError({
+            detail:
+              "Managed Claude needs a file-based Claude sign-in, or CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in the provider's environment.",
+          }),
+        ),
+      },
+    };
+    const result = yield* FactoryExecution.FactoryExecution.pipe(
+      Effect.flatMap((execution) =>
+        execution.qualify({
+          projectId: ProjectId.make("keychain-project"),
+          modelSelection: { instanceId, model: "claude-sonnet-4-6" },
+          workflow: { repositoryRoot: root, revision: "a".repeat(40) },
+        }),
+      ),
+      Effect.provide(
+        FactoryExecution.layer.pipe(
+          Layer.provideMerge(FactorySource.layer),
+          Layer.provideMerge(
+            Layer.mergeAll(
+              Layer.mock(FactoryStore.FactoryStore)({}),
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+              Layer.mock(ProjectStore.ProjectStoreV2)({}),
+              Layer.mock(ProcessRunner.ProcessRunner)({}),
+              Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+                getInstance: () => Effect.succeed(claude),
+              }),
+              ServerConfig.layerTest(root, root),
+            ),
+          ),
+        ),
+      ),
+    );
+    assert.deepEqual(result, {
+      status: "unavailable",
+      reason:
+        "Managed Claude needs a file-based Claude sign-in, or CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY in the provider's environment.",
+    });
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

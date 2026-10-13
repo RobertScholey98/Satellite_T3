@@ -3106,6 +3106,11 @@ export function makeClaudeAdapterV2(
     driver: CLAUDE_PROVIDER,
     getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+    checkConfinedCredential: confinedLaunch.checkCredential({
+      driver: "claudeAgent",
+      settings: adapterOptions.settings,
+      environment: adapterOptions.environment,
+    }),
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
         const sessionScope = yield* Effect.scope;

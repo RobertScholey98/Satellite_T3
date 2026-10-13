@@ -77,6 +77,10 @@ export class ConfinedProviderLaunch extends Context.Service<
     ) => Effect.Effect<ConfinedProcess, ConfinedLaunchError>;
     /** Fails while the owner holds or revoked the confinement. */
     readonly assertActive: (confinement: ConfinedExecution) => Effect.Effect<void, FactoryError>;
+    /** Fails unless `prepare` would find the provider's model credential. Starts nothing. */
+    readonly checkCredential: (
+      provider: ConfinedProvider,
+    ) => Effect.Effect<void, ConfinedLaunchError>;
   }
 >()("t3/orchestration-v2/Adapters/ConfinedProviderLaunch") {}
 
@@ -84,12 +88,14 @@ export class ConfinedProviderLaunch extends Context.Service<
  * No owner: nothing is confined, so a launch is refused. For tests and compositions without
  * engineering managers; the server provides the factory's implementation instead.
  */
+const noOwner = new ConfinedLaunchError({
+  detail: "No owner can launch a confined provider session.",
+});
+
 export const unconfined = ConfinedProviderLaunch.of({
-  prepare: () =>
-    Effect.fail(
-      new ConfinedLaunchError({ detail: "No owner can launch a confined provider session." }),
-    ),
+  prepare: () => Effect.fail(noOwner),
   assertActive: () => Effect.void,
+  checkCredential: () => Effect.fail(noOwner),
 });
 
 export const layerUnconfined = Layer.succeed(ConfinedProviderLaunch, unconfined);

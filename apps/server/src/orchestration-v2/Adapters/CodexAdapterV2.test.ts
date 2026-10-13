@@ -1457,6 +1457,7 @@ const CODEX_TEST_RUNTIME_POLICY = ProviderAdapterV2RuntimePolicy.make({
 const unconfinedLaunch: ConfinedProviderLaunch.ConfinedProviderLaunch["Service"] = {
   prepare: () => Effect.die("These sessions are never confined."),
   assertActive: () => Effect.void,
+  checkCredential: () => Effect.die("These sessions are never confined."),
 };
 
 function makeCodexTestAppThread(input: {

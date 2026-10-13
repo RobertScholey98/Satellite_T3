@@ -56,18 +56,25 @@ const fileAccessToken = Effect.fnUntraced(function* (input: {
   const path = yield* Path.Path;
   const configDir = yield* resolveClaudeHomePath(input.settings, input.environment);
   const file = path.join(configDir, ".credentials.json");
-  if (!(yield* fs.exists(file))) return yield* new ConfinedLaunchError({ detail: NO_CREDENTIAL });
+  const unreadable = (cause: unknown) =>
+    new ConfinedLaunchError({
+      detail: `Claude's sign-in file ${file} could not be read. Open Claude Code on this machine to sign in again, then retry.`,
+      cause,
+    });
   const credentials = yield* fs.readFileString(file).pipe(
-    Effect.flatMap(decodeFileCredentials),
-    Effect.mapError(
-      (cause) =>
-        new ConfinedLaunchError({
-          detail: `Claude's sign-in file ${file} could not be read. Open Claude Code on this machine to sign in again, then retry.`,
-          cause,
-        }),
+    Effect.catchTags({
+      PlatformError: (error) =>
+        error.reason._tag === "NotFound"
+          ? Effect.succeed(undefined)
+          : Effect.fail(unreadable(error)),
+    }),
+    Effect.flatMap((contents) =>
+      contents === undefined
+        ? Effect.succeed(undefined)
+        : decodeFileCredentials(contents).pipe(Effect.mapError(unreadable)),
     ),
   );
-  if (credentials.claudeAiOauth === undefined)
+  if (credentials?.claudeAiOauth === undefined)
     return yield* new ConfinedLaunchError({ detail: NO_CREDENTIAL });
   const renewBy = credentials.claudeAiOauth.expiresAt - REFRESH_MARGIN_MS;
   if ((yield* Clock.currentTimeMillis) >= renewBy) {

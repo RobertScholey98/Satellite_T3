@@ -44,6 +44,7 @@ import type {
   ProviderSelectionTransitionInput,
   ProviderSelectionTransitionPlan,
 } from "./ProviderSelectionTransition.ts";
+import type { ConfinedLaunchError } from "./Adapters/ConfinedProviderLaunch.ts";
 import { ConfinedExecution } from "./ThreadGovernance.ts";
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
@@ -597,6 +598,11 @@ export interface ProviderAdapterV2Shape {
   readonly openSession: (
     input: ProviderAdapterV2OpenSessionInput,
   ) => Effect.Effect<ProviderAdapterV2SessionRuntime, ProviderAdapterV2Error, Scope.Scope>;
+  /**
+   * Fails unless a confined session could find this instance's model credential. Starts nothing;
+   * managed execution runs it when it qualifies the instance.
+   */
+  readonly checkConfinedCredential?: Effect.Effect<void, ConfinedLaunchError>;
 }
 
 export class ProviderAdapterV2 extends Context.Service<ProviderAdapterV2, ProviderAdapterV2Shape>()(

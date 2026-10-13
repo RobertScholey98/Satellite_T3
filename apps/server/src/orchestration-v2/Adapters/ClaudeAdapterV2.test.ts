@@ -8474,6 +8474,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
                   return launch;
                 }),
               assertActive: () => Effect.void,
+              checkCredential: () => Effect.void,
             },
             queryRunner: {
               allocateSessionId: Effect.succeed("native-thread-confined"),
@@ -8663,6 +8664,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
               };
             }),
           assertActive: () => Effect.void,
+          checkCredential: () => Effect.void,
         },
         queryRunner: {
           allocateSessionId: Effect.succeed(CONFINED_NATIVE_SESSION),
@@ -8820,6 +8822,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
               },
             }),
           assertActive: () => Effect.void,
+          checkCredential: () => Effect.void,
         },
         queryRunner: {
           allocateSessionId: Effect.succeed(CONFINED_NATIVE_SESSION),
@@ -8934,6 +8937,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         confinedLaunch: {
           prepare: (request) => Effect.die(`unexpected ${request.driver} launch`),
+          checkCredential: () => Effect.void,
           assertActive: () =>
             Effect.sync(() => prepared.push("checked")).pipe(
               Effect.andThen(

@@ -171,6 +171,13 @@ const make = Effect.gen(function* () {
           detail: "Sign in to the selected provider before starting discovery.",
         });
       }
+      // A signed-in provider can still keep its credential where a container cannot reach it,
+      // such as the macOS keychain.
+      if (instance.orchestrationAdapter.checkConfinedCredential !== undefined) {
+        yield* instance.orchestrationAdapter.checkConfinedCredential.pipe(
+          Effect.mapError((cause) => new QualificationError({ detail: cause.detail })),
+        );
+      }
       const project = yield* projects.get(input.projectId);
       if (Option.isNone(project))
         return yield* new QualificationError({ detail: "The project no longer exists." });

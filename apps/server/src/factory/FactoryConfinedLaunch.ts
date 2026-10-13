@@ -9,7 +9,10 @@ import * as Schema from "effect/Schema";
 import * as ConfinedProviderLaunch from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 import type { ConfinedExecution } from "../orchestration-v2/ThreadGovernance.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { prepareFactoryClaudeLaunch } from "./FactoryClaudeLaunch.ts";
+import {
+  prepareFactoryClaudeLaunch,
+  resolveFactoryClaudeCredential,
+} from "./FactoryClaudeLaunch.ts";
 import { prepareFactoryCodexLaunch } from "./FactoryCodexLaunch.ts";
 import {
   FACTORY_PROVIDER_CREDENTIAL_FILES,
@@ -161,6 +164,19 @@ export const layerConfinedLaunch = Layer.effect(
                 }),
           ),
         ),
+      checkCredential: (provider) => {
+        switch (provider.driver) {
+          // Qualification checks a Codex account by its sign-in status.
+          case "codex":
+            return Effect.void;
+          case "claudeAgent":
+            return resolveFactoryClaudeCredential(provider).pipe(
+              Effect.asVoid,
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            );
+        }
+      },
       assertActive: (confinement) =>
         profileOf(confinement).pipe(
           Effect.flatMap(assertFactoryProfileActive),
