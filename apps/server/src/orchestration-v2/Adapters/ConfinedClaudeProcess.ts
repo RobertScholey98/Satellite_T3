@@ -9,11 +9,16 @@ import type { ConfinedProcess } from "./ConfinedProviderLaunch.ts";
 // stays off until it is reviewed. Agent tools (`Agent`, `Workflow`, `SendMessage`) choose models
 // that bypass FactoryModelAdmission, so teams delegate through `delegate_task`; scheduling,
 // worktree, remote and claude.ai account tools reach outside the assignment. MCP tools are not
-// built-ins and stay available. The live probe in FactoryClaudeLaunch.test.ts snapshots what the
-// image's Claude Code offers; rerun it when that version changes.
+// built-ins and stay available, but Claude Code can defer a large MCP tool set behind `ToolSearch`,
+// and without it a manager would lose `delegate_task`. Plan mode and `AskUserQuestion` reach the
+// human through T3. The live probe in FactoryClaudeLaunch.test.ts snapshots what the image's
+// Claude Code offers; rerun it when that version changes.
 export const CLAUDE_CONFINED_TOOLS: ReadonlyArray<string> = [
+  "AskUserQuestion",
   "Bash",
   "Edit",
+  "EnterPlanMode",
+  "ExitPlanMode",
   "NotebookEdit",
   "Read",
   "Skill",
@@ -23,6 +28,7 @@ export const CLAUDE_CONFINED_TOOLS: ReadonlyArray<string> = [
   "TaskOutput",
   "TaskStop",
   "TaskUpdate",
+  "ToolSearch",
   "WebFetch",
   "WebSearch",
   "Write",

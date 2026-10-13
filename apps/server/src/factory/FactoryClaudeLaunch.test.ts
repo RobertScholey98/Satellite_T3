@@ -460,6 +460,20 @@ it.effect("launches Claude only from an image that runs it, and fences the confi
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+// As many tools as the real t3-code server offers, so Claude Code weighs deferring them.
+const PROBE_MCP_TOOLS = Array.from({ length: 100 }, (_, index) => ({
+  name: `probe_tool_${String(index).padStart(3, "0")}`,
+  description: `Reports probe ${index}. ${"Describes what the tool does and when to use it. ".repeat(8)}`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      threadId: { type: "string", description: "The thread to act on." },
+      detail: { type: "string", description: "What to report." },
+    },
+    required: ["threadId"],
+  },
+}));
+
 // A capture server stands in for the model and for an MCP server, so the probes record what Claude
 // would send without a real model request. Model requests are refused after they are recorded.
 const captureServer = Effect.acquireRelease(
@@ -504,15 +518,7 @@ const captureServer = Effect.acquireRelease(
                   serverInfo: { name: "probe", version: "1.0.0" },
                 }
               : call.method === "tools/list"
-                ? {
-                    tools: [
-                      {
-                        name: "probe_tool",
-                        description: "Reports the probe.",
-                        inputSchema: { type: "object", properties: {} },
-                      },
-                    ],
-                  }
+                ? { tools: PROBE_MCP_TOOLS }
                 : {};
           response.writeHead(200, { "content-type": "application/json" });
           response.end(JSON.stringify({ jsonrpc: "2.0", id: call.id, result }));
@@ -536,14 +542,27 @@ const captureServer = Effect.acquireRelease(
     }),
 );
 
-const decodeModelRequest = Schema.decodeEffect(
-  Schema.fromJsonString(
+const ModelRequest = Schema.Struct({
+  model: Schema.String,
+  tools: Schema.Array(Schema.Struct({ name: Schema.String })),
+  messages: Schema.Array(
     Schema.Struct({
-      model: Schema.String,
-      tools: Schema.Array(Schema.Struct({ name: Schema.String })),
+      content: Schema.Union([
+        Schema.String,
+        Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) })),
+      ]),
     }),
   ),
-);
+});
+const decodeModelRequest = Schema.decodeEffect(Schema.fromJsonString(ModelRequest));
+
+// Claude Code names the tools it defers behind ToolSearch in a reminder, one per line.
+const deferredToolNames = (messages: (typeof ModelRequest.Type)["messages"]) =>
+  messages
+    .flatMap((message) => (typeof message.content === "string" ? [] : message.content))
+    .flatMap((block) => block.text ?? [])
+    .filter((text) => text.includes("deferred tools are now available via ToolSearch"))
+    .flatMap((text) => text.split("\n").filter((line) => /^[\w-]+$/.test(line)));
 
 /** Prepares a managed Claude launch of the pinned image in a fresh runtime, as a thread's is. */
 const liveClaudeLaunch = Effect.fn("liveClaudeLaunch")(function* (input: {
@@ -603,6 +622,10 @@ const probeImageClaude = Effect.fn("probeImageClaude")(function* (input: {
       ...launch.args.slice(0, entrypoint),
       "--env",
       `ANTHROPIC_BASE_URL=http://host.docker.internal:${port}`,
+      // Claude Code turns tool search off for a base URL that is not Anthropic's own; this keeps
+      // the default the real API gets.
+      "--env",
+      "ENABLE_TOOL_SEARCH=true",
       ...(input.user === undefined ? [] : ["--user", input.user]),
       ...launch.args.slice(entrypoint),
     ],
@@ -627,6 +650,8 @@ const probeImageClaude = Effect.fn("probeImageClaude")(function* (input: {
         cwd: null,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
+        // Claude Code offers the tools that ask the human only to a client that answers them.
+        canUseTool: async (_tool, toolInput) => ({ behavior: "allow", updatedInput: toolInput }),
         mcpServers: {
           "t3-code": { type: "http", url: `http://host.docker.internal:${port}/mcp` },
         },
@@ -669,30 +694,35 @@ live(
         const request = requests[0];
         assert.isDefined(request, stderr);
         assert.equal(request?.model, "claude-sonnet-4-6");
-        const offered = request?.tools.map((tool) => tool.name) ?? [];
+        // With a hundred MCP tools, Claude Code offers a core set and ToolSearch, and defers the
+        // rest, the MCP tools among them, to ToolSearch by name.
         assert.deepEqual(
-          offered.filter((name) => !name.startsWith("mcp__")),
+          request?.tools.map((tool) => tool.name),
           [
+            "AskUserQuestion",
             "Bash",
             "Edit",
-            "NotebookEdit",
             "Read",
             "Skill",
-            "TaskCreate",
-            "TaskGet",
-            "TaskList",
-            "TaskOutput",
-            "TaskStop",
-            "TaskUpdate",
-            "WebFetch",
-            "WebSearch",
+            "ToolSearch",
+            "DeferredToolPlaceholder",
             "Write",
           ],
         );
-        assert.deepEqual(
-          offered.filter((name) => name.startsWith("mcp__")),
-          ["mcp__t3-code__probe_tool"],
-        );
+        assert.deepEqual(deferredToolNames(request?.messages ?? []), [
+          "EnterPlanMode",
+          "ExitPlanMode",
+          "NotebookEdit",
+          "TaskCreate",
+          "TaskGet",
+          "TaskList",
+          "TaskOutput",
+          "TaskStop",
+          "TaskUpdate",
+          "WebFetch",
+          "WebSearch",
+          ...PROBE_MCP_TOOLS.map((tool) => `mcp__t3-code__${tool.name}`),
+        ]);
       }
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   240_000,

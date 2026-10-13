@@ -8540,8 +8540,11 @@ describe("ClaudeAdapterV2 confined sessions", () => {
           assert.deepEqual(options.extraArgs, { "thinking-display": "summarized" });
           assert.deepEqual(options.settingSources, ["user", "project"]);
           assert.deepEqual(options.tools, [
+            "AskUserQuestion",
             "Bash",
             "Edit",
+            "EnterPlanMode",
+            "ExitPlanMode",
             "NotebookEdit",
             "Read",
             "Skill",
@@ -8551,6 +8554,7 @@ describe("ClaudeAdapterV2 confined sessions", () => {
             "TaskOutput",
             "TaskStop",
             "TaskUpdate",
+            "ToolSearch",
             "WebFetch",
             "WebSearch",
             "Write",
