@@ -31,7 +31,7 @@ import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import { type FactoryCandidateArtifact } from "./FactoryCandidate.ts";
-import { FACTORY_CODEX_IMAGE, type FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
+import { FACTORY_AGENT_IMAGE, type FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import * as FactoryPreviewExecution from "./FactoryPreviewExecution.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
 import * as FactoryStore from "./FactoryStore.ts";
@@ -66,7 +66,7 @@ const fixture = Effect.fn(function* (options?: {
     })).stdout.trim();
     imageId = (yield* runner.run({
       command: "docker",
-      args: ["image", "inspect", FACTORY_CODEX_IMAGE, "--format", "{{.Id}}"],
+      args: ["image", "inspect", FACTORY_AGENT_IMAGE, "--format", "{{.Id}}"],
     })).stdout.trim();
   }
   const configuration = {

@@ -1,4 +1,9 @@
-import { FactoryError, isFactoryError, type CodexSettings } from "@t3tools/contracts";
+import {
+  FactoryError,
+  isFactoryError,
+  type ClaudeSettings,
+  type CodexSettings,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -8,8 +13,14 @@ import * as Schema from "effect/Schema";
 
 import * as ConfinedProviderLaunch from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
 import type { ConfinedExecution } from "../orchestration-v2/ThreadGovernance.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { assertFactoryImageRunsClaude, prepareFactoryClaudeLaunch } from "./FactoryClaudeLaunch.ts";
 import { prepareFactoryCodexLaunch } from "./FactoryCodexLaunch.ts";
-import { factoryDockerArguments, FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
+import {
+  factoryDockerArguments,
+  FactoryExecutionProfile,
+  makeFactoryProviderHomes,
+} from "./FactoryExecutionProfile.ts";
 import { assertFactoryProfileActive } from "./FactoryProfileAuthority.ts";
 
 const isLaunchError = Schema.is(ConfinedProviderLaunch.ConfinedLaunchError);
@@ -24,14 +35,18 @@ export const prepareFactoryLaunch = Effect.fn("prepareFactoryLaunch")(
     readonly profile: FactoryExecutionProfile;
     readonly containerName: string;
     readonly environment: NodeJS.ProcessEnv;
-    readonly provider: { readonly driver: "codex"; readonly settings: CodexSettings };
+    readonly provider:
+      | { readonly driver: "codex"; readonly settings: CodexSettings }
+      | { readonly driver: "claudeAgent"; readonly settings: ClaudeSettings };
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const { profile } = input;
     yield* assertFactoryProfileActive(profile);
-    for (const directory of [profile.runtimePath, path.join(profile.runtimePath, "codex")]) {
-      yield* fs.makeDirectory(directory, { recursive: true });
+    for (const directory of [
+      profile.runtimePath,
+      ...(yield* makeFactoryProviderHomes(fs, profile.runtimePath)),
+    ]) {
       if (path.relative(directory, yield* fs.realPath(directory)) !== "") {
         return yield* new ConfinedProviderLaunch.ConfinedLaunchError({
           detail: "The managed provider home must not contain filesystem links.",
@@ -54,11 +69,19 @@ export const prepareFactoryLaunch = Effect.fn("prepareFactoryLaunch")(
         input.environment[key] === undefined ? [] : [[key, input.environment[key]]],
       ),
     );
-    const provider = yield* prepareFactoryCodexLaunch({
-      profile,
-      settings: input.provider.settings,
-      environment: input.environment,
-    });
+    // Host configuration such as `binaryPath` or `launchArgs` never shapes the boundary.
+    const provider =
+      input.provider.driver === "codex"
+        ? yield* prepareFactoryCodexLaunch({
+            profile,
+            settings: input.provider.settings,
+            environment: input.environment,
+          })
+        : yield* prepareFactoryClaudeLaunch({
+            profile,
+            settings: input.provider.settings,
+            environment: input.environment,
+          });
     return {
       command: "docker",
       args: [...factoryDockerArguments(profile), "--name", input.containerName, ...provider.args],
@@ -89,6 +112,7 @@ export const layerConfinedLaunch = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const crypto = yield* Crypto.Crypto;
+    const runner = yield* ProcessRunner.ProcessRunner;
     const profileOf = (confinement: ConfinedExecution) =>
       decodeProfile(confinement.profile).pipe(
         Effect.mapError((cause) => new FactoryError({ code: "execution-unavailable", cause })),
@@ -105,6 +129,7 @@ export const layerConfinedLaunch = Layer.effect(
             environment: request.environment,
             provider: request,
           });
+          if (request.driver === "claudeAgent") yield* assertFactoryImageRunsClaude(profile);
           return {
             ...launch,
             cleanup: {
@@ -115,6 +140,7 @@ export const layerConfinedLaunch = Layer.effect(
         }).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
+          Effect.provideService(ProcessRunner.ProcessRunner, runner),
           Effect.mapError((cause) =>
             isLaunchError(cause)
               ? cause

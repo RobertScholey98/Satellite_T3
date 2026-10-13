@@ -28,9 +28,10 @@ import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryModelAdmission from "./FactoryModelAdmission.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import {
-  FACTORY_CODEX_DOCKERFILE,
-  FACTORY_CODEX_IMAGE,
+  FACTORY_AGENT_DOCKERFILE,
+  FACTORY_AGENT_IMAGE,
   factoryDockerArguments,
+  makeFactoryProviderHomes,
   FactoryExecutionProfile,
 } from "./FactoryExecutionProfile.ts";
 import { factoryExecutionProbe } from "./FactoryExecutionProbe.ts";
@@ -204,33 +205,33 @@ const make = Effect.gen(function* () {
           dockerContext,
           "image",
           "inspect",
-          FACTORY_CODEX_IMAGE,
+          FACTORY_AGENT_IMAGE,
           "--format",
           "{{.Id}}",
         ],
-        `The ${FACTORY_CODEX_IMAGE} discovery image could not be built on this environment.`,
+        `The ${FACTORY_AGENT_IMAGE} discovery image could not be built on this environment.`,
       );
       // Qualification is human-started, so building the pinned image here is expected.
       const buildImage = Effect.gen(function* () {
         const output = yield* runner
           .run({
             command: "docker",
-            args: ["--context", dockerContext, "build", "--tag", FACTORY_CODEX_IMAGE, "-"],
-            stdin: FACTORY_CODEX_DOCKERFILE,
+            args: ["--context", dockerContext, "build", "--tag", FACTORY_AGENT_IMAGE, "-"],
+            stdin: FACTORY_AGENT_DOCKERFILE,
             timeout: "20 minutes",
           })
           .pipe(
             Effect.mapError(
               () =>
                 new QualificationError({
-                  detail: `The ${FACTORY_CODEX_IMAGE} discovery image could not be built.`,
+                  detail: `The ${FACTORY_AGENT_IMAGE} discovery image could not be built.`,
                 }),
             ),
           );
         if (output.code !== 0) {
           const reason = output.stderr.trim().split("\n").at(-1) ?? "unknown error";
           return yield* new QualificationError({
-            detail: `Building the ${FACTORY_CODEX_IMAGE} discovery image failed: ${reason}`,
+            detail: `Building the ${FACTORY_AGENT_IMAGE} discovery image failed: ${reason}`,
           });
         }
         return yield* inspectImage;
@@ -289,7 +290,7 @@ const make = Effect.gen(function* () {
           detail: "The pinned workflow repository must contain a skills directory.",
         });
       }
-      yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
+      yield* makeFactoryProviderHomes(fs, profile.runtimePath);
       const proof = yield* run(
         "docker",
         [
@@ -529,7 +530,7 @@ const make = Effect.gen(function* () {
         profile.runtimePath,
         Buffer.from(threadId).toString("base64url"),
       );
-      yield* fs.makeDirectory(path.join(runtimePath, "codex"), { recursive: true });
+      yield* makeFactoryProviderHomes(fs, runtimePath);
       return {
         ...profile,
         workflow,

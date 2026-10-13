@@ -23,7 +23,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
-import { FACTORY_CODEX_DOCKERFILE, FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
+import { FACTORY_AGENT_DOCKERFILE, FactoryExecutionProfile } from "./FactoryExecutionProfile.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import * as FactorySource from "./FactorySource.ts";
 
@@ -255,7 +255,7 @@ it.effect(
         if (process.env.SATELLITE_FACTORY_LIVE_TEST !== "1") {
           assert.equal(probeCount, 1);
           // A missing runner image is built from the bundled recipe, once.
-          assert.deepStrictEqual(imageBuilds, [FACTORY_CODEX_DOCKERFILE]);
+          assert.deepStrictEqual(imageBuilds, [FACTORY_AGENT_DOCKERFILE]);
           acceptProbe = false;
           const rejected = yield* execution.qualify(input);
           assert.equal(rejected.status, "unavailable");

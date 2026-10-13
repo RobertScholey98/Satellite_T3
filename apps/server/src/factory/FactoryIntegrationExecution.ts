@@ -25,7 +25,11 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as FactoryStore from "./FactoryStore.ts";
 import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
-import { FactoryExecutionProfile, factoryDockerArguments } from "./FactoryExecutionProfile.ts";
+import {
+  FactoryExecutionProfile,
+  factoryDockerArguments,
+  makeFactoryProviderHomes,
+} from "./FactoryExecutionProfile.ts";
 import * as FactoryWorkflowExecution from "./FactoryWorkflowExecution.ts";
 import { FactorySourceFile } from "./FactorySource.ts";
 import {
@@ -873,9 +877,7 @@ const make = Effect.gen(function* () {
         const authority = path.join(profileDirectory, "authority");
         yield* fs.makeDirectory(authority, { recursive: true });
         yield* fs.makeDirectory(path.join(profileDirectory, "controls"), { recursive: true });
-        yield* fs.makeDirectory(path.join(profileDirectory, "runtime", "codex"), {
-          recursive: true,
-        });
+        yield* makeFactoryProviderHomes(fs, path.join(profileDirectory, "runtime"));
         const volumeName = `satellite-integration-${profileId}`;
         const profile: FactoryExecutionProfile = {
           ...coordinator.capability.profile,

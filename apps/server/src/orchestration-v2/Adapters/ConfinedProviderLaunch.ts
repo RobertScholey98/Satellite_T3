@@ -1,4 +1,4 @@
-import type { CodexSettings, FactoryError } from "@t3tools/contracts";
+import type { ClaudeSettings, CodexSettings, FactoryError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -23,17 +23,25 @@ export class ConfinedLaunchError extends Schema.TaggedError<ConfinedLaunchError>
   { detail: Schema.String, cause: Schema.optional(Schema.Defect()) },
 ) {}
 
-export type ConfinedLaunchRequest = {
-  readonly driver: "codex";
-  readonly confinement: ConfinedExecution;
-  readonly settings: CodexSettings;
-  readonly environment: NodeJS.ProcessEnv;
-};
+export type ConfinedLaunchRequest =
+  | {
+      readonly driver: "codex";
+      readonly confinement: ConfinedExecution;
+      readonly settings: CodexSettings;
+      readonly environment: NodeJS.ProcessEnv;
+    }
+  | {
+      readonly driver: "claudeAgent";
+      readonly confinement: ConfinedExecution;
+      readonly settings: ClaudeSettings;
+      readonly environment: NodeJS.ProcessEnv;
+    };
 
 /**
  * The command that starts a provider inside its runtime, up to the provider's own arguments.
  * Codex's ends with the image and its `-c` overrides, since the image's entrypoint is its app
- * server. `cleanup` removes the runtime when the provider process ends.
+ * server. Claude's ends with the image run as `claude`, and the adapter appends the Agent SDK's
+ * CLI arguments. `cleanup` removes the runtime when the provider process ends.
  */
 export interface ConfinedProcess {
   readonly command: string;

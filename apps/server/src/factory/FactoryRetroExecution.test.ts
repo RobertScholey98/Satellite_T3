@@ -27,7 +27,7 @@ import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import * as FactoryControlAccess from "./FactoryControlAccess.ts";
 import * as FactoryExecution from "./FactoryExecution.ts";
 import {
-  FACTORY_CODEX_IMAGE,
+  FACTORY_AGENT_IMAGE,
   FactoryExecutionProfile,
   factoryDockerArguments,
 } from "./FactoryExecutionProfile.ts";
@@ -86,7 +86,7 @@ const fixture = Effect.fn(function* (live = false) {
           dockerContext,
           "image",
           "inspect",
-          FACTORY_CODEX_IMAGE,
+          FACTORY_AGENT_IMAGE,
           "--format",
           "{{.Id}}",
         ],

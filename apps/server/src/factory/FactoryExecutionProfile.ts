@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { FactoryWorkflowVersion } from "@t3tools/contracts";
 
@@ -13,19 +15,29 @@ export type FactoryWorkflowSnapshot = typeof FactoryWorkflowSnapshot.Type;
  * Tag of the pinned runner image. Profiles store the image id it resolved to at qualification
  * and run that id, so rebuilding the tag never changes an existing profile's image.
  */
-export const FACTORY_CODEX_IMAGE = "satellite-factory-codex:0.161.0";
+export const FACTORY_AGENT_IMAGE = "satellite-factory-agent:codex-0.161.0-claude-2.1.276";
+/** Image label naming the provider drivers an image can run. Older profiles pin images without it. */
+export const FACTORY_IMAGE_PROVIDERS_LABEL = "satellite.factory.providers";
 // Built on demand by qualification, so installed servers need no source checkout.
-// Bump FACTORY_CODEX_IMAGE whenever this changes.
-export const FACTORY_CODEX_DOCKERFILE = `FROM node:24.10.0-bookworm-slim@sha256:b8d2197aff9129d16c801a3e3e1b2a873c4946480f5a310f38056df2268c38d9
+// Bump FACTORY_AGENT_IMAGE whenever this changes. Claude Code is pinned to the Agent SDK's
+// `claudeCodeVersion`. It refuses bypass permissions as root unless IS_SANDBOX is set, and
+// discovery runs as root.
+export const FACTORY_AGENT_DOCKERFILE = `FROM node:24.10.0-bookworm-slim@sha256:b8d2197aff9129d16c801a3e3e1b2a873c4946480f5a310f38056df2268c38d9
 
 RUN apt-get update \\
     && apt-get install -y --no-install-recommends ca-certificates git ripgrep \\
     && rm -rf /var/lib/apt/lists/* \\
-    && npm install --global @openai/codex@0.161.0 \\
+    && npm install --global @openai/codex@0.161.0 @anthropic-ai/claude-code@2.1.276 \\
     && npm cache clean --force
 
 ENV HOME=/runtime \\
-    CODEX_HOME=/runtime/codex
+    CODEX_HOME=/runtime/codex \\
+    CLAUDE_CONFIG_DIR=/runtime/claude \\
+    IS_SANDBOX=1 \\
+    DISABLE_AUTOUPDATER=1 \\
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+LABEL ${FACTORY_IMAGE_PROVIDERS_LABEL}="codex claudeAgent"
 
 WORKDIR /workspace
 ENTRYPOINT ["codex", "app-server"]
@@ -119,6 +131,20 @@ export const FactoryDeliveryExecutionHold = Schema.Struct({
 });
 export type FactoryDeliveryExecutionHold = typeof FactoryDeliveryExecutionHold.Type;
 
+/** Provider homes under a runtime's `/runtime`, each with the workflow's skills mounted. */
+const FACTORY_PROVIDER_HOMES = ["codex", "claude"] as const;
+
+/**
+ * Creates a runtime directory's provider homes before Docker mounts skills into them, so a
+ * non-root `--user` worker never finds root-owned mountpoints. Returns their paths.
+ */
+export const makeFactoryProviderHomes = (fs: FileSystem.FileSystem, runtimePath: string) =>
+  Effect.forEach(FACTORY_PROVIDER_HOMES, (home) =>
+    fs
+      .makeDirectory(`${runtimePath}/${home}`, { recursive: true })
+      .pipe(Effect.as(`${runtimePath}/${home}`)),
+  );
+
 /**
  * The `docker run` arguments every confined runtime shares, up to but not including the image:
  * no capabilities, a read-only root, resource limits, and the mounts the profile's role needs.
@@ -157,8 +183,10 @@ export function factoryDockerArguments(profile: FactoryExecutionProfile): Array<
     `type=bind,source=${profile.workflowSnapshotPath},target=/workflow,readonly`,
     "--mount",
     `type=bind,source=${profile.runtimePath},target=/runtime`,
-    "--mount",
-    `type=bind,source=${profile.workflowSnapshotPath}/skills,target=/runtime/codex/skills,readonly`,
+    ...FACTORY_PROVIDER_HOMES.flatMap((home) => [
+      "--mount",
+      `type=bind,source=${profile.workflowSnapshotPath}/skills,target=/runtime/${home}/skills,readonly`,
+    ]),
     ...(profile.integration === undefined
       ? []
       : ["--label", `satellite.factory.preparation=${profile.integration.preparationId}`]),

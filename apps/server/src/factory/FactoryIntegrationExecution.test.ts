@@ -16,7 +16,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import { type FactoryCandidateArtifact } from "./FactoryCandidate.ts";
 import {
-  FACTORY_CODEX_IMAGE,
+  FACTORY_AGENT_IMAGE,
   FactoryExecutionProfile,
   factoryDockerArguments,
 } from "./FactoryExecutionProfile.ts";
@@ -112,7 +112,7 @@ const scenario = (live: boolean) =>
           dockerContext,
           "image",
           "inspect",
-          FACTORY_CODEX_IMAGE,
+          FACTORY_AGENT_IMAGE,
           "--format",
           "{{.Id}}",
         ],

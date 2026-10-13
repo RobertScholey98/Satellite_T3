@@ -139,7 +139,7 @@ SATELLITE_FACTORY_LIVE_TEST=1 SATELLITE_FACTORY_INTEGRATION_LIVE_TEST=1 vp test 
 They need the pinned runner image. Qualifying any project builds it, or build it directly:
 
 ```sh
-node -e "import('./apps/server/src/factory/FactoryExecutionProfile.ts').then((m) => process.stdout.write(m.FACTORY_CODEX_DOCKERFILE))" | docker build -t satellite-factory-codex:0.161.0 -
+node -e "import('./apps/server/src/factory/FactoryExecutionProfile.ts').then((m) => process.stdout.write(m.FACTORY_AGENT_DOCKERFILE))" | docker build -t satellite-factory-agent:codex-0.161.0-claude-2.1.276 -
 ```
 
 The tests remove the containers and volumes they create.

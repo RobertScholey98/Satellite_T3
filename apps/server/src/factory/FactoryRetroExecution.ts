@@ -22,6 +22,7 @@ import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import {
   admissibleFactorySourcePath,
   factoryDockerArguments,
+  makeFactoryProviderHomes,
   FactoryExecutionProfile,
 } from "./FactoryExecutionProfile.ts";
 import { factoryExecutionProbe } from "./FactoryExecutionProbe.ts";
@@ -322,7 +323,7 @@ const make = Effect.gen(function* () {
           inspection: { sourceDigest: source.sourceDigest, evidencePath: sealed.directory },
           retro: { ...input, sourceBasis: source.sourceBasis, stopPath },
         });
-        yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
+        yield* makeFactoryProviderHomes(fs, profile.runtimePath);
         const proof = yield* runner.run({
           command: "docker",
           args: [

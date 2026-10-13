@@ -6,12 +6,14 @@ import { assert, it } from "@effect/vitest";
 import { CodexSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as ConfinedProviderLaunch from "../orchestration-v2/Adapters/ConfinedProviderLaunch.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as FactoryConfinedLaunch from "./FactoryConfinedLaunch.ts";
-import { admissibleFactorySourcePath, FACTORY_CODEX_IMAGE } from "./FactoryExecutionProfile.ts";
+import { admissibleFactorySourcePath, FACTORY_AGENT_IMAGE } from "./FactoryExecutionProfile.ts";
 
 const settings = Schema.decodeUnknownSync(CodexSettings);
 const readJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
@@ -231,7 +233,9 @@ it.effect("launches and fences a confinement from the profile it carries", () =>
     );
   }).pipe(
     Effect.scoped,
-    Effect.provide(FactoryConfinedLaunch.layerConfinedLaunch),
+    Effect.provide(
+      FactoryConfinedLaunch.layerConfinedLaunch.pipe(Layer.provide(ProcessRunner.layer)),
+    ),
     Effect.provide(NodeServices.layer),
   ),
 );
@@ -331,7 +335,7 @@ live(
         profile: {
           boundaryId: "native-subagent-probe",
           dockerContext: "local",
-          imageId: FACTORY_CODEX_IMAGE,
+          imageId: FACTORY_AGENT_IMAGE,
           projectSnapshotPath: root,
           workflowSnapshotPath: root,
           runtimePath: path.join(root, "runtime"),
@@ -387,7 +391,7 @@ live(
                 "PROBE_KEY=unused",
                 "--entrypoint",
                 "codex",
-                FACTORY_CODEX_IMAGE,
+                FACTORY_AGENT_IMAGE,
                 "exec",
                 "--skip-git-repo-check",
                 ...managedConfig,

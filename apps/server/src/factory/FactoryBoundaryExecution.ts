@@ -41,6 +41,7 @@ import {
 } from "./FactoryBoundaryPaths.ts";
 import {
   factoryDockerArguments,
+  makeFactoryProviderHomes,
   FactoryExecutionProfile,
   FactoryExecutionSuspension,
   FactoryDeliveryExecutionHold,
@@ -602,7 +603,7 @@ const make = Effect.gen(function* () {
         workerGid: Math.max(process.getgid?.() ?? 10001, 1),
       },
     });
-    yield* fs.makeDirectory(path.join(proofProfile.runtimePath, "codex"), { recursive: true });
+    yield* makeFactoryProviderHomes(fs, proofProfile.runtimePath);
     yield* fs.makeDirectory(path.dirname(proofProfile.assignmentWorkspace!.revocationPath), {
       recursive: true,
     });
@@ -1329,7 +1330,7 @@ const make = Effect.gen(function* () {
           runtimePath: path.join(directory, "sessions"),
           inspection: { sourceDigest: source.digest, evidencePath },
         });
-        yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
+        yield* makeFactoryProviderHomes(fs, profile.runtimePath);
         yield* current(input.assignmentId, input.expectedEpoch);
         yield* assertActive(original);
         yield* publish(directory, "profile", profile);
@@ -1404,7 +1405,7 @@ const make = Effect.gen(function* () {
           runtimePath: path.join(directory, "sessions"),
           inspection: { candidateId: candidate.id, sourceDigest: final.sourceDigest, evidencePath },
         });
-        yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
+        yield* makeFactoryProviderHomes(fs, profile.runtimePath);
         yield* current(input.assignmentId, input.expectedEpoch);
         yield* assertActive(original);
         yield* publish(directory, "profile", profile);
@@ -1451,7 +1452,7 @@ const make = Effect.gen(function* () {
           ...original,
           runtimePath: path.join(directory, "sessions"),
         });
-        yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
+        yield* makeFactoryProviderHomes(fs, profile.runtimePath);
         yield* current(input.assignmentId, input.expectedEpoch);
         yield* assertActive(original);
         yield* publish(directory, "profile", profile);
@@ -1640,7 +1641,7 @@ const make = Effect.gen(function* () {
       });
       yield* writeFiles(profile.projectSnapshotPath, files);
       yield* fs.writeFileString(path.join(directory, "source-paths.json"), json(existingPaths));
-      yield* fs.makeDirectory(path.join(profile.runtimePath, "codex"), { recursive: true });
+      yield* makeFactoryProviderHomes(fs, profile.runtimePath);
       yield* fs.makeDirectory(path.dirname(profile.assignmentWorkspace!.revocationPath), {
         recursive: true,
       });
@@ -2200,7 +2201,7 @@ const make = Effect.gen(function* () {
               deliveryHoldId: input.holdId,
             },
           });
-          yield* fs.makeDirectory(path.join(inspection.runtimePath, "codex"), { recursive: true });
+          yield* makeFactoryProviderHomes(fs, inspection.runtimePath);
           const latest = yield* current(input.assignmentId, input.expectedEpoch);
           if (
             latest.assignment.delivery?.flow?.holdId !== input.holdId ||

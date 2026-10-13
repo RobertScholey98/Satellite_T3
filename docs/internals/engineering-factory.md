@@ -28,7 +28,7 @@ those boundaries. For the user-facing behaviour, see [engineering managers](../u
 - Native Codex subagents are disabled. They would run in the same container, but `spawn_agent`
   accepts any catalog model and reasoning effort, even when its schema hides those arguments. That
   choice never reaches [`FactoryModelAdmission`](../../apps/server/src/factory/FactoryModelAdmission.ts),
-  so teams delegate with `delegate_task`. When you bump `FACTORY_CODEX_IMAGE`, rerun the live probe
+  so teams delegate with `delegate_task`. When you bump `FACTORY_AGENT_IMAGE`, rerun the live probe
   in `FactoryCodexLaunch.test.ts`.
 - The model credential is inside the container, and the container has network access. A shell
   command can still call a model directly. The model policy governs supported delegation paths

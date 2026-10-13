@@ -27,7 +27,7 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as FactoryBoundaryExecution from "./FactoryBoundaryExecution.ts";
 import {
   factoryDockerArguments,
-  FACTORY_CODEX_IMAGE,
+  FACTORY_AGENT_IMAGE,
   FactoryExecutionProfile,
 } from "./FactoryExecutionProfile.ts";
 import { initialFactorySnapshot } from "./FactoryState.ts";
@@ -65,7 +65,7 @@ live(
       const imageInspection = yield* docker([
         "image",
         "inspect",
-        FACTORY_CODEX_IMAGE,
+        FACTORY_AGENT_IMAGE,
         "--format",
         "{{.Id}}",
       ]);
