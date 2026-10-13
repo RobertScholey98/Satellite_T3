@@ -663,7 +663,6 @@ describe("FactoryStore", () => {
           assert.deepEqual(state.managers[0]?.workflow, pinned);
           assert.deepEqual(state.assignments[0]?.workflow, pinned);
           assert.equal(state.improvementValidations[0]?.outcome, "success");
-          assert.isFalse("workflowReleases" in state);
           assert.notInclude(
             (yield* reopened.pending).map((effect) => effect.id),
             "restart-old:0",
@@ -671,13 +670,46 @@ describe("FactoryStore", () => {
           const [outbox] = yield* sql<{ readonly status: string }>`
             SELECT status FROM factory_outbox WHERE effect_id = 'restart-old:0'`;
           assert.equal(outbox?.status, "superseded");
-          // An old receipt still answers a replay of its exact request.
+          // New work records the current skills commit while the old team keeps its own.
+          const skills = { repositoryRoot: "C:/skills", revision: "d".repeat(40) };
+          const created = yield* reopened.commit({
+            ...createInput,
+            command: {
+              ...createInput.command,
+              commandId: CommandId.make("create-api-after-upgrade"),
+              projectId: ProjectId.make("api"),
+            },
+            skills,
+            allocation: {
+              managerThreadId: ThreadId.make("manager-api"),
+              leadThreadId: ThreadId.make("onboarding-api"),
+              assignmentId: FactoryAssignmentId.make("assignment-api"),
+            },
+          });
+          const after = yield* reopened.snapshot;
           assert.deepEqual(
-            yield* reopened.findReceipt({
-              actor: { kind: "human" },
-              command: adopt as unknown as Parameters<typeof reopened.findReceipt>[0]["command"],
-            }),
-            { revision: 2 },
+            after.assignments.find((entry) => entry.id === created.assignmentId)?.workflow,
+            skills,
+          );
+          assert.deepEqual(
+            after.managers.find((entry) => entry.id === ThreadId.make("manager-api"))?.workflow,
+            skills,
+          );
+          assert.deepEqual(after.assignments[0]?.workflow, pinned);
+          // An old receipt still owns its command id, so reusing it is a conflict, not a crash.
+          assertFailure(
+            yield* reopened
+              .commit({
+                actor: { kind: "human" },
+                now,
+                command: {
+                  type: "policy.defaults.configure",
+                  commandId: CommandId.make("adopt-old"),
+                  defaults: state.defaults,
+                },
+              })
+              .pipe(Effect.result),
+            "command-conflict",
           );
           // The next command builds on the decoded state and writes it without the removed arrays.
           yield* reopened.commit({
@@ -691,7 +723,7 @@ describe("FactoryStore", () => {
           });
           const [rewritten] = yield* sql<{ readonly payload_json: string }>`
             SELECT payload_json FROM factory_state WHERE id = 1`;
-          assert.equal(JSON.parse(rewritten!.payload_json).revision, legacy.revision + 1);
+          assert.equal(JSON.parse(rewritten!.payload_json).revision, legacy.revision + 2);
           assert.notInclude(rewritten!.payload_json, "workflowReleases");
           assert.notInclude(rewritten!.payload_json, "workflowMigrations");
         }),
