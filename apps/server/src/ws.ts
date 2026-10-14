@@ -1106,7 +1106,6 @@ export const layerWsRpc = (
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const chatAttachments = yield* ChatAttachments.ChatAttachments;
-
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const intakeContext = yield* Effect.context<
@@ -1139,7 +1138,6 @@ export const layerWsRpc = (
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const pullRequests = yield* PullRequestService.PullRequestService;
-
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
       const deviceHostContext =
@@ -2677,7 +2675,6 @@ export const layer = Layer.unwrap(
     const satelliteWsRpc = yield* SatelliteWsRpc.makeConnectionLayer;
     const chatAttachments = yield* ChatAttachments.ChatAttachments;
     const acpRegistryManagement = yield* AcpRegistryManagement.AcpRegistryManagement;
-
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
