@@ -1,5 +1,5 @@
 import type { DesktopAppBranding } from "@t3tools/contracts";
-import { PRODUCT_NAME } from "@t3tools/shared/productIdentity";
+import { PRODUCT_NAME } from "@t3tools/contracts";
 import { formatAppDisplayName } from "./branding.logic";
 
 function readInjectedDesktopAppBranding(): DesktopAppBranding | null {

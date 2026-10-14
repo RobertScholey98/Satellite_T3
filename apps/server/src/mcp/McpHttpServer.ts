@@ -1,4 +1,4 @@
-import { PRODUCT_NAME } from "@t3tools/shared/productIdentity";
+import { PRODUCT_NAME } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";

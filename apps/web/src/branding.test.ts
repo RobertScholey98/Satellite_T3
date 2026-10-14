@@ -1,4 +1,4 @@
-import { PRODUCT_NAME } from "@t3tools/shared/productIdentity";
+import { PRODUCT_NAME } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveServerBackedAppDisplayName,

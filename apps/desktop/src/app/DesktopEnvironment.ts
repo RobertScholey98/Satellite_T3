@@ -4,7 +4,7 @@ import type {
   DesktopRuntimeArch,
   DesktopRuntimeInfo,
 } from "@t3tools/contracts";
-import { PRODUCT_NAME } from "@t3tools/shared/productIdentity";
+import { PRODUCT_NAME } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";

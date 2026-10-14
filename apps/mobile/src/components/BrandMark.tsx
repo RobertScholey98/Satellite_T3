@@ -1,4 +1,4 @@
-import { PRODUCT_NAME } from "@t3tools/shared/productIdentity";
+import { PRODUCT_NAME } from "@t3tools/contracts";
 import Constants from "expo-constants";
 import { SatelliteMark } from "./SatelliteMark";
 import { View } from "react-native";

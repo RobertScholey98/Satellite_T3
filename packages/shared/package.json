@@ -267,10 +267,6 @@
       "types": "./src/terminalLabels.ts",
       "import": "./src/terminalLabels.ts"
     },
-    "./productIdentity": {
-      "types": "./src/productIdentity.ts",
-      "import": "./src/productIdentity.ts"
-    },
     "./relayClient": {
       "types": "./src/relayClient.ts",
       "import": "./src/relayClient.ts"
