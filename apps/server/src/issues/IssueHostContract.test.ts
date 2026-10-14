@@ -1,8 +1,13 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import type * as FileSystem from "effect/FileSystem";
+import type * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
+import * as AzureBoardsIssueHost from "./AzureBoardsIssueHost.ts";
 import * as GitHubIssueHost from "./GitHubIssueHost.ts";
+import { azureCli, type AzureRequest } from "./IssueHost.testFixtures.ts";
 import type { IssueHostAdapter, IssueHostScope } from "./IssueHostAdapter.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -19,9 +24,13 @@ interface World {
 interface Subject {
   readonly name: string;
   readonly scope: IssueHostScope;
-  readonly adapter: (world: World) => Effect.Effect<IssueHostAdapter>;
+  readonly adapter: (
+    world: World,
+  ) => Effect.Effect<IssueHostAdapter, never, FileSystem.FileSystem | Path.Path>;
 }
 
+const decodeBatch = Schema.decodeUnknownSync(Schema.Struct({ ids: Schema.Array(Schema.Number) }));
+const decodeQuery = Schema.decodeUnknownSync(Schema.Struct({ query: Schema.String }));
 const pageOf = <A>(items: ReadonlyArray<A>, page: number, size: number) =>
   items.slice((page - 1) * size, page * size);
 
@@ -88,8 +97,66 @@ const github: Subject = {
   },
 };
 
-const subjects: ReadonlyArray<Subject> = [github];
+const azure: Subject = {
+  name: "Azure Boards",
+  scope: {
+    cwd: "/repo",
+    ref: {
+      hostKind: "azure-devops",
+      host: "dev.azure.com",
+      repository: "org/Project",
+      id: "0",
+      number: 0,
+      url: "https://dev.azure.com/org/Project",
+    },
+  },
+  adapter: (world) =>
+    Effect.gen(function* () {
+      const workItem = (id: number) => ({
+        id,
+        rev: 1,
+        fields: {
+          ...(world.malformed === "missing-title" ? {} : { "System.Title": `Issue ${id}` }),
+          "System.State": "New",
+          "System.ChangedDate": "2026-10-01T00:00:00Z",
+          "System.WorkItemType": "Task",
+        },
+      });
+      const answer = (request: AzureRequest) => {
+        if (world.malformed === "not-json") return "<html>";
+        if (request.resource === "wiql") {
+          const after = Number(/\[System\.Id\] > (\d+)/.exec(decodeQuery(request.body).query)?.[1]);
+          const ids = world.issues.filter((id) => id > after).slice(0, Number(request.query.$top));
+          return { workItems: ids.map((id) => ({ id })) };
+        }
+        if (request.resource === "workItemsBatch")
+          return {
+            value: decodeBatch(request.body).ids.map(workItem),
+          };
+        if (request.resource === "comments") {
+          const offset = Number(request.query.continuationToken ?? "0");
+          const next = offset + Number(request.query.$top);
+          const comments = world.comments ?? [];
+          return {
+            comments: comments.slice(offset, next).map((text, index) => ({
+              id: offset + index,
+              text,
+              createdDate: "2026-10-01T00:00:00Z",
+              createdBy: { displayName: "Rob" },
+            })),
+            continuation_token: next < comments.length ? String(next) : null,
+          };
+        }
+      };
+      const cli = yield* azureCli("org", (request) => Effect.sync(() => answer(request)));
+      return yield* AzureBoardsIssueHost.make.pipe(Effect.provide(cli));
+    }),
+};
 
+const subjects: ReadonlyArray<Subject> = [github, azure];
+
+const build = (subject: Subject, world: World) =>
+  subject.adapter(world).pipe(Effect.provide(NodeServices.layer));
 const listAll = Effect.fn(function* (adapter: IssueHostAdapter, scope: IssueHostScope) {
   const numbers: number[] = [];
   let cursor: string | undefined;
@@ -105,20 +172,20 @@ const range = (from: number, count: number) => Array.from({ length: count }, (_,
 describe.each(subjects)("issue host contract: $name", (subject) => {
   it.effect("returns later pages of issues instead of dropping them", () =>
     Effect.gen(function* () {
-      const adapter = yield* subject.adapter({ issues: range(1, 150) });
+      const adapter = yield* build(subject, { issues: range(1, 150) });
       assert.deepStrictEqual(yield* listAll(adapter, subject.scope), range(1, 150));
     }),
   );
   it.effect("excludes listed items that are not issues", () =>
     Effect.gen(function* () {
-      const adapter = yield* subject.adapter({ issues: [1, 2], nonIssues: [3] });
+      const adapter = yield* build(subject, { issues: [1, 2], nonIssues: [3] });
       assert.deepStrictEqual(yield* listAll(adapter, subject.scope), [1, 2]);
     }),
   );
   it.effect("reads an issue with every page of its comments", () =>
     Effect.gen(function* () {
       const bodies = range(1, 150).map((n) => `Comment ${n}`);
-      const adapter = yield* subject.adapter({ issues: [7], comments: bodies });
+      const adapter = yield* build(subject, { issues: [7], comments: bodies });
       const detail = yield* adapter.get({
         ...subject.scope,
         ref: { ...subject.scope.ref, id: "7", number: 7 },
@@ -133,14 +200,14 @@ describe.each(subjects)("issue host contract: $name", (subject) => {
   );
   it.effect("fails on a malformed response rather than listing nothing", () =>
     Effect.gen(function* () {
-      const adapter = yield* subject.adapter({ issues: [1], malformed: "not-json" });
+      const adapter = yield* build(subject, { issues: [1], malformed: "not-json" });
       const failure = yield* adapter.list(subject.scope).pipe(Effect.flip);
       assert.strictEqual(failure.message, "The repository host returned invalid issue data.");
     }),
   );
   it.effect("fails when an issue lacks a required field", () =>
     Effect.gen(function* () {
-      const adapter = yield* subject.adapter({ issues: [1], malformed: "missing-title" });
+      const adapter = yield* build(subject, { issues: [1], malformed: "missing-title" });
       const failure = yield* adapter.list(subject.scope).pipe(Effect.flip);
       assert.strictEqual(failure.message, "The repository host returned invalid issue data.");
     }),

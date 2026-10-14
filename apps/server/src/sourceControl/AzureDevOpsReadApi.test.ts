@@ -20,7 +20,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as AzureDevOpsPullRequestCli from "../pullRequest/AzureDevOpsPullRequestCli.ts";
 import * as AzureDevOpsPullRequestProvider from "../pullRequest/AzureDevOpsPullRequestProvider.ts";
 import { CredentialScope } from "./SourceControlRateLimit.ts";
-import { makeIssueHost } from "../issues/IssueHost.ts";
+import * as AzureBoardsIssueHost from "../issues/AzureBoardsIssueHost.ts";
 
 const { getSecret } = vi.hoisted(() => ({
   getSecret: vi.fn(async (): Promise<Uint8Array | undefined> => undefined),
@@ -220,7 +220,7 @@ it.effect("reads board discovery over HTTP without requiring an Azure Git remote
   }),
 );
 
-it.effect("loads an Azure board through IssueHost using one sign-in and no per-read CLI", () =>
+it.effect("loads an Azure board through the issue host using one sign-in and no per-read CLI", () =>
   Effect.gen(function* () {
     const test = fixture({
       response: (url) => {
@@ -255,15 +255,8 @@ it.effect("loads an Azure board through IssueHost using one sign-in and no per-r
       },
     });
     yield* Effect.gen(function* () {
-      const azure = yield* AzureDevOpsCli.AzureDevOpsCli;
-      const unused = () => Effect.die("Unexpected host");
-      const api = yield* makeIssueHost({
-        azure,
-        gitlab: { execute: unused },
-        forgejo: { api: unused },
-        bitbucket: { request: unused },
-      });
-      const board = yield* api.board("/repo", {
+      const adapter = yield* AzureBoardsIssueHost.make;
+      const board = yield* adapter.boards.read("/repo", {
         kind: "azure-board",
         host: "dev.azure.com",
         organization: "acme",

@@ -76,11 +76,13 @@ export const remoteIssueError = (cause: unknown) =>
 
 export const JsonRecord = Schema.Record(Schema.String, Schema.Unknown);
 const decodeRecordJson = Schema.decodeEffect(Schema.fromJsonString(JsonRecord));
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 const isRecord = Schema.is(JsonRecord);
 const isArray = Schema.is(Schema.Array(Schema.Unknown));
 
 export const readRecord = (text: string) =>
   decodeRecordJson(text).pipe(Effect.mapError(invalidIssueData));
+export const readJson = (text: string) => decodeJson(text).pipe(Effect.mapError(invalidIssueData));
 export const decodeHostJson = <S extends Schema.Top>(schema: S, text: string) =>
   Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(invalidIssueData));
 export const validate = <S extends Schema.Top>(schema: S, value: unknown) =>
