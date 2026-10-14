@@ -10,22 +10,36 @@ import {
   failEnvironmentInternal,
   requireEnvironmentScope,
 } from "../auth/http.ts";
-import { IdeaRuntime } from "./IdeaRuntime.ts";
+import { DocumentService } from "../documents/DocumentService.ts";
+import { decodeIdeaArtifactContent } from "./IdeaRuntime.ts";
 
 export const ideaHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
   "ideas",
   Effect.fnUntraced(function* (handlers) {
-    const runtime = yield* IdeaRuntime;
+    const documents = yield* DocumentService;
     return handlers
       .handle(
         "writeArtifact",
         Effect.fn("ideas.upload")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-          const artifact = yield* runtime
-            .writeArtifact({ ...args.payload, threadId: args.params.threadId, source: "upload" })
-            .pipe(Effect.catch((cause) => failEnvironmentInternal("idea_upload_failed", cause)));
+          const artifact = yield* Effect.try(() =>
+            decodeIdeaArtifactContent(args.payload.contentBase64),
+          ).pipe(
+            Effect.flatMap((bytes) =>
+              documents.publishIdeaDocument(
+                {
+                  threadId: args.params.threadId,
+                  name: args.payload.name,
+                  mediaType: args.payload.mediaType,
+                  bytes,
+                },
+                "upload",
+              ),
+            ),
+            Effect.catch((cause) => failEnvironmentInternal("idea_upload_failed", cause)),
+          );
           return { artifact };
         }),
       )
@@ -34,8 +48,8 @@ export const ideaHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("ideas.readArtifact")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-          return yield* runtime
-            .readArtifact(args.params)
+          return yield* documents
+            .readIdeaDocument(args.params)
             .pipe(
               Effect.catch((cause) => failEnvironmentInternal("idea_document_unavailable", cause)),
             );

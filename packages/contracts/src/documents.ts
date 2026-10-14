@@ -92,7 +92,7 @@ export const DocumentsPublishInput = Schema.Struct({
   expectedCurrentRevisionId: Schema.optional(DocumentId),
   title: DocumentTitle,
   kind: DocumentKind,
-  path: TrimmedNonEmptyString,
+  path: Schema.optional(TrimmedNonEmptyString),
   definition: Schema.optional(Schema.NullOr(DocumentChecklist)),
   step: Schema.optional(OpenWorkPublicationStep),
 });

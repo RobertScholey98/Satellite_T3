@@ -23,7 +23,9 @@ it.effect("moves published Open work rows into placements and leaves folder link
       VALUES ('file:1', '/repo', 'notes.md', 'linked', 'folder-1', '/repo/docs/notes.md',
       '2026-10-03T00:00:00.000Z', 'unassigned')`;
 
-    assert.deepStrictEqual(yield* runMigrations(), [[67, "DocumentPlacements"]]);
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 67 }), [
+      [67, "DocumentPlacements"],
+    ]);
 
     assert.deepStrictEqual(yield* sql`SELECT * FROM document_placements ORDER BY id`, [
       {

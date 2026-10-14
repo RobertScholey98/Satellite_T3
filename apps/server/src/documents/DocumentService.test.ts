@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   EventId,
+  IdeaArtifactId,
   type OrchestrationCommand,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -23,9 +24,11 @@ import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchest
 import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import migration from "../persistence/Migrations/055_ManagedDocuments.ts";
+import mediaTypesMigration from "../persistence/Migrations/068_DocumentMediaTypes.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 import { DocumentService, makeDocumentService } from "./DocumentService.ts";
 import { WorktreeRegistry } from "./WorktreeRegistry.ts";
+import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { makeOpenWorkService, OpenWorkService } from "../openWork/OpenWorkService.ts";
@@ -93,6 +96,23 @@ const createThread = (id: ThreadId, worktreePath: string | null = null) =>
       createdAt,
     }),
   );
+const ideaThreadId = ThreadId.make("idea-document-thread");
+const createIdea = Effect.flatMap(OrchestrationEngineService, (engine) =>
+  engine.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make("create-idea-document-thread"),
+    threadId: ideaThreadId,
+    projectId,
+    purpose: "idea",
+    title: "Private idea",
+    modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
+    runtimeMode: "approval-required",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdAt,
+  }),
+);
 const publishedRows = Effect.flatMap(
   SqlClient.SqlClient,
   (sql) =>
@@ -115,7 +135,12 @@ const setup = Effect.gen(function* () {
   );
   yield* recordProject({ projectId, title: "Documents", workspaceRoot: stateDir });
   yield* createThread(threadId);
-  const options = { stateDir, dispatch: engine.dispatch, projection };
+  const options = {
+    stateDir,
+    dispatch: engine.dispatch,
+    projection,
+    ideas: yield* IdeaNotebookStore,
+  };
   const service = yield* makeDocumentService(options);
   const publication = {
     threadId,
@@ -256,47 +281,138 @@ describe("managed document persistence", () => {
       }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
   );
 
-  it.effect("keeps idea documents out of managed snapshots and Open Work", () =>
+  it.effect("places documents published in an idea on its notebook instead of a worktree", () =>
     Effect.gen(function* () {
       const f = yield* setup;
       yield* initRepository(f.stateDir);
-      const ordinary = yield* f.service.publish(
-        { ...f.publication, requestId: "work-document" },
+      const ideas = yield* IdeaNotebookStore;
+      yield* createIdea;
+      const image = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+
+      const fromPath = yield* f.service.publish(
+        { ...f.publication, threadId: ideaThreadId, requestId: "idea-path" },
         actor,
       );
-      const ideaThreadId = ThreadId.make("idea-document-thread");
+      const upload = yield* f.service.publishIdeaDocument(
+        { threadId: ideaThreadId, name: "sketch.png", mediaType: "image/png", bytes: image },
+        "upload",
+      );
+      const binaryRead = yield* f.service.get({ documentId: upload.id }).pipe(Effect.flip);
+
+      assert.deepEqual(
+        (yield* ideas.requireActive(ideaThreadId)).artifacts.map(
+          ({ id, name, mediaType, textStatus, source }) => ({
+            id,
+            name,
+            mediaType,
+            textStatus,
+            source,
+          }),
+        ),
+        [
+          {
+            id: IdeaArtifactId.make(fromPath.document.id),
+            name: "Review",
+            mediaType: "text/html",
+            textStatus: "available",
+            source: "upload",
+          },
+          {
+            id: upload.id,
+            name: "sketch.png",
+            mediaType: "image/png",
+            textStatus: "image",
+            source: "upload",
+          },
+        ],
+      );
+      assert.deepEqual(
+        (yield* f.service.list({ threadId: ideaThreadId })).map((document) => document.id).sort(),
+        [fromPath.document.id, upload.id].sort(),
+      );
+      assert.equal(
+        (yield* f.service.readIdeaDocument({ threadId: ideaThreadId, artifactId: upload.id }))
+          .contentBase64,
+        Buffer.from(image).toString("base64"),
+      );
+      assert.equal(binaryRead.reason, "invalid");
+      assert.include(binaryRead.message, "idea_read_image");
+      assert.deepEqual(yield* publishedRows, []);
+    }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
+  );
+
+  it.effect("reads idea artifacts saved before ideas used the documents module", () =>
+    Effect.gen(function* () {
+      const f = yield* setup;
+      yield* createIdea;
+      const legacyId = IdeaArtifactId.make("legacy-notes");
+      const legacyDirectory = f.path.join(
+        f.stateDir,
+        "ideas",
+        Buffer.from(ideaThreadId).toString("base64url"),
+        "documents",
+      );
+      yield* f.fs.makeDirectory(legacyDirectory, { recursive: true });
+      yield* f.fs.writeFileString(f.path.join(legacyDirectory, legacyId), "# Earlier notes");
       yield* f.engine.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make("create-idea-document-thread"),
+        type: "idea.apply",
+        commandId: CommandId.make("register-legacy"),
         threadId: ideaThreadId,
-        projectId,
-        purpose: "idea",
-        title: "Private idea",
-        modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
-        runtimeMode: "approval-required",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: null,
-        createdAt,
+        deletionEpoch: 0,
+        mutation: {
+          kind: "artifact.register",
+          artifact: {
+            id: legacyId,
+            name: "notes.md",
+            mediaType: "text/markdown",
+            sizeBytes: 15,
+            textStatus: "available",
+            revision: 1,
+            createdAt,
+            source: "agent",
+          },
+        },
       });
-      const snapshotDirectory = f.path.join(f.stateDir, "documents");
-      const snapshotsBefore = yield* f.fs.readDirectory(snapshotDirectory);
 
-      const result = yield* f.service
-        .publish({ ...f.publication, threadId: ideaThreadId, requestId: "idea-document" }, actor)
-        .pipe(Effect.result);
+      const read = yield* f.service.readIdeaDocument({
+        threadId: ideaThreadId,
+        artifactId: legacyId,
+      });
+      yield* f.service.remove(ideaThreadId, legacyId);
 
-      assert.equal(result._tag, "Failure");
-      if (result._tag === "Failure") assert.equal(result.failure.reason, "invalid");
+      assert.equal(Buffer.from(read.contentBase64, "base64").toString("utf8"), "# Earlier notes");
+      assert.deepEqual(yield* f.fs.readDirectory(legacyDirectory), []);
+    }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
+  );
+
+  it.effect("rejects a publish into an idea that is being deleted and keeps no copy", () =>
+    Effect.gen(function* () {
+      const f = yield* setup;
+      yield* createIdea;
+      yield* f.engine.dispatch({
+        type: "idea.apply",
+        commandId: CommandId.make("delete-idea"),
+        threadId: ideaThreadId,
+        deletionEpoch: 0,
+        mutation: { kind: "delete.request" },
+      });
+      const snapshots = yield* f.fs.readDirectory(f.path.join(f.stateDir, "documents"));
+
+      const rejected = yield* f.service
+        .publishIdeaDocument(
+          {
+            threadId: ideaThreadId,
+            name: "late.md",
+            mediaType: "text/markdown",
+            bytes: Buffer.from("# Late"),
+          },
+          "upload",
+        )
+        .pipe(Effect.flip);
+
+      assert.equal(rejected.reason, "not-found");
       assert.deepEqual(yield* f.service.list({ threadId: ideaThreadId }), []);
-      assert.deepEqual(
-        (yield* f.fs.readDirectory(snapshotDirectory)).sort(),
-        snapshotsBefore.sort(),
-      );
-      assert.deepEqual(
-        (yield* publishedRows).map((row) => row.document_id),
-        [ordinary.document.id],
-      );
+      assert.deepEqual(yield* f.fs.readDirectory(f.path.join(f.stateDir, "documents")), snapshots);
     }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
   );
 
@@ -673,6 +789,7 @@ it.effect(
       const filename = f.path.join(f.stateDir, "persistent.sqlite");
       const published = yield* Effect.gen(function* () {
         yield* migration;
+        yield* mediaTypesMigration;
         const service = yield* makeDocumentService(f.options);
         const detail = yield* service.publish(f.publication, actor);
         yield* service.saveDraft(

@@ -96,7 +96,7 @@ export const layer = Layer.mergeAll(
 );
 
 const registerIdeaImage = Effect.gen(function* () {
-  const runtime = yield* IdeaRuntime;
+  const documents = yield* DocumentService;
   const built = yield* IdeasImageToolkit;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   yield* registerImageTool(
@@ -107,7 +107,7 @@ const registerIdeaImage = Effect.gen(function* () {
         .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
     (effect) =>
       effect.pipe(
-        Effect.provideService(IdeaRuntime, runtime),
+        Effect.provideService(DocumentService, documents),
         Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
       ),
     "idea-image",

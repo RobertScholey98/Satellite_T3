@@ -11,6 +11,7 @@ import { CommandId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/con
 import { ServerConfig } from "../config.ts";
 import { makeDocumentService } from "../documents/DocumentService.ts";
 import { WorktreeRegistry } from "../documents/WorktreeRegistry.ts";
+import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
 import {
   OrchestrationEngineService,
   ProjectionSnapshotQuery,
@@ -87,6 +88,7 @@ const setup = Effect.gen(function* () {
     stateDir: root,
     dispatch: engine.dispatch,
     projection: yield* ProjectionSnapshotQuery,
+    ideas: yield* IdeaNotebookStore,
   });
   const options = {
     projects: () => Effect.succeed([{ id: projectId, workspaceRoot: cwd }]),

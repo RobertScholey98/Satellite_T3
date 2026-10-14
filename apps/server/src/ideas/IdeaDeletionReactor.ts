@@ -1,4 +1,5 @@
 import { IdeaPromotion } from "./IdeaPromotion.ts";
+import { DocumentService } from "../documents/DocumentService.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ProviderSessionManagerV2 } from "../orchestration-v2/ProviderSessionManager.ts";
 import { ProviderEventLoggers } from "../provider/ProviderEventLoggers.ts";
@@ -39,6 +40,7 @@ export class IdeaDeletionReactor extends Context.Service<
       const engine = yield* OrchestrationEngineService;
       const store = yield* IdeaNotebookStore;
       const runtime = yield* IdeaRuntime;
+      const documents = yield* DocumentService;
       const updater = yield* IdeaUpdateReactor;
       const promotion = yield* IdeaPromotion;
       const fs = yield* FileSystem.FileSystem;
@@ -76,6 +78,7 @@ export class IdeaDeletionReactor extends Context.Service<
         yield* updater.cancel(threadId);
         yield* promotion.cancel(threadId);
         yield* close(threadId);
+        yield* documents.removeThread(threadId);
         yield* runtime.removeOwned(threadId);
         yield* removeAttachments(threadId);
         yield* engine.dispatch({
@@ -127,15 +130,13 @@ export class IdeaDeletionReactor extends Context.Service<
                   event.type === "idea.changed" &&
                   event.payload.mutation.kind === "artifact.delete"
                 )
-                  return runtime
-                    .removeArtifact(event.payload.threadId, event.payload.mutation.id)
-                    .pipe(
-                      Effect.catch(() =>
-                        Effect.logWarning("Could not remove an idea artifact", {
-                          threadId: event.payload.threadId,
-                        }),
-                      ),
-                    );
+                  return documents.remove(event.payload.threadId, event.payload.mutation.id).pipe(
+                    Effect.catch(() =>
+                      Effect.logWarning("Could not remove an idea artifact", {
+                        threadId: event.payload.threadId,
+                      }),
+                    ),
+                  );
                 return Effect.void;
               }),
             );

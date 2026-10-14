@@ -39,6 +39,9 @@ import {
 import { ServerSettingsService } from "../serverSettings.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime } from "./IdeaRuntime.ts";
+import { DocumentService } from "../documents/DocumentService.ts";
+import { WorktreeRegistry } from "../documents/WorktreeRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { IdeaPromotion } from "./IdeaPromotion.ts";
 import { IdeaUpdateReactor } from "./IdeaUpdateReactor.ts";
 import { IdeaDeletionReactor } from "./IdeaDeletionReactor.ts";
@@ -161,6 +164,9 @@ it.effect.each([
         Layer.provideMerge(IdeaUpdateReactor.layer),
         Layer.provideMerge(IdeaPromotion.layer),
         Layer.provideMerge(IdeaRuntime.layer),
+        Layer.provideMerge(DocumentService.layer),
+        Layer.provideMerge(WorktreeRegistry.layer),
+        Layer.provideMerge(VcsProcess.layer),
         Layer.provideMerge(SatelliteTestLayer),
         Layer.provide(
           Layer.succeed(RepositoryIdentityResolver, {
@@ -217,7 +223,7 @@ it.effect.each([
         const updates = yield* IdeaUpdateReactor;
         const promotion = yield* IdeaPromotion;
         const deletion = yield* IdeaDeletionReactor;
-        const runtime = yield* IdeaRuntime;
+        const documents = yield* DocumentService;
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const config = yield* ServerConfig;
@@ -325,12 +331,17 @@ it.effect.each([
           text: "Explore a later improvement.",
         });
         assert.equal((yield* store.get(threadId))?.status, "active");
-        yield* runtime.writeArtifact({
-          threadId,
-          name: "notes.md",
-          mediaType: "text/markdown",
-          contentBase64: Buffer.from("Owned document").toString("base64"),
-        });
+        const notes = yield* documents.publishIdeaDocument(
+          {
+            threadId,
+            name: "notes.md",
+            mediaType: "text/markdown",
+            bytes: Buffer.from("Owned document"),
+          },
+          "upload",
+        );
+        const snapshots = path.join(config.stateDir, "documents");
+        assert.equal((yield* fs.readDirectory(snapshots)).length, 1);
         const revdocThreadId = ThreadId.make(`${threadId}:review`);
         if (deletionMode === "project") {
           yield* engine.dispatch({
@@ -365,6 +376,12 @@ it.effect.each([
           assert.equal(yield* projections.getThreadShell(revdocThreadId), null);
         assert.equal(yield* store.get(threadId), null);
         assert.equal(yield* store.isDeleted(threadId), true);
+        assert.deepEqual(yield* documents.list({ threadId }), []);
+        assert.deepEqual(yield* fs.readDirectory(snapshots), []);
+        assert.equal(
+          (yield* documents.get({ documentId: notes.id }).pipe(Effect.flip)).reason,
+          "not-found",
+        );
         assert.isFalse(
           yield* fs.exists(
             path.join(config.stateDir, "ideas", Buffer.from(threadId).toString("base64url")),

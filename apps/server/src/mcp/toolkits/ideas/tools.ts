@@ -1,5 +1,6 @@
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import {
+  DocumentOperationError,
   IdeaArtifact,
   IdeaArtifactId,
   IdeaIssueDraft,
@@ -13,10 +14,18 @@ import * as Toolkit from "effect/ai/Toolkit";
 import { IdeaRuntime, IdeaRuntimeError } from "../../../ideas/IdeaRuntime.ts";
 import { IdeaPromotion as PromotionService } from "../../../ideas/IdeaPromotion.ts";
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
+import { DocumentService } from "../../../documents/DocumentService.ts";
 
-const dependencies = [ThreadManagementService, McpInvocationContext, IdeaRuntime, PromotionService];
+const dependencies = [
+  ThreadManagementService,
+  McpInvocationContext,
+  IdeaRuntime,
+  PromotionService,
+  DocumentService,
+];
 const failure = Schema.Union([
   IdeaRuntimeError,
+  DocumentOperationError,
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
 ]);
@@ -34,7 +43,7 @@ export const IdeaImageTool = Tool.make("idea_read_image", {
     }),
   }),
   failure,
-  dependencies: [ThreadManagementService, McpInvocationContext, IdeaRuntime],
+  dependencies: [ThreadManagementService, McpInvocationContext, DocumentService],
 }).annotate(Tool.Readonly, true);
 export const IdeasImageToolkit = Toolkit.make(IdeaImageTool);
 export const IdeasToolkit = Toolkit.make(

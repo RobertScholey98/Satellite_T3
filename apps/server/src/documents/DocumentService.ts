@@ -12,6 +12,9 @@ import {
   DocumentHistoryEvent,
   DocumentAnswers,
   DocumentChecklist,
+  IdeaArtifactId,
+  DocumentFormat,
+  type IdeaArtifact,
   type OpenWorkDocument,
   type OpenWorkOperationError,
   type OpenWorkPublicationStep,
@@ -51,15 +54,37 @@ import {
 } from "../orchestration-v2/Orchestrator.ts";
 import { makeGitReader, type WorktreeIdentity } from "../openWork/GitReader.ts";
 import { WorktreeRegistry } from "./WorktreeRegistry.ts";
+import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
 
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
+const MAX_BINARY_BYTES = 20 * 1024 * 1024;
+type Format = typeof DocumentFormat.Type;
+const SNAPSHOT_EXTENSIONS = { html: "html", markdown: "md", text: "txt" } as const;
+/** Binary media, such as images uploaded to an idea, keep their bytes and are never read as text. */
+const BINARY_EXTENSION = "bin";
+const FORMAT_MEDIA_TYPES = {
+  html: "text/html",
+  markdown: "text/markdown",
+  text: "text/plain",
+} as const;
+const IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+export const isTextMedia = (mediaType: string, name: string) =>
+  mediaType.startsWith("text/") || /.(md|markdown|html?|txt|json|csv|svg)$/i.test(name);
+/** The text format of a source named `name`, or null for binary media. */
+const documentFormat = (mediaType: string | null, name: string): Format | null => {
+  if (mediaType === "text/html" || /.html?$/i.test(name)) return "html";
+  if (mediaType === "text/markdown" || /.(md|markdown)$/i.test(name)) return "markdown";
+  if (mediaType === null ? /.txt$/i.test(name) : isTextMedia(mediaType, name)) return "text";
+  return null;
+};
 const MAX_ANSWER_BYTES = 64 * 1024;
 const error = (reason: DocumentOperationError["reason"], message: string) =>
   new DocumentOperationError({ reason, message });
 const storageError = () => error("storage", "Could not read or save the managed document.");
 const gitError = (cause: OpenWorkOperationError) =>
   error(cause.reason === "git" ? "storage" : cause.reason, cause.message);
-const hash = (text: string) => Hex.encode(sha256(new TextEncoder().encode(text)));
+const hashBytes = (bytes: Uint8Array) => Hex.encode(sha256(bytes));
+const hash = (text: string) => hashBytes(new TextEncoder().encode(text));
 const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
@@ -75,7 +100,23 @@ const isOrchestrationCommandRejection = Schema.is(OrchestratorCommandRejectedErr
 /** Where a publication appears besides its thread's Documents panel. */
 type Placement =
   | { readonly kind: "thread" }
+  | { readonly kind: "idea" }
   | { readonly kind: "worktree"; readonly worktree: WorktreeIdentity };
+
+/** A publish from a file path or, for idea uploads and imports, from bytes with a media type. */
+export interface IdeaDocumentInput {
+  readonly threadId: ThreadId;
+  readonly name: string;
+  readonly mediaType: string;
+  readonly bytes: Uint8Array;
+  /** A stable ID makes the publish idempotent, as for an imported attachment. */
+  readonly id?: string;
+}
+export type PublishRequest = DocumentsPublishInput & {
+  readonly content?: { readonly mediaType: string; readonly bytes: Uint8Array };
+  /** Fixes the ID of a new document, such as an imported attachment the agent was told about. */
+  readonly newDocumentId?: string;
+};
 
 interface PlacementRow {
   id: string;
@@ -126,6 +167,7 @@ interface RevisionRow {
   snapshot_path: string;
   answers_json: string;
   answer_version: number;
+  media_type: string | null;
 }
 interface SubmissionRow {
   id: string;
@@ -200,9 +242,26 @@ export class DocumentService extends Context.Service<
       input: DocumentsGetInput,
     ) => Effect.Effect<DocumentDetail, DocumentOperationError>;
     readonly publish: (
-      input: DocumentsPublishInput,
+      input: PublishRequest,
       actor: string,
     ) => Effect.Effect<DocumentDetail, DocumentOperationError>;
+    /** Publishes an upload or import into an idea and returns its notebook entry. */
+    readonly publishIdeaDocument: (
+      input: IdeaDocumentInput,
+      actor: string,
+    ) => Effect.Effect<IdeaArtifact, DocumentOperationError>;
+    readonly readIdeaDocument: (input: {
+      readonly threadId: ThreadId;
+      readonly artifactId: IdeaArtifactId;
+    }) => Effect.Effect<
+      { readonly artifact: IdeaArtifact; readonly contentBase64: string },
+      DocumentOperationError
+    >;
+    readonly remove: (
+      threadId: ThreadId,
+      documentId: string,
+    ) => Effect.Effect<void, DocumentOperationError>;
+    readonly removeThread: (threadId: ThreadId) => Effect.Effect<void, DocumentOperationError>;
     readonly saveDraft: (
       input: DocumentsSaveDraftInput,
       actor: string,
@@ -251,6 +310,7 @@ export class DocumentService extends Context.Service<
           stateDir: config.stateDir,
           dispatch: engine.dispatch,
           projection,
+          ideas: yield* IdeaNotebookStore,
         });
       }),
     ),
@@ -264,6 +324,7 @@ export const makeDocumentService = (options: {
     ProjectionSnapshotQueryShape,
     "getThreadShellById" | "getProjectShellById"
   >;
+  readonly ideas: Pick<IdeaNotebookStore["Service"], "requireActive">;
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -273,6 +334,15 @@ export const makeDocumentService = (options: {
     const worktrees = yield* WorktreeRegistry;
     const mutex = yield* Semaphore.make(1);
     const snapshotRoot = path.join(options.stateDir, "documents");
+    // Ideas stored artifacts here before they used this module. Those bytes stay in place.
+    const legacyIdeaPath = (threadId: ThreadId, documentId: string) =>
+      path.join(
+        options.stateDir,
+        "ideas",
+        Buffer.from(threadId).toString("base64url"),
+        "documents",
+        encodeURIComponent(documentId),
+      );
     yield* fs.makeDirectory(snapshotRoot, { recursive: true }).pipe(Effect.mapError(storageError));
     const preserveError = (cause: unknown) =>
       isDocumentOperationError(cause) ? cause : storageError();
@@ -309,14 +379,21 @@ export const makeDocumentService = (options: {
         .pipe(Effect.mapError(storageError));
       if (Option.isNone(thread))
         return yield* error("not-found", "The original thread is unavailable.");
-      if (thread.value.purpose === "idea")
-        return yield* error("invalid", "Idea documents belong in the idea notebook.");
       return thread.value;
     });
+    const requireIdea = (threadId: ThreadId) =>
+      options.ideas
+        .requireActive(threadId)
+        .pipe(Effect.mapError(() => error("not-found", "The idea is unavailable.")));
     const resolvePlacement = Effect.fnUntraced(function* (
       thread: Effect.Success<ReturnType<typeof requireThread>>,
       step: OpenWorkPublicationStep | undefined,
     ) {
+      if (thread.purpose === "idea") {
+        if (step) return yield* error("invalid", "Ideas have no worktree steps.");
+        yield* requireIdea(thread.id);
+        return { kind: "idea" } satisfies Placement;
+      }
       const project = yield* options.projection
         .getProjectShellById(thread.projectId)
         .pipe(Effect.mapError(storageError));
@@ -339,7 +416,7 @@ export const makeDocumentService = (options: {
         readonly step: OpenWorkPublicationStep | undefined;
       },
     ) {
-      if (placement.kind === "thread") return;
+      if (placement.kind !== "worktree") return;
       const { worktree } = placement;
       yield* worktrees.record(worktree).pipe(Effect.mapError(gitError));
       const state = yield* git.state(worktree.path).pipe(Effect.mapError(gitError));
@@ -410,6 +487,14 @@ export const makeDocumentService = (options: {
       const rows = yield* sql<PlacementRow>`SELECT * FROM document_placements WHERE favorite=1`;
       return rows.map(decodePlacement);
     });
+    const snapshotName = (revision: RevisionRow) => {
+      // Legacy snapshots stored absolute host paths. Resolve their basename below
+      // the current home so restored data never reads from the previous location.
+      const filename = revision.snapshot_path.split(/[\\/]/).at(-1) ?? "";
+      return /^[a-f0-9-]{36}\.(?:html|md|txt|bin)$/.test(filename)
+        ? Effect.succeed(filename)
+        : Effect.fail(storageError());
+    };
     const get = Effect.fn("DocumentService.get")(function* (
       input: DocumentsGetInput,
     ): Effect.fn.Return<DocumentDetail, DocumentOperationError> {
@@ -418,10 +503,12 @@ export const makeDocumentService = (options: {
       const document = yield* decodeSummary(row);
       const revision = yield* decodeRevision(revisionRow);
       const answers = yield* parse(DocumentAnswers, revisionRow.answers_json);
-      // Legacy snapshots stored absolute host paths. Resolve their basename below
-      // the current home so restored data never reads from the previous location.
-      const snapshotFilename = revisionRow.snapshot_path.split(/[\\/]/).at(-1) ?? "";
-      if (!/^[a-f0-9-]{36}\.(?:html|md|txt)$/.test(snapshotFilename)) return yield* storageError();
+      const snapshotFilename = yield* snapshotName(revisionRow);
+      if (snapshotFilename.endsWith(`.${BINARY_EXTENSION}`))
+        return yield* error(
+          "invalid",
+          "This document is binary media and cannot be read as text. Use idea_read_image for PNG, JPEG, GIF or WebP images.",
+        );
       const content = yield* fs
         .readFileString(path.join(snapshotRoot, snapshotFilename))
         .pipe(Effect.mapError(storageError));
@@ -499,23 +586,76 @@ export const makeDocumentService = (options: {
         ) ?? []
       );
     });
+    const readSource = Effect.fnUntraced(function* (input: PublishRequest) {
+      if (input.content) return { name: input.title, ...input.content };
+      if (!input.path || !path.isAbsolute(input.path))
+        return yield* error("invalid", "Publish requires an absolute host file path.");
+      const stat = yield* fs.stat(input.path).pipe(Effect.mapError(storageError));
+      if (stat.type !== "File" || Number(stat.size) > MAX_SNAPSHOT_BYTES)
+        return yield* error("invalid", "Document must be a regular file smaller than 2 MB.");
+      const chunks = yield* fs
+        .stream(input.path, { bytesToRead: MAX_SNAPSHOT_BYTES + 1 })
+        .pipe(Stream.runCollect, Effect.mapError(storageError));
+      return { name: input.path, mediaType: null, bytes: Buffer.concat(chunks) };
+    });
+    /** Validated snapshot content: text in one of the document formats, or binary media. */
+    const readSnapshot = Effect.fnUntraced(function* (input: PublishRequest) {
+      const source = yield* readSource(input);
+      const format = documentFormat(source.mediaType, source.name);
+      if (!format) {
+        if (!source.mediaType)
+          return yield* error(
+            "invalid",
+            "Only self-contained HTML, Markdown, and text documents are supported.",
+          );
+        if (source.bytes.byteLength > MAX_BINARY_BYTES)
+          return yield* error("invalid", "Documents must be 20 MB or smaller.");
+        return { format: null, mediaType: source.mediaType, bytes: source.bytes } as const;
+      }
+      if (source.bytes.byteLength > MAX_SNAPSHOT_BYTES)
+        return yield* error("invalid", "Document exceeds the 2 MB limit.");
+      const content = yield* Effect.try({
+        try: () => new TextDecoder("utf-8", { fatal: true }).decode(source.bytes),
+        catch: () => error("invalid", "Document must be UTF-8 text."),
+      });
+      if (
+        format === "html" &&
+        (/<(?:script|img|iframe|source|video|audio|link|object|embed)\b[^>]*\b(?:src|srcset|href|data)\s*=\s*(?:["'](?!data:|#)[^"']+["']|(?!["']|data:|#)[^\s>]+)/i.test(
+          content,
+        ) ||
+          /\burl\(\s*["']?(?!data:|#)[^\s)"'][^)]*\)/i.test(content) ||
+          /@import\s/i.test(content))
+      )
+        return yield* error("invalid", "HTML snapshots must inline their scripts and resources.");
+      return { format, mediaType: source.mediaType ?? FORMAT_MEDIA_TYPES[format], content };
+    });
     const publishUnlocked = Effect.fn("DocumentService.publish")(function* (
-      input: DocumentsPublishInput,
+      input: PublishRequest,
       actor: string,
     ) {
-      const payloadHash = hash(json({ operation: "publish", ...input }));
+      const payloadHash = hash(
+        json({
+          operation: "publish",
+          ...input,
+          content: input.content && {
+            mediaType: input.content.mediaType,
+            hash: hashBytes(input.content.bytes),
+          },
+        }),
+      );
       const receipt = yield* transaction(
         Effect.gen(function* () {
           const previous = yield* findRequest(actor, input.requestId, payloadHash);
           if (previous)
-            return yield* parse(
-              Schema.Struct({ documentId: Schema.String, revisionId: Schema.String }),
-              previous,
-            );
-          const placement = yield* resolvePlacement(
-            yield* requireThread(input.threadId),
-            input.step,
-          );
+            return {
+              ...(yield* parse(
+                Schema.Struct({ documentId: Schema.String, revisionId: Schema.String }),
+                previous,
+              )),
+              replayed: true,
+            };
+          const thread = yield* requireThread(input.threadId);
+          const placement = yield* resolvePlacement(thread, input.step);
           const existing = input.documentId ? yield* readDocument(input.documentId) : null;
           if (
             existing &&
@@ -526,69 +666,31 @@ export const makeDocumentService = (options: {
               "conflict",
               "The document revision changed. Reload before publishing.",
             );
-          if (!path.isAbsolute(input.path))
-            return yield* error("invalid", "Publish requires an absolute host file path.");
-          const extension = path.extname(input.path).toLowerCase();
-          const format =
-            extension === ".html" || extension === ".htm"
-              ? "html"
-              : extension === ".md" || extension === ".markdown"
-                ? "markdown"
-                : extension === ".txt"
-                  ? "text"
-                  : null;
-          if (!format)
-            return yield* error(
-              "invalid",
-              "Only self-contained HTML, Markdown, and text documents are supported.",
-            );
-          const stat = yield* fs.stat(input.path).pipe(Effect.mapError(storageError));
-          if (stat.type !== "File" || Number(stat.size) > MAX_SNAPSHOT_BYTES)
-            return yield* error("invalid", "Document must be a regular file smaller than 2 MB.");
-          const chunks = yield* fs
-            .stream(input.path, { bytesToRead: MAX_SNAPSHOT_BYTES + 1 })
-            .pipe(Stream.runCollect, Effect.mapError(storageError));
-          const bytes = Buffer.concat(chunks);
-          if (bytes.length > MAX_SNAPSHOT_BYTES)
-            return yield* error("invalid", "Document exceeds the 2 MB limit.");
-          const content = yield* Effect.try({
-            try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-            catch: () => error("invalid", "Document must be UTF-8 text."),
-          });
-          if (
-            format === "html" &&
-            (/<(?:script|img|iframe|source|video|audio|link|object|embed)\b[^>]*\b(?:src|srcset|href|data)\s*=\s*(?:["'](?!data:|#)[^"']+["']|(?!["']|data:|#)[^\s>]+)/i.test(
-              content,
-            ) ||
-              /\burl\(\s*["']?(?!data:|#)[^\s)"'][^)]*\)/i.test(content) ||
-              /@import\s/i.test(content))
-          )
-            return yield* error(
-              "invalid",
-              "HTML snapshots must inline their scripts and resources.",
-            );
+          const snapshot = yield* readSnapshot(input);
           const definition = input.definition ?? null;
           if (
             definition &&
             new Set(definition.items.map((item) => item.id)).size !== definition.items.length
           )
             return yield* error("invalid", "Checklist item IDs must be unique.");
-          const documentId = existing?.id ?? (yield* randomUuidV4);
+          const documentId = existing?.id ?? input.newDocumentId ?? (yield* randomUuidV4);
           const revisionId = yield* randomUuidV4;
           const number = (existing?.revision_number ?? 0) + 1;
           const createdAt = yield* now;
-          const snapshotFilename = `${revisionId}.${format === "markdown" ? "md" : format === "html" ? "html" : "txt"}`;
+          const snapshotFilename = `${revisionId}.${snapshot.format ? SNAPSHOT_EXTENSIONS[snapshot.format] : BINARY_EXTENSION}`;
           const snapshotPath = path.join(snapshotRoot, snapshotFilename);
-          yield* fs
-            .writeFileString(snapshotPath, content, { flag: "wx" })
-            .pipe(Effect.mapError(storageError));
+          yield* (
+            snapshot.format
+              ? fs.writeFileString(snapshotPath, snapshot.content, { flag: "wx" })
+              : fs.writeFile(snapshotPath, snapshot.bytes, { flag: "wx" })
+          ).pipe(Effect.mapError(storageError));
           const answers = yield* normalizeAnswers(definition, []);
           if (existing) {
             yield* sql`UPDATE managed_documents SET title=${input.title},kind=${input.kind},current_revision_id=${revisionId},revision_number=${number},status='draft',updated_at=${createdAt} WHERE id=${documentId}`;
           } else {
             yield* sql`INSERT INTO managed_documents (id,thread_id,title,kind,current_revision_id,revision_number,status,updated_at) VALUES (${documentId},${input.threadId},${input.title},${input.kind},${revisionId},${number},'draft',${createdAt})`;
           }
-          yield* sql`INSERT INTO document_revisions (id,document_id,number,format,content_hash,created_at,definition_json,snapshot_path,answers_json,answer_version) VALUES (${revisionId},${documentId},${number},${format},${hash(content)},${createdAt},${json(definition)},${snapshotFilename},${json(answers)},0)`;
+          yield* sql`INSERT INTO document_revisions (id,document_id,number,format,content_hash,created_at,definition_json,snapshot_path,answers_json,answer_version,media_type) VALUES (${revisionId},${documentId},${number},${snapshot.format ?? "text"},${snapshot.format ? hash(snapshot.content) : hashBytes(snapshot.bytes)},${createdAt},${json(definition)},${snapshotFilename},${json(answers)},0,${snapshot.mediaType})`;
           yield* place(placement, {
             documentId,
             revisionId,
@@ -607,11 +709,84 @@ export const makeDocumentService = (options: {
           });
           const result = { documentId, revisionId };
           yield* saveRequest(actor, input.requestId, payloadHash, result);
-          return result;
+          return { ...result, replayed: false };
         }),
       );
-      return yield* get(receipt);
+      const artifact = yield* registerOnIdea(input.threadId, receipt, actor).pipe(
+        Effect.tapError(() =>
+          receipt.replayed ? Effect.void : discardPublish(receipt, actor, input.requestId),
+        ),
+      );
+      return { receipt, artifact };
     });
+    /** The notebook entry for a document placed on an idea, or null outside ideas. */
+    const registerOnIdea = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+      receipt: { readonly documentId: string; readonly revisionId: string },
+      actor: string,
+    ) {
+      const thread = yield* requireThread(threadId);
+      if (thread.purpose !== "idea") return null;
+      const notebook = yield* requireIdea(threadId);
+      const document = yield* readDocument(receipt.documentId);
+      const revision = yield* readRevision(receipt.documentId, receipt.revisionId);
+      const size = yield* fs
+        .stat(path.join(snapshotRoot, revision.snapshot_path))
+        .pipe(Effect.mapError(storageError));
+      const mediaType = revision.media_type ?? FORMAT_MEDIA_TYPES[revision.format as Format];
+      const artifact: IdeaArtifact = {
+        id: IdeaArtifactId.make(document.id),
+        name: document.title,
+        mediaType,
+        sizeBytes: Number(size.size),
+        textStatus: isTextMedia(mediaType, document.title)
+          ? "available"
+          : IMAGE_MEDIA_TYPES.has(mediaType)
+            ? "image"
+            : "unsupported",
+        revision: revision.number,
+        createdAt: revision.created_at,
+        source: actor.startsWith("agent:") ? "agent" : "upload",
+      };
+      yield* options
+        .dispatch({
+          type: "idea.apply",
+          commandId: CommandId.make(`document-placement-${revision.id}`),
+          threadId,
+          deletionEpoch: notebook.deletionEpoch,
+          mutation: { kind: "artifact.register", artifact },
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            isOrchestrationCommandRejection(cause) || isPreviouslyRejected(cause)
+              ? error("not-found", "The idea is unavailable. Its document was not saved.")
+              : storageError(),
+          ),
+        );
+      return artifact;
+    });
+    /** Undoes a fresh publish whose idea placement failed, so it never appears in one place only. */
+    const discardPublish = (
+      receipt: { readonly documentId: string; readonly revisionId: string },
+      actor: string,
+      requestId: string,
+    ) =>
+      transaction(
+        Effect.gen(function* () {
+          const revision = yield* readRevision(receipt.documentId, receipt.revisionId);
+          yield* sql`DELETE FROM document_history WHERE revision_id=${revision.id}`;
+          yield* sql`DELETE FROM document_revisions WHERE id=${revision.id}`;
+          yield* sql`DELETE FROM document_requests WHERE actor=${actor} AND request_id=${requestId}`;
+          const previous =
+            yield* sql<RevisionRow>`SELECT * FROM document_revisions WHERE document_id=${receipt.documentId} ORDER BY number DESC LIMIT 1`;
+          yield* previous[0]
+            ? sql`UPDATE managed_documents SET current_revision_id=${previous[0].id},revision_number=${previous[0].number} WHERE id=${receipt.documentId}`
+            : sql`DELETE FROM managed_documents WHERE id=${receipt.documentId}`;
+          yield* fs
+            .remove(path.join(snapshotRoot, revision.snapshot_path), { force: true })
+            .pipe(Effect.ignore);
+        }),
+      ).pipe(Effect.ignore);
     const updateAnswers = Effect.fnUntraced(function* (input: DocumentsSaveDraftInput) {
       const document = yield* readDocument(input.documentId);
       if (document.current_revision_id !== input.revisionId)
@@ -817,10 +992,98 @@ export const makeDocumentService = (options: {
         submissions: yield* Effect.forEach(submissionRows, decodeSubmission),
       };
     });
+    const publishIdeaDocument = Effect.fn("DocumentService.publishIdeaDocument")(function* (
+      input: IdeaDocumentInput,
+      actor: string,
+    ) {
+      const { artifact } = yield* publishUnlocked(
+        {
+          requestId: input.id ?? (yield* randomUuidV4),
+          threadId: input.threadId,
+          title: input.name,
+          kind: "document",
+          content: { mediaType: input.mediaType, bytes: input.bytes },
+          ...(input.id ? { newDocumentId: input.id } : {}),
+        },
+        actor,
+      );
+      if (!artifact) return yield* error("invalid", "This thread is not an idea.");
+      return artifact;
+    });
+    /** Current bytes of an idea document, including artifacts saved before ideas used this module. */
+    const readBytes = Effect.fnUntraced(function* (threadId: ThreadId, documentId: string) {
+      const rows =
+        yield* sql<RevisionRow>`SELECT r.* FROM managed_documents d JOIN document_revisions r ON r.id=d.current_revision_id WHERE d.id=${documentId} AND d.thread_id=${threadId}`.pipe(
+          Effect.mapError(storageError),
+        );
+      if (rows[0]) {
+        const bytes = yield* fs
+          .readFile(path.join(snapshotRoot, yield* snapshotName(rows[0])))
+          .pipe(Effect.mapError(storageError));
+        if (hashBytes(bytes) !== rows[0].content_hash)
+          return yield* error("storage", "The managed document snapshot changed.");
+        return bytes;
+      }
+      const legacy = legacyIdeaPath(threadId, documentId);
+      const real = yield* fs.realPath(legacy).pipe(Effect.orElseSucceed(() => null));
+      const expected = path.join(
+        yield* fs.realPath(options.stateDir).pipe(Effect.mapError(storageError)),
+        path.relative(options.stateDir, legacy),
+      );
+      if (real !== expected) return yield* error("not-found", "This document is unavailable.");
+      return yield* fs.readFile(real).pipe(Effect.mapError(storageError));
+    });
+    const readIdeaDocument = Effect.fn("DocumentService.readIdeaDocument")(function* (input: {
+      readonly threadId: ThreadId;
+      readonly artifactId: IdeaArtifactId;
+    }) {
+      const notebook = yield* requireIdea(input.threadId);
+      const artifact = notebook.artifacts.find((entry) => entry.id === input.artifactId);
+      if (!artifact) return yield* error("not-found", "This document is unavailable.");
+      const bytes = yield* readBytes(input.threadId, artifact.id);
+      return { artifact, contentBase64: Buffer.from(bytes).toString("base64") };
+    });
+    /** Removes documents with their history, placements and snapshots, plus legacy idea bytes. */
+    const removeDocuments = Effect.fnUntraced(function* (
+      threadId: ThreadId,
+      documentId: string | null,
+    ) {
+      const documents =
+        yield* sql<DocumentRow>`SELECT * FROM managed_documents WHERE thread_id=${threadId} AND (${documentId} IS NULL OR id=${documentId})`;
+      const snapshots: string[] = [];
+      yield* sql.withTransaction(
+        Effect.forEach(documents, (document) =>
+          Effect.gen(function* () {
+            const revisions =
+              yield* sql<RevisionRow>`SELECT * FROM document_revisions WHERE document_id=${document.id}`;
+            snapshots.push(...revisions.map((revision) => revision.snapshot_path));
+            yield* sql`DELETE FROM document_submissions WHERE document_id=${document.id}`;
+            yield* sql`DELETE FROM document_history WHERE document_id=${document.id}`;
+            yield* sql`DELETE FROM document_placements WHERE document_id=${document.id}`;
+            yield* sql`DELETE FROM document_revisions WHERE document_id=${document.id}`;
+            yield* sql`DELETE FROM managed_documents WHERE id=${document.id}`;
+          }),
+        ),
+      );
+      for (const snapshot of snapshots)
+        yield* fs.remove(path.join(snapshotRoot, path.basename(snapshot)), { force: true });
+      if (documentId) yield* fs.remove(legacyIdeaPath(threadId, documentId), { force: true });
+    });
     return DocumentService.of({
       list,
       get,
-      publish: (input, actor) => protect(mutex.withPermits(1)(publishUnlocked(input, actor))),
+      publish: (input, actor) =>
+        protect(
+          mutex.withPermits(1)(
+            publishUnlocked(input, actor).pipe(Effect.flatMap(({ receipt }) => get(receipt))),
+          ),
+        ),
+      publishIdeaDocument: (input, actor) =>
+        protect(mutex.withPermits(1)(publishIdeaDocument(input, actor))),
+      readIdeaDocument: (input) => protect(readIdeaDocument(input)),
+      remove: (threadId, documentId) =>
+        protect(mutex.withPermits(1)(removeDocuments(threadId, documentId))),
+      removeThread: (threadId) => protect(mutex.withPermits(1)(removeDocuments(threadId, null))),
       saveDraft: (input, actor) => protect(mutex.withPermits(1)(saveDraftUnlocked(input, actor))),
       submit: (input, actor) => protect(mutex.withPermits(1)(submitUnlocked(input, actor))),
       retry: (input, actor) => protect(mutex.withPermits(1)(deliver(input.submissionId, actor))),
