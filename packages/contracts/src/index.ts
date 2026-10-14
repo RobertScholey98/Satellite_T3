@@ -65,6 +65,8 @@ export * from "./worktreeSetup.ts";
 
 export * from "./ideas.ts";
 export * from "./satellite.ts";
+export * from "./satelliteRpc.ts";
+export * from "./productIdentity.ts";
 export * from "./documents.ts";
 export * from "./revdoc.ts";
 export * from "./issues.ts";

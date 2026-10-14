@@ -5,7 +5,6 @@ import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import {
   WS_METHODS,
-  ORCHESTRATION_WS_METHODS,
   type EnvironmentId,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
@@ -404,7 +403,7 @@ export function createThreadEnvironmentAtoms<R, E>(
     }),
     getRequestLifecycle: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:queries:thread:request-lifecycle",
-      tag: ORCHESTRATION_WS_METHODS.getRequestLifecycle,
+      tag: WS_METHODS.orchestrationGetRequestLifecycle,
       scheduler,
       concurrency,
     }),

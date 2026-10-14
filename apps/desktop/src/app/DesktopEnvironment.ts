@@ -4,6 +4,7 @@ import type {
   DesktopRuntimeArch,
   DesktopRuntimeInfo,
 } from "@t3tools/contracts";
+import { PRODUCT_NAME } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -94,7 +95,7 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "Satellite";
+const APP_BASE_NAME = PRODUCT_NAME;
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;

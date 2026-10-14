@@ -25,6 +25,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { RevdocService } from "../revdoc/RevdocService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerConfig from "../config.ts";
+import * as SatelliteServer from "../satellite/SatelliteServer.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
@@ -80,7 +81,7 @@ const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
     ),
   ),
 );
-const DocumentsTestLayer = McpHttpServer.DocumentsToolkitRegistrationLive.pipe(
+const DocumentsTestLayer = SatelliteServer.DocumentsToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provide(
@@ -94,7 +95,7 @@ const DocumentsTestLayer = McpHttpServer.DocumentsToolkitRegistrationLive.pipe(
   ),
 );
 
-const RevdocTestLayer = McpHttpServer.RevdocToolkitRegistrationLive.pipe(
+const RevdocTestLayer = SatelliteServer.RevdocToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provide(
@@ -616,7 +617,7 @@ it.effect("registers commit guidance with validated input and the caller's threa
     });
   }).pipe(
     Effect.provide(
-      McpHttpServer.CommitsToolkitRegistrationLive.pipe(
+      SatelliteServer.CommitsToolkitRegistrationLive.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(

@@ -9,7 +9,7 @@ export class IdeaHttpConnectionNotReadyError extends Data.TaggedError(
 import { IdeaArtifactHttp } from "./ideaArtifactHttp.ts";
 export { IdeaArtifactHttp, ideaArtifactHttpLayer } from "./ideaArtifactHttp.ts";
 import {
-  IDEA_WS_METHODS,
+  WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   IdeaArtifactReadInput,
   IdeaArtifactWriteInput,
@@ -30,19 +30,19 @@ export function createIdeaEnvironmentAtoms<R, E>(
 ) {
   const changes = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
     label: "environment-data:ideas:changes",
-    tag: IDEA_WS_METHODS.subscribeChanges,
+    tag: WS_METHODS.ideasSubscribeChanges,
   });
   return {
     changes,
     list: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:ideas:list",
-      tag: IDEA_WS_METHODS.list,
+      tag: WS_METHODS.ideasList,
       staleTimeMs: 0,
       refreshTrigger: ({ environmentId }) => changes({ environmentId, input: {} }),
     }),
     get: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:ideas:get",
-      tag: IDEA_WS_METHODS.get,
+      tag: WS_METHODS.ideasGet,
       staleTimeMs: 0,
       refreshTrigger: ({ environmentId }) => changes({ environmentId, input: {} }),
     }),

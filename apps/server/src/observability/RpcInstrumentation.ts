@@ -1,16 +1,11 @@
-import {
-  IDEA_WS_METHODS,
-  ORCHESTRATION_WS_METHODS,
-  ORCHESTRATION_V2_WS_METHODS,
-  WS_METHODS,
-  type WsRpcGroup,
-} from "@t3tools/contracts";
+import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS, type WsRpcGroup } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as References from "effect/References";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 
+import { SATELLITE_RPC_AGGREGATES } from "../satellite/SatelliteRpcRegistry.ts";
 import { rpcRequestDuration, rpcRequestsTotal, withMetrics } from "./Metrics.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
@@ -21,48 +16,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * prefix. Adding an RPC to `WsRpcGroup` without a label is a type error.
  */
 const RPC_AGGREGATES = {
-  [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: "orchestration",
-  [IDEA_WS_METHODS.list]: "ideas",
-  [IDEA_WS_METHODS.get]: "ideas",
-  [IDEA_WS_METHODS.subscribeChanges]: "ideas",
-  [WS_METHODS.revdocGet]: "revdoc",
-  [WS_METHODS.revdocStart]: "revdoc",
-  [WS_METHODS.revdocTestStart]: "revdoc",
-  [WS_METHODS.revdocCancel]: "revdoc",
-  [WS_METHODS.revdocSave]: "revdoc",
-  [WS_METHODS.revdocChanges]: "revdoc",
-  [WS_METHODS.revdocWorktrees]: "revdoc",
-  [WS_METHODS.documentsList]: "documents",
-  [WS_METHODS.issuesList]: "issues",
-  [WS_METHODS.issuesGet]: "issues",
-  [WS_METHODS.issuesBoardsList]: "issues",
-  [WS_METHODS.issuesBoardsOpen]: "issues",
-  [WS_METHODS.issuesBoardsSubscribe]: "issues",
-  [WS_METHODS.issuesBoardsConfigure]: "issues",
-  [WS_METHODS.issuesBoardsDisconnect]: "issues",
-  [WS_METHODS.issuesBoardsMove]: "issues",
-  [WS_METHODS.issuesMovesRetry]: "issues",
-  [WS_METHODS.issuesAttemptsReserve]: "issues",
-  [WS_METHODS.issuesAttemptsList]: "issues",
-  [WS_METHODS.issuesAttemptsReceipts]: "issues",
-  [WS_METHODS.issuesAttemptsIngest]: "issues",
-  [WS_METHODS.issuesAttemptsAcknowledge]: "issues",
-  [WS_METHODS.issuesAttemptsSyncGenerations]: "issues",
-  [WS_METHODS.openWorkList]: "openWork",
-  [WS_METHODS.openWorkTimeline]: "openWork",
-  [WS_METHODS.openWorkLinkFolder]: "openWork",
-  [WS_METHODS.openWorkUnlinkFolder]: "openWork",
-  [WS_METHODS.openWorkAssignDocument]: "openWork",
-  [WS_METHODS.openWorkFavoriteDocument]: "openWork",
-  [WS_METHODS.openWorkFavorites]: "openWork",
-  [WS_METHODS.openWorkReadLinkedDocument]: "openWork",
-  [WS_METHODS.documentsGet]: "documents",
-  [WS_METHODS.documentsPublish]: "documents",
-  [WS_METHODS.documentsSaveDraft]: "documents",
-  [WS_METHODS.documentsSubmit]: "documents",
-  [WS_METHODS.documentsRetry]: "documents",
-  [WS_METHODS.documentsHistory]: "documents",
-
+  ...SATELLITE_RPC_AGGREGATES,
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: "orchestration",

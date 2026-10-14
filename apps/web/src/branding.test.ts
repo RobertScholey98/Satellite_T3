@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveServerBackedAppDisplayName,
@@ -24,9 +25,9 @@ describe("branding", () => {
       value: {
         desktopBridge: {
           getAppBranding: () => ({
-            baseName: "Satellite",
+            baseName: PRODUCT_NAME,
             stageLabel: "Nightly",
-            displayName: "Satellite (Nightly)",
+            displayName: `${PRODUCT_NAME} (Nightly)`,
           }),
         },
       },
@@ -34,9 +35,9 @@ describe("branding", () => {
 
     const branding = await import("./branding");
 
-    expect(branding.APP_BASE_NAME).toBe("Satellite");
+    expect(branding.APP_BASE_NAME).toBe(PRODUCT_NAME);
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
-    expect(branding.APP_DISPLAY_NAME).toBe("Satellite (Nightly)");
+    expect(branding.APP_DISPLAY_NAME).toBe(`${PRODUCT_NAME} (Nightly)`);
   });
 
   it("normalizes hosted app channel metadata", async () => {
@@ -47,7 +48,7 @@ describe("branding", () => {
     expect(branding.HOSTED_APP_CHANNEL).toBe("nightly");
     expect(branding.HOSTED_APP_CHANNEL_LABEL).toBe("Nightly");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
-    expect(branding.APP_DISPLAY_NAME).toBe("Satellite (Nightly)");
+    expect(branding.APP_DISPLAY_NAME).toBe(`${PRODUCT_NAME} (Nightly)`);
   });
 
   it("does not label the latest hosted app channel", async () => {
@@ -58,7 +59,7 @@ describe("branding", () => {
     expect(branding.HOSTED_APP_CHANNEL).toBe("latest");
     expect(branding.HOSTED_APP_CHANNEL_LABEL).toBe("Latest");
     expect(branding.APP_STAGE_LABEL).toBe("Latest");
-    expect(branding.APP_DISPLAY_NAME).toBe("Satellite");
+    expect(branding.APP_DISPLAY_NAME).toBe(PRODUCT_NAME);
   });
 
   it("ignores unknown hosted app channels", async () => {
@@ -84,33 +85,33 @@ describe("branding logic", () => {
   it("updates the display name for nightly primary server versions", () => {
     expect(
       resolveServerBackedAppDisplayName({
-        baseName: "Satellite",
-        fallbackDisplayName: "Satellite (Alpha)",
+        baseName: PRODUCT_NAME,
+        fallbackDisplayName: `${PRODUCT_NAME} (Alpha)`,
         fallbackStageLabel: "Alpha",
         primaryServerVersion: "0.0.28-nightly.20260616.12",
       }),
-    ).toBe("Satellite (Nightly)");
+    ).toBe(`${PRODUCT_NAME} (Nightly)`);
   });
 
   it("keeps the fallback display name for stable primary server versions", () => {
     expect(
       resolveServerBackedAppDisplayName({
-        baseName: "Satellite",
-        fallbackDisplayName: "Satellite (Alpha)",
+        baseName: PRODUCT_NAME,
+        fallbackDisplayName: `${PRODUCT_NAME} (Alpha)`,
         fallbackStageLabel: "Alpha",
         primaryServerVersion: "0.0.27",
       }),
-    ).toBe("Satellite (Alpha)");
+    ).toBe(`${PRODUCT_NAME} (Alpha)`);
   });
 
   it("keeps the fallback display name for malformed nightly primary server versions", () => {
     expect(
       resolveServerBackedAppDisplayName({
-        baseName: "Satellite",
-        fallbackDisplayName: "Satellite (Alpha)",
+        baseName: PRODUCT_NAME,
+        fallbackDisplayName: `${PRODUCT_NAME} (Alpha)`,
         fallbackStageLabel: "Alpha",
         primaryServerVersion: "0.0.28-nightly.20260616",
       }),
-    ).toBe("Satellite (Alpha)");
+    ).toBe(`${PRODUCT_NAME} (Alpha)`);
   });
 });
