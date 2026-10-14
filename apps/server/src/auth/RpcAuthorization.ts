@@ -23,7 +23,6 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   ORCHESTRATION_WS_METHODS,
   AuthTerminalReadScope,
-  IDEA_WS_METHODS,
   type AuthEnvironmentScope,
   EnvironmentAuthorizationError,
   RpcScopeAuthorization,
@@ -35,6 +34,8 @@ import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 
+import { SATELLITE_RPC_REQUIRED_SCOPES } from "../satellite/SatelliteRpcRegistry.ts";
+
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
 /**
@@ -43,10 +44,8 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * runtime failure.
  */
 export const RPC_REQUIRED_SCOPES = {
+  ...SATELLITE_RPC_REQUIRED_SCOPES,
   [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: AuthOrchestrationReadScope,
-  [IDEA_WS_METHODS.list]: AuthOrchestrationReadScope,
-  [IDEA_WS_METHODS.get]: AuthOrchestrationReadScope,
-  [IDEA_WS_METHODS.subscribeChanges]: AuthOrchestrationReadScope,
   [WS_METHODS.issuesList]: AuthOrchestrationReadScope,
   [WS_METHODS.issuesGet]: AuthOrchestrationReadScope,
   [WS_METHODS.issuesBoardsList]: AuthOrchestrationReadScope,

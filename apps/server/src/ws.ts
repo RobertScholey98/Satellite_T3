@@ -1,16 +1,13 @@
-import { IDEA_WS_METHODS, IdeaOperationError, ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
-import { IdeaNotebookStore } from "./ideas/IdeaNotebookStore.ts";
+import { ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
 import { DocumentService } from "./documents/DocumentService.ts";
 import { RevdocService } from "./revdoc/RevdocService.ts";
 import { IssueService } from "./issues/IssueService.ts";
 import { OpenWorkService } from "./openWork/OpenWorkService.ts";
-import {
-  ProjectionSnapshotQuery,
-  OrchestrationEngineService,
-} from "./orchestration-v2/SatelliteOrchestration.ts";
+import { ProjectionSnapshotQuery } from "./orchestration-v2/SatelliteOrchestration.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
+import * as SatelliteWsRpc from "./satellite/SatelliteWsRpc.ts";
 
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -93,6 +90,7 @@ import {
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
   WS_METHODS,
+  WsCoreRpcGroup,
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
@@ -1103,24 +1101,22 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
   },
 );
 
-const layerWsRpc = (
+export const layerWsRpc = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   clientOrigin: OrchestrationClientOrigin,
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
 ) =>
-  ServerWsRpcGroup.toLayer(
+  WsCoreRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
-      const ideaStore = yield* IdeaNotebookStore;
       const chatAttachments = yield* ChatAttachments.ChatAttachments;
       const documents = yield* DocumentService;
       const revdoc = yield* RevdocService;
       const issues = yield* IssueService;
       const openWork = yield* OpenWorkService;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
-      const satelliteEngine = yield* OrchestrationEngineService;
 
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -1418,7 +1414,7 @@ const layerWsRpc = (
         return result;
       });
 
-      const handlers = ServerWsRpcGroup.of({
+      const handlers = WsCoreRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
@@ -2212,49 +2208,6 @@ const layerWsRpc = (
                 }),
             ),
           ),
-        [IDEA_WS_METHODS.list]: (input) =>
-          ideaStore.list(input.projectId).pipe(
-            Effect.map((ideas) => ({ ideas })),
-            Effect.mapError((error) => new IdeaOperationError({ message: error.message })),
-          ),
-        [IDEA_WS_METHODS.get]: (input) =>
-          ideaStore.get(input.threadId).pipe(
-            Effect.map((notebook) => ({ notebook })),
-            Effect.mapError((error) => new IdeaOperationError({ message: error.message })),
-          ),
-        [IDEA_WS_METHODS.subscribeChanges]: () =>
-          Effect.gen(function* () {
-            const events = yield* satelliteEngine.subscribeDomainEvents;
-            return events.pipe(
-              Stream.filter(
-                (event) =>
-                  event.type === "idea.changed" ||
-                  event.type === "idea.purged" ||
-                  event.type === "thread.meta-updated" ||
-                  (event.type === "thread.activity-appended" &&
-                    event.payload.activity.kind === "user-input.resolved") ||
-                  (event.type === "thread.session-set" && event.payload.turnSettled === true) ||
-                  (event.type === "thread.message-sent" && event.payload.role === "user") ||
-                  (event.type === "thread.created" && event.payload.purpose === "idea"),
-              ),
-              Stream.mapEffect((event) =>
-                Effect.gen(function* () {
-                  const threadId = ThreadId.make(event.aggregateId);
-                  const notebook = yield* ideaStore.get(threadId);
-                  return notebook || event.type === "idea.purged"
-                    ? Option.some({
-                        threadId,
-                        revision: notebook?.revision ?? 0,
-                        purged: event.type === "idea.purged",
-                      })
-                    : Option.none();
-                }),
-              ),
-              Stream.filter(Option.isSome),
-              Stream.map((change) => change.value),
-              Stream.mapError((error) => new IdeaOperationError({ message: error.message })),
-            );
-          }).pipe(Stream.unwrap),
         [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: (input) =>
           projectionSnapshotQuery.getRequestLifecycle(input),
         [WS_METHODS.revdocGet]: (input) => revdoc.get(input),
@@ -2779,8 +2732,7 @@ export const layer = Layer.unwrap(
     const revdoc = yield* RevdocService;
     const issues = yield* IssueService;
     const openWork = yield* OpenWorkService;
-    const ideaStore = yield* IdeaNotebookStore;
-    const satelliteEngine = yield* OrchestrationEngineService;
+    const satelliteWsRpc = yield* SatelliteWsRpc.makeConnectionLayer;
     const satelliteQuery = yield* ProjectionSnapshotQuery;
     const chatAttachments = yield* ChatAttachments.ChatAttachments;
     const acpRegistryManagement = yield* AcpRegistryManagement.AcpRegistryManagement;
@@ -2840,6 +2792,7 @@ export const layer = Layer.unwrap(
               previewAutomationBroker,
               serverBrowser,
             ).pipe(
+              Layer.merge(satelliteWsRpc(session)),
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees
               // their defects, not the rest of the server's.
@@ -2857,8 +2810,6 @@ export const layer = Layer.unwrap(
                   Layer.succeed(RevdocService, revdoc),
                   Layer.succeed(IssueService, issues),
                   Layer.succeed(OpenWorkService, openWork),
-                  Layer.succeed(IdeaNotebookStore, ideaStore),
-                  Layer.succeed(OrchestrationEngineService, satelliteEngine),
                   Layer.succeed(ProjectionSnapshotQuery, satelliteQuery),
                   Layer.succeed(ChatAttachments.ChatAttachments, chatAttachments),
                   Layer.succeed(AcpRegistryManagement.AcpRegistryManagement, acpRegistryManagement),

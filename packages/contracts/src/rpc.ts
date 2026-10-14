@@ -4,15 +4,7 @@ import {
   OrchestrationGetRequestLifecycleError,
 } from "./satelliteOrchestration.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
-import {
-  IDEA_WS_METHODS,
-  IdeaListInput,
-  IdeaListResult,
-  IdeaGetInput,
-  IdeaGetResult,
-  IdeaChange,
-  IdeaOperationError,
-} from "./ideas.ts";
+import { SATELLITE_WS_METHODS, WsSatelliteRpcGroup } from "./satelliteRpc.ts";
 import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
@@ -429,6 +421,7 @@ export const ORCHESTRATION_WS_METHODS = {
 } as const;
 
 export const WS_METHODS = {
+  ...SATELLITE_WS_METHODS,
   revdocGet: "revdoc.get",
   revdocStart: "revdoc.start",
   revdocTestStart: "revdoc.testStart",
@@ -1930,22 +1923,6 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
-const WsIdeaListRpc = Rpc.make(IDEA_WS_METHODS.list, {
-  payload: IdeaListInput,
-  success: IdeaListResult,
-  error: Schema.Union([IdeaOperationError, EnvironmentAuthorizationError]),
-});
-const WsIdeaGetRpc = Rpc.make(IDEA_WS_METHODS.get, {
-  payload: IdeaGetInput,
-  success: IdeaGetResult,
-  error: Schema.Union([IdeaOperationError, EnvironmentAuthorizationError]),
-});
-const WsIdeaChangesRpc = Rpc.make(IDEA_WS_METHODS.subscribeChanges, {
-  payload: Schema.Struct({}),
-  success: IdeaChange,
-  error: Schema.Union([IdeaOperationError, EnvironmentAuthorizationError]),
-  stream: true,
-});
 /**
  * Checks the connection's scopes against the scope each RPC declares, before
  * the handler runs. Every RPC in `WsRpcGroup` carries it, so a handler cannot
@@ -1956,15 +1933,12 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
-export const WsRpcGroup = RpcGroup.make(
+export const WsCoreRpcGroup = RpcGroup.make(
   Rpc.make(ORCHESTRATION_WS_METHODS.getRequestLifecycle, {
     payload: OrchestrationGetRequestLifecycleInput,
     success: OrchestrationGetRequestLifecycleResult,
     error: Schema.Union([OrchestrationGetRequestLifecycleError, EnvironmentAuthorizationError]),
   }),
-  WsIdeaListRpc,
-  WsIdeaGetRpc,
-  WsIdeaChangesRpc,
   Rpc.make(WS_METHODS.issuesList, {
     payload: IssuesListInput,
     success: IssuesListResult,
@@ -2274,3 +2248,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
 ).middleware(RpcScopeAuthorization);
+
+export const WsRpcGroup = WsCoreRpcGroup.merge(
+  WsSatelliteRpcGroup.middleware(RpcScopeAuthorization),
+);

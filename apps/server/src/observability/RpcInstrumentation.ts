@@ -1,5 +1,4 @@
 import {
-  IDEA_WS_METHODS,
   ORCHESTRATION_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   WS_METHODS,
@@ -11,6 +10,7 @@ import * as References from "effect/References";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 
+import { SATELLITE_RPC_AGGREGATES } from "../satellite/SatelliteRpcRegistry.ts";
 import { rpcRequestDuration, rpcRequestsTotal, withMetrics } from "./Metrics.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
@@ -21,10 +21,8 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * prefix. Adding an RPC to `WsRpcGroup` without a label is a type error.
  */
 const RPC_AGGREGATES = {
+  ...SATELLITE_RPC_AGGREGATES,
   [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: "orchestration",
-  [IDEA_WS_METHODS.list]: "ideas",
-  [IDEA_WS_METHODS.get]: "ideas",
-  [IDEA_WS_METHODS.subscribeChanges]: "ideas",
   [WS_METHODS.revdocGet]: "revdoc",
   [WS_METHODS.revdocStart]: "revdoc",
   [WS_METHODS.revdocTestStart]: "revdoc",

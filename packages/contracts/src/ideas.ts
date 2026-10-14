@@ -315,12 +315,6 @@ export const IdeaArtifactWriteInput = Schema.Struct({
   mediaType: TrimmedNonEmptyString,
   contentBase64: Schema.String.check(Schema.isMaxLength(28_000_000)),
 });
-export const IDEA_WS_METHODS = {
-  subscribeChanges: "ideas.subscribeChanges",
-  list: "ideas.list",
-  get: "ideas.get",
-} as const;
-
 export const IdeaChange = Schema.Struct({
   threadId: ThreadId,
   revision: NonNegativeInt,
