@@ -29,7 +29,6 @@ export const canonicalIssueKey = (ref: IssueRef) =>
 export class IssueHost extends Context.Service<
   IssueHost,
   {
-    /** Null for a host kind with no adapter, which the issue service reports as unavailable. */
     readonly forHost: (kind: SourceControlProviderKind) => IssueHostAdapter | null;
     readonly forBoard: (locator: IssueBoardLocator) => IssueHostBoards | null;
   }
@@ -39,7 +38,6 @@ const decodeHostKind = Schema.decodeUnknownEffect(IssueRef.fields.hostKind);
 const unavailable = (message: string) =>
   new IssueOperationError({ reason: "unavailable", message });
 
-/** The repository a project's issues live in, as the scope every adapter operation takes. */
 export const repositoryIssueScope = Effect.fnUntraced(function* (
   cwd: string,
   identity: RepositoryIdentity | null | undefined,
@@ -70,7 +68,6 @@ export const repositoryIssueScope = Effect.fnUntraced(function* (
   };
 });
 
-/** Exported for tests, which stand a registry up from adapters they supply themselves. */
 export function fromAdapters(adapters: ReadonlyArray<IssueHostAdapter>): IssueHost["Service"] {
   const byKind = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
   // Each group only receives locators of the kind it declared, which is what the cast relies on.

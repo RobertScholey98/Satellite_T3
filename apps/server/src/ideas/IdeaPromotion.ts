@@ -86,7 +86,6 @@ export class IdeaPromotion extends Context.Service<
           })
           .pipe(Effect.mapError(mapError));
       });
-      /** The approved repository and the adapter that publishes to it. */
       const destination = (cwd: string, promotion: Promotion) => {
         const adapter = hosts.forHost(promotion.target.hostKind);
         const publication = adapter?.publication;

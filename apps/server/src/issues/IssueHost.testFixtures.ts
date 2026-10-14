@@ -10,7 +10,6 @@ import type { IssueHostAdapter, PublishedIssue } from "./IssueHostAdapter.ts";
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
 
-/** One Azure CLI call, as the scripted host reads it. */
 export interface AzureRequest {
   readonly command: string;
   readonly resource: string | undefined;
@@ -77,10 +76,7 @@ export const azureCli = (
     });
   });
 
-/**
- * A GitHub adapter over an in-memory repository, for code that publishes issues. `onRead` sees
- * every issue read back, and `loseFirstCreate` creates the first issue but fails its response.
- */
+/** A GitHub adapter over an in-memory repository, for code that publishes issues. */
 export const publishingHost = (
   options: {
     readonly loseFirstCreate?: boolean;

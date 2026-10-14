@@ -25,7 +25,6 @@ interface World {
   readonly issues: ReadonlyArray<number>;
   /** Items the host lists beside issues, such as pull requests. */
   readonly nonIssues?: ReadonlyArray<number>;
-  /** Comment bodies on every issue, in order. */
   readonly comments?: ReadonlyArray<string>;
   readonly malformed?: "not-json" | "missing-title";
 }
@@ -161,7 +160,6 @@ const azure: Subject = {
     }),
 };
 
-/** Serves a REST host's issue list, one issue, or one issue's comments from the world. */
 const restAnswer = (
   world: World,
   path: string,

@@ -90,6 +90,8 @@ const GitHubPublishedIssue = Schema.Struct({
   html_url: Schema.String,
   body: Schema.NullOr(Schema.String),
 });
+// An issue body can reach 65,536 characters, so small pages keep each response under the limit.
+const MARKER_PAGE_SIZE = 15;
 const refuseDestination = () =>
   new IssueOperationError({
     reason: "unavailable",
@@ -421,18 +423,17 @@ export const make = Effect.gen(function* () {
     "GitHubIssueHost.findByMarker",
   )(function* ({ ref }, markers) {
     const found: PublishedIssue[] = [];
-    // Bodies run to 65 KB, so a small page keeps each response well under the response limit.
     for (let page = 1; ; page++) {
       const issues = yield* decodeHostJson(
         Schema.Array(GitHubPublishedIssue),
         yield* rest(
           ref.host,
-          `repos/${ref.repository}/issues?state=all&sort=created&direction=asc&per_page=25&page=${page}`,
+          `repos/${ref.repository}/issues?state=all&sort=created&direction=asc&per_page=${MARKER_PAGE_SIZE}&page=${page}`,
         ),
       );
       for (const issue of issues)
         if (markers.some((marker) => issue.body?.includes(marker))) found.push(toPublished(issue));
-      if (issues.length < 25) return found;
+      if (issues.length < MARKER_PAGE_SIZE) return found;
     }
   });
 

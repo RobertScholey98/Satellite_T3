@@ -45,7 +45,6 @@ export interface IssueHostBoards<K extends IssueBoardLocator["kind"] = IssueBoar
   ) => Effect.Effect<void, IssueOperationError>;
 }
 
-/** An issue as publication sees it: enough to match a marker and record the outcome. */
 export interface PublishedIssue {
   readonly number: number;
   readonly title: string;
