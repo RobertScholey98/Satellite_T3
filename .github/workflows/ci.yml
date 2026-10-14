@@ -64,8 +64,11 @@ jobs:
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
 
+      - name: Check rebrand
+        run: node scripts/rebrand.ts --check
+
       - name: Lint Satellite sources
-        run: vp lint apps/desktop/src/satellite apps/web/src/components/desktop/SatelliteDesktopShell.tsx apps/web/src/satellitePill.ts packages/contracts/src/satellite.ts scripts/satellite-dev.mjs
+        run: vp lint apps/desktop/src/satellite apps/server/src/satellite apps/web/src/components/desktop/SatelliteDesktopShell.tsx apps/web/src/satellitePill.ts packages/contracts/src/satellite.ts packages/contracts/src/satelliteRpc.ts scripts/rebrand.ts scripts/satellite-dev.mjs
 
       - name: Typecheck desktop and web
         run: |
@@ -84,8 +87,12 @@ jobs:
         working-directory: apps/desktop
         run: vp test run scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
 
-      - name: Test packaging
-        run: vp test run scripts/build-desktop-artifact.test.ts
+      - name: Test packaging and rebrand
+        run: vp test run scripts/build-desktop-artifact.test.ts scripts/rebrand.test.ts
+
+      - name: Test Satellite RPC registration
+        working-directory: apps/server
+        run: vp test run src/satellite
 
       - name: Build desktop pipeline
         run: vp run build:desktop
