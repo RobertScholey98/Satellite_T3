@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from "@t3tools/shared/productIdentity";
 import Constants from "expo-constants";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { Platform, View } from "react-native";
@@ -32,7 +33,7 @@ export function CompactBrandTitle(
   return (
     <View
       aria-level={1}
-      accessibilityLabel="Satellite, Threads"
+      accessibilityLabel={`${PRODUCT_NAME}, Threads`}
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
@@ -44,7 +45,7 @@ export function CompactBrandTitle(
         className="font-t3-medium text-foreground-muted"
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        Satellite
+        {PRODUCT_NAME}
       </Text>
       <View
         className="rounded-full bg-subtle px-1.5 py-0.5"

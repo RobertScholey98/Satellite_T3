@@ -1,3 +1,4 @@
+import { PRODUCT_NAME } from "@t3tools/shared/productIdentity";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -841,7 +842,7 @@ export const layerDeviceToolkit = Layer.mergeAll(
 );
 
 export const layerMcpTransport = McpServer.layerHttp({
-  name: "Satellite",
+  name: PRODUCT_NAME,
   version: packageJson.version,
   path: "/mcp",
   protocols: [McpProtocol.v2025_06_18],
