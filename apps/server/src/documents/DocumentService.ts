@@ -588,6 +588,15 @@ export const makeDocumentService = (options: {
     });
     const readSource = Effect.fnUntraced(function* (input: PublishRequest) {
       if (input.content) return { name: input.title, ...input.content };
+      if (input.text !== undefined) {
+        if (input.path || !input.mediaType)
+          return yield* error("invalid", "Publish either a file path or text with a media type.");
+        return {
+          name: input.title,
+          mediaType: input.mediaType,
+          bytes: new TextEncoder().encode(input.text),
+        };
+      }
       if (!input.path || !path.isAbsolute(input.path))
         return yield* error("invalid", "Publish requires an absolute host file path.");
       const stat = yield* fs.stat(input.path).pipe(Effect.mapError(storageError));

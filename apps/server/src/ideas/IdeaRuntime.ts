@@ -421,7 +421,7 @@ export class IdeaRuntime extends Context.Service<
         if (input.resource === "skill") return skill;
         return [
           "Promotion uses this idea's existing thread. Read the pitch first, then relevant entries, documents and current main.",
-          "Create optional PRD/spec documents with idea_write_document only when useful. Include requirements in ticket bodies. Never link tickets back to this idea or its files.",
+          "Create optional PRD/spec documents with publish_document only when useful. Include requirements in ticket bodies. Never link tickets back to this idea or its files.",
           "Use idea_propose_issues to save the breakdown for user review. After the user approves it in T3, idea_publish_issues publishes and verifies it. Do not use shell commands or create another thread.",
           "The installed to-issues instructions follow. T3's scoped tools replace tracker CLI actions and preserve its review requirement.",
           skill,

@@ -18,7 +18,7 @@ it("rejects ambiguous tool permissions instead of treating a document name as a 
   for (const title of [
     undefined,
     null,
-    "Write mcp__t3-code__idea_write_document",
+    "Write mcp__t3-code__publish_document",
     "mcp__other__idea_read",
     "mcp__t3-code__idea_read_extra",
   ]) {
@@ -165,7 +165,7 @@ it.layer(NodeServices.layer)("Idea native profiles", (it) => {
       const updatePolicy = (yield* decode(
         yield* fs.readFileString(path.join(updates, ".cursor", "cli.json")),
       )).permissions;
-      expect(threadPolicy.allow).toContain("Mcp(t3-code:idea_write_document)");
+      expect(threadPolicy.allow).toContain("Mcp(t3-code:publish_document)");
       expect(threadPolicy.deny).toContain("Write(**)");
       expect(threadPolicy.deny).toContain("Shell(*)");
       expect(updatePolicy.allow).toEqual([]);

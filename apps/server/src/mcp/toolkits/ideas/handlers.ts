@@ -10,7 +10,6 @@ import { IdeasToolkit, IdeasImageToolkit } from "./tools.ts";
 const make = Effect.gen(function* () {
   const runtime = yield* IdeaRuntime;
   const promotion = yield* IdeaPromotion;
-  const documents = yield* DocumentService;
   return {
     idea_read: McpToolAccess.readsAsCaller((input) =>
       requireThreadMcpCapability("ideas").pipe(
@@ -20,21 +19,6 @@ const make = Effect.gen(function* () {
     idea_read_main: McpToolAccess.readsAsCaller((input) =>
       requireThreadMcpCapability("ideas").pipe(
         Effect.flatMap(({ thread: { threadId } }) => runtime.readMain({ ...input, threadId })),
-      ),
-    ),
-    idea_write_document: McpToolAccess.actsAsCaller((input) =>
-      requireThreadMcpCapability("ideas").pipe(
-        Effect.flatMap(({ thread }) =>
-          documents.publishIdeaDocument(
-            {
-              threadId: thread.threadId,
-              name: input.name,
-              mediaType: input.mediaType,
-              bytes: Buffer.from(input.text),
-            },
-            `agent:${thread.providerInstanceId}:${thread.providerSessionId}`,
-          ),
-        ),
       ),
     ),
     idea_propose_issues: McpToolAccess.actsAsCaller((input) =>

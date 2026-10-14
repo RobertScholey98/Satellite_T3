@@ -16,13 +16,7 @@ import { IdeaPromotion as PromotionService } from "../../../ideas/IdeaPromotion.
 import { McpInvocationContext } from "../../McpInvocationContext.ts";
 import { DocumentService } from "../../../documents/DocumentService.ts";
 
-const dependencies = [
-  ThreadManagementService,
-  McpInvocationContext,
-  IdeaRuntime,
-  PromotionService,
-  DocumentService,
-];
+const dependencies = [ThreadManagementService, McpInvocationContext, IdeaRuntime, PromotionService];
 const failure = Schema.Union([
   IdeaRuntimeError,
   DocumentOperationError,
@@ -70,18 +64,6 @@ export const IdeasToolkit = Toolkit.make(
     failure,
     dependencies,
   }).annotate(Tool.Readonly, true),
-  Tool.make("idea_write_document", {
-    description:
-      "Save a generated text document inside this idea. The name is a label, not a filesystem path. Use text/html for an interactive design or text/markdown for a PRD or spec.",
-    parameters: Schema.Struct({
-      name: Schema.String,
-      mediaType: Schema.String,
-      text: Schema.String.check(Schema.isMaxLength(500_000)),
-    }),
-    success: IdeaArtifact,
-    failure,
-    dependencies,
-  }),
   Tool.make("idea_propose_issues", {
     description:
       "Save a self-contained issue breakdown for the user's review. Include implementation context in each body. Tickets must not rely on this idea's local links or documents. Record any scope still unaddressed.",

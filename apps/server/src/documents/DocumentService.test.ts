@@ -293,6 +293,29 @@ describe("managed document persistence", () => {
         { ...f.publication, threadId: ideaThreadId, requestId: "idea-path" },
         actor,
       );
+      const fromText = yield* f.service.publish(
+        {
+          requestId: "idea-text",
+          threadId: ideaThreadId,
+          title: "PRD",
+          kind: "document",
+          text: "# Goals",
+          mediaType: "text/markdown",
+        },
+        "agent:codex:session",
+      );
+      const withoutMediaType = yield* f.service
+        .publish(
+          {
+            requestId: "idea-text-bare",
+            threadId: ideaThreadId,
+            title: "PRD",
+            kind: "document",
+            text: "# Goals",
+          },
+          actor,
+        )
+        .pipe(Effect.flip);
       const upload = yield* f.service.publishIdeaDocument(
         { threadId: ideaThreadId, name: "sketch.png", mediaType: "image/png", bytes: image },
         "upload",
@@ -318,6 +341,13 @@ describe("managed document persistence", () => {
             source: "upload",
           },
           {
+            id: IdeaArtifactId.make(fromText.document.id),
+            name: "PRD",
+            mediaType: "text/markdown",
+            textStatus: "available",
+            source: "agent",
+          },
+          {
             id: upload.id,
             name: "sketch.png",
             mediaType: "image/png",
@@ -328,13 +358,14 @@ describe("managed document persistence", () => {
       );
       assert.deepEqual(
         (yield* f.service.list({ threadId: ideaThreadId })).map((document) => document.id).sort(),
-        [fromPath.document.id, upload.id].sort(),
+        [fromPath.document.id, fromText.document.id, upload.id].sort(),
       );
       assert.equal(
         (yield* f.service.readIdeaDocument({ threadId: ideaThreadId, artifactId: upload.id }))
           .contentBase64,
         Buffer.from(image).toString("base64"),
       );
+      assert.equal(withoutMediaType.reason, "invalid");
       assert.equal(binaryRead.reason, "invalid");
       assert.include(binaryRead.message, "idea_read_image");
       assert.deepEqual(yield* publishedRows, []);
