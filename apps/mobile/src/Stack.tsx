@@ -1,5 +1,4 @@
 import { IdeaDeletionCleanup } from "./features/ideas/IdeaDeletionCleanup";
-import { IdeasRouteScreen, IdeaRouteScreen } from "./features/ideas/IdeasRouteScreen";
 import {
   createPathConfigForStaticNavigation,
   getPathFromState,
@@ -36,7 +35,7 @@ import { ConnectOnboardingRouteScreen } from "./features/cloud/ConnectOnboarding
 import { useConnectOnboardingNavigation } from "./features/cloud/connectOnboardingNavigation";
 import { AttachmentFileScreen } from "./features/files/AttachmentFileScreen";
 import { ThreadFilesTreeScreen, ThreadFileScreen } from "./features/files/ThreadFilesRouteScreen";
-import { ThreadDocumentsScreen } from "./features/documents/ThreadDocumentsScreen";
+import { satelliteScreens } from "./features/satellite/satelliteScreens";
 import { AdaptiveWorkspaceLayout } from "./features/layout/AdaptiveWorkspaceLayout";
 import {
   HardwareKeyboardCommandOverlay,
@@ -689,15 +688,9 @@ const RootStackConfig = createNativeStackNavigator({
         ...getCompactBrandHeaderOptions(),
       },
     }),
-    Ideas: createNativeStackScreen({
-      screen: IdeasRouteScreen,
-      linking: "ideas",
-      options: GLASS_HEADER_OPTIONS,
-    }),
-    Idea: createNativeStackScreen({
-      screen: IdeaRouteScreen,
-      linking: "ideas/:environmentId/:threadId",
-      options: GLASS_HEADER_OPTIONS,
+    ...satelliteScreens({
+      headerOptions: GLASS_HEADER_OPTIONS,
+      threadLinkingPrefix: THREAD_LINKING_PREFIX,
     }),
     Thread: createNativeStackScreen({
       screen: ThreadRouteScreen,
@@ -746,11 +739,6 @@ const RootStackConfig = createNativeStackNavigator({
         sheetAllowedDetents: Platform.OS === "android" ? undefined : [0.55, 0.92],
         sheetGrabberVisible: Platform.OS !== "android",
       },
-    }),
-    ThreadDocuments: createNativeStackScreen({
-      screen: ThreadDocumentsScreen,
-      linking: `${THREAD_LINKING_PREFIX}/documents`,
-      options: { ...GLASS_HEADER_OPTIONS, title: "Documents" },
     }),
     ThreadFiles: createNativeStackScreen({
       screen: ThreadFilesTreeScreen,

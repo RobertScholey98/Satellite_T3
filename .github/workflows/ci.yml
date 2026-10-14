@@ -88,7 +88,7 @@ jobs:
         run: vp test run scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
 
       - name: Test packaging and rebrand
-        run: vp test run scripts/build-desktop-artifact.test.ts scripts/rebrand.test.ts
+        run: vp test run scripts/build-desktop-artifact.test.ts scripts/rebrand.test.ts scripts/fork-footprint.test.ts
 
       - name: Test Satellite RPC registration
         working-directory: apps/server
