@@ -13,11 +13,11 @@ import {
   ProviderInstanceId,
   ThreadId,
   TurnId,
-  IssueOperationError,
   type OrchestrationEvent,
   type OrchestrationThreadShell,
 } from "@t3tools/contracts";
 import { IssueService, makeIssueService } from "./IssueService.ts";
+import { fromAdapters } from "./IssueHost.ts";
 import { make, recoverStartedIssueAttempts } from "./IssueLifecycleReactor.ts";
 import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
@@ -30,22 +30,10 @@ describe("issue launch recovery", () => {
         const sourceEnvironmentId = EnvironmentId.make("source");
         const destinationEnvironmentId = EnvironmentId.make("destination");
         const projectId = ProjectId.make("destination-project");
-        const unavailable = Effect.fail(
-          new IssueOperationError({
-            reason: "unavailable",
-            message: "The destination must not contact the issue host.",
-          }),
-        );
         const service = yield* makeIssueService({
           environmentId: destinationEnvironmentId,
           getProject: () => Effect.succeed(null),
-          host: {
-            list: () => unavailable,
-            get: () => unavailable,
-            listBoards: () => unavailable,
-            board: () => unavailable,
-            move: () => unavailable,
-          },
+          hosts: fromAdapters([]),
         });
         const now = "2026-09-30T12:00:00Z";
         const threads: OrchestrationThreadShell[] = [];
@@ -161,22 +149,10 @@ describe("issue launch recovery", () => {
         const sourceEnvironmentId = EnvironmentId.make("source");
         const destinationEnvironmentId = EnvironmentId.make("destination");
         const projectId = ProjectId.make("destination-project");
-        const unavailable = Effect.fail(
-          new IssueOperationError({
-            reason: "unavailable",
-            message: "Host should not run during destination recovery.",
-          }),
-        );
         const options = {
           environmentId: destinationEnvironmentId,
           getProject: () => Effect.succeed(null),
-          host: {
-            list: () => unavailable,
-            get: () => unavailable,
-            listBoards: () => unavailable,
-            board: () => unavailable,
-            move: () => unavailable,
-          },
+          hosts: fromAdapters([]),
         };
         const service = yield* makeIssueService(options);
         for (const id of ["accepted", "queued", "id-without-start", "start-without-id"]) {

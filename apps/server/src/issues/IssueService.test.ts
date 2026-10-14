@@ -20,7 +20,8 @@ import {
 import migration from "../persistence/Migrations/056_IssueBoards.ts";
 import snapshotMigration from "../persistence/Migrations/059_IssueBoardSnapshots.ts";
 import { makeIssueService } from "./IssueService.ts";
-import { canonicalIssueKey, type IssueHostShape } from "./IssueHost.ts";
+import { canonicalIssueKey, fromAdapters } from "./IssueHost.ts";
+import type { IssueHostAdapter, IssueHostBoards } from "./IssueHostAdapter.ts";
 
 const environmentId = EnvironmentId.make("issue-test-source");
 const destination = EnvironmentId.make("issue-test-destination");
@@ -71,19 +72,10 @@ const setup = Effect.gen(function* () {
   let reads = 0;
   let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | null = null;
   const writes: string[] = [];
-  const host: IssueHostShape = {
-    list: () => Effect.succeed({ issues: [], nextCursor: null }),
-    get: () =>
-      Effect.succeed({
-        ref: issue,
-        title: "Issue",
-        body: "Details",
-        state: "open",
-        labels: [],
-        updatedAt: "now",
-      }),
-    listBoards: () => Effect.succeed([{ title: "Board", locator }]),
-    board: () =>
+  const boards: IssueHostBoards<"github-project"> = {
+    locatorKind: "github-project",
+    list: () => Effect.succeed([{ title: "Board", locator }]),
+    read: () =>
       Effect.gen(function* () {
         reads++;
         if (failReads)
@@ -120,7 +112,25 @@ const setup = Effect.gen(function* () {
             column = next;
           }),
   };
-  const options = { host, environmentId, getProject: () => Effect.succeed(project) };
+  const adapter = {
+    kind: "github",
+    list: () => Effect.succeed({ issues: [], nextCursor: null }),
+    get: () =>
+      Effect.succeed({
+        ref: issue,
+        title: "Issue",
+        body: "Details",
+        state: "open",
+        labels: [],
+        updatedAt: "now",
+      }),
+    boards,
+  } satisfies IssueHostAdapter;
+  const options = {
+    hosts: fromAdapters([adapter]),
+    environmentId,
+    getProject: () => Effect.succeed(project),
+  };
   const service = yield* makeIssueService(options);
   const view = yield* service.configureBoard({
     requestId: "configure",
@@ -145,6 +155,8 @@ const setup = Effect.gen(function* () {
   return {
     service,
     options,
+    adapter,
+    boards,
     boardId: view.board.id,
     reserve,
     writes,
@@ -528,14 +540,20 @@ describe("IssueService", () => {
                 },
               };
             }),
-          host: {
-            ...test.options.host,
-            listBoards: (scope) =>
-              Effect.sync(() => {
-                scopes.push(scope.ref.repository);
-                return [{ title: "Stories", locator: azureLocator }];
-              }),
-          },
+          hosts: fromAdapters([
+            {
+              ...test.adapter,
+              kind: "azure-devops",
+              boards: {
+                ...test.boards,
+                list: (scope) =>
+                  Effect.sync(() => {
+                    scopes.push(scope.ref.repository);
+                    return [{ title: "Stories", locator: azureLocator }];
+                  }),
+              },
+            },
+          ]),
         });
         const boards = yield* service.listBoards({ projectId: freshProjectId });
         assert.strictEqual(boards.length, 1);
@@ -564,14 +582,21 @@ describe("IssueService", () => {
         let discoveries = 0;
         const service = yield* makeIssueService({
           ...test.options,
-          host: {
-            ...test.options.host,
-            listBoards: () =>
-              Effect.sync(() => {
-                discoveries++;
-                return [{ title: "Discovered board", locator: { ...locator, projectNumber: 2 } }];
-              }),
-          },
+          hosts: fromAdapters([
+            {
+              ...test.adapter,
+              boards: {
+                ...test.boards,
+                list: () =>
+                  Effect.sync(() => {
+                    discoveries++;
+                    return [
+                      { title: "Discovered board", locator: { ...locator, projectNumber: 2 } },
+                    ];
+                  }),
+              },
+            },
+          ]),
         });
         const saved = yield* service.listBoards({ projectId, connectedOnly: true });
         assert.deepStrictEqual(
@@ -732,18 +757,23 @@ describe("IssueService", () => {
                 },
               },
             }),
-          host: {
-            ...test.options.host,
-            listBoards: () => Effect.succeed([]),
-            board: (cwd, requested) => {
-              assert.deepStrictEqual(requested, locator);
-              return test.options.host.board(cwd, requested);
+          hosts: fromAdapters([
+            {
+              ...test.adapter,
+              boards: {
+                ...test.boards,
+                list: () => Effect.succeed([]),
+                read: (cwd, requested) => {
+                  assert.deepStrictEqual(requested, locator);
+                  return test.boards.read(cwd, requested);
+                },
+                move: (cwd, requested, item, column) => {
+                  assert.deepStrictEqual(requested, locator);
+                  return test.boards.move(cwd, requested, item, column);
+                },
+              } satisfies IssueHostBoards<"github-project">,
             },
-            move: (cwd, requested, item, column) => {
-              assert.deepStrictEqual(requested, locator);
-              return test.options.host.move(cwd, requested, item, column);
-            },
-          },
+          ]),
         });
 
         assert.strictEqual((yield* restarted.listBoards({ projectId }))[0]?.id, test.boardId);
@@ -1104,13 +1134,18 @@ describe("IssueService", () => {
           };
           const crossOwner = yield* makeIssueService({
             ...test.options,
-            host: {
-              ...test.options.host,
-              board: () =>
-                test.options.host
-                  .board("/repo", otherLocator)
-                  .pipe(Effect.map((remote) => ({ ...remote, locator: otherLocator }))),
-            },
+            hosts: fromAdapters([
+              {
+                ...test.adapter,
+                boards: {
+                  ...test.boards,
+                  read: () =>
+                    test.boards
+                      .read("/repo", otherLocator)
+                      .pipe(Effect.map((remote) => ({ ...remote, locator: otherLocator }))),
+                },
+              },
+            ]),
           });
           const connected = yield* crossOwner.configureBoard({
             requestId: "connect-other-owner",
@@ -1132,16 +1167,21 @@ describe("IssueService", () => {
           );
           const denied = yield* makeIssueService({
             ...test.options,
-            host: {
-              ...test.options.host,
-              listBoards: () =>
-                Effect.fail(
-                  new IssueOperationError({
-                    reason: "authentication",
-                    message: "Project discovery denied",
-                  }),
-                ),
-            },
+            hosts: fromAdapters([
+              {
+                ...test.adapter,
+                boards: {
+                  ...test.boards,
+                  list: () =>
+                    Effect.fail(
+                      new IssueOperationError({
+                        reason: "authentication",
+                        message: "Project discovery denied",
+                      }),
+                    ),
+                },
+              },
+            ]),
           });
           const boards = yield* denied.listBoards({ projectId });
           assert.strictEqual(boards.length, 2);

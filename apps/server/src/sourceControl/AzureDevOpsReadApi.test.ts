@@ -259,7 +259,6 @@ it.effect("loads an Azure board through IssueHost using one sign-in and no per-r
       const unused = () => Effect.die("Unexpected host");
       const api = yield* makeIssueHost({
         azure,
-        github: { execute: unused },
         gitlab: { execute: unused },
         forgejo: { api: unused },
         bitbucket: { request: unused },

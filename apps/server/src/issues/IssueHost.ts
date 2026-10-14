@@ -16,26 +16,18 @@ import {
   TrimmedNonEmptyString,
   type IssueRef,
   type IssueBoardLocator,
-  type IssueBoardColumn,
   type IssueBoardItem,
-  type IssuesListResult,
+  type SourceControlProviderKind,
 } from "@t3tools/contracts";
-import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import { GitLabCli } from "../sourceControl/GitLabCli.ts";
 import { AzureDevOpsCli } from "../sourceControl/AzureDevOpsCli.ts";
 import { ForgejoCli } from "../sourceControl/ForgejoCli.ts";
 import { BitbucketApi } from "../sourceControl/BitbucketApi.ts";
 import { CredentialScope } from "../sourceControl/SourceControlRateLimit.ts";
+import * as GitHubIssueHost from "./GitHubIssueHost.ts";
+import type { IssueHostAdapter, IssueHostBoards, IssueHostScope } from "./IssueHostAdapter.ts";
 
-const decodeGitHubGraphqlRequest = Schema.decodeEffect(
-  Schema.fromJsonString(
-    Schema.Struct({
-      query: Schema.String,
-      variables: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
-    }),
-  ),
-);
-
+type AzureBoardLocator = Extract<IssueBoardLocator, { kind: "azure-board" }>;
 class AzureBoardsKey extends Data.Class<{
   readonly cwd: string;
   readonly host: string;
@@ -43,42 +35,6 @@ class AzureBoardsKey extends Data.Class<{
   readonly credentialScope: string;
 }> {}
 
-export interface IssueHostScope {
-  readonly cwd: string;
-  readonly ref: IssueRef;
-}
-export interface RemoteIssueBoard {
-  readonly title: string;
-  readonly locator: IssueBoardLocator;
-  readonly columns: ReadonlyArray<IssueBoardColumn>;
-  readonly items: ReadonlyArray<IssueBoardItem>;
-}
-export interface IssueHostShape {
-  readonly list: (
-    scope: IssueHostScope,
-    cursor?: string,
-  ) => Effect.Effect<IssuesListResult, IssueOperationError>;
-  readonly get: (scope: IssueHostScope) => Effect.Effect<IssueDetail, IssueOperationError>;
-  readonly listBoards: (
-    scope: IssueHostScope,
-  ) => Effect.Effect<
-    ReadonlyArray<{ title: string; locator: IssueBoardLocator }>,
-    IssueOperationError
-  >;
-  readonly board: (
-    cwd: string,
-    locator: IssueBoardLocator,
-  ) => Effect.Effect<RemoteIssueBoard, IssueOperationError>;
-  readonly move: (
-    cwd: string,
-    locator: IssueBoardLocator,
-    item: IssueBoardItem,
-    columnId: string,
-  ) => Effect.Effect<void, IssueOperationError>;
-}
-export class IssueHost extends Context.Service<IssueHost, IssueHostShape>()(
-  "t3/issues/IssueHost",
-) {}
 const invalid = () =>
   new IssueOperationError({
     reason: "remote",
@@ -126,25 +82,6 @@ const AzureIssueResponse = Schema.Struct({
     "System.WorkItemType": TrimmedNonEmptyString,
   }),
 });
-const GithubProjectResponse = Schema.Struct({
-  id: TrimmedNonEmptyString,
-  title: Schema.String,
-  fields: Schema.Struct({ nodes: Schema.Array(record) }),
-});
-const GithubFieldResponse = Schema.Struct({
-  id: TrimmedNonEmptyString,
-  name: Schema.String,
-  options: Schema.Array(Schema.Struct({ id: TrimmedNonEmptyString, name: Schema.String })),
-});
-const GithubProjectIssueResponse = Schema.Struct({
-  number: PositiveInt,
-  title: Schema.String,
-  state: TrimmedNonEmptyString,
-  updatedAt: Schema.String,
-  url: TrimmedNonEmptyString,
-  repository: Schema.Struct({ nameWithOwner: TrimmedNonEmptyString }),
-  labels: Schema.Struct({ nodes: Schema.Array(Schema.Struct({ name: Schema.String })) }),
-});
 const AzureBoardResponse = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: Schema.String,
@@ -162,13 +99,6 @@ const AzureTeamResponse = Schema.Struct({
   values: Schema.Array(
     Schema.Struct({ value: TrimmedNonEmptyString, includeChildren: Schema.Boolean }),
   ),
-});
-const GraphqlConnection = Schema.Struct({
-  nodes: Schema.Array(record),
-  pageInfo: Schema.Struct({
-    hasNextPage: Schema.Boolean,
-    endCursor: Schema.NullOr(Schema.String),
-  }),
 });
 const AzureWorkItemList = Schema.Struct({ value: Schema.Array(record) });
 const AzureQueryResponse = Schema.Struct({
@@ -217,7 +147,7 @@ export const canonicalIssueKey = (ref: IssueRef) =>
   ref.hostKind === "azure-devops"
     ? `${ref.hostKind}:${ref.host.toLowerCase()}:${ref.repository.split("/")[0]!.toLowerCase()}:${ref.id}`
     : `${ref.hostKind}:${ref.host.toLowerCase()}:${ref.repository.toLowerCase()}:${ref.id}`;
-export const issueFromHost = (scope: IssueHostScope, raw: Record<string, unknown>): IssueDetail => {
+const issueFromHost = (scope: IssueHostScope, raw: Record<string, unknown>): IssueDetail => {
   const fields = obj(raw.fields);
   const azure = scope.ref.hostKind === "azure-devops";
   const id = azure ? num(raw.id) : num(raw.number) || num(raw.iid) || num(raw.id);
@@ -267,38 +197,15 @@ export const issueFromHost = (scope: IssueHostScope, raw: Record<string, unknown
 };
 
 export const makeIssueHost = (options: {
-  readonly github: {
-    readonly execute: (input: {
-      readonly cwd: string;
-      readonly args: readonly string[];
-      readonly stdin?: string;
-      readonly maxOutputBytes?: number;
-    }) => Effect.Effect<
-      { readonly stdout: string },
-      GitHubApi.GitHubApiError | IssueOperationError
-    >;
-  };
   readonly gitlab: Pick<GitLabCli["Service"], "execute">;
   readonly azure: Pick<AzureDevOpsCli["Service"], "execute">;
   readonly forgejo: Pick<ForgejoCli["Service"], "api">;
   readonly bitbucket: Pick<BitbucketApi["Service"], "request">;
 }) =>
   Effect.gen(function* () {
-    const { github, gitlab, azure, forgejo, bitbucket } = options;
+    const { gitlab, azure, forgejo, bitbucket } = options;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const gh = (cwd: string, host: string, args: ReadonlyArray<string>, stdin?: string) =>
-      github
-        .execute({
-          cwd,
-          args: ["api", "--hostname", host, ...args],
-          ...(stdin === undefined ? {} : { stdin }),
-          maxOutputBytes: 4 * 1024 * 1024,
-        })
-        .pipe(
-          Effect.map((output) => output.stdout),
-          Effect.mapError(remoteError),
-        );
     const gl = (cwd: string, host: string, endpoint: string) =>
       gitlab
         .execute({
@@ -374,36 +281,14 @@ export const makeIssueHost = (options: {
         }),
       ).pipe(Effect.mapError(remoteError));
     });
-    const graphql = Effect.fnUntraced(function* (
-      cwd: string,
-      host: string,
-      query: string,
-      variables: Record<string, unknown>,
-    ) {
-      const response = yield* readRecord(
-        yield* gh(cwd, host, ["graphql", "--input", "-"], json({ query, variables })),
-      );
-      if (arr(response.errors).length)
-        return yield* new IssueOperationError({
-          reason: "remote",
-          message:
-            "GitHub Project access failed. Check project permissions and authenticate gh with the project scope.",
-        });
-      yield* validate(Schema.Struct({ data: record }), response);
-      return obj(response.data);
-    });
     const azureScope = (ref: IssueRef) => {
       const parts = ref.repository.split("/");
       return { organization: parts[0] ?? "", project: parts[1] ?? "" };
     };
-    const get: IssueHostShape["get"] = Effect.fn("IssueHost.get")(function* (scope) {
+    const get = Effect.fn("IssueHost.get")(function* (scope: IssueHostScope) {
       const { ref, cwd } = scope;
       let raw: Record<string, unknown>;
-      if (ref.hostKind === "github")
-        raw = yield* readRecord(
-          yield* gh(cwd, ref.host, [`repos/${ref.repository}/issues/${segment(ref.id)}`]),
-        );
-      else if (ref.hostKind === "gitlab")
+      if (ref.hostKind === "gitlab")
         raw = yield* readRecord(
           yield* gl(cwd, ref.host, `projects/${segment(ref.repository)}/issues/${segment(ref.id)}`),
         );
@@ -444,14 +329,7 @@ export const makeIssueHost = (options: {
       let more: boolean;
       do {
         let entries: ReadonlyArray<unknown>;
-        if (ref.hostKind === "github")
-          entries = yield* decode(
-            Schema.Array(record),
-            yield* gh(cwd, ref.host, [
-              `repos/${ref.repository}/issues/${segment(ref.id)}/comments?per_page=100&page=${page}`,
-            ]),
-          );
-        else if (ref.hostKind === "gitlab")
+        if (ref.hostKind === "gitlab")
           entries = yield* decode(
             Schema.Array(record),
             yield* gl(
@@ -525,18 +403,14 @@ export const makeIssueHost = (options: {
         }),
       }).pipe(Effect.mapError(invalid));
     });
-    const list: IssueHostShape["list"] = Effect.fn("IssueHost.list")(function* (scope, cursor) {
+    const list = Effect.fn("IssueHost.list")(function* (scope: IssueHostScope, cursor?: string) {
       const { ref, cwd } = scope;
       const page = cursor !== undefined && /^\d+$/.test(cursor) ? Number(cursor) : 1;
       let entries: ReadonlyArray<unknown>;
       let nextCursor: string | null = null;
-      if (ref.hostKind === "github" || ref.hostKind === "gitlab" || ref.hostKind === "forgejo") {
+      if (ref.hostKind === "gitlab" || ref.hostKind === "forgejo") {
         let text: string;
-        if (ref.hostKind === "github")
-          text = yield* gh(cwd, ref.host, [
-            `repos/${ref.repository}/issues?state=all&per_page=100&page=${page}`,
-          ]);
-        else if (ref.hostKind === "gitlab")
+        if (ref.hostKind === "gitlab")
           text = yield* gl(
             cwd,
             ref.host,
@@ -610,135 +484,6 @@ export const makeIssueHost = (options: {
         }),
       );
       return { issues, nextCursor };
-    });
-    const githubBoard = Effect.fnUntraced(function* (
-      cwd: string,
-      locator: Extract<IssueBoardLocator, { kind: "github-project" }>,
-    ) {
-      const ownerQuery = locator.ownerKind === "organization" ? "organization" : "user";
-      const data = yield* graphql(
-        cwd,
-        locator.host,
-        `query($owner:String!,$number:Int!){ ${ownerQuery}(login:$owner){projectV2(number:$number){id title fields(first:100){nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}}}`,
-        { owner: locator.owner, number: locator.projectNumber },
-      );
-      const project = obj(obj(data[ownerQuery]).projectV2);
-      yield* validate(GithubProjectResponse, project);
-      const fields = arr(obj(project.fields).nodes).map(obj);
-      const field = locator.statusFieldId
-        ? fields.find((value) => value.id === locator.statusFieldId)
-        : fields.find((value) => value.name === "Status");
-      if (!str(project.id) || !field)
-        return yield* new IssueOperationError({
-          reason: "invalid",
-          message: "Choose an existing GitHub Project with a single-select Status field.",
-        });
-      yield* validate(GithubFieldResponse, field);
-      const resolved = { ...locator, projectNodeId: str(project.id), statusFieldId: str(field.id) };
-      const columns = arr(field.options).map((option) => ({
-        id: str(obj(option).id),
-        title: str(obj(option).name),
-      }));
-      const items: IssueBoardItem[] = [];
-      let cursor: string | null = null;
-      do {
-        const page = yield* graphql(
-          cwd,
-          locator.host,
-          `
-            query ($id: ID!, $cursor: String) {
-              node(id: $id) {
-                ... on ProjectV2 {
-                  items(first: 100, after: $cursor) {
-                    pageInfo {
-                      hasNextPage
-                      endCursor
-                    }
-                    nodes {
-                      id
-                      updatedAt
-                      content {
-                        __typename
-                        ... on Issue {
-                          id
-                          number
-                          title
-                          body
-                          state
-                          updatedAt
-                          url
-                          repository {
-                            nameWithOwner
-                          }
-                          labels(first: 100) {
-                            nodes {
-                              name
-                            }
-                          }
-                        }
-                      }
-                      fieldValues(first: 100) {
-                        nodes {
-                          ... on ProjectV2ItemFieldSingleSelectValue {
-                            optionId
-                            field {
-                              ... on ProjectV2SingleSelectField {
-                                id
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          `,
-          { id: project.id, cursor },
-        );
-        const connection = obj(obj(page.node).items);
-        yield* validate(GraphqlConnection, connection);
-        for (const value of arr(connection.nodes)) {
-          const item = obj(value);
-          const issue = obj(item.content);
-          if (issue.__typename !== "Issue") continue;
-          yield* validate(GithubProjectIssueResponse, issue);
-          yield* validate(
-            Schema.Struct({
-              id: TrimmedNonEmptyString,
-              updatedAt: Schema.String,
-              fieldValues: Schema.Struct({ nodes: Schema.Array(record) }),
-            }),
-            item,
-          );
-          const selectedValue = arr(obj(item.fieldValues).nodes)
-            .map(obj)
-            .find((entry) => obj(entry.field).id === field.id);
-          items.push({
-            itemId: str(item.id),
-            columnId: selectedValue ? str(selectedValue.optionId) || null : null,
-            version: str(item.updatedAt) || null,
-            issue: {
-              ref: {
-                hostKind: "github",
-                host: locator.host,
-                repository: str(obj(issue.repository).nameWithOwner),
-                id: String(issue.number),
-                number: num(issue.number),
-                url: str(issue.url),
-              },
-              title: str(issue.title),
-              state: str(issue.state).toLowerCase(),
-              updatedAt: str(issue.updatedAt),
-              labels: labels(obj(issue.labels).nodes),
-            },
-          });
-        }
-        const pageInfo = obj(connection.pageInfo);
-        cursor = pageInfo.hasNextPage === true ? str(pageInfo.endCursor) || null : null;
-      } while (cursor);
-      return { title: str(project.title), locator: resolved, columns, items };
     });
     const azureWorkItems = Effect.fnUntraced(function* (
       cwd: string,
@@ -874,139 +619,87 @@ export const makeIssueHost = (options: {
         items,
       };
     });
-    const board: IssueHostShape["board"] = (cwd, locator) =>
-      locator.kind === "github-project" ? githubBoard(cwd, locator) : azureBoard(cwd, locator);
-    const loadBoards: IssueHostShape["listBoards"] = Effect.fn("IssueHost.listBoards")(
-      function* (scope) {
-        const { ref, cwd } = scope;
-        if (ref.hostKind === "github") {
-          const owner = ref.repository.split("/")[0]!;
-          const account = yield* readRecord(yield* gh(cwd, ref.host, [`users/${segment(owner)}`]));
-          const ownerKind =
-            str(account.type) === "Organization" ? ("organization" as const) : ("user" as const);
-          const results: { title: string; locator: IssueBoardLocator }[] = [];
-          let cursor: string | null = null;
-          do {
-            const data = yield* graphql(
-              cwd,
-              ref.host,
-              `query($owner:String!,$cursor:String){${ownerKind}(login:$owner){projectsV2(first:100,after:$cursor){nodes{id title number} pageInfo{hasNextPage endCursor}}}}`,
-              { owner, cursor },
-            );
-            const connection = obj(obj(data[ownerKind]).projectsV2);
-            yield* validate(GraphqlConnection, connection);
-            for (const entry of arr(connection.nodes)) {
-              const project = obj(entry);
-              yield* validate(
-                Schema.Struct({
-                  id: TrimmedNonEmptyString,
-                  title: Schema.String,
-                  number: PositiveInt,
-                }),
-                project,
-              );
-              results.push({
-                title: str(project.title),
-                locator: {
-                  kind: "github-project",
-                  host: ref.host,
-                  owner,
-                  ownerKind,
-                  projectNumber: num(project.number),
-                  projectNodeId: str(project.id),
-                },
-              });
-            }
-            const page = obj(connection.pageInfo);
-            cursor = page.hasNextPage === true ? str(page.endCursor) || null : null;
-          } while (cursor);
-          return results;
+    const loadBoards = Effect.fn("IssueHost.listBoards")(function* (scope: IssueHostScope) {
+      const { ref, cwd } = scope;
+      {
+        const { organization } = azureScope(ref);
+        const named = Schema.Struct({ id: TrimmedNonEmptyString, name: Schema.String });
+        const namedList = Schema.Struct({ value: Schema.Array(named) });
+        const pageSize = 100;
+        const projects: { id: string; name: string }[] = [];
+        for (let skip = 0; ; skip += pageSize) {
+          const output = yield* azCli(cwd, organization, [
+            "devops",
+            "project",
+            "list",
+            "--top",
+            String(pageSize),
+            "--skip",
+            String(skip),
+          ]);
+          const page = yield* validate(namedList, yield* readRecord(output));
+          projects.push(...page.value);
+          if (page.value.length < pageSize) break;
         }
-        if (ref.hostKind === "azure-devops") {
-          const { organization } = azureScope(ref);
-          const named = Schema.Struct({ id: TrimmedNonEmptyString, name: Schema.String });
-          const namedList = Schema.Struct({ value: Schema.Array(named) });
-          const pageSize = 100;
-          const projects: { id: string; name: string }[] = [];
-          for (let skip = 0; ; skip += pageSize) {
-            const output = yield* azCli(cwd, organization, [
-              "devops",
-              "project",
-              "list",
-              "--top",
-              String(pageSize),
-              "--skip",
-              String(skip),
-            ]);
-            const page = yield* validate(namedList, yield* readRecord(output));
-            projects.push(...page.value);
-            if (page.value.length < pageSize) break;
-          }
-          // Bound organization-wide discovery even when the read transport uses HTTP.
-          const results = yield* Effect.forEach(
-            projects,
-            (project) =>
-              Effect.gen(function* () {
-                const teams: { id: string; name: string }[] = [];
-                for (let skip = 0; ; skip += pageSize) {
-                  const output = yield* azCli(cwd, organization, [
-                    "devops",
-                    "team",
-                    "list",
-                    "--project",
-                    project.id,
-                    "--top",
-                    String(pageSize),
-                    "--skip",
-                    String(skip),
-                  ]);
-                  const page = yield* validate(Schema.Array(named), yield* readJson(output));
-                  teams.push(...page);
-                  if (page.length < pageSize) break;
-                }
-                const boards = yield* Effect.forEach(
-                  teams,
-                  (team) =>
-                    Effect.gen(function* () {
-                      const response = yield* validate(
-                        namedList,
-                        yield* readRecord(
-                          yield* az(cwd, organization, "work", "boards", {
-                            project: project.id,
+        // Bound organization-wide discovery even when the read transport uses HTTP.
+        const results = yield* Effect.forEach(
+          projects,
+          (project) =>
+            Effect.gen(function* () {
+              const teams: { id: string; name: string }[] = [];
+              for (let skip = 0; ; skip += pageSize) {
+                const output = yield* azCli(cwd, organization, [
+                  "devops",
+                  "team",
+                  "list",
+                  "--project",
+                  project.id,
+                  "--top",
+                  String(pageSize),
+                  "--skip",
+                  String(skip),
+                ]);
+                const page = yield* validate(Schema.Array(named), yield* readJson(output));
+                teams.push(...page);
+                if (page.length < pageSize) break;
+              }
+              const boards = yield* Effect.forEach(
+                teams,
+                (team) =>
+                  Effect.gen(function* () {
+                    const response = yield* validate(
+                      namedList,
+                      yield* readRecord(
+                        yield* az(cwd, organization, "work", "boards", {
+                          project: project.id,
+                          team: team.id,
+                        }),
+                      ),
+                    );
+                    return response.value.map(
+                      (board) =>
+                        ({
+                          title: `${project.name} / ${team.name} / ${board.name}`,
+                          locator: {
+                            kind: "azure-board",
+                            host: ref.host,
+                            organization,
+                            project: project.name,
                             team: team.id,
-                          }),
-                        ),
-                      );
-                      return response.value.map(
-                        (board) =>
-                          ({
-                            title: `${project.name} / ${team.name} / ${board.name}`,
-                            locator: {
-                              kind: "azure-board",
-                              host: ref.host,
-                              organization,
-                              project: project.name,
-                              team: team.id,
-                              boardId: board.id,
-                            },
-                          }) satisfies { title: string; locator: IssueBoardLocator },
-                      );
-                    }),
-                  { concurrency: 3 },
-                );
-                return boards.flat();
-              }),
-            { concurrency: 3 },
-          );
-          return results.flat();
-        }
-        return yield* new IssueOperationError({
-          reason: "unavailable",
-          message:
-            "Boards are supported for GitHub Projects and Azure DevOps. This host supports issue listing only.",
-        });
-      },
-    );
+                            boardId: board.id,
+                          },
+                        }) satisfies { title: string; locator: IssueBoardLocator },
+                    );
+                  }),
+                { concurrency: 3 },
+              );
+              return boards.flat();
+            }),
+          { concurrency: 3 },
+        );
+        return results.flat();
+      }
+    });
     const azureBoards = yield* Cache.makeWith(
       (key: AzureBoardsKey) =>
         loadBoards({
@@ -1025,143 +718,116 @@ export const makeIssueHost = (options: {
         timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.seconds(60) : Duration.zero),
       },
     );
-    const listBoards: IssueHostShape["listBoards"] = (scope) =>
-      scope.ref.hostKind !== "azure-devops"
-        ? loadBoards(scope)
-        : Effect.gen(function* () {
-            const credentialScope = yield* CredentialScope;
-            return yield* Cache.get(
-              azureBoards,
-              new AzureBoardsKey({
-                cwd: scope.cwd,
-                host: scope.ref.host,
-                organization: azureScope(scope.ref).organization,
-                credentialScope,
-              }),
-            );
-          });
-    const move: IssueHostShape["move"] = Effect.fn("IssueHost.move")(
-      function* (cwd, locator, item, columnId) {
-        if (locator.kind === "github-project") {
-          if (!locator.projectNodeId || !locator.statusFieldId)
-            return yield* new IssueOperationError({
-              reason: "invalid",
-              message: "Reconnect this GitHub Project to select its Status field.",
-            });
-          yield* graphql(
-            cwd,
-            locator.host,
-            `
-              mutation ($project: ID!, $item: ID!, $field: ID!, $option: String!) {
-                updateProjectV2ItemFieldValue(
-                  input: {
-                    projectId: $project
-                    itemId: $item
-                    fieldId: $field
-                    value: { singleSelectOptionId: $option }
-                  }
-                ) {
-                  projectV2Item {
-                    id
-                  }
-                }
-              }
-            `,
-            {
-              project: locator.projectNodeId,
-              item: item.itemId,
-              field: locator.statusFieldId,
-              option: columnId,
-            },
-          );
-          return;
-        }
-        const [metadata, workItem] = yield* Effect.all(
-          [
-            azureBoardMetadata(cwd, locator),
-            azureWorkItem(cwd, locator.organization, locator.project, item.issue.ref.id),
-          ],
-          { concurrency: 2 },
+    const listBoards = (scope: IssueHostScope) =>
+      Effect.gen(function* () {
+        const credentialScope = yield* CredentialScope;
+        return yield* Cache.get(
+          azureBoards,
+          new AzureBoardsKey({
+            cwd: scope.cwd,
+            host: scope.ref.host,
+            organization: azureScope(scope.ref).organization,
+            credentialScope,
+          }),
         );
-        const column = arr(metadata.columns)
-          .map(obj)
-          .find((column) => column.id === columnId);
-        if (!column)
-          return yield* new IssueOperationError({
-            reason: "invalid",
-            message: "The selected Azure board column no longer exists.",
-          });
-        yield* validate(AzureIssueResponse, workItem);
-        const fields = obj(workItem.fields);
-        const state = str(obj(column.stateMappings)[str(fields["System.WorkItemType"])]);
-        const columnField = str(obj(obj(metadata.fields).columnField).referenceName);
-        if (!state || !columnField)
-          return yield* new IssueOperationError({
-            reason: "invalid",
-            message: "The selected column does not map this work item type.",
-          });
-        const doneField = str(obj(obj(metadata.fields).doneField).referenceName);
-        yield* azCli(cwd, locator.organization, [
-          "boards",
-          "work-item",
-          "update",
-          "--id",
-          item.issue.ref.id,
-          "--state",
-          state,
-          "--fields",
-          `${columnField}=${str(column.name)}`,
-          ...(doneField ? [`${doneField}=false`] : []),
-        ]);
-      },
-    );
-    return { list, get, listBoards, board, move } satisfies IssueHostShape;
-  });
-export const make = Effect.gen(function* () {
-  const github = yield* GitHubApi.GitHubApi;
-  return yield* makeIssueHost({
-    github: {
-      execute: Effect.fn("IssueHost.githubRequest")(function* (input) {
-        const host = input.args[input.args.indexOf("--hostname") + 1];
-        const endpoint = input.args[3];
-        if (!host || !endpoint)
-          return yield* new IssueOperationError({
-            reason: "invalid",
-            message: "The GitHub request has no host or endpoint.",
-          });
-        if (endpoint === "graphql") {
-          const request = yield* decodeGitHubGraphqlRequest(input.stdin ?? "").pipe(
-            Effect.mapError(remoteError),
-          );
-          const stdout = yield* github.graphql({
-            host,
-            operation: "IssueHost.graphql",
-            query: request.query,
-            ...(request.variables === undefined ? {} : { variables: request.variables }),
-            ...(input.maxOutputBytes === undefined
-              ? {}
-              : { maxResponseBytes: input.maxOutputBytes }),
-          });
-          return { stdout };
-        }
-        const response = yield* github.rest({
-          host,
-          operation: "IssueHost.read",
-          path: endpoint,
-          ...(input.maxOutputBytes === undefined ? {} : { maxResponseBytes: input.maxOutputBytes }),
+      });
+    const move = Effect.fn("IssueHost.move")(function* (
+      cwd: string,
+      locator: AzureBoardLocator,
+      item: IssueBoardItem,
+      columnId: string,
+    ) {
+      const [metadata, workItem] = yield* Effect.all(
+        [
+          azureBoardMetadata(cwd, locator),
+          azureWorkItem(cwd, locator.organization, locator.project, item.issue.ref.id),
+        ],
+        { concurrency: 2 },
+      );
+      const column = arr(metadata.columns)
+        .map(obj)
+        .find((column) => column.id === columnId);
+      if (!column)
+        return yield* new IssueOperationError({
+          reason: "invalid",
+          message: "The selected Azure board column no longer exists.",
         });
-        if (response.truncated)
-          return yield* new IssueOperationError({
-            reason: "remote",
-            message: "The GitHub response exceeded the issue response limit.",
-          });
-        return { stdout: response.body };
-      }),
+      yield* validate(AzureIssueResponse, workItem);
+      const fields = obj(workItem.fields);
+      const state = str(obj(column.stateMappings)[str(fields["System.WorkItemType"])]);
+      const columnField = str(obj(obj(metadata.fields).columnField).referenceName);
+      if (!state || !columnField)
+        return yield* new IssueOperationError({
+          reason: "invalid",
+          message: "The selected column does not map this work item type.",
+        });
+      const doneField = str(obj(obj(metadata.fields).doneField).referenceName);
+      yield* azCli(cwd, locator.organization, [
+        "boards",
+        "work-item",
+        "update",
+        "--id",
+        item.issue.ref.id,
+        "--state",
+        state,
+        "--fields",
+        `${columnField}=${str(column.name)}`,
+        ...(doneField ? [`${doneField}=false`] : []),
+      ]);
+    });
+    return { list, get, listBoards, board: azureBoard, move };
+  });
+
+const readOnlyKinds = ["gitlab", "forgejo", "bitbucket"] as const;
+const fallbackAdapters = (host: Effect.Success<ReturnType<typeof makeIssueHost>>) => [
+  ...readOnlyKinds.map((kind): IssueHostAdapter => ({ kind, list: host.list, get: host.get })),
+  {
+    kind: "azure-devops",
+    list: host.list,
+    get: host.get,
+    boards: {
+      locatorKind: "azure-board",
+      list: host.listBoards,
+      read: host.board,
+      move: host.move,
     },
+  } satisfies IssueHostAdapter,
+];
+
+export class IssueHost extends Context.Service<
+  IssueHost,
+  {
+    /** Null for a host kind with no adapter, which the issue service reports as unavailable. */
+    readonly forHost: (kind: SourceControlProviderKind) => IssueHostAdapter | null;
+    readonly forBoard: (locator: IssueBoardLocator) => IssueHostBoards | null;
+  }
+>()("t3/issues/IssueHost") {}
+
+/** Exported for tests, which stand a registry up from adapters they supply themselves. */
+export function fromAdapters(adapters: ReadonlyArray<IssueHostAdapter>): IssueHost["Service"] {
+  const byKind = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
+  // Each group only receives locators of the kind it declared, which is what the cast relies on.
+  const byLocator = new Map(
+    adapters.flatMap((adapter) =>
+      adapter.boards
+        ? [[adapter.boards.locatorKind, adapter.boards as IssueHostBoards] as const]
+        : [],
+    ),
+  );
+  return {
+    forHost: (kind) => byKind.get(kind) ?? null,
+    forBoard: (locator) => byLocator.get(locator.kind) ?? null,
+  };
+}
+
+const make = Effect.gen(function* () {
+  const github = yield* GitHubIssueHost.make;
+  const fallback = yield* makeIssueHost({
     gitlab: yield* GitLabCli,
     azure: yield* AzureDevOpsCli,
     forgejo: yield* ForgejoCli,
     bitbucket: yield* BitbucketApi,
   });
+  return fromAdapters([github, ...fallbackAdapters(fallback)]);
 });
 export const layer = Layer.effect(IssueHost, make);
