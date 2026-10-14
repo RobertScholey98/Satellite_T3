@@ -210,9 +210,8 @@ const WsDocumentsHistoryRpc = Rpc.make(SATELLITE_WS_METHODS.documentsHistory, {
 
 /**
  * The RPCs Satellite adds to upstream's surface; `WsRpcGroup` merges this group into
- * `WsCoreRpcGroup`. The server implements it in its own handler layer: a single `toLayer` over
- * every RPC exceeds the compiler's instantiation limit, which silently widens the server layer's
- * requirements to `any`.
+ * `WsCoreRpcGroup`. `SatelliteWsRpc.ts` implements it in its own handler layer, so `ws.ts`
+ * carries only a merge line.
  */
 export const WsSatelliteRpcGroup = RpcGroup.make(
   Rpc.make(SATELLITE_WS_METHODS.ideasList, {

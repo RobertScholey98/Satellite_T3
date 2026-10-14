@@ -109,14 +109,14 @@ type IsAny<T> = 0 extends 1 & T ? true : false;
 type MergedWsRpcLayerServices =
   | Layer.Services<ReturnType<typeof WsServer.layerWsRpc>>
   | Layer.Services<ReturnType<Effect.Success<typeof SatelliteWsRpc.makeConnectionLayer>>>;
-// One `toLayer` over every RPC can widen the handler layer's requirements to `any`, which hides
-// missing services from the compiler. This fails to compile if that happens.
+// Fails to compile if the handler layers' requirements widen to `any`, which would hide missing
+// services from the compiler.
 const mergedWsRpcLayerRequirementsAreTyped: IsAny<MergedWsRpcLayerServices> = false;
 void mergedWsRpcLayerRequirementsAreTyped;
 
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
-// Clients resubscribe these on reconnect, so the set must follow the group's stream RPCs.
+// `StreamMethod` must pick out exactly the group's stream RPCs, which clients resubscribe on reconnect.
 const subscriptionsFollowTheGroup: Equals<
   SatelliteWsSubscriptionMethod,
   "ideas.subscribeChanges" | "revdoc.changes" | "issues.boards.subscribe"

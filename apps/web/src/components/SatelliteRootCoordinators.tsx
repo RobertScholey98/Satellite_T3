@@ -2,7 +2,7 @@ import { SatellitePillCoordinator } from "./desktop/SatellitePillCoordinator";
 import { IdeaDeletionCleanup } from "./ideas/IdeaDeletionCleanup";
 import { IssueReceiptRelay } from "./issues/IssueReceiptRelay";
 
-/** Satellite's app-wide coordinators. The root route mounts them on one line. */
+/** Satellite's app-wide coordinators. */
 export function SatelliteRootCoordinators() {
   return (
     <>

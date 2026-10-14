@@ -20,7 +20,6 @@ import {
 } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { RevdocService } from "../revdoc/RevdocService.ts";
 
-// Satellite's handlers get their own layer; `WsSatelliteRpcGroup` explains why.
 const layer = (session: EnvironmentAuth.AuthenticatedSession) =>
   WsSatelliteRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -131,8 +130,7 @@ type SatelliteWsRpcServices = Layer.Services<ReturnType<typeof layer>>;
 
 /**
  * Captures the server-lifetime services Satellite's handlers use, once, and returns the
- * per-connection handler layer. Every connection shares those services, so clients share caches
- * and subscriptions.
+ * per-connection handler layer, so every connection shares those services.
  */
 export const makeConnectionLayer = Effect.map(
   Effect.context<SatelliteWsRpcServices>(),
