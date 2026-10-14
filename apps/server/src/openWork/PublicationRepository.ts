@@ -1,8 +1,6 @@
 import * as Effect from "effect/Effect";
-import * as DateTime from "effect/DateTime";
 import * as SqlClient from "effect/sql/SqlClient";
-import type { ThreadId, OpenWorkPublicationStep } from "@t3tools/contracts";
-import { makeGitReader, type GitReader } from "./GitReader.ts";
+import type { GitReader } from "./GitReader.ts";
 
 export interface OpenWorkDocumentRow {
   id: string;
@@ -21,14 +19,6 @@ export interface OpenWorkDocumentRow {
   available: number;
   unresolved: "history-diverged" | "creation-time-unavailable" | null;
   association_mode: "pending" | "unassigned";
-}
-export interface PublicationInput {
-  documentId: string;
-  revisionId: string;
-  threadId: ThreadId;
-  title: string;
-  worktreePath: string;
-  step?: OpenWorkPublicationStep;
 }
 
 export const reconcileDocumentLinks = (
@@ -54,32 +44,3 @@ export const reconcileDocumentLinks = (
         yield* sql`UPDATE open_work_documents SET unresolved=${next.diverged ? "history-diverged" : null} WHERE id=${row.id} AND commit_sha IS NULL`;
     }
   });
-
-export const makePublicationRecorder = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const git = yield* makeGitReader;
-  return Effect.fn("OpenWork.recordPublication")(function* (input: PublicationInput) {
-    const identity = yield* git.identity(input.worktreePath).pipe(Effect.result);
-    // Documents also belong to projects that have no Git repository.
-    if (identity._tag === "Failure") {
-      if (
-        !input.step &&
-        identity.failure.reason === "git" &&
-        identity.failure.message === "The selected path is not a Git worktree."
-      )
-        return;
-      return yield* identity.failure;
-    }
-    const worktree = identity.success;
-    yield* sql`INSERT INTO open_worktrees (id,common_dir,path) VALUES (${worktree.id},${worktree.commonDir},${worktree.path}) ON CONFLICT(id) DO NOTHING`;
-    const state = yield* git.state(worktree.path);
-    yield* reconcileDocumentLinks(sql, git, worktree.id, state.head);
-    const sha =
-      input.step?.kind === "commit"
-        ? yield* git.validateCommit(worktree.path, input.step.commitSha)
-        : null;
-    const observedAt = DateTime.formatIso(yield* DateTime.now);
-    yield* sql`INSERT INTO open_work_documents (id,worktree_id,title,source,document_id,revision_id,thread_id,commit_sha,anchor_head,observed_at)
-      VALUES (${`publication:${input.revisionId}`},${worktree.id},${input.title},'published',${input.documentId},${input.revisionId},${input.threadId},${sha},${state.head},${observedAt})`;
-  });
-});

@@ -7,21 +7,30 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { CommandId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { ServerConfig } from "../config.ts";
+import { makeDocumentService } from "../documents/DocumentService.ts";
+import {
+  OrchestrationEngineService,
+  ProjectionSnapshotQuery,
+} from "../orchestration-v2/SatelliteOrchestration.ts";
+import {
+  layer as SatelliteTestLayer,
+  recordProject,
+} from "../orchestration-v2/testkit/SatelliteTestRuntime.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
-import migration from "../persistence/Migrations/057_OpenWork.ts";
 import { makeGitReader } from "./GitReader.ts";
 import { makeOpenWorkService } from "./OpenWorkService.ts";
-import { makePublicationRecorder } from "./PublicationRepository.ts";
 
-const layer = Layer.mergeAll(
-  NodeSqliteClient.layer({ filename: ":memory:" }),
-  VcsProcess.layer.pipe(Layer.provide(ProcessRunner.layer)),
-).pipe(Layer.provideMerge(NodeServices.layer));
+const layer = SatelliteTestLayer.pipe(
+  Layer.provide(RepositoryIdentityResolver.layer),
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-open-work-test-" })),
+  Layer.provideMerge(VcsProcess.layer.pipe(Layer.provide(ProcessRunner.layer))),
+  Layer.provideMerge(NodeServices.layer),
+);
 const setup = Effect.gen(function* () {
-  yield* migration;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const processes = yield* VcsProcess.VcsProcess;
@@ -54,20 +63,37 @@ const setup = Effect.gen(function* () {
   const projectId = ProjectId.make("open-project");
   const options = { projects: () => Effect.succeed([{ id: projectId, workspaceRoot: cwd }]) };
   const service = yield* makeOpenWorkService(options);
-  const record = yield* makePublicationRecorder;
   const sql = yield* SqlClient.SqlClient;
-  const publish = (revisionId: string) =>
-    sql.withTransaction(
-      record({
-        documentId: "document",
-        revisionId,
-        threadId: ThreadId.make("thread"),
-        title: revisionId,
-        worktreePath: cwd,
-      }),
+  const engine = yield* OrchestrationEngineService;
+  const threadId = ThreadId.make("thread");
+  yield* recordProject({ projectId, title: "Open work", workspaceRoot: cwd });
+  yield* engine.dispatch({
+    type: "thread.create",
+    commandId: CommandId.make("create-thread"),
+    threadId,
+    projectId,
+    title: "Open work",
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    createdAt: "2026-09-30T12:00:00.000Z",
+  });
+  const documents = yield* makeDocumentService({
+    stateDir: root,
+    dispatch: engine.dispatch,
+    projection: yield* ProjectionSnapshotQuery,
+  });
+  const source = path.join(root, "publication.md");
+  yield* fs.writeFileString(source, "# Publication");
+  const publish = (title: string) =>
+    documents.publish(
+      { requestId: title, threadId, title, kind: "document", path: source },
+      "session:test",
     );
   const worktreeId = (yield* service.list({})).worktrees[0]!.id;
-  return { fs, path, root, cwd, run, main, options, service, publish, record, sql, worktreeId };
+  return { fs, path, root, cwd, run, main, options, service, publish, sql, worktreeId };
 });
 
 describe("Open work", () => {

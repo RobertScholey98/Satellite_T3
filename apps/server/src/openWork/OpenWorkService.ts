@@ -264,7 +264,7 @@ export const makeOpenWorkService = <E>(options: {
         yield* sql<FolderRow>`SELECT * FROM open_work_folders WHERE worktree_id=${worktree.id} ORDER BY path`;
       for (const folder of folders) yield* scanFolder(folder, state.head, commits);
       const documents =
-        yield* sql<OpenWorkDocumentRow>`SELECT * FROM open_work_documents WHERE worktree_id=${worktree.id} AND (source='published' OR folder_id IN (SELECT id FROM open_work_folders)) ORDER BY observed_at,id`;
+        yield* sql<OpenWorkDocumentRow>`SELECT * FROM open_work_documents WHERE worktree_id=${worktree.id} AND (source='published' OR folder_id IN (SELECT id FROM open_work_folders)) ORDER BY observed_at,rowid`;
       const projects = yield* options
         .projects()
         .pipe(Effect.mapError(() => failure("storage", "Could not read registered projects.")));

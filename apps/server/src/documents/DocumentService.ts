@@ -12,6 +12,8 @@ import {
   DocumentHistoryEvent,
   DocumentAnswers,
   DocumentChecklist,
+  OpenWorkOperationError,
+  type OpenWorkPublicationStep,
   type DocumentDetail,
   type DocumentsPublishInput,
   type DocumentsSaveDraftInput,
@@ -45,16 +47,16 @@ import {
   OrchestratorCommandRejectedError,
   OrchestratorCommandPreviouslyRejectedError,
 } from "../orchestration-v2/Orchestrator.ts";
-import {
-  makePublicationRecorder,
-  type PublicationInput,
-} from "../openWork/PublicationRepository.ts";
+import { makeGitReader, type WorktreeIdentity } from "../openWork/GitReader.ts";
+import { reconcileDocumentLinks } from "../openWork/PublicationRepository.ts";
 
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 const MAX_ANSWER_BYTES = 64 * 1024;
 const error = (reason: DocumentOperationError["reason"], message: string) =>
   new DocumentOperationError({ reason, message });
 const storageError = () => error("storage", "Could not read or save the managed document.");
+const gitError = (cause: OpenWorkOperationError) =>
+  error(cause.reason === "git" ? "storage" : cause.reason, cause.message);
 const hash = (text: string) => Hex.encode(sha256(new TextEncoder().encode(text)));
 const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -66,7 +68,13 @@ const decodeSubmissionValue = Schema.decodeUnknownEffect(DocumentSubmission);
 const decodeHistoryValue = Schema.decodeUnknownEffect(DocumentHistoryEvent);
 const isDocumentOperationError = Schema.is(DocumentOperationError);
 const isPreviouslyRejected = Schema.is(OrchestratorCommandPreviouslyRejectedError);
+const isOpenWorkError = Schema.is(OpenWorkOperationError);
 const isOrchestrationCommandRejection = Schema.is(OrchestratorCommandRejectedError);
+
+/** Where a publication appears besides its thread's Documents panel. */
+type Placement =
+  | { readonly kind: "thread" }
+  | { readonly kind: "worktree"; readonly worktree: WorktreeIdentity };
 
 interface DocumentRow {
   id: string;
@@ -190,22 +198,10 @@ export class DocumentService extends Context.Service<
         const config = yield* ServerConfig;
         const engine = yield* OrchestrationEngineService;
         const projection = yield* ProjectionSnapshotQuery;
-        const recordPublication = yield* makePublicationRecorder;
         return yield* makeDocumentService({
           stateDir: config.stateDir,
           dispatch: engine.dispatch,
-          getThread: projection.getThreadShellById,
-          recordPublication: (input) =>
-            Effect.gen(function* () {
-              const thread = yield* projection.getThreadShellById(input.threadId);
-              if (Option.isNone(thread)) return;
-              const project = yield* projection.getProjectShellById(thread.value.projectId);
-              if (Option.isNone(project)) return;
-              yield* recordPublication({
-                ...input,
-                worktreePath: thread.value.worktreePath ?? project.value.workspaceRoot,
-              });
-            }).pipe(Effect.mapError(storageError)),
+          projection,
         });
       }),
     ),
@@ -215,15 +211,16 @@ export class DocumentService extends Context.Service<
 export const makeDocumentService = (options: {
   readonly stateDir: string;
   readonly dispatch: OrchestrationEngineShape["dispatch"];
-  readonly getThread: ProjectionSnapshotQueryShape["getThreadShellById"];
-  readonly recordPublication?: (
-    input: Omit<PublicationInput, "worktreePath">,
-  ) => Effect.Effect<void, DocumentOperationError>;
+  readonly projection: Pick<
+    ProjectionSnapshotQueryShape,
+    "getThreadShellById" | "getProjectShellById"
+  >;
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const git = yield* makeGitReader;
     const mutex = yield* Semaphore.make(1);
     const snapshotRoot = path.join(options.stateDir, "documents");
     yield* fs.makeDirectory(snapshotRoot, { recursive: true }).pipe(Effect.mapError(storageError));
@@ -257,12 +254,56 @@ export const makeDocumentService = (options: {
       return rows[0];
     });
     const requireThread = Effect.fnUntraced(function* (threadId: ThreadId) {
-      const thread = yield* options.getThread(threadId).pipe(Effect.mapError(storageError));
+      const thread = yield* options.projection
+        .getThreadShellById(threadId)
+        .pipe(Effect.mapError(storageError));
       if (Option.isNone(thread))
         return yield* error("not-found", "The original thread is unavailable.");
       if (thread.value.purpose === "idea")
         return yield* error("invalid", "Idea documents belong in the idea notebook.");
       return thread.value;
+    });
+    const resolvePlacement = Effect.fnUntraced(function* (
+      thread: Effect.Success<ReturnType<typeof requireThread>>,
+      step: OpenWorkPublicationStep | undefined,
+    ) {
+      const project = yield* options.projection
+        .getProjectShellById(thread.projectId)
+        .pipe(Effect.mapError(storageError));
+      if (Option.isNone(project))
+        return yield* error("not-found", "The thread's project is unavailable.");
+      const worktree = yield* git
+        .findIdentity(thread.worktreePath ?? project.value.workspaceRoot)
+        .pipe(Effect.mapError(gitError));
+      if (worktree) return { kind: "worktree", worktree } satisfies Placement;
+      if (step) return yield* error("invalid", "Choosing a step requires a Git worktree.");
+      return { kind: "thread" } satisfies Placement;
+    });
+    const place = Effect.fnUntraced(function* (
+      placement: Placement,
+      publication: {
+        readonly documentId: string;
+        readonly revisionId: string;
+        readonly threadId: ThreadId;
+        readonly title: string;
+        readonly step: OpenWorkPublicationStep | undefined;
+      },
+    ) {
+      if (placement.kind === "thread") return;
+      const { worktree } = placement;
+      yield* sql`INSERT INTO open_worktrees (id,common_dir,path) VALUES (${worktree.id},${worktree.commonDir},${worktree.path}) ON CONFLICT(id) DO NOTHING`;
+      const state = yield* git.state(worktree.path).pipe(Effect.mapError(gitError));
+      yield* reconcileDocumentLinks(sql, git, worktree.id, state.head).pipe(
+        Effect.mapError((cause) => (isOpenWorkError(cause) ? gitError(cause) : storageError())),
+      );
+      const sha =
+        publication.step?.kind === "commit"
+          ? yield* git
+              .validateCommit(worktree.path, publication.step.commitSha)
+              .pipe(Effect.mapError(gitError))
+          : null;
+      yield* sql`INSERT INTO open_work_documents (id,worktree_id,title,source,document_id,revision_id,thread_id,commit_sha,anchor_head,observed_at)
+        VALUES (${`publication:${publication.revisionId}`},${worktree.id},${publication.title},'published',${publication.documentId},${publication.revisionId},${publication.threadId},${sha},${state.head},${yield* now})`;
     });
     const get = Effect.fn("DocumentService.get")(function* (
       input: DocumentsGetInput,
@@ -366,7 +407,10 @@ export const makeDocumentService = (options: {
               Schema.Struct({ documentId: Schema.String, revisionId: Schema.String }),
               previous,
             );
-          yield* requireThread(input.threadId);
+          const placement = yield* resolvePlacement(
+            yield* requireThread(input.threadId),
+            input.step,
+          );
           const existing = input.documentId ? yield* readDocument(input.documentId) : null;
           if (
             existing &&
@@ -440,14 +484,13 @@ export const makeDocumentService = (options: {
             yield* sql`INSERT INTO managed_documents (id,thread_id,title,kind,current_revision_id,revision_number,status,updated_at) VALUES (${documentId},${input.threadId},${input.title},${input.kind},${revisionId},${number},'draft',${createdAt})`;
           }
           yield* sql`INSERT INTO document_revisions (id,document_id,number,format,content_hash,created_at,definition_json,snapshot_path,answers_json,answer_version) VALUES (${revisionId},${documentId},${number},${format},${hash(content)},${createdAt},${json(definition)},${snapshotFilename},${json(answers)},0)`;
-          if (options.recordPublication)
-            yield* options.recordPublication({
-              documentId,
-              revisionId,
-              threadId: input.threadId,
-              title: input.title,
-              ...(input.step ? { step: input.step } : {}),
-            });
+          yield* place(placement, {
+            documentId,
+            revisionId,
+            threadId: input.threadId,
+            title: input.title,
+            step: input.step,
+          });
           yield* recordHistory({
             documentId,
             revisionId,

@@ -57,26 +57,30 @@ export const makeGitReader = Effect.gen(function* () {
           }),
       ),
     );
-  const identity = Effect.fn("OpenWork.gitIdentity")(function* (cwd: string) {
+  /** The worktree containing `cwd`, or null when `cwd` is not inside a Git worktree. */
+  const findIdentity = Effect.fn("OpenWork.gitIdentity")(function* (cwd: string) {
     const topLevel = yield* text(cwd, ["rev-parse", "--show-toplevel"]);
-    if (!topLevel)
-      return yield* new OpenWorkOperationError({
-        reason: "git",
-        message: "The selected path is not a Git worktree.",
-      });
+    if (!topLevel) return null;
     const directory = yield* canonical(topLevel);
     const common = yield* text(directory, ["rev-parse", "--git-common-dir"]);
-    if (!common)
-      return yield* new OpenWorkOperationError({
-        reason: "git",
-        message: "The selected path is not a Git worktree.",
-      });
+    if (!common) return null;
     return {
       id: directory,
       path: directory,
       commonDir: yield* canonical(path.resolve(directory, common)),
     };
   });
+  const identity = (cwd: string) =>
+    findIdentity(cwd).pipe(
+      Effect.filterOrFail(
+        (found) => found !== null,
+        () =>
+          new OpenWorkOperationError({
+            reason: "git",
+            message: "The selected path is not a Git worktree.",
+          }),
+      ),
+    );
   const inventory = Effect.fn("OpenWork.gitInventory")(function* (cwd: string) {
     const result = yield* run(cwd, ["worktree", "list", "--porcelain", "-z"]);
     if (result.exitCode !== 0)
@@ -258,6 +262,7 @@ export const makeGitReader = Effect.gen(function* () {
       });
     return resolved;
   });
-  return { identity, inventory, state, commits, firstNewCommit, validateCommit };
+  return { findIdentity, identity, inventory, state, commits, firstNewCommit, validateCommit };
 });
 export type GitReader = Effect.Success<typeof makeGitReader>;
+export type WorktreeIdentity = NonNullable<Effect.Success<ReturnType<GitReader["findIdentity"]>>>;

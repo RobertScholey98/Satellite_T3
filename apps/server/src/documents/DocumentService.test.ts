@@ -3,7 +3,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  DocumentOperationError,
+  EventId,
   type OrchestrationCommand,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -24,11 +24,11 @@ import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestrat
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import migration from "../persistence/Migrations/055_ManagedDocuments.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
-import { makeDocumentService } from "./DocumentService.ts";
+import { DocumentService, makeDocumentService } from "./DocumentService.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { makePublicationRecorder } from "../openWork/PublicationRepository.ts";
-import { makeOpenWorkService } from "../openWork/OpenWorkService.ts";
+import { makeOpenWorkService, OpenWorkService } from "../openWork/OpenWorkService.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 
 const integrationLayer = SatelliteTestLayer.pipe(
@@ -37,9 +37,65 @@ const integrationLayer = SatelliteTestLayer.pipe(
   Layer.provideMerge(VcsProcess.layer.pipe(Layer.provide(ProcessRunner.layer))),
   Layer.provideMerge(NodeServices.layer),
 );
+const productionLayer = Layer.mergeAll(DocumentService.layer, OpenWorkService.layer).pipe(
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-documents-layer-test-" })),
+  Layer.provideMerge(integrationLayer),
+);
 const threadId = ThreadId.make("documents-thread");
+const projectId = ProjectId.make("documents-project");
 const actor = "session:reviewer";
 const createdAt = "2026-09-30T12:00:00.000Z";
+const git = Effect.fn("DocumentService.test.git")(function* (cwd: string, args: readonly string[]) {
+  const processes = yield* VcsProcess.VcsProcess;
+  const result = yield* processes.run({
+    operation: "DocumentService.test",
+    command: "git",
+    cwd,
+    args,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Test",
+      GIT_AUTHOR_EMAIL: "test@example.com",
+      GIT_COMMITTER_NAME: "Test",
+      GIT_COMMITTER_EMAIL: "test@example.com",
+    },
+  });
+  return result.stdout.trim();
+});
+const initRepository = Effect.fn("DocumentService.test.initRepository")(function* (cwd: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* git(cwd, ["init", "-b", "main"]);
+  yield* fs.writeFileString(path.join(cwd, "code.txt"), "main\n");
+  yield* git(cwd, ["add", "code.txt"]);
+  yield* git(cwd, ["commit", "-m", "main"]);
+  return yield* git(cwd, ["rev-parse", "HEAD"]);
+});
+const createThread = (id: ThreadId, worktreePath: string | null = null) =>
+  Effect.flatMap(OrchestrationEngineService, (engine) =>
+    engine.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(`create-${id}`),
+      threadId: id,
+      projectId,
+      title: "Documents",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath,
+      createdAt,
+    }),
+  );
+const publishedRows = Effect.flatMap(
+  SqlClient.SqlClient,
+  (sql) =>
+    sql<{
+      document_id: string;
+      worktree_id: string;
+    }>`SELECT document_id,worktree_id FROM open_work_documents WHERE source='published' ORDER BY observed_at,id`,
+);
+
 const setup = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -51,26 +107,9 @@ const setup = Effect.gen(function* () {
     sourcePath,
     "<!doctype html><h1>Original</h1><script>window.demo=true</script>",
   );
-  const projectId = ProjectId.make("documents-project");
-  yield* recordProject({
-    projectId,
-    title: "Documents",
-    workspaceRoot: stateDir,
-  });
-  yield* engine.dispatch({
-    type: "thread.create",
-    commandId: CommandId.make("create-thread"),
-    threadId,
-    projectId,
-    title: "Documents",
-    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    branch: null,
-    worktreePath: null,
-    createdAt,
-  });
-  const options = { stateDir, dispatch: engine.dispatch, getThread: projection.getThreadShellById };
+  yield* recordProject({ projectId, title: "Documents", workspaceRoot: stateDir });
+  yield* createThread(threadId);
+  const options = { stateDir, dispatch: engine.dispatch, projection };
   const service = yield* makeDocumentService(options);
   const publication = {
     threadId,
@@ -103,29 +142,119 @@ const setup = Effect.gen(function* () {
   };
 });
 
+it.effect("places a publication on its thread's worktree through the production layer", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-documents-layer-" });
+    yield* initRepository(root);
+    yield* recordProject({ projectId, title: "Documents", workspaceRoot: root });
+    yield* createThread(threadId);
+    const source = path.join(root, "plan.md");
+    yield* fs.writeFileString(source, "# Plan");
+    const documents = yield* DocumentService;
+    const openWork = yield* OpenWorkService;
+
+    const published = yield* documents.publish(
+      { requestId: "plan", threadId, title: "Plan", kind: "plan", path: source },
+      actor,
+    );
+
+    const worktree = (yield* openWork.list({})).worktrees[0]!;
+    const timeline = yield* openWork.timeline({ worktreeId: worktree.id });
+    assert.deepEqual(
+      timeline.documents.map(({ title, source, step }) => ({ title, source, step })),
+      [
+        {
+          title: "Plan",
+          source: {
+            kind: "published",
+            documentId: published.document.id,
+            revisionId: published.revision.id,
+            threadId,
+          },
+          step: { kind: "wip" },
+        },
+      ],
+    );
+  }).pipe(Effect.scoped, Effect.provide(productionLayer)),
+);
+
 describe("managed document persistence", () => {
+  it.effect("fails a publish whose project is unavailable instead of retaining it unplaced", () =>
+    Effect.gen(function* () {
+      const f = yield* setup;
+      const projects = yield* ProjectStore.ProjectStoreV2;
+      yield* projects.apply({
+        sequence: 0,
+        eventId: EventId.make("project-deleted"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        occurredAt: createdAt,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+        type: "project.deleted",
+        payload: { projectId, deletedAt: createdAt },
+      });
+
+      const result = yield* f.service
+        .publish({ ...f.publication, requestId: "orphaned" }, actor)
+        .pipe(Effect.flip);
+
+      assert.equal(result.reason, "not-found");
+      assert.deepEqual(
+        (yield* f.service.list({ threadId })).map((document) => document.id),
+        [f.detail.document.id],
+      );
+    }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
+  );
+
+  it.effect(
+    "publishes from a project without Git and from a Scratch folder without a worktree",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* setup;
+        yield* initRepository(f.stateDir);
+        const scratch = yield* f.fs.makeTempDirectoryScoped({ prefix: "t3-documents-scratch-" });
+        const scratchThread = ThreadId.make("documents-scratch-thread");
+        yield* createThread(scratchThread, scratch);
+
+        const fromScratch = yield* f.service.publish(
+          { ...f.publication, threadId: scratchThread, requestId: "scratch" },
+          actor,
+        );
+        const withStep = yield* f.service
+          .publish(
+            {
+              ...f.publication,
+              threadId: scratchThread,
+              requestId: "scratch-step",
+              step: { kind: "wip" },
+            },
+            actor,
+          )
+          .pipe(Effect.flip);
+
+        assert.deepEqual(
+          (yield* f.service.list({ threadId })).map((document) => document.title),
+          ["Review"],
+        );
+        assert.deepEqual(
+          (yield* f.service.list({ threadId: scratchThread })).map((document) => document.id),
+          [fromScratch.document.id],
+        );
+        assert.equal(withStep.reason, "invalid");
+        assert.deepEqual(yield* publishedRows, []);
+      }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
+  );
+
   it.effect("keeps idea documents out of managed snapshots and Open Work", () =>
     Effect.gen(function* () {
       const f = yield* setup;
-      const processes = yield* VcsProcess.VcsProcess;
-      yield* processes.run({
-        operation: "DocumentService.ideaIsolationTest",
-        command: "git",
-        cwd: f.stateDir,
-        args: ["init", "-b", "main"],
-      });
-      const recorder = yield* makePublicationRecorder;
-      const service = yield* makeDocumentService({
-        ...f.options,
-        recordPublication: (input) =>
-          recorder({ ...input, worktreePath: f.stateDir }).pipe(
-            Effect.mapError(
-              () =>
-                new DocumentOperationError({ reason: "storage", message: "Publication failed." }),
-            ),
-          ),
-      });
-      const ordinary = yield* service.publish(
+      yield* initRepository(f.stateDir);
+      const ordinary = yield* f.service.publish(
         { ...f.publication, requestId: "work-document" },
         actor,
       );
@@ -134,7 +263,7 @@ describe("managed document persistence", () => {
         type: "thread.create",
         commandId: CommandId.make("create-idea-document-thread"),
         threadId: ideaThreadId,
-        projectId: ProjectId.make("documents-project"),
+        projectId,
         purpose: "idea",
         title: "Private idea",
         modelSelection: { instanceId: ProviderInstanceId.make("claude"), model: "sonnet" },
@@ -147,27 +276,21 @@ describe("managed document persistence", () => {
       const snapshotDirectory = f.path.join(f.stateDir, "documents");
       const snapshotsBefore = yield* f.fs.readDirectory(snapshotDirectory);
 
-      const result = yield* service
+      const result = yield* f.service
         .publish({ ...f.publication, threadId: ideaThreadId, requestId: "idea-document" }, actor)
         .pipe(Effect.result);
 
       assert.equal(result._tag, "Failure");
       if (result._tag === "Failure") assert.equal(result.failure.reason, "invalid");
-      assert.deepEqual(yield* service.list({ threadId: ideaThreadId }), []);
+      assert.deepEqual(yield* f.service.list({ threadId: ideaThreadId }), []);
       assert.deepEqual(
         (yield* f.fs.readDirectory(snapshotDirectory)).sort(),
         snapshotsBefore.sort(),
       );
-      assert.include(
-        (yield* service.get({ documentId: ordinary.document.id })).content,
-        "Original",
+      assert.deepEqual(
+        (yield* publishedRows).map((row) => row.document_id),
+        [ordinary.document.id],
       );
-      const sql = yield* SqlClient.SqlClient;
-      const publications = yield* sql<{
-        thread_id: string;
-        document_id: string;
-      }>`SELECT thread_id,document_id FROM open_work_documents`;
-      assert.deepEqual(publications, [{ thread_id: threadId, document_id: ordinary.document.id }]);
     }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
   );
 
@@ -176,53 +299,21 @@ describe("managed document persistence", () => {
     () =>
       Effect.gen(function* () {
         const f = yield* setup;
-        const processes = yield* VcsProcess.VcsProcess;
-        const run = (args: readonly string[], cwd = f.stateDir) =>
-          processes
-            .run({
-              operation: "DocumentService.provenanceTest",
-              command: "git",
-              cwd,
-              args,
-              env: {
-                ...process.env,
-                GIT_AUTHOR_NAME: "Test",
-                GIT_AUTHOR_EMAIL: "test@example.com",
-                GIT_COMMITTER_NAME: "Test",
-                GIT_COMMITTER_EMAIL: "test@example.com",
-              },
-            })
-            .pipe(Effect.map((result) => result.stdout.trim()));
-        yield* run(["init", "-b", "main"]);
-        yield* f.fs.writeFileString(f.path.join(f.stateDir, "code.txt"), "main\n");
-        yield* run(["add", "code.txt"]);
-        yield* run(["commit", "-m", "main"]);
-        const main = yield* run(["rev-parse", "HEAD"]);
-        yield* run(["switch", "-c", "feature"]);
-        const recorder = yield* makePublicationRecorder;
-        let currentCwd = f.stateDir;
-        const recordPublication = (input: Parameters<typeof recorder>[0]) =>
-          recorder({ ...input, worktreePath: currentCwd }).pipe(
-            Effect.mapError(
-              () =>
-                new DocumentOperationError({
-                  reason: "storage",
-                  message: "Could not record provenance.",
-                }),
-            ),
-          );
-        const service = yield* makeDocumentService({
-          ...f.options,
-          recordPublication: (input) => recordPublication({ ...input, worktreePath: currentCwd }),
-        });
-        const first = yield* service.publish({ ...f.publication, requestId: "birth-one" }, actor);
+        const main = yield* initRepository(f.stateDir);
+        yield* git(f.stateDir, ["switch", "-c", "feature"]);
+        const first = yield* f.service.publish({ ...f.publication, requestId: "birth-one" }, actor);
         yield* f.fs.writeFileString(f.path.join(f.stateDir, "code.txt"), "first\n");
-        yield* run(["commit", "-am", "first"]);
-        const committed = yield* run(["rev-parse", "HEAD"]);
+        yield* git(f.stateDir, ["commit", "-am", "first"]);
+        const committed = yield* git(f.stateDir, ["rev-parse", "HEAD"]);
         const other = f.path.join(f.stateDir, "other-worktree");
-        yield* run(["worktree", "add", "--detach", other, main]);
-        currentCwd = other;
-        const next = yield* service.publish(
+        yield* git(f.stateDir, ["worktree", "add", "--detach", other, main]);
+        yield* f.engine.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("move-thread"),
+          threadId,
+          worktreePath: other,
+        });
+        const next = yield* f.service.publish(
           {
             ...f.publication,
             requestId: "birth-two",
@@ -233,10 +324,7 @@ describe("managed document persistence", () => {
           actor,
         );
         const open = yield* makeOpenWorkService({
-          projects: () =>
-            Effect.succeed([
-              { id: ProjectId.make("documents-project"), workspaceRoot: f.stateDir },
-            ]),
+          projects: () => Effect.succeed([{ id: projectId, workspaceRoot: f.stateDir }]),
         });
         const list = yield* open.list({});
         const original = list.worktrees.find((tree) => tree.branch === "feature")!;
@@ -255,34 +343,27 @@ describe("managed document persistence", () => {
         assert.deepEqual(otherView.documents[0]?.step, { kind: "commit", commitSha: main });
         yield* f.fs.writeFileString(f.sourcePath, "<h1>Live replacement</h1>");
         assert.include(
-          (yield* service.get({ documentId: first.document.id, revisionId: first.revision.id }))
+          (yield* f.service.get({ documentId: first.document.id, revisionId: first.revision.id }))
             .content,
           "Original",
         );
-        const failing = yield* makeDocumentService({
-          ...f.options,
-          recordPublication: (input) =>
-            recordPublication({ ...input, worktreePath: currentCwd }).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  new DocumentOperationError({ reason: "storage", message: "Injected rollback" }),
-                ),
-              ),
-            ),
-        });
+
+        const rejected = yield* f.service
+          .publish(
+            {
+              ...f.publication,
+              requestId: "rollback",
+              step: { kind: "commit", commitSha: "0000000" },
+            },
+            actor,
+          )
+          .pipe(Effect.flip);
+
+        assert.equal(rejected.reason, "invalid");
+        assert.equal((yield* publishedRows).length, 2);
+        assert.equal((yield* f.service.list({ threadId })).length, 2);
         assert.equal(
-          (yield* failing
-            .publish({ ...f.publication, requestId: "rollback" }, actor)
-            .pipe(Effect.result))._tag,
-          "Failure",
-        );
-        const sql = yield* SqlClient.SqlClient;
-        const rows = yield* sql<{
-          count: number;
-        }>`SELECT count(*) AS count FROM open_work_documents`;
-        assert.equal(rows[0]?.count, 2);
-        assert.equal(
-          (yield* service.history({ documentId: first.document.id })).revisions.length,
+          (yield* f.service.history({ documentId: first.document.id })).revisions.length,
           2,
         );
         assert.equal(next.revision.number, 2);
