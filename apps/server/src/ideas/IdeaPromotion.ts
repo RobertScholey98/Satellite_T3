@@ -9,35 +9,25 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import {
   CommandId,
   type IdeaIssueDraft,
   type IdeaPromotion as Promotion,
   type ThreadId,
 } from "@t3tools/contracts";
-import { ProcessRunner } from "../processRunner.ts";
 import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { IssueHost, repositoryIssueScope } from "../issues/IssueHost.ts";
+import type { IssueHostScope, PublishedIssue } from "../issues/IssueHostAdapter.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime, IdeaRuntimeError } from "./IdeaRuntime.ts";
 import { readIdeaExecution, withIdeaLock } from "./IdeaExecution.ts";
 
-const Repo = Schema.Struct({
-  nameWithOwner: Schema.String,
-  hasIssuesEnabled: Schema.Boolean,
-  isArchived: Schema.Boolean,
-});
-const Published = Schema.Struct({
-  number: Schema.Int,
-  title: Schema.String,
-  html_url: Schema.String,
-  body: Schema.NullOr(Schema.String),
-});
-const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
-const decodeIssue = Schema.decodeUnknownEffect(Schema.fromJsonString(Published));
-const decodeIssuePage = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Published)));
 const error = (message: string) => new IdeaRuntimeError({ message });
 const mapError = (e: { readonly message: string }) => error(e.message);
+const duplicates = () =>
+  error(
+    "More than one issue matches this publication attempt. Resolve the duplicates before retrying.",
+  );
 
 export function validateIdeaIssueDrafts(drafts: readonly IdeaIssueDraft[]): string | null {
   if (drafts.length === 0 || drafts.length > 30)
@@ -78,7 +68,7 @@ export class IdeaPromotion extends Context.Service<
       const runtime = yield* IdeaRuntime;
       const engine = yield* OrchestrationEngineService;
       const crypto = yield* Crypto.Crypto;
-      const runner = yield* ProcessRunner;
+      const hosts = yield* IssueHost;
       const repositories = yield* RepositoryIdentityResolver;
       const save = Effect.fn("IdeaPromotion.save")(function* (
         threadId: ThreadId,
@@ -96,85 +86,60 @@ export class IdeaPromotion extends Context.Service<
           })
           .pipe(Effect.mapError(mapError));
       });
-      const runGithub = Effect.fn("IdeaPromotion.github")(function* (
-        threadId: ThreadId,
-        cwd: string,
-        args: readonly string[],
-        stdin?: string,
-      ) {
-        yield* store.requireActive(threadId).pipe(Effect.mapError(mapError));
-        const result = yield* runner
-          .run({
-            command: "gh",
-            args,
-            cwd,
-            ...(stdin === undefined ? {} : { stdin }),
-            timeout: "60 seconds",
-            maxOutputBytes: 8 * 1024 * 1024,
-          })
-          .pipe(Effect.mapError(mapError));
-        if (result.stdoutTruncated)
-          return yield* error(
-            "GitHub returned more data than the response limit. No incomplete response was accepted. Retry after checking the repository's issue contents.",
-          );
-        if (result.code !== 0)
-          return yield* error(
-            "GitHub publication failed. Check the environment's GitHub authentication and issue access, then retry.",
-          );
-        return result.stdout;
-      });
+      const destination = (cwd: string, promotion: Promotion) => {
+        const adapter = hosts.forHost(promotion.target.hostKind);
+        const publication = adapter?.publication;
+        if (!adapter || !publication)
+          return Effect.fail(error("The approved issue destination is unsupported."));
+        const { hostKind, host, repository } = promotion.target;
+        const scope: IssueHostScope = {
+          cwd,
+          ref: {
+            hostKind,
+            host,
+            repository,
+            id: "0",
+            number: 0,
+            url: `https://${host}/${repository}`,
+          },
+        };
+        return Effect.succeed({ adapter, publication, scope });
+      };
       const markerFor = (promotionId: string, draftId: string) =>
         crypto.digest("SHA-256", new TextEncoder().encode(promotionId + ":" + draftId)).pipe(
           Effect.mapError(mapError),
           Effect.map((bytes) => "<!-- t3-promotion:" + Buffer.from(bytes).toString("hex") + " -->"),
         );
       const readPublicationIssues = Effect.fn("IdeaPromotion.readPublicationIssues")(function* (
-        threadId: ThreadId,
         cwd: string,
         promotion: Promotion,
       ) {
+        const { publication, scope } = yield* destination(cwd, promotion);
         const markers = yield* Effect.forEach(promotion.drafts, (draft) =>
           markerFor(promotion.id, draft.id),
         );
-        const found = new Map<number, typeof Published.Type>();
-        for (let page = 1; ; page++) {
-          const issues = yield* runGithub(threadId, cwd, [
-            "api",
-            "--hostname",
-            promotion.target.host,
-            `repos/${promotion.target.repository}/issues?state=all&sort=created&direction=asc&per_page=25&page=${page}`,
-          ]).pipe(Effect.flatMap(decodeIssuePage), Effect.mapError(mapError));
-          for (const issue of issues) {
-            if (!markers.some((marker) => issue.body?.includes(marker))) continue;
-            found.set(issue.number, issue);
-            if (found.size > promotion.drafts.length)
-              return yield* error(
-                "More than one issue matches this publication attempt. Resolve the duplicates before retrying.",
-              );
-          }
-          if (issues.length < 25) return [...found.values()];
-        }
+        const found = yield* publication
+          .findByMarker(scope, markers)
+          .pipe(Effect.mapError(mapError));
+        if (found.length > promotion.drafts.length) return yield* duplicates();
+        return found;
       });
       const reconcile = Effect.fn("IdeaPromotion.reconcile")(function* (
-        threadId: ThreadId,
         cwd: string,
         promotion: Promotion,
       ) {
-        const existing = yield* readPublicationIssues(threadId, cwd, promotion);
+        const existing = yield* readPublicationIssues(cwd, promotion);
         const issues = [...promotion.issues];
         for (const draft of promotion.drafts) {
           if (issues.some((issue) => issue.draftId === draft.id)) continue;
           const marker = yield* markerFor(promotion.id, draft.id);
-          const matches = existing.filter((issue) => issue.body?.includes(marker));
-          if (matches.length > 1)
-            return yield* error(
-              "More than one issue matches this publication attempt. Resolve the duplicates before retrying.",
-            );
+          const matches = existing.filter((issue) => issue.body.includes(marker));
+          if (matches.length > 1) return yield* duplicates();
           const found = matches[0];
           if (found)
             issues.push({
               draftId: draft.id,
-              url: found.html_url,
+              url: found.url,
               number: found.number,
               title: found.title,
               publishedAt: DateTime.formatIso(yield* DateTime.now),
@@ -210,11 +175,7 @@ export class IdeaPromotion extends Context.Service<
           yield* withIdeaLock(
             input.threadId,
             Effect.gen(function* () {
-              const reconciled = yield* reconcile(
-                input.threadId,
-                execution.projectDirectory,
-                previous,
-              );
+              const reconciled = yield* reconcile(execution.projectDirectory, previous);
               yield* save(
                 input.threadId,
                 {
@@ -231,18 +192,13 @@ export class IdeaPromotion extends Context.Service<
         const repository = yield* repositories.resolve(execution.projectDirectory, {
           refresh: true,
         });
-        const [host, owner, name, ...extra] = repository?.canonicalKey.split("/") ?? [];
-        if (
-          host !== "github.com" ||
-          !owner ||
-          !name ||
-          extra.length ||
-          !/^[\w.-]+$/.test(owner) ||
-          !/^[\w.-]+$/.test(name)
-        )
-          return yield* error(
-            "Idea promotion currently supports a GitHub.com project repository. Configure the project's tracked remote before proposing issues.",
-          );
+        const unsupported = error(
+          "Idea promotion currently supports GitHub project repositories. Configure the project's tracked remote before proposing issues.",
+        );
+        const { ref } = yield* repositoryIssueScope(execution.projectDirectory, repository).pipe(
+          Effect.mapError(() => unsupported),
+        );
+        if (!hosts.forHost(ref.hostKind)?.publication) return yield* unsupported;
         const current = yield* store.requireActive(input.threadId).pipe(Effect.mapError(mapError));
         for (const history of [
           ...current.promotionHistory,
@@ -264,7 +220,7 @@ export class IdeaPromotion extends Context.Service<
         }
         const promotion = {
           id: yield* crypto.randomUUIDv4.pipe(Effect.mapError(mapError)),
-          target: { host, repository: owner + "/" + name },
+          target: { hostKind: ref.hostKind, host: ref.host, repository: ref.repository },
           sourceRevision: notebook.contentRevision,
           status: "review",
           drafts: input.drafts,
@@ -286,38 +242,11 @@ export class IdeaPromotion extends Context.Service<
               return yield* error(
                 "The user must approve the proposed issue breakdown in T3 before publication.",
               );
-            const gh = (args: readonly string[], stdin?: string) =>
-              runGithub(threadId, execution.projectDirectory, args, stdin);
-            if (
-              promotion.target.host !== "github.com" ||
-              !/^[\w.-]+\/[\w.-]+$/.test(promotion.target.repository)
-            )
-              return yield* error("The approved issue destination is unsupported.");
-            const repo = yield* gh([
-              "repo",
-              "view",
-              promotion.target.host + "/" + promotion.target.repository,
-              "--json",
-              "nameWithOwner,hasIssuesEnabled,isArchived",
-            ]).pipe(
-              Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Repo))),
-              Effect.mapError(mapError),
-            );
-            if (
-              repo.nameWithOwner.toLowerCase() !== promotion.target.repository.toLowerCase() ||
-              !repo.hasIssuesEnabled ||
-              repo.isArchived ||
-              !/^[\w.-]+\/[\w.-]+$/.test(repo.nameWithOwner)
-            )
-              return yield* error(
-                "This repository cannot accept issues. Enable Issues or choose an active issue tracker before promotion.",
-              );
-            const endpoint = `repos/${promotion.target.repository}/issues`;
-            const known = yield* readPublicationIssues(
-              threadId,
+            const { adapter, publication, scope } = yield* destination(
               execution.projectDirectory,
               promotion,
             );
+            const known = yield* readPublicationIssues(execution.projectDirectory, promotion);
             promotion = { ...promotion, status: "publishing", error: null };
             yield* save(threadId, promotion, "promotion.record");
             for (const draft of promotion.drafts) {
@@ -325,11 +254,8 @@ export class IdeaPromotion extends Context.Service<
                 (issue) => issue.draftId === draft.id,
               );
               const marker = yield* markerFor(promotion.id, draft.id);
-              const found = known.filter((issue) => issue.body?.includes(marker));
-              if (found.length > 1)
-                return yield* error(
-                  "More than one issue matches this publication attempt. Resolve the duplicates before retrying.",
-                );
+              const found = known.filter((issue) => issue.body.includes(marker));
+              if (found.length > 1) return yield* duplicates();
               if (!recorded && !found[0]) {
                 const current = yield* store
                   .requireActive(threadId)
@@ -342,39 +268,25 @@ export class IdeaPromotion extends Context.Service<
                     "The idea changed after approval. Published issues have been preserved. Review a fresh breakdown before creating more issues.",
                   );
               }
-              const published: { readonly number: number } =
+              const published: Pick<PublishedIssue, "number" | "url"> =
                 recorded ??
                 found[0] ??
-                (yield* gh(
-                  [
-                    "api",
-                    "--hostname",
-                    promotion.target.host,
-                    "--method",
-                    "POST",
-                    endpoint,
-                    "--input",
-                    "-",
-                  ],
-                  yield* encodeJson({
+                (yield* publication
+                  .create(scope, {
                     title: draft.title,
                     body: `${draft.body}\n\n${marker}`,
                     labels: draft.labels,
-                  }).pipe(Effect.mapError(mapError)),
-                ).pipe(Effect.flatMap(decodeIssue), Effect.mapError(mapError)));
-              const verified: typeof Published.Type = yield* gh([
-                "api",
-                "--hostname",
-                promotion.target.host,
-                `${endpoint}/${published.number}`,
-              ]).pipe(Effect.flatMap(decodeIssue), Effect.mapError(mapError));
-              if (
-                verified.number !== published.number ||
-                verified.html_url !==
-                  `https://${promotion.target.host}/${promotion.target.repository}/issues/${published.number}`
-              )
+                  })
+                  .pipe(Effect.mapError(mapError)));
+              const verified = yield* adapter
+                .get({
+                  ...scope,
+                  ref: { ...scope.ref, id: String(published.number), number: published.number },
+                })
+                .pipe(Effect.mapError(mapError));
+              if (verified.ref.number !== published.number || verified.ref.url !== published.url)
                 return yield* error(
-                  "GitHub returned an issue outside the approved publication destination.",
+                  "The repository host returned an issue outside the approved publication destination.",
                 );
               promotion = {
                 ...promotion,
@@ -382,8 +294,8 @@ export class IdeaPromotion extends Context.Service<
                   ...promotion.issues.filter((issue) => issue.draftId !== draft.id),
                   {
                     draftId: draft.id,
-                    url: verified.html_url,
-                    number: verified.number,
+                    url: verified.ref.url,
+                    number: verified.ref.number,
                     title: verified.title,
                     publishedAt: DateTime.formatIso(yield* DateTime.now),
                   },

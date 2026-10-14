@@ -336,7 +336,7 @@ const layerRepositoryIdentityResolver = Layer.effect(
 
 const layerIssueService = IssueService.layer.pipe(
   Layer.provide(ProjectStore.layer),
-  Layer.provide(IssueHost.layer),
+  Layer.provideMerge(IssueHost.layer),
   Layer.provide(layerSourceControlProviderRegistry),
   Layer.provide(
     Layer.mergeAll(

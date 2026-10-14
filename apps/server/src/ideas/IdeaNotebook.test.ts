@@ -356,7 +356,7 @@ describe("idea notebooks", () => {
   it("settles only complete verified coverage and retains published receipts", () => {
     let state = blank();
     const promotion = {
-      target: { host: "github.com", repository: "example/repo" },
+      target: { hostKind: "github" as const, host: "github.com", repository: "example/repo" },
       id: "promotion-one",
       sourceRevision: state.contentRevision,
       status: "review" as const,

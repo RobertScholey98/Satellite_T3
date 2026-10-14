@@ -18,7 +18,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
-import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { ServerConfig } from "../config.ts";
 import {
@@ -43,13 +42,10 @@ import { IdeaRuntime } from "./IdeaRuntime.ts";
 import { IdeaPromotion } from "./IdeaPromotion.ts";
 import { IdeaUpdateReactor } from "./IdeaUpdateReactor.ts";
 import { IdeaDeletionReactor } from "./IdeaDeletionReactor.ts";
+import { IssueHost, fromAdapters } from "../issues/IssueHost.ts";
+import { publishingHost } from "../issues/IssueHost.testFixtures.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ProjectService } from "../project/ProjectService.ts";
-
-const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
-const decodePostedIssue = Schema.decodeEffect(
-  Schema.fromJsonString(Schema.Struct({ title: Schema.String, body: Schema.String })),
-);
 
 const threadId = ThreadId.make("workflow-idea");
 const projectId = ProjectId.make("workflow-project");
@@ -86,9 +82,7 @@ it.effect.each([
           : {}),
       };
       let generated = 0;
-      let posted = 0;
-      let published: { number: number; title: string; body: string; html_url: string } | null =
-        null;
+      const host = publishingHost();
       const provider: ProviderInstance = {
         instanceId,
         driverKind,
@@ -143,33 +137,13 @@ it.effect.each([
       };
       const runner = Layer.succeed(ProcessRunner, {
         run: (input) =>
-          Effect.gen(function* () {
+          Effect.sync(() => {
             let stdout = "";
             let code = 0;
             if (input.command === "git") {
               if (input.args.includes("symbolic-ref")) code = 1;
               else if (input.args.includes("rev-parse")) stdout = "a".repeat(40);
               else throw new Error("Unexpected Git command " + input.args.join(" "));
-            } else if (input.command === "gh") {
-              if (input.args[0] === "repo")
-                stdout = yield* encodeJson({
-                  nameWithOwner: "example/ideas",
-                  hasIssuesEnabled: true,
-                  isArchived: false,
-                });
-              else if (input.args.includes("POST")) {
-                posted++;
-                const data = yield* decodePostedIssue(input.stdin ?? "{}").pipe(Effect.orDie);
-                published = {
-                  number: posted,
-                  title: data.title,
-                  body: data.body,
-                  html_url: "https://github.com/example/ideas/issues/" + posted,
-                };
-                stdout = yield* encodeJson(published);
-              } else if (input.args.some((arg) => arg.includes("?state=all")))
-                stdout = yield* encodeJson(published ? [published] : []);
-              else stdout = yield* encodeJson(published);
             } else throw new Error("Unexpected process " + input.command);
             return {
               code: ChildProcessSpawner.ExitCode(code),
@@ -193,6 +167,8 @@ it.effect.each([
             resolve: () =>
               Effect.succeed({
                 canonicalKey: "github.com/example/ideas",
+                provider: "github",
+                displayName: "example/ideas",
                 locator: {
                   source: "git-remote",
                   remoteName: "origin",
@@ -229,6 +205,7 @@ it.effect.each([
         ),
         Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
         Layer.provide(runner),
+        Layer.provide(Layer.succeed(IssueHost, fromAdapters([host.adapter]))),
         Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "idea-workflow-" })),
         Layer.provideMerge(NodeServices.layer),
       );
@@ -324,7 +301,7 @@ it.effect.each([
           ],
           remainingScope: "",
         });
-        assert.equal(posted, 0);
+        assert.equal(host.remote.length, 0);
         const publishedEvent = yield* waitFor(
           (event) =>
             event.type === "idea.changed" &&
@@ -339,7 +316,7 @@ it.effect.each([
         });
         yield* Fiber.join(publishedEvent);
         yield* promotion.drain;
-        assert.equal(posted, 1);
+        assert.equal(host.remote.length, 1);
         assert.equal((yield* store.get(threadId))?.status, "settled");
         yield* recordMessage({
           threadId,
@@ -393,7 +370,7 @@ it.effect.each([
             path.join(config.stateDir, "ideas", Buffer.from(threadId).toString("base64url")),
           ),
         );
-        assert.equal(posted, 1);
+        assert.equal(host.remote.length, 1);
       }).pipe(Effect.provide(layer));
     }),
 );

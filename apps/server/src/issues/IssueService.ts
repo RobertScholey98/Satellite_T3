@@ -54,18 +54,14 @@ import {
   type EnvironmentId,
   type IssueAttemptsSyncGenerationsInput,
 } from "@t3tools/contracts";
-import {
-  canonicalIssueKey,
-  IssueHost,
-  type IssueHostShape,
-  type IssueHostScope,
-  type RemoteIssueBoard,
-} from "./IssueHost.ts";
+import { canonicalIssueKey, IssueHost, repositoryIssueScope } from "./IssueHost.ts";
+import type {
+  IssueHostAdapter,
+  IssueHostBoards,
+  IssueHostScope,
+  RemoteIssueBoard,
+} from "./IssueHostAdapter.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
-import {
-  sourceControlRepositorySelector,
-  detectSourceControlProviderFromRemoteUrl,
-} from "@t3tools/shared/sourceControl";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
@@ -145,7 +141,6 @@ const error = (reason: IssueOperationError["reason"], message: string) =>
   new IssueOperationError({ reason, message });
 const storageError = () => error("storage", "Could not read or save issue tracking state.");
 const isIssueError = Schema.is(IssueOperationError);
-const decodeHostKind = Schema.decodeUnknownEffect(IssueRef.fields.hostKind);
 const decodeBoardValue = Schema.decodeEffect(IssueBoardSummary);
 const decodeAttemptValue = Schema.decodeUnknownEffect(IssueAttempt);
 const decodeMoveValue = Schema.decodeUnknownEffect(IssueMoveReceipt);
@@ -231,7 +226,7 @@ export const issueBoardId = (projectId: ProjectId, locator: IssueBoardLocator) =
   ]).slice(0, 24)}`;
 
 export const makeIssueService = (options: {
-  readonly host: IssueHostShape;
+  readonly hosts: IssueHost["Service"];
   readonly environmentId: EnvironmentId;
   readonly resolveRepositoryIdentity?: RepositoryIdentityResolver["Service"]["resolve"];
   readonly getProject: (
@@ -248,6 +243,45 @@ export const makeIssueService = (options: {
     const transaction = <A, E>(effect: Effect.Effect<A, E>) => protect(sql.withTransaction(effect));
     const syncing = new Set<string>();
     const changes = yield* PubSub.unbounded<IssueBoardSyncEvent>();
+    const adapter = (
+      scope: IssueHostScope,
+    ): Effect.Effect<IssueHostAdapter, IssueOperationError> => {
+      const found = options.hosts.forHost(scope.ref.hostKind);
+      return found
+        ? Effect.succeed(found)
+        : Effect.fail(error("unavailable", "This repository host does not expose issues."));
+    };
+    const boards = (
+      locator: IssueBoardLocator,
+    ): Effect.Effect<IssueHostBoards, IssueOperationError> => {
+      const found = options.hosts.forBoard(locator);
+      return found
+        ? Effect.succeed(found)
+        : Effect.fail(error("unavailable", "This repository host does not expose this board."));
+    };
+    const host = {
+      list: (scope: IssueHostScope, cursor?: string) =>
+        adapter(scope).pipe(Effect.flatMap((found) => found.list(scope, cursor))),
+      get: (scope: IssueHostScope) =>
+        adapter(scope).pipe(Effect.flatMap((found) => found.get(scope))),
+      listBoards: (scope: IssueHostScope) =>
+        adapter(scope).pipe(
+          Effect.flatMap((found) =>
+            found.boards
+              ? found.boards.list(scope)
+              : Effect.fail(
+                  error(
+                    "unavailable",
+                    "Boards are supported for GitHub Projects and Azure DevOps. This host supports issue listing only.",
+                  ),
+                ),
+          ),
+        ),
+      board: (cwd: string, locator: IssueBoardLocator) =>
+        boards(locator).pipe(Effect.flatMap((found) => found.read(cwd, locator))),
+      move: (cwd: string, locator: IssueBoardLocator, item: IssueBoardItem, columnId: string) =>
+        boards(locator).pipe(Effect.flatMap((found) => found.move(cwd, locator, item, columnId))),
+    };
     const project = Effect.fnUntraced(function* (id: ProjectId) {
       const value = yield* options.getProject(id);
       if (!value) return yield* error("not-found", "The selected project is unavailable.");
@@ -267,32 +301,7 @@ export const makeIssueService = (options: {
           (yield* options.resolveRepositoryIdentity(value.workspaceRoot, { refresh: true })) ??
           identity;
       }
-      const repository =
-        identity?.provider === "azure-devops"
-          ? identity.displayName?.split("/_git/")[0]
-          : sourceControlRepositorySelector(identity);
-      if (!identity || !repository || !identity.provider)
-        return yield* error("unavailable", "This project has no supported repository host.");
-      const kind = yield* decodeHostKind(identity.provider).pipe(
-        Effect.mapError(() =>
-          error("unavailable", "This repository host does not support issues."),
-        ),
-      );
-      const detected = detectSourceControlProviderFromRemoteUrl(identity.locator.remoteUrl);
-      const host =
-        kind === "azure-devops" ? "dev.azure.com" : detected ? new URL(detected.baseUrl).host : "";
-      if (!host) return yield* error("unavailable", "This project's repository host is unknown.");
-      return {
-        cwd: value.workspaceRoot,
-        ref: {
-          hostKind: kind,
-          host,
-          repository,
-          id: "0",
-          number: 0,
-          url: `https://${host}/${repository}`,
-        },
-      };
+      return yield* repositoryIssueScope(value.workspaceRoot, identity);
     });
     const decodeBoard = Effect.fnUntraced(function* (row: BoardRow) {
       return yield* decodeBoardValue({
@@ -433,7 +442,7 @@ export const makeIssueService = (options: {
       cwd: string,
       locator: IssueBoardLocator,
     ) {
-      const remote = yield* options.host.board(cwd, locator);
+      const remote = yield* host.board(cwd, locator);
       yield* upsertSnapshot(boardId, remote);
       return remote;
     });
@@ -443,7 +452,7 @@ export const makeIssueService = (options: {
         if (!row) return;
         const board = yield* readBoard(boardId);
         const remote = yield* project(board.projectId).pipe(
-          Effect.flatMap((value) => options.host.board(value.workspaceRoot, board.locator)),
+          Effect.flatMap((value) => host.board(value.workspaceRoot, board.locator)),
           Effect.result,
         );
         if (remote._tag === "Success")
@@ -527,7 +536,7 @@ export const makeIssueService = (options: {
         );
         if (!item) return yield* error("not-found", "The issue is no longer on this board.");
         if (item.columnId !== move.column_id)
-          yield* options.host.move(cwd, remote.locator, item, move.column_id);
+          yield* host.move(cwd, remote.locator, item, move.column_id);
         const confirmed = yield* readRemote(board.id, cwd, remote.locator);
         if (
           confirmed.items.find((item) => canonicalIssueKey(item.issue.ref) === move.issue_key)
@@ -588,7 +597,7 @@ export const makeIssueService = (options: {
             remote = yield* parse(RemoteBoard, row.board_json);
             sync = syncOf(board.id, row);
           } else {
-            remote = yield* options.host.board(
+            remote = yield* host.board(
               (yield* project(board.projectId)).workspaceRoot,
               board.locator,
             );
@@ -646,7 +655,7 @@ export const makeIssueService = (options: {
               projectId: input.projectId,
               boardId: yield* parse(Schema.String, replay),
             });
-          const remote = yield* options.host.board(
+          const remote = yield* host.board(
             (yield* project(input.projectId)).workspaceRoot,
             input.locator,
           );
@@ -1006,7 +1015,7 @@ export const makeIssueService = (options: {
           const configs = yield* Effect.forEach(saved, decodeBoard);
           if (input.connectedOnly) return configs;
           const discovery = yield* scope(input.projectId).pipe(
-            Effect.flatMap((scope) => options.host.listBoards(scope)),
+            Effect.flatMap((scope) => host.listBoards(scope)),
             Effect.result,
           );
           if (discovery._tag === "Failure") {
@@ -1070,14 +1079,10 @@ export const makeIssueService = (options: {
       );
     return {
       list: (input) =>
-        scope(input.projectId).pipe(
-          Effect.flatMap((scope) => options.host.list(scope, input.cursor)),
-        ),
+        scope(input.projectId).pipe(Effect.flatMap((scope) => host.list(scope, input.cursor))),
       get: (input) =>
         project(input.projectId).pipe(
-          Effect.flatMap((project) =>
-            options.host.get({ cwd: project.workspaceRoot, ref: input.issue }),
-          ),
+          Effect.flatMap((project) => host.get({ cwd: project.workspaceRoot, ref: input.issue })),
         ),
       listBoards,
       openBoard,
@@ -1100,12 +1105,12 @@ export const makeIssueService = (options: {
     } satisfies IssueServiceShape;
   });
 export const make = Effect.gen(function* () {
-  const host = yield* IssueHost;
+  const hosts = yield* IssueHost;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const environment = yield* ServerEnvironmentIdentity;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver;
   return yield* makeIssueService({
-    host,
+    hosts,
     resolveRepositoryIdentity: repositoryIdentityResolver.resolve,
     environmentId: yield* environment.getEnvironmentId,
     getProject: (id) =>
