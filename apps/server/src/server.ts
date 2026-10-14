@@ -1,18 +1,5 @@
-import * as EventStoreV2 from "./orchestration-v2/EventStore.ts";
-import * as SatelliteOrchestration from "./orchestration-v2/SatelliteOrchestration.ts";
 import { ideaHttpApiLayer } from "./ideas/http.ts";
-import { IdeaNotebookStore } from "./ideas/IdeaNotebookStore.ts";
-import { IdeaRuntime } from "./ideas/IdeaRuntime.ts";
-import { IdeaPromotion } from "./ideas/IdeaPromotion.ts";
-import { IdeaDeletionReactor } from "./ideas/IdeaDeletionReactor.ts";
-import { IdeaUpdateReactor } from "./ideas/IdeaUpdateReactor.ts";
-import { DocumentService } from "./documents/DocumentService.ts";
-import * as RevdocService from "./revdoc/RevdocService.ts";
-import { OpenWorkService } from "./openWork/OpenWorkService.ts";
-import * as IssueService from "./issues/IssueService.ts";
-import * as IssueHost from "./issues/IssueHost.ts";
-import * as IssueLifecycleReactor from "./issues/IssueLifecycleReactor.ts";
-import * as CommitRecommendationService from "./git/CommitRecommendationService.ts";
+import * as SatelliteServer from "./satellite/SatelliteServer.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -30,8 +17,6 @@ import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import type * as FileSystem from "effect/FileSystem";
-import type * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -334,21 +319,6 @@ const layerRepositoryIdentityResolver = Layer.effect(
   }),
 ).pipe(Layer.provide(layerSourceControlProviderRegistry), Layer.provide(ProcessRunner.layer));
 
-const layerIssueService = IssueService.layer.pipe(
-  Layer.provide(ProjectStore.layer),
-  Layer.provideMerge(IssueHost.layer),
-  Layer.provide(layerSourceControlProviderRegistry),
-  Layer.provide(
-    Layer.mergeAll(
-      GitHubCli.layer,
-      GitLabCli.layer,
-      AzureDevOpsCli.layer,
-      ForgejoCli.layer,
-      BitbucketApi.layer,
-    ),
-  ),
-);
-
 const layerPullRequestService = PullRequestService.layer.pipe(
   Layer.provide(PullRequestProviderRegistry.layer),
   // Where the viewed-file marks live for a host that keeps none of its own.
@@ -514,31 +484,6 @@ const layerOrchestrationApplication = CheckpointDiffQuery.layer.pipe(
   Layer.provideMerge(layerOrchestrationV2Runtime),
 );
 
-const layerSatelliteFeatures = Layer.mergeAll(
-  DocumentService.layer,
-  RevdocService.layer,
-  OpenWorkService.layer,
-  CommitRecommendationService.layer,
-  Layer.effectDiscard(Effect.flatMap(IdeaUpdateReactor, (worker) => worker.start())),
-  Layer.effectDiscard(Effect.flatMap(IdeaDeletionReactor, (worker) => worker.start())).pipe(
-    Layer.provide(IdeaDeletionReactor.layer),
-  ),
-  Layer.effectDiscard(
-    Effect.flatMap(IssueLifecycleReactor.IssueLifecycleReactor, (worker) => worker.start()),
-  ).pipe(Layer.provide(IssueLifecycleReactor.layer)),
-  Layer.effectDiscard(Effect.flatMap(IdeaPromotion, (worker) => worker.start())),
-).pipe(
-  Layer.provideMerge(IdeaUpdateReactor.layer),
-  Layer.provideMerge(IdeaPromotion.layer),
-  Layer.provideMerge(IdeaRuntime.layer),
-  Layer.provideMerge(IdeaNotebookStore.layer),
-  Layer.provideMerge(layerIssueService),
-  Layer.provideMerge(SatelliteOrchestration.layer),
-  Layer.provideMerge(RuntimeLayer.layerEventSink),
-  Layer.provideMerge(EventStoreV2.layerFromOrchestrationEventStore),
-  Layer.provideMerge(ProjectionStoreV2.layer),
-);
-
 // Automatic thread settlement (#8600): a server-owned sweep evaluates
 // inactivity and merged pull requests, then settles through the orchestrator
 // so every client sees the same shelf.
@@ -618,7 +563,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ReplayMarkers.layer,
 ).pipe(
   // Core Services
-  Layer.provideMerge(layerSatelliteFeatures),
+  Layer.provideMerge(SatelliteServer.layer),
   Layer.provideMerge(layerOrchestrationApplication),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
@@ -691,8 +636,6 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 );
 
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
-  Layer.provideMerge(PreviewAutomationBroker.layer),
-  Layer.provideMerge(ProcessRunner.layer),
   // Misc.
   Layer.provideMerge(layerBackground),
   Layer.provideMerge(layerResourceDiagnostics),
@@ -742,6 +685,7 @@ const layerMakeRoutes = Layer.mergeAll(
   // orchestrator uses, so MCP capability reporting can never drift from
   // what dispatch can actually serve.
   McpHttpServer.layer.pipe(
+    SatelliteServer.withMcpToolkits,
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
   ),
@@ -1139,8 +1083,4 @@ const layerMakeServer = Layer.unwrap(
 );
 
 // The CLI supplies configuration.
-export const runServer: Effect.Effect<
-  never,
-  Layer.Error<typeof layerMakeServer>,
-  ServerConfig.ServerConfig | FileSystem.FileSystem | Path.Path
-> = Layer.launch(layerMakeServer);
+export const runServer = Layer.launch(layerMakeServer);

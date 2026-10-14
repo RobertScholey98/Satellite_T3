@@ -1,10 +1,3 @@
-import { RevdocToolkit, RevdocToolkitHandlersLive } from "./toolkits/revdoc/tools.ts";
-import { IdeaRuntime } from "../ideas/IdeaRuntime.ts";
-import { IdeasToolkit, IdeasImageToolkit, IdeaImageTool } from "./toolkits/ideas/tools.ts";
-import {
-  IdeasToolkitHandlersLive,
-  IdeasImageToolkitHandlersLive,
-} from "./toolkits/ideas/handlers.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -56,10 +49,6 @@ import { WorktreeToolkit } from "./toolkits/worktree/tools.ts";
 import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
-import { DocumentsToolkitHandlersLive } from "./toolkits/documents/handlers.ts";
-import { DocumentsToolkit } from "./toolkits/documents/tools.ts";
-import { CommitsToolkitHandlersLive } from "./toolkits/commits/handlers.ts";
-import { CommitsToolkit } from "./toolkits/commits/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
 import {
   DeviceScreenshotTool,
@@ -641,7 +630,7 @@ const imageToolFailure =
  * result carries a `screenshot` field are registered by hand so the PNG goes
  * out as an image block and the rest of the payload as JSON metadata.
  */
-const registerImageTool = <T extends Tool.Any, E, R>(
+export const registerImageTool = <T extends Tool.Any, E, R>(
   tool: T,
   handle: (payload: Tool.Parameters<T>) => Effect.Effect<{ readonly encodedResult: unknown }, E, R>,
   provide: (
@@ -777,7 +766,7 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
 ) => McpServer.toolkit(toolkit).pipe(Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)));
 
 /** A hand-registered tool, also only with handlers that declared their access. */
-const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, EX, RX>(
+export const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, EX, RX>(
   register: Effect.Effect<A, E, R>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) => Layer.effectDiscard(register).pipe(Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)));
@@ -858,47 +847,7 @@ export const layerMcpTransport = McpServer.layerHttp({
   protocols: [McpProtocol.v2025_06_18],
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
-const registerIdeaImage = Effect.gen(function* () {
-  const runtime = yield* IdeaRuntime;
-  const built = yield* IdeasImageToolkit;
-  const threads = yield* ThreadManagementService.ThreadManagementService;
-  yield* registerImageTool(
-    IdeaImageTool,
-    (payload) =>
-      built
-        .handle("idea_read_image", payload)
-        .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
-    (effect) =>
-      effect.pipe(
-        Effect.provideService(IdeaRuntime, runtime),
-        Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
-      ),
-    "idea-image",
-    "Could not read the idea image.",
-  );
-});
-export const IdeasToolkitRegistrationLive = Layer.mergeAll(
-  toolkitRegistration(IdeasToolkit, IdeasToolkitHandlersLive),
-  imageToolRegistration(registerIdeaImage, IdeasImageToolkitHandlersLive),
-);
-export const DocumentsToolkitRegistrationLive = toolkitRegistration(
-  DocumentsToolkit,
-  DocumentsToolkitHandlersLive,
-);
-export const CommitsToolkitRegistrationLive = toolkitRegistration(
-  CommitsToolkit,
-  CommitsToolkitHandlersLive,
-);
-export const RevdocToolkitRegistrationLive = toolkitRegistration(
-  RevdocToolkit,
-  RevdocToolkitHandlersLive,
-);
-
 export const layer = Layer.mergeAll(
-  IdeasToolkitRegistrationLive,
-  DocumentsToolkitRegistrationLive,
-  CommitsToolkitRegistrationLive,
-  RevdocToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,
