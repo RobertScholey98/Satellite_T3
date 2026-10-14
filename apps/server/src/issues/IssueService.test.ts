@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -19,6 +20,12 @@ import {
 } from "@t3tools/contracts";
 import migration from "../persistence/Migrations/056_IssueBoards.ts";
 import snapshotMigration from "../persistence/Migrations/059_IssueBoardSnapshots.ts";
+import * as BitbucketApi from "../sourceControl/BitbucketApi.ts";
+import * as ForgejoCli from "../sourceControl/ForgejoCli.ts";
+import * as GitLabCli from "../sourceControl/GitLabCli.ts";
+import * as BitbucketIssueHost from "./BitbucketIssueHost.ts";
+import * as ForgejoIssueHost from "./ForgejoIssueHost.ts";
+import * as GitLabIssueHost from "./GitLabIssueHost.ts";
 import { makeIssueService } from "./IssueService.ts";
 import { canonicalIssueKey, fromAdapters } from "./IssueHost.ts";
 import type { IssueHostAdapter, IssueHostBoards } from "./IssueHostAdapter.ts";
@@ -574,6 +581,61 @@ describe("IssueService", () => {
         assert.strictEqual(failure.reason, "unavailable");
       }),
     ),
+  );
+  it.effect(
+    "reports GitLab, Forgejo, and Bitbucket as listing issues only when asked for boards",
+    () =>
+      run(
+        Effect.gen(function* () {
+          const test = yield* setup;
+          const unused = () => Effect.die("Board discovery must not reach the host");
+          const hosts = fromAdapters(
+            yield* Effect.all([
+              GitLabIssueHost.make.pipe(
+                Effect.provide(Layer.mock(GitLabCli.GitLabCli)({ execute: unused })),
+              ),
+              ForgejoIssueHost.make.pipe(
+                Effect.provide(Layer.mock(ForgejoCli.ForgejoCli)({ api: unused })),
+              ),
+              BitbucketIssueHost.make.pipe(
+                Effect.provide(Layer.mock(BitbucketApi.BitbucketApi)({ request: unused })),
+              ),
+            ]),
+          );
+          for (const [provider, remoteUrl] of [
+            ["gitlab", "https://gitlab.com/owner/repo.git"],
+            ["forgejo", "https://codeberg.org/owner/repo.git"],
+            ["bitbucket", "https://bitbucket.org/owner/repo.git"],
+          ] as const) {
+            const readOnlyProject = ProjectId.make(`${provider}-project`);
+            const service = yield* makeIssueService({
+              ...test.options,
+              hosts,
+              getProject: () =>
+                Effect.succeed({
+                  ...project,
+                  id: readOnlyProject,
+                  repositoryIdentity: {
+                    ...project.repositoryIdentity!,
+                    provider,
+                    locator: { ...project.repositoryIdentity!.locator, remoteUrl },
+                  },
+                }),
+            });
+            const failure = yield* service
+              .listBoards({ projectId: readOnlyProject })
+              .pipe(Effect.flip);
+            assert.deepStrictEqual(
+              [provider, failure.reason, failure.message],
+              [
+                provider,
+                "unavailable",
+                "Boards are supported for GitHub Projects and Azure DevOps. This host supports issue listing only.",
+              ],
+            );
+          }
+        }),
+      ),
   );
   it.effect("lists saved board connections without querying repository hosts", () =>
     run(

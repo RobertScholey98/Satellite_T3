@@ -3,10 +3,18 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as BitbucketApi from "../sourceControl/BitbucketApi.ts";
+import * as ForgejoCli from "../sourceControl/ForgejoCli.ts";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
+import * as GitLabCli from "../sourceControl/GitLabCli.ts";
 import * as AzureBoardsIssueHost from "./AzureBoardsIssueHost.ts";
+import * as BitbucketIssueHost from "./BitbucketIssueHost.ts";
+import * as ForgejoIssueHost from "./ForgejoIssueHost.ts";
 import * as GitHubIssueHost from "./GitHubIssueHost.ts";
+import * as GitLabIssueHost from "./GitLabIssueHost.ts";
 import { azureCli, type AzureRequest } from "./IssueHost.testFixtures.ts";
 import type { IssueHostAdapter, IssueHostScope } from "./IssueHostAdapter.ts";
 
@@ -153,7 +161,169 @@ const azure: Subject = {
     }),
 };
 
-const subjects: ReadonlyArray<Subject> = [github, azure];
+/** Serves a REST host's issue list, one issue, or one issue's comments from the world. */
+const restAnswer = (
+  world: World,
+  path: string,
+  host: {
+    readonly size: string;
+    readonly issue: (number: number) => Record<string, unknown>;
+    readonly nonIssue?: (number: number) => Record<string, unknown>;
+    readonly comment: (body: string, id: number) => Record<string, unknown>;
+    readonly page?: (items: ReadonlyArray<unknown>, more: boolean) => unknown;
+  },
+): unknown => {
+  if (world.malformed === "not-json") return "<html>";
+  const url = new URL(path, "https://api.host.test/");
+  const segments = url.pathname.split("/");
+  const [number, comments] = segments.slice(segments.indexOf("issues") + 1);
+  const page = Number(url.searchParams.get("page") ?? "1");
+  const size = Number(url.searchParams.get(host.size));
+  const respond = (items: ReadonlyArray<unknown>) => {
+    const slice = pageOf(items, page, size);
+    return host.page ? host.page(slice, page * size < items.length) : slice;
+  };
+  const issue = (n: number) => {
+    const raw = host.issue(n);
+    if (world.malformed !== "missing-title") return raw;
+    const { title: _title, ...rest } = raw;
+    return rest;
+  };
+  if (number === undefined)
+    return respond([
+      ...(host.nonIssue ? (world.nonIssues ?? []).map(host.nonIssue) : []),
+      ...world.issues.map(issue),
+    ]);
+  if (comments === undefined) return issue(Number(number));
+  return respond((world.comments ?? []).map(host.comment));
+};
+const vcsOutput = (value: unknown) => ({
+  exitCode: ChildProcessSpawner.ExitCode(0),
+  stdout: typeof value === "string" ? value : json(value),
+  stderr: "",
+  stdoutTruncated: false,
+  stderrTruncated: false,
+});
+const repositoryScope = (
+  hostKind: IssueHostScope["ref"]["hostKind"],
+  host: string,
+): IssueHostScope => ({
+  cwd: "/repo",
+  ref: {
+    hostKind,
+    host,
+    repository: "owner/repo",
+    id: "0",
+    number: 0,
+    url: `https://${host}/owner/repo`,
+  },
+});
+
+const gitlab: Subject = {
+  name: "GitLab",
+  scope: repositoryScope("gitlab", "gitlab.com"),
+  adapter: (world) =>
+    GitLabIssueHost.make.pipe(
+      Effect.provide(
+        Layer.mock(GitLabCli.GitLabCli)({
+          execute: ({ args }) =>
+            Effect.succeed(
+              vcsOutput(
+                restAnswer(world, args[3]!, {
+                  size: "per_page",
+                  issue: (iid) => ({
+                    iid,
+                    title: `Issue ${iid}`,
+                    state: "opened",
+                    updated_at: "2026-10-01T00:00:00Z",
+                    web_url: `https://gitlab.com/owner/repo/-/issues/${iid}`,
+                  }),
+                  comment: (body, id) => ({
+                    id,
+                    body,
+                    created_at: "2026-10-01T00:00:00Z",
+                    author: { name: "Rob" },
+                  }),
+                }),
+              ),
+            ),
+        }),
+      ),
+    ),
+};
+
+const forgejo: Subject = {
+  name: "Forgejo",
+  scope: repositoryScope("forgejo", "codeberg.org"),
+  adapter: (world) => {
+    const issue = (number: number) => ({
+      number,
+      title: `Issue ${number}`,
+      state: "open",
+      updated_at: "2026-10-01T00:00:00Z",
+      html_url: `https://codeberg.org/owner/repo/issues/${number}`,
+    });
+    return ForgejoIssueHost.make.pipe(
+      Effect.provide(
+        Layer.mock(ForgejoCli.ForgejoCli)({
+          api: ({ path }) =>
+            Effect.succeed(
+              vcsOutput(
+                restAnswer(world, path, {
+                  size: "limit",
+                  issue,
+                  nonIssue: (number) => ({ ...issue(number), pull_request: {} }),
+                  comment: (body, id) => ({
+                    id,
+                    body,
+                    created_at: "2026-10-01T00:00:00Z",
+                    user: { login: "rob" },
+                  }),
+                }),
+              ),
+            ),
+        }),
+      ),
+    );
+  },
+};
+
+const bitbucket: Subject = {
+  name: "Bitbucket",
+  scope: repositoryScope("bitbucket", "bitbucket.org"),
+  adapter: (world) =>
+    BitbucketIssueHost.make.pipe(
+      Effect.provide(
+        Layer.mock(BitbucketApi.BitbucketApi)({
+          request: ({ url }) => {
+            const value = restAnswer(world, url, {
+              size: "pagelen",
+              issue: (id) => ({
+                id,
+                title: `Issue ${id}`,
+                state: "new",
+                updated_on: "2026-10-01T00:00:00Z",
+                links: { html: { href: `https://bitbucket.org/owner/repo/issues/${id}` } },
+              }),
+              comment: (body, id) => ({
+                id,
+                content: { raw: body },
+                created_on: "2026-10-01T00:00:00Z",
+                user: { display_name: "Rob" },
+              }),
+              page: (values, more) => ({ values, ...(more ? { next: "more" } : {}) }),
+            });
+            return Effect.succeed({
+              body: typeof value === "string" ? value : json(value),
+              truncated: false,
+            });
+          },
+        }),
+      ),
+    ),
+};
+
+const subjects: ReadonlyArray<Subject> = [github, azure, gitlab, forgejo, bitbucket];
 
 const build = (subject: Subject, world: World) =>
   subject.adapter(world).pipe(Effect.provide(NodeServices.layer));

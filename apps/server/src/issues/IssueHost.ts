@@ -20,7 +20,10 @@ import { GitLabCli } from "../sourceControl/GitLabCli.ts";
 import { ForgejoCli } from "../sourceControl/ForgejoCli.ts";
 import { BitbucketApi } from "../sourceControl/BitbucketApi.ts";
 import * as AzureBoardsIssueHost from "./AzureBoardsIssueHost.ts";
+import * as BitbucketIssueHost from "./BitbucketIssueHost.ts";
+import * as ForgejoIssueHost from "./ForgejoIssueHost.ts";
 import * as GitHubIssueHost from "./GitHubIssueHost.ts";
+import * as GitLabIssueHost from "./GitLabIssueHost.ts";
 import {
   JsonRecord,
   arr,
@@ -343,12 +346,14 @@ export function fromAdapters(adapters: ReadonlyArray<IssueHostAdapter>): IssueHo
   };
 }
 
-const make = Effect.gen(function* () {
-  const fallback = makeIssueHost({
-    gitlab: yield* GitLabCli,
-    forgejo: yield* ForgejoCli,
-    bitbucket: yield* BitbucketApi,
-  });
-  return fromAdapters([yield* GitHubIssueHost.make, yield* AzureBoardsIssueHost.make, ...fallback]);
-});
+const make = Effect.map(
+  Effect.all([
+    GitHubIssueHost.make,
+    AzureBoardsIssueHost.make,
+    GitLabIssueHost.make,
+    ForgejoIssueHost.make,
+    BitbucketIssueHost.make,
+  ]),
+  fromAdapters,
+);
 export const layer = Layer.effect(IssueHost, make);
