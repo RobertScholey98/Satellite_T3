@@ -27,7 +27,9 @@ import {
   type DiscoveredIssueBoard,
   type IssueHostAdapter,
   type IssueHostBoards,
+  type IssueHostPublication,
   type IssueHostScope,
+  type PublishedIssue,
 } from "./IssueHostAdapter.ts";
 
 type ProjectLocator = Extract<IssueBoardLocator, { kind: "github-project" }>;
@@ -75,6 +77,30 @@ const GraphqlConnection = Schema.Struct({
     hasNextPage: Schema.Boolean,
     endCursor: Schema.NullOr(Schema.String),
   }),
+});
+
+const GitHubRepository = Schema.Struct({
+  full_name: Schema.String,
+  has_issues: Schema.Boolean,
+  archived: Schema.Boolean,
+});
+const GitHubPublishedIssue = Schema.Struct({
+  number: Schema.Int,
+  title: Schema.String,
+  html_url: Schema.String,
+  body: Schema.NullOr(Schema.String),
+});
+const refuseDestination = () =>
+  new IssueOperationError({
+    reason: "unavailable",
+    message:
+      "This repository cannot accept issues. Enable Issues or choose an active issue tracker before promotion.",
+  });
+const toPublished = (issue: typeof GitHubPublishedIssue.Type): PublishedIssue => ({
+  number: issue.number,
+  title: issue.title,
+  url: issue.html_url,
+  body: issue.body ?? "",
 });
 
 const actor = (value: unknown) => {
@@ -176,13 +202,15 @@ const MOVE_ITEM_MUTATION = `
 
 export const make = Effect.gen(function* () {
   const github = yield* GitHubApi.GitHubApi;
-  const rest = (host: string, path: string) =>
+  const rest = (host: string, path: string, create?: { readonly body: unknown }) =>
     github
       .rest({
         host,
-        operation: "IssueHost.read",
         path,
         maxResponseBytes: ISSUE_RESPONSE_LIMIT_BYTES,
+        ...(create
+          ? { operation: "IssueHost.create", method: "POST" as const, body: create.body }
+          : { operation: "IssueHost.read" }),
       })
       .pipe(
         Effect.mapError(remoteIssueError),
@@ -368,10 +396,51 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const create: IssueHostPublication["create"] = Effect.fn("GitHubIssueHost.create")(function* (
+    { ref },
+    draft,
+  ) {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(ref.repository)) return yield* refuseDestination();
+    const repository = yield* decodeHostJson(
+      GitHubRepository,
+      yield* rest(ref.host, `repos/${ref.repository}`),
+    );
+    if (
+      repository.full_name.toLowerCase() !== ref.repository.toLowerCase() ||
+      !repository.has_issues ||
+      repository.archived
+    )
+      return yield* refuseDestination();
+    const created = yield* decodeHostJson(
+      GitHubPublishedIssue,
+      yield* rest(ref.host, `repos/${ref.repository}/issues`, { body: draft }),
+    );
+    return toPublished(created);
+  });
+  const findByMarker: IssueHostPublication["findByMarker"] = Effect.fn(
+    "GitHubIssueHost.findByMarker",
+  )(function* ({ ref }, markers) {
+    const found: PublishedIssue[] = [];
+    // Bodies run to 65 KB, so a small page keeps each response well under the response limit.
+    for (let page = 1; ; page++) {
+      const issues = yield* decodeHostJson(
+        Schema.Array(GitHubPublishedIssue),
+        yield* rest(
+          ref.host,
+          `repos/${ref.repository}/issues?state=all&sort=created&direction=asc&per_page=25&page=${page}`,
+        ),
+      );
+      for (const issue of issues)
+        if (markers.some((marker) => issue.body?.includes(marker))) found.push(toPublished(issue));
+      if (issues.length < 25) return found;
+    }
+  });
+
   return {
     kind: "github",
     list,
     get,
     boards: { locatorKind: "github-project", list: listBoards, read, move },
+    publication: { create, findByMarker },
   } satisfies IssueHostAdapter;
 });

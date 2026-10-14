@@ -45,6 +45,30 @@ export interface IssueHostBoards<K extends IssueBoardLocator["kind"] = IssueBoar
   ) => Effect.Effect<void, IssueOperationError>;
 }
 
+/** An issue as publication sees it: enough to match a marker and record the outcome. */
+export interface PublishedIssue {
+  readonly number: number;
+  readonly title: string;
+  readonly url: string;
+  readonly body: string;
+}
+export interface IssueHostPublication {
+  /** Refuses a repository that cannot accept issues before creating anything. */
+  readonly create: (
+    scope: IssueHostScope,
+    draft: {
+      readonly title: string;
+      readonly body: string;
+      readonly labels: ReadonlyArray<string>;
+    },
+  ) => Effect.Effect<PublishedIssue, IssueOperationError>;
+  /** Every issue in the repository whose body contains one of `markers`, across all pages. */
+  readonly findByMarker: (
+    scope: IssueHostScope,
+    markers: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<PublishedIssue>, IssueOperationError>;
+}
+
 /**
  * One repository host's issue I/O. A host that cannot do something omits that group; the issue
  * service turns the absence into its "unavailable" error, so there are no stub methods.
@@ -60,6 +84,7 @@ export interface IssueHostAdapter {
   readonly boards?: {
     [K in IssueBoardLocator["kind"]]: IssueHostBoards<K>;
   }[IssueBoardLocator["kind"]];
+  readonly publication?: IssueHostPublication;
 }
 
 export const ISSUE_RESPONSE_LIMIT_BYTES = 4 * 1024 * 1024;

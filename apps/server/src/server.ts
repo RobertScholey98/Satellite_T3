@@ -336,7 +336,8 @@ const layerRepositoryIdentityResolver = Layer.effect(
 
 const layerIssueService = IssueService.layer.pipe(
   Layer.provide(ProjectStore.layer),
-  Layer.provide(IssueHost.layer),
+  // Merged so idea promotion publishes through the same adapters the Issues tab reads.
+  Layer.provideMerge(IssueHost.layer),
   Layer.provide(layerSourceControlProviderRegistry),
   Layer.provide(
     Layer.mergeAll(

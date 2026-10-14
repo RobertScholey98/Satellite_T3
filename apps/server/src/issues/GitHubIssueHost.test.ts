@@ -6,6 +6,9 @@ import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as GitHubIssueHost from "./GitHubIssueHost.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeDraft = Schema.decodeUnknownSync(
+  Schema.Struct({ title: Schema.String, body: Schema.String }),
+);
 const repository: IssueRef = {
   hostKind: "github",
   host: "github.com",
@@ -312,6 +315,108 @@ describe("GitHubIssueHost", () => {
       const adapter = yield* adapterOn({ rest: () => ({ ...ok([]), truncated: true }) });
       const failure = yield* adapter.list(scope).pipe(Effect.flip);
       assert.strictEqual(failure.message, "The GitHub response exceeded the issue response limit.");
+    }),
+  );
+});
+
+describe("GitHubIssueHost publication", () => {
+  /** A repository that accepts posted issues while `settings` allow it. */
+  const repositoryHost = (settings: {
+    archived?: boolean;
+    has_issues?: boolean;
+    full_name?: string;
+  }) => {
+    const issues: { number: number; title: string; body: string; html_url: string }[] = [];
+    const adapter = adapterOn({
+      rest: (input) => {
+        if (input.path === "repos/owner/repo")
+          return ok({ full_name: "owner/repo", has_issues: true, archived: false, ...settings });
+        if (input.path === "repos/owner/repo/issues" && input.method === "POST") {
+          const { title, body } = decodeDraft(input.body);
+          const number = issues.length + 1;
+          issues.push({
+            number,
+            title,
+            body,
+            html_url: `https://github.com/owner/repo/issues/${number}`,
+          });
+          return { ...ok(issues.at(-1)), status: 201 };
+        }
+      },
+    });
+    return { adapter, issues };
+  };
+  const draft = { title: "Build it", body: "Details\n\n<!-- marker -->", labels: ["idea"] };
+
+  it.effect("creates an issue in a repository that accepts them", () =>
+    Effect.gen(function* () {
+      const host = repositoryHost({});
+      const adapter = yield* host.adapter;
+      assert.deepStrictEqual(yield* adapter.publication.create(scope, draft), {
+        number: 1,
+        title: "Build it",
+        url: "https://github.com/owner/repo/issues/1",
+        body: "Details\n\n<!-- marker -->",
+      });
+    }),
+  );
+
+  it.effect("refuses an archived, issue-less, or renamed repository before creating anything", () =>
+    Effect.gen(function* () {
+      for (const settings of [
+        { archived: true },
+        { has_issues: false },
+        { full_name: "someone-else/repo" },
+      ]) {
+        const host = repositoryHost(settings);
+        const adapter = yield* host.adapter;
+        const failure = yield* adapter.publication.create(scope, draft).pipe(Effect.flip);
+        assert.deepStrictEqual(
+          [failure.reason, failure.message],
+          [
+            "unavailable",
+            "This repository cannot accept issues. Enable Issues or choose an active issue tracker before promotion.",
+          ],
+        );
+        assert.deepStrictEqual(host.issues, []);
+      }
+    }),
+  );
+
+  it.effect("finds marked issues past many pages of large unrelated issues", () =>
+    Effect.gen(function* () {
+      const issues = [
+        ...Array.from({ length: 150 }, (_, i) => ({
+          number: i + 1,
+          title: "Unrelated",
+          body: "x".repeat(65_000),
+          html_url: `https://github.com/owner/repo/issues/${i + 1}`,
+        })),
+        {
+          number: 151,
+          title: "Build it",
+          body: "Details\n\n<!-- marker -->",
+          html_url: "https://github.com/owner/repo/issues/151",
+        },
+      ];
+      const adapter = yield* adapterOn({
+        rest: (input) => {
+          const url = new URL(input.path, "https://api.github.test/");
+          if (url.pathname !== "/repos/owner/repo/issues") return;
+          const page = Number(url.searchParams.get("page"));
+          const size = Number(url.searchParams.get("per_page"));
+          return ok(issues.slice((page - 1) * size, page * size));
+        },
+      });
+      const found = yield* adapter.publication.findByMarker(scope, ["<!-- marker -->"]);
+      assert.deepStrictEqual(found, [
+        {
+          number: 151,
+          title: "Build it",
+          url: "https://github.com/owner/repo/issues/151",
+          body: "Details\n\n<!-- marker -->",
+        },
+      ]);
     }),
   );
 });

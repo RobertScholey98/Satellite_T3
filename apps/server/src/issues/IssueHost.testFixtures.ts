@@ -3,7 +3,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import { IssueOperationError } from "@t3tools/contracts";
 import * as AzureDevOpsCli from "../sourceControl/AzureDevOpsCli.ts";
+import type { IssueHostAdapter, PublishedIssue } from "./IssueHostAdapter.ts";
 
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
@@ -74,3 +76,56 @@ export const azureCli = (
         }).pipe(Effect.orDie),
     });
   });
+
+/**
+ * A GitHub adapter over an in-memory repository, for code that publishes issues. `onRead` sees
+ * every issue read back, and `loseFirstCreate` creates the first issue but fails its response.
+ */
+export const publishingHost = (
+  options: {
+    readonly loseFirstCreate?: boolean;
+    readonly alterReadback?: boolean;
+    readonly onRead?: (issue: PublishedIssue) => void;
+  } = {},
+) => {
+  const remote: PublishedIssue[] = [];
+  const adapter: IssueHostAdapter = {
+    kind: "github",
+    list: () => Effect.die("Publication does not list issues"),
+    get: ({ ref }) => {
+      const issue = remote.find((entry) => entry.number === ref.number);
+      if (!issue) return Effect.die(`Unexpected read of issue ${ref.number}`);
+      options.onRead?.(issue);
+      return Effect.succeed({
+        ref: { ...ref, url: issue.url },
+        title: issue.title,
+        state: "open",
+        updatedAt: "2026-10-01T00:00:00Z",
+        labels: [],
+        body: options.alterReadback ? issue.body + "\nAltered externally" : issue.body,
+      });
+    },
+    publication: {
+      create: ({ ref }, draft) => {
+        const number = remote.length + 1;
+        const issue = {
+          number,
+          title: draft.title,
+          body: draft.body,
+          url: `https://${ref.host}/${ref.repository}/issues/${number}`,
+        };
+        remote.push(issue);
+        return number === 1 && options.loseFirstCreate
+          ? Effect.fail(
+              new IssueOperationError({ reason: "remote", message: "GitHub did not answer." }),
+            )
+          : Effect.succeed(issue);
+      },
+      findByMarker: (_scope, markers) =>
+        Effect.succeed(
+          remote.filter((issue) => markers.some((marker) => issue.body.includes(marker))),
+        ),
+    },
+  };
+  return { adapter, remote };
+};

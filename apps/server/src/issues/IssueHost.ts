@@ -4,13 +4,18 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import {
   IssueOperationError,
+  IssueRef,
   PositiveInt,
   TrimmedNonEmptyString,
-  type IssueRef,
   type IssueBoardLocator,
   type IssueDetail,
+  type RepositoryIdentity,
   type SourceControlProviderKind,
 } from "@t3tools/contracts";
+import {
+  detectSourceControlProviderFromRemoteUrl,
+  sourceControlRepositorySelector,
+} from "@t3tools/shared/sourceControl";
 import { GitLabCli } from "../sourceControl/GitLabCli.ts";
 import { ForgejoCli } from "../sourceControl/ForgejoCli.ts";
 import { BitbucketApi } from "../sourceControl/BitbucketApi.ts";
@@ -285,6 +290,41 @@ export class IssueHost extends Context.Service<
     readonly forBoard: (locator: IssueBoardLocator) => IssueHostBoards | null;
   }
 >()("t3/issues/IssueHost") {}
+
+const decodeHostKind = Schema.decodeUnknownEffect(IssueRef.fields.hostKind);
+const unavailable = (message: string) =>
+  new IssueOperationError({ reason: "unavailable", message });
+
+/** The repository a project's issues live in, as the scope every adapter operation takes. */
+export const repositoryIssueScope = Effect.fnUntraced(function* (
+  cwd: string,
+  identity: RepositoryIdentity | null | undefined,
+): Effect.fn.Return<IssueHostScope, IssueOperationError> {
+  const repository =
+    identity?.provider === "azure-devops"
+      ? identity.displayName?.split("/_git/")[0]
+      : sourceControlRepositorySelector(identity);
+  if (!identity || !repository || !identity.provider)
+    return yield* unavailable("This project has no supported repository host.");
+  const kind = yield* decodeHostKind(identity.provider).pipe(
+    Effect.mapError(() => unavailable("This repository host does not support issues.")),
+  );
+  const detected = detectSourceControlProviderFromRemoteUrl(identity.locator.remoteUrl);
+  const host =
+    kind === "azure-devops" ? "dev.azure.com" : detected ? new URL(detected.baseUrl).host : "";
+  if (!host) return yield* unavailable("This project's repository host is unknown.");
+  return {
+    cwd,
+    ref: {
+      hostKind: kind,
+      host,
+      repository,
+      id: "0",
+      number: 0,
+      url: `https://${host}/${repository}`,
+    },
+  };
+});
 
 /** Exported for tests, which stand a registry up from adapters they supply themselves. */
 export function fromAdapters(adapters: ReadonlyArray<IssueHostAdapter>): IssueHost["Service"] {

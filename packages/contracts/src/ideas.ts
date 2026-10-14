@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
   CommandId,
@@ -9,6 +10,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { SourceControlProviderKind } from "./sourceControl.ts";
 
 export const ThreadPurpose = Schema.Literals(["work", "idea", "revdoc"]);
 export type ThreadPurpose = typeof ThreadPurpose.Type;
@@ -148,7 +150,14 @@ export const IdeaPublishedIssue = Schema.Struct({
   publishedAt: IsoDateTime,
 });
 export const IdeaPromotion = Schema.Struct({
-  target: Schema.Struct({ host: TrimmedNonEmptyString, repository: TrimmedNonEmptyString }),
+  target: Schema.Struct({
+    // Promotions recorded before other hosts existed could only target GitHub.
+    hostKind: SourceControlProviderKind.pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed("github" as const)),
+    ),
+    host: TrimmedNonEmptyString,
+    repository: TrimmedNonEmptyString,
+  }),
   id: TrimmedNonEmptyString,
   sourceRevision: NonNegativeInt,
   status: Schema.Literals(["review", "approved", "publishing", "partial", "complete", "failed"]),

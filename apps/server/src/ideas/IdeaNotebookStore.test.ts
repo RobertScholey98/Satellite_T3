@@ -185,7 +185,7 @@ it.effect.each(["message", "native answer"] as const)(
       const engine = yield* OrchestrationEngineService;
       const store = yield* IdeaNotebookStore;
       const promotion = {
-        target: { host: "github.com", repository: "example/repo" },
+        target: { hostKind: "github" as const, host: "github.com", repository: "example/repo" },
         id: "plan",
         sourceRevision: 0,
         status: "review" as const,

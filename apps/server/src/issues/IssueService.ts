@@ -54,7 +54,7 @@ import {
   type EnvironmentId,
   type IssueAttemptsSyncGenerationsInput,
 } from "@t3tools/contracts";
-import { canonicalIssueKey, IssueHost } from "./IssueHost.ts";
+import { canonicalIssueKey, IssueHost, repositoryIssueScope } from "./IssueHost.ts";
 import type {
   IssueHostAdapter,
   IssueHostBoards,
@@ -62,10 +62,6 @@ import type {
   RemoteIssueBoard,
 } from "./IssueHostAdapter.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
-import {
-  sourceControlRepositorySelector,
-  detectSourceControlProviderFromRemoteUrl,
-} from "@t3tools/shared/sourceControl";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
@@ -145,7 +141,6 @@ const error = (reason: IssueOperationError["reason"], message: string) =>
   new IssueOperationError({ reason, message });
 const storageError = () => error("storage", "Could not read or save issue tracking state.");
 const isIssueError = Schema.is(IssueOperationError);
-const decodeHostKind = Schema.decodeUnknownEffect(IssueRef.fields.hostKind);
 const decodeBoardValue = Schema.decodeEffect(IssueBoardSummary);
 const decodeAttemptValue = Schema.decodeUnknownEffect(IssueAttempt);
 const decodeMoveValue = Schema.decodeUnknownEffect(IssueMoveReceipt);
@@ -306,32 +301,7 @@ export const makeIssueService = (options: {
           (yield* options.resolveRepositoryIdentity(value.workspaceRoot, { refresh: true })) ??
           identity;
       }
-      const repository =
-        identity?.provider === "azure-devops"
-          ? identity.displayName?.split("/_git/")[0]
-          : sourceControlRepositorySelector(identity);
-      if (!identity || !repository || !identity.provider)
-        return yield* error("unavailable", "This project has no supported repository host.");
-      const kind = yield* decodeHostKind(identity.provider).pipe(
-        Effect.mapError(() =>
-          error("unavailable", "This repository host does not support issues."),
-        ),
-      );
-      const detected = detectSourceControlProviderFromRemoteUrl(identity.locator.remoteUrl);
-      const host =
-        kind === "azure-devops" ? "dev.azure.com" : detected ? new URL(detected.baseUrl).host : "";
-      if (!host) return yield* error("unavailable", "This project's repository host is unknown.");
-      return {
-        cwd: value.workspaceRoot,
-        ref: {
-          hostKind: kind,
-          host,
-          repository,
-          id: "0",
-          number: 0,
-          url: `https://${host}/${repository}`,
-        },
-      };
+      return yield* repositoryIssueScope(value.workspaceRoot, identity);
     });
     const decodeBoard = Effect.fnUntraced(function* (row: BoardRow) {
       return yield* decodeBoardValue({
