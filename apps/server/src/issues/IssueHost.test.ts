@@ -1,50 +1,69 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
-import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import type { IssueRef } from "@t3tools/contracts";
-import { makeIssueHost } from "./IssueHost.ts";
+import { canonicalIssueKey, fromAdapters } from "./IssueHost.ts";
+import type { IssueHostAdapter } from "./IssueHostAdapter.ts";
 
-const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const output = (value: unknown) => ({
-  exitCode: ChildProcessSpawner.ExitCode(0),
-  stdout: json(value),
-  stderr: "",
-  stdoutTruncated: false,
-  stderrTruncated: false,
-});
-const issue: IssueRef = {
-  hostKind: "forgejo",
-  host: "forge",
-  repository: "owner/repo",
+const ref = (overrides: Partial<IssueRef>): IssueRef => ({
+  hostKind: "github",
+  host: "GitHub.com",
+  repository: "Owner/Repo",
   id: "42",
   number: 42,
-  url: "https://forge/owner/repo/issues/42",
-};
+  url: "https://github.com/Owner/Repo/issues/42",
+  ...overrides,
+});
 
-describe("IssueHost", () => {
-  it.effect("Forgejo lists through its existing authenticated API", () =>
-    Effect.gen(function* () {
-      const [, forgejo] = makeIssueHost({
-        gitlab: { execute: () => Effect.die("Unexpected GitLab request") },
-        forgejo: {
-          api: () =>
-            Effect.succeed(
-              output([
-                {
-                  number: 42,
-                  title: "Forge task",
-                  state: "open",
-                  updated_at: "now",
-                  html_url: "https://forge/repo/issues/42",
-                },
-              ]),
-            ),
-        },
-        bitbucket: { request: () => Effect.die("Unexpected Bitbucket request") },
-      });
-      const result = yield* forgejo!.list({ cwd: "/repo", ref: issue });
-      assert.strictEqual(result.issues[0]!.title, "Forge task");
-    }),
-  );
+describe("canonicalIssueKey", () => {
+  it("keys an issue by host kind, lower-cased host and repository, and id", () => {
+    assert.strictEqual(canonicalIssueKey(ref({})), "github:github.com:owner/repo:42");
+  });
+  it("keys an Azure work item by organization alone, since ids are unique across projects", () => {
+    assert.strictEqual(
+      canonicalIssueKey(
+        ref({ hostKind: "azure-devops", host: "dev.azure.com", repository: "FSGB/Hub Redesign" }),
+      ),
+      "azure-devops:dev.azure.com:fsgb:42",
+    );
+  });
+});
+
+describe("fromAdapters", () => {
+  const unused = () => Effect.die("unused");
+  const github: IssueHostAdapter = {
+    kind: "github",
+    list: unused,
+    get: unused,
+    boards: { locatorKind: "github-project", list: unused, read: unused, move: unused },
+  };
+  const gitlab: IssueHostAdapter = { kind: "gitlab", list: unused, get: unused };
+
+  it("finds an adapter by host kind and a boards group by locator kind, and nothing else", () => {
+    const registry = fromAdapters([github, gitlab]);
+    assert.deepStrictEqual(
+      (["github", "gitlab", "unknown"] as const).map((kind) => registry.forHost(kind)?.kind),
+      ["github", "gitlab", undefined],
+    );
+    assert.strictEqual(
+      registry.forBoard({
+        kind: "github-project",
+        host: "github.com",
+        owner: "owner",
+        ownerKind: "user",
+        projectNumber: 1,
+      }),
+      github.boards,
+    );
+    assert.strictEqual(
+      registry.forBoard({
+        kind: "azure-board",
+        host: "dev.azure.com",
+        organization: "org",
+        project: "Project",
+        team: "Team",
+        boardId: "board",
+      }),
+      null,
+    );
+  });
 });

@@ -637,6 +637,28 @@ describe("IssueService", () => {
         }),
       ),
   );
+  it.effect("reports a repository host with no issue adapter as not exposing issues", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const unknownProject = ProjectId.make("unknown-host-project");
+        const service = yield* makeIssueService({
+          ...test.options,
+          getProject: () =>
+            Effect.succeed({
+              ...project,
+              id: unknownProject,
+              repositoryIdentity: { ...project.repositoryIdentity!, provider: "unknown" },
+            }),
+        });
+        const failure = yield* service.list({ projectId: unknownProject }).pipe(Effect.flip);
+        assert.deepStrictEqual(
+          [failure.reason, failure.message],
+          ["unavailable", "This repository host does not expose issues."],
+        );
+      }),
+    ),
+  );
   it.effect("lists saved board connections without querying repository hosts", () =>
     run(
       Effect.gen(function* () {
