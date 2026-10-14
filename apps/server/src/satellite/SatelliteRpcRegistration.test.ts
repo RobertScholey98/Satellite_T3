@@ -2,6 +2,7 @@ import {
   AuthOrchestrationReadScope,
   AuthSessionId,
   type SatelliteWsRpcMethod,
+  type SatelliteWsSubscriptionMethod,
   WS_METHODS,
   WsCoreRpcGroup,
   WsRpcGroup,
@@ -14,8 +15,15 @@ import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcTest from "effect/rpc/RpcTest";
 
 import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
+import { DocumentService } from "../documents/DocumentService.ts";
 import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
-import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { IssueService } from "../issues/IssueService.ts";
+import { OpenWorkService } from "../openWork/OpenWorkService.ts";
+import {
+  OrchestrationEngineService,
+  ProjectionSnapshotQuery,
+} from "../orchestration-v2/SatelliteOrchestration.ts";
+import { RevdocService } from "../revdoc/RevdocService.ts";
 import type * as WsServer from "../ws.ts";
 import { SATELLITE_RPC_AGGREGATES, SATELLITE_RPC_REQUIRED_SCOPES } from "./SatelliteRpcRegistry.ts";
 import * as SatelliteWsRpc from "./SatelliteWsRpc.ts";
@@ -26,6 +34,11 @@ const services = Layer.mergeAll(
     list: () => Effect.succeed([]),
   } as unknown as IdeaNotebookStore["Service"]),
   Layer.succeed(OrchestrationEngineService, {} as OrchestrationEngineService["Service"]),
+  Layer.succeed(ProjectionSnapshotQuery, {} as ProjectionSnapshotQuery["Service"]),
+  Layer.succeed(RevdocService, {} as RevdocService["Service"]),
+  Layer.succeed(DocumentService, {} as DocumentService["Service"]),
+  Layer.succeed(IssueService, {} as IssueService["Service"]),
+  Layer.succeed(OpenWorkService, {} as OpenWorkService["Service"]),
 );
 
 const session = {
@@ -77,6 +90,12 @@ describe("Satellite RPC registration", () => {
     expect(Object.keys(SATELLITE_RPC_AGGREGATES).toSorted()).toEqual(satelliteMethods);
   });
 
+  it("lets read-only sessions recover a request's lifecycle", () => {
+    expect(
+      RpcAuthorization.requiredScopeForRpcMethod(WS_METHODS.orchestrationGetRequestLifecycle),
+    ).toBe(AuthOrchestrationReadScope);
+  });
+
   it("registers Satellite RPCs only through the Satellite group", () => {
     const coreMethods = new Set(WsCoreRpcGroup.requests.keys());
     expect(satelliteMethods.filter((method) => coreMethods.has(method))).toEqual([]);
@@ -94,3 +113,12 @@ type MergedWsRpcLayerServices =
 // missing services from the compiler. This fails to compile if that happens.
 const mergedWsRpcLayerRequirementsAreTyped: IsAny<MergedWsRpcLayerServices> = false;
 void mergedWsRpcLayerRequirementsAreTyped;
+
+type Equals<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+// Clients resubscribe these on reconnect, so the set must follow the group's stream RPCs.
+const subscriptionsFollowTheGroup: Equals<
+  SatelliteWsSubscriptionMethod,
+  "ideas.subscribeChanges" | "revdoc.changes" | "issues.boards.subscribe"
+> = true;
+void subscriptionsFollowTheGroup;

@@ -1,9 +1,3 @@
-import { ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
-import { DocumentService } from "./documents/DocumentService.ts";
-import { RevdocService } from "./revdoc/RevdocService.ts";
-import { IssueService } from "./issues/IssueService.ts";
-import { OpenWorkService } from "./openWork/OpenWorkService.ts";
-import { ProjectionSnapshotQuery } from "./orchestration-v2/SatelliteOrchestration.ts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -1112,11 +1106,6 @@ export const layerWsRpc = (
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const chatAttachments = yield* ChatAttachments.ChatAttachments;
-      const documents = yield* DocumentService;
-      const revdoc = yield* RevdocService;
-      const issues = yield* IssueService;
-      const openWork = yield* OpenWorkService;
-      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
 
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -2208,49 +2197,6 @@ export const layerWsRpc = (
                 }),
             ),
           ),
-        [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: (input) =>
-          projectionSnapshotQuery.getRequestLifecycle(input),
-        [WS_METHODS.revdocGet]: (input) => revdoc.get(input),
-        [WS_METHODS.revdocTestStart]: (input) => revdoc.startTesting(input),
-        [WS_METHODS.revdocStart]: (input) => revdoc.start(input),
-        [WS_METHODS.revdocCancel]: (input) => revdoc.cancel(input),
-        [WS_METHODS.revdocSave]: (input) => revdoc.save(input),
-        [WS_METHODS.revdocChanges]: (input) => revdoc.changes(input),
-        [WS_METHODS.revdocWorktrees]: (input) => revdoc.worktrees(input),
-        [WS_METHODS.documentsList]: (input) => documents.list(input),
-        [WS_METHODS.issuesList]: (input) => issues.list(input),
-        [WS_METHODS.issuesGet]: (input) => issues.get(input),
-        [WS_METHODS.issuesBoardsList]: (input) => issues.listBoards(input),
-        [WS_METHODS.issuesBoardsOpen]: (input) => issues.openBoard(input),
-        [WS_METHODS.issuesBoardsSubscribe]: (input) => issues.subscribeBoard(input),
-        [WS_METHODS.issuesBoardsConfigure]: (input) => issues.configureBoard(input),
-        [WS_METHODS.issuesBoardsDisconnect]: (input) => issues.disconnectBoard(input),
-        [WS_METHODS.issuesBoardsMove]: (input) => issues.move(input),
-        [WS_METHODS.issuesMovesRetry]: (input) => issues.retryMove(input),
-        [WS_METHODS.issuesAttemptsReserve]: (input) => issues.reserveAttempt(input),
-        [WS_METHODS.issuesAttemptsList]: (input) => issues.listAttempts(input),
-        [WS_METHODS.issuesAttemptsReceipts]: (input) => issues.listReceipts(input),
-        [WS_METHODS.issuesAttemptsIngest]: (input) => issues.ingestReceipts(input),
-        [WS_METHODS.issuesAttemptsSyncGenerations]: (input) => issues.syncAttemptGenerations(input),
-        [WS_METHODS.issuesAttemptsAcknowledge]: (input) => issues.acknowledgeReceipts(input),
-        [WS_METHODS.openWorkList]: (input) => openWork.list(input),
-        [WS_METHODS.openWorkTimeline]: (input) => openWork.timeline(input),
-        [WS_METHODS.openWorkLinkFolder]: (input) => openWork.linkFolder(input),
-        [WS_METHODS.openWorkUnlinkFolder]: (input) => openWork.unlinkFolder(input),
-        [WS_METHODS.openWorkAssignDocument]: (input) => openWork.assignDocument(input),
-        [WS_METHODS.openWorkFavoriteDocument]: (input) => openWork.favoriteDocument(input),
-        [WS_METHODS.openWorkFavorites]: (input) => openWork.favorites(input),
-        [WS_METHODS.openWorkReadLinkedDocument]: (input) => openWork.readLinkedDocument(input),
-        [WS_METHODS.documentsGet]: (input) => documents.get(input),
-        [WS_METHODS.documentsHistory]: (input) => documents.history(input),
-        [WS_METHODS.documentsPublish]: (input) =>
-          documents.publish(input, `session:${currentSessionId}`),
-        [WS_METHODS.documentsSaveDraft]: (input) =>
-          documents.saveDraft(input, `session:${currentSessionId}`),
-        [WS_METHODS.documentsSubmit]: (input) =>
-          documents.submit(input, `session:${currentSessionId}`),
-        [WS_METHODS.documentsRetry]: (input) =>
-          documents.retry(input, `session:${currentSessionId}`),
         [WS_METHODS.projectsWriteFile]: (input) =>
           workspaceFileSystem.writeFile(input).pipe(
             Effect.mapError(
@@ -2728,12 +2674,7 @@ export const layer = Layer.unwrap(
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
-    const documents = yield* DocumentService;
-    const revdoc = yield* RevdocService;
-    const issues = yield* IssueService;
-    const openWork = yield* OpenWorkService;
     const satelliteWsRpc = yield* SatelliteWsRpc.makeConnectionLayer;
-    const satelliteQuery = yield* ProjectionSnapshotQuery;
     const chatAttachments = yield* ChatAttachments.ChatAttachments;
     const acpRegistryManagement = yield* AcpRegistryManagement.AcpRegistryManagement;
 
@@ -2806,11 +2747,6 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
               Layer.provide(
                 Layer.mergeAll(
-                  Layer.succeed(DocumentService, documents),
-                  Layer.succeed(RevdocService, revdoc),
-                  Layer.succeed(IssueService, issues),
-                  Layer.succeed(OpenWorkService, openWork),
-                  Layer.succeed(ProjectionSnapshotQuery, satelliteQuery),
                   Layer.succeed(ChatAttachments.ChatAttachments, chatAttachments),
                   Layer.succeed(AcpRegistryManagement.AcpRegistryManagement, acpRegistryManagement),
                 ),

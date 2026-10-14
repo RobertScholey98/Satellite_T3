@@ -10,15 +10,28 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import type * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { DocumentService } from "../documents/DocumentService.ts";
 import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
-import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
+import { IssueService } from "../issues/IssueService.ts";
+import { OpenWorkService } from "../openWork/OpenWorkService.ts";
+import {
+  OrchestrationEngineService,
+  ProjectionSnapshotQuery,
+} from "../orchestration-v2/SatelliteOrchestration.ts";
+import { RevdocService } from "../revdoc/RevdocService.ts";
 
 // Satellite's handlers get their own layer; `WsSatelliteRpcGroup` explains why.
-const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
+const layer = (session: EnvironmentAuth.AuthenticatedSession) =>
   WsSatelliteRpcGroup.toLayer(
     Effect.gen(function* () {
+      const currentSessionId = session.sessionId;
       const ideaStore = yield* IdeaNotebookStore;
       const satelliteEngine = yield* OrchestrationEngineService;
+      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const revdoc = yield* RevdocService;
+      const documents = yield* DocumentService;
+      const issues = yield* IssueService;
+      const openWork = yield* OpenWorkService;
       return WsSatelliteRpcGroup.of({
         [SATELLITE_WS_METHODS.ideasList]: (input) =>
           ideaStore.list(input.projectId).pipe(
@@ -63,6 +76,53 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
               Stream.mapError((error) => new IdeaOperationError({ message: error.message })),
             );
           }).pipe(Stream.unwrap),
+        [SATELLITE_WS_METHODS.orchestrationGetRequestLifecycle]: (input) =>
+          projectionSnapshotQuery.getRequestLifecycle(input),
+        [SATELLITE_WS_METHODS.revdocGet]: (input) => revdoc.get(input),
+        [SATELLITE_WS_METHODS.revdocTestStart]: (input) => revdoc.startTesting(input),
+        [SATELLITE_WS_METHODS.revdocStart]: (input) => revdoc.start(input),
+        [SATELLITE_WS_METHODS.revdocCancel]: (input) => revdoc.cancel(input),
+        [SATELLITE_WS_METHODS.revdocSave]: (input) => revdoc.save(input),
+        [SATELLITE_WS_METHODS.revdocChanges]: (input) => revdoc.changes(input),
+        [SATELLITE_WS_METHODS.revdocWorktrees]: (input) => revdoc.worktrees(input),
+        [SATELLITE_WS_METHODS.documentsList]: (input) => documents.list(input),
+        [SATELLITE_WS_METHODS.issuesList]: (input) => issues.list(input),
+        [SATELLITE_WS_METHODS.issuesGet]: (input) => issues.get(input),
+        [SATELLITE_WS_METHODS.issuesBoardsList]: (input) => issues.listBoards(input),
+        [SATELLITE_WS_METHODS.issuesBoardsOpen]: (input) => issues.openBoard(input),
+        [SATELLITE_WS_METHODS.issuesBoardsSubscribe]: (input) => issues.subscribeBoard(input),
+        [SATELLITE_WS_METHODS.issuesBoardsConfigure]: (input) => issues.configureBoard(input),
+        [SATELLITE_WS_METHODS.issuesBoardsDisconnect]: (input) => issues.disconnectBoard(input),
+        [SATELLITE_WS_METHODS.issuesBoardsMove]: (input) => issues.move(input),
+        [SATELLITE_WS_METHODS.issuesMovesRetry]: (input) => issues.retryMove(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsReserve]: (input) => issues.reserveAttempt(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsList]: (input) => issues.listAttempts(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsReceipts]: (input) => issues.listReceipts(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsIngest]: (input) => issues.ingestReceipts(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations]: (input) =>
+          issues.syncAttemptGenerations(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsAcknowledge]: (input) =>
+          issues.acknowledgeReceipts(input),
+        [SATELLITE_WS_METHODS.openWorkList]: (input) => openWork.list(input),
+        [SATELLITE_WS_METHODS.openWorkTimeline]: (input) => openWork.timeline(input),
+        [SATELLITE_WS_METHODS.openWorkLinkFolder]: (input) => openWork.linkFolder(input),
+        [SATELLITE_WS_METHODS.openWorkUnlinkFolder]: (input) => openWork.unlinkFolder(input),
+        [SATELLITE_WS_METHODS.openWorkAssignDocument]: (input) => openWork.assignDocument(input),
+        [SATELLITE_WS_METHODS.openWorkFavoriteDocument]: (input) =>
+          openWork.favoriteDocument(input),
+        [SATELLITE_WS_METHODS.openWorkFavorites]: (input) => openWork.favorites(input),
+        [SATELLITE_WS_METHODS.openWorkReadLinkedDocument]: (input) =>
+          openWork.readLinkedDocument(input),
+        [SATELLITE_WS_METHODS.documentsGet]: (input) => documents.get(input),
+        [SATELLITE_WS_METHODS.documentsHistory]: (input) => documents.history(input),
+        [SATELLITE_WS_METHODS.documentsPublish]: (input) =>
+          documents.publish(input, `session:${currentSessionId}`),
+        [SATELLITE_WS_METHODS.documentsSaveDraft]: (input) =>
+          documents.saveDraft(input, `session:${currentSessionId}`),
+        [SATELLITE_WS_METHODS.documentsSubmit]: (input) =>
+          documents.submit(input, `session:${currentSessionId}`),
+        [SATELLITE_WS_METHODS.documentsRetry]: (input) =>
+          documents.retry(input, `session:${currentSessionId}`),
       });
     }),
   );

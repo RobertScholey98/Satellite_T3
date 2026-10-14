@@ -21,7 +21,6 @@ import {
   AuthRelayWriteScope,
   AuthTerminalOperateScope,
   ORCHESTRATION_V2_WS_METHODS,
-  ORCHESTRATION_WS_METHODS,
   AuthTerminalReadScope,
   type AuthEnvironmentScope,
   EnvironmentAuthorizationError,
@@ -33,7 +32,6 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
-
 import { SATELLITE_RPC_REQUIRED_SCOPES } from "../satellite/SatelliteRpcRegistry.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
@@ -45,44 +43,6 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  */
 export const RPC_REQUIRED_SCOPES = {
   ...SATELLITE_RPC_REQUIRED_SCOPES,
-  [ORCHESTRATION_WS_METHODS.getRequestLifecycle]: AuthOrchestrationReadScope,
-  [WS_METHODS.issuesList]: AuthOrchestrationReadScope,
-  [WS_METHODS.issuesGet]: AuthOrchestrationReadScope,
-  [WS_METHODS.issuesBoardsList]: AuthOrchestrationReadScope,
-  [WS_METHODS.issuesBoardsOpen]: AuthOrchestrationReadScope,
-  [WS_METHODS.issuesBoardsSubscribe]: AuthOrchestrationReadScope,
-  [WS_METHODS.issuesBoardsConfigure]: AuthOrchestrationOperateScope,
-  [WS_METHODS.issuesBoardsDisconnect]: AuthOrchestrationOperateScope,
-  [WS_METHODS.issuesBoardsMove]: AuthOrchestrationOperateScope,
-  [WS_METHODS.issuesMovesRetry]: AuthOrchestrationOperateScope,
-  [WS_METHODS.issuesAttemptsReserve]: AuthOrchestrationOperateScope,
-  [WS_METHODS.issuesAttemptsList]: AuthOrchestrationReadScope,
-  [WS_METHODS.issuesAttemptsReceipts]: AuthOrchestrationReadScope,
-  [WS_METHODS.issuesAttemptsIngest]: AuthOrchestrationOperateScope,
-  [WS_METHODS.issuesAttemptsAcknowledge]: AuthOrchestrationOperateScope,
-  [WS_METHODS.issuesAttemptsSyncGenerations]: AuthOrchestrationOperateScope,
-  [WS_METHODS.openWorkList]: AuthOrchestrationReadScope,
-  [WS_METHODS.openWorkTimeline]: AuthOrchestrationReadScope,
-  [WS_METHODS.openWorkLinkFolder]: AuthOrchestrationOperateScope,
-  [WS_METHODS.openWorkUnlinkFolder]: AuthOrchestrationOperateScope,
-  [WS_METHODS.openWorkAssignDocument]: AuthOrchestrationOperateScope,
-  [WS_METHODS.openWorkFavoriteDocument]: AuthOrchestrationOperateScope,
-  [WS_METHODS.openWorkFavorites]: AuthOrchestrationReadScope,
-  [WS_METHODS.openWorkReadLinkedDocument]: AuthOrchestrationReadScope,
-  [WS_METHODS.revdocGet]: AuthOrchestrationReadScope,
-  [WS_METHODS.revdocChanges]: AuthOrchestrationReadScope,
-  [WS_METHODS.revdocWorktrees]: AuthOrchestrationReadScope,
-  [WS_METHODS.revdocStart]: AuthOrchestrationOperateScope,
-  [WS_METHODS.revdocTestStart]: AuthOrchestrationOperateScope,
-  [WS_METHODS.revdocCancel]: AuthOrchestrationOperateScope,
-  [WS_METHODS.revdocSave]: AuthOrchestrationOperateScope,
-  [WS_METHODS.documentsList]: AuthOrchestrationReadScope,
-  [WS_METHODS.documentsGet]: AuthOrchestrationReadScope,
-  [WS_METHODS.documentsHistory]: AuthOrchestrationReadScope,
-  [WS_METHODS.documentsPublish]: AuthOrchestrationOperateScope,
-  [WS_METHODS.documentsSaveDraft]: AuthOrchestrationOperateScope,
-  [WS_METHODS.documentsSubmit]: AuthOrchestrationOperateScope,
-  [WS_METHODS.documentsRetry]: AuthOrchestrationOperateScope,
   ...CLIENT_GUARDED_RPC_SCOPES,
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: AuthOrchestrationReadScope,
