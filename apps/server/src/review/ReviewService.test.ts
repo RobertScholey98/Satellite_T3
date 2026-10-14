@@ -5,9 +5,13 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as SqlClient from "effect/sql/SqlClient";
+import { EventId, ProjectId } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
+import { WorktreeRegistry } from "../documents/WorktreeRegistry.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import { runMigrations } from "../persistence/Migrations.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
@@ -40,73 +44,105 @@ function layer(input: {
       }),
     ),
     Layer.provide(ServerConfig.layerTest(input.workspaceRoot, input.baseDir)),
-    Layer.provide(NodeSqliteClient.layer({ filename: ":memory:" })),
+    Layer.provide(Layer.mock(WorktreeRegistry)({ isReviewable: () => Effect.succeed(false) })),
     Layer.provideMerge(NodeServices.layer),
   );
 }
 
+const projectId = ProjectId.make("review-project");
+const now = "2026-10-01T00:00:00.000Z";
+
 describe("ReviewService", () => {
-  it.effect(
-    "allows active registered detached worktrees and rejects stale or unrelated paths",
-    () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-main-" });
-        const detached = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-detached-" });
-        const unknown = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-unknown-" });
-        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
-        const testLayer = ReviewService.layer.pipe(
-          Layer.provideMerge(GitVcsDriver.layer),
-          Layer.provide(
-            Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({ detect: () => Effect.succeed(null) }),
-          ),
-          Layer.provide(ServerSettings.ServerSettingsService.layerTest()),
-          Layer.provide(ServerConfig.layerTest(workspaceRoot, baseDir)),
-          Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
-          Layer.provideMerge(NodeServices.layer),
-        );
-        yield* Effect.gen(function* () {
-          const git = yield* GitVcsDriver.GitVcsDriver;
-          const sql = yield* SqlClient.SqlClient;
-          const review = yield* ReviewService.ReviewService;
-          const run = (args: string[]) =>
-            git.execute({ operation: "ReviewService.test", cwd: workspaceRoot, args });
-          yield* run(["init", "-b", "main"]);
-          yield* run([
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "initial",
-          ]);
-          yield* run(["worktree", "add", "--detach", detached]);
-          const canonicalDetached = yield* fs.realPath(detached);
-          const common = yield* fs.realPath(workspaceRoot + "/.git");
-          yield* sql`CREATE TABLE open_worktrees (id TEXT PRIMARY KEY,path TEXT,common_dir TEXT)`;
-          yield* sql`CREATE TABLE projection_projects (workspace_root TEXT,deleted_at TEXT)`;
-          yield* sql`INSERT INTO open_worktrees (id,path,common_dir) VALUES (${canonicalDetached},${canonicalDetached},${common})`;
-          yield* sql`INSERT INTO projection_projects (workspace_root,deleted_at) VALUES (${workspaceRoot},NULL)`;
-          assert.deepEqual((yield* review.getDiffPreview({ cwd: detached })).sources, []);
-          assert.equal(
-            (yield* review.getDiffPreview({ cwd: unknown }).pipe(Effect.flip))._tag,
-            "VcsRepositoryDetectionError",
+  it.effect("reviews worktrees the documents module registered for an active project", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-main-" });
+      const detached = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-detached-" });
+      const unknown = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-unknown-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+      const testLayer = ReviewService.layer.pipe(
+        Layer.provideMerge(WorktreeRegistry.layer),
+        Layer.provideMerge(ProjectStore.layer),
+        Layer.provideMerge(VcsProcess.layer),
+        Layer.provideMerge(GitVcsDriver.layer),
+        Layer.provide(
+          Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({ detect: () => Effect.succeed(null) }),
+        ),
+        Layer.provide(ServerSettings.ServerSettingsService.layerTest()),
+        Layer.provide(ServerConfig.layerTest(workspaceRoot, baseDir)),
+        Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+        Layer.provideMerge(NodeServices.layer),
+      );
+      yield* Effect.gen(function* () {
+        yield* runMigrations();
+        const git = yield* GitVcsDriver.GitVcsDriver;
+        const registry = yield* WorktreeRegistry;
+        const projects = yield* ProjectStore.ProjectStoreV2;
+        const review = yield* ReviewService.ReviewService;
+        const run = (args: string[], cwd = workspaceRoot) =>
+          git.execute({ operation: "ReviewService.test", cwd, args });
+        const projectEvent = (type: "project.created" | "project.deleted") =>
+          projects.apply({
+            sequence: 0,
+            eventId: EventId.make(`review-${type}`),
+            aggregateKind: "project",
+            aggregateId: projectId,
+            occurredAt: now,
+            commandId: null,
+            causationEventId: null,
+            correlationId: null,
+            metadata: {},
+            ...(type === "project.created"
+              ? {
+                  type,
+                  payload: {
+                    projectId,
+                    title: "Review",
+                    workspaceRoot,
+                    defaultModelSelection: null,
+                    scripts: [],
+                    createdAt: now,
+                    updatedAt: now,
+                  },
+                }
+              : { type, payload: { projectId, deletedAt: now } }),
+          });
+        yield* run(["init", "-b", "main"]);
+        yield* run([
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.com",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "initial",
+        ]);
+        yield* run(["worktree", "add", "--detach", detached]);
+        const canonicalDetached = yield* fs.realPath(detached);
+        yield* registry.record({
+          id: canonicalDetached,
+          path: canonicalDetached,
+          commonDir: yield* fs.realPath(workspaceRoot + "/.git"),
+        });
+        yield* projectEvent("project.created");
+        const rejected = (cwd: string) =>
+          review.getDiffPreview({ cwd }).pipe(
+            Effect.flip,
+            Effect.map((error) => error._tag),
           );
-          yield* sql`UPDATE projection_projects SET deleted_at='removed'`;
-          assert.equal(
-            (yield* review.getDiffPreview({ cwd: detached }).pipe(Effect.flip))._tag,
-            "VcsRepositoryDetectionError",
-          );
-          yield* sql`UPDATE projection_projects SET deleted_at=NULL`;
-          yield* sql`UPDATE open_worktrees SET common_dir=${unknown} WHERE id=${canonicalDetached}`;
-          assert.equal(
-            (yield* review.getDiffPreview({ cwd: detached }).pipe(Effect.flip))._tag,
-            "VcsRepositoryDetectionError",
-          );
-        }).pipe(Effect.provide(testLayer));
-      }).pipe(Effect.provide(NodeServices.layer)),
+
+        assert.deepEqual((yield* review.getDiffPreview({ cwd: detached })).sources, []);
+        assert.equal(yield* rejected(unknown), "VcsRepositoryDetectionError");
+        yield* projectEvent("project.deleted");
+        assert.equal(yield* rejected(detached), "VcsRepositoryDetectionError");
+        yield* projectEvent("project.created");
+        yield* run(["worktree", "remove", "--force", detached]);
+        yield* fs.makeDirectory(detached, { recursive: true });
+        yield* run(["init", "-b", "main"], detached);
+        assert.equal(yield* rejected(detached), "VcsRepositoryDetectionError");
+      }).pipe(Effect.provide(testLayer));
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
   it.effect("rejects diff preview cwd outside the configured workspace roots", () =>
     Effect.gen(function* () {

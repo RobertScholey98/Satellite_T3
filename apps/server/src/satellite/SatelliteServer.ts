@@ -59,6 +59,11 @@ const layerIssueService = IssueService.layer.pipe(
   ),
 );
 
+/** What upstream's review service needs from Satellite to accept a registered worktree. */
+export const layerReviewDependencies = WorktreeRegistry.layer.pipe(
+  Layer.provide(ProjectStore.layer),
+);
+
 /**
  * Satellite's server-lifetime services and reactors. `server.ts` provides it once; what it needs
  * from upstream, such as the source control provider registry, it takes from that environment.
