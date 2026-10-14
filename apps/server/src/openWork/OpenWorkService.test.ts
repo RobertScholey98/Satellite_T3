@@ -10,6 +10,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { CommandId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { ServerConfig } from "../config.ts";
 import { makeDocumentService } from "../documents/DocumentService.ts";
+import { WorktreeRegistry } from "../documents/WorktreeRegistry.ts";
 import {
   OrchestrationEngineService,
   ProjectionSnapshotQuery,
@@ -24,11 +25,15 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { makeGitReader } from "./GitReader.ts";
 import { makeOpenWorkService } from "./OpenWorkService.ts";
 
-const layer = SatelliteTestLayer.pipe(
-  Layer.provide(RepositoryIdentityResolver.layer),
-  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-open-work-test-" })),
-  Layer.provideMerge(VcsProcess.layer.pipe(Layer.provide(ProcessRunner.layer))),
-  Layer.provideMerge(NodeServices.layer),
+const layer = WorktreeRegistry.layer.pipe(
+  Layer.provideMerge(
+    SatelliteTestLayer.pipe(
+      Layer.provide(RepositoryIdentityResolver.layer),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-open-work-test-" })),
+      Layer.provideMerge(VcsProcess.layer.pipe(Layer.provide(ProcessRunner.layer))),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+  ),
 );
 const setup = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -61,8 +66,6 @@ const setup = Effect.gen(function* () {
   const main = yield* run(["rev-parse", "HEAD"]);
   yield* run(["switch", "-c", "feature"]);
   const projectId = ProjectId.make("open-project");
-  const options = { projects: () => Effect.succeed([{ id: projectId, workspaceRoot: cwd }]) };
-  const service = yield* makeOpenWorkService(options);
   const sql = yield* SqlClient.SqlClient;
   const engine = yield* OrchestrationEngineService;
   const threadId = ThreadId.make("thread");
@@ -85,6 +88,11 @@ const setup = Effect.gen(function* () {
     dispatch: engine.dispatch,
     projection: yield* ProjectionSnapshotQuery,
   });
+  const options = {
+    projects: () => Effect.succeed([{ id: projectId, workspaceRoot: cwd }]),
+    documents,
+  };
+  const service = yield* makeOpenWorkService(options);
   const source = path.join(root, "publication.md");
   yield* fs.writeFileString(source, "# Publication");
   const publish = (title: string) =>
@@ -176,7 +184,7 @@ describe("Open work", () => {
         const rows = yield* f.sql<{
           revision_id: string;
           worktree_id: string;
-        }>`SELECT revision_id,worktree_id FROM open_work_documents ORDER BY id`;
+        }>`SELECT revision_id,worktree_id FROM document_placements ORDER BY id`;
         assert.deepEqual(
           rows.map((row) => row.worktree_id),
           [f.worktreeId, f.worktreeId],
@@ -193,6 +201,7 @@ describe("Open work", () => {
         yield* f.run(["worktree", "add", "--detach", detached, f.main]);
         yield* f.fs.makeDirectory(f.path.join(f.cwd, "subdir"));
         const service = yield* makeOpenWorkService({
+          ...f.options,
           projects: () =>
             Effect.succeed([
               { id: ProjectId.make("one"), workspaceRoot: f.cwd },
@@ -352,6 +361,40 @@ describe("Open work", () => {
         view = yield* f.service.timeline({ worktreeId: f.worktreeId });
         assert.deepEqual(view.documents[0]?.step, { kind: "wip" });
       }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("reassigns and pins a published document through Open work", () =>
+    Effect.gen(function* () {
+      const f = yield* setup;
+      const published = yield* f.publish("plan");
+      const id = `publication:${published.revision.id}`;
+
+      const assigned = yield* f.service.assignDocument({
+        requestId: "assign-plan",
+        documentId: id,
+        step: { kind: "commit", commitSha: f.main },
+      });
+      yield* f.service.favoriteDocument({ requestId: "pin-plan", documentId: id, favorite: true });
+      const unassigned = yield* f.service
+        .assignDocument({
+          requestId: "unassign-plan",
+          documentId: id,
+          step: { kind: "unassigned" },
+        })
+        .pipe(Effect.flip);
+
+      assert.deepEqual(assigned.step, { kind: "commit", commitSha: f.main });
+      assert.equal(unassigned.reason, "invalid");
+      const view = yield* f.service.timeline({ worktreeId: f.worktreeId });
+      assert.deepEqual(
+        view.documents.map(({ id, step, favorite }) => ({ id, step, favorite })),
+        [{ id, step: { kind: "commit", commitSha: f.main }, favorite: true }],
+      );
+      assert.deepEqual(
+        (yield* f.service.favorites()).documents.map((document) => document.title),
+        ["plan"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 });
 

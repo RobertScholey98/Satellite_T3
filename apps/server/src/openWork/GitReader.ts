@@ -248,6 +248,19 @@ export const makeGitReader = Effect.gen(function* () {
       ? { sha: null, diverged: true }
       : { sha: shas[index - 1] ?? null, diverged: false };
   });
+  /** `firstNewCommit` memoized per anchor, for one reconciliation pass over a worktree. */
+  const commitAfter = (cwd: string, head: string | null) => {
+    const resolved = new Map<string | null, { sha: string | null; diverged: boolean }>();
+    return (anchor: string | null) =>
+      Effect.suspend(() => {
+        const known = resolved.get(anchor);
+        return known
+          ? Effect.succeed(known)
+          : firstNewCommit(cwd, anchor, head).pipe(
+              Effect.tap((next) => Effect.sync(() => resolved.set(anchor, next))),
+            );
+      });
+  };
   const validateCommit = Effect.fn("OpenWork.validateCommit")(function* (cwd: string, sha: string) {
     if (!/^[a-f0-9]{7,64}$/i.test(sha))
       return yield* new OpenWorkOperationError({
@@ -262,7 +275,7 @@ export const makeGitReader = Effect.gen(function* () {
       });
     return resolved;
   });
-  return { findIdentity, identity, inventory, state, commits, firstNewCommit, validateCommit };
+  return { findIdentity, identity, inventory, state, commits, commitAfter, validateCommit };
 });
 export type GitReader = Effect.Success<typeof makeGitReader>;
 export type WorktreeIdentity = NonNullable<Effect.Success<ReturnType<GitReader["findIdentity"]>>>;

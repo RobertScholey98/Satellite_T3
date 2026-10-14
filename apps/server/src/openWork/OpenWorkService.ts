@@ -14,9 +14,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import {
   OpenWorkOperationError,
   OpenWorkDocument,
+  type DocumentOperationError,
   OpenWorkFolderLink,
   ProjectId,
-  ThreadId,
   type OpenWorkListInput,
   type OpenWorkListResult,
   type OpenWorkTimelineInput,
@@ -29,9 +29,10 @@ import {
   type OpenWorkReadLinkedResult,
   type OpenWorkFavoritesResult,
 } from "@t3tools/contracts";
+import { DocumentService } from "../documents/DocumentService.ts";
+import { WorktreeRegistry } from "../documents/WorktreeRegistry.ts";
 import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { makeGitReader } from "./GitReader.ts";
-import { reconcileDocumentLinks, type OpenWorkDocumentRow } from "./PublicationRepository.ts";
 
 type Input<S extends Schema.Top> = S["Type"];
 export class OpenWorkService extends Context.Service<
@@ -67,7 +68,10 @@ export class OpenWorkService extends Context.Service<
     OpenWorkService,
     Effect.gen(function* () {
       const projection = yield* ProjectionSnapshotQuery;
-      return yield* makeOpenWorkService({ projects: () => projection.getProjectShells() });
+      return yield* makeOpenWorkService({
+        projects: () => projection.getProjectShells(),
+        documents: yield* DocumentService,
+      });
     }),
   );
 }
@@ -82,24 +86,26 @@ interface FolderRow {
   path: string;
   time_link: OpenWorkFolderLink["timeLink"];
 }
-interface WorktreeRow {
+/** A file found in a linked folder. Published documents are placements the documents module owns. */
+interface LinkedDocumentRow {
   id: string;
-  common_dir: string;
-  path: string;
+  worktree_id: string;
+  title: string;
+  folder_id: string | null;
+  path: string | null;
+  commit_sha: string | null;
+  anchor_head: string | null;
+  observed_at: string;
+  favorite: number;
+  available: number;
+  unresolved: "history-diverged" | "creation-time-unavailable" | null;
+  association_mode: "pending" | "unassigned";
 }
-const decodeDocument = (row: OpenWorkDocumentRow): OpenWorkDocument => ({
+const decodeDocument = (row: LinkedDocumentRow): OpenWorkDocument => ({
   id: row.id,
   title: row.title,
   worktreeId: row.worktree_id,
-  source:
-    row.source === "published"
-      ? {
-          kind: "published",
-          documentId: row.document_id ?? "",
-          revisionId: row.revision_id ?? "",
-          threadId: ThreadId.make(row.thread_id ?? ""),
-        }
-      : { kind: "linked", folderLinkId: row.folder_id ?? "", path: row.path ?? "" },
+  source: { kind: "linked", folderLinkId: row.folder_id ?? "", path: row.path ?? "" },
   step: row.commit_sha
     ? { kind: "commit", commitSha: row.commit_sha }
     : row.association_mode === "unassigned"
@@ -116,14 +122,22 @@ const decodeFolder = (row: FolderRow): OpenWorkFolderLink => ({
   timeLink: row.time_link,
 });
 
+const fromDocuments = (cause: DocumentOperationError) =>
+  failure(cause.reason === "delivery" ? "storage" : cause.reason, cause.message);
+
 export const makeOpenWorkService = <E>(options: {
   projects: () => Effect.Effect<readonly { id: ProjectId; workspaceRoot: string }[], E>;
+  documents: Pick<
+    DocumentService["Service"],
+    "worktreeDocuments" | "assignPlacement" | "favoritePlacement" | "favoritePlacements"
+  >;
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const git = yield* makeGitReader;
+    const registry = yield* WorktreeRegistry;
     const mutex = yield* Semaphore.make(1);
     const protect = <A, E>(effect: Effect.Effect<A, E>) =>
       effect.pipe(
@@ -131,20 +145,27 @@ export const makeOpenWorkService = <E>(options: {
           isOpenWorkError(cause) ? cause : failure("storage", "Could not read or save Open work."),
         ),
       );
+    const findLinked = (id: string) =>
+      sql<LinkedDocumentRow>`SELECT * FROM open_work_documents WHERE id=${id} AND source='linked'`.pipe(
+        Effect.map((rows) => rows[0]),
+      );
     const readDocument = Effect.fnUntraced(function* (id: string) {
-      const rows =
-        yield* sql<OpenWorkDocumentRow>`SELECT * FROM open_work_documents WHERE id=${id}`;
-      if (!rows[0]) return yield* failure("not-found", "Document link is unavailable.");
-      return rows[0];
+      const row = yield* findLinked(id);
+      if (!row) return yield* failure("not-found", "Document link is unavailable.");
+      return row;
     });
-    const requireWorktree = Effect.fnUntraced(function* (id: string) {
-      const rows = yield* sql<WorktreeRow>`SELECT * FROM open_worktrees WHERE id=${id}`;
-      if (!rows[0])
-        return yield* failure("not-found", "Worktree is unavailable. Refresh Open work.");
-      const identity = yield* git.identity(rows[0].path);
-      if (identity.commonDir !== rows[0].common_dir)
-        return yield* failure("conflict", "This path now belongs to a different repository.");
-      return identity;
+    /** Folder links stay pending until a commit follows the head they were found at. */
+    const reconcileLinks = Effect.fnUntraced(function* (worktreeId: string, head: string | null) {
+      const pending =
+        yield* sql<LinkedDocumentRow>`SELECT * FROM open_work_documents WHERE worktree_id=${worktreeId} AND source='linked' AND commit_sha IS NULL AND association_mode='pending'`;
+      const commitAfter = git.commitAfter(worktreeId, head);
+      for (const row of pending) {
+        if (row.unresolved === "creation-time-unavailable") continue;
+        const next = yield* commitAfter(row.anchor_head);
+        yield* next.sha
+          ? sql`UPDATE open_work_documents SET commit_sha=${next.sha},unresolved=NULL WHERE id=${row.id}`
+          : sql`UPDATE open_work_documents SET unresolved=${next.diverged ? "history-diverged" : null} WHERE id=${row.id}`;
+      }
     });
     const list = Effect.fn("OpenWork.list")(function* (input: Input<typeof OpenWorkListInput>) {
       const projects = yield* options
@@ -168,7 +189,7 @@ export const makeOpenWorkService = <E>(options: {
         const entries = yield* git.inventory(repository.cwd);
         for (const entry of new Set(entries)) {
           if (!entry) continue;
-          yield* sql`INSERT INTO open_worktrees (id,common_dir,path) VALUES (${entry},${commonDir},${entry}) ON CONFLICT(id) DO NOTHING`;
+          yield* registry.record({ id: entry, commonDir, path: entry });
           const state = yield* git.state(entry);
           worktrees.push({
             id: entry,
@@ -211,7 +232,7 @@ export const makeOpenWorkService = <E>(options: {
               const canonical = yield* fs.realPath(target);
               discovered.add(canonical);
               const existing =
-                yield* sql<OpenWorkDocumentRow>`SELECT * FROM open_work_documents WHERE worktree_id=${folder.worktree_id} AND path=${canonical}`;
+                yield* sql<LinkedDocumentRow>`SELECT * FROM open_work_documents WHERE worktree_id=${folder.worktree_id} AND path=${canonical}`;
               if (existing[0]) {
                 const owner =
                   yield* sql<FolderRow>`SELECT * FROM open_work_folders WHERE id=${existing[0].folder_id}`;
@@ -245,7 +266,7 @@ export const makeOpenWorkService = <E>(options: {
         return;
       }
       const rows =
-        yield* sql<OpenWorkDocumentRow>`SELECT * FROM open_work_documents WHERE folder_id=${folder.id}`;
+        yield* sql<LinkedDocumentRow>`SELECT * FROM open_work_documents WHERE folder_id=${folder.id}`;
       for (const row of rows)
         if (!row.path || !discovered.has(row.path))
           yield* sql`UPDATE open_work_documents SET available=0 WHERE id=${row.id}`;
@@ -253,18 +274,21 @@ export const makeOpenWorkService = <E>(options: {
     const timeline = Effect.fn("OpenWork.timeline")(function* (
       input: Input<typeof OpenWorkTimelineInput>,
     ) {
-      const worktree = yield* requireWorktree(input.worktreeId);
+      const worktree = yield* registry.require(input.worktreeId);
       const state = yield* git.state(worktree.path);
       const commits =
         state.head && state.baseRef
           ? yield* git.commits(worktree.path, `${state.baseRef}..HEAD`)
           : [];
-      yield* sql.withTransaction(reconcileDocumentLinks(sql, git, worktree.id, state.head));
+      yield* sql.withTransaction(reconcileLinks(worktree.id, state.head));
+      const published = yield* options.documents
+        .worktreeDocuments(worktree.id, state.head)
+        .pipe(Effect.mapError(fromDocuments));
       const folders =
         yield* sql<FolderRow>`SELECT * FROM open_work_folders WHERE worktree_id=${worktree.id} ORDER BY path`;
       for (const folder of folders) yield* scanFolder(folder, state.head, commits);
       const documents =
-        yield* sql<OpenWorkDocumentRow>`SELECT * FROM open_work_documents WHERE worktree_id=${worktree.id} AND (source='published' OR folder_id IN (SELECT id FROM open_work_folders)) ORDER BY observed_at,rowid`;
+        yield* sql<LinkedDocumentRow>`SELECT * FROM open_work_documents WHERE worktree_id=${worktree.id} AND source='linked' AND folder_id IN (SELECT id FROM open_work_folders) ORDER BY observed_at,rowid`;
       const projects = yield* options
         .projects()
         .pipe(Effect.mapError(() => failure("storage", "Could not read registered projects.")));
@@ -288,7 +312,12 @@ export const makeOpenWorkService = <E>(options: {
         },
         commits,
         wip: state.wip,
-        documents: documents.map(decodeDocument),
+        documents: [
+          ...published,
+          ...documents.map((row) => ({ ...decodeDocument(row), observedAt: row.observed_at })),
+        ]
+          .sort((left, right) => left.observedAt.localeCompare(right.observedAt))
+          .map(({ observedAt: _observedAt, ...document }) => document),
         folderLinks: folders.map(decodeFolder),
       };
     });
@@ -325,7 +354,7 @@ export const makeOpenWorkService = <E>(options: {
         input,
         OpenWorkFolderLink,
         Effect.gen(function* () {
-          yield* requireWorktree(input.worktreeId);
+          yield* registry.require(input.worktreeId);
           if (!path.isAbsolute(input.path))
             return yield* failure("invalid", "Choose an absolute folder path on this environment.");
           const folderPath = yield* fs.realPath(input.path);
@@ -346,7 +375,7 @@ export const makeOpenWorkService = <E>(options: {
         Effect.gen(function* () {
           yield* sql`DELETE FROM open_work_folders WHERE id=${input.folderLinkId}`;
           const documents =
-            yield* sql<OpenWorkDocumentRow>`SELECT * FROM open_work_documents WHERE folder_id=${input.folderLinkId}`;
+            yield* sql<LinkedDocumentRow>`SELECT * FROM open_work_documents WHERE folder_id=${input.folderLinkId}`;
           for (const document of documents) {
             const folders =
               yield* sql<FolderRow>`SELECT * FROM open_work_folders WHERE worktree_id=${document.worktree_id} ORDER BY path`;
@@ -369,13 +398,12 @@ export const makeOpenWorkService = <E>(options: {
         input,
         OpenWorkDocument,
         Effect.gen(function* () {
-          const row = yield* readDocument(input.documentId);
-          if (row.source === "published" && input.step.kind === "unassigned")
-            return yield* failure(
-              "invalid",
-              "Published documents belong to WIP or a saved commit.",
-            );
-          yield* requireWorktree(row.worktree_id);
+          const row = yield* findLinked(input.documentId);
+          if (!row)
+            return yield* options.documents
+              .assignPlacement(input.documentId, input.step)
+              .pipe(Effect.mapError(fromDocuments));
+          yield* registry.require(row.worktree_id);
           const state = yield* git.state(row.worktree_id);
           const sha =
             input.step.kind === "commit"
@@ -390,22 +418,31 @@ export const makeOpenWorkService = <E>(options: {
         input,
         OpenWorkDocument,
         Effect.gen(function* () {
-          yield* readDocument(input.documentId);
+          if (!(yield* findLinked(input.documentId)))
+            return yield* options.documents
+              .favoritePlacement(input.documentId, input.favorite)
+              .pipe(Effect.mapError(fromDocuments));
           yield* sql`UPDATE open_work_documents SET favorite=${input.favorite ? 1 : 0} WHERE id=${input.documentId}`;
           return decodeDocument(yield* readDocument(input.documentId));
         }),
       );
     const favorites = Effect.fn("OpenWork.favorites")(function* () {
-      const rows =
-        yield* sql<OpenWorkDocumentRow>`SELECT * FROM open_work_documents WHERE favorite=1 ORDER BY title,id`;
-      return { documents: rows.map(decodeDocument) };
+      const published = yield* options.documents
+        .favoritePlacements()
+        .pipe(Effect.mapError(fromDocuments));
+      const linked =
+        yield* sql<LinkedDocumentRow>`SELECT * FROM open_work_documents WHERE favorite=1 AND source='linked'`;
+      return {
+        documents: [...published, ...linked.map(decodeDocument)].sort(
+          (left, right) => left.title.localeCompare(right.title) || left.id.localeCompare(right.id),
+        ),
+      };
     });
     const readLinkedDocument = Effect.fn("OpenWork.readLinkedDocument")(function* (
       input: Input<typeof OpenWorkReadLinkedInput>,
     ) {
       const row = yield* readDocument(input.documentId);
-      if (row.source !== "linked" || !row.path)
-        return yield* failure("invalid", "This document is a retained publication.");
+      if (!row.path) return yield* failure("not-found", "The linked document is unavailable.");
       const folders =
         yield* sql<FolderRow>`SELECT * FROM open_work_folders WHERE id=${row.folder_id}`;
       if (!folders[0])

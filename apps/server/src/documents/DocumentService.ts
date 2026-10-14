@@ -12,8 +12,10 @@ import {
   DocumentHistoryEvent,
   DocumentAnswers,
   DocumentChecklist,
-  OpenWorkOperationError,
+  type OpenWorkDocument,
+  type OpenWorkOperationError,
   type OpenWorkPublicationStep,
+  type OpenWorkStep,
   type DocumentDetail,
   type DocumentsPublishInput,
   type DocumentsSaveDraftInput,
@@ -48,7 +50,7 @@ import {
   OrchestratorCommandPreviouslyRejectedError,
 } from "../orchestration-v2/Orchestrator.ts";
 import { makeGitReader, type WorktreeIdentity } from "../openWork/GitReader.ts";
-import { reconcileDocumentLinks } from "../openWork/PublicationRepository.ts";
+import { WorktreeRegistry } from "./WorktreeRegistry.ts";
 
 const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 const MAX_ANSWER_BYTES = 64 * 1024;
@@ -68,7 +70,6 @@ const decodeSubmissionValue = Schema.decodeUnknownEffect(DocumentSubmission);
 const decodeHistoryValue = Schema.decodeUnknownEffect(DocumentHistoryEvent);
 const isDocumentOperationError = Schema.is(DocumentOperationError);
 const isPreviouslyRejected = Schema.is(OrchestratorCommandPreviouslyRejectedError);
-const isOpenWorkError = Schema.is(OpenWorkOperationError);
 const isOrchestrationCommandRejection = Schema.is(OrchestratorCommandRejectedError);
 
 /** Where a publication appears besides its thread's Documents panel. */
@@ -76,6 +77,34 @@ type Placement =
   | { readonly kind: "thread" }
   | { readonly kind: "worktree"; readonly worktree: WorktreeIdentity };
 
+interface PlacementRow {
+  id: string;
+  document_id: string;
+  revision_id: string;
+  thread_id: string;
+  worktree_id: string;
+  title: string;
+  commit_sha: string | null;
+  anchor_head: string | null;
+  observed_at: string;
+  favorite: number;
+  unresolved: "history-diverged" | null;
+}
+const decodePlacement = (row: PlacementRow): OpenWorkDocument => ({
+  id: row.id,
+  title: row.title,
+  worktreeId: row.worktree_id,
+  source: {
+    kind: "published",
+    documentId: row.document_id,
+    revisionId: row.revision_id,
+    threadId: ThreadId.make(row.thread_id),
+  },
+  step: row.commit_sha ? { kind: "commit", commitSha: row.commit_sha } : { kind: "wip" },
+  favorite: row.favorite === 1,
+  available: true,
+  unresolved: row.unresolved,
+});
 interface DocumentRow {
   id: string;
   thread_id: string;
@@ -189,6 +218,26 @@ export class DocumentService extends Context.Service<
     readonly history: (
       input: DocumentsHistoryInput,
     ) => Effect.Effect<DocumentsHistoryResult, DocumentOperationError>;
+    /** Publications placed on a worktree, after moving WIP placements onto new commits. */
+    readonly worktreeDocuments: (
+      worktreeId: string,
+      head: string | null,
+    ) => Effect.Effect<
+      ReadonlyArray<OpenWorkDocument & { readonly observedAt: string }>,
+      DocumentOperationError
+    >;
+    readonly assignPlacement: (
+      id: string,
+      step: OpenWorkStep,
+    ) => Effect.Effect<OpenWorkDocument, DocumentOperationError>;
+    readonly favoritePlacement: (
+      id: string,
+      favorite: boolean,
+    ) => Effect.Effect<OpenWorkDocument, DocumentOperationError>;
+    readonly favoritePlacements: () => Effect.Effect<
+      ReadonlyArray<OpenWorkDocument>,
+      DocumentOperationError
+    >;
   }
 >()("t3/documents/DocumentService") {
   static readonly layer = Layer.suspend(() =>
@@ -221,6 +270,7 @@ export const makeDocumentService = (options: {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const git = yield* makeGitReader;
+    const worktrees = yield* WorktreeRegistry;
     const mutex = yield* Semaphore.make(1);
     const snapshotRoot = path.join(options.stateDir, "documents");
     yield* fs.makeDirectory(snapshotRoot, { recursive: true }).pipe(Effect.mapError(storageError));
@@ -291,19 +341,74 @@ export const makeDocumentService = (options: {
     ) {
       if (placement.kind === "thread") return;
       const { worktree } = placement;
-      yield* sql`INSERT INTO open_worktrees (id,common_dir,path) VALUES (${worktree.id},${worktree.commonDir},${worktree.path}) ON CONFLICT(id) DO NOTHING`;
+      yield* worktrees.record(worktree).pipe(Effect.mapError(gitError));
       const state = yield* git.state(worktree.path).pipe(Effect.mapError(gitError));
-      yield* reconcileDocumentLinks(sql, git, worktree.id, state.head).pipe(
-        Effect.mapError((cause) => (isOpenWorkError(cause) ? gitError(cause) : storageError())),
-      );
+      yield* reconcilePlacements(worktree.id, state.head);
       const sha =
         publication.step?.kind === "commit"
           ? yield* git
               .validateCommit(worktree.path, publication.step.commitSha)
               .pipe(Effect.mapError(gitError))
           : null;
-      yield* sql`INSERT INTO open_work_documents (id,worktree_id,title,source,document_id,revision_id,thread_id,commit_sha,anchor_head,observed_at)
-        VALUES (${`publication:${publication.revisionId}`},${worktree.id},${publication.title},'published',${publication.documentId},${publication.revisionId},${publication.threadId},${sha},${state.head},${yield* now})`;
+      yield* sql`INSERT INTO document_placements (id,document_id,revision_id,thread_id,worktree_id,title,commit_sha,anchor_head,observed_at)
+        VALUES (${`publication:${publication.revisionId}`},${publication.documentId},${publication.revisionId},${publication.threadId},${worktree.id},${publication.title},${sha},${state.head},${yield* now})`;
+    });
+    /** A WIP placement follows the first commit made after it was placed. */
+    const reconcilePlacements = Effect.fnUntraced(function* (
+      worktreeId: string,
+      head: string | null,
+    ) {
+      const pending =
+        yield* sql<PlacementRow>`SELECT * FROM document_placements WHERE worktree_id=${worktreeId} AND commit_sha IS NULL`;
+      const commitAfter = git.commitAfter(worktreeId, head);
+      for (const row of pending) {
+        const next = yield* commitAfter(row.anchor_head).pipe(Effect.mapError(gitError));
+        yield* next.sha
+          ? sql`UPDATE document_placements SET commit_sha=${next.sha},unresolved=NULL WHERE id=${row.id}`
+          : sql`UPDATE document_placements SET unresolved=${next.diverged ? "history-diverged" : null} WHERE id=${row.id}`;
+      }
+    });
+    const readPlacement = Effect.fnUntraced(function* (id: string) {
+      const rows = yield* sql<PlacementRow>`SELECT * FROM document_placements WHERE id=${id}`;
+      if (!rows[0]) return yield* error("not-found", "Document link is unavailable.");
+      return rows[0];
+    });
+    const worktreeDocuments = Effect.fn("DocumentService.worktreeDocuments")(function* (
+      worktreeId: string,
+      head: string | null,
+    ) {
+      yield* sql.withTransaction(reconcilePlacements(worktreeId, head));
+      const rows =
+        yield* sql<PlacementRow>`SELECT * FROM document_placements WHERE worktree_id=${worktreeId} ORDER BY observed_at,rowid`;
+      return rows.map((row) => ({ ...decodePlacement(row), observedAt: row.observed_at }));
+    });
+    const assignPlacement = Effect.fn("DocumentService.assignPlacement")(function* (
+      id: string,
+      step: OpenWorkStep,
+    ) {
+      if (step.kind === "unassigned")
+        return yield* error("invalid", "Published documents belong to WIP or a saved commit.");
+      const row = yield* readPlacement(id);
+      const worktree = yield* worktrees.require(row.worktree_id).pipe(Effect.mapError(gitError));
+      const state = yield* git.state(worktree.path).pipe(Effect.mapError(gitError));
+      const sha =
+        step.kind === "commit"
+          ? yield* git.validateCommit(worktree.path, step.commitSha).pipe(Effect.mapError(gitError))
+          : null;
+      yield* sql`UPDATE document_placements SET commit_sha=${sha},anchor_head=${state.head},unresolved=NULL WHERE id=${id}`;
+      return decodePlacement(yield* readPlacement(id));
+    });
+    const favoritePlacement = Effect.fn("DocumentService.favoritePlacement")(function* (
+      id: string,
+      favorite: boolean,
+    ) {
+      yield* readPlacement(id);
+      yield* sql`UPDATE document_placements SET favorite=${favorite ? 1 : 0} WHERE id=${id}`;
+      return decodePlacement(yield* readPlacement(id));
+    });
+    const favoritePlacements = Effect.fn("DocumentService.favoritePlacements")(function* () {
+      const rows = yield* sql<PlacementRow>`SELECT * FROM document_placements WHERE favorite=1`;
+      return rows.map(decodePlacement);
     });
     const get = Effect.fn("DocumentService.get")(function* (
       input: DocumentsGetInput,
@@ -720,5 +825,9 @@ export const makeDocumentService = (options: {
       submit: (input, actor) => protect(mutex.withPermits(1)(submitUnlocked(input, actor))),
       retry: (input, actor) => protect(mutex.withPermits(1)(deliver(input.submissionId, actor))),
       history: (input) => protect(history(input)),
+      worktreeDocuments: (worktreeId, head) => protect(worktreeDocuments(worktreeId, head)),
+      assignPlacement: (id, step) => protect(assignPlacement(id, step)),
+      favoritePlacement: (id, favorite) => protect(favoritePlacement(id, favorite)),
+      favoritePlacements: () => protect(favoritePlacements()),
     });
   });

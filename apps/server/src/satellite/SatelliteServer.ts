@@ -4,6 +4,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 
 import { DocumentService } from "../documents/DocumentService.ts";
+import { WorktreeRegistry } from "../documents/WorktreeRegistry.ts";
 import * as CommitRecommendationService from "../git/CommitRecommendationService.ts";
 import { IdeaDeletionReactor } from "../ideas/IdeaDeletionReactor.ts";
 import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
@@ -63,7 +64,6 @@ const layerIssueService = IssueService.layer.pipe(
  * from upstream, such as the source control provider registry, it takes from that environment.
  */
 export const layer = Layer.mergeAll(
-  DocumentService.layer,
   RevdocService.layer,
   OpenWorkService.layer,
   CommitRecommendationService.layer,
@@ -79,6 +79,8 @@ export const layer = Layer.mergeAll(
   Layer.provideMerge(IdeaUpdateReactor.layer),
   Layer.provideMerge(IdeaPromotion.layer),
   Layer.provideMerge(IdeaRuntime.layer),
+  Layer.provideMerge(DocumentService.layer),
+  Layer.provideMerge(WorktreeRegistry.layer),
   Layer.provideMerge(IdeaNotebookStore.layer),
   Layer.provideMerge(layerIssueService),
   Layer.provideMerge(SatelliteOrchestration.layer),

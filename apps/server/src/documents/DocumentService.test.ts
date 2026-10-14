@@ -25,19 +25,25 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import migration from "../persistence/Migrations/055_ManagedDocuments.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 import { DocumentService, makeDocumentService } from "./DocumentService.ts";
+import { WorktreeRegistry } from "./WorktreeRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { makeOpenWorkService, OpenWorkService } from "../openWork/OpenWorkService.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 
-const integrationLayer = SatelliteTestLayer.pipe(
-  Layer.provide(RepositoryIdentityResolver.layer),
-  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-documents-test-" })),
-  Layer.provideMerge(VcsProcess.layer.pipe(Layer.provide(ProcessRunner.layer))),
-  Layer.provideMerge(NodeServices.layer),
+const integrationLayer = WorktreeRegistry.layer.pipe(
+  Layer.provideMerge(
+    SatelliteTestLayer.pipe(
+      Layer.provide(RepositoryIdentityResolver.layer),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-documents-test-" })),
+      Layer.provideMerge(VcsProcess.layer.pipe(Layer.provide(ProcessRunner.layer))),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+  ),
 );
-const productionLayer = Layer.mergeAll(DocumentService.layer, OpenWorkService.layer).pipe(
+const productionLayer = OpenWorkService.layer.pipe(
+  Layer.provideMerge(DocumentService.layer),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-documents-layer-test-" })),
   Layer.provideMerge(integrationLayer),
 );
@@ -93,7 +99,7 @@ const publishedRows = Effect.flatMap(
     sql<{
       document_id: string;
       worktree_id: string;
-    }>`SELECT document_id,worktree_id FROM open_work_documents WHERE source='published' ORDER BY observed_at,id`,
+    }>`SELECT document_id,worktree_id FROM document_placements ORDER BY observed_at,rowid`,
 );
 
 const setup = Effect.gen(function* () {
@@ -325,6 +331,7 @@ describe("managed document persistence", () => {
         );
         const open = yield* makeOpenWorkService({
           projects: () => Effect.succeed([{ id: projectId, workspaceRoot: f.stateDir }]),
+          documents: f.service,
         });
         const list = yield* open.list({});
         const original = list.worktrees.find((tree) => tree.branch === "feature")!;
