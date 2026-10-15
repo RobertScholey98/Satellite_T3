@@ -89,10 +89,10 @@ export interface ThreadTitleGenerationResult {
 export class TextGeneration extends Context.Service<
   TextGeneration,
   {
-    readonly generateRevdoc?: (
+    readonly generateRevdoc: (
       input: RevdocGenerationInput,
     ) => Effect.Effect<RevdocGenerationResult, TextGenerationError>;
-    readonly generateIdeaUpdate?: (
+    readonly generateIdeaUpdate: (
       input: IdeaUpdateInput,
     ) => Effect.Effect<IdeaUpdateResult, TextGenerationError>;
     /**
@@ -123,15 +123,9 @@ export class TextGeneration extends Context.Service<
   }
 >()("t3/textGeneration/TextGeneration") {}
 
-type TextGenerationOp =
-  | "generateCommitMessage"
-  | "generatePrContent"
-  | "generateBranchName"
-  | "generateThreadTitle";
-
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
-  operation: TextGenerationOp,
+  operation: keyof TextGeneration["Service"],
   instanceId: ProviderInstanceId,
 ): Effect.Effect<ProviderInstance["textGeneration"], TextGenerationError> =>
   registry.getInstance(instanceId).pipe(
@@ -152,6 +146,14 @@ export const make = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   return TextGeneration.of({
+    generateRevdoc: (input) =>
+      resolveInstance(registry, "generateRevdoc", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => textGeneration.generateRevdoc(input)),
+      ),
+    generateIdeaUpdate: (input) =>
+      resolveInstance(registry, "generateIdeaUpdate", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => textGeneration.generateIdeaUpdate(input)),
+      ),
     generateCommitMessage: (input) =>
       resolveInstance(registry, "generateCommitMessage", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateCommitMessage(input)),

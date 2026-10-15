@@ -148,6 +148,16 @@ function selectOpenCodeRuntimeTextGeneration(
   v2: TextGeneration["Service"],
 ): TextGeneration["Service"] {
   return {
+    generateRevdoc: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.generateRevdoc(input),
+        v2: v2.generateRevdoc(input),
+      }),
+    generateIdeaUpdate: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.generateIdeaUpdate(input),
+        v2: v2.generateIdeaUpdate(input),
+      }),
     generateCommitMessage: (input) =>
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateCommitMessage(input),

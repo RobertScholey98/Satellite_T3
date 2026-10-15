@@ -123,11 +123,13 @@ it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
       { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":"invalid","summary":"Bad update"}' },
       (generation, cwd) =>
         Effect.gen(function* () {
-          const error = yield* generation.generateIdeaUpdate!({
-            cwd,
-            prompt: "Organize the notebook.",
-            modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
-          }).pipe(Effect.flip);
+          const error = yield* generation
+            .generateIdeaUpdate({
+              cwd,
+              prompt: "Organize the notebook.",
+              modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
+            })
+            .pipe(Effect.flip);
           expect(error.detail).toContain("invalid structured output");
         }),
     ),
@@ -138,7 +140,7 @@ it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
       { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":[],"summary":"No new decisions."}' },
       (generation, cwd) =>
         Effect.gen(function* () {
-          const result = yield* generation.generateIdeaUpdate!({
+          const result = yield* generation.generateIdeaUpdate({
             cwd,
             prompt: "Organize the supplied notebook.",
             modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-mock-alt"),
@@ -165,11 +167,13 @@ it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
       },
       (generation, cwd) =>
         Effect.gen(function* () {
-          const result = yield* generation.generateIdeaUpdate!({
-            cwd,
-            prompt: "Organize the supplied notebook.",
-            modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
-          }).pipe(Effect.flip);
+          const result = yield* generation
+            .generateIdeaUpdate({
+              cwd,
+              prompt: "Organize the supplied notebook.",
+              modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
+            })
+            .pipe(Effect.flip);
           expect(result.detail).toContain("cannot use tools");
         }),
     ),

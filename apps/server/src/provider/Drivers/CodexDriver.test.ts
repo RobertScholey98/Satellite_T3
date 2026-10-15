@@ -302,7 +302,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
           }),
         ),
         Effect.flip(
-          instance.textGeneration.generateRevdoc!({
+          instance.textGeneration.generateRevdoc({
             cwd: process.cwd(),
             prompt: "Review the worktree.",
             modelSelection,

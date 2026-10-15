@@ -36,6 +36,7 @@ import { ProcessRunner } from "../processRunner.ts";
 import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime } from "./IdeaRuntime.ts";
@@ -95,45 +96,49 @@ const runCatchup = Effect.fn(function* (
       generateCommitMessage: unused,
       generatePrContent: unused,
       generateThreadTitle: unused,
-      generateIdeaUpdate: (input) =>
-        Effect.gen(function* () {
-          calls++;
-          prompt = input.prompt;
-          yield* Deferred.succeed(started, undefined);
-          yield* Deferred.await(release);
-          if (outcome === "failed")
-            return yield* new TextGenerationError({
-              operation: "generateIdeaUpdate",
-              detail: "Controlled generation failure",
-            });
-          return {
-            summary: "Saved the answered question.",
-            title: "Idea notebook",
-            edits: [
-              {
-                kind: "entry.save" as const,
-                id: IdeaEntryId.make("discussion"),
-                categoryId: IdeaCategoryId.make("notes"),
-                title: "Thread ownership",
-                baseRevision: 0,
-                markdown: "One thread per idea.",
-                sources: [
-                  { kind: "activity" as const, activityId: answerId },
-                  ...(studyArtifactId
-                    ? [{ kind: "artifact" as const, artifactId: studyArtifactId }]
-                    : []),
-                ],
-              },
-              {
-                kind: "pitch.save" as const,
-                baseRevision: 0,
-                markdown: "Caught up: one thread per idea.",
-              },
-            ],
-          };
-        }),
+      generateRevdoc: unused,
+      generateIdeaUpdate: unused,
     },
   };
+  const generateIdeaUpdate: TextGeneration.TextGeneration["Service"]["generateIdeaUpdate"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      calls++;
+      prompt = input.prompt;
+      yield* Deferred.succeed(started, undefined);
+      yield* Deferred.await(release);
+      if (outcome === "failed")
+        return yield* new TextGenerationError({
+          operation: "generateIdeaUpdate",
+          detail: "Controlled generation failure",
+        });
+      return {
+        summary: "Saved the answered question.",
+        title: "Idea notebook",
+        edits: [
+          {
+            kind: "entry.save" as const,
+            id: IdeaEntryId.make("discussion"),
+            categoryId: IdeaCategoryId.make("notes"),
+            title: "Thread ownership",
+            baseRevision: 0,
+            markdown: "One thread per idea.",
+            sources: [
+              { kind: "activity" as const, activityId: answerId },
+              ...(studyArtifactId
+                ? [{ kind: "artifact" as const, artifactId: studyArtifactId }]
+                : []),
+            ],
+          },
+          {
+            kind: "pitch.save" as const,
+            baseRevision: 0,
+            markdown: "Caught up: one thread per idea.",
+          },
+        ],
+      };
+    });
   const nativeFs = yield* FileSystem.FileSystem;
   const isPromotionSkill = (path: string) =>
     path.replaceAll("\\", "/").endsWith("/to-issues/SKILL.md");
@@ -165,6 +170,7 @@ const runCatchup = Effect.fn(function* (
         getInstance: () => Effect.succeed(provider),
       }),
     ),
+    Layer.provide(Layer.mock(TextGeneration.TextGeneration)({ generateIdeaUpdate })),
     Layer.provide(Layer.succeed(ProcessRunner, { run: unused })),
     Layer.provide(
       Layer.succeed(RepositoryIdentityResolver, { resolve: () => Effect.succeed(null) }),

@@ -40,6 +40,8 @@ import * as LegacyImporter from "../orchestration-v2/legacy/LegacyV1ThreadImport
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { createIdeaNotebook } from "./IdeaNotebook.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
@@ -75,6 +77,12 @@ const updaterLayer = (generate: (prompt: string) => Effect.Effect<IdeaUpdateResu
           }),
       }),
     ),
+    Layer.provide(TextGeneration.layer),
+    Layer.provide(
+      Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+        resolveLink: () => Effect.die("Idea updates resolve no source control links"),
+      }),
+    ),
     Layer.provide(
       Layer.mock(ServerSettingsService)({
         getSettings: Effect.succeed({
@@ -108,6 +116,7 @@ const updaterLayer = (generate: (prompt: string) => Effect.Effect<IdeaUpdateResu
               generatePrContent: unused,
               generateBranchName: unused,
               generateThreadTitle: unused,
+              generateRevdoc: unused,
               generateIdeaUpdate: ({ prompt }) => generate(prompt),
             },
           }),

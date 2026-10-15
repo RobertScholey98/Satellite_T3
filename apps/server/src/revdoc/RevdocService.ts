@@ -52,6 +52,7 @@ import {
 import { writeFileStringAtomically } from "../atomicWrite.ts";
 import * as ProjectionSnapshotQuery from "../orchestration-v2/SatelliteOrchestration.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
@@ -122,6 +123,7 @@ const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const providers = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+  const textGeneration = yield* TextGeneration.TextGeneration;
   const settings = yield* ServerSettings.ServerSettingsService;
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const browser = yield* PreviewAutomationBroker.PreviewAutomationBroker;
@@ -1144,12 +1146,12 @@ const make = Effect.gen(function* () {
               config.revdocModelSelection ??
               thread.modelSelection;
             const instance = yield* providers.getInstance(modelSelection.instanceId);
-            if (!instance?.enabled || !instance.textGeneration.generateRevdoc) {
+            if (!instance?.enabled) {
               return yield* fail(
                 `Choose an available provider and model in Settings → Text generation → ${large ? "Large Revdoc" : "Revdoc"}.`,
               );
             }
-            const generate = instance.textGeneration.generateRevdoc;
+            const generate = textGeneration.generateRevdoc;
             let completed = checkpoint.batches.filter((part) => part !== null).length;
             let reviewRevision = initial.revision;
             let stage: "reviewing" | "combining" = "reviewing";

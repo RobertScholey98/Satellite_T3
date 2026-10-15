@@ -110,6 +110,8 @@ const makeHarness = Effect.fn(function* (
       generatePrContent: () => Effect.die("Unused generation"),
       generateBranchName: () => Effect.die("Unused generation"),
       generateThreadTitle: () => Effect.die("Unused generation"),
+      generateRevdoc: () => Effect.die("Unused generation"),
+      generateIdeaUpdate: () => Effect.die("Unused generation"),
     },
     acpSessionManagement: {
       listSessions: ({ cwd, cursor }) =>

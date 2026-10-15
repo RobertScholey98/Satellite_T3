@@ -32,6 +32,7 @@ import { ProcessRunner } from "../processRunner.ts";
 import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import {
   NoOpProviderEventLoggers,
   ProviderEventLoggers,
@@ -105,39 +106,43 @@ it.effect.each([
           generateCommitMessage: unused,
           generatePrContent: unused,
           generateThreadTitle: unused,
-          generateIdeaUpdate: (input) =>
-            Effect.sync(() => {
-              assert.deepEqual(input.modelSelection, updateModelSelection);
-              assert.include(input.prompt, '"edits"');
-              assert.include(input.prompt, '"baseRevision"');
-              assert.include(input.prompt, "Assistant decision from two chunks.");
-              generated++;
-              return {
-                summary: "Organised the creation flow.",
-                edits:
-                  generated === 1
-                    ? [
-                        {
-                          kind: "entry.save" as const,
-                          id: IdeaEntryId.make("creation"),
-                          categoryId: IdeaCategoryId.make("notes"),
-                          title: "Creation flow",
-                          baseRevision: 0,
-                          markdown: "Create ideas from the home composer.",
-                          sources: [{ kind: "message" as const, messageId }],
-                        },
-                        {
-                          kind: "pitch.save" as const,
-                          baseRevision: 0,
-                          markdown:
-                            "A notebook with an agent-first [creation flow](idea-entry:creation).",
-                        },
-                      ]
-                    : [],
-              };
-            }),
+          generateRevdoc: unused,
+          generateIdeaUpdate: unused,
         },
       };
+      const generateIdeaUpdate: TextGeneration.TextGeneration["Service"]["generateIdeaUpdate"] = (
+        input,
+      ) =>
+        Effect.sync(() => {
+          assert.deepEqual(input.modelSelection, updateModelSelection);
+          assert.include(input.prompt, '"edits"');
+          assert.include(input.prompt, '"baseRevision"');
+          assert.include(input.prompt, "Assistant decision from two chunks.");
+          generated++;
+          return {
+            summary: "Organised the creation flow.",
+            edits:
+              generated === 1
+                ? [
+                    {
+                      kind: "entry.save" as const,
+                      id: IdeaEntryId.make("creation"),
+                      categoryId: IdeaCategoryId.make("notes"),
+                      title: "Creation flow",
+                      baseRevision: 0,
+                      markdown: "Create ideas from the home composer.",
+                      sources: [{ kind: "message" as const, messageId }],
+                    },
+                    {
+                      kind: "pitch.save" as const,
+                      baseRevision: 0,
+                      markdown:
+                        "A notebook with an agent-first [creation flow](idea-entry:creation).",
+                    },
+                  ]
+                : [],
+          };
+        });
       const runner = Layer.succeed(ProcessRunner, {
         run: (input) =>
           Effect.sync(() => {
@@ -201,7 +206,6 @@ it.effect.each([
                       ...provider,
                       instanceId: ProviderInstanceId.make("other-provider"),
                       driverKind: ProviderDriverKind.make("opencode"),
-                      textGeneration: { ...provider.textGeneration, generateIdeaUpdate: unused },
                     },
                   ]),
               provider,
@@ -209,6 +213,7 @@ it.effect.each([
             getInstance: () => Effect.succeed(provider),
           }),
         ),
+        Layer.provide(Layer.mock(TextGeneration.TextGeneration)({ generateIdeaUpdate })),
         Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
         Layer.provide(runner),
         Layer.provide(Layer.succeed(IssueHost, fromAdapters([host.adapter]))),

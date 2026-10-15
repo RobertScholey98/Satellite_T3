@@ -272,11 +272,13 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
         runtimeMock.state.promptResult = {
           data: { parts: [{ type: "text", text: '{"edits":"invalid","summary":"Bad update"}' }] },
         };
-        const error = yield* generation.generateIdeaUpdate!({
-          cwd,
-          prompt: "Organize the notebook.",
-          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
-        }).pipe(Effect.flip);
+        const error = yield* generation
+          .generateIdeaUpdate({
+            cwd,
+            prompt: "Organize the notebook.",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          })
+          .pipe(Effect.flip);
         expect(error.detail).toContain("invalid structured output");
         expect(runtimeMock.state.deletedSessions).toEqual(["http://127.0.0.1:4301/session"]);
       }),
@@ -294,7 +296,7 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
         runtimeMock.state.promptResult = {
           data: { parts: [{ type: "text", text: '{"edits":[],"summary":"No new decisions."}' }] },
         };
-        const result = yield* generation.generateIdeaUpdate!({
+        const result = yield* generation.generateIdeaUpdate({
           cwd,
           prompt: "Organize the notebook.",
           modelSelection: {

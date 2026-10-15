@@ -93,14 +93,14 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       const instance = yield* create({}, noHttp);
       const modelSelection = { instanceId: instance.instanceId, model: "opencode/big-pickle" };
       const ideaUpdate = yield* Effect.flip(
-        instance.textGeneration.generateIdeaUpdate!({
+        instance.textGeneration.generateIdeaUpdate({
           cwd: process.cwd(),
           prompt: "Organize the notebook.",
           modelSelection,
         }),
       );
       const revdoc = yield* Effect.flip(
-        instance.textGeneration.generateRevdoc!({
+        instance.textGeneration.generateRevdoc({
           cwd: process.cwd(),
           prompt: "Review the worktree.",
           modelSelection,

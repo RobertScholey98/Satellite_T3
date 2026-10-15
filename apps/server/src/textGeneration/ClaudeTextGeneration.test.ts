@@ -209,14 +209,16 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       { output: '{"structured_output":{"edits":"invalid","summary":"Bad update"}}' },
       (generation) =>
         Effect.gen(function* () {
-          const error = yield* generation.generateIdeaUpdate!({
-            cwd: process.cwd(),
-            prompt: "Organize the notebook.",
-            modelSelection: createModelSelection(
-              ProviderInstanceId.make("claudeAgent"),
-              SYNTHETIC_CLAUDE_THINKING_MODEL,
-            ),
-          }).pipe(Effect.flip);
+          const error = yield* generation
+            .generateIdeaUpdate({
+              cwd: process.cwd(),
+              prompt: "Organize the notebook.",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_THINKING_MODEL,
+              ),
+            })
+            .pipe(Effect.flip);
           expect(error.detail).toContain("invalid structured output");
         }),
     ),
@@ -234,7 +236,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
         },
         (generation) =>
           Effect.gen(function* () {
-            const result = yield* generation.generateIdeaUpdate!({
+            const result = yield* generation.generateIdeaUpdate({
               cwd: process.cwd(),
               prompt: "Organize the notebook.",
               modelSelection: createModelSelection(
@@ -266,7 +268,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       (generation) =>
         Effect.gen(function* () {
           const activity: RevdocGenerationActivity[] = [];
-          const result = yield* generation.generateRevdoc!({
+          const result = yield* generation.generateRevdoc({
             cwd: process.cwd(),
             prompt: "Create the worktree review.",
             modelSelection: createModelSelection(

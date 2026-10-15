@@ -245,7 +245,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
       },
       (generation, cwd) =>
         Effect.gen(function* () {
-          const result = yield* generation.generateRevdoc!({
+          const result = yield* generation.generateRevdoc({
             cwd,
             prompt: "Create the worktree review.",
             modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna", [
@@ -277,7 +277,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
       { output: JSON.stringify(update), requireStrictSchema: true },
       (generation, cwd) =>
         Effect.gen(function* () {
-          const result = yield* generation.generateIdeaUpdate!({
+          const result = yield* generation.generateIdeaUpdate({
             cwd,
             prompt: "Organize the notebook.",
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
@@ -303,7 +303,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
         },
         (generation, cwd) =>
           Effect.gen(function* () {
-            const result = yield* generation.generateIdeaUpdate!({
+            const result = yield* generation.generateIdeaUpdate({
               cwd,
               prompt: "Organize the notebook.",
               modelSelection: createModelSelection(
@@ -319,11 +319,13 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
   it.effect("rejects invalid notebook edits", () =>
     withFakeCodexEnv({ output: '{"edits":"invalid","summary":"Bad update"}' }, (generation, cwd) =>
       Effect.gen(function* () {
-        const error = yield* generation.generateIdeaUpdate!({
-          cwd,
-          prompt: "Organize the notebook.",
-          modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna"),
-        }).pipe(Effect.flip);
+        const error = yield* generation
+          .generateIdeaUpdate({
+            cwd,
+            prompt: "Organize the notebook.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.6-luna"),
+          })
+          .pipe(Effect.flip);
         expect(error.detail).toContain("invalid structured output");
       }),
     ),
@@ -343,7 +345,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
         },
         (generation, cwd) =>
           Effect.gen(function* () {
-            const result = yield* generation.generateIdeaUpdate!({
+            const result = yield* generation.generateIdeaUpdate({
               cwd,
               prompt: "Organize the notebook.",
               modelSelection: createModelSelection(

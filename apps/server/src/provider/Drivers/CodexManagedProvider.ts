@@ -249,6 +249,7 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
       ),
     );
   const textGeneration: ProviderInstance["textGeneration"] = {
+    generateRevdoc: (value) => protect("generateRevdoc", nativeGeneration.generateRevdoc(value)),
     generateIdeaUpdate: (value) =>
       protect("generateIdeaUpdate", nativeGeneration.generateIdeaUpdate(value)),
     generateCommitMessage: (value) =>

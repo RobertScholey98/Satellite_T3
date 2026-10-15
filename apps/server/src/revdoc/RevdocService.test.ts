@@ -44,6 +44,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as RevdocService from "./RevdocService.ts";
 import type { RevdocGenerationInput, RevdocGenerationResult } from "./RevdocGeneration.ts";
 import { makeCodexTextGeneration } from "../textGeneration/CodexTextGeneration.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
 
 const threadId = ThreadId.make("review-thread");
@@ -158,16 +159,11 @@ const setup = (
       updatedAt: timestamp,
     });
     const calls: RevdocGenerationInput[] = [];
-    const instance = {
-      instanceId: defaultModel.instanceId,
-      enabled: true,
-      textGeneration: {
-        generateRevdoc: (input: RevdocGenerationInput) => {
-          calls.push(input);
-          return options.generate?.(input) ?? Effect.succeed(generated);
-        },
-      },
-    } as ProviderInstance;
+    const instance = { instanceId: defaultModel.instanceId, enabled: true } as ProviderInstance;
+    const generateRevdoc = (input: RevdocGenerationInput) => {
+      calls.push(input);
+      return options.generate?.(input) ?? Effect.succeed(generated);
+    };
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     const starts = yield* Queue.unbounded<ThreadId>();
     const captured: string[] = [];
@@ -239,6 +235,7 @@ const setup = (
             getInstance: () => Effect.succeed(options.unavailable ? undefined : instance),
           }),
         ),
+        Layer.provide(Layer.mock(TextGeneration.TextGeneration)({ generateRevdoc })),
         Layer.provide(
           Layer.mock(ServerSettings.ServerSettingsService)({
             getSettings: Effect.succeed({

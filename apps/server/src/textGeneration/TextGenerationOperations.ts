@@ -97,13 +97,7 @@ const METADATA_TIMEOUT = Duration.minutes(3);
 const DOCUMENT_TIMEOUT = Duration.minutes(30);
 
 /** The text generation service over `run`. `name` prefixes each operation's span. */
-export function fromRunner(
-  name: string,
-  run: Runner,
-): TextGeneration.TextGeneration["Service"] &
-  Required<
-    Pick<TextGeneration.TextGeneration["Service"], "generateRevdoc" | "generateIdeaUpdate">
-  > {
+export function fromRunner(name: string, run: Runner): TextGeneration.TextGeneration["Service"] {
   const runTask = <S extends Schema.Top>(request: Request<S>, timeout: Duration.Duration) =>
     run(request).pipe(
       Effect.timeoutOrElse({
