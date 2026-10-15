@@ -83,6 +83,11 @@ export interface TurnDeliveryServices<A extends TurnAttachmentDraft> {
   readonly environment: (
     environmentId: EnvironmentId,
   ) => ExecutionEnvironmentDescriptor | undefined;
+  /**
+   * Rechecks the operate grant after uploads and reservation, so a grant revoked meanwhile stops
+   * the send before the caller clears its composer.
+   */
+  readonly canOperate?: (environmentId: EnvironmentId) => boolean;
 }
 
 /** An existing thread's settings as the server holds them. */
@@ -133,8 +138,10 @@ export interface TurnDeliveryRequest<A extends TurnAttachmentDraft> {
   readonly issue?: IssueStart;
   /** Sends `/compact` under this message id first, so a stale session compacts before the turn. */
   readonly compactFirst?: MessageId;
-  /** Runs once every check has passed, immediately before the start command. */
+  /** Runs once attachments and issue work are ready, before the settings sync. */
   readonly onDispatching?: (message: { readonly text: string }) => void | Promise<void>;
+  /** Runs as soon as the start command is in flight. */
+  readonly onStartSent?: () => void;
 }
 
 export type TurnDeliveryStage = "settings" | "attachments" | "issue" | "dispatch";
@@ -144,7 +151,8 @@ export type TurnDeliveryInvalidReason =
   | "issue-worktree-name"
   | "issue-in-background"
   | "issue-needs-worktree"
-  | "issue-multiple-models";
+  | "issue-multiple-models"
+  | "operate-scope-revoked";
 
 const INVALID_TURN_MESSAGES: Record<TurnDeliveryInvalidReason, string> = {
   "issue-in-idea-thread":
@@ -153,6 +161,7 @@ const INVALID_TURN_MESSAGES: Record<TurnDeliveryInvalidReason, string> = {
   "issue-in-background": "Send issue work in the foreground so its launch can be tracked.",
   "issue-needs-worktree": "Issue work needs a Git project and one model in a new worktree.",
   "issue-multiple-models": "Issue work starts one model per attempt.",
+  "operate-scope-revoked": "This connection cannot change threads.",
 };
 
 export function invalidTurnMessage(reason: TurnDeliveryInvalidReason): string {
@@ -179,41 +188,11 @@ export async function deliverTurn<A extends TurnAttachmentDraft>(
   const invalid = validateTurnDelivery(request);
   if (invalid !== null) return { _tag: "Invalid", reason: invalid };
 
-  const settings = await syncThreadSettings(request, services.commands);
-  if (settings !== null) return failed("settings", settings);
-
   const { environmentId, turn } = request;
   const drafts = request.message.attachments;
-  const environment = services.environment(environmentId);
-  if (environment === undefined && drafts.length > 0) {
-    // Without the server's capabilities the upload path is unknown; wait for the config.
-    return failed(
-      "attachments",
-      AsyncResult.failure(
-        Cause.fail(
-          new EnvironmentRpcUnavailableError({
-            environmentId,
-            message: "The environment is not connected.",
-          }),
-        ),
-      ),
-    );
-  }
-  const upload = environment?.capabilities.attachmentUploads === true;
-  let attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment> | "abandoned";
-  try {
-    if (!upload && drafts.some((draft) => draft.type === "file")) {
-      throw new Error("This server does not support file attachments.");
-    }
-    attachments = await services.attachments.prepare({
-      environmentId,
-      attachments: drafts,
-      upload,
-    });
-  } catch (error) {
-    return failed("attachments", AsyncResult.failure(Cause.die(error)));
-  }
-  if (attachments === "abandoned") return { _tag: "Abandoned" };
+  const prepared = await prepareTurnAttachments({ environmentId, attachments: drafts }, services);
+  if (prepared._tag !== "Prepared") return prepared;
+  const attachments = prepared.attachments;
 
   let text = request.message.text;
   let start = turn;
@@ -246,7 +225,12 @@ export async function deliverTurn<A extends TurnAttachmentDraft>(
     };
   }
 
+  if (services.canOperate?.(environmentId) === false) {
+    return { _tag: "Invalid", reason: "operate-scope-revoked" };
+  }
   await request.onDispatching?.({ text });
+  const settings = await syncThreadSettings(request, services.commands);
+  if (settings !== null) return failed("settings", settings);
   if (request.compactFirst !== undefined) {
     const compact = await services.commands.startTurn({
       environmentId,
@@ -268,7 +252,7 @@ export async function deliverTurn<A extends TurnAttachmentDraft>(
   const supportsInlineContext =
     services.environment(environmentId)?.capabilities.inlineMessageContext === true;
   const context = bindAttachments(request.message.context, drafts, attachments);
-  const started = await services.commands.startTurn({
+  const starting = services.commands.startTurn({
     environmentId,
     input: {
       ...start,
@@ -284,7 +268,79 @@ export async function deliverTurn<A extends TurnAttachmentDraft>(
       },
     },
   });
+  request.onStartSent?.();
+  const started = await starting;
   return started._tag === "Failure" ? failed("dispatch", started) : { _tag: "Delivered" };
+}
+
+/**
+ * The result as a command failure for callers that only report errors: an invalid turn fails with
+ * its message and an abandoned one reads as interrupted, so it shows nothing.
+ */
+export function turnDeliveryFailure(
+  result: TurnDeliveryResult,
+): AsyncResult.Failure<unknown, unknown> | null {
+  switch (result._tag) {
+    case "Delivered":
+      return null;
+    case "Failed":
+      return result.failure;
+    case "Invalid":
+      return AsyncResult.failure(Cause.fail(new Error(invalidTurnMessage(result.reason))));
+    case "Abandoned":
+      return AsyncResult.failure(Cause.interrupt());
+  }
+}
+
+export type PreparedTurnAttachments =
+  | {
+      readonly _tag: "Prepared";
+      readonly attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
+      readonly uploaded: boolean;
+    }
+  | { readonly _tag: "Abandoned" }
+  | Extract<TurnDeliveryResult, { readonly _tag: "Failed" }>;
+
+/**
+ * The attachment step on its own: uploads when the environment supports it, otherwise inlines
+ * images and rejects files. A fan-out prepares once and hands the result to every delivery.
+ */
+export async function prepareTurnAttachments<A extends TurnAttachmentDraft>(
+  input: { readonly environmentId: EnvironmentId; readonly attachments: ReadonlyArray<A> },
+  services: Pick<TurnDeliveryServices<A>, "attachments" | "environment">,
+): Promise<PreparedTurnAttachments> {
+  const { environmentId, attachments: drafts } = input;
+  const environment = services.environment(environmentId);
+  if (environment === undefined && drafts.length > 0) {
+    // Without the server's capabilities the upload path is unknown; wait for the config.
+    return failed(
+      "attachments",
+      AsyncResult.failure(
+        Cause.fail(
+          new EnvironmentRpcUnavailableError({
+            environmentId,
+            message: "The environment is not connected.",
+          }),
+        ),
+      ),
+    );
+  }
+  const upload = environment?.capabilities.attachmentUploads === true;
+  let attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment> | "abandoned";
+  try {
+    if (!upload && drafts.some((draft) => draft.type === "file")) {
+      throw new Error("This server does not support file attachments.");
+    }
+    attachments = await services.attachments.prepare({
+      environmentId,
+      attachments: drafts,
+      upload,
+    });
+  } catch (error) {
+    return failed("attachments", AsyncResult.failure(Cause.die(error)));
+  }
+  if (attachments === "abandoned") return { _tag: "Abandoned" };
+  return { _tag: "Prepared", attachments, uploaded: upload && drafts.length > 0 };
 }
 
 function validateTurnDelivery(
@@ -459,7 +515,7 @@ async function syncThreadSettings(
 function failed(
   stage: TurnDeliveryStage,
   failure: AsyncResult.Failure<unknown, unknown>,
-): TurnDeliveryResult {
+): Extract<TurnDeliveryResult, { readonly _tag: "Failed" }> {
   return {
     _tag: "Failed",
     stage,

@@ -37,6 +37,8 @@ import { createThreadEnvironmentAtoms } from "./state/threadCommands.ts";
 import {
   deliverTurn,
   invalidTurnMessage,
+  prepareTurnAttachments,
+  turnDeliveryFailure,
   isTransientDeliveryError,
   validWorktreeName,
   type IssueStart,
@@ -161,6 +163,8 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
     readonly launch?: () => Effect.Effect<{ sequence: number }, CommandRejected | SocketDropped>;
     readonly issueDelivery?: boolean;
     readonly unconfigured?: boolean;
+    readonly events?: string[];
+    readonly canOperate?: boolean;
   } = {},
 ) {
   const sent: OrchestrationV2Command[] = [];
@@ -185,6 +189,7 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
           [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
             Effect.suspend(() => {
               sent.push(command);
+              options.events?.push(command.type);
               return reply(command);
             }),
           [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input: unknown) =>
@@ -259,6 +264,7 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
       registerPeer: (value) => issues.registerPeer.run(registry, value),
     },
     attachments: options.attachments ?? fakeAttachments(),
+    ...(options.canOperate === undefined ? {} : { canOperate: () => options.canOperate! }),
     environment: (environmentId) =>
       options.unconfigured
         ? undefined
@@ -720,6 +726,139 @@ function issueRequest(
     },
   });
 }
+
+describe("deliverTurn stages", () => {
+  it.effect("shows the turn before the settings sync and reports the start once it is sent", () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const h = yield* makeHarness({ events });
+      yield* deliver(
+        request({
+          thread: { branch: null, runtimeMode: "approval-required", interactionMode: "plan" },
+          onDispatching: () => void events.push("dispatching"),
+          onStartSent: () => void events.push("start sent"),
+        }),
+        h.services,
+      );
+
+      expect(events).toEqual([
+        "dispatching",
+        "thread.runtime-mode.set",
+        "thread.interaction-mode.set",
+        "message.dispatch",
+        "start sent",
+      ]);
+    }),
+  );
+
+  it.effect("stops before the dispatching callback when the operate grant was revoked", () =>
+    Effect.gen(function* () {
+      const events: string[] = [];
+      const h = yield* makeHarness({ events, canOperate: false });
+      const result = yield* deliver(
+        request({
+          thread: { branch: null, runtimeMode: "approval-required", interactionMode: "plan" },
+          onDispatching: () => void events.push("dispatching"),
+        }),
+        h.services,
+      );
+
+      expect(result).toEqual({ _tag: "Invalid", reason: "operate-scope-revoked" });
+      expect(invalidTurnMessage("operate-scope-revoked")).toBe(
+        "This connection cannot change threads.",
+      );
+      expect(events).toEqual([]);
+    }),
+  );
+
+  it("turns an invalid result into its message and an abandoned one into an interrupt", () => {
+    const invalid = turnDeliveryFailure({ _tag: "Invalid", reason: "operate-scope-revoked" });
+    const abandoned = turnDeliveryFailure({ _tag: "Abandoned" });
+
+    expect(invalid === null ? null : Cause.squash(invalid.cause)).toEqual(
+      new Error("This connection cannot change threads."),
+    );
+    expect(abandoned === null ? null : Cause.hasInterruptsOnly(abandoned.cause)).toBe(true);
+    expect(turnDeliveryFailure({ _tag: "Delivered" })).toBeNull();
+  });
+
+  it.effect("prepares a fan-out's attachments once and sends them to every target", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const h = yield* makeHarness({ attachments: fakeAttachments(calls) });
+      const prepared = yield* Effect.promise(() =>
+        prepareTurnAttachments(
+          { environmentId: ENVIRONMENT_ID, attachments: [SCREENSHOT] },
+          h.services,
+        ),
+      );
+      if (prepared._tag !== "Prepared") throw new Error("expected prepared attachments");
+      const reuse = { ...h.services, attachments: { prepare: async () => prepared.attachments } };
+      for (const threadId of ["first", "second"]) {
+        yield* deliver(
+          request({
+            turn: { ...request().turn, threadId: ThreadId.make(threadId) },
+            message: {
+              messageId: MessageId.make(threadId),
+              text: "Compare",
+              attachments: [SCREENSHOT],
+            },
+          }),
+          reuse,
+        );
+      }
+
+      expect(calls).toEqual(["upload local-1"]);
+      expect(prepared.uploaded).toBe(true);
+      expect(
+        h.sent.map((command) => ("attachments" in command ? command.attachments : [])),
+      ).toEqual([
+        [
+          {
+            type: "image",
+            id: "uploaded-local-1",
+            name: "shot.png",
+            mimeType: "image/png",
+            sizeBytes: 3,
+          },
+        ],
+        [
+          {
+            type: "image",
+            id: "uploaded-local-1",
+            name: "shot.png",
+            mimeType: "image/png",
+            sizeBytes: 3,
+          },
+        ],
+      ]);
+    }),
+  );
+
+  it.effect("reports one attachment failure for a fan-out before any target starts", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({
+        attachments: {
+          prepare: async () => {
+            throw new Error("Retry or remove failed uploads before sending.");
+          },
+        },
+      });
+      const prepared = yield* Effect.promise(() =>
+        prepareTurnAttachments(
+          { environmentId: ENVIRONMENT_ID, attachments: [SCREENSHOT] },
+          h.services,
+        ),
+      );
+
+      expect(prepared).toMatchObject({ _tag: "Failed", stage: "attachments", transient: false });
+      expect(prepared._tag === "Failed" ? Cause.squash(prepared.failure.cause) : null).toEqual(
+        new Error("Retry or remove failed uploads before sending."),
+      );
+      expect(h.sent).toEqual([]);
+    }),
+  );
+});
 
 describe("deliverTurn issue start", () => {
   it.effect("attaches the issue, reserves its attempt, and launches in the named worktree", () =>

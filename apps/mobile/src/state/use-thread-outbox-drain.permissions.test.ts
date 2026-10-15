@@ -217,7 +217,7 @@ describe("queued task operation access", () => {
     await runDrain();
     expect(state.runtime).toHaveBeenCalledOnce();
     expect(state.interaction).not.toHaveBeenCalled();
-    expect(state.prepare).not.toHaveBeenCalled();
+    expect(state.prepare).toHaveBeenCalledOnce();
     expect(state.start).not.toHaveBeenCalled();
     expect(remaining()).toEqual([queued]);
   });

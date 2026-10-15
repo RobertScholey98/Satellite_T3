@@ -587,8 +587,9 @@ import { assetEnvironment } from "../state/assets";
 import { readEnvironmentScope, readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
-import { useDeliverTurn } from "../state/turnDelivery";
-import { invalidTurnMessage } from "@t3tools/client-runtime/turn-delivery";
+import { useDeliverTurn, usePrepareTurnAttachments } from "../state/turnDelivery";
+import { preparedTurnAttachments } from "../lib/turnAttachments";
+import { invalidTurnMessage, turnDeliveryFailure } from "@t3tools/client-runtime/turn-delivery";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { Button, InlineButton } from "./ui/button";
 import {
@@ -1715,6 +1716,7 @@ export default function ChatView(props: ChatViewProps) {
       ? baseComposerDraftTarget
       : queuedEditDraftTargetFor(editingQueuedRun.runId);
   const deliverTurn = useDeliverTurn(composerDraftTarget);
+  const prepareTurnAttachments = usePrepareTurnAttachments(composerDraftTarget);
   const draftThread = useComposerDraftStore((store) =>
     routeKind === "server"
       ? store.getDraftSessionByRef(routeThreadRef)
@@ -7401,13 +7403,14 @@ export default function ChatView(props: ChatViewProps) {
             scrollToEnd();
           },
         });
-        if (delivery._tag === "Failed") {
+        const failure = turnDeliveryFailure(delivery);
+        if (failure !== null) {
           setOptimisticUserMessages((messages) =>
             messages.filter((message) => message.id !== messageId),
           );
           resetLocalDispatch();
-          if (!isAtomCommandInterrupted(delivery.failure)) {
-            const error = squashAtomCommandFailure(delivery.failure);
+          if (!isAtomCommandInterrupted(failure)) {
+            const error = squashAtomCommandFailure(failure);
             setThreadError(threadId, error instanceof Error ? error.message : failureMessage);
           }
         } else {
@@ -8520,7 +8523,8 @@ export default function ChatView(props: ChatViewProps) {
             ? { branch: localCheckoutBranchMismatch.currentBranch }
             : {}),
         });
-        if (delivery._tag === "Failed") return delivery.failure;
+        const failure = turnDeliveryFailure(delivery);
+        if (failure !== null) return failure;
         if (!hasHeldQueuedRuns) return AsyncResult.success(undefined);
         clearUsageLimitsFor(routeThreadKey);
         return resumeThreadQueue({ environmentId, input: { threadId } });
@@ -8558,6 +8562,7 @@ export default function ChatView(props: ChatViewProps) {
     },
   ) => {
     e?.preventDefault();
+    const requestedSubmissionIntent = submissionIntent;
     const keepFullHistory = keepFullHistoryOnceRef.current;
     // Typed out in full rather than picked from the menu. Attachments or contexts
     // mean the user is sending a prompt, so those go through as usual.
@@ -9100,16 +9105,19 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
 
-    const fileBlockReason = (() => {
-      const config = appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId) ?? null;
-      return fileAttachmentCapabilityBlockReason({
-        files: composerFilesSnapshot,
-        attachmentUploadsCapabilityKnown: config !== null,
-        supportsAttachmentUploads: config?.environment.capabilities.attachmentUploads === true,
-        maxFileAttachmentBytes:
-          config?.environment.capabilities.fileAttachments?.maxUploadBytes ?? null,
-      });
-    })();
+    const liveServerConfig =
+      appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId) ?? null;
+    const liveSupportsAttachmentUploads =
+      liveServerConfig?.environment.capabilities.attachmentUploads === true;
+    const fileBlockReason = fileAttachmentCapabilityBlockReason({
+      files: composerFilesSnapshot,
+      attachmentUploadsCapabilityKnown: liveServerConfig !== null,
+      supportsAttachmentUploads: liveSupportsAttachmentUploads,
+      maxFileAttachmentBytes:
+        liveServerConfig?.environment.capabilities.fileAttachments?.maxUploadBytes ?? null,
+    });
+    const turnUsesAttachmentUploads =
+      composerFilesSnapshot.length > 0 ? liveSupportsAttachmentUploads : supportsAttachmentUploads;
 
     const multipleTargets = [];
     for (const selection of multipleModelSelections ?? []) {
@@ -9173,6 +9181,18 @@ export default function ChatView(props: ChatViewProps) {
       submissionIntent === "background" && !isLocalDraftThread ? "foreground" : submissionIntent;
 
     if (multipleModelSelections !== null) {
+      const prepared = await prepareTurnAttachments(environmentId, composerAttachmentsSnapshot);
+      if (prepared._tag !== "Prepared") {
+        sendInFlightRef.current = false;
+        if (prepared._tag === "Failed" && !isAtomCommandInterrupted(prepared.failure)) {
+          const error = squashAtomCommandFailure(prepared.failure);
+          setThreadError(
+            threadIdForSend,
+            error instanceof Error ? error.message : "Failed to send messages.",
+          );
+        }
+        return;
+      }
       beginLocalDispatch({ preparingWorktree: true, submissionIntent: localDispatchIntent });
       setWorktreeSetupRef(null);
       const failedSelections: ModelSelection[] = [];
@@ -9185,10 +9205,7 @@ export default function ChatView(props: ChatViewProps) {
           composerAttachmentsSnapshot[0]?.name ||
           "New thread",
       );
-      // Each request owns its background thread, so the draft is free for another prompt
-      // while checkout and setup scripts finish.
-      const releaseDraftOnce = () => {
-        if (clearedDraft) return;
+      try {
         promptRef.current = "";
         clearComposerDraftContent(composerDraftTarget);
         composerRef.current?.resetCursorState();
@@ -9203,13 +9220,8 @@ export default function ChatView(props: ChatViewProps) {
           useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ===
             clearedDraftSnapshot &&
           multipleModelSelectionsRef.current === submittedSelections;
-        sendInFlightRef.current = false;
-        resetLocalDispatch();
-        releasedComposer = true;
-      };
-      try {
         setThreadError(threadIdForSend, null);
-        await Promise.all(
+        const starts = Promise.all(
           multipleTargets.map(async (target) => {
             const retryKey = JSON.stringify([
               routeThreadKey,
@@ -9225,49 +9237,52 @@ export default function ChatView(props: ChatViewProps) {
                   "The previous request may have started. Open its thread to check before sending again.",
                 );
               }
-              const delivery = await deliverTurn({
-                environmentId,
-                turn: {
-                  threadId: targetThreadId,
-                  modelSelection: target.selection,
-                  titleSeed: title,
-                  runtimeMode,
-                  interactionMode: target.interactionMode,
-                  bootstrap: {
-                    createThread: {
-                      projectId: activeProject.id,
-                      ...(isIdea ? { purpose: "idea" as const } : {}),
-                      title,
-                      modelSelection: target.selection,
-                      runtimeMode,
-                      interactionMode: target.interactionMode,
-                      branch: activeThreadBranch,
-                      worktreePath: null,
-                      createdAt: messageCreatedAt,
+              const delivery = await deliverTurn(
+                {
+                  environmentId,
+                  turn: {
+                    threadId: targetThreadId,
+                    modelSelection: target.selection,
+                    titleSeed: title,
+                    runtimeMode,
+                    interactionMode: target.interactionMode,
+                    bootstrap: {
+                      createThread: {
+                        projectId: activeProject.id,
+                        ...(isIdea ? { purpose: "idea" as const } : {}),
+                        title,
+                        modelSelection: target.selection,
+                        runtimeMode,
+                        interactionMode: target.interactionMode,
+                        branch: activeThreadBranch,
+                        worktreePath: null,
+                        createdAt: messageCreatedAt,
+                      },
+                      prepareWorktree: {
+                        projectCwd: activeProject.workspaceRoot,
+                        baseBranch: activeThreadBranch!,
+                        requireWorktree: true,
+                        ...(startFromOrigin ? { startFromOrigin: true } : {}),
+                      },
+                      runSetupScript: true,
                     },
-                    prepareWorktree: {
-                      projectCwd: activeProject.workspaceRoot,
-                      baseBranch: activeThreadBranch!,
-                      requireWorktree: true,
-                      ...(startFromOrigin ? { startFromOrigin: true } : {}),
-                    },
-                    runSetupScript: true,
+                    createdAt: messageCreatedAt,
                   },
-                  createdAt: messageCreatedAt,
+                  message: {
+                    messageId: newMessageId(),
+                    text: target.text,
+                    ...(outgoingMessageContext ? { context: outgoingMessageContext } : {}),
+                    attachments: composerAttachmentsSnapshot,
+                  },
+                  onStartSent: () => {
+                    requestMayHaveStarted = true;
+                  },
                 },
-                message: {
-                  messageId: newMessageId(),
-                  text: target.text,
-                  ...(outgoingMessageContext ? { context: outgoingMessageContext } : {}),
-                  attachments: composerAttachmentsSnapshot,
-                },
-                onDispatching: () => {
-                  requestMayHaveStarted = true;
-                  releaseDraftOnce();
-                },
-              });
-              if (delivery._tag === "Failed") {
-                const error = squashAtomCommandFailure(delivery.failure);
+                preparedTurnAttachments(prepared.attachments),
+              );
+              const failure = turnDeliveryFailure(delivery);
+              if (failure !== null) {
+                const error = squashAtomCommandFailure(failure);
                 if (wasBootstrapThreadDeleted(error) || wasBootstrapThreadNotCreated(error)) {
                   requestMayHaveStarted = false;
                 }
@@ -9330,6 +9345,12 @@ export default function ChatView(props: ChatViewProps) {
             }
           }),
         );
+        // Each request now owns its background thread. The original draft is
+        // ready for another prompt while checkout and setup scripts finish.
+        sendInFlightRef.current = false;
+        resetLocalDispatch();
+        releasedComposer = true;
+        await starts;
         if (startedCount > 0) {
           toastManager.add(
             stackedThreadToast({
@@ -9338,7 +9359,7 @@ export default function ChatView(props: ChatViewProps) {
             }),
           );
         }
-        if (failedSelections.length === 0) {
+        if (failedSelections.length === 0 && prepared.uploaded) {
           releaseDraftAttachments(composerAttachmentsSnapshot);
         }
       } catch (error) {
@@ -9528,11 +9549,11 @@ export default function ChatView(props: ChatViewProps) {
       },
       ...(isServerThread && serverThread ? { thread: serverThread } : {}),
       ...(localCheckoutBranchMismatch ? { branch: localCheckoutBranchMismatch.currentBranch } : {}),
-      ...(issueDraftIntent && draftId
+      ...(issueDraftIntent && draftId && isFirstMessage
         ? {
             issue: {
               intent: issueDraftIntent,
-              background: submissionIntent === "background",
+              background: requestedSubmissionIntent === "background",
               models: sendCtx.multipleModelSelections?.length ?? 1,
               persist: (reservation) =>
                 useIssueDraftStore.getState().set(draftId, { ...issueDraftIntent, reservation }),
@@ -9636,6 +9657,8 @@ export default function ChatView(props: ChatViewProps) {
         promptRef.current = "";
         clearComposerDraftContent(composerDraftTarget);
         composerRef.current?.resetCursorState();
+      },
+      onStartSent: () => {
         if (backgroundThreadRef) {
           // The fresh composer opens while the start request is in flight.
           beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
@@ -9691,7 +9714,9 @@ export default function ChatView(props: ChatViewProps) {
       // snapshot is stale. Uploads may have outlasted a navigation, so only
       // the sending thread's panel clears.
       clearUsageLimitsFor(routeThreadKey);
-      releaseDraftAttachments(composerAttachmentsSnapshot);
+      if (turnUsesAttachmentUploads) {
+        releaseDraftAttachments(composerAttachmentsSnapshot);
+      }
       acknowledgeActiveThreadWoke();
       if (backgroundThreadRef) {
         if (backgroundDraftOpened || currentRouteThreadKeyRef.current !== routeThreadKey) {
@@ -10286,7 +10311,8 @@ export default function ChatView(props: ChatViewProps) {
       },
     });
 
-    if (delivery._tag !== "Failed") {
+    const failure = turnDeliveryFailure(delivery);
+    if (failure === null) {
       sendInFlightRef.current = false;
       resetLocalDispatch();
       return true;
@@ -10295,7 +10321,6 @@ export default function ChatView(props: ChatViewProps) {
     setOptimisticUserMessages((existing) =>
       existing.filter((message) => message.id !== messageIdForSend),
     );
-    const failure = delivery.failure;
     if (!isAtomCommandInterrupted(failure)) {
       const error = squashAtomCommandFailure(failure);
       setThreadError(
@@ -10390,7 +10415,7 @@ export default function ChatView(props: ChatViewProps) {
         },
         message: { messageId: newMessageId(), text: outgoingImplementationPrompt, attachments: [] },
       });
-      failure = delivery._tag === "Failed" ? delivery.failure : null;
+      failure = turnDeliveryFailure(delivery);
     }
 
     if (failure === null) {

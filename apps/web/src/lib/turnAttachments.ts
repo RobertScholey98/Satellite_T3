@@ -1,4 +1,5 @@
 import type { TurnAttachmentAdapter } from "@t3tools/client-runtime/turn-delivery";
+import type { ChatAttachment, UploadChatAttachment } from "@t3tools/contracts";
 
 import type {
   ComposerFileAttachment,
@@ -55,4 +56,11 @@ export function composerTurnAttachments(
       return uploaded;
     },
   };
+}
+
+/** Hands every delivery of a fan-out the attachments it prepared once. */
+export function preparedTurnAttachments(
+  attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>,
+): TurnAttachmentAdapter<ComposerTurnAttachment> {
+  return { prepare: async () => attachments };
 }

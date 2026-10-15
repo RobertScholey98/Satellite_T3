@@ -1,5 +1,10 @@
-import { deliverTurn, type TurnDeliveryRequest } from "@t3tools/client-runtime/turn-delivery";
-import type { EnvironmentId } from "@t3tools/contracts";
+import {
+  deliverTurn,
+  prepareTurnAttachments,
+  type TurnAttachmentAdapter,
+  type TurnDeliveryRequest,
+} from "@t3tools/client-runtime/turn-delivery";
+import { AuthOrchestrationOperateScope, type EnvironmentId } from "@t3tools/contracts";
 import { useCallback } from "react";
 
 import type { ComposerThreadTarget } from "../composerDraftStore";
@@ -7,6 +12,7 @@ import { composerTurnAttachments, type ComposerTurnAttachment } from "../lib/tur
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { issuesEnvironment } from "./issues";
 import { environmentServerConfigsAtom } from "./server";
+import { readEnvironmentScope } from "./session";
 import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
 import { useOrchestrationCommand } from "./use-orchestration-command";
@@ -32,12 +38,19 @@ export function useDeliverTurn(draftTarget?: ComposerThreadTarget) {
   const grantPeer = useAtomCommand(issuesEnvironment.grantPeer, { reportFailure: false });
   const registerPeer = useAtomCommand(issuesEnvironment.registerPeer, { reportFailure: false });
   return useCallback(
-    (request: TurnDeliveryRequest<ComposerTurnAttachment>) =>
+    (
+      request: TurnDeliveryRequest<ComposerTurnAttachment>,
+      attachments: TurnAttachmentAdapter<ComposerTurnAttachment> = composerTurnAttachments(
+        draftTarget,
+      ),
+    ) =>
       deliverTurn(request, {
         commands: { updateMetadata, setRuntimeMode, setInteractionMode, startTurn },
         issues: { get, reserveAttempt, peerIdentity, grantPeer, registerPeer },
-        attachments: composerTurnAttachments(draftTarget),
+        attachments,
         environment: readEnvironment,
+        canOperate: (environmentId) =>
+          readEnvironmentScope(environmentId, AuthOrchestrationOperateScope),
       }),
     [
       draftTarget,
@@ -51,5 +64,17 @@ export function useDeliverTurn(draftTarget?: ComposerThreadTarget) {
       startTurn,
       updateMetadata,
     ],
+  );
+}
+
+/** Prepares composer attachments once, for a fan-out that hands them to several deliveries. */
+export function usePrepareTurnAttachments(draftTarget?: ComposerThreadTarget) {
+  return useCallback(
+    (environmentId: EnvironmentId, attachments: ReadonlyArray<ComposerTurnAttachment>) =>
+      prepareTurnAttachments(
+        { environmentId, attachments },
+        { attachments: composerTurnAttachments(draftTarget), environment: readEnvironment },
+      ),
+    [draftTarget],
   );
 }
