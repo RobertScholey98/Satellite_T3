@@ -45,8 +45,7 @@ const fixture = Effect.gen(function* () {
       }),
   });
   const runtime = yield* IdeaRuntime.pipe(
-    Effect.provide(IdeaRuntime.layer),
-    Effect.provide(documents),
+    Effect.provide(IdeaRuntime.layer.pipe(Layer.provide(documents))),
     Effect.provideService(IdeaNotebookStore, state.store),
     Effect.provideService(OrchestrationEngineService, state.engine),
     Effect.provideService(ProjectionSnapshotQuery, unusedIdeaSnapshots),
@@ -117,8 +116,7 @@ describe("idea runtime boundaries", () => {
         });
         const state = ideaStateFixture();
         const runtime = yield* IdeaRuntime.pipe(
-          Effect.provide(IdeaRuntime.layer),
-          Effect.provide(Layer.mock(DocumentService)({})),
+          Effect.provide(IdeaRuntime.layer.pipe(Layer.provide(Layer.mock(DocumentService)({})))),
           Effect.provideService(IdeaNotebookStore, state.store),
           Effect.provideService(OrchestrationEngineService, state.engine),
           Effect.provideService(ProjectionSnapshotQuery, {
