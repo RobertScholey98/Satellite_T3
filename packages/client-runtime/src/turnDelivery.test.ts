@@ -6,6 +6,7 @@ import {
   EnvironmentId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
+  ProjectId,
   ProviderInstanceId,
   ThreadId,
   WS_METHODS,
@@ -120,6 +121,7 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
   } = {},
 ) {
   const sent: OrchestrationV2Command[] = [];
+  const launched: unknown[] = [];
   const reply: Reply = options.reply ?? (() => Effect.succeed({ sequence: 1 }));
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
     target: { environmentId: ENVIRONMENT_ID },
@@ -133,6 +135,11 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
             Effect.suspend(() => {
               sent.push(command);
               return reply(command);
+            }),
+          [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input: unknown) =>
+            Effect.sync(() => {
+              launched.push(input);
+              return { sequence: 1 };
             }),
           [WS_METHODS.assetsPersistChatAttachments]: (input: {
             readonly attachments: ReadonlyArray<{ readonly id?: string; readonly name: string }>;
@@ -183,7 +190,7 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
         },
       }) as ExecutionEnvironmentDescriptor,
   };
-  return { sent, services };
+  return { sent, launched, services };
 });
 
 const deliver = (input: TurnDeliveryRequest<Draft>, services: TurnDeliveryServices<Draft>) =>
@@ -492,6 +499,80 @@ describe("deliverTurn", () => {
 
       expect(result).toEqual({ _tag: "Abandoned" });
       expect(h.sent).toEqual([]);
+    }),
+  );
+
+  it.effect("launches a draft as a new thread in a worktree with its uploaded attachments", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const result = yield* deliver(
+        request({
+          turn: {
+            threadId: THREAD_ID,
+            modelSelection: MODEL,
+            titleSeed: "Fix the build",
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: "auto",
+            bootstrap: {
+              createThread: {
+                projectId: ProjectId.make("project"),
+                title: "Fix the build",
+                modelSelection: MODEL,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: "main",
+                worktreePath: null,
+                createdAt: "2026-10-15T09:59:00.000Z",
+              },
+              prepareWorktree: { projectCwd: "/repo", baseBranch: "main" },
+              runSetupScript: true,
+            },
+            createdAt: "2026-10-15T10:00:00.000Z",
+          },
+          message: {
+            messageId: MessageId.make("message"),
+            text: "Fix the build ![shot.png](t3-context://v1/image/local-1)",
+            context: { version: 1, records: [SCREENSHOT_RECORD] },
+            attachments: [SCREENSHOT],
+          },
+        }),
+        h.services,
+      );
+
+      expect(result).toEqual({ _tag: "Delivered" });
+      expect(h.sent).toEqual([]);
+      expect(h.launched).toEqual([
+        {
+          commandId: ZERO_UUID,
+          creationSource: "web",
+          threadId: THREAD_ID,
+          projectId: "project",
+          title: "Fix the build",
+          generateTitle: true,
+          modelSelection: MODEL,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          workspaceStrategy: { type: "worktree", baseRef: "main" },
+          initialMessage: {
+            messageId: "message",
+            text: "Fix the build ![shot.png](t3-context://v1/image/local-1)",
+            context: {
+              version: 1,
+              records: [{ ...SCREENSHOT_RECORD, attachmentId: "uploaded-local-1" }],
+            },
+            attachments: [
+              {
+                type: "image",
+                id: "uploaded-local-1",
+                name: "shot.png",
+                mimeType: "image/png",
+                sizeBytes: 3,
+              },
+            ],
+          },
+        },
+      ]);
     }),
   );
 });
