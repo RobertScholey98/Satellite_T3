@@ -10,8 +10,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
 import { makePiTextGeneration } from "./PiTextGeneration.ts";
-import { expectRunnerContract } from "./testing/runners.ts";
-import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+import { expectRunnerContract, textGenerationOf } from "./testing/runners.ts";
 
 const decodeJsonLine = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeJsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -70,6 +69,7 @@ const makeFakePi = (reply: string) =>
 it.effect("keeps the text generation runner contract", () =>
   expectRunnerContract(
     createModelSelection(ProviderInstanceId.make("pi"), "default"),
+    ["isolated", "isolatedWorkspace"],
     (reply, generate) =>
       Effect.gen(function* () {
         const pi = yield* makeFakePi(reply);
@@ -79,7 +79,7 @@ it.effect("keeps the text generation runner contract", () =>
             {},
           ).pipe(
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, pi.spawner),
-            Effect.map(TextGenerationOperations.fromRunner),
+            Effect.map(textGenerationOf),
           ),
         );
       }),
@@ -94,7 +94,7 @@ it.effect("puts linked source control context in the Pi thread title prompt", ()
       {},
     ).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, pi.spawner),
-      Effect.map(TextGenerationOperations.fromRunner),
+      Effect.map(textGenerationOf),
     );
 
     const generated = yield* textGeneration.generateThreadTitle({

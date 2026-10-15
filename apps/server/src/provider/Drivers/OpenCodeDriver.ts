@@ -144,10 +144,14 @@ function selectOpenCodeRuntimeAdapter(input: {
 /** Text generation runs on the server the instance's probe detected, each in its own protocol. */
 function selectOpenCodeRuntimeTextGeneration(
   probe: OpenCodeRuntimeProbe,
-  v1: TextGenerationOperations.Runner,
-  v2: TextGenerationOperations.Runner,
-): TextGenerationOperations.Runner {
-  return (request) => byOpenCodeRuntime(probe.get, { v1: v1(request), v2: v2(request) });
+  v1: TextGenerationOperations.Provider,
+  v2: TextGenerationOperations.Provider,
+): TextGenerationOperations.Provider {
+  return {
+    name: v1.name,
+    run: (request) => byOpenCodeRuntime(probe.get, { v1: v1.run(request), v2: v2.run(request) }),
+    isolation: byOpenCodeRuntime(probe.get, { v1: v1.isolation, v2: v2.isolation }),
+  };
 }
 
 export type OpenCodeDriverEnv =

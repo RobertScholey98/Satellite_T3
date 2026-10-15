@@ -50,8 +50,19 @@ export type Needs =
   /** As `isolated`, and `cwd` is a T3-owned idea workspace rather than the user's checkout. */
   | "isolatedWorkspace";
 
-export const isIsolated = (needs: Needs): boolean =>
+/** The needs of document tasks, which a provider must declare before it is given one. */
+export type Isolation = Extract<Needs, "isolated" | "isolatedWorkspace">;
+
+export const isIsolated = (needs: Needs): needs is Isolation =>
   needs === "isolated" || needs === "isolatedWorkspace";
+
+/** The isolation each document task needs. */
+const DOCUMENT_NEEDS = {
+  generateRevdoc: "isolated",
+  generateIdeaUpdate: "isolatedWorkspace",
+} as const satisfies Record<string, Isolation>;
+
+export type DocumentOperation = keyof typeof DOCUMENT_NEEDS;
 
 /** One prompt for a provider to run. */
 export interface Request<S extends Schema.Top> {
@@ -70,6 +81,31 @@ export interface Request<S extends Schema.Top> {
 export type Runner = <S extends Schema.Top>(
   request: Request<S>,
 ) => Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]>;
+
+/** One provider's text generation: its run step and the isolation that run step honours. */
+export interface Provider {
+  /** Prefixes the span of every request this provider runs. */
+  readonly name: string;
+  readonly run: Runner;
+  readonly isolation: Effect.Effect<ReadonlySet<Isolation>>;
+}
+
+export const isolates = (...needs: ReadonlyArray<Isolation>) =>
+  Effect.succeed<ReadonlySet<Isolation>>(new Set(needs));
+
+/** Whether `provider` can be given `operation`; candidate selection reads this, not method presence. */
+export const supports = (provider: Provider, operation: DocumentOperation) =>
+  Effect.map(provider.isolation, (isolation) => isolation.has(DOCUMENT_NEEDS[operation]));
+
+/** A document task refused because its provider cannot isolate it. Refused before any process starts. */
+export class TextGenerationUnsupportedError extends Schema.TaggedError<TextGenerationUnsupportedError>()(
+  "TextGenerationUnsupportedError",
+  { operation: Schema.String, provider: Schema.String },
+) {
+  override get message(): string {
+    return `${this.provider} cannot run ${this.operation} in isolation. Choose another provider.`;
+  }
+}
 
 /** Decodes the JSON object in a text reply, which models often wrap in prose. */
 export const decodeJsonReply = <S extends Schema.Top>(
@@ -96,19 +132,48 @@ export const decodeJsonReply = <S extends Schema.Top>(
 const METADATA_TIMEOUT = Duration.minutes(3);
 const DOCUMENT_TIMEOUT = Duration.minutes(30);
 
-/** The text generation service: every task composed over `run`. */
-export function fromRunner(run: Runner): TextGeneration.TextGeneration["Service"] {
-  const runTask = <S extends Schema.Top>(request: Request<S>, timeout: Duration.Duration) =>
-    run(request).pipe(
+/**
+ * The text generation service: every task composed over the provider `resolve`
+ * returns for the request's model selection.
+ */
+export function fromProvider(
+  resolve: (request: Request<Schema.Top>) => Effect.Effect<Provider, TextGenerationError>,
+): TextGeneration.TextGeneration["Service"] {
+  const withTimeout = <A, E, R>(
+    operation: Operation,
+    timeout: Duration.Duration,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    effect.pipe(
       Effect.timeoutOrElse({
         duration: timeout,
         orElse: () =>
-          Effect.fail(
-            new TextGenerationError({
-              operation: request.operation,
-              detail: "Text generation timed out.",
-            }),
-          ),
+          Effect.fail(new TextGenerationError({ operation, detail: "Text generation timed out." })),
+      }),
+    );
+  const runOn = <S extends Schema.Top>(provider: Provider, request: Request<S>) =>
+    provider.run(request).pipe(Effect.withSpan(`${provider.name}.${request.operation}`));
+  const runTask = <S extends Schema.Top>(request: Request<S>, timeout: Duration.Duration) =>
+    withTimeout(
+      request.operation,
+      timeout,
+      Effect.flatMap(resolve(request), (provider) => runOn(provider, request)),
+    );
+  const runDocument = <S extends Schema.Top>(
+    request: Request<S> & { readonly operation: DocumentOperation },
+  ) =>
+    withTimeout(
+      request.operation,
+      DOCUMENT_TIMEOUT,
+      Effect.gen(function* () {
+        const provider = yield* resolve(request);
+        if (!(yield* supports(provider, request.operation))) {
+          return yield* new TextGenerationUnsupportedError({
+            operation: request.operation,
+            provider: provider.name,
+          });
+        }
+        return yield* runOn(provider, request);
       }),
     );
 
@@ -208,30 +273,24 @@ export function fromRunner(run: Runner): TextGeneration.TextGeneration["Service"
 
   return {
     generateRevdoc: (input: RevdocGenerationInput) =>
-      runTask(
-        {
-          operation: "generateRevdoc",
-          needs: "isolated",
-          cwd: input.cwd,
-          prompt: input.prompt,
-          outputSchema: RevdocGenerationResult,
-          modelSelection: input.modelSelection,
-          ...(input.onActivity ? { onActivity: input.onActivity } : {}),
-        },
-        DOCUMENT_TIMEOUT,
-      ),
+      runDocument({
+        operation: "generateRevdoc",
+        needs: DOCUMENT_NEEDS.generateRevdoc,
+        cwd: input.cwd,
+        prompt: input.prompt,
+        outputSchema: RevdocGenerationResult,
+        modelSelection: input.modelSelection,
+        ...(input.onActivity ? { onActivity: input.onActivity } : {}),
+      }),
     generateIdeaUpdate: (input: IdeaUpdateInput) =>
-      runTask(
-        {
-          operation: "generateIdeaUpdate",
-          needs: "isolatedWorkspace",
-          cwd: input.cwd,
-          prompt: input.prompt,
-          outputSchema: IdeaUpdateGenerationResult,
-          modelSelection: input.modelSelection,
-        },
-        DOCUMENT_TIMEOUT,
-      ).pipe(Effect.map(normalizeIdeaUpdateResult)),
+      runDocument({
+        operation: "generateIdeaUpdate",
+        needs: DOCUMENT_NEEDS.generateIdeaUpdate,
+        cwd: input.cwd,
+        prompt: input.prompt,
+        outputSchema: IdeaUpdateGenerationResult,
+        modelSelection: input.modelSelection,
+      }).pipe(Effect.map(normalizeIdeaUpdateResult)),
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

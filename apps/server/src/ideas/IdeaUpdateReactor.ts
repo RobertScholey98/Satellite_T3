@@ -25,6 +25,7 @@ import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestrat
 import { hasUnversionedTitleUpdate, readIdeaUpdateSources } from "./IdeaUpdateSources.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as TextGenerationOperations from "../textGeneration/TextGenerationOperations.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
@@ -106,7 +107,11 @@ export class IdeaUpdateReactor extends Context.Service<
           const selected = (yield* settings.getSettings).ideaUpdatesModelSelection;
           const candidates = selected
             ? []
-            : (yield* providers.listInstances).filter((instance) => instance.enabled);
+            : yield* Effect.filter(
+                (yield* providers.listInstances).filter((instance) => instance.enabled),
+                (instance) =>
+                  TextGenerationOperations.supports(instance.textGeneration, "generateIdeaUpdate"),
+              );
           const automatic =
             candidates.find(
               (instance) =>
@@ -125,10 +130,16 @@ export class IdeaUpdateReactor extends Context.Service<
           if (!modelSelection)
             return yield* new IdeaRuntimeError({
               message:
-                "Choose an enabled model in Settings → Idea updates, then retry this notebook update.",
+                "Choose an enabled model that can run idea updates in Settings → Idea updates, then retry this notebook update.",
             });
           const provider = yield* providers.getInstance(modelSelection.instanceId);
-          if (!provider?.enabled)
+          if (
+            !provider?.enabled ||
+            !(yield* TextGenerationOperations.supports(
+              provider.textGeneration,
+              "generateIdeaUpdate",
+            ))
+          )
             return yield* new IdeaRuntimeError({
               message:
                 "The selected provider is unavailable for idea updates. Choose an enabled model in Settings → Idea updates.",

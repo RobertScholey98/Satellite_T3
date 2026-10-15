@@ -28,7 +28,7 @@ import {
   type AcpRegistryAdapterV2DriverEnv,
 } from "../../orchestration-v2/Adapters/AcpRegistryAdapterV2.ts";
 import * as ServerSettings from "../../serverSettings.ts";
-import type * as TextGenerationOperations from "../../textGeneration/TextGenerationOperations.ts";
+import * as TextGenerationOperations from "../../textGeneration/TextGenerationOperations.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
@@ -75,13 +75,17 @@ const MAINTENANCE = makeManualOnlyProviderMaintenanceCapabilities({
   packageName: null,
 });
 
-const makeUnsupportedTextGeneration = (): TextGenerationOperations.Runner => (request) =>
-  Effect.fail(
-    new TextGenerationError({
-      operation: request.operation,
-      detail: "ACP Registry instances do not provide application text generation.",
-    }),
-  );
+const makeUnsupportedTextGeneration = (): TextGenerationOperations.Provider => ({
+  name: "AcpRegistryTextGeneration",
+  run: (request) =>
+    Effect.fail(
+      new TextGenerationError({
+        operation: request.operation,
+        detail: "ACP Registry instances do not provide application text generation.",
+      }),
+    ),
+  isolation: TextGenerationOperations.isolates(),
+});
 
 function modelsFromDiscovery(
   discovery:

@@ -191,5 +191,11 @@ export const make = Effect.fn("OpenCode2TextGeneration.make")(function* () {
         ),
         Effect.flatMap((raw) => TextGenerationOperations.decodeJsonReply(input, "OpenCode", raw)),
       );
-  return run;
+  return {
+    name: "OpenCode2TextGeneration",
+    run,
+    // The instance's shared server loads global and project config, plugins and MCP
+    // servers for every session; denying tools does not contain them.
+    isolation: TextGenerationOperations.isolates(),
+  } satisfies TextGenerationOperations.Provider;
 });

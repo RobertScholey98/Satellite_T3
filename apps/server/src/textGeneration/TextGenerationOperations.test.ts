@@ -4,15 +4,14 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 
-import * as TextGenerationOperations from "./TextGenerationOperations.ts";
-import { cannedRunner } from "./testing/runners.ts";
+import { cannedProvider, textGenerationOf } from "./testing/runners.ts";
 
 const modelSelection = { instanceId: ProviderInstanceId.make("test"), model: "test-model" };
 const BRANCH_INSTRUCTION = "branch must be a short semantic git branch fragment";
 
 const replying = (reply: unknown) => {
-  const runner = cannedRunner(() => Effect.succeed(reply));
-  return { ...TextGenerationOperations.fromRunner(runner.run), requests: runner.requests };
+  const canned = cannedProvider(() => Effect.succeed(reply));
+  return { ...textGenerationOf(canned.provider), requests: canned.requests };
 };
 
 it.effect("sanitizes a commit subject and trims its body without asking for a branch", () =>
@@ -175,7 +174,37 @@ it.effect("drops a null idea title and rejects invalid notebook edits", () =>
   }),
 );
 
-const stalled = TextGenerationOperations.fromRunner(() => Effect.never);
+it.effect("refuses document tasks a provider cannot isolate before running anything", () =>
+  Effect.gen(function* () {
+    const canned = cannedProvider(() => Effect.succeed({ title: "Repair login" }), []);
+    const generation = textGenerationOf(canned.provider);
+    const refused = yield* Effect.all([
+      Effect.flip(
+        generation.generateIdeaUpdate({ cwd: "/idea", prompt: "Organize.", modelSelection }),
+      ),
+      Effect.flip(generation.generateRevdoc({ cwd: "/work", prompt: "Review.", modelSelection })),
+    ]);
+    assert.deepStrictEqual(
+      refused.map((error) => [error._tag, error.operation]),
+      [
+        ["TextGenerationUnsupportedError", "generateIdeaUpdate"],
+        ["TextGenerationUnsupportedError", "generateRevdoc"],
+      ],
+    );
+    const title = yield* generation.generateThreadTitle({
+      cwd: "/work",
+      message: "Repair login",
+      modelSelection,
+    });
+    assert.deepStrictEqual(title, { title: "Repair login" });
+    assert.deepStrictEqual(
+      canned.requests.map((request) => request.operation),
+      ["generateThreadTitle"],
+    );
+  }),
+);
+
+const stalled = textGenerationOf(cannedProvider(() => Effect.never).provider);
 
 it.effect("abandons a metadata task after three minutes", () =>
   Effect.gen(function* () {
@@ -198,7 +227,9 @@ it.effect("gives a document task thirty minutes before abandoning it", () =>
     assert.isUndefined(review.pollUnsafe());
     yield* TestClock.adjust("27 minutes");
     const error = yield* Fiber.join(review);
-    assert.strictEqual(error.operation, "generateRevdoc");
-    assert.strictEqual(error.detail, "Text generation timed out.");
+    assert.strictEqual(
+      error.message,
+      "Text generation failed in generateRevdoc: Text generation timed out.",
+    );
   }),
 );

@@ -27,7 +27,7 @@ import {
   replayOpenCodeServer,
 } from "../testFixtures/opencodeProbeResponses.ts";
 import { OpenCodeDriver, openCodeUpdateFor } from "./OpenCodeDriver.ts";
-import * as TextGenerationOperations from "../../textGeneration/TextGenerationOperations.ts";
+import { textGenerationOf } from "../../textGeneration/testing/runners.ts";
 
 const serverStarts: Array<string> = [];
 const reachedServer = (operation: string) =>
@@ -78,7 +78,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       const instance = yield* create({}, noHttp);
       // Text generation goes to the instance's 2.x server, which this test refuses to start.
       yield* Effect.flip(
-        TextGenerationOperations.fromRunner(instance.textGeneration).generateThreadTitle({
+        textGenerationOf(instance.textGeneration).generateThreadTitle({
           cwd: process.cwd(),
           message: "hello",
           modelSelection: { instanceId: instance.instanceId, model: "opencode/big-pickle" },
@@ -88,30 +88,33 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("sends idea updates and Revdoc passes to the instance's own server", () =>
+  it.effect("refuses idea updates and Revdoc passes on OpenCode 2 before starting its server", () =>
     Effect.gen(function* () {
       serverStarts.length = 0;
       const instance = yield* create({}, noHttp);
       const modelSelection = { instanceId: instance.instanceId, model: "opencode/big-pickle" };
       const ideaUpdate = yield* Effect.flip(
-        TextGenerationOperations.fromRunner(instance.textGeneration).generateIdeaUpdate({
+        textGenerationOf(instance.textGeneration).generateIdeaUpdate({
           cwd: process.cwd(),
           prompt: "Organize the notebook.",
           modelSelection,
         }),
       );
       const revdoc = yield* Effect.flip(
-        TextGenerationOperations.fromRunner(instance.textGeneration).generateRevdoc({
+        textGenerationOf(instance.textGeneration).generateRevdoc({
           cwd: process.cwd(),
           prompt: "Review the worktree.",
           modelSelection,
         }),
       );
       assert.deepStrictEqual(
-        [ideaUpdate.operation, revdoc.operation],
-        ["generateIdeaUpdate", "generateRevdoc"],
+        [ideaUpdate, revdoc].map((error) => [error._tag, error.operation]),
+        [
+          ["TextGenerationUnsupportedError", "generateIdeaUpdate"],
+          ["TextGenerationUnsupportedError", "generateRevdoc"],
+        ],
       );
-      assert.deepStrictEqual(serverStarts, ["start", "start"]);
+      assert.deepStrictEqual(serverStarts, []);
     }).pipe(Effect.scoped),
   );
 

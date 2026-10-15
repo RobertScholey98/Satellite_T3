@@ -37,6 +37,7 @@ import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolve
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { cannedProvider } from "../textGeneration/testing/runners.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime } from "./IdeaRuntime.ts";
@@ -91,7 +92,7 @@ const runCatchup = Effect.fn(function* (
       applyUsageLimits: unused,
     },
     orchestrationAdapter: makeProviderAdapter(instanceId, driverKind),
-    textGeneration: unused,
+    textGeneration: cannedProvider(unused).provider,
   };
   const generateIdeaUpdate: TextGeneration.TextGeneration["Service"]["generateIdeaUpdate"] = (
     input,

@@ -53,6 +53,7 @@ import { writeFileStringAtomically } from "../atomicWrite.ts";
 import * as ProjectionSnapshotQuery from "../orchestration-v2/SatelliteOrchestration.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as TextGenerationOperations from "../textGeneration/TextGenerationOperations.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
@@ -1146,7 +1147,10 @@ const make = Effect.gen(function* () {
               config.revdocModelSelection ??
               thread.modelSelection;
             const instance = yield* providers.getInstance(modelSelection.instanceId);
-            if (!instance?.enabled) {
+            if (
+              !instance?.enabled ||
+              !(yield* TextGenerationOperations.supports(instance.textGeneration, "generateRevdoc"))
+            ) {
               return yield* fail(
                 `Choose an available provider and model in Settings → Text generation → ${large ? "Large Revdoc" : "Revdoc"}.`,
               );

@@ -13,7 +13,7 @@ import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.
 import * as TextGeneration from "./TextGeneration.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as Layer from "effect/Layer";
-import { cannedRunner } from "./testing/runners.ts";
+import { cannedProvider } from "./testing/runners.ts";
 
 const makeStubInstance = (
   instanceId: ProviderInstanceId,
@@ -54,8 +54,8 @@ describe("TextGeneration.make", () => {
   it.effect("retains supplied subject context in the provider prompt", () =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("codex");
-      const runner = cannedRunner(() => Effect.succeed({ title: "Review reset credit routing" }));
-      const instance = makeStubInstance(instanceId, runner.run);
+      const runner = cannedProvider(() => Effect.succeed({ title: "Review reset credit routing" }));
+      const instance = makeStubInstance(instanceId, runner.provider);
       const generation = yield* TextGeneration.make.pipe(
         Effect.provideService(
           ProviderInstanceRegistry.ProviderInstanceRegistry,
@@ -81,13 +81,13 @@ describe("TextGeneration.make", () => {
 
   it.effect("delegates to the matching instance's run step", () =>
     Effect.gen(function* () {
-      const personalRunner = cannedRunner(() => Effect.succeed({ branch: "personal-branch" }));
+      const personalRunner = cannedProvider(() => Effect.succeed({ branch: "personal-branch" }));
       const personal = makeStubInstance(
         ProviderInstanceId.make("codex_personal"),
-        personalRunner.run,
+        personalRunner.provider,
       );
-      const workRunner = cannedRunner(() => Effect.succeed({ branch: "work-branch" }));
-      const work = makeStubInstance(ProviderInstanceId.make("codex_work"), workRunner.run);
+      const workRunner = cannedProvider(() => Effect.succeed({ branch: "work-branch" }));
+      const work = makeStubInstance(ProviderInstanceId.make("codex_work"), workRunner.provider);
 
       const tg = yield* TextGeneration.make.pipe(
         Effect.provideService(

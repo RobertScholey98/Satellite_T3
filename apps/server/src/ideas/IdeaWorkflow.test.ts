@@ -33,6 +33,7 @@ import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolve
 import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { cannedProvider } from "../textGeneration/testing/runners.ts";
 import {
   NoOpProviderEventLoggers,
   ProviderEventLoggers,
@@ -101,7 +102,7 @@ it.effect.each([
           applyUsageLimits: unused,
         },
         orchestrationAdapter: makeProviderAdapter(instanceId, driverKind),
-        textGeneration: unused,
+        textGeneration: cannedProvider(unused).provider,
       };
       const generateIdeaUpdate: TextGeneration.TextGeneration["Service"]["generateIdeaUpdate"] = (
         input,

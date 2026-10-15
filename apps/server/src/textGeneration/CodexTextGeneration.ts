@@ -327,5 +327,9 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     }).pipe(Effect.ensuring(cleanup));
   }, Effect.scoped);
 
-  return runCodexJson;
+  return {
+    name: "CodexTextGeneration",
+    run: runCodexJson,
+    isolation: TextGenerationOperations.isolates("isolated", "isolatedWorkspace"),
+  } satisfies TextGenerationOperations.Provider;
 });

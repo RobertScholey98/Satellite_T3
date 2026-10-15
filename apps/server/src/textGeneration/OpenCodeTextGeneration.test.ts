@@ -15,8 +15,7 @@ import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 import * as OpenCodeServerOwner from "../provider/OpenCodeServerOwner.ts";
 import * as OpenCodeTextGeneration from "./OpenCodeTextGeneration.ts";
 import * as TextGeneration from "./TextGeneration.ts";
-import { expectRunnerContract } from "./testing/runners.ts";
-import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+import { expectRunnerContract, textGenerationOf } from "./testing/runners.ts";
 
 const runtimeMock = {
   state: {
@@ -245,7 +244,7 @@ function withOpenCodeTextGeneration<A, E, R>(
       settings,
       environment,
     ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
-    return yield* effectFn(TextGenerationOperations.fromRunner(textGeneration));
+    return yield* effectFn(textGenerationOf(textGeneration));
   }).pipe(Effect.scoped);
 }
 
@@ -261,10 +260,13 @@ const advanceIdleClock = Effect.gen(function* () {
 
 it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
   it.effect("keeps the text generation runner contract", () =>
-    expectRunnerContract(DEFAULT_TEST_MODEL_SELECTION, (reply, generate) =>
-      Effect.sync(() => {
-        runtimeMock.state.promptResult = { data: { parts: [{ type: "text", text: reply }] } };
-      }).pipe(Effect.andThen(withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, generate))),
+    expectRunnerContract(
+      DEFAULT_TEST_MODEL_SELECTION,
+      ["isolated", "isolatedWorkspace"],
+      (reply, generate) =>
+        Effect.sync(() => {
+          runtimeMock.state.promptResult = { data: { parts: [{ type: "text", text: reply }] } };
+        }).pipe(Effect.andThen(withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, generate))),
     ),
   );
 
@@ -312,7 +314,7 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
           })
           .pipe(Effect.flip);
-        expect(error.detail).toContain("invalid structured output");
+        expect(error.message).toContain("invalid structured output");
         expect(runtimeMock.state.deletedSessions).toEqual(["http://127.0.0.1:4301/session"]);
       }),
     ),

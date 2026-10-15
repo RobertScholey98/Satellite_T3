@@ -367,5 +367,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
   });
 
-  return runClaudeJson;
+  return {
+    name: "ClaudeTextGeneration",
+    run: runClaudeJson,
+    isolation: TextGenerationOperations.isolates("isolated", "isolatedWorkspace"),
+  } satisfies TextGenerationOperations.Provider;
 });

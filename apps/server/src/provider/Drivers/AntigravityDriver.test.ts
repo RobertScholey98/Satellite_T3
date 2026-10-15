@@ -33,7 +33,7 @@ import * as ProviderEventLoggers from "../ProviderEventLoggers.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import { AntigravityDriver } from "./AntigravityDriver.ts";
-import * as TextGenerationOperations from "../../textGeneration/TextGenerationOperations.ts";
+import { textGenerationOf } from "../../textGeneration/testing/runners.ts";
 
 const hostPlatform = HostProcessPlatform.defaultValue();
 const windowsHost = hostPlatform === "win32";
@@ -441,7 +441,7 @@ it.layer(layerTest)("AntigravityDriver", (it) => {
         const h = yield* makeHarness();
         yield* h.refresh();
         h.controls.selected = h.signedOut;
-        const error = yield* TextGenerationOperations.fromRunner(h.instance.textGeneration)
+        const error = yield* textGenerationOf(h.instance.textGeneration)
           .generateThreadTitle({
             cwd: h.profileDirectory,
             message: "Repair Google login",

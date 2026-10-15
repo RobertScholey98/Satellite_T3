@@ -96,8 +96,8 @@ export interface ProviderInstance {
     ProviderDriverError
   >;
   readonly orchestrationAdapter: ProviderAdapterV2Shape;
-  /** Runs one text generation request; the TextGeneration service composes tasks on top. */
-  readonly textGeneration: TextGenerationOperations.Runner;
+  /** The instance's text generation run step; the TextGeneration service composes tasks over it. */
+  readonly textGeneration: TextGenerationOperations.Provider;
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {

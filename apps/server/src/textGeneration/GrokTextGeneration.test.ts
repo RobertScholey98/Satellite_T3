@@ -19,8 +19,7 @@ import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { makeGrokTextGeneration } from "./GrokTextGeneration.ts";
 import { execScriptSource, writeFakeCli } from "../testUtils/fakeCli.ts";
-import { expectRunnerContract } from "./testing/runners.ts";
-import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+import { expectRunnerContract, textGenerationOf } from "./testing/runners.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -97,7 +96,7 @@ function withFakeAcpGrok<A, E, R>(
     const textGeneration = yield* makeGrokTextGeneration(config).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fixtureSpawner),
     );
-    return yield* effectFn(TextGenerationOperations.fromRunner(textGeneration), tempDir);
+    return yield* effectFn(textGenerationOf(textGeneration), tempDir);
   }).pipe(Effect.scoped);
 }
 
@@ -115,6 +114,7 @@ it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
   it.effect("keeps the text generation runner contract", () =>
     expectRunnerContract(
       createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
+      ["isolated", "isolatedWorkspace"],
       (reply, generate) => withFakeAcpGrok({ T3_ACP_PROMPT_RESPONSE_TEXT: reply }, generate),
     ),
   );
@@ -179,7 +179,7 @@ it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
               modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
             })
             .pipe(Effect.flip);
-          expect(result.detail).toContain("cannot use tools");
+          expect(result.message).toContain("cannot use tools");
         }),
     ),
   );

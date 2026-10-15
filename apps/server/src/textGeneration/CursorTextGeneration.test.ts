@@ -10,11 +10,10 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { beforeEach, vi } from "vite-plus/test";
 
 import { makeCursorTextGeneration } from "./CursorTextGeneration.ts";
-import { expectRunnerContract } from "./testing/runners.ts";
-import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+import { expectRunnerContract, textGenerationOf } from "./testing/runners.ts";
 
 const makeTextGeneration = (...args: Parameters<typeof makeCursorTextGeneration>) =>
-  makeCursorTextGeneration(...args).pipe(Effect.map(TextGenerationOperations.fromRunner));
+  makeCursorTextGeneration(...args).pipe(Effect.map(textGenerationOf));
 
 const cursorSdkMock = vi.hoisted(() => ({
   create: vi.fn<(options: unknown) => Promise<unknown>>(),
@@ -73,6 +72,7 @@ describe("CursorTextGeneration", () => {
   it.effect("keeps the text generation runner contract", () =>
     expectRunnerContract(
       createModelSelection(ProviderInstanceId.make("cursor"), "composer-2"),
+      ["isolated", "isolatedWorkspace"],
       (reply, generate) =>
         Effect.gen(function* () {
           cursorSdkMock.prompt.mockResolvedValue({

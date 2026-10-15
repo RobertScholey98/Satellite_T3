@@ -22,8 +22,7 @@ import * as TextGeneration from "./TextGeneration.ts";
 import { sanitizeThreadTitle } from "./TextGenerationUtils.ts";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
-import { expectRunnerContract } from "./testing/runners.ts";
-import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+import { expectRunnerContract, textGenerationOf } from "./testing/runners.ts";
 import type { RevdocGenerationActivity } from "../revdoc/RevdocGeneration.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const REVDOC_OUTPUT =
@@ -192,7 +191,7 @@ function withFakeClaudeEnv<A, E, R>(
       undefined,
       Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
     );
-    return yield* effectFn(TextGenerationOperations.fromRunner(textGeneration));
+    return yield* effectFn(textGenerationOf(textGeneration));
   }).pipe(Effect.scoped);
 }
 
@@ -200,6 +199,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
   it.effect("keeps the text generation runner contract", () =>
     expectRunnerContract(
       createModelSelection(ProviderInstanceId.make("claudeAgent"), SYNTHETIC_CLAUDE_STANDARD_MODEL),
+      ["isolated", "isolatedWorkspace"],
       (reply, generate) =>
         withFakeClaudeEnv({ output: `{"structured_output":${reply}}` }, generate),
     ),

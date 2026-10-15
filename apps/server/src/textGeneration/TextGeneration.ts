@@ -86,10 +86,16 @@ export class TextGeneration extends Context.Service<
   {
     readonly generateRevdoc: (
       input: RevdocGenerationInput,
-    ) => Effect.Effect<RevdocGenerationResult, TextGenerationError>;
+    ) => Effect.Effect<
+      RevdocGenerationResult,
+      TextGenerationError | TextGenerationOperations.TextGenerationUnsupportedError
+    >;
     readonly generateIdeaUpdate: (
       input: IdeaUpdateInput,
-    ) => Effect.Effect<IdeaUpdateResult, TextGenerationError>;
+    ) => Effect.Effect<
+      IdeaUpdateResult,
+      TextGenerationError | TextGenerationOperations.TextGenerationUnsupportedError
+    >;
     /**
      * Generate a commit message from staged change context.
      */
@@ -122,11 +128,11 @@ export class TextGeneration extends Context.Service<
 export const make = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
-  const tasks = TextGenerationOperations.fromRunner((request) =>
+  const tasks = TextGenerationOperations.fromProvider((request) =>
     registry.getInstance(request.modelSelection.instanceId).pipe(
       Effect.flatMap((instance) =>
         instance
-          ? instance.textGeneration(request)
+          ? Effect.succeed(instance.textGeneration)
           : Effect.fail(
               new TextGenerationError({
                 operation: request.operation,

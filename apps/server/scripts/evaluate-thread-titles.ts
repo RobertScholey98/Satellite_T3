@@ -68,9 +68,8 @@ await Effect.runPromise(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-title-evaluation-" });
-    const generation = TextGenerationOperations.fromRunner(
-      yield* CodexTextGeneration.makeCodexTextGeneration(yield* decodeSettings({})),
-    );
+    const codex = yield* CodexTextGeneration.makeCodexTextGeneration(yield* decodeSettings({}));
+    const generation = TextGenerationOperations.fromProvider(() => Effect.succeed(codex));
     const baseline = values.baseline
       ? yield* fs.readFileString(values.baseline).pipe(Effect.flatMap(decodeResults))
       : [];

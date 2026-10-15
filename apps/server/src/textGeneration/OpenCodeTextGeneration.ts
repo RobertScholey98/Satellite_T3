@@ -390,5 +390,9 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     return yield* TextGenerationOperations.decodeJsonReply(input, "OpenCode", rawOutput);
   }, Effect.scoped);
 
-  return runOpenCodeJson;
+  return {
+    name: "OpenCodeTextGeneration",
+    run: runOpenCodeJson,
+    isolation: TextGenerationOperations.isolates("isolated", "isolatedWorkspace"),
+  } satisfies TextGenerationOperations.Provider;
 });

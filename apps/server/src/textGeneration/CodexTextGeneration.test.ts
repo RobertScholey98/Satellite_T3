@@ -17,8 +17,7 @@ import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { makeCodexTextGeneration } from "./CodexTextGeneration.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
-import { expectRunnerContract } from "./testing/runners.ts";
-import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+import { expectRunnerContract, textGenerationOf } from "./testing/runners.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DEFAULT_TEST_MODEL_SELECTION = createModelSelection(
@@ -198,14 +197,16 @@ function withFakeCodexEnv<A, E, R>(
           })
         : undefined,
     );
-    return yield* effectFn(TextGenerationOperations.fromRunner(textGeneration), tempDir);
+    return yield* effectFn(textGenerationOf(textGeneration), tempDir);
   }).pipe(Effect.scoped);
 }
 
 it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
   it.effect("keeps the text generation runner contract", () =>
-    expectRunnerContract(DEFAULT_TEST_MODEL_SELECTION, (reply, generate) =>
-      withFakeCodexEnv({ output: reply }, generate),
+    expectRunnerContract(
+      DEFAULT_TEST_MODEL_SELECTION,
+      ["isolated", "isolatedWorkspace"],
+      (reply, generate) => withFakeCodexEnv({ output: reply }, generate),
     ),
   );
 

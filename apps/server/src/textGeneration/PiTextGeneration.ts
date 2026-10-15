@@ -110,5 +110,9 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
     );
   };
 
-  return runPiJson;
+  return {
+    name: "PiTextGeneration",
+    run: runPiJson,
+    isolation: TextGenerationOperations.isolates("isolated", "isolatedWorkspace"),
+  } satisfies TextGenerationOperations.Provider;
 });
