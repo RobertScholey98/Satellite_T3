@@ -168,6 +168,10 @@ function terminalRunStatus(status: OrchestrationV2RunStatus): boolean {
   );
 }
 
+export function isLatestRunSettled(latestRun: Pick<ThreadRunSummary, "status"> | null): boolean {
+  return latestRun !== null && terminalRunStatus(latestRun.status);
+}
+
 // Park runtime at idle when the post-settlement background roster holds the
 // run's completion, so #4415 waiting-presentation Waiting (session.idle) can
 // consume CTM runtime. Only work that wakes the agent holds it: commands it

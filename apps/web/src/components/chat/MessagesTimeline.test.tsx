@@ -2690,7 +2690,6 @@ describe("MessagesTimeline", () => {
                 entry: {
                   id: "work-standalone",
                   createdAt: MESSAGE_CREATED_AT,
-                  toolCallId: "call-standalone",
                   label: "Run lint",
                   tone: "tool",
                   itemType: "command_execution",

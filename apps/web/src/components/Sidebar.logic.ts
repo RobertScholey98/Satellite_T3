@@ -1,4 +1,7 @@
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import {
+  isLatestRunSettled,
+  resolveThreadWorkingStartedAt,
+} from "@t3tools/client-runtime/state/models";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
@@ -24,7 +27,6 @@ import {
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
-import { isLatestRunSettled } from "../session-logic";
 import { resolveServerBackedAppStageLabel } from "../branding.logic";
 
 export function shouldNavigateAfterThreadPark(input: {
@@ -1218,7 +1220,7 @@ export function resolveThreadStatusPill(input: {
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&
     thread.interactionMode === "plan" &&
-    isLatestRunSettled(thread.latestRun, thread.runtime) &&
+    isLatestRunSettled(thread.latestRun) &&
     thread.hasActionableProposedPlan;
   if (hasPlanReadyPrompt) {
     return {

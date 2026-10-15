@@ -2,13 +2,13 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildPendingUserInputAnswers,
+  togglePendingUserInputOptionSelection,
+} from "@t3tools/client-runtime/work-log/user-input";
+import {
   carryDisplacedCustomAnswerIntoPrompt,
   countAnsweredPendingUserInputQuestions,
   derivePendingUserInputProgress,
   findFirstUnansweredPendingUserInputQuestionIndex,
-  resolvePendingUserInputAnswer,
-  setPendingUserInputCustomAnswer,
-  togglePendingUserInputOptionSelection,
 } from "./pendingUserInput";
 
 const singleSelectQuestion = {
@@ -53,156 +53,7 @@ const nativeChoiceQuestion = {
   multiSelect: false,
 } as const;
 
-describe("resolvePendingUserInputAnswer", () => {
-  it("prefers a custom answer over selected options", () => {
-    expect(
-      resolvePendingUserInputAnswer(singleSelectQuestion, {
-        selectedOptionValues: ["Orchestration-first"],
-        customAnswer: "Keep the existing envelope for one release",
-      }),
-    ).toBe("Keep the existing envelope for one release");
-  });
-
-  it("falls back to the selected option for single-select questions", () => {
-    expect(
-      resolvePendingUserInputAnswer(singleSelectQuestion, {
-        selectedOptionValues: ["Orchestration-first"],
-      }),
-    ).toBe("Orchestration-first");
-  });
-
-  it("returns all selected labels for multi-select questions", () => {
-    expect(
-      resolvePendingUserInputAnswer(multiSelectQuestion, {
-        selectedOptionValues: ["Server", "Web"],
-      }),
-    ).toEqual(["Server", "Web"]);
-  });
-
-  it("clears the preset selection when a custom answer is entered", () => {
-    expect(
-      setPendingUserInputCustomAnswer(
-        {
-          selectedOptionValues: ["Server", "Web"],
-        },
-        "doesn't matter",
-      ),
-    ).toEqual({
-      customAnswer: "doesn't matter",
-    });
-  });
-
-  it("does not replace a required choice with a custom answer", () => {
-    expect(
-      resolvePendingUserInputAnswer(nativeChoiceQuestion, {
-        selectedOptionValues: ["second"],
-        customAnswer: "Use another result",
-      }),
-    ).toBe("second");
-  });
-
-  it("does not submit labels or unknown values when an option has a value", () => {
-    expect(
-      resolvePendingUserInputAnswer(nativeChoiceQuestion, {
-        selectedOptionValues: ["Result", "unknown"],
-      }),
-    ).toBeNull();
-  });
-});
-
-describe("togglePendingUserInputOptionSelection", () => {
-  it("toggles options for multi-select questions", () => {
-    expect(togglePendingUserInputOptionSelection(multiSelectQuestion, undefined, "Server")).toEqual(
-      {
-        customAnswer: "",
-        selectedOptionValues: ["Server"],
-      },
-    );
-
-    expect(
-      togglePendingUserInputOptionSelection(
-        multiSelectQuestion,
-        {
-          selectedOptionValues: ["Server", "Web"],
-        },
-        "Server",
-      ),
-    ).toEqual({
-      customAnswer: "",
-      selectedOptionValues: ["Web"],
-    });
-  });
-
-  it("selects and removes options with the same label independently", () => {
-    const question = { ...nativeChoiceQuestion, multiSelect: true };
-    const firstSelected = togglePendingUserInputOptionSelection(question, undefined, " first\t");
-    const bothSelected = togglePendingUserInputOptionSelection(question, firstSelected, "second");
-
-    expect(buildPendingUserInputAnswers([question], { result: bothSelected })).toEqual({
-      result: [" first\t", "second"],
-    });
-
-    const secondSelected = togglePendingUserInputOptionSelection(
-      question,
-      bothSelected,
-      " first\t",
-    );
-    expect(buildPendingUserInputAnswers([question], { result: secondSelected })).toEqual({
-      result: ["second"],
-    });
-  });
-});
-
-describe("buildPendingUserInputAnswers", () => {
-  it("returns a canonical answer map for complete prompts", () => {
-    expect(
-      buildPendingUserInputAnswers(
-        [
-          singleSelectQuestion,
-          {
-            id: "compat",
-            header: "Compat",
-            question: "How strict should compatibility be?",
-            options: [
-              {
-                label: "Keep current envelope",
-                description: "Preserve current wire format",
-              },
-            ],
-            multiSelect: false,
-          },
-        ],
-        {
-          scope: {
-            selectedOptionValues: ["Orchestration-first"],
-          },
-          compat: {
-            customAnswer: "Keep the current envelope for one release window",
-          },
-        },
-      ),
-    ).toEqual({
-      scope: "Orchestration-first",
-      compat: "Keep the current envelope for one release window",
-    });
-  });
-
-  it("returns arrays for answered multi-select prompts", () => {
-    expect(
-      buildPendingUserInputAnswers([multiSelectQuestion], {
-        areas: {
-          selectedOptionValues: ["Server", "Web"],
-        },
-      }),
-    ).toEqual({
-      areas: ["Server", "Web"],
-    });
-  });
-
-  it("returns null when any question is unanswered", () => {
-    expect(buildPendingUserInputAnswers([singleSelectQuestion], {})).toBeNull();
-  });
-
+describe("selected option values", () => {
   it.each([" first\t", ""])("preserves the exact selected option value %j", (value) => {
     const question = {
       ...nativeChoiceQuestion,
@@ -221,6 +72,23 @@ describe("buildPendingUserInputAnswers", () => {
 });
 
 describe("pending user input question progress", () => {
+  it("counts a deliberately cleared editor answer as answered", () => {
+    const question = { ...singleSelectQuestion, initialAnswer: "  Proposed message\n" };
+    const questions = [question, { ...singleSelectQuestion, id: "follow-up" }];
+    const drafts = { scope: { customAnswer: "" } };
+    expect(findFirstUnansweredPendingUserInputQuestionIndex(questions, drafts)).toBe(1);
+    expect(derivePendingUserInputProgress([question], drafts, 0)).toMatchObject({
+      customAnswer: "",
+      resolvedAnswer: "",
+      usingCustomAnswer: false,
+      canAdvance: true,
+      isComplete: true,
+    });
+    expect(
+      derivePendingUserInputProgress([question], { scope: { customAnswer: " \n" } }, 0),
+    ).toMatchObject({ resolvedAnswer: " \n", usingCustomAnswer: true });
+  });
+
   const questions = [
     singleSelectQuestion,
     {

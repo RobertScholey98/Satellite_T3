@@ -24,6 +24,7 @@ import {
 } from "./ChatView.logic";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { useScratchProject } from "../hooks/useScratchProject";
+import { isLatestRunSettled } from "@t3tools/client-runtime/state/models";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
@@ -217,7 +218,6 @@ import {
   deriveCanInterruptRunningThread,
   findLatestProposedPlan,
   hasActionableProposedPlan,
-  isLatestRunSettled,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -229,13 +229,15 @@ import {
   type TimelineScrollMode,
 } from "./chat/timelineScrollAnchoring";
 import {
-  buildPendingUserInputAnswers,
   carryDisplacedCustomAnswerIntoPrompt,
   derivePendingUserInputProgress,
+} from "../pendingUserInput";
+import {
+  buildPendingUserInputAnswers,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
-} from "../pendingUserInput";
+} from "@t3tools/client-runtime/work-log/user-input";
 import { useUiStateStore } from "../uiStateStore";
 import { useWorkspaceMutationRefresh } from "../hooks/useWorkspaceMutationRefresh";
 import {
@@ -2469,13 +2471,13 @@ export default function ChatView(props: ChatViewProps) {
         : nextThreadIds;
     });
   }, [activeTerminalDrawerPresence.present, activeThreadKey, existingOpenTerminalThreadKeys]);
-  const latestRunSettled = isLatestRunSettled(activeLatestRun, activeRuntime);
+  const latestRunSettled = isLatestRunSettled(activeLatestRun);
   const activePlan = useMemo(
     () => deriveActivePlanState(serverProjection, activeActivityRun?.runId),
     [activeActivityRun?.runId, serverProjection],
   );
   const { progress: activeComposerTasksProgress, steps: activeComposerTaskSteps } =
-    useComposerTasks(activePlan, activeActivityRun, activeRuntime);
+    useComposerTasks(activePlan, activeActivityRun);
   const activeProjectRef = useMemo(
     () =>
       activeThread ? scopeProjectRef(activeThread.environmentId, activeThread.projectId) : null,
@@ -3660,7 +3662,7 @@ export default function ChatView(props: ChatViewProps) {
       latestServerUserItem.text.trim().toLowerCase() === "/compact" &&
       latestServerUserItem.attachments.length === 0 &&
       latestServerUserItem.runId === activeActivityRun?.runId &&
-      !isLatestRunSettled(activeActivityRun, activeRuntime));
+      !isLatestRunSettled(activeActivityRun));
   const compactionSettled = serverVisibleTurnItems.some(
     ({ item }) =>
       item.type === "compaction" &&
@@ -10151,7 +10153,11 @@ export default function ChatView(props: ChatViewProps) {
         ...existing,
         answers: {
           ...existing.answers,
-          [questionId]: setPendingUserInputCustomAnswer(existing.answers[questionId], value),
+          [questionId]: setPendingUserInputCustomAnswer(
+            question,
+            existing.answers[questionId],
+            value,
+          ),
         },
       }));
       const snapshot = composerRef.current?.readSnapshot();

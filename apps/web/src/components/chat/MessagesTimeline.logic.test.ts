@@ -35,7 +35,9 @@ import {
   workEntryReadOutput,
   workEntryIsVisibleInGroup,
 } from "./MessagesTimeline.logic";
-import type { WorkLogEntry } from "../../session-logic";
+import type { WorkLogEntry } from "@t3tools/client-runtime/work-log/work-log-entry";
+import { summarizeToolGroup } from "@t3tools/client-runtime/work-log/presentation";
+import { projectedTurnItem, turnItemBase } from "@t3tools/client-runtime/work-log/test-fixtures";
 
 describe("expanded tool group scrolling", () => {
   const entries = [{ id: "first" }, { id: "second" }];
@@ -3075,7 +3077,6 @@ describe("deriveMessagesTimelineRows", () => {
         createdAt,
         entry: {
           id: `tool-${index}`,
-          toolCallId: `call-${index}`,
           createdAt,
           runId,
           label: "t3-code.preview_snapshot",
@@ -4888,4 +4889,23 @@ describe("failed turn transcript", () => {
       });
     },
   );
+});
+
+describe("approval rows", () => {
+  it("describes a file-read approval as an approval, not a read", () => {
+    const [timelineEntry] = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        projectedTurnItem({
+          ...turnItemBase("approve-read"),
+          type: "approval_request",
+          requestId: RuntimeRequestId.make("request-read"),
+          requestKind: "file-read",
+        }),
+      ],
+      optimisticMessages: [],
+    });
+    if (timelineEntry?.kind !== "work") throw new Error("Expected an approval work row");
+    expect(workEntryDisplayLabel(timelineEntry.entry, undefined)).toBe("Approval requested");
+    expect(summarizeToolGroup([timelineEntry.entry]).summary).toBe("Used 1 tool");
+  });
 });

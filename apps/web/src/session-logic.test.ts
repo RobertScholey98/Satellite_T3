@@ -30,11 +30,9 @@ import {
   deriveRevertTurnCountByUserMessageId,
   derivePhase,
   findLatestProposedPlan,
-  isLatestRunSettled,
   selectHandoffImageResources,
   selectMessageImageResources,
   createMessageAttachmentPreviewProjector,
-  providerErrorPresentation,
   type TimelineEntry,
   workEntryIndicatesToolFailure,
   workEntryDisplayIndicatesToolFailure,
@@ -44,33 +42,6 @@ import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "./tes
 import type { ChatMessage } from "./types";
 
 describe("V2 session presentation", () => {
-  it("uses run status as the settlement boundary", () => {
-    const runId = RunId.make("run-1");
-    expect(
-      isLatestRunSettled(
-        {
-          runId,
-          status: "completed",
-          startedAt: "2026-06-20T00:00:00.000Z",
-          completedAt: "2026-06-20T00:01:00.000Z",
-        },
-        null,
-      ),
-    ).toBe(true);
-    expect(
-      isLatestRunSettled(
-        { runId, status: "running", startedAt: null, completedAt: null },
-        { status: "running", activeRunId: runId },
-      ),
-    ).toBe(false);
-    expect(
-      isLatestRunSettled(
-        { runId, status: "queued", startedAt: null, completedAt: null },
-        { status: "running", activeRunId: RunId.make("run-active") },
-      ),
-    ).toBe(false);
-  });
-
   it("offers Stop while a run is preparing/starting, not just once it's running (#13392)", () => {
     const runtimeWithStatus = (
       status: ThreadRuntimeSummary["status"],
@@ -107,87 +78,6 @@ describe("V2 session presentation", () => {
 
     // No runtime at all: nothing to interrupt.
     expect(deriveCanInterruptRunningThread(true, null)).toBe(false);
-  });
-
-  it("labels provider retry progress, delay, recovery, and exhaustion", () => {
-    const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
-    const retryItem = {
-      id: TurnItemId.make("item-provider-retry"),
-      threadId: ThreadId.make("thread-provider-retry"),
-      runId: RunId.make("run-provider-retry"),
-      nodeId: null,
-      providerThreadId: null,
-      providerTurnId: null,
-      nativeItemRef: null,
-      parentItemId: null,
-      ordinal: 1,
-      status: "running" as const,
-      title: "Provider retry",
-      startedAt: now,
-      completedAt: null,
-      updatedAt: now,
-      type: "error" as const,
-      failure: {
-        class: "provider_error" as const,
-        message: "Claude API overloaded.",
-        code: "api_error_529",
-        retryable: true,
-      },
-      retry: {
-        attempt: 2,
-        maxAttempts: 10,
-        retryDelayMs: 1_500,
-      },
-    } satisfies Extract<OrchestrationV2TurnItem, { readonly type: "error" }>;
-
-    expect(
-      providerErrorPresentation({
-        ...retryItem,
-        status: "failed",
-        failure: { ...retryItem.failure, class: "usage_limit" },
-      }),
-    ).toMatchObject({ label: "Usage limit reached after 2/10 retries" });
-    const recoveredLimit = {
-      ...retryItem,
-      status: "completed" as const,
-      completedAt: now,
-      failure: { ...retryItem.failure, class: "usage_limit" as const },
-    };
-    const [recoveredEntry] = deriveTimelineEntriesFromVisibleTurnItems({
-      visibleTurnItems: [
-        {
-          item: recoveredLimit,
-          position: 0,
-          visibility: "local",
-          sourceThreadId: recoveredLimit.threadId,
-          sourceItemId: recoveredLimit.id,
-        },
-      ],
-      optimisticMessages: [],
-    });
-    if (recoveredEntry?.kind !== "work") throw new Error("Expected recovered provider work");
-    expect(recoveredEntry.entry.label).toBe("Provider recovered (2/10 retries)");
-    expect(recoveredEntry.entry.sourceActivityKind).not.toBe("runtime.warning");
-    expect(workEntryDisplayIndicatesToolFailure(recoveredEntry.entry)).toBe(false);
-    expect(providerErrorPresentation(retryItem)).toEqual({
-      label: "Retrying provider (2/10)",
-      detail: "Claude API overloaded. Retrying in 1.5s.",
-    });
-    expect(
-      providerErrorPresentation({
-        ...retryItem,
-        status: "completed",
-        completedAt: now,
-      }),
-    ).toMatchObject({ label: "Provider recovered (2/10 retries)" });
-    expect(
-      providerErrorPresentation({
-        ...retryItem,
-        status: "failed",
-        retry: { ...retryItem.retry, attempt: 10 },
-        completedAt: now,
-      }),
-    ).toMatchObject({ label: "Provider error after 10/10 retries" });
   });
 
   it("selects the latest proposed plan for a run", () => {

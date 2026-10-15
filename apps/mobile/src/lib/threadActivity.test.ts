@@ -30,13 +30,8 @@ import {
   buildThreadFeed,
   deriveThreadFeedPresentation,
   threadFeedActivityIsVisible,
-  threadFeedRunIsUnsettled,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
-  togglePendingUserInputOptionSelection,
-  setPendingUserInputCustomAnswer,
-  isPendingUserInputOptionSelected,
-  buildPendingUserInputAnswers,
 } from "./threadActivity";
 
 const threadId = ThreadId.make("thread-1");
@@ -574,41 +569,6 @@ describe("buildThreadFeed", () => {
     );
 
     expect(buildThreadFeed([workspacePreparation])).toEqual([]);
-  });
-
-  it("does not treat a queued-only run as live feed activity", () => {
-    expect(
-      threadFeedRunIsUnsettled({
-        runId,
-        status: "queued",
-        startedAt: null,
-        completedAt: null,
-      }),
-    ).toBe(false);
-    expect(
-      threadFeedRunIsUnsettled({
-        runId,
-        status: "running",
-        startedAt: "2026-06-20T00:00:01.000Z",
-        completedAt: null,
-      }),
-    ).toBe(true);
-    expect(
-      threadFeedRunIsUnsettled({
-        runId,
-        status: "completed",
-        startedAt: "2026-06-20T00:00:01.000Z",
-        completedAt: null,
-      }),
-    ).toBe(true);
-    expect(
-      threadFeedRunIsUnsettled({
-        runId,
-        status: "waiting",
-        startedAt: "2026-06-20T00:00:01.000Z",
-        completedAt: null,
-      }),
-    ).toBe(true);
   });
 
   it("adds queued input only after dispatch creates its turn item", () => {
@@ -1920,167 +1880,6 @@ describe("retained v2 feed presentation", () => {
   });
 });
 
-const singleSelectQuestion = {
-  id: "runtime",
-  header: "Runtime",
-  question: "Which runtime should be used?",
-  options: [
-    { label: "Go", description: "One binary" },
-    { label: "Node.js", description: "Reuse TypeScript" },
-  ],
-  multiSelect: false,
-} as const;
-
-const multiSelectQuestion = {
-  id: "scope",
-  header: "Scope",
-  question: "Which data should be collected?",
-  options: [
-    { label: "Orders", description: "Receipts" },
-    { label: "Listings", description: "Inventory" },
-  ],
-  multiSelect: true,
-} as const;
-
-describe("pending user input answers", () => {
-  it("replaces single-select options and toggles multi-select options", () => {
-    expect(
-      togglePendingUserInputOptionSelection(
-        singleSelectQuestion,
-        { selectedOptionValues: ["Go"] },
-        "Node.js",
-      ),
-    ).toEqual({ customAnswer: "", selectedOptionValues: ["Node.js"] });
-
-    const orders = togglePendingUserInputOptionSelection(multiSelectQuestion, undefined, "Orders");
-    const ordersAndListings = togglePendingUserInputOptionSelection(
-      multiSelectQuestion,
-      orders,
-      "Listings",
-    );
-    expect(ordersAndListings).toEqual({
-      customAnswer: "",
-      selectedOptionValues: ["Orders", "Listings"],
-    });
-    expect(
-      togglePendingUserInputOptionSelection(multiSelectQuestion, ordersAndListings, "Orders"),
-    ).toEqual({ customAnswer: "", selectedOptionValues: ["Listings"] });
-
-    const paddedOrders = togglePendingUserInputOptionSelection(
-      multiSelectQuestion,
-      undefined,
-      "  Orders  ",
-    );
-    expect(paddedOrders).toEqual({ customAnswer: "", selectedOptionValues: ["Orders"] });
-    expect(
-      togglePendingUserInputOptionSelection(multiSelectQuestion, paddedOrders, "  Orders  "),
-    ).toEqual({ customAnswer: "" });
-  });
-
-  it("builds array answers for multi-select questions", () => {
-    expect(
-      buildPendingUserInputAnswers([singleSelectQuestion, multiSelectQuestion], {
-        runtime: { selectedOptionValues: ["Go"] },
-        scope: { selectedOptionValues: ["Orders", "Listings"] },
-      }),
-    ).toEqual({
-      runtime: "Go",
-      scope: ["Orders", "Listings"],
-    });
-  });
-
-  it("clears selected options while a custom answer is active", () => {
-    expect(
-      setPendingUserInputCustomAnswer(
-        multiSelectQuestion,
-        { selectedOptionValues: ["Orders", "Listings"] },
-        "Orders first",
-      ),
-    ).toEqual({ customAnswer: "Orders first" });
-  });
-
-  it("matches selected chips against normalized option labels", () => {
-    expect(
-      isPendingUserInputOptionSelected(
-        multiSelectQuestion,
-        { selectedOptionValues: ["Orders"] },
-        "  Orders  ",
-      ),
-    ).toBe(true);
-    expect(
-      isPendingUserInputOptionSelected(
-        multiSelectQuestion,
-        { selectedOptionValues: ["Orders"], customAnswer: "Orders first" },
-        "  Orders  ",
-      ),
-    ).toBe(false);
-  });
-});
-
-describe("provider question values", () => {
-  const question = {
-    ...singleSelectQuestion,
-    allowCustomAnswer: false,
-    options: [
-      { label: "Same label", value: "  exact first  ", description: "First" },
-      { label: "Same label", value: "second", description: "Second" },
-    ],
-  } as const;
-
-  it("submits raw option values and distinguishes duplicate labels", () => {
-    const first = togglePendingUserInputOptionSelection(question, undefined, "  exact first  ");
-    expect(isPendingUserInputOptionSelected(question, first, "  exact first  ")).toBe(true);
-    expect(isPendingUserInputOptionSelected(question, first, "second")).toBe(false);
-    expect(buildPendingUserInputAnswers([question], { runtime: first })).toEqual({
-      runtime: "  exact first  ",
-    });
-    expect(togglePendingUserInputOptionSelection(question, first, "Same label")).toBe(first);
-  });
-
-  it("rejects arbitrary text when the provider only accepts offered options", () => {
-    expect(setPendingUserInputCustomAnswer(question, undefined, "Other")).toEqual({});
-    expect(
-      buildPendingUserInputAnswers([question], { runtime: { customAnswer: "Other" } }),
-    ).toBeNull();
-    expect(
-      buildPendingUserInputAnswers([question], { runtime: { selectedOptionValues: ["unknown"] } }),
-    ).toBeNull();
-    expect(
-      buildPendingUserInputAnswers([question], {
-        runtime: { selectedOptionValues: ["second"], customAnswer: "stale draft" },
-      }),
-    ).toEqual({ runtime: "second" });
-  });
-});
-
-it("accepts ready attachment-only answers while preserving selected options", () => {
-  const question = {
-    id: "q",
-    header: "Spec",
-    question: "Provide a specification",
-    options: [{ label: "Yes", description: "Approve" }],
-    multiSelect: false,
-  };
-  expect(buildPendingUserInputAnswers([question], { q: { attachmentCount: 1 } })).toEqual({
-    q: "",
-  });
-  expect(
-    buildPendingUserInputAnswers([question], {
-      q: { attachmentCount: 1, selectedOptionValues: ["Yes"] },
-    }),
-  ).toEqual({ q: "Yes" });
-  expect(
-    buildPendingUserInputAnswers([question], {
-      q: { attachmentCount: 1, attachmentsBlocked: true },
-    }),
-  ).toBeNull();
-  expect(
-    buildPendingUserInputAnswers([{ ...question, allowCustomAnswer: false }], {
-      q: { attachmentCount: 1 },
-    }),
-  ).toBeNull();
-});
-
 it("makes attachment-only question answers expandable in the mobile feed", () => {
   const answer = {
     requestId: RuntimeRequestId.make("question-request"),
@@ -2442,4 +2241,23 @@ describe("html renders", () => {
       expect(entries.map((entry) => entry.type)).toEqual(["activity-group"]);
     }
   });
+});
+
+it("labels an approval without a prompt by its title, not its request kind", () => {
+  const approval = (id: string, title: string | null) => ({
+    ...base(id, "2026-06-20T00:00:02.000Z", 1),
+    title,
+    type: "approval_request" as const,
+    requestId: RuntimeRequestId.make(`request-${id}`),
+    requestKind: "file-change" as const,
+  });
+  const labels = buildThreadFeed([
+    projected(approval("untitled", null), 0),
+    projected(approval("titled", "Custom approval"), 1),
+  ]).flatMap((entry) =>
+    entry.type === "activity-group"
+      ? entry.activities.map((activity) => workEntryRowLabel(activity.workEntry))
+      : [],
+  );
+  expect(labels).toEqual(["Approval requested", "Custom approval"]);
 });

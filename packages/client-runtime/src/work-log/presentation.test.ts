@@ -13,13 +13,13 @@ import {
   toolGroupAction,
   toolGroupSummaryKind,
   toolItemForDisplay,
-  type WorkLogPresentationEntry,
   type WorkLogToolLifecycleStatus,
   workEntryViewedImagePath,
   workEntryIndicatesToolFailure,
   workEntryDisplayIndicatesToolFailure,
   workEntryIndicatesToolSuccess,
 } from "./presentation.js";
+import type { WorkLogEntry } from "./workLogEntry.ts";
 
 function commandItem(
   fields: Partial<Extract<OrchestrationV2TurnItem, { type: "command_execution" }>> = {},
@@ -64,7 +64,7 @@ describe("workEntryIndicatesToolFailure", () => {
     "preserves command failure state after removing displayed output: %j",
     (fields, failed) => {
       const structuredPayload = commandItem(fields);
-      const entry: WorkLogPresentationEntry = {
+      const entry: WorkLogEntry = {
         ...base,
         tone: "tool",
         itemType: "command_execution",
@@ -147,7 +147,7 @@ describe("workEntryIndicatesToolFailure", () => {
       toolLifecycleStatus: "completed",
       command: 'rg "file not found"',
       detail: "Found 3 matches",
-    } satisfies WorkLogPresentationEntry;
+    } satisfies WorkLogEntry;
 
     expect(workEntryDisplayIndicatesToolFailure(entry)).toBe(false);
     // Older activities can store output in this field, so that path stays separate.
@@ -194,10 +194,7 @@ describe("workEntryIndicatesToolFailure", () => {
 });
 
 describe("summarizeToolGroup", () => {
-  const entry = (
-    id: string,
-    overrides: Partial<WorkLogPresentationEntry>,
-  ): WorkLogPresentationEntry => ({
+  const entry = (id: string, overrides: Partial<WorkLogEntry>): WorkLogEntry => ({
     id,
     createdAt: "2026-09-01T00:00:00Z",
     label: "Tool call",
@@ -271,7 +268,7 @@ describe("summarizeToolGroup", () => {
 describe("resolveWorkEntryToolPresentation", () => {
   it("presents and summarizes every T3 tool using the same structured identity", () => {
     for (const tool of T3_MCP_TOOL_NAMES) {
-      const entry: WorkLogPresentationEntry = {
+      const entry: WorkLogEntry = {
         id: tool,
         createdAt: "2026-09-19T00:00:00.000Z",
         tone: "tool",
@@ -320,7 +317,7 @@ describe("resolveWorkEntryToolPresentation", () => {
   });
 
   it("summarizes project tools from MCP arguments and results without claiming failed effects", () => {
-    const entry: WorkLogPresentationEntry = {
+    const entry: WorkLogEntry = {
       id: "clone",
       createdAt: "2026-09-19T00:00:00.000Z",
       tone: "tool",
@@ -350,7 +347,7 @@ describe("resolveWorkEntryToolPresentation", () => {
   });
 
   it("does not summarize a foreign structured identity as T3 work", () => {
-    const entry: WorkLogPresentationEntry = {
+    const entry: WorkLogEntry = {
       id: "foreign",
       createdAt: "2026-09-19T00:00:00.000Z",
       tone: "tool",
@@ -362,7 +359,7 @@ describe("resolveWorkEntryToolPresentation", () => {
   });
 
   it("shows returned MCP errors as failures even in the live activity row", () => {
-    const entry: WorkLogPresentationEntry = {
+    const entry: WorkLogEntry = {
       id: "clone",
       createdAt: "2026-09-19T00:00:00.000Z",
       tone: "tool",
@@ -520,9 +517,9 @@ describe("resolveWorkEntryToolPresentation", () => {
 });
 
 describe("browser group summaries", () => {
-  const summarizeGroupLabel = (entries: ReadonlyArray<WorkLogPresentationEntry>) =>
+  const summarizeGroupLabel = (entries: ReadonlyArray<WorkLogEntry>) =>
     summarizeToolGroup(entries).summary;
-  const browserEntry: WorkLogPresentationEntry = {
+  const browserEntry: WorkLogEntry = {
     id: "browser",
     createdAt: "2026-09-01T00:00:00Z",
     label: "MCP tool call",
@@ -531,7 +528,7 @@ describe("browser group summaries", () => {
     toolLifecycleStatus: "completed",
     tone: "tool",
   };
-  const commandEntry: WorkLogPresentationEntry = {
+  const commandEntry: WorkLogEntry = {
     id: "command",
     createdAt: "2026-09-01T00:00:00Z",
     label: "Ran command",
@@ -765,7 +762,7 @@ describe("toolGroupAction", () => {
           type: "dynamic_tool",
           toolName: "Read",
           input: { file_path: "src/env.ts" },
-        } as NonNullable<WorkLogPresentationEntry["structuredPayload"]>,
+        } as NonNullable<WorkLogEntry["structuredPayload"]>,
       }),
     ).toBe("read");
     expect(
@@ -781,7 +778,7 @@ describe("toolGroupAction", () => {
           type: "dynamic_tool",
           toolName: "Grep",
           input: { pattern: "TODO", path: "apps/web" },
-        } as NonNullable<WorkLogPresentationEntry["structuredPayload"]>,
+        } as NonNullable<WorkLogEntry["structuredPayload"]>,
       }),
     ).toBe("code-search");
   });
@@ -826,7 +823,7 @@ describe("pull request tool presentation", () => {
     "t3code/link_pull_request",
     "link_pull_request",
   ])("recognizes the native linking tool: %s", (label) => {
-    const entry: WorkLogPresentationEntry = {
+    const entry: WorkLogEntry = {
       id: "link",
       createdAt: "2026-09-10T00:00:00.000Z",
       label,
@@ -875,7 +872,7 @@ describe("pull request tool presentation", () => {
   });
 
   it("summarizes native PR work separately from ordinary tools and integration metadata", () => {
-    const link: WorkLogPresentationEntry = {
+    const link: WorkLogEntry = {
       id: "link",
       createdAt: "2026-09-10T00:00:00.000Z",
       label: "T3-code · link_pull_request",
@@ -884,7 +881,7 @@ describe("pull request tool presentation", () => {
       toolLifecycleStatus: "completed",
       toolSource: { key: "t3-code", name: "Satellite", kind: "integration" },
     };
-    const list: WorkLogPresentationEntry = {
+    const list: WorkLogEntry = {
       ...link,
       label: "T3-code · list_thread_pull_requests",
     };
@@ -903,7 +900,7 @@ describe("pull request tool presentation", () => {
 });
 
 describe("device group summaries", () => {
-  const deviceEntry = (tool: string): WorkLogPresentationEntry => ({
+  const deviceEntry = (tool: string): WorkLogEntry => ({
     id: tool,
     createdAt: "2026-09-10T00:00:00.000Z",
     label: "MCP tool call",

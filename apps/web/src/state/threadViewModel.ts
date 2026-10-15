@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { threadRequestActivities } from "@t3tools/client-runtime/pending-requests";
 import { arrayElementsEqual } from "@t3tools/client-runtime/state/entities";
+import { isLatestRunSettled, type ThreadRunSummary } from "@t3tools/client-runtime/state/models";
 import type { PendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
 import type {
   OrchestrationThreadActivity,
@@ -25,7 +26,6 @@ import {
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
-  isLatestRunSettled,
   type ActivePlanState,
   type TimelineEntry,
 } from "../session-logic";
@@ -200,13 +200,12 @@ function useSameContent<T>(next: T): T {
 
 /**
  * The composer's task strip for the running turn's own plan. A streamed token
- * rebuilds the plan, run and runtime objects without changing what the strip
- * shows, so the result keeps its identity until a step changes.
+ * rebuilds the plan and run objects without changing what the strip shows,
+ * so the result keeps its identity until a step changes.
  */
 export function useComposerTasks(
   activePlan: ActivePlanState | null,
-  activityRun: Parameters<typeof isLatestRunSettled>[0],
-  runtime: Parameters<typeof isLatestRunSettled>[1],
+  activityRun: Pick<ThreadRunSummary, "runId" | "status"> | null,
 ): {
   readonly progress: ComposerTasksProgress | null;
   readonly steps: ReadonlyArray<ComposerTaskStep> | null;
@@ -214,7 +213,7 @@ export function useComposerTasks(
   // deriveActivePlanState falls back to older runs' plans, which must not
   // label fresh work.
   const ownPlan =
-    !isLatestRunSettled(activityRun, runtime) &&
+    !isLatestRunSettled(activityRun) &&
     activePlan !== null &&
     activePlan.runId === (activityRun?.runId ?? null) &&
     activePlan.steps.length > 0

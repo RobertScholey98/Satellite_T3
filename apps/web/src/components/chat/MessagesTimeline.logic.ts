@@ -31,8 +31,8 @@ import {
   workEntryIndicatesToolNeutralStatus,
   workLogEntryIsToolLike,
   type TimelineEntry,
-  type WorkLogEntry,
 } from "../../session-logic";
+import type { WorkLogEntry } from "@t3tools/client-runtime/work-log/work-log-entry";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import {
   type MessageId,

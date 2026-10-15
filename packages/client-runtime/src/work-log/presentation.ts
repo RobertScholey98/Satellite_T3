@@ -3,8 +3,6 @@ import {
   type AssetResource,
   type RuntimeItemStatus,
   type ToolActivitySource,
-  type ToolActivitySurface,
-  type ToolActivityIcon,
   type OrchestrationV2TurnItem,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -21,6 +19,7 @@ import { formatTokens } from "@t3tools/shared/usageFormat";
 import { classifyToolActivity } from "@t3tools/shared/toolActivity";
 import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
 
+import type { WorkLogEntry } from "@t3tools/client-runtime/work-log/work-log-entry";
 import {
   summarizeT3ToolCalls,
   t3ToolResultIndicatesFailure,
@@ -62,28 +61,6 @@ export function contextCompactionLabel(
   return "Context compacted";
 }
 
-export interface WorkLogPresentationEntry {
-  readonly questionAnswer?: import("@t3tools/contracts").UserInputAttachmentAnswerPayload;
-  readonly id: string;
-  readonly createdAt: string;
-  readonly label: string;
-  readonly tone: "thinking" | "tool" | "info" | "error";
-  readonly command?: string;
-  readonly rawCommand?: string;
-  readonly detail?: string;
-  readonly viewedImagePath?: string;
-  readonly changedFiles?: ReadonlyArray<string>;
-  readonly toolTitle?: string;
-  readonly toolData?: unknown;
-  readonly requestKind?: string;
-  readonly itemType?: OrchestrationV2TurnItem["type"];
-  readonly toolLifecycleStatus?: WorkLogToolLifecycleStatus;
-  readonly structuredPayload?: OrchestrationV2TurnItem;
-  readonly toolSource?: ToolActivitySource;
-  readonly toolSurface?: ToolActivitySurface;
-  readonly toolIcon?: ToolActivityIcon;
-}
-
 export type ToolGroupAction =
   | "link-pr"
   | "unlink-pr"
@@ -116,7 +93,7 @@ export function normalizeCompactToolLabel(value: string): string {
 
 /** Structured identity is authoritative, including when it identifies a foreign server. */
 function workEntryToolName(
-  entry: Pick<WorkLogPresentationEntry, "label" | "toolTitle" | "toolData" | "structuredPayload">,
+  entry: Pick<WorkLogEntry, "label" | "toolTitle" | "toolData" | "structuredPayload">,
 ): string | undefined {
   const item = entry.structuredPayload;
   if (item?.type === "dynamic_tool" && item.toolName) return item.toolName;
@@ -128,9 +105,7 @@ function workEntryToolName(
   return resolveT3McpToolDefinition(entry.toolTitle) ? entry.toolTitle : entry.label;
 }
 
-function workEntryToolOutput(
-  entry: Pick<WorkLogPresentationEntry, "toolData" | "structuredPayload">,
-): unknown {
+function workEntryToolOutput(entry: Pick<WorkLogEntry, "toolData" | "structuredPayload">): unknown {
   const item = entry.structuredPayload;
   const data = asRecord(entry.toolData);
   return item?.type === "dynamic_tool"
@@ -198,7 +173,7 @@ export function liveActivityToolStatus(status: string | undefined, presentTense:
 /** Resolves tool identity before choosing labels or icons in either client. */
 export function resolveWorkEntryToolPresentation(
   entry: Pick<
-    WorkLogPresentationEntry,
+    WorkLogEntry,
     "label" | "toolTitle" | "toolData" | "toolLifecycleStatus" | "structuredPayload"
   >,
   fallbackStatus?: "inProgress" | "completed",
@@ -353,7 +328,7 @@ export function commandDetailRepeatsCommand(input: {
   );
 }
 
-function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
+function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") return true;
   if (entry.command !== undefined && entry.command.trim().length > 0) return true;
   if (entry.requestKind !== undefined) return true;
@@ -361,7 +336,7 @@ function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
 }
 
 function workEntryIndicatesToolFailureFromOutput(
-  entry: WorkLogPresentationEntry,
+  entry: WorkLogEntry,
   includeCommand: boolean,
 ): boolean {
   if (
@@ -370,6 +345,10 @@ function workEntryIndicatesToolFailureFromOutput(
     entry.toolLifecycleStatus === "declined"
   ) {
     return true;
+  }
+  // A request's text is what the agent asked, not output that could report a failure.
+  if (entry.itemType === "approval_request" || entry.itemType === "user_input_request") {
+    return false;
   }
   if (!workLogEntryIsToolLike(entry)) return false;
   if (
@@ -396,17 +375,17 @@ function workEntryIndicatesToolFailureFromOutput(
 }
 
 /** Includes legacy activities that stored error output in the command field. */
-export function workEntryIndicatesToolFailure(entry: WorkLogPresentationEntry): boolean {
+export function workEntryIndicatesToolFailure(entry: WorkLogEntry): boolean {
   return workEntryIndicatesToolFailureFromOutput(entry, true);
 }
 
 /** Checks rendered output without treating the user's command as an error. */
-export function workEntryDisplayIndicatesToolFailure(entry: WorkLogPresentationEntry): boolean {
+export function workEntryDisplayIndicatesToolFailure(entry: WorkLogEntry): boolean {
   return workEntryIndicatesToolFailureFromOutput(entry, false);
 }
 
 /** Decides whether the row can show a success marker. */
-export function workEntryIndicatesToolSuccess(entry: WorkLogPresentationEntry): boolean {
+export function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
   return (
     workLogEntryIsToolLike(entry) &&
     !workEntryIndicatesToolFailure(entry) &&
@@ -417,7 +396,7 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogPresentationEntry): 
   );
 }
 
-function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): boolean {
+function workLogEntryIsLocalCodeSearch(entry: WorkLogEntry): boolean {
   return (
     entry.itemType === "file_search" ||
     (entry.itemType === "web_search" &&
@@ -425,17 +404,17 @@ function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): boolean
   );
 }
 
-export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupAction {
+export function toolGroupAction(entry: WorkLogEntry): ToolGroupAction {
   if (entry.itemType === "thread_created") return "thread-create";
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation?.action !== undefined) return presentation.action;
   if (presentation?.icon === "browser") return "browser";
   if (presentation?.icon === "device") return "device";
-  if (entry.requestKind === "file-read" || entry.viewedImagePath !== undefined) return "read";
   // Approvals and questions describe requested work, not work that ran.
   if (entry.itemType === "approval_request" || entry.itemType === "user_input_request") {
     return workLogEntryIsToolLike(entry) ? "other" : "update";
   }
+  if (entry.requestKind === "file-read" || entry.viewedImagePath !== undefined) return "read";
   const data = asRecord(entry.toolData) ?? {};
   const toolName =
     entry.structuredPayload?.type === "dynamic_tool"
@@ -474,7 +453,7 @@ export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupActio
   return workLogEntryIsToolLike(entry) ? "other" : "update";
 }
 
-export function workEntryViewedImagePath(entry: WorkLogPresentationEntry): string | null {
+export function workEntryViewedImagePath(entry: WorkLogEntry): string | null {
   const viewedImagePath = entry.viewedImagePath?.trim();
   if (
     viewedImagePath !== undefined &&
@@ -525,7 +504,7 @@ export function resolveViewedImageAsset(
 
 function toolGroupActionCount(
   action: ToolGroupAction,
-  entries: ReadonlyArray<WorkLogPresentationEntry>,
+  entries: ReadonlyArray<WorkLogEntry>,
 ): number {
   if (action !== "edit") return entries.length;
   const changedFiles = new Set<string>();
@@ -577,7 +556,7 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
   }
 }
 
-function t3ToolSummaryCall(entry: WorkLogPresentationEntry): T3ToolSummaryCall {
+function t3ToolSummaryCall(entry: WorkLogEntry): T3ToolSummaryCall {
   const item = entry.structuredPayload;
   const data =
     entry.toolData !== null && typeof entry.toolData === "object"
@@ -642,7 +621,7 @@ function summaryActionPriority(action: ToolGroupAction | T3McpToolSummaryAction)
 }
 
 /** Summarizes at most two action categories; every omitted call still counts in the remainder. */
-export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): {
+export function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): {
   summary: string;
   hasFailure: boolean;
 } {
@@ -659,7 +638,7 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
     {
       action: ToolGroupAction;
       t3Action: T3McpToolSummaryAction | null;
-      entries: WorkLogPresentationEntry[];
+      entries: WorkLogEntry[];
     }
   >();
   const sources = new Map<string, ToolActivitySource>();
@@ -728,9 +707,7 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
   return { summary, hasFailure: summaries.some((group) => group.failedCount > 0) };
 }
 
-export function toolGroupSummaryKind(
-  entries: ReadonlyArray<WorkLogPresentationEntry>,
-): ToolGroupSummaryKind {
+export function toolGroupSummaryKind(entries: ReadonlyArray<WorkLogEntry>): ToolGroupSummaryKind {
   const toolEntries = entries.filter((entry) => entry.itemType !== "reasoning");
   if (entries.length > 0 && toolEntries.length === 0) return "reasoning";
   entries = toolEntries;

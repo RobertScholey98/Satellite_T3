@@ -88,7 +88,6 @@ import { FileDiff } from "@pierre/diffs/react";
 import { DiffWorkerPoolProvider } from "../DiffWorkerPoolProvider";
 import {
   type TimelineEntry,
-  providerErrorPresentation,
   createMessageAttachmentPreviewProjector,
   selectMessageImageResources,
   workEntryDisplayIndicatesToolFailure,
@@ -96,6 +95,7 @@ import {
   workLogEntryIsToolLike,
 } from "../../session-logic";
 import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
+import { providerErrorPresentation } from "@t3tools/client-runtime/work-log/work-log-entry";
 import {
   type ChatMessage,
   type ChatFileAttachment,

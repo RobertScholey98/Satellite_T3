@@ -1,8 +1,8 @@
 import type {
   ThreadPendingApproval,
   ThreadPendingUserInput,
-  ThreadUserInputQuestion,
 } from "@t3tools/client-runtime/state/thread-requests";
+import { isLatestRunSettled } from "@t3tools/client-runtime/state/models";
 import { turnItemIsWorkspacePreparation } from "@t3tools/client-runtime/state/turn-item-presentation";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
@@ -24,9 +24,14 @@ import {
   summarizeToolGroup,
   toolGroupSummaryKind,
   type ToolGroupSummaryKind,
-  type WorkLogPresentationEntry,
   type WorkLogToolLifecycleStatus,
 } from "@t3tools/client-runtime/work-log/presentation";
+import {
+  turnItemLifecycleStatus,
+  turnItemPreview,
+  workLogEntryFromTurnItem,
+  type WorkLogEntry,
+} from "@t3tools/client-runtime/work-log/work-log-entry";
 import {
   resolveT3McpToolDefinition,
   resolveT3McpToolPresentation,
@@ -64,13 +69,6 @@ import * as DateTime from "effect/DateTime";
 export type PendingApproval = ThreadPendingApproval;
 export type PendingUserInput = ThreadPendingUserInput;
 
-export interface PendingUserInputDraftAnswer {
-  readonly selectedOptionValues?: ReadonlyArray<string>;
-  readonly customAnswer?: string;
-  readonly attachmentCount?: number;
-  readonly attachmentsBlocked?: boolean;
-}
-
 export interface ThreadFeedActivity {
   readonly id: string;
   readonly createdAt: string;
@@ -105,7 +103,7 @@ export interface ThreadFeedActivity {
   readonly prominent: boolean;
   readonly status: "success" | "failure" | "neutral" | null;
   readonly lifecycleStatus: WorkLogToolLifecycleStatus;
-  readonly workEntry: WorkLogPresentationEntry;
+  readonly workEntry: WorkLogEntry;
   readonly groupedToolDetail?: boolean;
   readonly live?: boolean;
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
@@ -187,8 +185,8 @@ type ThreadFeedEntryContent =
       readonly expanded: boolean;
       readonly summary: string;
       readonly summaryKind: ToolGroupSummaryKind;
-      readonly toolSurface?: WorkLogPresentationEntry["toolSurface"];
-      readonly toolIcon?: WorkLogPresentationEntry["toolIcon"];
+      readonly toolSurface?: WorkLogEntry["toolSurface"];
+      readonly toolIcon?: WorkLogEntry["toolIcon"];
       readonly summaryToolIcon?: "browser" | "device" | "t3-code" | "pull-request";
       readonly hasFailure: boolean;
       readonly live: boolean;
@@ -234,7 +232,7 @@ function compactWorkEntryText(value: string): string {
 }
 
 /** Expanded work rows keep their detail while compact rows show a stable one-line label. */
-export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = false): string {
+export function workEntryRowLabel(entry: WorkLogEntry, expanded = false): string {
   if (expanded && entry.itemType === "reasoning")
     return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
   const presentation = resolveWorkEntryToolPresentation(entry);
@@ -332,69 +330,6 @@ function isUserInputActivityGroup(entry: ThreadFeedActivityGroup): boolean {
   return entry.activities.some((activity) => activity.workEntry.questionAnswer !== undefined);
 }
 
-function normalizeDraftAnswer(value: string | undefined): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function resolvePendingUserInputOptionValue(
-  question: ThreadUserInputQuestion,
-  value: string,
-): string | null {
-  if (question.options.some((option) => option.value === value)) {
-    return value;
-  }
-
-  const label = value.trim();
-  return label.length > 0 &&
-    question.options.some((option) => option.value === undefined && option.label.trim() === label)
-    ? label
-    : null;
-}
-
-function normalizeSelectedOptionValues(
-  question: ThreadUserInputQuestion,
-  value: ReadonlyArray<string> | undefined,
-): ReadonlyArray<string> {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return Array.from(
-    new Set(
-      value
-        .map((entry) => resolvePendingUserInputOptionValue(question, entry))
-        .filter((entry): entry is string => entry !== null),
-    ),
-  );
-}
-
-function resolvePendingUserInputAnswer(
-  question: ThreadUserInputQuestion,
-  draft: PendingUserInputDraftAnswer | undefined,
-): string | ReadonlyArray<string> | null {
-  if (draft?.attachmentsBlocked) return null;
-  const customAnswer =
-    question.allowCustomAnswer === false ? null : normalizeDraftAnswer(draft?.customAnswer);
-  if (customAnswer) {
-    return customAnswer;
-  }
-
-  const selectedOptionValues = normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
-  if (question.multiSelect) {
-    return selectedOptionValues.length > 0
-      ? selectedOptionValues
-      : question.allowCustomAnswer !== false && (draft?.attachmentCount ?? 0) > 0
-        ? ""
-        : null;
-  }
-  return (
-    selectedOptionValues[0] ??
-    (question.allowCustomAnswer !== false && (draft?.attachmentCount ?? 0) > 0 ? "" : null)
-  );
-}
-
 function capitalizePhrase(value: string): string {
   const trimmed = value.trim();
   return trimmed.length === 0 ? value : `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
@@ -446,40 +381,6 @@ function itemStatus(item: OrchestrationV2TurnItem): ThreadFeedActivity["status"]
   if (!itemIsToolLike(item)) return null;
   if (item.status === "failed") return "failure";
   return item.status === "completed" ? "success" : "neutral";
-}
-
-function itemLifecycleStatus(item: OrchestrationV2TurnItem): WorkLogToolLifecycleStatus {
-  switch (item.status) {
-    case "pending":
-    case "running":
-    case "waiting":
-      return "inProgress";
-    case "idle":
-      return "idle";
-    case "completed":
-      return "completed";
-    case "failed":
-      return "failed";
-    case "cancelled":
-    case "interrupted":
-      return "stopped";
-  }
-}
-
-function itemWorkLogTone(item: OrchestrationV2TurnItem): WorkLogPresentationEntry["tone"] {
-  if (item.type === "error") return "info";
-  if (item.type === "reasoning") return "thinking";
-  switch (item.type) {
-    case "command_execution":
-    case "file_change":
-    case "file_search":
-    case "web_search":
-    case "dynamic_tool":
-    case "subagent":
-      return "tool";
-    default:
-      return "info";
-  }
 }
 
 function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
@@ -632,129 +533,6 @@ function itemSummary(
   }
 }
 
-function itemPreview(item: OrchestrationV2TurnItem): string | null {
-  switch (item.type) {
-    case "reasoning":
-      return item.text || null;
-    case "command_execution":
-      return item.input || null;
-    case "file_change":
-      return item.fileName;
-    case "file_search":
-      return item.pattern ?? null;
-    case "web_search":
-      return item.patterns?.join(", ") ?? null;
-    case "approval_request":
-      return item.prompt ?? null;
-    case "user_input_request":
-      return item.questions.map((question) => question.question).join(" · ") || null;
-    case "checkpoint":
-      return item.files.length === 1
-        ? (item.files[0]?.path ?? null)
-        : `${item.files.length} changed files`;
-    case "run_interrupt_request":
-    case "run_interrupt_result":
-    case "system_notice":
-      return item.message || null;
-    case "error":
-      return item.failure.message;
-    case "compaction":
-    case "handoff":
-      return item.summary ?? null;
-    case "fork":
-    case "thread_created":
-      return item.targetThreadId;
-    case "secret_request":
-      return item.reason || null;
-    case "subagent":
-      return item.result ?? item.progress ?? item.prompt;
-    case "dynamic_tool":
-      return null;
-    case "notification":
-      return item.detail ?? null;
-    case "proposed_plan":
-      return item.markdown || null;
-    case "todo_list":
-      return `${item.steps.filter((step) => step.status === "completed").length}/${item.steps.length} completed`;
-    case "user_message":
-    case "assistant_message":
-      return item.text || null;
-  }
-}
-
-function toWorkLogEntry(
-  item: OrchestrationV2TurnItem,
-  createdAt: string,
-  summary: string,
-  detail: string | null,
-): WorkLogPresentationEntry {
-  const title = item.title?.trim() || null;
-  const common = {
-    ...extractToolActivityPresentation(item),
-    id: item.id,
-    createdAt,
-    label: summary,
-    tone: itemWorkLogTone(item),
-    itemType: item.type,
-    toolLifecycleStatus: itemLifecycleStatus(item),
-    structuredPayload: item,
-    ...(item.type === "user_input_request" && item.questionAnswer
-      ? { questionAnswer: item.questionAnswer }
-      : {}),
-  } as const;
-
-  switch (item.type) {
-    case "reasoning":
-      return { ...common, ...(item.text ? { detail: item.text } : {}) };
-    case "command_execution":
-      return {
-        ...common,
-        command: item.input,
-        rawCommand: item.input,
-        toolTitle: title ?? "Command",
-        toolData: item,
-      };
-    case "file_change":
-      return {
-        ...common,
-        changedFiles: [item.fileName],
-        toolTitle: title ?? "File change",
-        toolData: item,
-      };
-    case "file_search":
-      return {
-        ...common,
-        ...(item.pattern ? { detail: item.pattern } : {}),
-        toolTitle: title ?? "File search",
-        toolData: item,
-      };
-    case "web_search":
-      return {
-        ...common,
-        ...(item.patterns?.length ? { detail: item.patterns.join(", ") } : {}),
-        toolTitle: title ?? "Web search",
-        toolData: item,
-      };
-    case "checkpoint":
-      return { ...common, changedFiles: item.files.map((file) => file.path), toolData: item };
-    case "approval_request":
-      return {
-        ...common,
-        ...(item.prompt ? { detail: item.prompt } : {}),
-        requestKind: item.requestKind,
-        toolData: item,
-      };
-    case "dynamic_tool":
-      return {
-        ...common,
-        toolTitle: title ?? item.toolName ?? "Tool",
-        toolData: { input: item.input, output: item.output },
-      };
-    default:
-      return { ...common, ...(detail ? { detail } : {}), toolData: item };
-  }
-}
-
 /** Expanded detail for a row, from its wire item or the full item from getTurnItem. */
 export function formatItemFullDetail(
   row: OrchestrationV2ProjectedTurnItem,
@@ -779,9 +557,9 @@ function toFeedActivity(
   const item = row.item;
   const toolPresentation = itemToolPresentation(item);
   const summary = itemSummary(item, toolPresentation);
-  const detail = item.type === "notification" ? null : itemPreview(item);
+  const detail = item.type === "notification" ? null : turnItemPreview(item);
   const createdAt = DateTime.formatIso(item.startedAt ?? item.updatedAt);
-  const workEntry = toWorkLogEntry(item, createdAt, summary, detail);
+  const workEntry = { ...workLogEntryFromTurnItem(row), label: summary };
   const readPaths =
     item.type === "dynamic_tool" && toolGroupAction(workEntry) === "read"
       ? collectToolFilePaths(item)
@@ -823,7 +601,7 @@ function toFeedActivity(
         : workEntryDisplayIndicatesToolFailure(workEntry)
           ? "failure"
           : itemStatus(item),
-    lifecycleStatus: itemLifecycleStatus(item),
+    lifecycleStatus: turnItemLifecycleStatus(item),
     workEntry,
     projectedItem: row,
   };
@@ -957,21 +735,8 @@ function maxIsoTimestamp(left: string | null, right: string | null): string | nu
   return Date.parse(right) > Date.parse(left) ? right : left;
 }
 
-function unsettledRunId(latestRun: ThreadFeedLatestRun | null): RunId | null {
-  return threadFeedRunIsUnsettled(latestRun) ? latestRun.runId : null;
-}
-
-export function threadFeedRunIsUnsettled(
-  run: ThreadFeedLatestRun | null,
-): run is ThreadFeedLatestRun {
-  if (run === null || run.status === "queued") return false;
-  return (
-    run.completedAt === null ||
-    run.status === "preparing" ||
-    run.status === "starting" ||
-    run.status === "running" ||
-    run.status === "waiting"
-  );
+export function unsettledRunId(latestRun: ThreadFeedLatestRun | null): RunId | null {
+  return latestRun === null || isLatestRunSettled(latestRun) ? null : latestRun.runId;
 }
 
 export function threadFeedActivityIsVisible(
@@ -1582,93 +1347,6 @@ function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boo
     return `${verb} ${program ?? "command"}`;
   }
   return activity.detail ?? activity.summary;
-}
-
-export function setPendingUserInputCustomAnswer(
-  question: ThreadUserInputQuestion,
-  draft: PendingUserInputDraftAnswer | undefined,
-  customAnswer: string,
-): PendingUserInputDraftAnswer {
-  if (question.allowCustomAnswer === false) {
-    return draft ?? {};
-  }
-
-  const selectedOptionValues =
-    customAnswer.trim().length > 0
-      ? undefined
-      : normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
-  return {
-    customAnswer,
-    ...(selectedOptionValues && selectedOptionValues.length > 0 ? { selectedOptionValues } : {}),
-  };
-}
-
-export function isPendingUserInputOptionSelected(
-  question: ThreadUserInputQuestion,
-  draft: PendingUserInputDraftAnswer | undefined,
-  optionValue: string,
-): boolean {
-  if (question.allowCustomAnswer !== false && normalizeDraftAnswer(draft?.customAnswer)) {
-    return false;
-  }
-
-  const resolvedOptionValue = resolvePendingUserInputOptionValue(question, optionValue);
-  return (
-    resolvedOptionValue !== null &&
-    normalizeSelectedOptionValues(question, draft?.selectedOptionValues).includes(
-      resolvedOptionValue,
-    )
-  );
-}
-
-export function togglePendingUserInputOptionSelection(
-  question: ThreadUserInputQuestion,
-  draft: PendingUserInputDraftAnswer | undefined,
-  optionValue: string,
-): PendingUserInputDraftAnswer {
-  const resolvedOptionValue = resolvePendingUserInputOptionValue(question, optionValue);
-  if (resolvedOptionValue === null) {
-    return draft ?? {};
-  }
-
-  if (question.multiSelect) {
-    const selectedOptionValues = normalizeSelectedOptionValues(
-      question,
-      draft?.selectedOptionValues,
-    );
-    const nextSelectedOptionValues = selectedOptionValues.includes(resolvedOptionValue)
-      ? selectedOptionValues.filter((value) => value !== resolvedOptionValue)
-      : [...selectedOptionValues, resolvedOptionValue];
-
-    return {
-      customAnswer: "",
-      ...(nextSelectedOptionValues.length > 0
-        ? { selectedOptionValues: nextSelectedOptionValues }
-        : {}),
-    };
-  }
-
-  return {
-    customAnswer: "",
-    selectedOptionValues: [resolvedOptionValue],
-  };
-}
-
-export function buildPendingUserInputAnswers(
-  questions: ReadonlyArray<ThreadUserInputQuestion>,
-  draftAnswers: Record<string, PendingUserInputDraftAnswer>,
-): Record<string, string | ReadonlyArray<string>> | null {
-  const answers: Record<string, string | ReadonlyArray<string>> = {};
-
-  for (const question of questions) {
-    const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
-    if (answer === null) {
-      return null;
-    }
-    answers[question.id] = answer;
-  }
-
-  return answers;
 }
 
 /**
