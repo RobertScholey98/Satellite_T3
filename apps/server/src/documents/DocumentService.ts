@@ -68,12 +68,12 @@ const FORMAT_MEDIA_TYPES = {
 } as const;
 const IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 export const isTextMedia = (mediaType: string, name: string) =>
-  mediaType.startsWith("text/") || /.(md|markdown|html?|txt|json|csv|svg)$/i.test(name);
+  mediaType.startsWith("text/") || /\.(md|markdown|html?|txt|json|csv|svg)$/i.test(name);
 /** The text format of a source named `name`, or null for binary media. */
 const documentFormat = (mediaType: string | null, name: string): Format | null => {
-  if (mediaType === "text/html" || /.html?$/i.test(name)) return "html";
-  if (mediaType === "text/markdown" || /.(md|markdown)$/i.test(name)) return "markdown";
-  if (mediaType === null ? /.txt$/i.test(name) : isTextMedia(mediaType, name)) return "text";
+  if (mediaType === "text/html" || /\.html?$/i.test(name)) return "html";
+  if (mediaType === "text/markdown" || /\.(md|markdown)$/i.test(name)) return "markdown";
+  if (mediaType === null ? /\.txt$/i.test(name) : isTextMedia(mediaType, name)) return "text";
   return null;
 };
 const MAX_ANSWER_BYTES = 64 * 1024;

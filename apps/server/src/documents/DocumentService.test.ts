@@ -372,6 +372,43 @@ describe("managed document persistence", () => {
     }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
   );
 
+  it.effect("classifies sources by file extension, not by a name that merely ends in one", () =>
+    Effect.gen(function* () {
+      const f = yield* setup;
+      yield* createIdea;
+      const myhtml = f.path.join(f.stateDir, "myhtml");
+      yield* f.fs.writeFileString(myhtml, "<h1>Not an extension</h1>");
+
+      const uploads = yield* Effect.forEach(["cmd", "export_json", "notes.md"], (name) =>
+        f.service.publishIdeaDocument(
+          {
+            threadId: ideaThreadId,
+            name,
+            mediaType: "application/octet-stream",
+            bytes: Buffer.from("plain"),
+          },
+          "upload",
+        ),
+      );
+      const fromPath = yield* f.service
+        .publish({ ...f.publication, requestId: "myhtml", path: myhtml }, actor)
+        .pipe(Effect.flip);
+
+      assert.deepEqual(
+        uploads.map(({ name, textStatus }) => [name, textStatus]),
+        [
+          ["cmd", "unsupported"],
+          ["export_json", "unsupported"],
+          ["notes.md", "available"],
+        ],
+      );
+      assert.deepEqual(
+        [fromPath.reason, fromPath.message],
+        ["invalid", "Only self-contained HTML, Markdown, and text documents are supported."],
+      );
+    }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
+  );
+
   it.effect("reads idea artifacts saved before ideas used the documents module", () =>
     Effect.gen(function* () {
       const f = yield* setup;
