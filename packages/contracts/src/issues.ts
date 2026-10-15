@@ -128,6 +128,26 @@ export const IssueMoveReceipt = Schema.Struct({
 export type IssueMoveReceipt = typeof IssueMoveReceipt.Type;
 export const IssueBoardSyncFailure = Schema.Struct({ at: Schema.String, message: Schema.String });
 export type IssueBoardSyncFailure = typeof IssueBoardSyncFailure.Type;
+/**
+ * Whether the board's environment is collecting updates from a worktree environment that runs
+ * attempts on this board. `unregistered` means no credential was handed over, so updates from
+ * that computer wait for a start from a client connected to both.
+ */
+export const IssueDeliveryPeer = Schema.Struct({
+  destinationEnvironmentId: EnvironmentId,
+  state: Schema.Literals([
+    "pending",
+    "delivered",
+    "unreachable",
+    "unauthorized",
+    "failed",
+    "unregistered",
+    "expired",
+  ]),
+  lastDeliveredAt: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+});
+export type IssueDeliveryPeer = typeof IssueDeliveryPeer.Type;
 /** Freshness of the server's stored board copy. `syncing` and `failure` are independent facts. */
 export const IssueBoardSync = Schema.Struct({
   /** Changes only when the board's columns, items, title or mapping changed. */
@@ -138,6 +158,8 @@ export const IssueBoardSync = Schema.Struct({
   syncing: Schema.Boolean,
   /** Outcome of the last finished refresh. */
   failure: Schema.NullOr(IssueBoardSyncFailure),
+  /** Absent from servers that leave cross-environment delivery to clients. */
+  deliveries: Schema.optionalKey(Schema.Array(IssueDeliveryPeer)),
 });
 export type IssueBoardSync = typeof IssueBoardSync.Type;
 export const IssueBoardView = Schema.Struct({
@@ -260,23 +282,60 @@ export const IssueAttemptsReceiptsResult = Schema.Struct({
   nextCursor: Schema.Number,
 });
 export type IssueAttemptsReceiptsResult = typeof IssueAttemptsReceiptsResult.Type;
-export const IssueAttemptsIngestInput = Schema.Struct({
-  receipts: Schema.Array(IssueLifecycleReceipt).check(Schema.isMaxLength(100)),
-});
-export type IssueAttemptsIngestInput = typeof IssueAttemptsIngestInput.Type;
-export const IssueAttemptsIngestResult = Schema.Struct({
+export const IssueAttemptsAcknowledgeInput = Schema.Struct({
   acknowledgedKeys: Schema.Array(Schema.String),
 });
-export type IssueAttemptsIngestResult = typeof IssueAttemptsIngestResult.Type;
-export const IssueAttemptsAcknowledgeInput = IssueAttemptsIngestResult;
 export type IssueAttemptsAcknowledgeInput = typeof IssueAttemptsAcknowledgeInput.Type;
 export const IssueAttemptGeneration = Schema.Struct({
   attemptId: Id,
   reservationId: Id,
   sourceGeneration: NonNegativeInt,
+  /** The board environment's signature; a worktree environment requires it from a peer. */
+  signature: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
 });
 export type IssueAttemptGeneration = typeof IssueAttemptGeneration.Type;
 export const IssueAttemptsSyncGenerationsInput = Schema.Struct({
   generations: Schema.Array(IssueAttemptGeneration).check(Schema.isMaxLength(100)),
 });
 export type IssueAttemptsSyncGenerationsInput = typeof IssueAttemptsSyncGenerationsInput.Type;
+/**
+ * Registers the worktree environment the board's environment collects lifecycle receipts from.
+ * `credential` is the peer credential the destination granted; it never appears in a read model.
+ */
+export const IssuePeersRegisterInput = Schema.Struct({
+  destinationEnvironmentId: EnvironmentId,
+  credential: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+  endpoints: Schema.Array(Id).check(Schema.isMaxLength(16)),
+  /** The destination's identity key; an endpoint must prove it holds the private half. */
+  publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+  /** When the credential stops working; delivery stops contacting the destination then. */
+  expiresAt: Schema.String,
+});
+export type IssuePeersRegisterInput = typeof IssuePeersRegisterInput.Type;
+export const IssuePeersForgetInput = Schema.Struct({ destinationEnvironmentId: EnvironmentId });
+export type IssuePeersForgetInput = typeof IssuePeersForgetInput.Type;
+/** `revokedRemotely` is false when the worktree environment could not be told to drop access. */
+export const IssuePeersForgetResult = Schema.Struct({ revokedRemotely: Schema.Boolean });
+export type IssuePeersForgetResult = typeof IssuePeersForgetResult.Type;
+export const IssueDeliveriesDeliverInput = Schema.Struct({ boardId: Id });
+export type IssueDeliveriesDeliverInput = typeof IssueDeliveriesDeliverInput.Type;
+/** Asks a worktree environment for a credential the board's environment collects receipts with. */
+export const IssuePeersGrantInput = Schema.Struct({
+  sourceEnvironmentId: EnvironmentId,
+  sourceLabel: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  /** Generations the board environment pushes must verify against this key. */
+  sourcePublicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+});
+export type IssuePeersGrantInput = typeof IssuePeersGrantInput.Type;
+/** Returned once. `endpoints` are the direct addresses the granting environment listens on. */
+export const IssuePeerGrant = Schema.Struct({
+  credential: TrimmedNonEmptyString,
+  endpoints: Schema.Array(Id),
+  publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+  expiresAt: Schema.String,
+});
+export type IssuePeerGrant = typeof IssuePeerGrant.Type;
+export const IssuePeerIdentity = Schema.Struct({
+  publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+});
+export type IssuePeerIdentity = typeof IssuePeerIdentity.Type;

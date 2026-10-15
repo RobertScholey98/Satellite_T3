@@ -8,7 +8,7 @@ import {
   WsRpcGroup,
   WsSatelliteRpcGroup,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
@@ -17,6 +17,8 @@ import * as RpcTest from "effect/rpc/RpcTest";
 import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import { DocumentService } from "../documents/DocumentService.ts";
 import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
+import { IssueDelivery } from "../issues/IssueDelivery.ts";
+import { IssuePeerAccess } from "../issues/IssuePeerAccess.ts";
 import { IssueService } from "../issues/IssueService.ts";
 import { OpenWorkService } from "../openWork/OpenWorkService.ts";
 import {
@@ -28,7 +30,9 @@ import type * as WsServer from "../ws.ts";
 import { SATELLITE_RPC_AGGREGATES, SATELLITE_RPC_REQUIRED_SCOPES } from "./SatelliteRpcRegistry.ts";
 import * as SatelliteWsRpc from "./SatelliteWsRpc.ts";
 
-// Handlers capture these at build time; only `IdeaNotebookStore.list` is ever called.
+const receiptQueries: unknown[] = [];
+// Handlers capture these at build time; only `IdeaNotebookStore.list` and
+// `IssueService.listReceipts` are ever called.
 const services = Layer.mergeAll(
   Layer.succeed(IdeaNotebookStore, {
     list: () => Effect.succeed([]),
@@ -37,7 +41,16 @@ const services = Layer.mergeAll(
   Layer.succeed(ProjectionSnapshotQuery, {} as ProjectionSnapshotQuery["Service"]),
   Layer.succeed(RevdocService, {} as RevdocService["Service"]),
   Layer.succeed(DocumentService, {} as DocumentService["Service"]),
-  Layer.succeed(IssueService, {} as IssueService["Service"]),
+  Layer.succeed(IssueService, {
+    listReceipts: (input: unknown) =>
+      Effect.sync(() => receiptQueries.push(input)).pipe(
+        Effect.as({ receipts: [], nextCursor: 0 }),
+      ),
+  } as unknown as IssueService["Service"]),
+  Layer.succeed(IssueDelivery, {
+    deliver: () => Effect.die("delivery must not run for this caller"),
+  } as unknown as IssueDelivery["Service"]),
+  Layer.succeed(IssuePeerAccess, {} as IssuePeerAccess["Service"]),
   Layer.succeed(OpenWorkService, {} as OpenWorkService["Service"]),
 );
 
@@ -82,6 +95,53 @@ describe("Satellite RPC registration", () => {
         Effect.catchTags({ EnvironmentAuthorizationError: Effect.succeed }),
       );
       expect(result).toMatchObject(expected);
+    }).pipe(Effect.scoped, Effect.provide(services)),
+  );
+
+  it.effect("lets an issue peer session call only the peer RPCs, for its own board", () =>
+    Effect.gen(function* () {
+      const peer = { ...session, subject: "issue-peer:board-environment" };
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (tag): tag is Exclude<RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"], SatelliteWsRpcMethod> =>
+            WsCoreRpcGroup.requests.has(tag),
+        ),
+      );
+      const makeLayer = yield* SatelliteWsRpc.makeConnectionLayer;
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(makeLayer(peer), RpcAuthorization.layer([], peer.subject))),
+      );
+      receiptQueries.length = 0;
+      assert.deepStrictEqual(yield* client[WS_METHODS.issuesAttemptsReceipts]({ after: 4 }), {
+        receipts: [],
+        nextCursor: 0,
+      });
+      assert.deepStrictEqual(receiptQueries, [
+        { after: 4, sourceEnvironmentId: "board-environment" },
+      ]);
+      const denied = yield* client[WS_METHODS.ideasList]({}).pipe(Effect.flip);
+      assert.strictEqual(denied._tag, "EnvironmentAuthorizationError");
+    }).pipe(Effect.scoped, Effect.provide(services)),
+  );
+
+  it.effect("refuses a read-only session that asks for outbound delivery", () =>
+    Effect.gen(function* () {
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (tag): tag is Exclude<RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"], SatelliteWsRpcMethod> =>
+            WsCoreRpcGroup.requests.has(tag),
+        ),
+      );
+      const makeLayer = yield* SatelliteWsRpc.makeConnectionLayer;
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(makeLayer(session), RpcAuthorization.layer([AuthOrchestrationReadScope])),
+        ),
+      );
+      const denied = yield* client[WS_METHODS.issuesDeliveriesDeliver]({ boardId: "board" }).pipe(
+        Effect.flip,
+      );
+      assert.strictEqual(denied._tag, "EnvironmentAuthorizationError");
     }).pipe(Effect.scoped, Effect.provide(services)),
   );
 

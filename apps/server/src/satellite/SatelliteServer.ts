@@ -11,8 +11,12 @@ import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
 import { IdeaPromotion } from "../ideas/IdeaPromotion.ts";
 import { IdeaRuntime } from "../ideas/IdeaRuntime.ts";
 import { IdeaUpdateReactor } from "../ideas/IdeaUpdateReactor.ts";
+import * as IssueDelivery from "../issues/IssueDelivery.ts";
 import * as IssueHost from "../issues/IssueHost.ts";
 import * as IssueLifecycleReactor from "../issues/IssueLifecycleReactor.ts";
+import * as IssuePeerAccess from "../issues/IssuePeerAccess.ts";
+import * as IssuePeerKeys from "../issues/IssuePeerKeys.ts";
+import * as IssuePeerTransport from "../issues/IssuePeerTransport.ts";
 import * as IssueService from "../issues/IssueService.ts";
 import {
   imageToolRegistration,
@@ -28,6 +32,8 @@ import {
   IdeasToolkitHandlersLive,
 } from "../mcp/toolkits/ideas/handlers.ts";
 import { IdeaImageTool, IdeasImageToolkit, IdeasToolkit } from "../mcp/toolkits/ideas/tools.ts";
+import { IssuesToolkitHandlersLive } from "../mcp/toolkits/issues/handlers.ts";
+import { IssuesToolkit } from "../mcp/toolkits/issues/tools.ts";
 import { RevdocToolkit, RevdocToolkitHandlersLive } from "../mcp/toolkits/revdoc/tools.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as EventStoreV2 from "../orchestration-v2/EventStore.ts";
@@ -79,6 +85,7 @@ export const layer = Layer.mergeAll(
   Layer.effectDiscard(
     Effect.flatMap(IssueLifecycleReactor.IssueLifecycleReactor, (worker) => worker.start()),
   ).pipe(Layer.provide(IssueLifecycleReactor.layer)),
+  Layer.effectDiscard(Effect.flatMap(IssueDelivery.IssueDelivery, (delivery) => delivery.start())),
   Layer.effectDiscard(Effect.flatMap(IdeaPromotion, (worker) => worker.start())),
 ).pipe(
   Layer.provideMerge(IdeaUpdateReactor.layer),
@@ -87,6 +94,12 @@ export const layer = Layer.mergeAll(
   Layer.provideMerge(DocumentService.layer),
   Layer.provideMerge(WorktreeRegistry.layer),
   Layer.provideMerge(IdeaNotebookStore.layer),
+  Layer.provideMerge(
+    Layer.merge(
+      IssueDelivery.layer.pipe(Layer.provide(IssuePeerTransport.layerSocket)),
+      IssuePeerAccess.layer,
+    ).pipe(Layer.provideMerge(IssuePeerKeys.layer)),
+  ),
   Layer.provideMerge(layerIssueService),
   Layer.provideMerge(SatelliteOrchestration.layer),
   Layer.provideMerge(RuntimeLayer.layerEventSink),
@@ -126,10 +139,14 @@ export const CommitsToolkitRegistrationLive = toolkitRegistration(
   CommitsToolkit,
   CommitsToolkitHandlersLive,
 );
+const IssuesToolkitRegistrationLive = toolkitRegistration(IssuesToolkit, IssuesToolkitHandlersLive);
 export const RevdocToolkitRegistrationLive = toolkitRegistration(
   RevdocToolkit,
   RevdocToolkitHandlersLive,
 );
+
+/** Satellite's HTTP routes. `server.ts` serves them beside upstream's. */
+export const routes = IssuePeerAccess.proofRoute;
 
 /** Registers Satellite's MCP toolkits on the `/mcp` server that `mcpServer` provides. */
 export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) =>
@@ -138,4 +155,5 @@ export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) =>
     DocumentsToolkitRegistrationLive,
     CommitsToolkitRegistrationLive,
     RevdocToolkitRegistrationLive,
+    IssuesToolkitRegistrationLive,
   ).pipe(Layer.provideMerge(mcpServer));

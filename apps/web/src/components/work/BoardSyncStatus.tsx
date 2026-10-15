@@ -16,7 +16,11 @@ export function BoardSyncStatus({
   const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   if (!sync) return null;
   const failure = sync.syncing ? null : sync.failure;
-  const at = failure?.at ?? sync.syncedAt;
+  const at =
+    failure?.at ??
+    [sync.syncedAt, ...(sync.deliveries ?? []).map((delivery) => delivery.lastDeliveredAt)]
+      .filter((value) => value !== null)
+      .reduce((latest, value) => (Date.parse(value) > Date.parse(latest) ? value : latest));
   const shown = formatDayAwareTimestamp(at, timestampFormat);
   const label = sync.syncing
     ? "Syncing…"

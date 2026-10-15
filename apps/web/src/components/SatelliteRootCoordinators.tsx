@@ -1,6 +1,5 @@
 import { SatellitePillCoordinator } from "./desktop/SatellitePillCoordinator";
 import { IdeaDeletionCleanup } from "./ideas/IdeaDeletionCleanup";
-import { IssueReceiptRelay } from "./issues/IssueReceiptRelay";
 
 /** Satellite's app-wide coordinators. */
 export function SatelliteRootCoordinators() {
@@ -8,7 +7,6 @@ export function SatelliteRootCoordinators() {
     <>
       {window.satelliteBridge ? <SatellitePillCoordinator /> : null}
       <IdeaDeletionCleanup />
-      <IssueReceiptRelay />
     </>
   );
 }

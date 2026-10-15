@@ -1,11 +1,4 @@
-import {
-  WS_METHODS,
-  type EnvironmentId,
-  type IssueLifecycleReceipt,
-  type IssueAttempt,
-  type IssueAttemptsSyncGenerationsInput,
-  type IssueAttemptsReceiptsResult,
-} from "@t3tools/contracts";
+import { WS_METHODS } from "@t3tools/contracts";
 import type { Atom } from "effect/reactivity";
 import type { EnvironmentRegistry } from "./connection/registry.ts";
 import {
@@ -58,121 +51,25 @@ export function createIssuesEnvironmentAtoms<R, E>(
       label: "issues:attempts:list",
       tag: WS_METHODS.issuesAttemptsList,
     }),
-    listReceipts: createEnvironmentRpcCommand(runtime, {
-      label: "issues:attempts:receipts",
-      tag: WS_METHODS.issuesAttemptsReceipts,
+    peerIdentity: createEnvironmentRpcCommand(runtime, {
+      label: "issues:peers:identity",
+      tag: WS_METHODS.issuesPeersIdentity,
     }),
-    ingestReceipts: createEnvironmentRpcCommand(runtime, {
-      label: "issues:attempts:ingest",
-      tag: WS_METHODS.issuesAttemptsIngest,
+    grantPeer: createEnvironmentRpcCommand(runtime, {
+      label: "issues:peers:grant",
+      tag: WS_METHODS.issuesPeersGrant,
     }),
-    syncAttemptGenerations: createEnvironmentRpcCommand(runtime, {
-      label: "issues:attempts:syncGenerations",
-      tag: WS_METHODS.issuesAttemptsSyncGenerations,
+    registerPeer: createEnvironmentRpcCommand(runtime, {
+      label: "issues:peers:register",
+      tag: WS_METHODS.issuesPeersRegister,
     }),
-    acknowledgeReceipts: createEnvironmentRpcCommand(runtime, {
-      label: "issues:attempts:acknowledge",
-      tag: WS_METHODS.issuesAttemptsAcknowledge,
+    forgetPeer: createEnvironmentRpcCommand(runtime, {
+      label: "issues:peers:forget",
+      tag: WS_METHODS.issuesPeersForget,
+    }),
+    deliver: createEnvironmentRpcCommand(runtime, {
+      label: "issues:deliveries:deliver",
+      tag: WS_METHODS.issuesDeliveriesDeliver,
     }),
   };
-}
-
-export interface IssueReceiptTransport {
-  readonly list: (
-    environmentId: EnvironmentId,
-    after: number,
-  ) => Promise<IssueAttemptsReceiptsResult>;
-  readonly ingest: (
-    environmentId: EnvironmentId,
-    receipts: readonly IssueLifecycleReceipt[],
-  ) => Promise<readonly string[]>;
-  readonly acknowledge: (environmentId: EnvironmentId, keys: readonly string[]) => Promise<void>;
-  readonly attempts: (environmentId: EnvironmentId) => Promise<readonly IssueAttempt[]>;
-  readonly syncGenerations: (
-    environmentId: EnvironmentId,
-    input: IssueAttemptsSyncGenerationsInput,
-  ) => Promise<void>;
-}
-
-export async function relayIssueReceipts(
-  environments: readonly EnvironmentId[],
-  transport: IssueReceiptTransport,
-) {
-  const connected = new Set(environments);
-  const failures: { environmentId: EnvironmentId; error: unknown }[] = [];
-  for (const destination of environments) {
-    try {
-      let after = 0;
-      while (true) {
-        const page = await transport.list(destination, after);
-        const receipts = page.receipts;
-        const bySource = new Map<EnvironmentId, IssueLifecycleReceipt[]>();
-        for (const receipt of receipts) {
-          if (receipt.link.destinationEnvironmentId !== destination) continue;
-          const source = receipt.link.sourceEnvironmentId;
-          if (!connected.has(source)) continue;
-          const batch = bySource.get(source) ?? [];
-          batch.push(receipt);
-          bySource.set(source, batch);
-        }
-        for (const [source, receipts] of bySource) {
-          try {
-            for (let offset = 0; offset < receipts.length; offset += 100) {
-              const batch = receipts.slice(offset, offset + 100);
-              const accepted = new Set(await transport.ingest(source, batch));
-              const acknowledged = batch
-                .filter((receipt) => accepted.has(receipt.eventKey))
-                .map((receipt) => receipt.eventKey);
-              if (acknowledged.length > 0) await transport.acknowledge(destination, acknowledged);
-            }
-          } catch (error) {
-            failures.push({ environmentId: source, error });
-          }
-        }
-        if (receipts.length === 0 || page.nextCursor <= after) break;
-        after = page.nextCursor;
-      }
-    } catch (error) {
-      failures.push({ environmentId: destination, error });
-    }
-  }
-  for (const source of environments) {
-    try {
-      const attempts = await transport.attempts(source);
-      const byDestination = new Map<
-        EnvironmentId,
-        IssueAttemptsSyncGenerationsInput["generations"][number][]
-      >();
-      for (const attempt of attempts) {
-        const destination = attempt.link.destinationEnvironmentId;
-        if (
-          attempt.link.sourceEnvironmentId !== source ||
-          destination === source ||
-          !connected.has(destination)
-        )
-          continue;
-        const batch = byDestination.get(destination) ?? [];
-        batch.push({
-          attemptId: attempt.link.attemptId,
-          reservationId: attempt.link.reservationId,
-          sourceGeneration: attempt.sourceGeneration,
-        });
-        byDestination.set(destination, batch);
-      }
-      for (const [destination, generations] of byDestination) {
-        try {
-          for (let offset = 0; offset < generations.length; offset += 100) {
-            await transport.syncGenerations(destination, {
-              generations: generations.slice(offset, offset + 100),
-            });
-          }
-        } catch (error) {
-          failures.push({ environmentId: destination, error });
-        }
-      }
-    } catch (error) {
-      failures.push({ environmentId: source, error });
-    }
-  }
-  return failures;
 }

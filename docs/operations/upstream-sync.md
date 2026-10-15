@@ -13,7 +13,7 @@ surfaces read come from `PRODUCT_NAME` in `packages/contracts/src/productIdentit
 | `packages/contracts/src/satelliteRpc.ts`                 | `WS_METHODS` spread and `WsRpcGroup` merge in `rpc.ts`    |
 | `apps/server/src/satellite/SatelliteWsRpc.ts`            | handler layer capture and merge in `ws.ts`                |
 | `apps/server/src/satellite/SatelliteRpcRegistry.ts`      | spreads in `RpcAuthorization.ts`, `RpcInstrumentation.ts` |
-| `apps/server/src/satellite/SatelliteServer.ts`           | `Layer.provideMerge` and MCP pipe in `server.ts`          |
+| `apps/server/src/satellite/SatelliteServer.ts`           | `Layer.provideMerge`, routes, and MCP pipe in `server.ts` |
 | `apps/web/src/components/SatelliteRootCoordinators.tsx`  | one mount in `routes/__root.tsx`                          |
 | `apps/mobile/src/features/satellite/satelliteScreens.ts` | one spread in `Stack.tsx`                                 |
 

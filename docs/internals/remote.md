@@ -55,6 +55,18 @@ learned route still has to answer as this environment before it is used.
 GitHub routing trust covers the whole route list. Adding or changing a route
 revokes it; reordering does not, because the same addresses remain trusted.
 
+## Issue updates cross environments server to server
+
+Issue lifecycle receipts are the one thing environments exchange directly. The
+board's environment pulls them from the worktree's environment
+([IssueDelivery](../../apps/server/src/issues/IssueDelivery.ts)), so the worktree
+side stays passive and no client has to be online. The worktree environment
+issues the credential at ticket start because only it can grant access to itself;
+a client cannot delegate one without `access:write`. The board's environment
+connects like a paired client, over the endpoints the worktree environment
+advertises, so a loopback-only or SSH-forwarded worktree environment is
+unreachable by design and the board shows that state.
+
 ## Hosted web is a client
 
 The hosted web app stores its connection catalog in the browser and connects

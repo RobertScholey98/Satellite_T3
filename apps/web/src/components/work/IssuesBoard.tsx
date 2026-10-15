@@ -90,6 +90,7 @@ import {
   DialogFooter,
 } from "../ui/dialog";
 
+import { BoardDeliveryNotices } from "./BoardDeliveryNotices";
 import { BoardSyncStatus } from "./BoardSyncStatus";
 import { IssueStartDialog } from "./IssueStartDialog";
 import { IssueReadyColumnsPicker } from "./IssueReadyColumnsPicker";
@@ -336,6 +337,23 @@ export function IssuesBoard({
 
   const disconnect = useAtomCommand(issuesEnvironment.disconnectBoard, { reportFailure: false });
 
+  const deliver = useAtomCommand(issuesEnvironment.deliver, { reportFailure: false });
+
+  const forgetPeer = useAtomCommand(issuesEnvironment.forgetPeer, { reportFailure: false });
+
+  const labelOf = (environmentId: EnvironmentId) =>
+    environments.find((environment) => environment.environmentId === environmentId)?.label ??
+    "another computer";
+  const deliveryCapable =
+    scopedEnvironment?.serverConfig?.environment.capabilities.issueDelivery === true;
+  const deliverNow = useCallback(
+    (boardId: string) => {
+      if (scope && connected && deliveryCapable)
+        void deliver({ environmentId: scope.environmentId, input: { boardId } });
+    },
+    [deliver, scope, connected, deliveryCapable],
+  );
+
   const navigate = useNavigate();
 
   const requestView = useCallback(
@@ -353,6 +371,7 @@ export function IssuesBoard({
 
       try {
         const result = unwrapWorkResult(await (track ? trackSync(request) : request()));
+        if (track) deliverNow(boardId);
 
         if (current === generation.current) {
           setView(result);
@@ -362,7 +381,7 @@ export function IssuesBoard({
         if (current === generation.current && track) setError(workError(failure));
       }
     },
-    [open, scope, connected, trackSync],
+    [open, scope, connected, trackSync, deliverNow],
   );
   const refreshBoard = useCallback(
     (boardId: string, { force = false }: { force?: boolean } = {}) =>
@@ -1019,6 +1038,32 @@ export function IssuesBoard({
             ) : null}
           </div>
         ))}
+      {view ? (
+        <BoardDeliveryNotices
+          deliveries={displaySync?.deliveries}
+          labelOf={labelOf}
+          disabled={!connected}
+          onRetry={() => deliverNow(view.board.id)}
+          onForget={(destinationEnvironmentId) => {
+            if (!scope || !connected) return;
+            const currentScope = scopeGeneration.current;
+            void forgetPeer({
+              environmentId: scope.environmentId,
+              input: { destinationEnvironmentId },
+            })
+              .then(unwrapWorkResult)
+              .then(({ revokedRemotely }) => {
+                if (!revokedRemotely && currentScope === scopeGeneration.current)
+                  setError(
+                    `Satellite could not reach ${labelOf(destinationEnvironmentId)}, so its Connections settings may still list this board's access. Revoke it there to remove it.`,
+                  );
+              })
+              .catch((failure) => {
+                if (currentScope === scopeGeneration.current) setError(workError(failure));
+              });
+          }}
+        />
+      ) : null}
       {mode === "issues" ? (
         <section>
           <Menu>

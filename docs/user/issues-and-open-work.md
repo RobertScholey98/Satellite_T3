@@ -29,9 +29,20 @@ events, so refreshing does not undo a manual move. A draft or ready pull request
 moves the active attempt into In PR. The newest linked pull request controls
 that attempt's status; closing it without merging returns the ticket to In
 progress. Earlier attempts remain linked but no longer move it.
-When the board and worktree belong to different computers, pending updates sync
-while a client is connected to both. An update that arrives after a manual move
-may need you to retry it explicitly, so an older update cannot undo your choice.
+When the board and worktree belong to different computers, the board's computer
+collects updates from the worktree's computer itself, so tickets move even when no
+Satellite window is open. Starting the ticket from a Satellite window connected to
+both computers sets this up, and both computers must run a Satellite version that
+supports it. The board's computer must reach the worktree's computer directly, for
+example over your local network or tailnet. A worktree computer that listens only on
+loopback, or that you reach through an SSH forward, cannot be reached this way. The
+board then shows that updates from it are not arriving and why. Fix the connection
+and choose **Retry**, or choose **Forget** to stop collecting from that computer.
+**Forget** also removes the access on that computer when it can be reached.
+**Refresh board** also collects pending updates. On the worktree computer, the
+access appears in **Connections** as **Issue updates for** the board's computer;
+revoking it there stops updates too. An update that arrives after a manual move may
+need you to retry it explicitly, so an older update cannot undo your choice.
 
 Use **Open** to inspect local worktrees, including worktrees without tickets.
 The selector shows how far each is ahead of and behind main. The timeline shows

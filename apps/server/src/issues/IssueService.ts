@@ -36,6 +36,7 @@ import {
   type IssueBoardsOpenInput,
   type IssueBoardView,
   type IssueBoardSync,
+  type IssueDeliveryPeer,
   type IssueBoardSyncEvent,
   type IssueBoardsSubscribeInput,
   type IssueBoardsConfigureInput,
@@ -46,8 +47,6 @@ import {
   type IssueAttemptsListInput,
   type IssueAttemptsReceiptsInput,
   type IssueAttemptsReceiptsResult,
-  type IssueAttemptsIngestInput,
-  type IssueAttemptsIngestResult,
   type IssueAttemptsAcknowledgeInput,
   type IssuePullRequestKey,
   type OrchestrationProjectShell,
@@ -64,6 +63,7 @@ import type {
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
+import { generationMessage, verifyIssuePeerSignature } from "./IssuePeerKeys.ts";
 import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
 
 export interface AttachIssueAttemptInput {
@@ -78,6 +78,14 @@ export interface ObserveIssuePullRequestInput {
   readonly key: typeof IssuePullRequestKey.Type;
   readonly state: "open" | "closed" | "merged";
   readonly source?: string;
+}
+/** Set when a worktree environment answers a board environment: only that board's attempts. */
+export interface IssuePeerBinding {
+  readonly sourceEnvironmentId?: EnvironmentId;
+}
+export interface IngestedIssueReceipts {
+  readonly acknowledgedKeys: ReadonlyArray<string>;
+  readonly rejected: ReadonlyArray<{ readonly eventKey: string; readonly message: string }>;
 }
 export interface IssueServiceShape {
   readonly list: (input: IssuesListInput) => Effect.Effect<IssuesListResult, IssueOperationError>;
@@ -110,16 +118,17 @@ export interface IssueServiceShape {
     input: IssueAttemptsListInput,
   ) => Effect.Effect<ReadonlyArray<IssueAttempt>, IssueOperationError>;
   readonly listReceipts: (
-    input: IssueAttemptsReceiptsInput,
+    input: IssueAttemptsReceiptsInput & IssuePeerBinding,
   ) => Effect.Effect<IssueAttemptsReceiptsResult, IssueOperationError>;
-  readonly ingestReceipts: (
-    input: IssueAttemptsIngestInput,
-  ) => Effect.Effect<IssueAttemptsIngestResult, IssueOperationError>;
+  /** Consumes each receipt on its own; a receipt that cannot apply is rejected, not fatal. */
+  readonly ingestReceipts: (input: {
+    readonly receipts: ReadonlyArray<IssueLifecycleReceipt>;
+  }) => Effect.Effect<IngestedIssueReceipts, IssueOperationError>;
   readonly acknowledgeReceipts: (
-    input: IssueAttemptsAcknowledgeInput,
+    input: IssueAttemptsAcknowledgeInput & IssuePeerBinding,
   ) => Effect.Effect<void, IssueOperationError>;
   readonly syncAttemptGenerations: (
-    input: IssueAttemptsSyncGenerationsInput,
+    input: IssueAttemptsSyncGenerationsInput & IssuePeerBinding,
   ) => Effect.Effect<void, IssueOperationError>;
   readonly attachAttempt: (
     input: AttachIssueAttemptInput,
@@ -131,6 +140,13 @@ export interface IssueServiceShape {
   readonly observePullRequest: (
     input: ObserveIssuePullRequestInput,
   ) => Effect.Effect<void, IssueOperationError>;
+  /**
+   * Worktree environments still running work this environment's boards wait on: an active attempt
+   * not yet completed by a merge, or a reservation from the last day that has not started.
+   */
+  readonly unfinishedDestinations: Effect.Effect<ReadonlySet<EnvironmentId>, IssueOperationError>;
+  /** Tells board subscribers that delivery from this worktree environment changed. */
+  readonly publishDeliveries: (destination: EnvironmentId) => Effect.Effect<void>;
   readonly drain: Effect.Effect<void, IssueOperationError>;
   readonly drainRefreshes: Effect.Effect<void>;
 }
@@ -156,6 +172,7 @@ const RemoteBoard = Schema.Struct({
   items: Schema.Array(IssueBoardItem),
 });
 const ISSUE_BOARD_FRESH_WINDOW_MS = 30_000;
+const RESERVATION_START_WINDOW_HOURS = 24;
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
   Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(storageError));
 interface BoardRow {
@@ -191,6 +208,12 @@ interface AttemptRow {
   started_at: string | null;
   source_generation: number;
   controlling_pr_key: string | null;
+}
+interface DeliveryPeerRow {
+  destination_environment_id: string;
+  state: IssueDeliveryPeer["state"];
+  last_error: string | null;
+  last_delivered_at: string | null;
 }
 interface MoveRow {
   sequence: number;
@@ -383,9 +406,61 @@ export const makeIssueService = (options: {
       FROM issue_board_snapshots WHERE board_id=${boardId}`;
       return rows[0];
     });
+    const unfinishedDestinationsOn = Effect.fnUntraced(function* (boardId: string | null) {
+      const cutoff = DateTime.formatIso(
+        DateTime.subtract(yield* DateTime.now, { hours: RESERVATION_START_WINDOW_HOURS }),
+      );
+      const rows = yield* sql<{
+        destination: EnvironmentId;
+      }>`SELECT DISTINCT json_extract(attempts.link_json,'$.destinationEnvironmentId') AS destination
+        FROM issue_attempts attempts
+        LEFT JOIN issue_active_attempts active ON active.attempt_id=attempts.id
+        WHERE (${boardId} IS NULL OR attempts.board_id=${boardId})
+          AND json_extract(attempts.link_json,'$.sourceEnvironmentId')=${options.environmentId}
+          AND json_extract(attempts.link_json,'$.destinationEnvironmentId')<>${options.environmentId}
+          AND attempts.completed_at IS NULL
+          AND (active.attempt_id IS NOT NULL OR (attempts.status='reserved' AND attempts.created_at>=${cutoff}))`;
+      return new Set(rows.map((row) => row.destination));
+    });
+    const deliveriesFor = Effect.fnUntraced(function* (boardId: string) {
+      const destinations = yield* sql<{
+        destination: EnvironmentId;
+      }>`SELECT DISTINCT json_extract(link_json,'$.destinationEnvironmentId') AS destination
+        FROM issue_attempts WHERE board_id=${boardId}
+          AND json_extract(link_json,'$.destinationEnvironmentId')<>${options.environmentId}
+        ORDER BY destination`;
+      if (destinations.length === 0) return [];
+      const peers = new Map(
+        (yield* sql<DeliveryPeerRow>`SELECT destination_environment_id,state,last_error,last_delivered_at
+          FROM issue_delivery_peers`).map((row) => [row.destination_environment_id, row]),
+      );
+      const unfinished = yield* unfinishedDestinationsOn(boardId);
+      return destinations.flatMap(({ destination }): IssueDeliveryPeer[] => {
+        const peer = peers.get(destination);
+        if (peer)
+          return [
+            {
+              destinationEnvironmentId: destination,
+              state: peer.state,
+              lastDeliveredAt: peer.last_delivered_at,
+              error: peer.last_error,
+            },
+          ];
+        return unfinished.has(destination)
+          ? [
+              {
+                destinationEnvironmentId: destination,
+                state: "unregistered",
+                lastDeliveredAt: null,
+                error: null,
+              },
+            ]
+          : [];
+      });
+    });
     const syncEvent = Effect.fnUntraced(function* (boardId: string) {
       const row = yield* readSync(boardId);
-      return { boardId, sync: row ? syncOf(boardId, row) : null };
+      return { boardId, sync: row ? syncOf(boardId, row, yield* deliveriesFor(boardId)) : null };
     });
     const publish = (boardId: string) =>
       syncEvent(boardId).pipe(Effect.flatMap((event) => PubSub.publish(changes, event)));
@@ -480,11 +555,16 @@ export const makeIssueService = (options: {
         syncing.add(boardId);
         return publish(boardId).pipe(Effect.andThen(refreshes.enqueue(boardId)));
       });
-    const syncOf = (boardId: string, row: SyncRow): IssueBoardSync => ({
+    const syncOf = (
+      boardId: string,
+      row: SyncRow,
+      deliveries: ReadonlyArray<IssueDeliveryPeer>,
+    ): IssueBoardSync => ({
       revision: row.revision,
       syncedAt: row.synced_at,
       syncing: syncing.has(boardId),
       failure: row.failed_at === null ? null : { at: row.failed_at, message: row.failure ?? "" },
+      deliveries,
     });
     const enqueueMove = Effect.fnUntraced(function* (
       requestKey: string,
@@ -595,7 +675,7 @@ export const makeIssueService = (options: {
             )
               yield* requestRefresh(board.id);
             remote = yield* parse(RemoteBoard, row.board_json);
-            sync = syncOf(board.id, row);
+            sync = syncOf(board.id, row, yield* deliveriesFor(board.id));
           } else {
             remote = yield* host.board(
               (yield* project(board.projectId)).workspaceRoot,
@@ -610,7 +690,7 @@ export const makeIssueService = (options: {
               if (inserted.length) yield* publish(board.id);
               const stored = yield* readSync(board.id);
               if (!stored) return yield* error("not-found", "This board is no longer connected.");
-              sync = syncOf(board.id, stored);
+              sync = syncOf(board.id, stored, yield* deliveriesFor(board.id));
             }
           }
           const moves =
@@ -783,6 +863,8 @@ export const makeIssueService = (options: {
         if (receipt.kind === "pr-created" || attempt.controlling_pr_key === null)
           yield* sql`UPDATE issue_attempts SET controlling_pr_key=${key} WHERE id=${attempt.id}`;
         else if (attempt.controlling_pr_key !== key) return;
+        if (receipt.state === "merged")
+          yield* sql`UPDATE issue_attempts SET completed_at=${receipt.createdAt} WHERE id=${attempt.id}`;
       }
       const column =
         receipt.kind === "started"
@@ -820,9 +902,16 @@ export const makeIssueService = (options: {
     const ingestReceipts: IssueServiceShape["ingestReceipts"] = (input) =>
       lock(
         Effect.gen(function* () {
-          for (const receipt of input.receipts) yield* transaction(consume(receipt));
+          const acknowledgedKeys: string[] = [];
+          const rejected: { eventKey: string; message: string }[] = [];
+          for (const receipt of input.receipts) {
+            const result = yield* transaction(consume(receipt)).pipe(Effect.result);
+            if (result._tag === "Success") acknowledgedKeys.push(receipt.eventKey);
+            else if (result.failure.reason === "storage") return yield* result.failure;
+            else rejected.push({ eventKey: receipt.eventKey, message: result.failure.message });
+          }
           yield* flush;
-          return { acknowledgedKeys: input.receipts.map((receipt) => receipt.eventKey) };
+          return { acknowledgedKeys, rejected };
         }),
       );
     const emitReceipt = Effect.fnUntraced(function* (receipt: IssueLifecycleReceipt) {
@@ -1037,7 +1126,9 @@ export const makeIssueService = (options: {
           const rows = yield* sql<{
             sequence: number;
             receipt_json: string;
-          }>`SELECT sequence,receipt_json FROM issue_lifecycle_outbox WHERE acknowledged=0 AND sequence>${input.after ?? 0} ORDER BY sequence LIMIT 100`;
+          }>`SELECT sequence,receipt_json FROM issue_lifecycle_outbox WHERE acknowledged=0 AND sequence>${input.after ?? 0}
+          AND (${input.sourceEnvironmentId ?? null} IS NULL OR json_extract(receipt_json,'$.link.sourceEnvironmentId')=${input.sourceEnvironmentId ?? null})
+          ORDER BY sequence LIMIT 100`;
           return {
             receipts: yield* Effect.forEach(rows, (row) =>
               parse(IssueLifecycleReceipt, row.receipt_json),
@@ -1050,13 +1141,25 @@ export const makeIssueService = (options: {
       lock(
         Effect.gen(function* () {
           for (const key of input.acknowledgedKeys)
-            yield* sql`UPDATE issue_lifecycle_outbox SET acknowledged=1 WHERE event_key=${key}`;
+            yield* sql`UPDATE issue_lifecycle_outbox SET acknowledged=1 WHERE event_key=${key}
+            AND (${input.sourceEnvironmentId ?? null} IS NULL OR json_extract(receipt_json,'$.link.sourceEnvironmentId')=${input.sourceEnvironmentId ?? null})`;
         }),
       );
     const syncAttemptGenerations: IssueServiceShape["syncAttemptGenerations"] = (input) =>
       lock(
         transaction(
           Effect.gen(function* () {
+            // A peer raises a generation only with the board environment's own signature, so a
+            // leaked credential cannot push a value the board never issued.
+            let publicKey: string | undefined;
+            if (input.sourceEnvironmentId !== undefined) {
+              const grants = yield* sql<{
+                public_key: string;
+              }>`SELECT public_key FROM issue_peer_grants WHERE source_environment_id=${input.sourceEnvironmentId}`;
+              if (!grants[0])
+                return yield* error("invalid", "This board's computer holds no delivery grant.");
+              publicKey = grants[0].public_key;
+            }
             for (const generation of input.generations) {
               const rows =
                 yield* sql<AttemptRow>`SELECT * FROM issue_attempts WHERE id=${generation.attemptId}`;
@@ -1067,10 +1170,30 @@ export const makeIssueService = (options: {
                   "This generation update does not match a known issue attempt.",
                 );
               const link = yield* parse(IssueAttemptLink, row.link_json);
-              if (link.destinationEnvironmentId !== options.environmentId)
+              if (
+                link.destinationEnvironmentId !== options.environmentId ||
+                (input.sourceEnvironmentId !== undefined &&
+                  link.sourceEnvironmentId !== input.sourceEnvironmentId)
+              )
                 return yield* error(
                   "invalid",
                   "This attempt does not belong to the destination server.",
+                );
+              if (
+                publicKey !== undefined &&
+                !verifyIssuePeerSignature({
+                  publicKey,
+                  message: generationMessage(
+                    link.sourceEnvironmentId,
+                    options.environmentId,
+                    generation,
+                  ),
+                  signature: generation.signature ?? "",
+                })
+              )
+                return yield* error(
+                  "invalid",
+                  "This generation update is not signed by the board's computer.",
                 );
               yield* sql`UPDATE issue_attempts SET source_generation=MAX(source_generation,${generation.sourceGeneration}) WHERE id=${row.id}`;
             }
@@ -1100,6 +1223,16 @@ export const makeIssueService = (options: {
       attachAttempt,
       firstPromptSent,
       observePullRequest,
+      unfinishedDestinations: protect(unfinishedDestinationsOn(null)),
+      publishDeliveries: (destination) =>
+        sql<{ board_id: string }>`SELECT DISTINCT board_id FROM issue_attempts
+          WHERE json_extract(link_json,'$.destinationEnvironmentId')=${destination}`.pipe(
+          Effect.flatMap((rows) => Effect.forEach(rows, (row) => publish(row.board_id))),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("issue delivery publish failed", { cause }),
+          ),
+          Effect.asVoid,
+        ),
       drain: lock(flush),
       drainRefreshes: refreshes.drain,
     } satisfies IssueServiceShape;

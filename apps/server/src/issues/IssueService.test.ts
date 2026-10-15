@@ -20,12 +20,15 @@ import {
 } from "@t3tools/contracts";
 import migration from "../persistence/Migrations/056_IssueBoards.ts";
 import snapshotMigration from "../persistence/Migrations/059_IssueBoardSnapshots.ts";
+import deliveryMigration from "../persistence/Migrations/069_IssueDeliveryPeers.ts";
 import * as BitbucketApi from "../sourceControl/BitbucketApi.ts";
 import * as ForgejoCli from "../sourceControl/ForgejoCli.ts";
 import * as GitLabCli from "../sourceControl/GitLabCli.ts";
 import * as BitbucketIssueHost from "./BitbucketIssueHost.ts";
 import * as ForgejoIssueHost from "./ForgejoIssueHost.ts";
 import * as GitLabIssueHost from "./GitLabIssueHost.ts";
+import { freshPeerKeys } from "./IssuePeer.testFixtures.ts";
+import { generationMessage } from "./IssuePeerKeys.ts";
 import { makeIssueService } from "./IssueService.ts";
 import { canonicalIssueKey, fromAdapters } from "./IssueHost.ts";
 import type { IssueHostAdapter, IssueHostBoards } from "./IssueHostAdapter.ts";
@@ -73,6 +76,7 @@ const project: OrchestrationProjectShell = {
 const setup = Effect.gen(function* () {
   yield* migration;
   yield* snapshotMigration;
+  yield* deliveryMigration;
   let column = "ready";
   let fail = false;
   let failReads = false;
@@ -196,7 +200,13 @@ describe("IssueService", () => {
       Effect.gen(function* () {
         const test = yield* setup;
         assert.strictEqual(test.reads(), 1);
-        const fresh = { revision: 1, syncedAt: epoch, syncing: false, failure: null };
+        const fresh = {
+          revision: 1,
+          syncedAt: epoch,
+          syncing: false,
+          failure: null,
+          deliveries: [],
+        };
         const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
         assert.deepStrictEqual(view.sync, fresh);
         assert.strictEqual(view.board.title, "Board");
@@ -226,6 +236,7 @@ describe("IssueService", () => {
           syncedAt: epoch,
           syncing: false,
           failure: null,
+          deliveries: [],
         });
         assert.deepStrictEqual(
           view.items.map((item) => item.columnId),
@@ -252,6 +263,7 @@ describe("IssueService", () => {
             syncedAt: epoch,
             syncing: true,
             failure: null,
+            deliveries: [],
           });
           assert.deepStrictEqual(
             view.items.map((item) => item.columnId),
@@ -266,6 +278,7 @@ describe("IssueService", () => {
           syncedAt: "1970-01-01T00:00:31.000Z",
           syncing: false,
           failure: null,
+          deliveries: [],
         });
         assert.deepStrictEqual(
           refreshed.items.map((item) => item.columnId),
@@ -284,7 +297,13 @@ describe("IssueService", () => {
         yield* test.service.drainRefreshes;
         assert.deepStrictEqual(
           (yield* test.service.openBoard({ projectId, boardId: test.boardId })).sync,
-          { revision: 1, syncedAt: "1970-01-01T00:00:31.000Z", syncing: false, failure: null },
+          {
+            revision: 1,
+            syncedAt: "1970-01-01T00:00:31.000Z",
+            syncing: false,
+            failure: null,
+            deliveries: [],
+          },
         );
         assert.strictEqual(test.reads(), 2);
       }),
@@ -333,6 +352,7 @@ describe("IssueService", () => {
           syncedAt: epoch,
           syncing: false,
           failure: { at: "1970-01-01T00:00:31.000Z", message: "Board unavailable" },
+          deliveries: [],
         });
         assert.deepStrictEqual(
           failed.items.map((item) => item.columnId),
@@ -349,6 +369,7 @@ describe("IssueService", () => {
           syncedAt: "1970-01-01T00:00:41.000Z",
           syncing: false,
           failure: null,
+          deliveries: [],
         });
         assert.deepStrictEqual(
           recovered.items.map((item) => item.columnId),
@@ -389,7 +410,7 @@ describe("IssueService", () => {
         const later = "1970-01-01T00:00:31.000Z";
         const sync = (revision: number, syncedAt: string, syncing: boolean) => ({
           boardId: test.boardId,
-          sync: { revision, syncedAt, syncing, failure: null },
+          sync: { revision, syncedAt, syncing, failure: null, deliveries: [] },
         });
         assert.deepStrictEqual(events, [
           sync(1, epoch, false),
@@ -467,7 +488,7 @@ describe("IssueService", () => {
         yield* Fiber.join(collector);
         const connected = {
           boardId: test.boardId,
-          sync: { revision: 1, syncedAt: epoch, syncing: false, failure: null },
+          sync: { revision: 1, syncedAt: epoch, syncing: false, failure: null, deliveries: [] },
         };
         assert.deepStrictEqual(events, [
           connected,
@@ -1044,13 +1065,17 @@ describe("IssueService", () => {
           const pending = yield* restarted.listReceipts({});
           assert.strictEqual(pending.receipts.length, 1);
           const receipt = pending.receipts[0]!;
-          const invalid = yield* test.service
-            .ingestReceipts({
-              receipts: [{ ...receipt, link: { ...receipt.link, reservationId: "forged" } }],
-            })
-            .pipe(Effect.result);
-          assert.strictEqual(invalid._tag, "Failure");
-          const ack = yield* test.service.ingestReceipts({ receipts: pending.receipts });
+          const forged = { ...receipt, link: { ...receipt.link, reservationId: "forged" } };
+          const ack = yield* test.service.ingestReceipts({ receipts: [forged, receipt] });
+          assert.deepStrictEqual(ack, {
+            acknowledgedKeys: [receipt.eventKey],
+            rejected: [
+              {
+                eventKey: receipt.eventKey,
+                message: "The issue lifecycle receipt does not match its reservation.",
+              },
+            ],
+          });
           yield* restarted.acknowledgeReceipts(ack);
           assert.strictEqual(test.column(), "progress");
           yield* test.service.ingestReceipts({ receipts: pending.receipts });
@@ -1275,5 +1300,116 @@ describe("IssueService", () => {
           );
         }),
       ),
+  );
+  it.effect("answers a peer only about the board environment it was granted to", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const dest = yield* makeIssueService({ ...test.options, environmentId: destination });
+        const other = EnvironmentId.make("issue-test-other-board");
+        const mine = yield* test.reserve("mine", destination);
+        const theirs = { ...mine, attemptId: "theirs", sourceEnvironmentId: other };
+        for (const [link, thread] of [
+          [mine, ThreadId.make("mine")],
+          [theirs, ThreadId.make("theirs")],
+        ] as const) {
+          yield* dest.attachAttempt({ link, threadId: thread, projectId, worktreePath: "/w" });
+          yield* dest.firstPromptSent({ threadId: thread, eventKey: "send" });
+        }
+        const keys = (input: { readonly sourceEnvironmentId?: EnvironmentId }) =>
+          dest
+            .listReceipts(input)
+            .pipe(Effect.map((page) => page.receipts.map((receipt) => receipt.eventKey)));
+        assert.deepStrictEqual(yield* keys({ sourceEnvironmentId: environmentId }), [
+          `start:${mine.attemptId}`,
+        ]);
+        yield* dest.acknowledgeReceipts({
+          acknowledgedKeys: ["start:theirs"],
+          sourceEnvironmentId: environmentId,
+        });
+        assert.deepStrictEqual(yield* keys({ sourceEnvironmentId: other }), ["start:theirs"]);
+        const sql = yield* SqlClient.SqlClient;
+        const boardKeys = yield* freshPeerKeys();
+        yield* sql`INSERT INTO issue_peer_grants(source_environment_id,public_key)
+          VALUES(${environmentId},${boardKeys.publicKey})`;
+        const theirsGeneration = {
+          attemptId: "theirs",
+          reservationId: mine.reservationId,
+          sourceGeneration: 2,
+        };
+        const foreign = yield* dest
+          .syncAttemptGenerations({
+            generations: [
+              {
+                ...theirsGeneration,
+                signature: boardKeys.sign(
+                  generationMessage(environmentId, destination, theirsGeneration),
+                ),
+              },
+            ],
+            sourceEnvironmentId: environmentId,
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(
+          foreign.message,
+          "This attempt does not belong to the destination server.",
+        );
+      }),
+    ),
+  );
+  it.effect("lets a peer raise a generation only with the board's own signature", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const dest = yield* makeIssueService({ ...test.options, environmentId: destination });
+        const link = yield* test.reserve("signed", destination);
+        yield* dest.attachAttempt({ link, threadId, projectId, worktreePath: "/w" });
+        const sql = yield* SqlClient.SqlClient;
+        const boardKeys = yield* freshPeerKeys();
+        const impostorKeys = yield* freshPeerKeys();
+        const generation = {
+          attemptId: link.attemptId,
+          reservationId: link.reservationId,
+          sourceGeneration: 9,
+        };
+        const push = (signature?: string) =>
+          dest
+            .syncAttemptGenerations({
+              generations: [{ ...generation, ...(signature ? { signature } : {}) }],
+              sourceEnvironmentId: environmentId,
+            })
+            .pipe(
+              Effect.flip,
+              Effect.map((error) => error.message),
+            );
+        const signedBy = (keys: typeof boardKeys) =>
+          keys.sign(generationMessage(environmentId, destination, generation));
+        assert.strictEqual(
+          yield* push(signedBy(boardKeys)),
+          "This board's computer holds no delivery grant.",
+        );
+        yield* sql`INSERT INTO issue_peer_grants(source_environment_id,public_key)
+          VALUES(${environmentId},${boardKeys.publicKey})`;
+        const unsigned = "This generation update is not signed by the board's computer.";
+        assert.strictEqual(yield* push(), unsigned);
+        assert.strictEqual(yield* push(signedBy(impostorKeys)), unsigned);
+        const sourceGeneration = () =>
+          dest
+            .listAttempts({})
+            .pipe(
+              Effect.map(
+                (attempts) =>
+                  attempts.find((attempt) => attempt.link.attemptId === link.attemptId)
+                    ?.sourceGeneration,
+              ),
+            );
+        assert.strictEqual(yield* sourceGeneration(), 0);
+        yield* dest.syncAttemptGenerations({
+          generations: [{ ...generation, signature: signedBy(boardKeys) }],
+          sourceEnvironmentId: environmentId,
+        });
+        assert.strictEqual(yield* sourceGeneration(), 9);
+      }),
+    ),
   );
 });

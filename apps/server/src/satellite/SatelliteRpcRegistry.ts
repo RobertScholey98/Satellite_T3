@@ -6,6 +6,8 @@ import {
   type SatelliteWsRpcMethod,
 } from "@t3tools/contracts";
 
+import { ISSUE_PEER_METHODS, issuePeerSource } from "../issues/IssuePeerAccess.ts";
+
 /** The scope each Satellite RPC requires. `RPC_REQUIRED_SCOPES` spreads it. */
 export const SATELLITE_RPC_REQUIRED_SCOPES = {
   [SATELLITE_WS_METHODS.ideasList]: AuthOrchestrationReadScope,
@@ -24,9 +26,15 @@ export const SATELLITE_RPC_REQUIRED_SCOPES = {
   [SATELLITE_WS_METHODS.issuesAttemptsReserve]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.issuesAttemptsList]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.issuesAttemptsReceipts]: AuthOrchestrationReadScope,
-  [SATELLITE_WS_METHODS.issuesAttemptsIngest]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.issuesAttemptsAcknowledge]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.issuesPeersIdentity]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.issuesPeersGrant]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.issuesPeersRegister]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.issuesPeersForget]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.issuesPeersRelease]: AuthOrchestrationOperateScope,
+  // It makes outbound connections on the caller's behalf, so reading the board is not enough.
+  [SATELLITE_WS_METHODS.issuesDeliveriesDeliver]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.openWorkList]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.openWorkTimeline]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.openWorkLinkFolder]: AuthOrchestrationOperateScope,
@@ -77,9 +85,14 @@ export const SATELLITE_RPC_AGGREGATES = {
   [SATELLITE_WS_METHODS.issuesAttemptsReserve]: "issues",
   [SATELLITE_WS_METHODS.issuesAttemptsList]: "issues",
   [SATELLITE_WS_METHODS.issuesAttemptsReceipts]: "issues",
-  [SATELLITE_WS_METHODS.issuesAttemptsIngest]: "issues",
   [SATELLITE_WS_METHODS.issuesAttemptsAcknowledge]: "issues",
   [SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations]: "issues",
+  [SATELLITE_WS_METHODS.issuesPeersIdentity]: "issues",
+  [SATELLITE_WS_METHODS.issuesPeersGrant]: "issues",
+  [SATELLITE_WS_METHODS.issuesPeersRegister]: "issues",
+  [SATELLITE_WS_METHODS.issuesPeersForget]: "issues",
+  [SATELLITE_WS_METHODS.issuesPeersRelease]: "issues",
+  [SATELLITE_WS_METHODS.issuesDeliveriesDeliver]: "issues",
   [SATELLITE_WS_METHODS.openWorkList]: "openWork",
   [SATELLITE_WS_METHODS.openWorkTimeline]: "openWork",
   [SATELLITE_WS_METHODS.openWorkLinkFolder]: "openWork",
@@ -95,3 +108,10 @@ export const SATELLITE_RPC_AGGREGATES = {
   [SATELLITE_WS_METHODS.documentsRetry]: "documents",
   [SATELLITE_WS_METHODS.documentsHistory]: "documents",
 } as const satisfies Readonly<Record<SatelliteWsRpcMethod, string>>;
+
+/**
+ * RPCs a session may call because of who it is rather than which scopes it holds. An issue peer
+ * session holds no scopes, so everything outside its grant fails the ordinary scope check.
+ */
+export const satelliteSubjectGrantsRpc = (subject: string, method: string): boolean =>
+  issuePeerSource(subject) !== undefined && ISSUE_PEER_METHODS.has(method);
