@@ -119,6 +119,27 @@ it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
     ),
   );
 
+  it.effect("runs a Revdoc pass outside the checkout", () =>
+    withFakeAcpGrok(
+      {
+        T3_ACP_PROMPT_RESPONSE_TEXT:
+          '{"title":"Review","summary":"Changes","context":"Verify manually","sections":[]}',
+      },
+      (generation, cwd) =>
+        Effect.gen(function* () {
+          const checkout = NodePath.join(cwd, "checkout");
+          NodeFS.mkdirSync(checkout);
+          NodeFS.writeFileSync(NodePath.join(checkout, "keep.txt"), "untouched");
+          yield* generation.generateRevdoc({
+            cwd: checkout,
+            prompt: "Review the worktree.",
+            modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
+          });
+          expect(NodeFS.readdirSync(checkout)).toEqual(["keep.txt"]);
+        }),
+    ),
+  );
+
   it.effect("generates notebook edits with the selected model", () =>
     withFakeAcpGrok(
       { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":[],"summary":"No new decisions."}' },

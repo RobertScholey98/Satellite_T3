@@ -35,10 +35,15 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
   const path = yield* Path.Path;
 
   const runGrokJson: TextGenerationOperations.Runner = (request) => {
-    const { operation, needs, cwd, prompt, modelSelection, onActivity } = request;
+    const { operation, needs, prompt, modelSelection, onActivity } = request;
     const isolated = TextGenerationOperations.isIsolated(needs);
     return Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
+      // An isolated task prepares its runtime in a temporary directory, never the checkout.
+      const cwd =
+        needs === "isolated"
+          ? yield* fs.makeTempDirectoryScoped({ prefix: "t3code-grok-text-" })
+          : request.cwd;
       const runtimeEnvironment = isolated
         ? yield* prepareGrokIdeaEnvironment(cwd, environment, "updates").pipe(
             Effect.provideService(FileSystem.FileSystem, fs),
