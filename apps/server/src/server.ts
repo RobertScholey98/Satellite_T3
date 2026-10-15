@@ -358,6 +358,7 @@ const layerProjectCloneTracker = ProjectCloneTracker.layer.pipe(
 );
 
 const layerReview = ReviewService.layer.pipe(
+  Layer.provide(SatelliteServer.layerReviewDependencies),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(layerVcsDriverRegistry),
 );

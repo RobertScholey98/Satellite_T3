@@ -4,6 +4,7 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 
 import { DocumentService } from "../documents/DocumentService.ts";
+import { WorktreeRegistry } from "../documents/WorktreeRegistry.ts";
 import * as CommitRecommendationService from "../git/CommitRecommendationService.ts";
 import { IdeaDeletionReactor } from "../ideas/IdeaDeletionReactor.ts";
 import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
@@ -58,12 +59,16 @@ const layerIssueService = IssueService.layer.pipe(
   ),
 );
 
+/** What upstream's review service needs from Satellite to accept a registered worktree. */
+export const layerReviewDependencies = WorktreeRegistry.layer.pipe(
+  Layer.provide(ProjectStore.layer),
+);
+
 /**
  * Satellite's server-lifetime services and reactors. `server.ts` provides it once; what it needs
  * from upstream, such as the source control provider registry, it takes from that environment.
  */
 export const layer = Layer.mergeAll(
-  DocumentService.layer,
   RevdocService.layer,
   OpenWorkService.layer,
   CommitRecommendationService.layer,
@@ -79,6 +84,8 @@ export const layer = Layer.mergeAll(
   Layer.provideMerge(IdeaUpdateReactor.layer),
   Layer.provideMerge(IdeaPromotion.layer),
   Layer.provideMerge(IdeaRuntime.layer),
+  Layer.provideMerge(DocumentService.layer),
+  Layer.provideMerge(WorktreeRegistry.layer),
   Layer.provideMerge(IdeaNotebookStore.layer),
   Layer.provideMerge(layerIssueService),
   Layer.provideMerge(SatelliteOrchestration.layer),
@@ -89,7 +96,7 @@ export const layer = Layer.mergeAll(
 );
 
 const registerIdeaImage = Effect.gen(function* () {
-  const runtime = yield* IdeaRuntime;
+  const documents = yield* DocumentService;
   const built = yield* IdeasImageToolkit;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   yield* registerImageTool(
@@ -100,7 +107,7 @@ const registerIdeaImage = Effect.gen(function* () {
         .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption)),
     (effect) =>
       effect.pipe(
-        Effect.provideService(IdeaRuntime, runtime),
+        Effect.provideService(DocumentService, documents),
         Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
       ),
     "idea-image",

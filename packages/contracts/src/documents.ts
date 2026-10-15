@@ -92,7 +92,10 @@ export const DocumentsPublishInput = Schema.Struct({
   expectedCurrentRevisionId: Schema.optional(DocumentId),
   title: DocumentTitle,
   kind: DocumentKind,
-  path: TrimmedNonEmptyString,
+  path: Schema.optional(TrimmedNonEmptyString),
+  /** Inline content for threads without a checkout to write into, such as ideas. */
+  text: Schema.optional(Schema.String.check(Schema.isMaxLength(2 * 1024 * 1024))),
+  mediaType: Schema.optional(TrimmedNonEmptyString),
   definition: Schema.optional(Schema.NullOr(DocumentChecklist)),
   step: Schema.optional(OpenWorkPublicationStep),
 });

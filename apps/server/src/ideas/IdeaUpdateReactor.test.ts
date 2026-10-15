@@ -43,6 +43,7 @@ import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.t
 import { ServerSettingsService } from "../serverSettings.ts";
 import { createIdeaNotebook } from "./IdeaNotebook.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
+import { DocumentService } from "../documents/DocumentService.ts";
 import { IdeaRuntime } from "./IdeaRuntime.ts";
 import { IdeaUpdateReactor } from "./IdeaUpdateReactor.ts";
 import { type IdeaUpdateResult, validateIdeaUpdateSources } from "./IdeaUpdateGeneration.ts";
@@ -63,7 +64,11 @@ const updaterLayer = (generate: (prompt: string) => Effect.Effect<IdeaUpdateResu
     Layer.provide(
       Layer.mock(IdeaRuntime)({
         workingDirectory: () => Effect.succeed("C:/isolated-idea"),
-        readArtifact: () =>
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(DocumentService)({
+        readIdeaDocument: () =>
           Effect.succeed({
             artifact: artifact,
             contentBase64: Buffer.from("The retained design document.").toString("base64"),

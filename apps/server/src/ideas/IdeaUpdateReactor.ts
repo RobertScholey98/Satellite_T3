@@ -28,7 +28,8 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { ideaActivityDiscussion } from "./IdeaDiscussion.ts";
-import { IdeaRuntime, IdeaRuntimeError, isIdeaTextDocument } from "./IdeaRuntime.ts";
+import { IdeaRuntime, IdeaRuntimeError } from "./IdeaRuntime.ts";
+import { DocumentService, isTextArtifact } from "../documents/DocumentService.ts";
 import {
   IDEA_UPDATE_INSTRUCTIONS,
   IDEA_UPDATE_OUTPUT_SCHEMA,
@@ -56,6 +57,7 @@ export class IdeaUpdateReactor extends Context.Service<
     Effect.gen(function* () {
       const store = yield* IdeaNotebookStore;
       const runtime = yield* IdeaRuntime;
+      const documentService = yield* DocumentService;
       const engine = yield* OrchestrationEngineService;
       const snapshots = yield* ProjectionSnapshotQuery;
       const settings = yield* ServerSettingsService;
@@ -183,11 +185,9 @@ export class IdeaUpdateReactor extends Context.Service<
               sourceSequences.set("artifact:" + event.payload.mutation.artifact.id, event.sequence);
           }
           const documents = yield* Effect.forEach(
-            notebook.artifacts.filter((artifact) =>
-              isIdeaTextDocument(artifact.mediaType, artifact.name),
-            ),
+            notebook.artifacts.filter(isTextArtifact),
             (artifact) =>
-              runtime.readArtifact({ threadId, artifactId: artifact.id }).pipe(
+              documentService.readIdeaDocument({ threadId, artifactId: artifact.id }).pipe(
                 Effect.map((result) => {
                   const text = Buffer.from(result.contentBase64, "base64").toString("utf8");
                   return {

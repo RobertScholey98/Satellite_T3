@@ -4,7 +4,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as SqlClient from "effect/sql/SqlClient";
 
 import {
   VcsRepositoryDetectionError,
@@ -21,6 +20,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { isFilesystemRoot, managedWorktreesDirectories } from "../worktreesDirectory.ts";
+import { WorktreeRegistry } from "../documents/WorktreeRegistry.ts";
 
 export class ReviewService extends Context.Service<
   ReviewService,
@@ -41,7 +41,7 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
-  const sql = yield* SqlClient.SqlClient;
+  const registeredWorktrees = yield* WorktreeRegistry;
   const settings = yield* ServerSettings.ServerSettingsService;
 
   const canonicalizePath = (value: string) => {
@@ -97,52 +97,7 @@ export const make = Effect.gen(function* () {
       return;
     }
 
-    const registered = yield* sql<{
-      common_dir: string;
-      path: string;
-    }>`SELECT common_dir,path FROM open_worktrees WHERE path=${candidate}`.pipe(
-      Effect.orElseSucceed(() => []),
-    );
-    if (registered[0]) {
-      const identity = yield* git
-        .execute({
-          operation,
-          cwd: candidate,
-          args: ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"],
-        })
-        .pipe(Effect.result);
-      if (identity._tag === "Success") {
-        const [commonDir, root] = identity.success.stdout.trim().split("\n");
-        if (commonDir && root) {
-          const [actualCommon, expectedCommon, actualRoot] = yield* Effect.all([
-            canonicalizePath(commonDir),
-            canonicalizePath(registered[0].common_dir),
-            canonicalizePath(root),
-          ]);
-          if (actualCommon === expectedCommon && actualRoot === candidate) {
-            const projects = yield* sql<{
-              workspace_root: string;
-            }>`SELECT DISTINCT workspace_root FROM projection_projects WHERE deleted_at IS NULL`.pipe(
-              Effect.orElseSucceed(() => []),
-            );
-            for (const project of projects) {
-              const repository = yield* git
-                .execute({
-                  operation,
-                  cwd: project.workspace_root,
-                  args: ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-                })
-                .pipe(Effect.result);
-              if (
-                repository._tag === "Success" &&
-                (yield* canonicalizePath(repository.success.stdout.trim())) === actualCommon
-              )
-                return;
-            }
-          }
-        }
-      }
-    }
+    if (yield* registeredWorktrees.isReviewable(candidate)) return;
 
     return yield* new VcsRepositoryDetectionError({
       operation,

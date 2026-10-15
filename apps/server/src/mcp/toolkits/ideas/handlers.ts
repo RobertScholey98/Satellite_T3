@@ -3,6 +3,7 @@ import { readImageDimensions } from "@t3tools/shared/imageDimensions";
 import * as Effect from "effect/Effect";
 import { IdeaRuntime, IdeaRuntimeError } from "../../../ideas/IdeaRuntime.ts";
 import { IdeaPromotion } from "../../../ideas/IdeaPromotion.ts";
+import { DocumentService } from "../../../documents/DocumentService.ts";
 import { requireThreadMcpCapability } from "../../McpInvocationContext.ts";
 import { IdeasToolkit, IdeasImageToolkit } from "./tools.ts";
 
@@ -18,19 +19,6 @@ const make = Effect.gen(function* () {
     idea_read_main: McpToolAccess.readsAsCaller((input) =>
       requireThreadMcpCapability("ideas").pipe(
         Effect.flatMap(({ thread: { threadId } }) => runtime.readMain({ ...input, threadId })),
-      ),
-    ),
-    idea_write_document: McpToolAccess.actsAsCaller((input) =>
-      requireThreadMcpCapability("ideas").pipe(
-        Effect.flatMap(({ thread: { threadId } }) =>
-          runtime.writeArtifact({
-            threadId,
-            name: input.name,
-            mediaType: input.mediaType,
-            contentBase64: Buffer.from(input.text).toString("base64"),
-            source: "agent",
-          }),
-        ),
       ),
     ),
     idea_propose_issues: McpToolAccess.actsAsCaller((input) =>
@@ -51,14 +39,17 @@ export const IdeasToolkitHandlersLive = McpToolAccess.toLayer(IdeasToolkit, make
 export const IdeasImageToolkitHandlersLive = McpToolAccess.toLayer(
   IdeasImageToolkit,
   Effect.gen(function* () {
-    const runtime = yield* IdeaRuntime;
+    const documents = yield* DocumentService;
     return {
       idea_read_image: McpToolAccess.readsAsCaller((input) =>
         Effect.gen(function* () {
           const {
             thread: { threadId },
           } = yield* requireThreadMcpCapability("ideas");
-          const result = yield* runtime.readArtifact({ threadId, artifactId: input.artifactId });
+          const result = yield* documents.readIdeaDocument({
+            threadId,
+            artifactId: input.artifactId,
+          });
           if (
             !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(
               result.artifact.mediaType,

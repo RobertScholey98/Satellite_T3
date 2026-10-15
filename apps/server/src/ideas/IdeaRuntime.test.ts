@@ -22,24 +22,40 @@ import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestrat
 import { withIdeaLock, setIdeaExecution, clearIdeaExecution } from "./IdeaExecution.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime, decodeIdeaArtifactContent } from "./IdeaRuntime.ts";
+import { DocumentService, type IdeaDocumentInput } from "../documents/DocumentService.ts";
 import { resolveIdeaMain } from "./IdeaMain.ts";
 import { ideaStateFixture, testIdeaId, unusedIdeaSnapshots } from "./IdeaRuntime.testFixtures.ts";
 
 const fixture = Effect.gen(function* () {
   const state = ideaStateFixture();
+  const published: Array<{ input: IdeaDocumentInput; actor: string }> = [];
+  const documents = Layer.mock(DocumentService)({
+    publishIdeaDocument: (input, actor) =>
+      Effect.sync(() => {
+        published.push({ input, actor });
+        return {
+          id: IdeaArtifactId.make(input.id ?? "document"),
+          name: input.name,
+          mediaType: input.mediaType,
+          sizeBytes: input.bytes.byteLength,
+          revision: 1,
+          createdAt: "2026-09-30T12:00:00.000Z",
+          source: "upload" as const,
+        };
+      }),
+  });
   const runtime = yield* IdeaRuntime.pipe(
-    Effect.provide(IdeaRuntime.layer),
+    Effect.provide(IdeaRuntime.layer.pipe(Layer.provide(documents))),
     Effect.provideService(IdeaNotebookStore, state.store),
     Effect.provideService(OrchestrationEngineService, state.engine),
     Effect.provideService(ProjectionSnapshotQuery, unusedIdeaSnapshots),
   );
-  return { ...state, runtime };
+  return { ...state, runtime, published };
 });
 const testLayer = Layer.mergeAll(
   ServerConfig.layerTest(process.cwd(), { prefix: "idea-runtime-" }),
   ProcessRunner.layer,
 ).pipe(Layer.provideMerge(NodeServices.layer));
-const text = Buffer.from("Owned notebook document").toString("base64");
 const decodeThreadShell = Schema.decodeUnknownEffect(OrchestrationThreadShell);
 const decodeProjectShell = Schema.decodeUnknownEffect(OrchestrationProjectShell);
 
@@ -100,7 +116,7 @@ describe("idea runtime boundaries", () => {
         });
         const state = ideaStateFixture();
         const runtime = yield* IdeaRuntime.pipe(
-          Effect.provide(IdeaRuntime.layer),
+          Effect.provide(IdeaRuntime.layer.pipe(Layer.provide(Layer.mock(DocumentService)({})))),
           Effect.provideService(IdeaNotebookStore, state.store),
           Effect.provideService(OrchestrationEngineService, state.engine),
           Effect.provideService(ProjectionSnapshotQuery, {
@@ -138,7 +154,7 @@ describe("idea runtime boundaries", () => {
     "imports a question attachment and supplies an owned artifact reference while preserving the answer",
     () =>
       Effect.gen(function* () {
-        const { runtime, get } = yield* fixture;
+        const { runtime, get, set, published } = yield* fixture;
         const config = yield* ServerConfig;
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -159,15 +175,39 @@ describe("idea runtime boundaries", () => {
         assert.deepEqual((answers.q as readonly string[]).slice(0, 1), ["One thread"]);
         assert.include((answers.q as readonly string[])[1]!, id);
         assert.notInclude((answers.q as readonly string[])[1]!, config.attachmentsDir);
-        assert.equal(
-          Buffer.from(
-            (yield* runtime.readArtifact({ threadId: testIdeaId, artifactId: id })).contentBase64,
-            "base64",
-          ).toString("utf8"),
-          "decision",
+        assert.deepEqual(
+          published.map(({ input, actor }) => ({
+            ...input,
+            bytes: Buffer.from(input.bytes).toString("utf8"),
+            actor,
+          })),
+          [
+            {
+              threadId: testIdeaId,
+              name: "decision.txt",
+              mediaType: "text/plain",
+              bytes: "decision",
+              id,
+              actor: "upload:attachment",
+            },
+          ],
         );
+        set({
+          ...get(),
+          artifacts: [
+            {
+              id,
+              name: "decision.txt",
+              mediaType: "text/plain",
+              sizeBytes: 8,
+              revision: 1,
+              createdAt: "2026-09-30T12:00:00.000Z",
+              source: "upload",
+            },
+          ],
+        });
         yield* runtime.importAttachments(testIdeaId, [attachment]);
-        assert.equal(get().artifacts.length, 1);
+        assert.equal(published.length, 1);
       }).pipe(Effect.provide(testLayer)),
   );
   it("rejects malformed and oversized document transport", () => {
@@ -177,23 +217,18 @@ describe("idea runtime boundaries", () => {
       /20 MB/,
     );
   });
-  it.effect("owns artifacts and rejects reads and queued writes after deletion", () =>
+  it.effect("removes the idea's working directory and rejects queued work after deletion", () =>
     Effect.gen(function* () {
       const { runtime, get, set } = yield* fixture;
       const fs = yield* FileSystem.FileSystem;
       const config = yield* ServerConfig;
       const path = yield* Path.Path;
-      const artifact = yield* runtime.writeArtifact({
-        threadId: testIdeaId,
-        name: "../notes.md",
-        mediaType: "text/markdown",
-        contentBase64: text,
-      });
-      assert.equal(
-        (yield* runtime.readArtifact({ threadId: testIdeaId, artifactId: artifact.id }))
-          .contentBase64,
-        text,
+      const directory = path.join(
+        config.stateDir,
+        "ideas",
+        Buffer.from(testIdeaId).toString("base64url"),
       );
+      assert.equal(yield* runtime.workingDirectory(testIdeaId), yield* fs.realPath(directory));
       const entered = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       const held = yield* withIdeaLock(
@@ -201,36 +236,15 @@ describe("idea runtime boundaries", () => {
         Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))),
       ).pipe(Effect.forkScoped);
       yield* Deferred.await(entered);
-      const lateWrite = yield* runtime
-        .writeArtifact({
-          threadId: testIdeaId,
-          name: "late.md",
-          mediaType: "text/markdown",
-          contentBase64: text,
-        })
+      const late = yield* runtime
+        .workingDirectory(testIdeaId)
         .pipe(Effect.result, Effect.forkScoped);
       set({ ...get(), status: "deleting", deletionEpoch: 1 });
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(held);
-      const result = yield* Fiber.join(lateWrite);
-      assert.equal(result._tag, "Failure");
+      assert.equal((yield* Fiber.join(late))._tag, "Failure");
       yield* runtime.removeOwned(testIdeaId);
-      assert.isFalse(
-        yield* fs.exists(
-          path.join(config.stateDir, "ideas", Buffer.from(testIdeaId).toString("base64url")),
-        ),
-      );
-      assert.equal(
-        (yield* runtime
-          .readArtifact({ threadId: testIdeaId, artifactId: artifact.id })
-          .pipe(Effect.result))._tag,
-        "Failure",
-      );
-      assert.isFalse(
-        yield* fs.exists(
-          path.join(config.stateDir, "ideas", Buffer.from(testIdeaId).toString("base64url")),
-        ),
-      );
+      assert.isFalse(yield* fs.exists(directory));
     }).pipe(Effect.provide(testLayer)),
   );
   it.effect("rejects a linked storage ancestor before creating anything outside the idea", () =>
@@ -243,14 +257,7 @@ describe("idea runtime boundaries", () => {
       const linked = path.join(config.stateDir, "ideas");
       yield* Effect.tryPromise(() => NodeFSP.symlink(outside, linked, "junction"));
       assert.equal(
-        (yield* runtime
-          .writeArtifact({
-            threadId: testIdeaId,
-            name: "notes.md",
-            mediaType: "text/markdown",
-            contentBase64: text,
-          })
-          .pipe(Effect.result))._tag,
+        (yield* runtime.workingDirectory(testIdeaId).pipe(Effect.result))._tag,
         "Failure",
       );
       assert.deepEqual(yield* fs.readDirectory(outside), []);

@@ -731,6 +731,21 @@ class EnvironmentConnectHttpApi extends HttpApiGroup.make("connect")
     }),
   ) {}
 
+/** An idea upload the user can fix, such as a file over the size limit, with the reason. */
+export class IdeaUploadRejectedError extends Schema.TaggedError<IdeaUploadRejectedError>()(
+  "IdeaUploadRejectedError",
+  { detail: Schema.String },
+  { httpApiStatus: 400 },
+) {
+  [HttpServerRespondable.symbol]() {
+    return HttpServerResponse.schemaJson(IdeaUploadRejectedError)(this, { status: 400 });
+  }
+
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export class EnvironmentIdeasHttpApi extends HttpApiGroup.make("ideas")
   .add(
     HttpApiEndpoint.post("writeArtifact", "/api/ideas/:threadId/artifacts", {
@@ -742,7 +757,7 @@ export class EnvironmentIdeasHttpApi extends HttpApiGroup.make("ideas")
         contentBase64: IdeaArtifactWriteInput.fields.contentBase64,
       }),
       success: IdeaArtifactWriteResult,
-      error: EnvironmentOrchestrationSnapshotErrors,
+      error: [...EnvironmentOrchestrationSnapshotErrors, IdeaUploadRejectedError],
     }).middleware(EnvironmentAuthenticatedAuth),
   )
   .add(

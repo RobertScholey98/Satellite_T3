@@ -10,13 +10,13 @@ import * as Path from "effect/Path";
 import * as NodeOS from "node:os";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { CommandId, IdeaArtifactId, type IdeaArtifact, type ThreadId } from "@t3tools/contracts";
+import { CommandId, IdeaArtifactId, type ThreadId } from "@t3tools/contracts";
+import { DocumentService, isTextArtifact } from "../documents/DocumentService.ts";
 import { ServerConfig } from "../config.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
@@ -41,16 +41,6 @@ const MAX_CONTEXT_CHARS = 100_000;
 const fail = (message: string) => new IdeaRuntimeError({ message });
 const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const asRuntimeError = (error: { readonly message: string }) => fail(error.message);
-const isIdeaRuntimeError = Schema.is(IdeaRuntimeError);
-
-export interface IdeaArtifactWrite {
-  readonly threadId: ThreadId;
-  readonly name: string;
-  readonly mediaType: string;
-  readonly contentBase64: string;
-  readonly sourceAttachmentId?: string;
-  readonly source?: "upload" | "agent";
-}
 
 export function decodeIdeaArtifactContent(contentBase64: string): Uint8Array {
   if (contentBase64.length > Math.ceil(MAX_IDEA_ARTIFACT_BYTES / 3) * 4)
@@ -68,9 +58,6 @@ export function decodeIdeaArtifactContent(contentBase64: string): Uint8Array {
   if (bytes.byteLength > MAX_IDEA_ARTIFACT_BYTES) throw fail("Documents must be 20 MB or smaller.");
   return bytes;
 }
-
-export const isIdeaTextDocument = (mediaType: string, name: string) =>
-  mediaType.startsWith("text/") || /\.(md|markdown|html?|txt|json|csv|svg)$/i.test(name);
 
 export class IdeaRuntime extends Context.Service<
   IdeaRuntime,
@@ -96,17 +83,6 @@ export class IdeaRuntime extends Context.Service<
       id?: string | undefined;
       offset?: number | undefined;
     }) => Effect.Effect<string, IdeaRuntimeError>;
-    readonly writeArtifact: (
-      input: IdeaArtifactWrite,
-    ) => Effect.Effect<IdeaArtifact, IdeaRuntimeError>;
-    readonly readArtifact: (input: {
-      threadId: ThreadId;
-      artifactId: IdeaArtifactId;
-    }) => Effect.Effect<{ artifact: IdeaArtifact; contentBase64: string }, IdeaRuntimeError>;
-    readonly removeArtifact: (
-      threadId: ThreadId,
-      artifactId: IdeaArtifactId,
-    ) => Effect.Effect<void, IdeaRuntimeError>;
     readonly removeOwned: (threadId: ThreadId) => Effect.Effect<void, IdeaRuntimeError>;
   }
 >()("t3/ideas/IdeaRuntime") {
@@ -121,10 +97,9 @@ export class IdeaRuntime extends Context.Service<
       const config = yield* ServerConfig;
       const process = yield* ProcessRunner;
       const crypto = yield* Crypto.Crypto;
+      const documents = yield* DocumentService;
       const root = (id: ThreadId) =>
         NodePath.join(config.stateDir, "ideas", Buffer.from(id).toString("base64url"));
-      const file = (id: ThreadId, artifactId: IdeaArtifactId) =>
-        NodePath.join(root(id), "documents", encodeURIComponent(artifactId));
       const active = (id: ThreadId) =>
         store.requireActive(id).pipe(Effect.mapError(asRuntimeError));
       const git = Effect.fn("IdeaRuntime.git")(function* (cwd: string, args: readonly string[]) {
@@ -169,24 +144,19 @@ export class IdeaRuntime extends Context.Service<
       const ownedDirectory = Effect.fn("IdeaRuntime.ownedDirectory")(function* (
         threadId: ThreadId,
         create = false,
-        includeDocuments = true,
       ) {
         let expected = yield* fs.realPath(config.stateDir).pipe(Effect.mapError(asRuntimeError));
-        for (const segment of [
-          "ideas",
-          Buffer.from(threadId).toString("base64url"),
-          ...(includeDocuments ? ["documents"] : []),
-        ]) {
+        for (const segment of ["ideas", Buffer.from(threadId).toString("base64url")]) {
           expected = NodePath.join(expected, segment);
           if (!(yield* fs.exists(expected).pipe(Effect.mapError(asRuntimeError)))) {
-            if (!create) return yield* fail("The idea's document storage is unavailable.");
+            if (!create) return yield* fail("The idea's working directory is unavailable.");
             yield* fs.makeDirectory(expected).pipe(Effect.mapError(asRuntimeError));
           }
           const real = yield* fs.realPath(expected).pipe(Effect.mapError(asRuntimeError));
           if (NodePath.relative(expected, real) !== "")
             return yield* fail("The idea directory must not be a symbolic link.");
         }
-        return NodePath.dirname(expected);
+        return expected;
       });
       const foregroundContext = Effect.fn("IdeaRuntime.foregroundContext")(function* (
         threadId: ThreadId,
@@ -318,86 +288,6 @@ export class IdeaRuntime extends Context.Service<
           text: yield* git(current.projectDirectory, ["ls-tree", "-r", "--name-only", revision]),
         };
       });
-      const readArtifact = Effect.fn("IdeaRuntime.readArtifact")(function* (input: {
-        threadId: ThreadId;
-        artifactId: IdeaArtifactId;
-      }) {
-        return yield* withIdeaLock(
-          input.threadId,
-          Effect.gen(function* () {
-            const notebook = yield* active(input.threadId);
-            const artifact = notebook.artifacts.find((a) => a.id === input.artifactId);
-            if (!artifact) return yield* fail("This document is unavailable.");
-            yield* ownedDirectory(input.threadId);
-            const target = file(input.threadId, input.artifactId);
-            if ((yield* fs.realPath(target).pipe(Effect.mapError(asRuntimeError))) !== target)
-              return yield* fail("The document must not be a symbolic link.");
-            const bytes = yield* fs.readFile(target).pipe(Effect.mapError(asRuntimeError));
-            return { artifact, contentBase64: Buffer.from(bytes).toString("base64") };
-          }),
-        );
-      });
-      const writeArtifact = Effect.fn("IdeaRuntime.writeArtifact")(function* (
-        input: IdeaArtifactWrite,
-      ) {
-        return yield* withIdeaLock(
-          input.threadId,
-          Effect.gen(function* () {
-            const notebook = yield* active(input.threadId);
-            if (!input.name.trim() || input.name.length > 240 || !input.mediaType.trim())
-              return yield* fail("A document name and media type are required.");
-            const importedId = input.sourceAttachmentId
-              ? IdeaArtifactId.make("attachment-" + input.sourceAttachmentId)
-              : undefined;
-            const previous = importedId
-              ? notebook.artifacts.find((artifact) => artifact.id === importedId)
-              : undefined;
-            if (previous) return previous;
-            const bytes = yield* Effect.try({
-              try: () => decodeIdeaArtifactContent(input.contentBase64),
-              catch: (e) => (isIdeaRuntimeError(e) ? e : fail("Invalid document data.")),
-            });
-            yield* ownedDirectory(input.threadId, true);
-            const artifact = {
-              id:
-                importedId ??
-                IdeaArtifactId.make(
-                  yield* crypto.randomUUIDv4.pipe(Effect.mapError(asRuntimeError)),
-                ),
-              name: input.name.trim(),
-              mediaType: input.mediaType,
-              sizeBytes: bytes.byteLength,
-              textStatus: isIdeaTextDocument(input.mediaType, input.name)
-                ? "available"
-                : ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(input.mediaType)
-                  ? "image"
-                  : "unsupported",
-              revision: 1,
-              createdAt: DateTime.formatIso(yield* DateTime.now),
-              source: input.source ?? "upload",
-            } satisfies IdeaArtifact;
-            const target = file(input.threadId, artifact.id);
-            yield* fs
-              .writeFile(target, bytes, { flag: "wx" })
-              .pipe(Effect.mapError(asRuntimeError));
-            yield* engine
-              .dispatch({
-                type: "idea.apply",
-                commandId: CommandId.make(
-                  yield* crypto.randomUUIDv4.pipe(Effect.mapError(asRuntimeError)),
-                ),
-                threadId: input.threadId,
-                deletionEpoch: notebook.deletionEpoch,
-                mutation: { kind: "artifact.register", artifact },
-              })
-              .pipe(
-                Effect.mapError(asRuntimeError),
-                Effect.onError(() => fs.remove(target, { force: true }).pipe(Effect.ignore)),
-              );
-            return artifact;
-          }),
-        );
-      });
       const catchUp = (threadId: ThreadId) =>
         Effect.gen(function* () {
           const stream = yield* engine.subscribeDomainEvents;
@@ -489,11 +379,13 @@ export class IdeaRuntime extends Context.Service<
         }
         if (input.resource === "artifact") {
           if (!input.id) return yield* fail("Choose a document to read.");
-          const result = yield* readArtifact({
-            threadId: input.threadId,
-            artifactId: IdeaArtifactId.make(input.id),
-          });
-          if (!isIdeaTextDocument(result.artifact.mediaType, result.artifact.name))
+          const result = yield* documents
+            .readIdeaDocument({
+              threadId: input.threadId,
+              artifactId: IdeaArtifactId.make(input.id),
+            })
+            .pipe(Effect.mapError(asRuntimeError));
+          if (!isTextArtifact(result.artifact))
             return yield* fail(
               "This document cannot be extracted as text. Use idea_read_image for PNG, JPEG, GIF or WebP attachments. Other binary formats need a text export.",
             );
@@ -529,7 +421,7 @@ export class IdeaRuntime extends Context.Service<
         if (input.resource === "skill") return skill;
         return [
           "Promotion uses this idea's existing thread. Read the pitch first, then relevant entries, documents and current main.",
-          "Create optional PRD/spec documents with idea_write_document only when useful. Include requirements in ticket bodies. Never link tickets back to this idea or its files.",
+          "Create optional PRD/spec documents with publish_document only when useful. Include requirements in ticket bodies. Never link tickets back to this idea or its files.",
           "Use idea_propose_issues to save the breakdown for user review. After the user approves it in T3, idea_publish_issues publishes and verifies it. Do not use shell commands or create another thread.",
           "The installed to-issues instructions follow. T3's scoped tools replace tracker CLI actions and preserve its review requirement.",
           skill,
@@ -541,7 +433,7 @@ export class IdeaRuntime extends Context.Service<
         threadId: ThreadId,
         attachments: readonly ChatAttachment[],
       ) {
-        yield* active(threadId);
+        const notebook = yield* active(threadId);
         for (const attachment of attachments) {
           if (attachment.type !== "image" && attachment.type !== "file") continue;
           if (
@@ -551,14 +443,15 @@ export class IdeaRuntime extends Context.Service<
             return yield* fail("The attachment does not belong to this idea.");
           const path = resolveAttachmentPath({ attachmentsDir: config.attachmentsDir, attachment });
           if (!path) return yield* fail("The idea attachment is unavailable.");
+          const id = "attachment-" + attachment.id;
+          if (notebook.artifacts.some((artifact) => artifact.id === id)) continue;
           const bytes = yield* fs.readFile(path).pipe(Effect.mapError(asRuntimeError));
-          yield* writeArtifact({
-            threadId,
-            name: attachment.name,
-            mediaType: attachment.mimeType,
-            contentBase64: Buffer.from(bytes).toString("base64"),
-            sourceAttachmentId: attachment.id,
-          });
+          yield* documents
+            .publishIdeaDocument(
+              { threadId, name: attachment.name, mediaType: attachment.mimeType, bytes, id },
+              "upload:attachment",
+            )
+            .pipe(Effect.mapError(asRuntimeError));
         }
       });
       return IdeaRuntime.of({
@@ -572,31 +465,13 @@ export class IdeaRuntime extends Context.Service<
         foregroundContext,
         readMain,
         readContext,
-        writeArtifact,
-        readArtifact,
-        removeArtifact: (threadId, artifactId) =>
-          withIdeaLock(
-            threadId,
-            Effect.gen(function* () {
-              if (
-                !(yield* fs
-                  .exists(file(threadId, artifactId))
-                  .pipe(Effect.mapError(asRuntimeError)))
-              )
-                return;
-              yield* ownedDirectory(threadId);
-              yield* fs
-                .remove(file(threadId, artifactId), { force: true })
-                .pipe(Effect.mapError(asRuntimeError));
-            }),
-          ),
         removeOwned: (threadId) =>
           withIdeaLock(
             threadId,
             Effect.gen(function* () {
               clearIdeaExecution(threadId);
               if (!(yield* fs.exists(root(threadId)).pipe(Effect.mapError(asRuntimeError)))) return;
-              yield* ownedDirectory(threadId, false, false);
+              yield* ownedDirectory(threadId);
               yield* fs
                 .remove(root(threadId), { recursive: true, force: true })
                 .pipe(Effect.mapError(asRuntimeError));

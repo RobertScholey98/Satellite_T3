@@ -39,6 +39,9 @@ import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.t
 import { ServerSettingsService } from "../serverSettings.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { IdeaRuntime } from "./IdeaRuntime.ts";
+import { DocumentService } from "../documents/DocumentService.ts";
+import { WorktreeRegistry } from "../documents/WorktreeRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { IdeaUpdateReactor } from "./IdeaUpdateReactor.ts";
 
 const threadId = ThreadId.make("promotion-catchup");
@@ -144,6 +147,9 @@ const runCatchup = Effect.fn(function* (
   });
   const layer = IdeaUpdateReactor.layer.pipe(
     Layer.provideMerge(IdeaRuntime.layer),
+    Layer.provideMerge(DocumentService.layer),
+    Layer.provideMerge(WorktreeRegistry.layer),
+    Layer.provideMerge(VcsProcess.layer),
     Layer.provideMerge(SatelliteTestLayer),
     Layer.provide(
       Layer.mock(ServerSettingsService)({
@@ -171,6 +177,7 @@ const runCatchup = Effect.fn(function* (
     const store = yield* IdeaNotebookStore;
     const updates = yield* IdeaUpdateReactor;
     const runtime = yield* IdeaRuntime;
+    const documents = yield* DocumentService;
     const snapshots = yield* ProjectionSnapshotQuery;
     const config = yield* ServerConfig;
     yield* recordProject({
@@ -228,12 +235,15 @@ const runCatchup = Effect.fn(function* (
           sources: [],
         },
       });
-      const artifact = yield* runtime.writeArtifact({
-        threadId,
-        name: outcome === "html-study" ? "ux-study.html" : "ux-study.md",
-        mediaType: outcome === "html-study" ? "text/html" : "text/markdown",
-        contentBase64: Buffer.from(studyText).toString("base64"),
-      });
+      const artifact = yield* documents.publishIdeaDocument(
+        {
+          threadId,
+          name: outcome === "html-study" ? "ux-study.html" : "ux-study.md",
+          mediaType: outcome === "html-study" ? "text/html" : "text/markdown",
+          bytes: Buffer.from(studyText),
+        },
+        "upload",
+      );
       studyArtifactId = artifact.id;
     }
     yield* updates.start();

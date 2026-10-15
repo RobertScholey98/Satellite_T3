@@ -139,6 +139,32 @@ describe("document toolkit", () => {
     }),
   );
 
+  it.effect("publishes inline text for a thread without a checkout through the same method", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* harness.call("publish_document", {
+        requestId: "prd-1",
+        title: "PRD",
+        kind: "document",
+        text: "# Goals",
+        mediaType: "text/markdown",
+      });
+      expect(harness.publications).toEqual([
+        {
+          input: {
+            requestId: "prd-1",
+            title: "PRD",
+            kind: "document",
+            text: "# Goals",
+            mediaType: "text/markdown",
+            threadId,
+          },
+          actor: "agent:codex:session-1",
+        },
+      ]);
+    }),
+  );
+
   it.effect("does not read another thread's document by ID", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;

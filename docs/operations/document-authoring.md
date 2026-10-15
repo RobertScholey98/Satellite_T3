@@ -3,9 +3,12 @@
 The document API preserves reviewed content independently of a provider's working
 files and session history. Publish self-contained HTML, Markdown, or text using
 the thread-scoped `publish_document` tool. Supply a unique `requestId`, `title`,
-`kind` (`plan`, `review`, or `document`), and the absolute host `path`. For a
-checklist, include `definition: { items: [{ id, title, description? }] }`. Item IDs
-must remain stable within a revision. Publishing does not approve anything.
+`kind` (`plan`, `review`, or `document`), and either the absolute host `path` of
+an existing file or `text` with a `mediaType` such as `text/markdown`. Use `text`
+in an idea, which has no checkout to write into; the document also appears in the
+idea's notebook. For a checklist, include
+`definition: { items: [{ id, title, description? }] }`. Item IDs must remain stable
+within a revision. Publishing does not approve anything.
 
 `list_documents` returns the current revision IDs for this thread;
 `read_document` returns retained content, its checklist, draft answers, and the

@@ -81,7 +81,7 @@ describe("V2 preview upgrade", () => {
       assert.deepStrictEqual(
         yield* runMigrations(),
         migrationManifest
-          .filter(([id]) => id >= 55 && id <= 62)
+          .filter(([id]) => (id >= 55 && id <= 62) || id >= 67)
           .map(([id, name]) => [id, name] as const),
       );
       assert.deepStrictEqual(yield* runMigrations(), []);
@@ -114,6 +114,8 @@ describe("V2 preview upgrade", () => {
         [64, "RemoveRedundantProjectionIndexes"],
         [65, "ScheduledTaskWebhooks"],
         [66, "WebhookRelayDeliveries"],
+        [67, "DocumentPlacements"],
+        [68, "DocumentMediaTypes"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -196,6 +198,8 @@ describe("V2 preview upgrade", () => {
         [64, "RemoveRedundantProjectionIndexes"],
         [65, "ScheduledTaskWebhooks"],
         [66, "WebhookRelayDeliveries"],
+        [67, "DocumentPlacements"],
+        [68, "DocumentMediaTypes"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

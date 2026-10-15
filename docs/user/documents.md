@@ -4,6 +4,9 @@ Ask the agent to publish a plan, report, or verification checklist to the thread
 Documents panel. Publishing retains a copy, so changing or deleting the original
 working file does not change the version you reviewed. Documents belong to the
 environment running the thread and remain available when you connect remotely.
+In an idea, published documents also appear in the idea's notebook. Text documents,
+including files you upload to an idea, must be UTF-8 and under 2 MB, and HTML must
+inline its scripts and resources; images and other files can be up to 20 MB.
 
 Open **Documents** from the thread. A review checklist lets you mark each item as
 complete, broken, change requested, skipped, or not checked, and add notes.
@@ -33,8 +36,9 @@ history and unpublished working files retain their existing storage locations.
 
 The [Open work timeline](issues-and-open-work.md) places published versions beside
 the worktree's commits. A publication keeps its original worktree association
-even if its thread later moves. Folder-linked Markdown and HTML files are live
-references and remain separate from retained publications.
+even if its thread later moves. Documents from a project without Git, or from a
+Scratch thread, appear only in the Documents panel. Folder-linked Markdown and
+HTML files are live references and remain separate from retained publications.
 
 ## Worktree reviews
 
