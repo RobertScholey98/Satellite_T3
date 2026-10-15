@@ -2,8 +2,9 @@ import { type RevdocGenerationActivity } from "../revdoc/RevdocGeneration.ts";
 /**
  * ClaudeTextGeneration – Text generation layer using the Claude CLI.
  *
- * Implements the text generation run step with the `claude` CLI (`claude -p`),
- * which returns structured JSON output natively.
+ * Implements the same TextGeneration service contract as CodexTextGeneration but
+ * delegates to the `claude` CLI (`claude -p`) with structured JSON output
+ * instead of the `codex exec` CLI.
  *
  * @module ClaudeTextGeneration
  */
