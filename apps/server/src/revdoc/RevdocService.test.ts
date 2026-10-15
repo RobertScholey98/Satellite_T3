@@ -44,6 +44,8 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as RevdocService from "./RevdocService.ts";
 import type { RevdocGenerationInput, RevdocGenerationResult } from "./RevdocGeneration.ts";
 import { makeCodexTextGeneration } from "../textGeneration/CodexTextGeneration.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { cannedProvider, textGenerationOf } from "../textGeneration/testing/runners.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
 
 const threadId = ThreadId.make("review-thread");
@@ -88,10 +90,9 @@ const setup = (
     largeModel?: ModelSelection | null;
     testingModel?: ModelSelection | null;
     defaultAction?: "generate" | "generate-and-test";
-    generate?: (
-      input: RevdocGenerationInput,
-    ) => Effect.Effect<RevdocGenerationResult, TextGenerationError>;
+    generate?: TextGeneration.TextGeneration["Service"]["generateRevdoc"];
     unavailable?: boolean;
+    unisolated?: boolean;
     assumeDifferentOwner?: boolean;
     title?: () => string;
   } = {},
@@ -161,13 +162,15 @@ const setup = (
     const instance = {
       instanceId: defaultModel.instanceId,
       enabled: true,
-      textGeneration: {
-        generateRevdoc: (input: RevdocGenerationInput) => {
-          calls.push(input);
-          return options.generate?.(input) ?? Effect.succeed(generated);
-        },
-      },
+      textGeneration: cannedProvider(
+        () => Effect.die("Revdoc passes are stubbed at the service"),
+        options.unisolated ? [] : ["isolated"],
+      ).provider,
     } as ProviderInstance;
+    const generateRevdoc = (input: RevdocGenerationInput) => {
+      calls.push(input);
+      return options.generate?.(input) ?? Effect.succeed(generated);
+    };
     const events = yield* PubSub.unbounded<OrchestrationEvent>();
     const starts = yield* Queue.unbounded<ThreadId>();
     const captured: string[] = [];
@@ -239,6 +242,7 @@ const setup = (
             getInstance: () => Effect.succeed(options.unavailable ? undefined : instance),
           }),
         ),
+        Layer.provide(Layer.mock(TextGeneration.TextGeneration)({ generateRevdoc })),
         Layer.provide(
           Layer.mock(ServerSettings.ServerSettingsService)({
             getSettings: Effect.succeed({
@@ -352,8 +356,10 @@ describe("worktree Revdoc service", () => {
             ].join("\n"),
           }),
         );
-        const generation = yield* makeCodexTextGeneration(
-          yield* decodeCodexSettings({ binaryPath, homePath: cliDirectory }),
+        const generation = textGenerationOf(
+          yield* makeCodexTextGeneration(
+            yield* decodeCodexSettings({ binaryPath, homePath: cliDirectory }),
+          ),
         );
         const env = yield* setup({
           generate: (input) =>
@@ -747,13 +753,15 @@ describe("worktree Revdoc service", () => {
       expect((yield* env.service.get({ threadId })).revision).toBe(initial.revision);
     }).pipe(Effect.scoped, Effect.provide(platform)),
   );
-  it.effect("reports an unavailable configured provider without generating a review", () =>
-    Effect.gen(function* () {
-      const env = yield* setup({ unavailable: true });
-      yield* env.service.start({ threadId });
-      expect((yield* env.finished()).error).toContain("Choose an available provider");
-      expect(env.calls).toHaveLength(0);
-    }).pipe(Effect.scoped, Effect.provide(platform)),
+  it.effect.each([{ unavailable: true }, { unisolated: true }])(
+    "reports a configured provider that cannot run Revdoc without generating a review",
+    (options) =>
+      Effect.gen(function* () {
+        const env = yield* setup(options);
+        yield* env.service.start({ threadId });
+        expect((yield* env.finished()).error).toContain("Choose an available provider");
+        expect(env.calls).toHaveLength(0);
+      }).pipe(Effect.scoped, Effect.provide(platform)),
   );
 });
 

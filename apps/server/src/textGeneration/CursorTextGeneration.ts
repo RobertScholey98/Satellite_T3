@@ -4,7 +4,6 @@ import * as FileSystem from "effect/FileSystem";
 import type { AgentOptions, RunResult } from "@cursor/sdk";
 import { Agent } from "../provider/cursorSdk.ts";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
@@ -16,8 +15,6 @@ import {
 import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 import { cursorSdkModelSelection } from "../provider/cursorSdkModel.ts";
 import type { CursorAuth } from "../provider/CursorAuth.ts";
-
-const CURSOR_TIMEOUT_MS = 180_000;
 
 const isTextGenerationError = Schema.is(TextGenerationError);
 
@@ -130,7 +127,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
           }),
         );
 
-      const request = Effect.gen(function* () {
+      const promptResult = yield* Effect.gen(function* () {
         // Prefer the sandbox. When the SDK refuses it, the empty temp directory
         // and empty setting sources still keep this run off the user's project.
         const agent = yield* Effect.acquireRelease(
@@ -160,21 +157,6 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
         );
         return yield* Effect.tryPromise(() => run.wait());
       }).pipe(Effect.scoped);
-      const promptResult = yield* request.pipe(
-        Effect.timeoutOption(CURSOR_TIMEOUT_MS),
-        Effect.flatMap(
-          Option.match({
-            onNone: () =>
-              Effect.fail(
-                new TextGenerationError({
-                  operation,
-                  detail: "Cursor SDK request timed out.",
-                }),
-              ),
-            onSome: (value) => Effect.succeed(value),
-          }),
-        ),
-      );
 
       const rawResult = promptResult.result?.trim() ?? "";
       if (promptResult.status !== "finished" || !rawResult) {
@@ -200,5 +182,9 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     );
   };
 
-  return TextGenerationOperations.fromRunner("CursorTextGeneration", runCursorJson);
+  return {
+    name: "CursorTextGeneration",
+    run: runCursorJson,
+    isolation: TextGenerationOperations.isolates("isolated", "isolatedWorkspace"),
+  } satisfies TextGenerationOperations.Provider;
 });

@@ -34,6 +34,7 @@ import {
   resolveLatestProviderVersion,
 } from "../providerMaintenance.ts";
 import { CodexDriver } from "./CodexDriver.ts";
+import { textGenerationOf } from "../../textGeneration/testing/runners.ts";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../../orchestration-v2/ProviderAdapter.ts";
@@ -265,6 +266,55 @@ it.layer(layerTest)("CodexDriver", (it) => {
         ),
       );
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("runs every text generation task behind the managed sign-in", () =>
+    Effect.gen(function* () {
+      const installation = yield* CodexInstallation.CodexInstallation;
+      const instanceId = ProviderInstanceId.make("managed-text-generation");
+      const instance = yield* CodexDriver.create({
+        instanceId,
+        displayName: undefined,
+        enabled: true,
+        environment: [],
+        config: { ...CodexDriver.defaultConfig(), setupMode: "managed" },
+      }).pipe(
+        Effect.provideService(
+          CodexInstallation.CodexInstallation,
+          CodexInstallation.CodexInstallation.of({
+            ...installation,
+            acquire: () =>
+              Effect.fail(
+                new CodexInstallation.CodexInstallationError({
+                  operation: "acquire",
+                  detail: "Managed Codex is not installed.",
+                }),
+              ),
+          }),
+        ),
+      );
+      const modelSelection = { instanceId, model: "gpt-5.4" };
+      const failures = yield* Effect.all([
+        Effect.flip(
+          textGenerationOf(instance.textGeneration).generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Repair login",
+            modelSelection,
+          }),
+        ),
+        Effect.flip(
+          textGenerationOf(instance.textGeneration).generateRevdoc({
+            cwd: process.cwd(),
+            prompt: "Review the worktree.",
+            modelSelection,
+          }),
+        ),
+      ]);
+      expect(failures.map((failure) => failure.message)).toEqual([
+        "Text generation failed in generateThreadTitle: Set up managed Codex before starting a session.",
+        "Text generation failed in generateRevdoc: Set up managed Codex before starting a session.",
+      ]);
+    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn), Effect.scoped),
   );
 
   it.effect.skipIf(windowsHost)(

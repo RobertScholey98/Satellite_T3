@@ -26,7 +26,15 @@ import {
   OPENCODE_2_WORKSPACE_RESPONSES,
   replayOpenCodeServer,
 } from "../testFixtures/opencodeProbeResponses.ts";
-import { OpenCodeDriver, openCodeUpdateFor } from "./OpenCodeDriver.ts";
+import * as OpenCode2Server from "../opencode2/OpenCode2Server.ts";
+import type { ProbedOpenCode } from "../opencodeVersionProbe.ts";
+import * as OpenCode2TextGeneration from "../../textGeneration/OpenCode2TextGeneration.ts";
+import {
+  OpenCodeDriver,
+  openCodeUpdateFor,
+  selectOpenCodeRuntimeTextGeneration,
+} from "./OpenCodeDriver.ts";
+import { cannedProvider, textGenerationOf } from "../../textGeneration/testing/runners.ts";
 
 const serverStarts: Array<string> = [];
 const reachedServer = (operation: string) =>
@@ -77,7 +85,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       const instance = yield* create({}, noHttp);
       // Text generation goes to the instance's 2.x server, which this test refuses to start.
       yield* Effect.flip(
-        instance.textGeneration.generateThreadTitle({
+        textGenerationOf(instance.textGeneration).generateThreadTitle({
           cwd: process.cwd(),
           message: "hello",
           modelSelection: { instanceId: instance.instanceId, model: "opencode/big-pickle" },
@@ -85,6 +93,79 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       );
       assert.deepStrictEqual(serverStarts, ["start"]);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("refuses idea updates and Revdoc passes on OpenCode 2 before starting its server", () =>
+    Effect.gen(function* () {
+      serverStarts.length = 0;
+      const instance = yield* create({}, noHttp);
+      const modelSelection = { instanceId: instance.instanceId, model: "opencode/big-pickle" };
+      const ideaUpdate = yield* Effect.flip(
+        textGenerationOf(instance.textGeneration).generateIdeaUpdate({
+          cwd: process.cwd(),
+          prompt: "Organize the notebook.",
+          modelSelection,
+        }),
+      );
+      const revdoc = yield* Effect.flip(
+        textGenerationOf(instance.textGeneration).generateRevdoc({
+          cwd: process.cwd(),
+          prompt: "Review the worktree.",
+          modelSelection,
+        }),
+      );
+      assert.deepStrictEqual(
+        [ideaUpdate, revdoc].map((error) => [error._tag, error.operation]),
+        [
+          ["TextGenerationUnsupportedError", "generateIdeaUpdate"],
+          ["TextGenerationUnsupportedError", "generateRevdoc"],
+        ],
+      );
+      assert.deepStrictEqual(serverStarts, []);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { first: "a failure", probed: [undefined, "v2"] },
+    { first: "1.x", probed: ["v1", "v2"] },
+  ] as const)(
+    "refuses a Revdoc pass when the probe reports $first and then OpenCode 2",
+    ({ probed }) =>
+      Effect.gen(function* () {
+        let probes = 0;
+        let connections = 0;
+        const get = Effect.suspend(() => {
+          const generation = probed[probes++];
+          return generation === undefined
+            ? Effect.fail(
+                new OpenCodeRuntime.OpenCodeRuntimeError({ operation: "probe", detail: "flaky" }),
+              )
+            : Effect.succeed<ProbedOpenCode>({ generation, version: "2.0.18" });
+        });
+        const v1 = cannedProvider(() => Effect.die("A Revdoc pass must not reach OpenCode 1.x"));
+        const v2 = yield* OpenCode2TextGeneration.make().pipe(
+          Effect.provide(
+            Layer.mock(OpenCode2Server.OpenCode2Server)({
+              withConnection: () =>
+                Effect.sync(() => connections++).pipe(Effect.andThen(Effect.die("started"))),
+            }),
+          ),
+        );
+        const refused = yield* Effect.flip(
+          textGenerationOf(
+            selectOpenCodeRuntimeTextGeneration({ get }, v1.provider, v2),
+          ).generateRevdoc({
+            cwd: process.cwd(),
+            prompt: "Review the worktree.",
+            modelSelection: { instanceId: ProviderInstanceId.make("opencode"), model: "a/b" },
+          }),
+        );
+        assert.deepStrictEqual(
+          [refused._tag, refused.operation],
+          ["TextGenerationUnsupportedError", "generateRevdoc"],
+        );
+        assert.deepStrictEqual([v1.requests.length, connections], [0, 0]);
+      }),
   );
 
   it.effect("lists an OpenCode 2 workspace's own skills and commands from its server", () =>

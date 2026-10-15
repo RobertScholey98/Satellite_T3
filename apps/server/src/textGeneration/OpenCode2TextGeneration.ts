@@ -23,9 +23,6 @@ import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 
 const isTextGenerationError = Schema.is(TextGenerationError);
 
-/** A generation that takes this long is stuck; its session is stopped and removed. */
-const GENERATION_TIMEOUT = "3 minutes";
-
 /**
  * Nothing in a text generation needs a tool, so every tool asks and T3 is not
  * there to answer. Denying `shell` or `read` outright gets the whole session
@@ -155,17 +152,9 @@ const runOnServer = (
       ...(images.length === 0 ? {} : { files: images }),
     });
     const result = yield* Deferred.await(outcome).pipe(
-      Effect.timeoutOrElse({
-        duration: GENERATION_TIMEOUT,
-        orElse: () =>
-          client.session.interrupt({ sessionID: Session.ID.make(session.id) }).pipe(
-            Effect.ignore,
-            Effect.as<Outcome>({
-              _tag: "failed",
-              detail: "OpenCode did not finish generating in time.",
-            }),
-          ),
-      }),
+      Effect.onInterrupt(() =>
+        client.session.interrupt({ sessionID: Session.ID.make(session.id) }).pipe(Effect.ignore),
+      ),
     );
     if (result._tag === "failed") {
       return yield* new TextGenerationError({
@@ -188,19 +177,34 @@ export const make = Effect.fn("OpenCode2TextGeneration.make")(function* () {
   const server = yield* OpenCode2Server.OpenCode2Server;
   const { attachmentsDir } = yield* ServerConfig.ServerConfig;
   const run: TextGenerationOperations.Runner = (input) =>
-    server
-      .withConnection((connection) => runOnServer(connection, input, attachmentsDir))
-      .pipe(
-        Effect.mapError((cause) =>
-          isTextGenerationError(cause)
-            ? cause
-            : new TextGenerationError({
-                operation: input.operation,
-                detail: "OpenCode text generation failed.",
-                cause,
-              }),
-        ),
-        Effect.flatMap((raw) => TextGenerationOperations.decodeJsonReply(input, "OpenCode", raw)),
-      );
-  return TextGenerationOperations.fromRunner("OpenCode2TextGeneration", run);
+    TextGenerationOperations.isIsolated(input.needs)
+      ? Effect.fail(
+          new TextGenerationOperations.TextGenerationUnsupportedError({
+            operation: input.operation,
+            provider: "OpenCode2TextGeneration",
+          }),
+        )
+      : server
+          .withConnection((connection) => runOnServer(connection, input, attachmentsDir))
+          .pipe(
+            Effect.mapError((cause) =>
+              isTextGenerationError(cause)
+                ? cause
+                : new TextGenerationError({
+                    operation: input.operation,
+                    detail: "OpenCode text generation failed.",
+                    cause,
+                  }),
+            ),
+            Effect.flatMap((raw) =>
+              TextGenerationOperations.decodeJsonReply(input, "OpenCode", raw),
+            ),
+          );
+  return {
+    name: "OpenCode2TextGeneration",
+    run,
+    // The instance's shared server loads global and project config, plugins and MCP
+    // servers for every session; denying tools does not contain them.
+    isolation: TextGenerationOperations.isolates(),
+  } satisfies TextGenerationOperations.Provider;
 });

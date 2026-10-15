@@ -39,7 +39,11 @@ import {
 import * as LegacyImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
+import type { ProviderInstance } from "../provider/ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { cannedProvider } from "../textGeneration/testing/runners.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { createIdeaNotebook } from "./IdeaNotebook.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
@@ -58,8 +62,38 @@ const infrastructure = Layer.mergeAll(
   SatelliteTestLayer,
   LegacyImporter.layer.pipe(Layer.provide(SatelliteTestLayer)),
 );
-const updaterLayer = (generate: (prompt: string) => Effect.Effect<IdeaUpdateResult>) =>
-  IdeaUpdateReactor.layer.pipe(
+const makeInstance = (
+  id: ProviderInstanceId,
+  driver: string,
+  textGeneration: ProviderInstance["textGeneration"],
+): ProviderInstance => ({
+  instanceId: id,
+  driverKind: ProviderDriverKind.make(driver),
+  continuationIdentity: {
+    driverKind: ProviderDriverKind.make(driver),
+    continuationKey: "idea-regression",
+  },
+  displayName: driver,
+  enabled: true,
+  snapshot: {
+    resolveMaintenance: unused,
+    getSnapshot: unused(),
+    refresh: unused(),
+    streamChanges: Stream.empty,
+    applyUsageLimits: unused,
+  },
+  orchestrationAdapter: makeProviderAdapter(id),
+  textGeneration,
+});
+
+const updaterLayer = (
+  generate: (prompt: string) => Effect.Effect<IdeaUpdateResult>,
+  automatic?: ReadonlyArray<ProviderInstance>,
+) => {
+  const instances = automatic ?? [
+    makeInstance(instanceId, "codex", cannedProvider(({ prompt }) => generate(prompt)).provider),
+  ];
+  return IdeaUpdateReactor.layer.pipe(
     Layer.provideMerge(infrastructure),
     Layer.provide(
       Layer.mock(IdeaRuntime)({
@@ -75,46 +109,30 @@ const updaterLayer = (generate: (prompt: string) => Effect.Effect<IdeaUpdateResu
           }),
       }),
     ),
+    Layer.provide(TextGeneration.layer),
+    Layer.provide(
+      Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+        resolveLink: () => Effect.die("Idea updates resolve no source control links"),
+      }),
+    ),
     Layer.provide(
       Layer.mock(ServerSettingsService)({
         getSettings: Effect.succeed({
           ...DEFAULT_SERVER_SETTINGS,
-          ideaUpdatesModelSelection: { instanceId, model: "test" },
+          ideaUpdatesModelSelection: automatic ? null : { instanceId, model: "test" },
         }),
       }),
     ),
     Layer.provide(
       Layer.mock(ProviderInstanceRegistry)({
-        getInstance: () =>
-          Effect.succeed({
-            instanceId,
-            driverKind: ProviderDriverKind.make("codex"),
-            continuationIdentity: {
-              driverKind: ProviderDriverKind.make("codex"),
-              continuationKey: "idea-regression",
-            },
-            displayName: "Codex",
-            enabled: true,
-            snapshot: {
-              resolveMaintenance: unused,
-              getSnapshot: unused(),
-              refresh: unused(),
-              streamChanges: Stream.empty,
-              applyUsageLimits: unused,
-            },
-            orchestrationAdapter: makeProviderAdapter(instanceId),
-            textGeneration: {
-              generateCommitMessage: unused,
-              generatePrContent: unused,
-              generateBranchName: unused,
-              generateThreadTitle: unused,
-              generateIdeaUpdate: ({ prompt }) => generate(prompt),
-            },
-          }),
+        listInstances: Effect.succeed(instances),
+        getInstance: (id) =>
+          Effect.succeed(instances.find((instance) => instance.instanceId === id)),
       }),
     ),
     Layer.provideMerge(NodeServices.layer),
   );
+};
 
 const awaitUpdate = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
@@ -235,6 +253,76 @@ it.effect.each(["initial", "before", "during", "same-text", "away-and-back", "ol
         ),
       );
     }),
+);
+
+const acpRegistryId = ProviderInstanceId.make("acp-registry");
+const acpRegistry = makeInstance(
+  acpRegistryId,
+  "acpRegistry",
+  cannedProvider(() => Effect.die("ACP Registry instances cannot be given an idea update"), [])
+    .provider,
+);
+
+const updateAutomatically = (threadId: ThreadId) =>
+  Effect.gen(function* () {
+    const engine = yield* OrchestrationEngineService;
+    const updates = yield* IdeaUpdateReactor;
+    const store = yield* IdeaNotebookStore;
+    yield* recordProject({ projectId, title: "Project", workspaceRoot: "C:/isolated-project" });
+    yield* engine.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-" + threadId),
+      threadId,
+      projectId,
+      purpose: "idea",
+      title: "Untitled idea",
+      modelSelection: { instanceId: acpRegistryId, model: "default" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+    });
+    yield* recordMessage({
+      threadId,
+      messageId: MessageId.make("message-" + threadId),
+      role: "user",
+      text: "Explore the idea",
+    });
+    const finished = yield* awaitUpdate;
+    yield* updates.start();
+    yield* recordCompletedRun(threadId);
+    yield* Fiber.join(finished);
+    yield* updates.drain;
+    return (yield* store.requireActive(threadId)).update;
+  });
+
+it.effect("passes over an ACP Registry thread model for one that can run idea updates", () => {
+  const supporting = cannedProvider(() => Effect.succeed({ edits: [], summary: "Updated" }));
+  return updateAutomatically(ThreadId.make("acp-first-idea")).pipe(
+    Effect.map((update) => {
+      assert.equal(update.status, "current");
+      assert.deepEqual(
+        supporting.requests.map((request) => request.modelSelection.instanceId),
+        [instanceId],
+      );
+    }),
+    Effect.provide(
+      updaterLayer(unused, [acpRegistry, makeInstance(instanceId, "codex", supporting.provider)]),
+    ),
+  );
+});
+
+it.effect("fails an automatic idea update when no enabled provider can run one", () =>
+  updateAutomatically(ThreadId.make("acp-only-idea")).pipe(
+    Effect.map((update) => {
+      assert.equal(update.status, "failed");
+      assert.equal(
+        update.error,
+        "Choose an enabled model that can run idea updates in Settings → Idea updates, then retry this notebook update.",
+      );
+    }),
+    Effect.provide(updaterLayer(unused, [acpRegistry])),
+  ),
 );
 
 const artifact: IdeaArtifact = {

@@ -107,7 +107,10 @@ function fakeGhOutput(stdout: string): VcsProcess.VcsProcessOutput {
   };
 }
 
-type FakeGitTextGeneration = TextGeneration.TextGeneration["Service"];
+type FakeGitTextGeneration = Omit<
+  TextGeneration.TextGeneration["Service"],
+  "generateRevdoc" | "generateIdeaUpdate"
+>;
 
 type FakePullRequest = NonNullable<FakeGhScenario["pullRequest"]>;
 
@@ -335,6 +338,8 @@ function createTextGeneration(
   };
 
   return {
+    generateRevdoc: () => Effect.die("Git actions do not generate Revdoc passes"),
+    generateIdeaUpdate: () => Effect.die("Git actions do not update ideas"),
     generateCommitMessage: (input) =>
       implementation.generateCommitMessage(input).pipe(
         Effect.mapError(

@@ -24,6 +24,8 @@ import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchest
 import { ProjectionSnapshotQuery } from "../orchestration-v2/SatelliteOrchestration.ts";
 import { hasUnversionedTitleUpdate, readIdeaUpdateSources } from "./IdeaUpdateSources.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as TextGenerationOperations from "../textGeneration/TextGenerationOperations.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
@@ -62,6 +64,7 @@ export class IdeaUpdateReactor extends Context.Service<
       const snapshots = yield* ProjectionSnapshotQuery;
       const settings = yield* ServerSettingsService;
       const providers = yield* ProviderInstanceRegistry;
+      const textGeneration = yield* TextGeneration.TextGeneration;
       const crypto = yield* Crypto.Crypto;
       const running = new Map<ThreadId, Fiber.Fiber<void>>();
       const cancelled = new Set<ThreadId>();
@@ -104,8 +107,10 @@ export class IdeaUpdateReactor extends Context.Service<
           const selected = (yield* settings.getSettings).ideaUpdatesModelSelection;
           const candidates = selected
             ? []
-            : (yield* providers.listInstances).filter(
-                (instance) => instance.enabled && instance.textGeneration.generateIdeaUpdate,
+            : yield* Effect.filter(
+                (yield* providers.listInstances).filter((instance) => instance.enabled),
+                (instance) =>
+                  TextGenerationOperations.supports(instance.textGeneration, "generateIdeaUpdate"),
               );
           const automatic =
             candidates.find(
@@ -125,10 +130,16 @@ export class IdeaUpdateReactor extends Context.Service<
           if (!modelSelection)
             return yield* new IdeaRuntimeError({
               message:
-                "Choose an enabled model in Settings → Idea updates, then retry this notebook update.",
+                "Choose an enabled model that can run idea updates in Settings → Idea updates, then retry this notebook update.",
             });
           const provider = yield* providers.getInstance(modelSelection.instanceId);
-          if (!provider?.enabled || !provider.textGeneration.generateIdeaUpdate)
+          if (
+            !provider?.enabled ||
+            !(yield* TextGenerationOperations.supports(
+              provider.textGeneration,
+              "generateIdeaUpdate",
+            ))
+          )
             return yield* new IdeaRuntimeError({
               message:
                 "The selected provider is unavailable for idea updates. Choose an enabled model in Settings → Idea updates.",
@@ -226,7 +237,7 @@ export class IdeaUpdateReactor extends Context.Service<
               message:
                 "The combined notebook context exceeds the automatic update budget. The notebook remains behind; no unread input was marked processed.",
             });
-          const result = yield* provider.textGeneration.generateIdeaUpdate({
+          const result = yield* textGeneration.generateIdeaUpdate({
             cwd,
             modelSelection,
             prompt,

@@ -29,6 +29,7 @@ import {
   isAntigravityTextGenerationAvailable,
   makeAntigravityTextGeneration,
 } from "./AntigravityTextGeneration.ts";
+import { expectRunnerContract, textGenerationOf } from "./testing/runners.ts";
 
 type TextRuntime = Effect.Success<ReturnType<AntigravityTextGenerationOptions["makeRuntime"]>>;
 
@@ -245,11 +246,9 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
       } satisfies TextRuntime;
     });
 
-  const textGeneration = yield* makeAntigravityTextGeneration({
-    profileDirectory,
-    makeRuntime,
-    withProcess,
-  });
+  const textGeneration = textGenerationOf(
+    yield* makeAntigravityTextGeneration({ profileDirectory, makeRuntime, withProcess }),
+  );
   const titleInput = { cwd: projectDirectory, message: "Repair Google login", modelSelection };
   const assertCleaned = Effect.gen(function* () {
     expect(state.closed).toEqual(state.workspaces);
@@ -282,6 +281,15 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
 });
 
 it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
+  it.effect("keeps the text generation runner contract", () =>
+    expectRunnerContract(modelSelection, ["isolated", "isolatedWorkspace"], (reply, generate) =>
+      makeFixture({ outputs: [reply] }).pipe(
+        Effect.flatMap((fixture) => generate(fixture.textGeneration)),
+        Effect.scoped,
+      ),
+    ),
+  );
+
   it.effect("rejects invalid notebook edits and cleans helper state", () =>
     Effect.gen(function* () {
       const fixture = yield* makeFixture({
@@ -294,7 +302,7 @@ it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
           modelSelection,
         })
         .pipe(Effect.flip);
-      expect(error.detail).toContain("invalid structured output");
+      expect(error.message).toContain("invalid structured output");
       yield* fixture.assertCleaned;
     }).pipe(Effect.scoped),
   );
@@ -675,7 +683,7 @@ it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
       expect(fixture.state.cancellations).toBe(0);
       yield* TestClock.adjust(30 * 60_000 - 180_000);
       const error = yield* Fiber.join(child).pipe(Effect.flip);
-      expect(error.detail).toContain("timed out");
+      expect(error.message).toContain("timed out");
       expect(fixture.state.cancellations).toBe(1);
       yield* fixture.assertCleaned;
     }).pipe(Effect.scoped),

@@ -30,6 +30,7 @@ import * as ServerRuntimeStartup from "../../serverRuntimeStartup.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
+import { cannedProvider } from "../../textGeneration/testing/runners.ts";
 import * as ProviderAuth from "../ProviderAuthService.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
 import * as ProviderInstanceRegistry from "../ProviderInstanceRegistry.ts";
@@ -105,12 +106,7 @@ const makeHarness = Effect.fn(function* (
         ),
     },
     orchestrationAdapter: SatelliteTestRuntime.makeProviderAdapter(instanceId),
-    textGeneration: {
-      generateCommitMessage: () => Effect.die("Unused generation"),
-      generatePrContent: () => Effect.die("Unused generation"),
-      generateBranchName: () => Effect.die("Unused generation"),
-      generateThreadTitle: () => Effect.die("Unused generation"),
-    },
+    textGeneration: cannedProvider(() => Effect.die("Unused generation"), []).provider,
     acpSessionManagement: {
       listSessions: ({ cwd, cursor }) =>
         Effect.sync(() => {
