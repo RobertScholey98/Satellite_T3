@@ -456,6 +456,52 @@ describe("managed document persistence", () => {
     }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
   );
 
+  it.effect("keeps an idea document whose registration was committed but not acknowledged", () =>
+    Effect.gen(function* () {
+      const f = yield* setup;
+      const ideas = yield* IdeaNotebookStore;
+      yield* createIdea;
+      const lostAcknowledgement = yield* makeDocumentService({
+        ...f.options,
+        dispatch: (command) =>
+          command.type === "idea.apply"
+            ? f.engine.dispatch(command).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
+                      cause: new PersistenceSqlError({ operation: "lost acknowledgement" }),
+                    }),
+                  ),
+                ),
+              )
+            : f.engine.dispatch(command),
+      });
+      const request = {
+        requestId: "idea-lost-ack",
+        threadId: ideaThreadId,
+        title: "PRD",
+        kind: "document" as const,
+        text: "# Goals",
+        mediaType: "text/markdown",
+      };
+
+      const failed = yield* lostAcknowledgement.publish(request, actor).pipe(Effect.flip);
+      const retried = yield* f.service.publish(request, actor);
+
+      assert.equal(failed.reason, "storage");
+      assert.deepEqual(
+        (yield* f.service.list({ threadId: ideaThreadId })).map((document) => document.id),
+        [retried.document.id],
+      );
+      assert.deepEqual(
+        (yield* ideas.requireActive(ideaThreadId)).artifacts.map((artifact) => artifact.id),
+        [IdeaArtifactId.make(retried.document.id)],
+      );
+    }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
+  );
+
   it.effect("reads idea artifacts saved before ideas used the documents module", () =>
     Effect.gen(function* () {
       const f = yield* setup;

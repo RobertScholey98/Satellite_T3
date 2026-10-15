@@ -727,9 +727,13 @@ export const makeDocumentService = (options: {
           return { ...result, replayed: false };
         }),
       );
+      // Only a not-found failure proves the notebook never recorded the document. Any other
+      // failure keeps it; replaying the same request registers it again with the same command.
       const artifact = yield* registerOnIdea(input.threadId, receipt, actor).pipe(
-        Effect.tapError(() =>
-          receipt.replayed ? Effect.void : discardPublish(receipt, actor, input.requestId),
+        Effect.tapError((cause) =>
+          receipt.replayed || cause.reason !== "not-found"
+            ? Effect.void
+            : discardPublish(receipt, actor, input.requestId),
         ),
       );
       return { receipt, artifact };
@@ -763,19 +767,34 @@ export const makeDocumentService = (options: {
         createdAt: revision.created_at,
         source: actor.startsWith("agent:") ? "agent" : "upload",
       };
+      const commandId = CommandId.make(`document-placement-${revision.id}`);
       yield* options
         .dispatch({
           type: "idea.apply",
-          commandId: CommandId.make(`document-placement-${revision.id}`),
+          commandId,
           threadId,
           deletionEpoch: notebook.deletionEpoch,
           mutation: { kind: "artifact.register", artifact },
         })
         .pipe(
-          Effect.mapError((cause) =>
-            isOrchestrationCommandRejection(cause) || isPreviouslyRejected(cause)
-              ? error("not-found", "The idea is unavailable. Its document was not saved.")
-              : storageError(),
+          Effect.catch((cause) =>
+            Effect.gen(function* () {
+              const rejected =
+                isOrchestrationCommandRejection(cause) ||
+                isPreviouslyRejected(cause) ||
+                (yield* sql<{
+                  readonly status: string;
+                }>`SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId} LIMIT 1`.pipe(
+                  Effect.map((receipts) => receipts[0]?.status === "rejected"),
+                  Effect.orElseSucceed(() => false),
+                ));
+              return yield* rejected
+                ? error("not-found", "The idea is unavailable. Its document was not saved.")
+                : error(
+                    "storage",
+                    "The document was saved but the idea did not confirm it. Retry the same request.",
+                  );
+            }),
           ),
         );
       return artifact;
