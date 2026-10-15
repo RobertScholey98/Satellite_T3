@@ -85,7 +85,12 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { copyPullRequestLink, useThreadActionMenu } from "../hooks/useThreadActionMenu";
+import {
+  copyPullRequestLink,
+  requestThreadRename,
+  useThreadActionMenu,
+  type ThreadActionSurface,
+} from "../hooks/useThreadActionMenu";
 import { buildThreadActionPaletteItems } from "./threadActionPalette";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { useClientSettings } from "../hooks/useSettings";
@@ -128,7 +133,11 @@ import {
   isUnsupportedWindowsProjectPath,
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
-import { onOpenCommandPalette } from "../commandPaletteBus";
+import {
+  onOpenCommandPalette,
+  runAfterCommandPaletteCloses,
+  takeCommandPaletteAfterClose,
+} from "../commandPaletteBus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import {
@@ -666,7 +675,9 @@ function CommandPaletteDialog(props: {
       data-palette-mode={props.mode}
       data-testid="command-palette"
       finalFocus={() => {
-        composerHandleRef?.current?.focusAtEnd();
+        const afterClose = takeCommandPaletteAfterClose();
+        if (afterClose) afterClose();
+        else composerHandleRef?.current?.focusAtEnd();
         return false;
       }}
       onBackdropPointerDown={() => {
@@ -757,11 +768,15 @@ function OpenCommandPaletteDialog(props: {
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
   const threadActionMenu = useThreadActionMenu();
-  const threadActionSurface = { openPanelPullRequestUrl };
+  const threadActionSurface: ThreadActionSurface = {
+    openPanelPullRequestUrl,
+    // The palette returns focus to the composer as it closes, which would
+    // blur a title editor opened any earlier.
+    startRename: (threadRef) => runAfterCommandPaletteCloses(() => requestThreadRename(threadRef)),
+  };
   const activeThreadRef = activeThread
     ? scopeThreadRef(activeThread.environmentId, activeThread.id)
     : null;
-  // The pull requests page has no thread; its panel's link is the reference.
   const pullRequestsPageLink =
     pathname === "/pull-requests" ? (openPanelPullRequestUrl ?? null) : null;
   const activeThreadServerConfig = useServerConfigs().get(

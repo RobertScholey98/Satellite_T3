@@ -40,7 +40,6 @@ import {
 } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
-import { isCommandPaletteOpen } from "../commandPaletteBus";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
@@ -95,7 +94,6 @@ export interface ThreadActionSurface {
   };
 }
 
-/** Snapshot of everything the thread action registry decides availability from. */
 function readThreadActionMenuState(
   threadRef: ScopedThreadRef,
   options: {
@@ -137,7 +135,6 @@ function readThreadActionMenuState(
   };
 }
 
-/** Copies a pull request link, the one implementation behind every "copy reference" entry point. */
 export async function copyPullRequestLink(url: string): Promise<void> {
   try {
     if (!(await writeTextToClipboard(url, "pull request link"))) return;
@@ -150,17 +147,10 @@ export async function copyPullRequestLink(url: string): Promise<void> {
 const THREAD_RENAME_REQUEST_EVENT = "t3code:thread-rename-request";
 
 /** Asks whichever surface shows this thread's title editor to open it. */
-function requestThreadRename(threadRef: ScopedThreadRef): void {
-  const threadKey = scopedThreadKey(threadRef);
-  const dispatch = () =>
-    window.dispatchEvent(
-      new CustomEvent<string>(THREAD_RENAME_REQUEST_EVENT, { detail: threadKey }),
-    );
-  // The palette hands focus back to the composer as it closes. Opening the
-  // title editor before that would blur it straight into a no-op commit.
-  const afterPaletteCloses = () =>
-    requestAnimationFrame(isCommandPaletteOpen() ? afterPaletteCloses : dispatch);
-  afterPaletteCloses();
+export function requestThreadRename(threadRef: ScopedThreadRef): void {
+  window.dispatchEvent(
+    new CustomEvent<string>(THREAD_RENAME_REQUEST_EVENT, { detail: scopedThreadKey(threadRef) }),
+  );
 }
 
 /** Opens `startRename` when another surface (the command palette) asks to rename this thread. */

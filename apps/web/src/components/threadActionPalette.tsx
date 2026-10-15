@@ -68,10 +68,6 @@ function icon(name: string | undefined, className: string) {
   return <Icon className={className} />;
 }
 
-/**
- * Projects the thread action registry (the same items the context menus
- * show) into command palette entries for one thread.
- */
 export function buildThreadActionPaletteItems(input: {
   readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
   readonly run: (action: ThreadActionMenuId) => Promise<void>;

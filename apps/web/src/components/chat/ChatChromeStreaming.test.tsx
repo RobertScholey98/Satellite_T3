@@ -369,37 +369,46 @@ beforeEach(() => {
   publish(baseProjection);
 });
 
+async function mountChatView() {
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(
+      <AppAtomRegistryProvider>
+        <Profiler id="chat-view" onRender={countChatView}>
+          <ChatViewStandIn />
+        </Profiler>
+      </AppAtomRegistryProvider>,
+    );
+  });
+  return { mounted: { ...commits }, unmount: () => act(async () => root.unmount()) };
+}
+
+async function streamDeltas(count: number): Promise<string> {
+  let text = "";
+  for (let delta = 0; delta < count; delta += 1) {
+    text += `token-${delta} `;
+    await act(async () => publish(streamText(text)));
+  }
+  return text;
+}
+
 describe("chat chrome while a response streams", () => {
   it("re-renders neither the composer nor the header for message-content updates", async () => {
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    await act(async () => {
-      root.render(
-        <AppAtomRegistryProvider>
-          <Profiler id="chat-view" onRender={countChatView}>
-            <ChatViewStandIn />
-          </Profiler>
-        </AppAtomRegistryProvider>,
-      );
-    });
-    const mounted = { ...commits };
-
-    let text = "";
-    for (let delta = 0; delta < 20; delta += 1) {
-      text += `token-${delta} `;
-      await act(async () => publish(streamText(text)));
-    }
-
-    // Re-renders caused by the stream alone: ChatView takes every delta,
-    // the chrome takes none.
+    const { mounted, unmount } = await mountChatView();
+    await streamDeltas(20);
     expect({
       chatView: commits.chatView - mounted.chatView,
       header: commits.header - mounted.header,
       composer: commits.composer - mounted.composer,
     }).toEqual({ chatView: 20, header: 0, composer: 0 });
+    await unmount();
+  });
 
-    // A newly sent prompt is part of the composer's recall history, so it does re-render.
+  it("re-renders the composer once when a sent prompt joins its recall history", async () => {
+    const { mounted, unmount } = await mountChatView();
+    const text = await streamDeltas(3);
     await act(async () =>
       publish({
         ...streamText(text),
@@ -414,6 +423,6 @@ describe("chat chrome while a response streams", () => {
       }),
     );
     expect(commits.composer - mounted.composer).toBe(1);
-    await act(async () => root.unmount());
+    await unmount();
   });
 });

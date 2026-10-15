@@ -1519,7 +1519,6 @@ export interface ChatComposerProps {
   // Thread context
   activeThreadId: ThreadId | null;
   activeThreadEnvironmentId: EnvironmentId | undefined;
-  /** The provider instance the thread's session runs on, once it has one. */
   activeThreadProviderInstanceId: ProviderInstanceId | null;
   /** The routed server thread's shell, present before its detail loads. */
   activeThreadShell: ThreadShell | null;

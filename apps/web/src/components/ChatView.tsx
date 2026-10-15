@@ -4792,8 +4792,8 @@ export default function ChatView(props: ChatViewProps) {
           },
     );
   }, []);
-  // The composer is memoized; everything below keeps its identity while a
-  // response streams so the composer renders only for its own changes.
+  // The composer is memoized, so these props keep their identity while a
+  // response streams.
   const queuedRunsControl = useMemo(
     () =>
       isServerThread && activeThread ? (

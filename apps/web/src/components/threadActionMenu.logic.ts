@@ -73,7 +73,6 @@ export function buildDraftActionMenuItems(options: {
 export interface ThreadActionMenuState {
   readonly canOperate: boolean;
   readonly branch: string | null;
-  /** The pull request a reference to this thread points at, when it has one. */
   readonly pullRequestUrl: string | null;
   /**
    * Project scoping for the thread list. Null on surfaces with no scoped
@@ -142,7 +141,6 @@ export const THREAD_ACTION_SHORTCUT_COMMANDS = Object.keys(
   SHORTCUT_ACTIONS,
 ) as ReadonlyArray<KeybindingCommand>;
 
-/** The registry action a keybinding runs for a thread, or null when it has nothing to do. */
 export function threadActionForShortcut(
   command: KeybindingCommand,
   items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
@@ -151,9 +149,9 @@ export function threadActionForShortcut(
 }
 
 /**
- * Single source for the per-thread action menu: the sidebar row's right-click
- * menu and the chat header menu share labels, ordering, and capability gating.
- * Each surface supplies state for the actions it supports.
+ * The thread action registry: both sidebars' row menus, the chat header menu,
+ * the command palette and thread keybindings take labels, ordering, and
+ * availability from here.
  */
 export function buildThreadActionMenuItems(
   state: ThreadActionMenuState,

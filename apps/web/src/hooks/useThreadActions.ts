@@ -990,7 +990,7 @@ export function useThreadActions() {
     [resolveThreadTarget, snoozeThreadMutation, unsnoozeThread],
   );
 
-  /** The one rename commit. Inline title editors call this and toast nothing themselves. */
+  /** Inline title editors commit through this and toast nothing themselves. */
   const renameThread = useCallback(
     async (target: ScopedThreadRef, title: string): Promise<ThreadRenameOutcome> => {
       if (!readEnvironmentScope(target.environmentId, AuthOrchestrationOperateScope)) {
