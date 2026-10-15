@@ -47,7 +47,7 @@ export type Needs =
   | "prompt"
   /** Reads only its prompt and runs tool-free under the provider's isolation policy. */
   | "isolated"
-  /** As `isolated`, in a T3-owned `cwd` that the isolation policy may write into. */
+  /** As `isolated`, and `cwd` is a T3-owned idea workspace rather than the user's checkout. */
   | "isolatedWorkspace";
 
 export const isIsolated = (needs: Needs): boolean =>

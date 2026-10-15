@@ -248,8 +248,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
-      // Tasks that need no checkout run in an empty directory rather than with --bare,
-      // which also skips the subscription's OAuth credentials.
+      // An empty directory, not --bare: --bare also skips the subscription's OAuth credentials.
       const workingDirectory =
         needs !== "checkout"
           ? yield* fileSystem

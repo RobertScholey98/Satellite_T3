@@ -151,7 +151,6 @@ const runOnServer = (
       text: input.prompt,
       ...(images.length === 0 ? {} : { files: images }),
     });
-    // A generation abandoned midway is stopped before its session is removed.
     const result = yield* Deferred.await(outcome).pipe(
       Effect.onInterrupt(() =>
         client.session.interrupt({ sessionID: Session.ID.make(session.id) }).pipe(Effect.ignore),

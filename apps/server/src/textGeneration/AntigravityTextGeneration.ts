@@ -101,8 +101,8 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
     Effect.provideService(Path.Path, path),
   );
 
-  // The helper runs in an empty temp directory, away from the project. An owned idea
-  // workspace hosts that directory and the isolated profile instead.
+  // Runs in an empty temp directory, never the project. For an owned idea workspace, that
+  // directory and the isolated profile sit inside the T3-owned `cwd`.
   const runAntigravityJson = Effect.fn("AntigravityTextGeneration.runJson")(
     function* <S extends Schema.Top>(input: TextGenerationOperations.Request<S>) {
       const { operation, onActivity } = input;
