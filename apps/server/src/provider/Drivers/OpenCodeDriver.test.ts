@@ -87,6 +87,33 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("sends idea updates and Revdoc passes to the instance's own server", () =>
+    Effect.gen(function* () {
+      serverStarts.length = 0;
+      const instance = yield* create({}, noHttp);
+      const modelSelection = { instanceId: instance.instanceId, model: "opencode/big-pickle" };
+      const ideaUpdate = yield* Effect.flip(
+        instance.textGeneration.generateIdeaUpdate!({
+          cwd: process.cwd(),
+          prompt: "Organize the notebook.",
+          modelSelection,
+        }),
+      );
+      const revdoc = yield* Effect.flip(
+        instance.textGeneration.generateRevdoc!({
+          cwd: process.cwd(),
+          prompt: "Review the worktree.",
+          modelSelection,
+        }),
+      );
+      assert.deepStrictEqual(
+        [ideaUpdate.operation, revdoc.operation],
+        ["generateIdeaUpdate", "generateRevdoc"],
+      );
+      assert.deepStrictEqual(serverStarts, ["start", "start"]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("lists an OpenCode 2 workspace's own skills and commands from its server", () =>
     Effect.gen(function* () {
       serverStarts.length = 0;

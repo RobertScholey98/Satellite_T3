@@ -267,6 +267,58 @@ it.layer(layerTest)("CodexDriver", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("runs every text generation task behind the managed sign-in", () =>
+    Effect.gen(function* () {
+      const installation = yield* CodexInstallation.CodexInstallation;
+      const instanceId = ProviderInstanceId.make("managed-text-generation");
+      const instance = yield* CodexDriver.create({
+        instanceId,
+        displayName: undefined,
+        enabled: true,
+        environment: [],
+        config: { ...CodexDriver.defaultConfig(), setupMode: "managed" },
+      }).pipe(
+        Effect.provideService(
+          CodexInstallation.CodexInstallation,
+          CodexInstallation.CodexInstallation.of({
+            ...installation,
+            acquire: () =>
+              Effect.fail(
+                new CodexInstallation.CodexInstallationError({
+                  operation: "acquire",
+                  detail: "Managed Codex is not installed.",
+                }),
+              ),
+          }),
+        ),
+      );
+      const modelSelection = { instanceId, model: "gpt-5.4" };
+      const failures = yield* Effect.all([
+        Effect.flip(
+          instance.textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Repair login",
+            modelSelection,
+          }),
+        ),
+        Effect.flip(
+          instance.textGeneration.generateRevdoc!({
+            cwd: process.cwd(),
+            prompt: "Review the worktree.",
+            modelSelection,
+          }),
+        ),
+      ]);
+      expect(failures.map(({ operation, detail }) => ({ operation, detail }))).toEqual([
+        {
+          operation: "generateThreadTitle",
+          detail: "Set up managed Codex before starting a session.",
+        },
+        { operation: "generateRevdoc", detail: "Set up managed Codex before starting a session." },
+      ]);
+    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn), Effect.scoped),
+  );
+
   it.effect.skipIf(windowsHost)(
     "runs the standalone updater against the shared home, not the shadow home",
     () =>
