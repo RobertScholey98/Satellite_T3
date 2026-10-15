@@ -43,7 +43,7 @@ describe("workLogEntryFromTurnItem", () => {
     ).toMatchObject({ label: "Changed src/a.ts", changedFiles: ["src/a.ts"] });
   });
 
-  it("keeps an approval's request kind, which decides how its row groups", () => {
+  it("keeps an approval's request kind beside its prompt", () => {
     const command = entryOf({
       ...turnItemBase("approve-command"),
       type: "approval_request",
@@ -66,7 +66,8 @@ describe("workLogEntryFromTurnItem", () => {
       requestId: RuntimeRequestId.make("request-2"),
       requestKind: "file-read",
     });
-    expect(fileRead).toMatchObject({ detail: "file-read", requestKind: "file-read" });
+    expect(fileRead).toMatchObject({ label: "Approval requested", requestKind: "file-read" });
+    expect(fileRead.detail).toBeUndefined();
     expect(toolGroupAction(fileRead)).toBe("read");
   });
 

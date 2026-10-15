@@ -288,7 +288,7 @@ export function workLogEntryFromTurnItem(row: OrchestrationV2ProjectedTurnItem):
       return {
         ...common,
         label: title ?? "Approval requested",
-        detail: item.prompt ?? item.requestKind,
+        ...(item.prompt ? { detail: item.prompt } : {}),
         requestKind: item.requestKind,
         toolData: item,
       };

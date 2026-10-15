@@ -2242,3 +2242,22 @@ describe("html renders", () => {
     }
   });
 });
+
+it("labels an approval without a prompt by its title, not its request kind", () => {
+  const approval = (id: string, title: string | null) => ({
+    ...base(id, "2026-06-20T00:00:02.000Z", 1),
+    title,
+    type: "approval_request" as const,
+    requestId: RuntimeRequestId.make(`request-${id}`),
+    requestKind: "file-change" as const,
+  });
+  const labels = buildThreadFeed([
+    projected(approval("untitled", null), 0),
+    projected(approval("titled", "Custom approval"), 1),
+  ]).flatMap((entry) =>
+    entry.type === "activity-group"
+      ? entry.activities.map((activity) => workEntryRowLabel(activity.workEntry))
+      : [],
+  );
+  expect(labels).toEqual(["Approval requested", "Custom approval"]);
+});
