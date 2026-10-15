@@ -7,6 +7,7 @@ const STUCK_STATES: ReadonlySet<IssueDeliveryPeer["state"]> = new Set([
   "unauthorized",
   "failed",
   "unregistered",
+  "expired",
 ]);
 
 /** Why ticket updates from a worktree computer are not reaching this board, with the way out. */

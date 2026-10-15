@@ -142,6 +142,7 @@ export const IssueDeliveryPeer = Schema.Struct({
     "unauthorized",
     "failed",
     "unregistered",
+    "expired",
   ]),
   lastDeliveredAt: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
@@ -307,6 +308,8 @@ export const IssuePeersRegisterInput = Schema.Struct({
   endpoints: Schema.Array(Id).check(Schema.isMaxLength(16)),
   /** The destination's identity key; an endpoint must prove it holds the private half. */
   publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+  /** When the credential stops working; delivery stops contacting the destination then. */
+  expiresAt: Schema.String,
 });
 export type IssuePeersRegisterInput = typeof IssuePeersRegisterInput.Type;
 export const IssuePeersForgetInput = Schema.Struct({ destinationEnvironmentId: EnvironmentId });
@@ -326,6 +329,7 @@ export const IssuePeerGrant = Schema.Struct({
   credential: TrimmedNonEmptyString,
   endpoints: Schema.Array(Id),
   publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+  expiresAt: Schema.String,
 });
 export type IssuePeerGrant = typeof IssuePeerGrant.Type;
 export const IssuePeerIdentity = Schema.Struct({

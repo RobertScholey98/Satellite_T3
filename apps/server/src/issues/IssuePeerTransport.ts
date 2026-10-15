@@ -58,6 +58,15 @@ export class IssuePeerUnauthorizedError extends Schema.TaggedError<IssuePeerUnau
   }
 }
 
+export class IssuePeerExpiredError extends Schema.TaggedError<IssuePeerExpiredError>()(
+  "IssuePeerExpiredError",
+  {},
+) {
+  override get message(): string {
+    return "This computer's access to the worktree computer expired. Start a ticket on it again from a Satellite window connected to both computers.";
+  }
+}
+
 export type IssuePeerError =
   | IssuePeerUnreachableError
   | IssuePeerUnauthorizedError

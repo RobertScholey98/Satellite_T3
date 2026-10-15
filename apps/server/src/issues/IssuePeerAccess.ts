@@ -10,6 +10,7 @@ import {
   type IssuePeersGrantInput,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -107,6 +108,7 @@ export const make = Effect.gen(function* () {
         credential: issued.token,
         endpoints: endpoints.map((endpoint) => endpoint.httpBaseUrl),
         publicKey: keys.publicKey,
+        expiresAt: DateTime.formatIso(DateTime.toUtc(issued.expiresAt)),
       };
     }),
   });

@@ -86,10 +86,12 @@ const inProcessTransport = (state: {
   reachable: boolean;
   credential: string;
   acknowledged: string[];
+  connects: number;
 }) =>
   IssuePeerTransport.of({
     connect: (peer) =>
       Effect.gen(function* () {
+        state.connects++;
         if (!state.reachable)
           return yield* new IssuePeerUnreachableError({ endpoints: peer.endpoints.length });
         if (peer.credential !== state.credential) return yield* new IssuePeerUnauthorizedError({});
@@ -157,6 +159,7 @@ const setup = Effect.gen(function* () {
     reachable: true,
     credential,
     acknowledged: [] as string[],
+    connects: 0,
   };
   const secrets = memorySecretStore();
   const sourceKeys = yield* freshPeerKeys();
@@ -233,13 +236,17 @@ const setup = Effect.gen(function* () {
     start,
     secrets: secrets.values,
     writes,
-    register: (value = credential) =>
+    setColumn: (next: string) => {
+      column = next;
+    },
+    register: (value = credential, expiresAt = "2099-01-01T00:00:00.000Z") =>
       delivery
         .registerPeer({
           destinationEnvironmentId: destination,
           credential: value,
           endpoints: ["http://192.168.1.20:3773/"],
           publicKey: "destination-key",
+          expiresAt,
         })
         .pipe(Effect.andThen(delivery.drain)),
   };
@@ -502,6 +509,53 @@ describe("IssueDelivery", () => {
           error: null,
         },
       ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("stays idle once its work is complete and wakes for a new start", () =>
+    Effect.gen(function* () {
+      const test = yield* setup;
+      yield* test.start();
+      yield* test.register();
+      yield* test.pullRequest("opened", "open");
+      yield* test.nudge;
+      yield* test.pullRequest("merged", "merged");
+      yield* test.nudge;
+      assert.deepStrictEqual(test.writes, ["progress", "pr", "done"]);
+      assert.strictEqual(test.peer.connects, 3);
+      yield* test.delivery.start();
+      yield* TestClock.adjust("10 minutes");
+      yield* test.delivery.drain;
+      assert.strictEqual(test.peer.connects, 3, "no rounds without unfinished work");
+      test.setColumn("ready");
+      yield* test.sourceIssues.reserveAttempt({
+        requestId: "second-attempt",
+        boardId: test.boardId,
+        issue,
+        sourceEnvironmentId: source,
+        destinationEnvironmentId: destination,
+      });
+      yield* tick;
+      yield* test.delivery.drain;
+      assert.strictEqual(test.peer.connects, 4, "a new reservation wakes delivery");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("stops contacting the destination once the credential expires", () =>
+    Effect.gen(function* () {
+      const test = yield* setup;
+      yield* test.start();
+      yield* test.register(credential, "1970-01-01T00:01:00.000Z");
+      assert.strictEqual(test.peer.connects, 1);
+      yield* test.delivery.start();
+      yield* TestClock.adjust("10 minutes");
+      yield* test.delivery.drain;
+      assert.strictEqual(test.peer.connects, 2, "one scheduled round before expiry, none after");
+      assert.strictEqual((yield* test.peerRow)?.state, "expired");
+      yield* test.pullRequest("opened", "open");
+      yield* test.nudge;
+      assert.deepStrictEqual(test.writes, ["progress"]);
+      assert.strictEqual(test.peer.connects, 2);
     }).pipe(Effect.scoped),
   );
 });

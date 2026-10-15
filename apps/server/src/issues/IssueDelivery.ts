@@ -25,6 +25,7 @@ import { forkParked } from "../serverActivation.ts";
 import { generationMessage, IssuePeerKeys } from "./IssuePeerKeys.ts";
 import { IssueService } from "./IssueService.ts";
 import {
+  IssuePeerExpiredError,
   IssuePeerTransport,
   IssuePeerUnauthorizedError,
   IssuePeerUnreachableError,
@@ -63,6 +64,7 @@ type DeliveryWork =
 interface PeerRow {
   endpoints_json: string;
   public_key: string;
+  credential_expires_at: string;
   preferred_endpoint: string | null;
   state: string;
   last_error: string | null;
@@ -170,8 +172,10 @@ export const make = Effect.gen(function* () {
         ? [row.preferred_endpoint, ...endpoints.filter((value) => value !== row.preferred_endpoint)]
         : endpoints;
       const credential = yield* secrets.get(credentialName(destination));
+      const expired = (yield* Clock.currentTimeMillis) >= Date.parse(row.credential_expires_at);
       const outcome = yield* Effect.scoped(
         Effect.gen(function* () {
+          if (expired) return yield* new IssuePeerExpiredError({});
           if (Option.isNone(credential)) return yield* new IssuePeerUnauthorizedError({});
           if (ordered.length === 0) return yield* new IssuePeerUnreachableError({ endpoints: 0 });
           const peer = yield* transport.connect({
@@ -208,7 +212,9 @@ export const make = Effect.gen(function* () {
           ? "unreachable"
           : failure._tag === "IssuePeerUnauthorizedError"
             ? "unauthorized"
-            : "failed";
+            : failure._tag === "IssuePeerExpiredError"
+              ? "expired"
+              : "failed";
       yield* sql`UPDATE issue_delivery_peers SET state=${state}, last_error=${failure.message},
         last_attempt_at=${at}, failures=failures+1,
         next_attempt_at=${nowMs + backoffMs(row.failures + 1)}
@@ -223,8 +229,15 @@ export const make = Effect.gen(function* () {
     const nowMs = yield* Clock.currentTimeMillis;
     const rows = yield* sql<{
       destination_environment_id: EnvironmentId;
-    }>`SELECT destination_environment_id FROM issue_delivery_peers WHERE next_attempt_at<=${nowMs}`;
-    for (const row of rows) yield* round(row.destination_environment_id);
+      credential_expires_at: string;
+    }>`SELECT destination_environment_id,credential_expires_at FROM issue_delivery_peers
+      WHERE next_attempt_at<=${nowMs} AND state<>'expired'`;
+    if (rows.length === 0) return;
+    // A destination with no unfinished work stays idle until a start or a manual delivery.
+    const unfinished = yield* issues.unfinishedDestinations;
+    for (const row of rows)
+      if (unfinished.has(row.destination_environment_id))
+        yield* round(row.destination_environment_id);
   }).pipe(
     Effect.catchCause((cause) => Effect.logWarning("issue delivery schedule failed", { cause })),
   );
@@ -249,10 +262,10 @@ export const make = Effect.gen(function* () {
           new TextEncoder().encode(input.credential),
         );
         const at = DateTime.formatIso(yield* DateTime.now);
-        yield* sql`INSERT INTO issue_delivery_peers(destination_environment_id,endpoints_json,public_key,state,registered_at)
-          VALUES(${input.destinationEnvironmentId},${encodeEndpoints(endpoints)},${input.publicKey},'pending',${at})
+        yield* sql`INSERT INTO issue_delivery_peers(destination_environment_id,endpoints_json,public_key,credential_expires_at,state,registered_at)
+          VALUES(${input.destinationEnvironmentId},${encodeEndpoints(endpoints)},${input.publicKey},${input.expiresAt},'pending',${at})
           ON CONFLICT(destination_environment_id) DO UPDATE SET endpoints_json=excluded.endpoints_json,
-            public_key=excluded.public_key,
+            public_key=excluded.public_key,credential_expires_at=excluded.credential_expires_at,
             preferred_endpoint=NULL,state='pending',last_error=NULL,failures=0,next_attempt_at=0`;
         yield* issues.publishDeliveries(input.destinationEnvironmentId);
         yield* worker.enqueue({ _tag: "peer", destination: input.destinationEnvironmentId });

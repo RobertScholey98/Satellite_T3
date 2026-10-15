@@ -140,6 +140,11 @@ export interface IssueServiceShape {
   readonly observePullRequest: (
     input: ObserveIssuePullRequestInput,
   ) => Effect.Effect<void, IssueOperationError>;
+  /**
+   * Worktree environments still running work this environment's boards wait on: an active attempt
+   * not yet completed by a merge, or a reservation from the last day that has not started.
+   */
+  readonly unfinishedDestinations: Effect.Effect<ReadonlySet<EnvironmentId>, IssueOperationError>;
   /** Tells board subscribers that delivery from this worktree environment changed. */
   readonly publishDeliveries: (destination: EnvironmentId) => Effect.Effect<void>;
   readonly drain: Effect.Effect<void, IssueOperationError>;
@@ -167,6 +172,7 @@ const RemoteBoard = Schema.Struct({
   items: Schema.Array(IssueBoardItem),
 });
 const ISSUE_BOARD_FRESH_WINDOW_MS = 30_000;
+const RESERVATION_START_WINDOW_HOURS = 24;
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
   Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(storageError));
 interface BoardRow {
@@ -399,6 +405,22 @@ export const makeIssueService = (options: {
       const rows = yield* sql<SyncRow>`SELECT revision,synced_at,failed_at,failure
       FROM issue_board_snapshots WHERE board_id=${boardId}`;
       return rows[0];
+    });
+    const unfinishedDestinationsOn = Effect.fnUntraced(function* (boardId: string | null) {
+      const cutoff = DateTime.formatIso(
+        DateTime.subtract(yield* DateTime.now, { hours: RESERVATION_START_WINDOW_HOURS }),
+      );
+      const rows = yield* sql<{
+        destination: EnvironmentId;
+      }>`SELECT DISTINCT json_extract(attempts.link_json,'$.destinationEnvironmentId') AS destination
+        FROM issue_attempts attempts
+        LEFT JOIN issue_active_attempts active ON active.attempt_id=attempts.id
+        WHERE (${boardId} IS NULL OR attempts.board_id=${boardId})
+          AND json_extract(attempts.link_json,'$.sourceEnvironmentId')=${options.environmentId}
+          AND json_extract(attempts.link_json,'$.destinationEnvironmentId')<>${options.environmentId}
+          AND attempts.completed_at IS NULL
+          AND (active.attempt_id IS NOT NULL OR (attempts.status='reserved' AND attempts.created_at>=${cutoff}))`;
+      return new Set(rows.map((row) => row.destination));
     });
     const deliveriesFor = Effect.fnUntraced(function* (boardId: string) {
       const destinations = yield* sql<{
@@ -844,6 +866,8 @@ export const makeIssueService = (options: {
         if (receipt.kind === "pr-created" || attempt.controlling_pr_key === null)
           yield* sql`UPDATE issue_attempts SET controlling_pr_key=${key} WHERE id=${attempt.id}`;
         else if (attempt.controlling_pr_key !== key) return;
+        if (receipt.state === "merged")
+          yield* sql`UPDATE issue_attempts SET completed_at=${receipt.createdAt} WHERE id=${attempt.id}`;
       }
       const column =
         receipt.kind === "started"
@@ -1202,6 +1226,7 @@ export const makeIssueService = (options: {
       attachAttempt,
       firstPromptSent,
       observePullRequest,
+      unfinishedDestinations: protect(unfinishedDestinationsOn(null)),
       publishDeliveries: (destination) =>
         sql<{ board_id: string }>`SELECT DISTINCT board_id FROM issue_attempts
           WHERE json_extract(link_json,'$.destinationEnvironmentId')=${destination}`.pipe(
