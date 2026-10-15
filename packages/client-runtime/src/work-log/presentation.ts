@@ -406,11 +406,11 @@ export function toolGroupAction(entry: WorkLogEntry): ToolGroupAction {
   if (presentation?.action !== undefined) return presentation.action;
   if (presentation?.icon === "browser") return "browser";
   if (presentation?.icon === "device") return "device";
-  if (entry.requestKind === "file-read" || entry.viewedImagePath !== undefined) return "read";
   // Approvals and questions describe requested work, not work that ran.
   if (entry.itemType === "approval_request" || entry.itemType === "user_input_request") {
     return workLogEntryIsToolLike(entry) ? "other" : "update";
   }
+  if (entry.requestKind === "file-read" || entry.viewedImagePath !== undefined) return "read";
   const data = asRecord(entry.toolData) ?? {};
   const toolName =
     entry.structuredPayload?.type === "dynamic_tool"

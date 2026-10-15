@@ -68,7 +68,7 @@ describe("workLogEntryFromTurnItem", () => {
     });
     expect(fileRead).toMatchObject({ label: "Approval requested", requestKind: "file-read" });
     expect(fileRead.detail).toBeUndefined();
-    expect(toolGroupAction(fileRead)).toBe("read");
+    expect(toolGroupAction(fileRead)).toBe("other");
   });
 
   it("shows the questions a pending request asks and the answers it got", () => {
