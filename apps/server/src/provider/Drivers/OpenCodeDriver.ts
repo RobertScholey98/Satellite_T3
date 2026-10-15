@@ -32,7 +32,7 @@ import * as OpenCodeAdapterV2 from "../../orchestration-v2/Adapters/OpenCodeAdap
 import * as OpenCode2AdapterV2 from "../../orchestration-v2/Adapters/OpenCode2AdapterV2.ts";
 import type { ProviderAdapterV2Shape } from "../../orchestration-v2/ProviderAdapter.ts";
 import * as ServerSettings from "../../serverSettings.ts";
-import type * as TextGenerationOperations from "../../textGeneration/TextGenerationOperations.ts";
+import * as TextGenerationOperations from "../../textGeneration/TextGenerationOperations.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { readOpenCodeGoUsageLimits } from "../openCodeUsageLimits.ts";
 import {
@@ -142,15 +142,26 @@ function selectOpenCodeRuntimeAdapter(input: {
 }
 
 /** Text generation runs on the server the instance's probe detected, each in its own protocol. */
-function selectOpenCodeRuntimeTextGeneration(
-  probe: OpenCodeRuntimeProbe,
+export function selectOpenCodeRuntimeTextGeneration(
+  probe: Pick<OpenCodeRuntimeProbe, "get">,
   v1: TextGenerationOperations.Provider,
   v2: TextGenerationOperations.Provider,
 ): TextGenerationOperations.Provider {
   return {
     name: v1.name,
     run: (request) => byOpenCodeRuntime(probe.get, { v1: v1.run(request), v2: v2.run(request) }),
-    isolation: byOpenCodeRuntime(probe.get, { v1: v1.isolation, v2: v2.isolation }),
+    // Unlike a run, a document task is not defaulted to 1.x when the probe fails: the
+    // server may be 2.x, whose shared server cannot isolate it.
+    isolation: probe.get.pipe(
+      Effect.flatMap((probed) =>
+        probed === undefined
+          ? TextGenerationOperations.isolates()
+          : probed.generation === "v2"
+            ? v2.isolation
+            : v1.isolation,
+      ),
+      Effect.catch(() => TextGenerationOperations.isolates()),
+    ),
   };
 }
 

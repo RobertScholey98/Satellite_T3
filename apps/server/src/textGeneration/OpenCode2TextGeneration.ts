@@ -177,20 +177,29 @@ export const make = Effect.fn("OpenCode2TextGeneration.make")(function* () {
   const server = yield* OpenCode2Server.OpenCode2Server;
   const { attachmentsDir } = yield* ServerConfig.ServerConfig;
   const run: TextGenerationOperations.Runner = (input) =>
-    server
-      .withConnection((connection) => runOnServer(connection, input, attachmentsDir))
-      .pipe(
-        Effect.mapError((cause) =>
-          isTextGenerationError(cause)
-            ? cause
-            : new TextGenerationError({
-                operation: input.operation,
-                detail: "OpenCode text generation failed.",
-                cause,
-              }),
-        ),
-        Effect.flatMap((raw) => TextGenerationOperations.decodeJsonReply(input, "OpenCode", raw)),
-      );
+    TextGenerationOperations.isIsolated(input.needs)
+      ? Effect.fail(
+          new TextGenerationOperations.TextGenerationUnsupportedError({
+            operation: input.operation,
+            provider: "OpenCode2TextGeneration",
+          }),
+        )
+      : server
+          .withConnection((connection) => runOnServer(connection, input, attachmentsDir))
+          .pipe(
+            Effect.mapError((cause) =>
+              isTextGenerationError(cause)
+                ? cause
+                : new TextGenerationError({
+                    operation: input.operation,
+                    detail: "OpenCode text generation failed.",
+                    cause,
+                  }),
+            ),
+            Effect.flatMap((raw) =>
+              TextGenerationOperations.decodeJsonReply(input, "OpenCode", raw),
+            ),
+          );
   return {
     name: "OpenCode2TextGeneration",
     run,

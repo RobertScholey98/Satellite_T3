@@ -77,10 +77,14 @@ export interface Request<S extends Schema.Top> {
   readonly onActivity?: RevdocGenerationInput["onActivity"];
 }
 
-/** Runs one request and decodes the reply as its `outputSchema`. */
+/** Runs one request and decodes the reply as its `outputSchema`; it may refuse needs it cannot honour. */
 export type Runner = <S extends Schema.Top>(
   request: Request<S>,
-) => Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]>;
+) => Effect.Effect<
+  S["Type"],
+  TextGenerationError | TextGenerationUnsupportedError,
+  S["DecodingServices"]
+>;
 
 /** One provider's text generation: its run step and the isolation that run step honours. */
 export interface Provider {
@@ -157,7 +161,15 @@ export function fromProvider(
     withTimeout(
       request.operation,
       timeout,
-      Effect.flatMap(resolve(request), (provider) => runOn(provider, request)),
+      Effect.flatMap(resolve(request), (provider) => runOn(provider, request)).pipe(
+        // Every provider honours the needs of a metadata task, so a refusal is a plain failure.
+        Effect.catchTags({
+          TextGenerationUnsupportedError: (refused) =>
+            Effect.fail(
+              new TextGenerationError({ operation: refused.operation, detail: refused.message }),
+            ),
+        }),
+      ),
     );
   const runDocument = <S extends Schema.Top>(
     request: Request<S> & { readonly operation: DocumentOperation },

@@ -31,9 +31,11 @@ export const cannedProvider = (
   const requests: Array<TextGenerationOperations.Request<Schema.Top>> = [];
   const provider: TextGenerationOperations.Provider = {
     name: "CannedTextGeneration",
-    run: (request) => {
-      requests.push(request);
-      return reply(request).pipe(
+    run: (request) =>
+      Effect.suspend(() => {
+        requests.push(request);
+        return reply(request);
+      }).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(request.outputSchema)),
         Effect.mapError(
           (cause) =>
@@ -43,8 +45,7 @@ export const cannedProvider = (
               cause,
             }),
         ),
-      );
-    },
+      ),
     isolation: TextGenerationOperations.isolates(...isolation),
   };
   return { provider, requests };
