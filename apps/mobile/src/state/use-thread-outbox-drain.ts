@@ -1032,6 +1032,7 @@ export function useThreadOutboxDrain(): void {
         messageId: queuedMessage.messageId,
         createdAt: queuedMessage.createdAt,
         text,
+        // A creation needs text to send, so its title never falls back to attachment names.
         uploadedAttachments: [],
         modelSelection: settings.modelSelection,
         runtimeMode: settings.runtimeMode,

@@ -1,7 +1,7 @@
 import { validWorktreeName } from "@t3tools/client-runtime/turn-delivery";
 import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, TextInput, View } from "react-native";
 
 import { AppText as Text } from "../../../components/AppText";
@@ -35,26 +35,32 @@ function useProjectReadyIssues(environmentId: EnvironmentId, projectId: ProjectI
   const listBoards = useAtomCommand(issuesEnvironment.listBoards, { reportFailure: false });
   const openBoard = useAtomCommand(issuesEnvironment.openBoard, { reportFailure: false });
   const [state, setState] = useState<ReadyIssuesState>({ status: "loading" });
-  const load = useCallback(async () => {
-    const result = await loadReadyIssues({ environmentId, projectId, listBoards, openBoard });
-    setState(
-      "error" in result
-        ? { status: "error", error: result.error }
-        : { status: "ready", issues: result.issues },
-    );
-  }, [environmentId, listBoards, openBoard, projectId]);
   useEffect(() => {
-    void load();
-  }, [load]);
-  const reload = useCallback(() => {
-    setState({ status: "loading" });
-    void load();
-  }, [load]);
-  return { state, reload };
+    let live = true;
+    void loadReadyIssues({ environmentId, projectId, listBoards, openBoard }).then((result) => {
+      if (!live) return;
+      setState(
+        "error" in result
+          ? { status: "error", error: result.error }
+          : { status: "ready", issues: result.issues },
+      );
+    });
+    return () => {
+      live = false;
+    };
+  }, [environmentId, listBoards, openBoard, projectId]);
+  return state;
 }
 
 /** Ready issues for one project, each with a Start action that queues work in a new worktree. */
 export function ProjectIssuesRouteScreen(props: ProjectIssuesProps) {
+  const [attempt, setAttempt] = useState(0);
+  return (
+    <ProjectIssues key={attempt} {...props} onRetry={() => setAttempt((current) => current + 1)} />
+  );
+}
+
+function ProjectIssues(props: ProjectIssuesProps & { readonly onRetry: () => void }) {
   const navigation = useNavigation();
   const environmentId = EnvironmentId.make(props.route.params.environmentId);
   const projectId = ProjectId.make(props.route.params.projectId);
@@ -78,7 +84,7 @@ export function ProjectIssuesRouteScreen(props: ProjectIssuesProps) {
     stickySelection: resolveDefaultableModelSelection(serverConfig, stickyModelSelection),
     modelOptions: buildModelOptions(serverConfig, null),
   });
-  const { state, reload } = useProjectReadyIssues(environmentId, projectId);
+  const state = useProjectReadyIssues(environmentId, projectId);
   const [selected, setSelected] = useState<{ key: string; worktreeName: string } | null>(null);
   const [starting, setStarting] = useState(false);
 
@@ -136,7 +142,7 @@ export function ProjectIssuesRouteScreen(props: ProjectIssuesProps) {
             title="Issues could not load"
             detail={state.error}
             actionLabel="Retry"
-            onAction={reload}
+            onAction={props.onRetry}
           />
         ) : state.issues.length === 0 ? (
           <EmptyState

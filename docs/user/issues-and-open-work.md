@@ -24,8 +24,9 @@ your instructions. The ticket moves into progress after the worktree is ready
 and the agent receives the prompt. Returning tickets offer **Continue existing**;
 choose **New attempt** to keep the previous work and start another thread.
 
-In the mobile app, filter the thread list to a project to see **Ready issues** when that
-project has a connected board. Tap a ticket, keep or change the worktree name, and choose
+In the mobile app, filter the thread list to a project to see **Ready issues** when the
+project's computer supports issue boards. The list shows tickets in the Ready columns of the
+project's connected boards. Tap a ticket, keep or change the worktree name, and choose
 **Start**. The new worktree branches from the branch checked out in the project. The work
 queues like any new task, so it starts once the computer is reachable, even if you went
 offline after you chose **Start**.
