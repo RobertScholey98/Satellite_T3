@@ -8250,6 +8250,8 @@ export default function ChatView(props: ChatViewProps) {
     onToggleDiff,
     runThreadAction,
     threadShortcutAction,
+    openPanelPullRequestUrl,
+    linkedThreadPullRequest?.url,
     getShortcutContext,
     toggleRightPanel,
     toggleThreadPanel,
@@ -8261,6 +8263,8 @@ export default function ChatView(props: ChatViewProps) {
     hasMultipleEnvironments,
     logicalProjectEnvironments,
     onEnvironmentChange,
+    embeddedDraft,
+    routeKind,
   ]);
 
   // Paste-to-focus: the resting composer blurs on a click into the timeline,
