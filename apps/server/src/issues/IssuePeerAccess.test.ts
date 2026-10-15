@@ -10,6 +10,7 @@ import {
   RpcScopeAuthorization,
   WsSatelliteRpcGroup,
   type IssueBoardLocator,
+  type IssueAttemptLink,
   type IssueRef,
   type OrchestrationProjectShell,
 } from "@t3tools/contracts";
@@ -54,7 +55,7 @@ import { fromAdapters } from "./IssueHost.ts";
 import type { IssueHostAdapter } from "./IssueHostAdapter.ts";
 import { freshPeerKeys } from "./IssuePeer.testFixtures.ts";
 import * as IssuePeerAccess from "./IssuePeerAccess.ts";
-import { IssuePeerKeys } from "./IssuePeerKeys.ts";
+import { generationMessage, IssuePeerKeys } from "./IssuePeerKeys.ts";
 import * as IssuePeerTransport from "./IssuePeerTransport.ts";
 import { IssueService, makeIssueService } from "./IssueService.ts";
 
@@ -298,6 +299,8 @@ const boardEnvironment = Effect.gen(function* () {
     issues,
     peerState,
     publicKey: boardKeys.publicKey,
+    sign: boardKeys.sign,
+    transport: Context.get(transport, IssuePeerTransport.IssuePeerTransport),
     writes,
   };
 });
@@ -425,5 +428,78 @@ it.layer(NodeServices.layer)("issue peer access", (it) => {
       );
       assert.strictEqual(yield* peerSessions, 0);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a credential for one board cannot read, acknowledge, or sync another board's work",
+    () =>
+      Effect.gen(function* () {
+        const worktree = yield* worktreeServer;
+        const board = yield* boardEnvironment;
+        const theirs: IssueAttemptLink = {
+          attemptId: "theirs",
+          reservationId: "theirs-reservation",
+          sourceEnvironmentId: EnvironmentId.make("other-board-environment"),
+          sourceProjectId: projectId,
+          boardId: "other-board",
+          issue,
+          destinationEnvironmentId: worktree.environmentId,
+          sourceGeneration: 0,
+        };
+        const theirThread = ThreadId.make("their-thread");
+        yield* worktree.issues.attachAttempt({
+          link: theirs,
+          threadId: theirThread,
+          projectId,
+          worktreePath: "/other",
+        });
+        yield* worktree.issues.firstPromptSent({ threadId: theirThread, eventKey: "send" });
+        const grant = yield* worktree.peerAccess.grant(
+          { sourceEnvironmentId: source, sourceLabel: "Desktop", sourcePublicKey: board.publicKey },
+          operator,
+        );
+        const generation = {
+          attemptId: theirs.attemptId,
+          reservationId: theirs.reservationId,
+          sourceGeneration: 5,
+        };
+        const seen = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const peer = yield* board.transport.connect({
+              destinationEnvironmentId: worktree.environmentId,
+              endpoints: grant.endpoints,
+              credential: grant.credential,
+              publicKey: grant.publicKey,
+            });
+            const listed = (yield* peer.listReceipts(0)).receipts.map(
+              (receipt) => receipt.eventKey,
+            );
+            yield* peer.acknowledge({ acknowledgedKeys: ["start:theirs"] });
+            const synced = yield* peer
+              .syncGenerations({
+                generations: [
+                  {
+                    ...generation,
+                    signature: board.sign(
+                      generationMessage(source, worktree.environmentId, generation),
+                    ),
+                  },
+                ],
+              })
+              .pipe(Effect.flip);
+            return { listed, synced: synced.message };
+          }),
+        );
+        assert.deepStrictEqual(seen, {
+          listed: [],
+          synced: "This attempt does not belong to the destination server.",
+        });
+        assert.deepStrictEqual(
+          (yield* worktree.issues.listReceipts({})).receipts.map((receipt) => receipt.eventKey),
+          ["start:theirs"],
+          "the other board's receipt stays pending",
+        );
+        assert.strictEqual((yield* worktree.issues.listAttempts({}))[0]?.sourceGeneration, 0);
+      }).pipe(Effect.scoped),
   );
 });
