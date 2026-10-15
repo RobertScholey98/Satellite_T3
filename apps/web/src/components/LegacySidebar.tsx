@@ -2243,8 +2243,14 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       openThreadActionMenu(threadRef, position, {
         startRename: startThreadRenameFromMenu,
         openProjectSettings: openProjectSettingsFromMenu,
+        fallbackWorkspaceRoot: project.workspaceRoot,
       }),
-    [openProjectSettingsFromMenu, openThreadActionMenu, startThreadRenameFromMenu],
+    [
+      openProjectSettingsFromMenu,
+      openThreadActionMenu,
+      project.workspaceRoot,
+      startThreadRenameFromMenu,
+    ],
   );
 
   return (

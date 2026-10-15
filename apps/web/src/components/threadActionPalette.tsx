@@ -1,6 +1,7 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import {
   ArchiveIcon,
+  CheckIcon,
   CircleCheckIcon,
   ClockIcon,
   CopyIcon,
@@ -59,6 +60,12 @@ const ICONS: Readonly<Record<string, LucideIcon>> = {
 // sense under the parent ("Enabled", "In 1 hour").
 const FLATTENED_PARENTS: ReadonlySet<ThreadActionMenuId> = new Set(["copy"]);
 
+// The copy entries that name a thread reference, findable as one.
+const EXTRA_SEARCH_TERMS: Partial<Record<ThreadActionMenuId, ReadonlyArray<string>>> = {
+  "copy-reference": ["pull request", "pr link", "reference"],
+  "copy-thread-id": ["thread id", "reference"],
+};
+
 function lowerFirstWord(label: string): string {
   return /^[A-Z][a-z]/.test(label) ? label.charAt(0).toLowerCase() + label.slice(1) : label;
 }
@@ -71,6 +78,8 @@ function icon(name: string | undefined, className: string) {
 export function buildThreadActionPaletteItems(input: {
   readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
   readonly run: (action: ThreadActionMenuId) => Promise<void>;
+  /** The value an entry acts on (the path or link it copies), shown beside its title. */
+  readonly describe?: (action: ThreadActionMenuId) => string | null;
 }): Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> {
   const shortcutByAction = new Map(
     THREAD_ACTION_SHORTCUT_COMMANDS.flatMap((command) => {
@@ -84,12 +93,15 @@ export function buildThreadActionPaletteItems(input: {
     iconName: string | undefined,
   ): CommandPaletteActionItem => {
     const shortcutCommand = shortcutByAction.get(item.id);
+    const description = input.describe?.(item.id) ?? null;
     return {
       kind: "action",
       value: `thread-action:${item.id}`,
-      searchTerms: [title, "thread"],
+      searchTerms: [title, "thread", ...(EXTRA_SEARCH_TERMS[item.id] ?? [])],
       title,
       icon: icon(iconName, ITEM_ICON_CLASS),
+      ...(description === null ? {} : { description }),
+      ...(item.checked ? { titleTrailingContent: <CheckIcon className={ITEM_ICON_CLASS} /> } : {}),
       ...(item.disabled ? { disabled: true } : {}),
       ...(shortcutCommand ? { shortcutCommand } : {}),
       run: () => input.run(item.id),

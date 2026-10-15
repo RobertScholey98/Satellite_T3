@@ -1946,6 +1946,12 @@ function OpenCommandPaletteDialog(props: {
       ...buildThreadActionPaletteItems({
         items: threadActionMenu.readMenuItems(activeThreadRef, threadActionSurface),
         run: (action) => threadActionMenu.runAction(activeThreadRef, action, threadActionSurface),
+        describe: (action) =>
+          action === "copy-reference"
+            ? threadActionMenu.readPullRequestUrl(activeThreadRef, threadActionSurface)
+            : action === "copy-thread-id"
+              ? activeThreadRef.threadId
+              : null,
       }),
     );
   }

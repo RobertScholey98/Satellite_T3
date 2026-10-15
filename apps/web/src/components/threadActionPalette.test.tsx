@@ -135,4 +135,45 @@ describe("buildThreadActionPaletteItems", () => {
       ["Copy PR link", "thread.copyReference"],
     ]);
   });
+
+  it("describes and finds the reference copies the way the old palette entry did", () => {
+    const items = buildThreadActionPaletteItems({
+      items: buildThreadActionMenuItems({
+        ...state,
+        pullRequestUrl: "https://github.com/o/r/pull/7",
+      }),
+      run: async () => {},
+      describe: (action) =>
+        action === "copy-reference"
+          ? "https://github.com/o/r/pull/7"
+          : action === "copy-thread-id"
+            ? "thread-1"
+            : null,
+    });
+    const entry = (value: string) => items.find((item) => item.value === value);
+    expect(entry("thread-action:copy-reference")).toMatchObject({
+      title: "Copy PR link",
+      description: "https://github.com/o/r/pull/7",
+      searchTerms: ["Copy PR link", "thread", "pull request", "pr link", "reference"],
+    });
+    expect(entry("thread-action:copy-thread-id")).toMatchObject({
+      description: "thread-1",
+      searchTerms: ["Copy thread ID", "thread", "thread id", "reference"],
+    });
+    expect(entry("thread-action:copy-path")?.description).toBeUndefined();
+  });
+
+  it("marks the auto-settle option that is in effect", () => {
+    const autoSettle = buildThreadActionPaletteItems({
+      items: buildThreadActionMenuItems({ ...state, autoSettleEnabled: false }),
+      run: async () => {},
+    }).find((item) => item.value === "thread-action:auto-settle");
+    if (autoSettle?.kind !== "submenu") throw new Error("auto-settle is not a submenu");
+    expect(
+      autoSettle.groups[0]!.items.map((child) => [child.title, child.titleTrailingContent != null]),
+    ).toEqual([
+      ["Enabled", false],
+      ["Disabled", true],
+    ]);
+  });
 });

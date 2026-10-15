@@ -117,7 +117,9 @@ vi.mock("../components/Sidebar.snooze", () => ({
   snoozeWakeDescription: () => "later",
 }));
 vi.mock("./useCopyToClipboard", () => ({
-  useCopyToClipboard: () => ({ copyToClipboard: () => recordEffect("copy") }),
+  useCopyToClipboard: () => ({
+    copyToClipboard: (value: string) => recordEffect(`copy:${value}`),
+  }),
   writeTextToClipboard: async (value: string) => {
     recordEffect("clipboard:" + value);
     return true;
@@ -233,7 +235,7 @@ describe("thread menu permissions", () => {
 
   it.each([
     ["new-thread-on-branch", "draft"],
-    ["copy-thread-id", "copy"],
+    ["copy-thread-id", "copy:thread"],
     ["mark-unread", "mark-unread"],
     ["project-settings", "project-settings"],
   ] as const)("keeps %s available without task permission", async (action, effect) => {
@@ -375,5 +377,14 @@ describe("thread keybindings", () => {
     ).toBe("copy-thread-id");
     await menu().runAction(target, "copy-reference");
     expect(state.effects).toEqual(["clipboard:https://github.com/o/r/pull/3"]);
+  });
+});
+
+describe("copy path", () => {
+  it("falls back to the legacy sidebar's project root when the thread has none of its own", async () => {
+    await useThreadActionMenu().runAction(target, "copy-path", {
+      fallbackWorkspaceRoot: "/workspace/group",
+    });
+    expect(state.effects).toEqual(["copy:/workspace/group"]);
   });
 });

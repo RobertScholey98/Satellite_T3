@@ -93,6 +93,8 @@ export interface ThreadActionSurface {
    * thread's stored link. ChatView swaps in a replacement for a merged one.
    */
   readonly linkedPullRequestUrl?: string | null;
+  /** Copied when the thread has no worktree and its own project has no root. */
+  readonly fallbackWorkspaceRoot?: string | null;
   /** Only a surface with a project-scoped thread list offers "Filter by project". */
   readonly projectFilter?: {
     readonly read: (threadRef: ScopedThreadRef) => ThreadActionMenuState["projectFilter"];
@@ -265,6 +267,18 @@ export function useThreadActionMenu() {
     [readMenuItems],
   );
 
+  /** The link "Copy PR link" copies for this thread on this surface, if any. */
+  const readPullRequestUrl = useCallback(
+    (threadRef: ScopedThreadRef, surface: ThreadActionSurface = {}) =>
+      readThreadActionMenuState(threadRef, {
+        now: new Date(),
+        timestampFormat,
+        openPanelPullRequestUrl: surface.openPanelPullRequestUrl,
+        linkedPullRequestUrl: surface.linkedPullRequestUrl,
+      })?.pullRequestUrl ?? null,
+    [timestampFormat],
+  );
+
   const runAction = useCallback(
     async (
       threadRef: ScopedThreadRef,
@@ -391,6 +405,7 @@ export function useThreadActionMenu() {
             thread.worktreePath ??
             readProject(scopeProjectRef(threadRef.environmentId, thread.projectId))
               ?.workspaceRoot ??
+            surface.fallbackWorkspaceRoot ??
             null;
           if (!workspacePath) {
             toastManager.add(
@@ -411,12 +426,7 @@ export function useThreadActionMenu() {
           }
           return;
         case "copy-reference": {
-          const url = readThreadActionMenuState(threadRef, {
-            now: new Date(),
-            timestampFormat,
-            openPanelPullRequestUrl: surface.openPanelPullRequestUrl,
-            linkedPullRequestUrl: surface.linkedPullRequestUrl,
-          })?.pullRequestUrl;
+          const url = readPullRequestUrl(threadRef, surface);
           if (url) await copyPullRequestLink(url);
           return;
         }
@@ -491,6 +501,7 @@ export function useThreadActionMenu() {
       pinThread,
       projectGroupingSettings,
       projects,
+      readPullRequestUrl,
       regenerateThreadTitle,
       router,
       setThreadAutoSettle,
@@ -527,5 +538,13 @@ export function useThreadActionMenu() {
     void readLocalApi()?.contextMenu.close();
   }, []);
 
-  return { openMenu, closeMenu, readMenuItems, runAction, shortcutAction, renameThread };
+  return {
+    openMenu,
+    closeMenu,
+    readMenuItems,
+    readPullRequestUrl,
+    runAction,
+    shortcutAction,
+    renameThread,
+  };
 }
