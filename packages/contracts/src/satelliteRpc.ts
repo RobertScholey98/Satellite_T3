@@ -42,6 +42,7 @@ import {
   IssuePeersForgetInput,
   IssuePeersGrantInput,
   IssuePeersRegisterInput,
+  IssueDeliveriesDeliverInput,
 } from "./issues.ts";
 import {
   OpenWorkListInput,
@@ -123,6 +124,7 @@ export const SATELLITE_WS_METHODS = {
   issuesPeersGrant: "issues.peers.grant",
   issuesPeersRegister: "issues.peers.register",
   issuesPeersForget: "issues.peers.forget",
+  issuesDeliveriesDeliver: "issues.deliveries.deliver",
   openWorkList: "openWork.list",
   openWorkTimeline: "openWork.timeline",
   openWorkLinkFolder: "openWork.linkFolder",
@@ -330,6 +332,11 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   }),
   Rpc.make(SATELLITE_WS_METHODS.issuesPeersForget, {
     payload: IssuePeersForgetInput,
+    success: Schema.Void,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(SATELLITE_WS_METHODS.issuesDeliveriesDeliver, {
+    payload: IssueDeliveriesDeliverInput,
     success: Schema.Void,
     error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
   }),

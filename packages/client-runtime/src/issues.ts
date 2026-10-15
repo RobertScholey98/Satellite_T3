@@ -82,6 +82,14 @@ export function createIssuesEnvironmentAtoms<R, E>(
       label: "issues:peers:register",
       tag: WS_METHODS.issuesPeersRegister,
     }),
+    forgetPeer: createEnvironmentRpcCommand(runtime, {
+      label: "issues:peers:forget",
+      tag: WS_METHODS.issuesPeersForget,
+    }),
+    deliver: createEnvironmentRpcCommand(runtime, {
+      label: "issues:deliveries:deliver",
+      tag: WS_METHODS.issuesDeliveriesDeliver,
+    }),
   };
 }
 

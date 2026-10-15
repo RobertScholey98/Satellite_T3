@@ -173,11 +173,19 @@ export const make = Effect.gen(function* () {
       const nowMs = yield* Clock.currentTimeMillis;
       if (outcome._tag === "Success") {
         const { endpoint, delivered, rejected } = outcome.success;
+        const state = rejected.length > 0 ? "failed" : "delivered";
+        const deliveredAt = delivered > 0 ? at : row.last_delivered_at;
         yield* sql`UPDATE issue_delivery_peers SET preferred_endpoint=${endpoint},
-          state=${rejected.length > 0 ? "failed" : "delivered"}, last_error=${rejected[0] ?? null},
-          last_attempt_at=${at}, last_delivered_at=${delivered > 0 ? at : row.last_delivered_at},
+          state=${state}, last_error=${rejected[0] ?? null},
+          last_attempt_at=${at}, last_delivered_at=${deliveredAt},
           failures=0, next_attempt_at=${nowMs + ROUND_INTERVAL_MS}
           WHERE destination_environment_id=${destination}`;
+        if (
+          state !== row.state ||
+          (rejected[0] ?? null) !== row.last_error ||
+          deliveredAt !== row.last_delivered_at
+        )
+          yield* issues.publishDeliveries(destination);
         return;
       }
       const failure = outcome.failure;
@@ -191,6 +199,8 @@ export const make = Effect.gen(function* () {
         last_attempt_at=${at}, failures=failures+1,
         next_attempt_at=${nowMs + backoffMs(row.failures + 1)}
         WHERE destination_environment_id=${destination}`;
+      if (state !== row.state || failure.message !== row.last_error)
+        yield* issues.publishDeliveries(destination);
     }).pipe(
       Effect.catchCause((cause) => Effect.logWarning("issue delivery round failed", { cause })),
     );
@@ -230,6 +240,7 @@ export const make = Effect.gen(function* () {
           VALUES(${input.destinationEnvironmentId},${encodeEndpoints(endpoints)},'pending',${at})
           ON CONFLICT(destination_environment_id) DO UPDATE SET endpoints_json=excluded.endpoints_json,
             preferred_endpoint=NULL,state='pending',last_error=NULL,failures=0,next_attempt_at=0`;
+        yield* issues.publishDeliveries(input.destinationEnvironmentId);
         yield* worker.enqueue(input.destinationEnvironmentId);
       }),
     );
@@ -240,6 +251,7 @@ export const make = Effect.gen(function* () {
         yield* sql`DELETE FROM issue_delivery_peers
           WHERE destination_environment_id=${input.destinationEnvironmentId}`;
         yield* secrets.remove(credentialName(input.destinationEnvironmentId));
+        yield* issues.publishDeliveries(input.destinationEnvironmentId);
       }),
     );
 

@@ -31,6 +31,8 @@ import {
   IdeasToolkitHandlersLive,
 } from "../mcp/toolkits/ideas/handlers.ts";
 import { IdeaImageTool, IdeasImageToolkit, IdeasToolkit } from "../mcp/toolkits/ideas/tools.ts";
+import { IssuesToolkitHandlersLive } from "../mcp/toolkits/issues/handlers.ts";
+import { IssuesToolkit } from "../mcp/toolkits/issues/tools.ts";
 import { RevdocToolkit, RevdocToolkitHandlersLive } from "../mcp/toolkits/revdoc/tools.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as EventStoreV2 from "../orchestration-v2/EventStore.ts";
@@ -136,6 +138,7 @@ export const CommitsToolkitRegistrationLive = toolkitRegistration(
   CommitsToolkit,
   CommitsToolkitHandlersLive,
 );
+const IssuesToolkitRegistrationLive = toolkitRegistration(IssuesToolkit, IssuesToolkitHandlersLive);
 export const RevdocToolkitRegistrationLive = toolkitRegistration(
   RevdocToolkit,
   RevdocToolkitHandlersLive,
@@ -148,4 +151,5 @@ export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) =>
     DocumentsToolkitRegistrationLive,
     CommitsToolkitRegistrationLive,
     RevdocToolkitRegistrationLive,
+    IssuesToolkitRegistrationLive,
   ).pipe(Layer.provideMerge(mcpServer));

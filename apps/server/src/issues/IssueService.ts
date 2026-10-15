@@ -36,6 +36,7 @@ import {
   type IssueBoardsOpenInput,
   type IssueBoardView,
   type IssueBoardSync,
+  type IssueDeliveryPeer,
   type IssueBoardSyncEvent,
   type IssueBoardsSubscribeInput,
   type IssueBoardsConfigureInput,
@@ -138,6 +139,8 @@ export interface IssueServiceShape {
   readonly observePullRequest: (
     input: ObserveIssuePullRequestInput,
   ) => Effect.Effect<void, IssueOperationError>;
+  /** Tells board subscribers that delivery from this worktree environment changed. */
+  readonly publishDeliveries: (destination: EnvironmentId) => Effect.Effect<void>;
   readonly drain: Effect.Effect<void, IssueOperationError>;
   readonly drainRefreshes: Effect.Effect<void>;
 }
@@ -198,6 +201,12 @@ interface AttemptRow {
   started_at: string | null;
   source_generation: number;
   controlling_pr_key: string | null;
+}
+interface DeliveryPeerRow {
+  destination_environment_id: string;
+  state: IssueDeliveryPeer["state"];
+  last_error: string | null;
+  last_delivered_at: string | null;
 }
 interface MoveRow {
   sequence: number;
@@ -390,9 +399,48 @@ export const makeIssueService = (options: {
       FROM issue_board_snapshots WHERE board_id=${boardId}`;
       return rows[0];
     });
+    const deliveriesFor = Effect.fnUntraced(function* (boardId: string) {
+      const destinations = yield* sql<{
+        destination: EnvironmentId;
+        active: number;
+      }>`SELECT json_extract(attempts.link_json,'$.destinationEnvironmentId') AS destination,
+        MAX(active.attempt_id IS NOT NULL) AS active
+        FROM issue_attempts attempts
+        LEFT JOIN issue_active_attempts active ON active.attempt_id=attempts.id
+        WHERE attempts.board_id=${boardId}
+          AND json_extract(attempts.link_json,'$.destinationEnvironmentId')<>${options.environmentId}
+        GROUP BY destination ORDER BY destination`;
+      if (destinations.length === 0) return [];
+      const peers = new Map(
+        (yield* sql<DeliveryPeerRow>`SELECT destination_environment_id,state,last_error,last_delivered_at
+          FROM issue_delivery_peers`).map((row) => [row.destination_environment_id, row]),
+      );
+      return destinations.flatMap(({ destination, active }): IssueDeliveryPeer[] => {
+        const peer = peers.get(destination);
+        if (peer)
+          return [
+            {
+              destinationEnvironmentId: destination,
+              state: peer.state,
+              lastDeliveredAt: peer.last_delivered_at,
+              error: peer.last_error,
+            },
+          ];
+        return active
+          ? [
+              {
+                destinationEnvironmentId: destination,
+                state: "unregistered",
+                lastDeliveredAt: null,
+                error: null,
+              },
+            ]
+          : [];
+      });
+    });
     const syncEvent = Effect.fnUntraced(function* (boardId: string) {
       const row = yield* readSync(boardId);
-      return { boardId, sync: row ? syncOf(boardId, row) : null };
+      return { boardId, sync: row ? syncOf(boardId, row, yield* deliveriesFor(boardId)) : null };
     });
     const publish = (boardId: string) =>
       syncEvent(boardId).pipe(Effect.flatMap((event) => PubSub.publish(changes, event)));
@@ -487,11 +535,16 @@ export const makeIssueService = (options: {
         syncing.add(boardId);
         return publish(boardId).pipe(Effect.andThen(refreshes.enqueue(boardId)));
       });
-    const syncOf = (boardId: string, row: SyncRow): IssueBoardSync => ({
+    const syncOf = (
+      boardId: string,
+      row: SyncRow,
+      deliveries: ReadonlyArray<IssueDeliveryPeer>,
+    ): IssueBoardSync => ({
       revision: row.revision,
       syncedAt: row.synced_at,
       syncing: syncing.has(boardId),
       failure: row.failed_at === null ? null : { at: row.failed_at, message: row.failure ?? "" },
+      deliveries,
     });
     const enqueueMove = Effect.fnUntraced(function* (
       requestKey: string,
@@ -602,7 +655,7 @@ export const makeIssueService = (options: {
             )
               yield* requestRefresh(board.id);
             remote = yield* parse(RemoteBoard, row.board_json);
-            sync = syncOf(board.id, row);
+            sync = syncOf(board.id, row, yield* deliveriesFor(board.id));
           } else {
             remote = yield* host.board(
               (yield* project(board.projectId)).workspaceRoot,
@@ -617,7 +670,7 @@ export const makeIssueService = (options: {
               if (inserted.length) yield* publish(board.id);
               const stored = yield* readSync(board.id);
               if (!stored) return yield* error("not-found", "This board is no longer connected.");
-              sync = syncOf(board.id, stored);
+              sync = syncOf(board.id, stored, yield* deliveriesFor(board.id));
             }
           }
           const moves =
@@ -1121,6 +1174,15 @@ export const makeIssueService = (options: {
       attachAttempt,
       firstPromptSent,
       observePullRequest,
+      publishDeliveries: (destination) =>
+        sql<{ board_id: string }>`SELECT DISTINCT board_id FROM issue_attempts
+          WHERE json_extract(link_json,'$.destinationEnvironmentId')=${destination}`.pipe(
+          Effect.flatMap((rows) => Effect.forEach(rows, (row) => publish(row.board_id))),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("issue delivery publish failed", { cause }),
+          ),
+          Effect.asVoid,
+        ),
       drain: lock(flush),
       drainRefreshes: refreshes.drain,
     } satisfies IssueServiceShape;

@@ -32,6 +32,8 @@ export const SATELLITE_RPC_REQUIRED_SCOPES = {
   [SATELLITE_WS_METHODS.issuesPeersGrant]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.issuesPeersRegister]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.issuesPeersForget]: AuthOrchestrationOperateScope,
+  // Like Refresh board: it only collects what the worktree computer already reported.
+  [SATELLITE_WS_METHODS.issuesDeliveriesDeliver]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.openWorkList]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.openWorkTimeline]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.openWorkLinkFolder]: AuthOrchestrationOperateScope,
@@ -88,6 +90,7 @@ export const SATELLITE_RPC_AGGREGATES = {
   [SATELLITE_WS_METHODS.issuesPeersGrant]: "issues",
   [SATELLITE_WS_METHODS.issuesPeersRegister]: "issues",
   [SATELLITE_WS_METHODS.issuesPeersForget]: "issues",
+  [SATELLITE_WS_METHODS.issuesDeliveriesDeliver]: "issues",
   [SATELLITE_WS_METHODS.openWorkList]: "openWork",
   [SATELLITE_WS_METHODS.openWorkTimeline]: "openWork",
   [SATELLITE_WS_METHODS.openWorkLinkFolder]: "openWork",

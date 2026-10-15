@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import migration from "../persistence/Migrations/056_IssueBoards.ts";
 import snapshotMigration from "../persistence/Migrations/059_IssueBoardSnapshots.ts";
+import deliveryMigration from "../persistence/Migrations/069_IssueDeliveryPeers.ts";
 import * as BitbucketApi from "../sourceControl/BitbucketApi.ts";
 import * as ForgejoCli from "../sourceControl/ForgejoCli.ts";
 import * as GitLabCli from "../sourceControl/GitLabCli.ts";
@@ -73,6 +74,7 @@ const project: OrchestrationProjectShell = {
 const setup = Effect.gen(function* () {
   yield* migration;
   yield* snapshotMigration;
+  yield* deliveryMigration;
   let column = "ready";
   let fail = false;
   let failReads = false;
@@ -196,7 +198,13 @@ describe("IssueService", () => {
       Effect.gen(function* () {
         const test = yield* setup;
         assert.strictEqual(test.reads(), 1);
-        const fresh = { revision: 1, syncedAt: epoch, syncing: false, failure: null };
+        const fresh = {
+          revision: 1,
+          syncedAt: epoch,
+          syncing: false,
+          failure: null,
+          deliveries: [],
+        };
         const view = yield* test.service.openBoard({ projectId, boardId: test.boardId });
         assert.deepStrictEqual(view.sync, fresh);
         assert.strictEqual(view.board.title, "Board");
@@ -226,6 +234,7 @@ describe("IssueService", () => {
           syncedAt: epoch,
           syncing: false,
           failure: null,
+          deliveries: [],
         });
         assert.deepStrictEqual(
           view.items.map((item) => item.columnId),
@@ -252,6 +261,7 @@ describe("IssueService", () => {
             syncedAt: epoch,
             syncing: true,
             failure: null,
+            deliveries: [],
           });
           assert.deepStrictEqual(
             view.items.map((item) => item.columnId),
@@ -266,6 +276,7 @@ describe("IssueService", () => {
           syncedAt: "1970-01-01T00:00:31.000Z",
           syncing: false,
           failure: null,
+          deliveries: [],
         });
         assert.deepStrictEqual(
           refreshed.items.map((item) => item.columnId),
@@ -284,7 +295,13 @@ describe("IssueService", () => {
         yield* test.service.drainRefreshes;
         assert.deepStrictEqual(
           (yield* test.service.openBoard({ projectId, boardId: test.boardId })).sync,
-          { revision: 1, syncedAt: "1970-01-01T00:00:31.000Z", syncing: false, failure: null },
+          {
+            revision: 1,
+            syncedAt: "1970-01-01T00:00:31.000Z",
+            syncing: false,
+            failure: null,
+            deliveries: [],
+          },
         );
         assert.strictEqual(test.reads(), 2);
       }),
@@ -333,6 +350,7 @@ describe("IssueService", () => {
           syncedAt: epoch,
           syncing: false,
           failure: { at: "1970-01-01T00:00:31.000Z", message: "Board unavailable" },
+          deliveries: [],
         });
         assert.deepStrictEqual(
           failed.items.map((item) => item.columnId),
@@ -349,6 +367,7 @@ describe("IssueService", () => {
           syncedAt: "1970-01-01T00:00:41.000Z",
           syncing: false,
           failure: null,
+          deliveries: [],
         });
         assert.deepStrictEqual(
           recovered.items.map((item) => item.columnId),
@@ -389,7 +408,7 @@ describe("IssueService", () => {
         const later = "1970-01-01T00:00:31.000Z";
         const sync = (revision: number, syncedAt: string, syncing: boolean) => ({
           boardId: test.boardId,
-          sync: { revision, syncedAt, syncing, failure: null },
+          sync: { revision, syncedAt, syncing, failure: null, deliveries: [] },
         });
         assert.deepStrictEqual(events, [
           sync(1, epoch, false),
@@ -467,7 +486,7 @@ describe("IssueService", () => {
         yield* Fiber.join(collector);
         const connected = {
           boardId: test.boardId,
-          sync: { revision: 1, syncedAt: epoch, syncing: false, failure: null },
+          sync: { revision: 1, syncedAt: epoch, syncing: false, failure: null, deliveries: [] },
         };
         assert.deepStrictEqual(events, [
           connected,

@@ -128,6 +128,25 @@ export const IssueMoveReceipt = Schema.Struct({
 export type IssueMoveReceipt = typeof IssueMoveReceipt.Type;
 export const IssueBoardSyncFailure = Schema.Struct({ at: Schema.String, message: Schema.String });
 export type IssueBoardSyncFailure = typeof IssueBoardSyncFailure.Type;
+/**
+ * Whether the board's environment is collecting updates from a worktree environment that runs
+ * attempts on this board. `unregistered` means no credential was handed over, so updates from
+ * that computer wait for a start from a client connected to both.
+ */
+export const IssueDeliveryPeer = Schema.Struct({
+  destinationEnvironmentId: EnvironmentId,
+  state: Schema.Literals([
+    "pending",
+    "delivered",
+    "unreachable",
+    "unauthorized",
+    "failed",
+    "unregistered",
+  ]),
+  lastDeliveredAt: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+});
+export type IssueDeliveryPeer = typeof IssueDeliveryPeer.Type;
 /** Freshness of the server's stored board copy. `syncing` and `failure` are independent facts. */
 export const IssueBoardSync = Schema.Struct({
   /** Changes only when the board's columns, items, title or mapping changed. */
@@ -138,6 +157,8 @@ export const IssueBoardSync = Schema.Struct({
   syncing: Schema.Boolean,
   /** Outcome of the last finished refresh. */
   failure: Schema.NullOr(IssueBoardSyncFailure),
+  /** Absent from servers that leave cross-environment delivery to clients. */
+  deliveries: Schema.optionalKey(Schema.Array(IssueDeliveryPeer)),
 });
 export type IssueBoardSync = typeof IssueBoardSync.Type;
 export const IssueBoardView = Schema.Struct({

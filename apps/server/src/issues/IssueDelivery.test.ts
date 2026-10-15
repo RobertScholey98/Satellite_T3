@@ -9,9 +9,11 @@ import {
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -448,6 +450,55 @@ describe("IssueDelivery", () => {
       assert.deepStrictEqual(test.writes, []);
       assert.strictEqual(test.secrets.size, 0);
       assert.strictEqual(yield* test.peerRow, undefined);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("shows each worktree environment's delivery state on the board", () =>
+    Effect.gen(function* () {
+      const test = yield* setup;
+      const deliveries = test.sourceIssues
+        .openBoard({ projectId, boardId: test.boardId })
+        .pipe(Effect.map((view) => view.sync?.deliveries));
+      yield* test.start();
+      assert.deepStrictEqual(yield* deliveries, []);
+      test.peer.reachable = false;
+      yield* test.register();
+      assert.deepStrictEqual(yield* deliveries, [
+        {
+          destinationEnvironmentId: destination,
+          state: "unreachable",
+          lastDeliveredAt: null,
+          error: "The worktree computer could not be reached on any of its network addresses.",
+        },
+      ]);
+      const delivered = yield* test.sourceIssues
+        .subscribeBoard({ projectId, boardId: test.boardId })
+        .pipe(
+          Stream.map((event) => event.sync?.deliveries?.[0]?.state),
+          Stream.filter((state) => state === "delivered"),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+      test.peer.reachable = true;
+      yield* test.nudge;
+      assert.deepStrictEqual(yield* Fiber.join(delivered), Option.some("delivered"));
+      assert.deepStrictEqual(yield* deliveries, [
+        {
+          destinationEnvironmentId: destination,
+          state: "delivered",
+          lastDeliveredAt: "1970-01-01T00:00:00.000Z",
+          error: null,
+        },
+      ]);
+      yield* test.delivery.forgetPeer({ destinationEnvironmentId: destination });
+      assert.deepStrictEqual(yield* deliveries, [
+        {
+          destinationEnvironmentId: destination,
+          state: "unregistered",
+          lastDeliveredAt: null,
+          error: null,
+        },
+      ]);
     }).pipe(Effect.scoped),
   );
 });
