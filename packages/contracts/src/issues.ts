@@ -281,15 +281,9 @@ export const IssueAttemptsReceiptsResult = Schema.Struct({
   nextCursor: Schema.Number,
 });
 export type IssueAttemptsReceiptsResult = typeof IssueAttemptsReceiptsResult.Type;
-export const IssueAttemptsIngestInput = Schema.Struct({
-  receipts: Schema.Array(IssueLifecycleReceipt).check(Schema.isMaxLength(100)),
-});
-export type IssueAttemptsIngestInput = typeof IssueAttemptsIngestInput.Type;
-export const IssueAttemptsIngestResult = Schema.Struct({
+export const IssueAttemptsAcknowledgeInput = Schema.Struct({
   acknowledgedKeys: Schema.Array(Schema.String),
 });
-export type IssueAttemptsIngestResult = typeof IssueAttemptsIngestResult.Type;
-export const IssueAttemptsAcknowledgeInput = IssueAttemptsIngestResult;
 export type IssueAttemptsAcknowledgeInput = typeof IssueAttemptsAcknowledgeInput.Type;
 export const IssueAttemptGeneration = Schema.Struct({
   attemptId: Id,

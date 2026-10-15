@@ -81,6 +81,17 @@ transaction](../../apps/server/src/persistence/AuthSessions.ts); a failed
 replacement must leave the old credential usable. Pairing and browser sessions
 do not follow this replacement rule.
 
+### Issue peer sessions hold no scopes
+
+A worktree environment grants a board environment a bearer session with no
+scopes and the subject `issue-peer:<board environment>`
+([IssuePeerAccess](../../apps/server/src/issues/IssuePeerAccess.ts)). RPC
+authorization lets that subject call the three peer RPCs and nothing else, and
+the handlers restrict those calls to the board environment's own attempts.
+Because the session holds no scopes, an HTTP route or RPC that skips the subject
+check still denies it. The session is listed and revoked
+in Connections like any other.
+
 ### Reusable dev credential
 
 Web development environments can accept one `T3CODE_DEV_AUTH_TOKEN` across
