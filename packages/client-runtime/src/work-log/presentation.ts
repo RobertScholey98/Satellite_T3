@@ -346,6 +346,10 @@ function workEntryIndicatesToolFailureFromOutput(
   ) {
     return true;
   }
+  // A request's text is what the agent asked, not output that could report a failure.
+  if (entry.itemType === "approval_request" || entry.itemType === "user_input_request") {
+    return false;
+  }
   if (!workLogEntryIsToolLike(entry)) return false;
   if (
     resolveT3McpToolDefinition(workEntryToolName(entry)) &&

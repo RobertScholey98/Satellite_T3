@@ -111,6 +111,40 @@ describe("workLogEntryFromTurnItem", () => {
     ).toMatchObject({ label: "Answered questions", detail: "Which files?", questionAnswer });
   });
 
+  it("reads failure from a request's status, never from its question or prompt text", () => {
+    const question = entryOf({
+      ...turnItemBase("input-exit-code"),
+      type: "user_input_request",
+      status: "waiting",
+      requestId: RuntimeRequestId.make("request-exit"),
+      questions: [
+        {
+          id: "retry",
+          header: "Retry",
+          question: "It ended with exit code 1. Retry?",
+          options: [],
+        },
+      ],
+    });
+    const approval = entryOf({
+      ...turnItemBase("approve-exit-code"),
+      type: "approval_request",
+      requestId: RuntimeRequestId.make("request-approve-exit"),
+      requestKind: "command",
+      prompt: "The last run reported exit code 2. Run it again?",
+    });
+    const declined = entryOf({
+      ...turnItemBase("approve-failed"),
+      type: "approval_request",
+      status: "failed",
+      requestId: RuntimeRequestId.make("request-approve-failed"),
+      requestKind: "command",
+    });
+    expect(
+      [question, approval, declined].map((entry) => workEntryDisplayIndicatesToolFailure(entry)),
+    ).toEqual([false, false, true]);
+  });
+
   it("tones a created thread as tool work", () => {
     expect(
       entryOf({
