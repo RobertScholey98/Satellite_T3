@@ -112,6 +112,7 @@ const layer = (session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.issuesPeersGrant]: (input) => peerAccess.grant(input, session),
         [SATELLITE_WS_METHODS.issuesPeersRegister]: (input) => delivery.registerPeer(input),
         [SATELLITE_WS_METHODS.issuesPeersForget]: (input) => delivery.forgetPeer(input),
+        [SATELLITE_WS_METHODS.issuesPeersRelease]: () => peerAccess.release(session),
         [SATELLITE_WS_METHODS.issuesDeliveriesDeliver]: (input) => delivery.deliver(input),
         [SATELLITE_WS_METHODS.openWorkList]: (input) => openWork.list(input),
         [SATELLITE_WS_METHODS.openWorkTimeline]: (input) => openWork.timeline(input),

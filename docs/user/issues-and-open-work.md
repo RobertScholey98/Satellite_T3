@@ -38,6 +38,7 @@ example over your local network or tailnet. A worktree computer that listens onl
 loopback, or that you reach through an SSH forward, cannot be reached this way. The
 board then shows that updates from it are not arriving and why. Fix the connection
 and choose **Retry**, or choose **Forget** to stop collecting from that computer.
+**Forget** also removes the access on that computer when it can be reached.
 **Refresh board** also collects pending updates. On the worktree computer, the
 access appears in **Connections** as **Issue updates for** the board's computer;
 revoking it there stops updates too. An update that arrives after a manual move may

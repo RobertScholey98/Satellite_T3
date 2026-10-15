@@ -93,6 +93,8 @@ export interface IssuePeerConnection {
   readonly syncGenerations: (
     input: IssueAttemptsSyncGenerationsInput,
   ) => Effect.Effect<void, IssuePeerError>;
+  /** Asks the destination to revoke this credential. */
+  readonly release: Effect.Effect<void, IssuePeerError>;
 }
 
 /**
@@ -224,6 +226,7 @@ const makeSocket = Effect.gen(function* () {
       acknowledge: (input) => call(client[SATELLITE_WS_METHODS.issuesAttemptsAcknowledge](input)),
       syncGenerations: (input) =>
         call(client[SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations](input)),
+      release: call(client[SATELLITE_WS_METHODS.issuesPeersRelease]({})),
     } satisfies IssuePeerConnection;
   });
 

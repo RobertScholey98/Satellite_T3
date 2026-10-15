@@ -5,6 +5,7 @@ import {
   IssueOperationError,
   SATELLITE_WS_METHODS,
   type AuthEnvironmentScope,
+  type AuthSessionId,
   type IssuePeerGrant,
   type IssuePeerIdentity,
   type IssuePeersGrantInput,
@@ -28,12 +29,14 @@ const ISSUE_PEER_SUBJECT_PREFIX = "issue-peer:";
 export type IssuePeerMethod =
   | typeof SATELLITE_WS_METHODS.issuesAttemptsReceipts
   | typeof SATELLITE_WS_METHODS.issuesAttemptsAcknowledge
-  | typeof SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations;
+  | typeof SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations
+  | typeof SATELLITE_WS_METHODS.issuesPeersRelease;
 /** The destination RPCs a board environment calls. */
 export const ISSUE_PEER_METHODS: ReadonlySet<string> = new Set<IssuePeerMethod>([
   SATELLITE_WS_METHODS.issuesAttemptsReceipts,
   SATELLITE_WS_METHODS.issuesAttemptsAcknowledge,
   SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations,
+  SATELLITE_WS_METHODS.issuesPeersRelease,
 ]);
 const PEER_CREDENTIAL_TTL = Duration.days(90);
 
@@ -55,6 +58,11 @@ export class IssuePeerAccess extends Context.Service<
       input: IssuePeersGrantInput,
       caller: { readonly scopes: ReadonlyArray<AuthEnvironmentScope> },
     ) => Effect.Effect<IssuePeerGrant, IssueOperationError>;
+    /** Revokes the calling peer session, so a forgotten board environment loses access at once. */
+    readonly release: (session: {
+      readonly sessionId: AuthSessionId;
+      readonly subject: string;
+    }) => Effect.Effect<void, IssueOperationError>;
     /** The key a worktree environment checks this board environment's generation pushes with. */
     readonly identity: Effect.Effect<IssuePeerIdentity>;
   }
@@ -73,6 +81,18 @@ export const make = Effect.gen(function* () {
     });
   return IssuePeerAccess.of({
     identity: Effect.succeed({ publicKey: keys.publicKey }),
+    release: Effect.fn("IssuePeerAccess.release")(function* (session) {
+      const source = issuePeerSource(session.subject);
+      if (source === undefined)
+        return yield* new IssueOperationError({
+          reason: "invalid",
+          message: "Only a board environment's delivery session can release itself.",
+        });
+      yield* sessions.revoke(session.sessionId).pipe(Effect.mapError(storageError));
+      yield* sql`DELETE FROM issue_peer_grants WHERE source_environment_id=${source}`.pipe(
+        Effect.mapError(storageError),
+      );
+    }),
     grant: Effect.fn("IssuePeerAccess.grant")(function* (input, caller) {
       if (input.sourceEnvironmentId === environmentId)
         return yield* new IssueOperationError({

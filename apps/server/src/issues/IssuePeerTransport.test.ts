@@ -87,6 +87,7 @@ const destinationServer = (environmentId: EnvironmentId) =>
         issues.acknowledgeReceipts(input),
       [SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations]: (input) =>
         issues.syncAttemptGenerations(input),
+      [SATELLITE_WS_METHODS.issuesPeersRelease]: () => Effect.void,
     });
     const routes = Layer.mergeAll(
       HttpRouter.add(

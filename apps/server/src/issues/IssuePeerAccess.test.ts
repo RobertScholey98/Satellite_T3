@@ -395,4 +395,35 @@ it.layer(NodeServices.layer)("issue peer access", (it) => {
       );
     }).pipe(Effect.scoped),
   );
+
+  it.effect("forgetting the worktree environment revokes its grant there", () =>
+    Effect.gen(function* () {
+      const worktree = yield* worktreeServer;
+      const board = yield* boardEnvironment;
+      const grant = yield* worktree.peerAccess.grant(
+        { sourceEnvironmentId: source, sourceLabel: "Desktop", sourcePublicKey: board.publicKey },
+        operator,
+      );
+      yield* board.delivery.registerPeer({
+        destinationEnvironmentId: worktree.environmentId,
+        ...grant,
+      });
+      yield* board.delivery.drain;
+      const peerSessions = worktree.auth
+        .listSessions()
+        .pipe(
+          Effect.map(
+            (sessions) =>
+              sessions.filter((session) => session.subject === "issue-peer:board-environment")
+                .length,
+          ),
+        );
+      assert.strictEqual(yield* peerSessions, 1);
+      assert.deepStrictEqual(
+        yield* board.delivery.forgetPeer({ destinationEnvironmentId: worktree.environmentId }),
+        { revokedRemotely: true },
+      );
+      assert.strictEqual(yield* peerSessions, 0);
+    }).pipe(Effect.scoped),
+  );
 });

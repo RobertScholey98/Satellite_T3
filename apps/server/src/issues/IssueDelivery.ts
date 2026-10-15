@@ -5,6 +5,7 @@ import {
   type IssueAttemptGeneration,
   type IssueDeliveriesDeliverInput,
   type IssuePeersForgetInput,
+  type IssuePeersForgetResult,
   type IssuePeersRegisterInput,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -43,7 +44,10 @@ export class IssueDelivery extends Context.Service<
     readonly registerPeer: (
       input: IssuePeersRegisterInput,
     ) => Effect.Effect<void, IssueOperationError>;
-    readonly forgetPeer: (input: IssuePeersForgetInput) => Effect.Effect<void, IssueOperationError>;
+    /** Revokes the credential on the destination when it answers, then forgets it here. */
+    readonly forgetPeer: (
+      input: IssuePeersForgetInput,
+    ) => Effect.Effect<IssuePeersForgetResult, IssueOperationError>;
     /** Queues a round for every peer holding attempts on the board, ignoring backoff. */
     readonly deliver: (
       input: IssueDeliveriesDeliverInput,
@@ -275,10 +279,29 @@ export const make = Effect.gen(function* () {
   const forgetPeer: IssueDelivery["Service"]["forgetPeer"] = (input) =>
     protect(
       Effect.gen(function* () {
+        const destination = input.destinationEnvironmentId;
+        const rows = yield* sql<PeerRow>`SELECT * FROM issue_delivery_peers
+          WHERE destination_environment_id=${destination}`;
+        const credential = yield* secrets.get(credentialName(destination));
+        const row = rows[0];
+        const revoked =
+          row && Option.isSome(credential)
+            ? yield* Effect.scoped(
+                transport
+                  .connect({
+                    destinationEnvironmentId: destination,
+                    endpoints: yield* decodeEndpoints(row.endpoints_json),
+                    credential: new TextDecoder().decode(credential.value),
+                    publicKey: row.public_key,
+                  })
+                  .pipe(Effect.flatMap((peer) => peer.release)),
+              ).pipe(Effect.result)
+            : null;
         yield* sql`DELETE FROM issue_delivery_peers
           WHERE destination_environment_id=${input.destinationEnvironmentId}`;
         yield* secrets.remove(credentialName(input.destinationEnvironmentId));
         yield* issues.publishDeliveries(input.destinationEnvironmentId);
+        return { revokedRemotely: revoked?._tag === "Success" };
       }),
     );
 

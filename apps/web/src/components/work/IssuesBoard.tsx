@@ -341,6 +341,9 @@ export function IssuesBoard({
 
   const forgetPeer = useAtomCommand(issuesEnvironment.forgetPeer, { reportFailure: false });
 
+  const labelOf = (environmentId: EnvironmentId) =>
+    environments.find((environment) => environment.environmentId === environmentId)?.label ??
+    "another computer";
   const deliveryCapable =
     scopedEnvironment?.serverConfig?.environment.capabilities.issueDelivery === true;
   const deliverNow = useCallback(
@@ -1038,10 +1041,7 @@ export function IssuesBoard({
       {view ? (
         <BoardDeliveryNotices
           deliveries={displaySync?.deliveries}
-          labelOf={(environmentId) =>
-            environments.find((environment) => environment.environmentId === environmentId)
-              ?.label ?? "another computer"
-          }
+          labelOf={labelOf}
           disabled={!connected}
           onRetry={() => deliverNow(view.board.id)}
           onForget={(destinationEnvironmentId) => {
@@ -1052,6 +1052,12 @@ export function IssuesBoard({
               input: { destinationEnvironmentId },
             })
               .then(unwrapWorkResult)
+              .then(({ revokedRemotely }) => {
+                if (!revokedRemotely && currentScope === scopeGeneration.current)
+                  setError(
+                    `Satellite could not reach ${labelOf(destinationEnvironmentId)}, so its Connections settings may still list this board's access. Revoke it there to remove it.`,
+                  );
+              })
               .catch((failure) => {
                 if (currentScope === scopeGeneration.current) setError(workError(failure));
               });

@@ -87,6 +87,7 @@ const inProcessTransport = (state: {
   credential: string;
   acknowledged: string[];
   connects: number;
+  released: number;
 }) =>
   IssuePeerTransport.of({
     connect: (peer) =>
@@ -107,6 +108,9 @@ const inProcessTransport = (state: {
             ),
           syncGenerations: (input) =>
             state.destination.syncAttemptGenerations({ ...input, sourceEnvironmentId: source }),
+          release: Effect.sync(() => {
+            state.released++;
+          }),
         };
       }),
   });
@@ -160,6 +164,7 @@ const setup = Effect.gen(function* () {
     credential,
     acknowledged: [] as string[],
     connects: 0,
+    released: 0,
   };
   const secrets = memorySecretStore();
   const sourceKeys = yield* freshPeerKeys();
@@ -454,7 +459,11 @@ describe("IssueDelivery", () => {
       const test = yield* setup;
       yield* test.register();
       assert.strictEqual(test.secrets.size, 1);
-      yield* test.delivery.forgetPeer({ destinationEnvironmentId: destination });
+      assert.deepStrictEqual(
+        yield* test.delivery.forgetPeer({ destinationEnvironmentId: destination }),
+        { revokedRemotely: true },
+      );
+      assert.strictEqual(test.peer.released, 1);
       yield* test.start();
       yield* test.nudge;
       assert.deepStrictEqual(test.writes, []);
@@ -567,6 +576,21 @@ describe("IssueDelivery", () => {
       yield* test.nudge;
       assert.deepStrictEqual(test.writes, ["progress"]);
       assert.strictEqual(test.peer.connects, 2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("forgets an unreachable destination here and says its grant may linger", () =>
+    Effect.gen(function* () {
+      const test = yield* setup;
+      yield* test.register();
+      test.peer.reachable = false;
+      assert.deepStrictEqual(
+        yield* test.delivery.forgetPeer({ destinationEnvironmentId: destination }),
+        { revokedRemotely: false },
+      );
+      assert.strictEqual(test.peer.released, 0);
+      assert.strictEqual(test.secrets.size, 0);
+      assert.strictEqual(yield* test.peerRow, undefined);
     }).pipe(Effect.scoped),
   );
 });

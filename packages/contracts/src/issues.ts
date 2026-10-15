@@ -314,6 +314,9 @@ export const IssuePeersRegisterInput = Schema.Struct({
 export type IssuePeersRegisterInput = typeof IssuePeersRegisterInput.Type;
 export const IssuePeersForgetInput = Schema.Struct({ destinationEnvironmentId: EnvironmentId });
 export type IssuePeersForgetInput = typeof IssuePeersForgetInput.Type;
+/** `revokedRemotely` is false when the worktree environment could not be told to drop access. */
+export const IssuePeersForgetResult = Schema.Struct({ revokedRemotely: Schema.Boolean });
+export type IssuePeersForgetResult = typeof IssuePeersForgetResult.Type;
 export const IssueDeliveriesDeliverInput = Schema.Struct({ boardId: Id });
 export type IssueDeliveriesDeliverInput = typeof IssueDeliveriesDeliverInput.Type;
 /** Asks a worktree environment for a credential the board's environment collects receipts with. */
