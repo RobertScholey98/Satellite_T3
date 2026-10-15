@@ -46,8 +46,6 @@ import {
   type IssueAttemptsListInput,
   type IssueAttemptsReceiptsInput,
   type IssueAttemptsReceiptsResult,
-  type IssueAttemptsIngestInput,
-  type IssueAttemptsIngestResult,
   type IssueAttemptsAcknowledgeInput,
   type IssuePullRequestKey,
   type OrchestrationProjectShell,
@@ -78,6 +76,10 @@ export interface ObserveIssuePullRequestInput {
   readonly key: typeof IssuePullRequestKey.Type;
   readonly state: "open" | "closed" | "merged";
   readonly source?: string;
+}
+export interface IngestedIssueReceipts {
+  readonly acknowledgedKeys: ReadonlyArray<string>;
+  readonly rejected: ReadonlyArray<{ readonly eventKey: string; readonly message: string }>;
 }
 export interface IssueServiceShape {
   readonly list: (input: IssuesListInput) => Effect.Effect<IssuesListResult, IssueOperationError>;
@@ -112,9 +114,10 @@ export interface IssueServiceShape {
   readonly listReceipts: (
     input: IssueAttemptsReceiptsInput,
   ) => Effect.Effect<IssueAttemptsReceiptsResult, IssueOperationError>;
-  readonly ingestReceipts: (
-    input: IssueAttemptsIngestInput,
-  ) => Effect.Effect<IssueAttemptsIngestResult, IssueOperationError>;
+  /** Consumes each receipt on its own; a receipt that cannot apply is rejected, not fatal. */
+  readonly ingestReceipts: (input: {
+    readonly receipts: ReadonlyArray<IssueLifecycleReceipt>;
+  }) => Effect.Effect<IngestedIssueReceipts, IssueOperationError>;
   readonly acknowledgeReceipts: (
     input: IssueAttemptsAcknowledgeInput,
   ) => Effect.Effect<void, IssueOperationError>;
@@ -820,9 +823,16 @@ export const makeIssueService = (options: {
     const ingestReceipts: IssueServiceShape["ingestReceipts"] = (input) =>
       lock(
         Effect.gen(function* () {
-          for (const receipt of input.receipts) yield* transaction(consume(receipt));
+          const acknowledgedKeys: string[] = [];
+          const rejected: { eventKey: string; message: string }[] = [];
+          for (const receipt of input.receipts) {
+            const result = yield* transaction(consume(receipt)).pipe(Effect.result);
+            if (result._tag === "Success") acknowledgedKeys.push(receipt.eventKey);
+            else if (result.failure.reason === "storage") return yield* result.failure;
+            else rejected.push({ eventKey: receipt.eventKey, message: result.failure.message });
+          }
           yield* flush;
-          return { acknowledgedKeys: input.receipts.map((receipt) => receipt.eventKey) };
+          return { acknowledgedKeys, rejected };
         }),
       );
     const emitReceipt = Effect.fnUntraced(function* (receipt: IssueLifecycleReceipt) {

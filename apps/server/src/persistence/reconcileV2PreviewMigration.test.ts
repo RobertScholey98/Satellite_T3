@@ -116,6 +116,7 @@ describe("V2 preview upgrade", () => {
         [66, "WebhookRelayDeliveries"],
         [67, "DocumentPlacements"],
         [68, "DocumentMediaTypes"],
+        [69, "IssueDeliveryPeers"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_legacy_imports`, imports);
@@ -200,6 +201,7 @@ describe("V2 preview upgrade", () => {
         [66, "WebhookRelayDeliveries"],
         [67, "DocumentPlacements"],
         [68, "DocumentMediaTypes"],
+        [69, "IssueDeliveryPeers"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

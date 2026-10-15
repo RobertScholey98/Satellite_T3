@@ -280,3 +280,17 @@ export const IssueAttemptsSyncGenerationsInput = Schema.Struct({
   generations: Schema.Array(IssueAttemptGeneration).check(Schema.isMaxLength(100)),
 });
 export type IssueAttemptsSyncGenerationsInput = typeof IssueAttemptsSyncGenerationsInput.Type;
+/**
+ * Registers the worktree environment the board's environment collects lifecycle receipts from.
+ * `credential` is the peer credential the destination granted; it never appears in a read model.
+ */
+export const IssuePeersRegisterInput = Schema.Struct({
+  destinationEnvironmentId: EnvironmentId,
+  credential: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
+  endpoints: Schema.Array(Id).check(Schema.isMaxLength(16)),
+});
+export type IssuePeersRegisterInput = typeof IssuePeersRegisterInput.Type;
+export const IssuePeersForgetInput = Schema.Struct({ destinationEnvironmentId: EnvironmentId });
+export type IssuePeersForgetInput = typeof IssuePeersForgetInput.Type;
+export const IssueDeliveriesDeliverInput = Schema.Struct({ boardId: Id });
+export type IssueDeliveriesDeliverInput = typeof IssueDeliveriesDeliverInput.Type;

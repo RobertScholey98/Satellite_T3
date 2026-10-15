@@ -1044,13 +1044,17 @@ describe("IssueService", () => {
           const pending = yield* restarted.listReceipts({});
           assert.strictEqual(pending.receipts.length, 1);
           const receipt = pending.receipts[0]!;
-          const invalid = yield* test.service
-            .ingestReceipts({
-              receipts: [{ ...receipt, link: { ...receipt.link, reservationId: "forged" } }],
-            })
-            .pipe(Effect.result);
-          assert.strictEqual(invalid._tag, "Failure");
-          const ack = yield* test.service.ingestReceipts({ receipts: pending.receipts });
+          const forged = { ...receipt, link: { ...receipt.link, reservationId: "forged" } };
+          const ack = yield* test.service.ingestReceipts({ receipts: [forged, receipt] });
+          assert.deepStrictEqual(ack, {
+            acknowledgedKeys: [receipt.eventKey],
+            rejected: [
+              {
+                eventKey: receipt.eventKey,
+                message: "The issue lifecycle receipt does not match its reservation.",
+              },
+            ],
+          });
           yield* restarted.acknowledgeReceipts(ack);
           assert.strictEqual(test.column(), "progress");
           yield* test.service.ingestReceipts({ receipts: pending.receipts });

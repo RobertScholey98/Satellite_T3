@@ -97,7 +97,10 @@ const layer = (session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.issuesAttemptsReserve]: (input) => issues.reserveAttempt(input),
         [SATELLITE_WS_METHODS.issuesAttemptsList]: (input) => issues.listAttempts(input),
         [SATELLITE_WS_METHODS.issuesAttemptsReceipts]: (input) => issues.listReceipts(input),
-        [SATELLITE_WS_METHODS.issuesAttemptsIngest]: (input) => issues.ingestReceipts(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsIngest]: (input) =>
+          issues
+            .ingestReceipts(input)
+            .pipe(Effect.map(({ acknowledgedKeys }) => ({ acknowledgedKeys }))),
         [SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations]: (input) =>
           issues.syncAttemptGenerations(input),
         [SATELLITE_WS_METHODS.issuesAttemptsAcknowledge]: (input) =>
