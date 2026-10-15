@@ -1317,6 +1317,25 @@ describe("resolveThreadStatusPill", () => {
     ).toMatchObject({ label: "Plan Ready", pulse: false });
   });
 
+  it("reads Plan Ready from the run's status: off while queued, on once terminal without a completion time", () => {
+    const planReadyLabel = (latestRun: NonNullable<Thread["latestRun"]>) =>
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          hasActionableProposedPlan: true,
+          latestRun,
+          runtime: { ...baseThread.runtime, status: "completed", activeRunId: null },
+        },
+      })?.label ?? null;
+    expect(
+      planReadyLabel({
+        ...makeLatestRun({ startedAt: null, completedAt: null }),
+        status: "queued",
+      }),
+    ).toBeNull();
+    expect(planReadyLabel(makeLatestRun({ completedAt: null }))).toBe("Plan Ready");
+  });
+
   it("does not manufacture completed state without a client visit marker", () => {
     expect(
       resolveThreadStatusPill({
