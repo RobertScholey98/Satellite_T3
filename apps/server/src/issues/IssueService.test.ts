@@ -27,6 +27,8 @@ import * as GitLabCli from "../sourceControl/GitLabCli.ts";
 import * as BitbucketIssueHost from "./BitbucketIssueHost.ts";
 import * as ForgejoIssueHost from "./ForgejoIssueHost.ts";
 import * as GitLabIssueHost from "./GitLabIssueHost.ts";
+import { freshPeerKeys } from "./IssuePeer.testFixtures.ts";
+import { generationMessage } from "./IssuePeerKeys.ts";
 import { makeIssueService } from "./IssueService.ts";
 import { canonicalIssueKey, fromAdapters } from "./IssueHost.ts";
 import type { IssueHostAdapter, IssueHostBoards } from "./IssueHostAdapter.ts";
@@ -1326,15 +1328,87 @@ describe("IssueService", () => {
           sourceEnvironmentId: environmentId,
         });
         assert.deepStrictEqual(yield* keys({ sourceEnvironmentId: other }), ["start:theirs"]);
+        const sql = yield* SqlClient.SqlClient;
+        const boardKeys = yield* freshPeerKeys();
+        yield* sql`INSERT INTO issue_peer_grants(source_environment_id,public_key)
+          VALUES(${environmentId},${boardKeys.publicKey})`;
+        const theirsGeneration = {
+          attemptId: "theirs",
+          reservationId: mine.reservationId,
+          sourceGeneration: 2,
+        };
         const foreign = yield* dest
           .syncAttemptGenerations({
             generations: [
-              { attemptId: "theirs", reservationId: mine.reservationId, sourceGeneration: 2 },
+              {
+                ...theirsGeneration,
+                signature: boardKeys.sign(
+                  generationMessage(environmentId, destination, theirsGeneration),
+                ),
+              },
             ],
             sourceEnvironmentId: environmentId,
           })
           .pipe(Effect.flip);
-        assert.strictEqual(foreign.reason, "invalid");
+        assert.strictEqual(
+          foreign.message,
+          "This attempt does not belong to the destination server.",
+        );
+      }),
+    ),
+  );
+  it.effect("lets a peer raise a generation only with the board's own signature", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const dest = yield* makeIssueService({ ...test.options, environmentId: destination });
+        const link = yield* test.reserve("signed", destination);
+        yield* dest.attachAttempt({ link, threadId, projectId, worktreePath: "/w" });
+        const sql = yield* SqlClient.SqlClient;
+        const boardKeys = yield* freshPeerKeys();
+        const impostorKeys = yield* freshPeerKeys();
+        const generation = {
+          attemptId: link.attemptId,
+          reservationId: link.reservationId,
+          sourceGeneration: 9,
+        };
+        const push = (signature?: string) =>
+          dest
+            .syncAttemptGenerations({
+              generations: [{ ...generation, ...(signature ? { signature } : {}) }],
+              sourceEnvironmentId: environmentId,
+            })
+            .pipe(
+              Effect.flip,
+              Effect.map((error) => error.message),
+            );
+        const signedBy = (keys: typeof boardKeys) =>
+          keys.sign(generationMessage(environmentId, destination, generation));
+        assert.strictEqual(
+          yield* push(signedBy(boardKeys)),
+          "This board's computer holds no delivery grant.",
+        );
+        yield* sql`INSERT INTO issue_peer_grants(source_environment_id,public_key)
+          VALUES(${environmentId},${boardKeys.publicKey})`;
+        const unsigned = "This generation update is not signed by the board's computer.";
+        assert.strictEqual(yield* push(), unsigned);
+        assert.strictEqual(yield* push(signedBy(impostorKeys)), unsigned);
+        const sourceGeneration = () =>
+          dest
+            .listAttempts({})
+            .pipe(
+              Effect.map(
+                (attempts) =>
+                  attempts.find((attempt) => attempt.link.attemptId === link.attemptId)
+                    ?.sourceGeneration,
+              ),
+            );
+        assert.strictEqual(yield* sourceGeneration(), 0);
+        yield* dest.syncAttemptGenerations({
+          generations: [{ ...generation, signature: signedBy(boardKeys) }],
+          sourceEnvironmentId: environmentId,
+        });
+        assert.strictEqual(yield* sourceGeneration(), 9);
       }),
     ),
   );

@@ -22,6 +22,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import { forkParked } from "../serverActivation.ts";
+import { generationMessage, IssuePeerKeys } from "./IssuePeerKeys.ts";
 import { IssueService } from "./IssueService.ts";
 import {
   IssuePeerTransport,
@@ -104,6 +105,7 @@ export const make = Effect.gen(function* () {
   const issues = yield* IssueService;
   const transport = yield* IssuePeerTransport;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
+  const keys = yield* IssuePeerKeys;
   const environmentId = yield* (yield* ServerEnvironmentIdentity).getEnvironmentId;
   const protect = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.mapError((cause) => (isIssueError(cause) ? cause : storageError())));
@@ -141,11 +143,17 @@ export const make = Effect.gen(function* () {
           attempt.status === "started" &&
           attempt.sourceGeneration > 0,
       )
-      .map((attempt) => ({
-        attemptId: attempt.link.attemptId,
-        reservationId: attempt.link.reservationId,
-        sourceGeneration: attempt.sourceGeneration,
-      }));
+      .map((attempt) => {
+        const generation = {
+          attemptId: attempt.link.attemptId,
+          reservationId: attempt.link.reservationId,
+          sourceGeneration: attempt.sourceGeneration,
+        };
+        return {
+          ...generation,
+          signature: keys.sign(generationMessage(environmentId, destination, generation)),
+        };
+      });
     for (const batch of chunks(generations, 100))
       yield* peer.syncGenerations({ generations: batch });
     return { delivered, rejected };

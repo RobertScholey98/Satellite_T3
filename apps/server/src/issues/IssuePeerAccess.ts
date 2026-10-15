@@ -6,6 +6,7 @@ import {
   SATELLITE_WS_METHODS,
   type AuthEnvironmentScope,
   type IssuePeerGrant,
+  type IssuePeerIdentity,
   type IssuePeersGrantInput,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -14,6 +15,7 @@ import * as Effect from "effect/Effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SessionStore from "../auth/SessionStore.ts";
 import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
@@ -52,6 +54,8 @@ export class IssuePeerAccess extends Context.Service<
       input: IssuePeersGrantInput,
       caller: { readonly scopes: ReadonlyArray<AuthEnvironmentScope> },
     ) => Effect.Effect<IssuePeerGrant, IssueOperationError>;
+    /** The key a worktree environment checks this board environment's generation pushes with. */
+    readonly identity: Effect.Effect<IssuePeerIdentity>;
   }
 >()("t3/issues/IssuePeerAccess") {}
 
@@ -60,7 +64,14 @@ export const make = Effect.gen(function* () {
   const directEndpoints = yield* DirectEndpoints;
   const keys = yield* IssuePeerKeys;
   const environmentId = yield* (yield* ServerEnvironmentIdentity).getEnvironmentId;
+  const sql = yield* SqlClient.SqlClient;
+  const storageError = () =>
+    new IssueOperationError({
+      reason: "storage",
+      message: "Could not create the delivery credential.",
+    });
   return IssuePeerAccess.of({
+    identity: Effect.succeed({ publicKey: keys.publicKey }),
     grant: Effect.fn("IssuePeerAccess.grant")(function* (input, caller) {
       if (input.sourceEnvironmentId === environmentId)
         return yield* new IssueOperationError({
@@ -85,15 +96,12 @@ export const make = Effect.gen(function* () {
           ttl: PEER_CREDENTIAL_TTL,
           replaceActiveForSubjectAndMethod: true,
         })
-        .pipe(
-          Effect.mapError(
-            () =>
-              new IssueOperationError({
-                reason: "storage",
-                message: "Could not create the delivery credential.",
-              }),
-          ),
-        );
+        .pipe(Effect.mapError(storageError));
+      yield* sql`INSERT INTO issue_peer_grants(source_environment_id,public_key)
+        VALUES(${input.sourceEnvironmentId},${input.sourcePublicKey})
+        ON CONFLICT(source_environment_id) DO UPDATE SET public_key=excluded.public_key`.pipe(
+        Effect.mapError(storageError),
+      );
       const endpoints = yield* directEndpoints.resolve();
       return {
         credential: issued.token,

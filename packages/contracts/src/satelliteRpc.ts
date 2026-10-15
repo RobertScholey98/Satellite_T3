@@ -37,6 +37,7 @@ import {
   IssueAttemptsSyncGenerationsInput,
   IssueOperationError,
   IssuePeerGrant,
+  IssuePeerIdentity,
   IssuePeersForgetInput,
   IssuePeersGrantInput,
   IssuePeersRegisterInput,
@@ -118,6 +119,7 @@ export const SATELLITE_WS_METHODS = {
   issuesAttemptsReceipts: "issues.attempts.receipts",
   issuesAttemptsAcknowledge: "issues.attempts.acknowledge",
   issuesAttemptsSyncGenerations: "issues.attempts.syncGenerations",
+  issuesPeersIdentity: "issues.peers.identity",
   issuesPeersGrant: "issues.peers.grant",
   issuesPeersRegister: "issues.peers.register",
   issuesPeersForget: "issues.peers.forget",
@@ -310,6 +312,11 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   Rpc.make(SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations, {
     payload: IssueAttemptsSyncGenerationsInput,
     success: Schema.Void,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(SATELLITE_WS_METHODS.issuesPeersIdentity, {
+    payload: Schema.Struct({}),
+    success: IssuePeerIdentity,
     error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(SATELLITE_WS_METHODS.issuesPeersGrant, {

@@ -108,6 +108,7 @@ const layer = (session: EnvironmentAuth.AuthenticatedSession) =>
           issues.syncAttemptGenerations({ ...input, ...peerBinding }),
         [SATELLITE_WS_METHODS.issuesAttemptsAcknowledge]: (input) =>
           issues.acknowledgeReceipts({ ...input, ...peerBinding }),
+        [SATELLITE_WS_METHODS.issuesPeersIdentity]: () => peerAccess.identity,
         [SATELLITE_WS_METHODS.issuesPeersGrant]: (input) => peerAccess.grant(input, session),
         [SATELLITE_WS_METHODS.issuesPeersRegister]: (input) => delivery.registerPeer(input),
         [SATELLITE_WS_METHODS.issuesPeersForget]: (input) => delivery.forgetPeer(input),

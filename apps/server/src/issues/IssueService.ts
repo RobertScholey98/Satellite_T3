@@ -63,6 +63,7 @@ import type {
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
+import { generationMessage, verifyIssuePeerSignature } from "./IssuePeerKeys.ts";
 import { RepositoryIdentityResolver } from "../project/RepositoryIdentityResolver.ts";
 
 export interface AttachIssueAttemptInput {
@@ -1127,6 +1128,17 @@ export const makeIssueService = (options: {
       lock(
         transaction(
           Effect.gen(function* () {
+            // A peer raises a generation only with the board environment's own signature, so a
+            // leaked credential cannot push a value the board never issued.
+            let publicKey: string | undefined;
+            if (input.sourceEnvironmentId !== undefined) {
+              const grants = yield* sql<{
+                public_key: string;
+              }>`SELECT public_key FROM issue_peer_grants WHERE source_environment_id=${input.sourceEnvironmentId}`;
+              if (!grants[0])
+                return yield* error("invalid", "This board's computer holds no delivery grant.");
+              publicKey = grants[0].public_key;
+            }
             for (const generation of input.generations) {
               const rows =
                 yield* sql<AttemptRow>`SELECT * FROM issue_attempts WHERE id=${generation.attemptId}`;
@@ -1145,6 +1157,22 @@ export const makeIssueService = (options: {
                 return yield* error(
                   "invalid",
                   "This attempt does not belong to the destination server.",
+                );
+              if (
+                publicKey !== undefined &&
+                !verifyIssuePeerSignature({
+                  publicKey,
+                  message: generationMessage(
+                    link.sourceEnvironmentId,
+                    options.environmentId,
+                    generation,
+                  ),
+                  signature: generation.signature ?? "",
+                })
+              )
+                return yield* error(
+                  "invalid",
+                  "This generation update is not signed by the board's computer.",
                 );
               yield* sql`UPDATE issue_attempts SET source_generation=MAX(source_generation,${generation.sourceGeneration}) WHERE id=${row.id}`;
             }

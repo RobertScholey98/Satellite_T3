@@ -22,6 +22,8 @@ import issueBoardsMigration from "../persistence/Migrations/056_IssueBoards.ts";
 import snapshotMigration from "../persistence/Migrations/059_IssueBoardSnapshots.ts";
 import deliveryMigration from "../persistence/Migrations/069_IssueDeliveryPeers.ts";
 import * as IssueDelivery from "./IssueDelivery.ts";
+import { freshPeerKeys, memorySecretStore } from "./IssuePeer.testFixtures.ts";
+import { IssuePeerKeys } from "./IssuePeerKeys.ts";
 import { fromAdapters } from "./IssueHost.ts";
 import type { IssueHostAdapter } from "./IssueHostAdapter.ts";
 import {
@@ -78,18 +80,6 @@ const database = Effect.gen(function* () {
   return context;
 });
 
-const memorySecrets = () => {
-  const values = new Map<string, Uint8Array>();
-  const store = ServerSecretStore.ServerSecretStore.of({
-    get: (name) => Effect.succeed(Option.fromNullishOr(values.get(name))),
-    set: (name, value) => Effect.sync(() => void values.set(name, value)),
-    create: (name, value) => Effect.sync(() => void values.set(name, value)),
-    getOrCreateRandom: (name) => Effect.succeed(values.get(name) ?? new Uint8Array()),
-    remove: (name) => Effect.sync(() => void values.delete(name)),
-  });
-  return { store, values };
-};
-
 /** Joins the source to an in-memory destination the way the socket adapter joins two servers. */
 const inProcessTransport = (state: {
   readonly destination: IssueServiceShape;
@@ -105,12 +95,16 @@ const inProcessTransport = (state: {
         if (peer.credential !== state.credential) return yield* new IssuePeerUnauthorizedError({});
         return {
           endpoint: peer.endpoints[0]!,
-          listReceipts: (after) => state.destination.listReceipts({ after }),
+          listReceipts: (after) =>
+            state.destination.listReceipts({ after, sourceEnvironmentId: source }),
           acknowledge: (input) =>
             Effect.sync(() => state.acknowledged.push(...input.acknowledgedKeys)).pipe(
-              Effect.andThen(state.destination.acknowledgeReceipts(input)),
+              Effect.andThen(
+                state.destination.acknowledgeReceipts({ ...input, sourceEnvironmentId: source }),
+              ),
             ),
-          syncGenerations: (input) => state.destination.syncAttemptGenerations(input),
+          syncGenerations: (input) =>
+            state.destination.syncAttemptGenerations({ ...input, sourceEnvironmentId: source }),
         };
       }),
   });
@@ -164,13 +158,22 @@ const setup = Effect.gen(function* () {
     credential,
     acknowledged: [] as string[],
   };
-  const secrets = memorySecrets();
+  const secrets = memorySecretStore();
+  const sourceKeys = yield* freshPeerKeys();
+  yield* SqlClient.SqlClient.pipe(
+    Effect.flatMap(
+      (sql) => sql`INSERT INTO issue_peer_grants(source_environment_id,public_key)
+        VALUES(${source},${sourceKeys.publicKey})`,
+    ),
+    Effect.provideContext(destinationDb),
+  );
   const makeDelivery = IssueDelivery.make.pipe(
     Effect.provide(
       Layer.mergeAll(
         Layer.succeed(IssueService, sourceIssues),
         Layer.succeed(IssuePeerTransport, inProcessTransport(peer)),
         Layer.succeed(ServerSecretStore.ServerSecretStore, secrets.store),
+        Layer.succeed(IssuePeerKeys, sourceKeys),
         Layer.succeed(ServerEnvironmentIdentity, { getEnvironmentId: Effect.succeed(source) }),
       ),
     ),

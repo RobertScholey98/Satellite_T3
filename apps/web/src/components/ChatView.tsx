@@ -1622,6 +1622,9 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const readIssueForStart = useAtomCommand(issuesEnvironment.get, { reportFailure: false });
+  const readIssuePeerIdentity = useAtomCommand(issuesEnvironment.peerIdentity, {
+    reportFailure: false,
+  });
   const grantIssuePeer = useAtomCommand(issuesEnvironment.grantPeer, { reportFailure: false });
   const registerIssuePeer = useAtomCommand(issuesEnvironment.registerPeer, {
     reportFailure: false,
@@ -9340,12 +9343,19 @@ export default function ChatView(props: ChatViewProps) {
           sourceEnvironment?.capabilities.issueDelivery === true &&
           serverConfigs.get(environmentId)?.environment.capabilities.issueDelivery === true
         ) {
+          const identity = unwrapWorkResult(
+            await readIssuePeerIdentity({
+              environmentId: issueDraftIntent.sourceEnvironmentId,
+              input: {},
+            }),
+          );
           const grant = unwrapWorkResult(
             await grantIssuePeer({
               environmentId,
               input: {
                 sourceEnvironmentId: issueDraftIntent.sourceEnvironmentId,
                 sourceLabel: sourceEnvironment.label,
+                sourcePublicKey: identity.publicKey,
               },
             }),
           );

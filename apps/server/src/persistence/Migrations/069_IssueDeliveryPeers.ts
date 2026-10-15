@@ -10,4 +10,7 @@ export default Effect.gen(function* () {
     last_delivered_at TEXT, failures INTEGER NOT NULL DEFAULT 0,
     next_attempt_at INTEGER NOT NULL DEFAULT 0, registered_at TEXT NOT NULL
   )`;
+  yield* sql`CREATE TABLE issue_peer_grants (
+    source_environment_id TEXT PRIMARY KEY, public_key TEXT NOT NULL
+  )`;
 });

@@ -289,6 +289,8 @@ export const IssueAttemptGeneration = Schema.Struct({
   attemptId: Id,
   reservationId: Id,
   sourceGeneration: NonNegativeInt,
+  /** The board environment's signature; a worktree environment requires it from a peer. */
+  signature: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
 });
 export type IssueAttemptGeneration = typeof IssueAttemptGeneration.Type;
 export const IssueAttemptsSyncGenerationsInput = Schema.Struct({
@@ -315,6 +317,8 @@ export type IssueDeliveriesDeliverInput = typeof IssueDeliveriesDeliverInput.Typ
 export const IssuePeersGrantInput = Schema.Struct({
   sourceEnvironmentId: EnvironmentId,
   sourceLabel: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  /** Generations the board environment pushes must verify against this key. */
+  sourcePublicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
 });
 export type IssuePeersGrantInput = typeof IssuePeersGrantInput.Type;
 /** Returned once. `endpoints` are the direct addresses the granting environment listens on. */
@@ -324,3 +328,7 @@ export const IssuePeerGrant = Schema.Struct({
   publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
 });
 export type IssuePeerGrant = typeof IssuePeerGrant.Type;
+export const IssuePeerIdentity = Schema.Struct({
+  publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+});
+export type IssuePeerIdentity = typeof IssuePeerIdentity.Type;

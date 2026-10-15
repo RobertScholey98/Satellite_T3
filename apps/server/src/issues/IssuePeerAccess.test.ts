@@ -125,6 +125,7 @@ const worktreeServer = Effect.gen(function* () {
       resolve: () => Effect.sync(() => [{ kind: "lan", httpBaseUrl: advertised.origin }]),
     }),
     Effect.provide(identity),
+    Effect.provideService(SqlClient.SqlClient, Context.get(context, SqlClient.SqlClient)),
   );
   const handlerServices = Layer.mergeAll(
     Layer.succeed(IssueService, issues),
@@ -253,10 +254,12 @@ const boardEnvironment = Effect.gen(function* () {
   const transport = yield* Layer.build(
     IssuePeerTransport.layerSocket.pipe(Layer.provide(FetchHttpClient.layer)),
   );
+  const boardKeys = yield* freshPeerKeys();
   const delivery = yield* IssueDelivery.make.pipe(
     Effect.provide(
       Layer.mergeAll(
         Layer.succeed(IssueService, issues),
+        Layer.succeed(IssuePeerKeys, boardKeys),
         Layer.succeedContext(transport),
         Layer.succeed(ServerSecretStore.ServerSecretStore, {
           get: (name) => Effect.succeed(Option.fromNullishOr(secrets.get(name))),
@@ -289,7 +292,14 @@ const boardEnvironment = Effect.gen(function* () {
     Effect.map((rows) => rows[0]?.state),
     Effect.provideContext(database),
   );
-  return { boardId: board.board.id, delivery, issues, peerState, writes };
+  return {
+    boardId: board.board.id,
+    delivery,
+    issues,
+    peerState,
+    publicKey: boardKeys.publicKey,
+    writes,
+  };
 });
 
 it.layer(NodeServices.layer)("issue peer access", (it) => {
@@ -305,7 +315,7 @@ it.layer(NodeServices.layer)("issue peer access", (it) => {
         destinationEnvironmentId: worktree.environmentId,
       });
       const grant = yield* worktree.peerAccess.grant(
-        { sourceEnvironmentId: source, sourceLabel: "Desktop" },
+        { sourceEnvironmentId: source, sourceLabel: "Desktop", sourcePublicKey: board.publicKey },
         operator,
       );
       yield* board.delivery.registerPeer({
@@ -346,7 +356,7 @@ it.layer(NodeServices.layer)("issue peer access", (it) => {
   it.effect("a new grant replaces the previous credential for the same board environment", () =>
     Effect.gen(function* () {
       const worktree = yield* worktreeServer;
-      const input = { sourceEnvironmentId: source, sourceLabel: "Desktop" };
+      const input = { sourceEnvironmentId: source, sourceLabel: "Desktop", sourcePublicKey: "key" };
       yield* worktree.peerAccess.grant(input, operator);
       yield* worktree.peerAccess.grant(input, operator);
       const peers = (yield* worktree.auth.listSessions()).filter(
@@ -362,14 +372,21 @@ it.layer(NodeServices.layer)("issue peer access", (it) => {
       const refusals = yield* Effect.all([
         worktree.peerAccess
           .grant(
-            { sourceEnvironmentId: source, sourceLabel: "Desktop" },
+            { sourceEnvironmentId: source, sourceLabel: "Desktop", sourcePublicKey: "key" },
             {
               scopes: [AuthOrchestrationReadScope],
             },
           )
           .pipe(Effect.flip),
         worktree.peerAccess
-          .grant({ sourceEnvironmentId: worktree.environmentId, sourceLabel: "Self" }, operator)
+          .grant(
+            {
+              sourceEnvironmentId: worktree.environmentId,
+              sourceLabel: "Self",
+              sourcePublicKey: "key",
+            },
+            operator,
+          )
           .pipe(Effect.flip),
       ]);
       assert.deepStrictEqual(
