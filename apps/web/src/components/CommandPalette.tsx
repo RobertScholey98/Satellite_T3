@@ -86,6 +86,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { requestThreadRename, useThreadActionMenu } from "../hooks/useThreadActionMenu";
+import { buildThreadActionPaletteItems } from "./threadActionPalette";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { useClientSettings } from "../hooks/useSettings";
@@ -756,6 +758,7 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
+  const threadActionMenu = useThreadActionMenu({ startRename: requestThreadRename });
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
@@ -1941,6 +1944,18 @@ function OpenCommandPaletteDialog(props: {
       shortcutCommand: "thread.copyReference",
       run: copyActiveThreadReference,
     });
+  }
+
+  if (activeThread !== null) {
+    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    actionItems.push(
+      ...buildThreadActionPaletteItems({
+        items: threadActionMenu
+          .readMenuItems(threadRef)
+          .filter((item) => item.id === "rename" || item.id === "regenerate-title"),
+        run: (action) => threadActionMenu.runAction(threadRef, action),
+      }),
+    );
   }
 
   if (

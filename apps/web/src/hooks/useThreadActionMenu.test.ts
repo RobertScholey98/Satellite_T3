@@ -37,7 +37,9 @@ function recordEffect(action: string) {
 vi.mock("../components/CustomSnoozeDialog", () => ({ requestCustomSnooze: vi.fn() }));
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
+  useEffect: () => {},
   useMemo: (factory: () => unknown) => factory(),
+  useRef: (current: unknown) => ({ current }),
 }));
 vi.mock("@tanstack/react-router", () => ({
   useRouter: () => ({ navigate: async () => recordEffect("project-settings") }),
@@ -52,6 +54,7 @@ vi.mock("../state/entities", () => ({
   readEnvironmentSupportsSettlement: () => true,
   readEnvironmentSupportsSnooze: () => true,
   readEnvironmentSupportsTitleRegeneration: () => true,
+  readProject: () => null,
   readThreadShell: () => ({
     id: "thread",
     environmentId: "secondary",
@@ -134,10 +137,17 @@ vi.mock("./useThreadActions", () => ({
         "confirmAndUnpinThread",
         "archiveThread",
         "deleteThread",
+        "regenerateThreadTitle",
       ].map((action) => [
         action,
         async () => {
-          recordEffect(action === "markThreadUnread" ? "mark-unread" : action);
+          recordEffect(
+            action === "markThreadUnread"
+              ? "mark-unread"
+              : action === "regenerateThreadTitle"
+                ? "metadata"
+                : action,
+          );
           return AsyncResult.success(undefined);
         },
       ]),
@@ -151,12 +161,10 @@ const target = {
   threadId: ThreadId.make("thread"),
 };
 const position = { x: 10, y: 20 };
-const createMenu = () =>
-  useThreadActionMenu({
-    threadRef: target,
-    projectCwd: "/project",
-    onStartRename: () => recordEffect("rename"),
-  });
+const createMenu = () => {
+  const menu = useThreadActionMenu({ startRename: () => recordEffect("rename") });
+  return { openMenu: (at: typeof position) => menu.openMenu(target, at) };
+};
 
 beforeEach(() => {
   state.granted = new Set(["primary"]);

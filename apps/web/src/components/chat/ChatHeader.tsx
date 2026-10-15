@@ -6,10 +6,6 @@ import {
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import {
-  isAtomCommandInterrupted,
-  squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
 import { ChevronDownIcon } from "lucide-react";
 import {
   memo,
@@ -23,13 +19,10 @@ import {
 } from "react";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { toastManager } from "../ui/toast";
-import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
+import { useThreadActionMenu, useThreadRenameRequest } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
 import { useRevdocWorktree } from "~/revdocWorktreeStore";
-import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
@@ -52,20 +45,6 @@ interface ChatHeaderProps {
   onOpenProjectSettings?: (() => void) | undefined;
 }
 
-/**
- * Rename commit rule shared with the sidebar's inline rename: trim, reject
- * empty (the caller toasts), and skip the mutation when nothing changed.
- */
-export function resolveRenameCommit(input: {
-  readonly title: string;
-  readonly originalTitle: string;
-}): { action: "commit"; title: string } | { action: "reject-empty" } | { action: "noop" } {
-  const trimmed = input.title.trim();
-  if (trimmed.length === 0) return { action: "reject-empty" };
-  if (trimmed === input.originalTitle) return { action: "noop" };
-  return { action: "commit", title: trimmed };
-}
-
 // How long a click on the thread title waits before opening the action menu,
 // so a double-click-to-rename can cancel it first. Only the native desktop
 // menu needs this: it swallows input while open, so the wait must cover the
@@ -84,7 +63,6 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenProjectSettings,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.title;
-  const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadRef = useMemo(
     () => scopeThreadRef(activeThreadEnvironmentId, activeThreadId),
     [activeThreadEnvironmentId, activeThreadId],
@@ -93,9 +71,6 @@ export const ChatHeader = memo(function ChatHeader({
     activeThreadEnvironmentId,
     AuthOrchestrationOperateScope,
   );
-  const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
-    reportFailure: false,
-  });
   // Inline rename, keyed by thread: navigating away drops an in-progress
   // rename instead of committing stale text. Cleared on thread change (not
   // just hidden) so returning to the thread doesn't revive the old draft.
@@ -132,37 +107,15 @@ export const ChatHeader = memo(function ChatHeader({
       title: activeThreadTitle,
     });
   }, [activeThreadEnvironmentId, activeThreadId, activeThreadTitle, isServerThread]);
+  const { openMenu, closeMenu, renameThread } = useThreadActionMenu({ startRename });
+  useThreadRenameRequest(isServerThread ? activeThreadRef : null, startRename);
   const commitRename = useCallback(
     (title: string) => {
       setRenaming(null);
-      if (!readEnvironmentScope(activeThreadEnvironmentId, AuthOrchestrationOperateScope)) return;
-      const resolution = resolveRenameCommit({ title, originalTitle: activeThreadTitle });
-      if (resolution.action === "reject-empty") {
-        toastManager.add({ type: "warning", title: "Thread title cannot be empty" });
-        return;
-      }
-      if (resolution.action === "noop") return;
-      void updateThreadMetadata({
-        environmentId: activeThreadEnvironmentId,
-        input: { threadId: activeThreadId, title: resolution.title },
-      }).then((result) => {
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          toastManager.add({
-            type: "error",
-            title: "Failed to rename thread",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          });
-        }
-      });
+      void renameThread(activeThreadRef, title);
     },
-    [activeThreadEnvironmentId, activeThreadId, activeThreadTitle, updateThreadMetadata],
+    [activeThreadRef, renameThread],
   );
-  const { openMenu, closeMenu } = useThreadActionMenu({
-    threadRef: isServerThread ? activeThreadRef : null,
-    projectCwd: activeProjectCwd,
-    onStartRename: startRename,
-  });
   const titleButtonRef = useRef<HTMLButtonElement | null>(null);
   const titleMenuTimerRef = useRef<number | null>(null);
   const cancelPendingTitleMenu = useCallback(() => {
@@ -182,8 +135,8 @@ export const ChatHeader = memo(function ChatHeader({
     cancelPendingTitleMenu();
     const rect = titleButtonRef.current?.getBoundingClientRect();
     if (!rect) return;
-    openMenu({ x: rect.left, y: rect.bottom + 4 });
-  }, [cancelPendingTitleMenu, openMenu]);
+    openMenu(activeThreadRef, { x: rect.left, y: rect.bottom + 4 });
+  }, [activeThreadRef, cancelPendingTitleMenu, openMenu]);
   const openMenuFromTitle = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
       // The trailing click of a double-click belongs to rename, not the menu.
@@ -236,9 +189,16 @@ export const ChatHeader = memo(function ChatHeader({
           });
         return;
       }
-      openMenu({ x: event.clientX, y: event.clientY });
+      openMenu(activeThreadRef, { x: event.clientX, y: event.clientY });
     },
-    [cancelPendingTitleMenu, isServerThread, onOpenProjectSettings, openMenu, renamingTitle],
+    [
+      activeThreadRef,
+      cancelPendingTitleMenu,
+      isServerThread,
+      onOpenProjectSettings,
+      openMenu,
+      renamingTitle,
+    ],
   );
   const handleRenameKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {

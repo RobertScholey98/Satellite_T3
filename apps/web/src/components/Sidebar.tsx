@@ -157,10 +157,8 @@ import {
 } from "../state/entities";
 import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../state/server";
 import { vcsEnvironment } from "../state/vcs";
-import { threadEnvironment } from "../state/threads";
 import { useEnvironmentQuery } from "../state/query";
 import { useThreadSearch } from "../state/queries";
-import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import {
   buildThreadRouteParams,
@@ -1149,7 +1147,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
   onStartRename: (threadRef: ScopedThreadRef, title: string) => void;
   onRenameTitleChange: (title: string) => void;
-  onCommitRename: (threadRef: ScopedThreadRef, title: string, originalTitle: string) => void;
+  onCommitRename: (threadRef: ScopedThreadRef, title: string) => void;
   onCancelRename: () => void;
   isRenaming: boolean;
   renamingTitle: string;
@@ -1469,20 +1467,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       if (event.key === "Enter") {
         event.preventDefault();
         renameCommittedRef.current = true;
-        onCommitRename(threadRef, renamingTitle, thread.title);
+        onCommitRename(threadRef, renamingTitle);
       } else if (event.key === "Escape") {
         event.preventDefault();
         renameCommittedRef.current = true;
         onCancelRename();
       }
     },
-    [onCancelRename, onCommitRename, renamingTitle, thread.title, threadRef],
+    [onCancelRename, onCommitRename, renamingTitle, threadRef],
   );
   const handleRenameBlur = useCallback(() => {
     if (!renameCommittedRef.current) {
-      onCommitRename(threadRef, renamingTitle, thread.title);
+      onCommitRename(threadRef, renamingTitle);
     }
-  }, [onCommitRename, renamingTitle, thread.title, threadRef]);
+  }, [onCommitRename, renamingTitle, threadRef]);
   const handleSettleClick = useCallback(
     (event: ReactMouseEvent) => {
       event.preventDefault();
@@ -2394,10 +2392,9 @@ export default function Sidebar() {
     markThreadUnread,
     archiveThread,
     deleteThread,
+    renameThread,
+    regenerateThreadTitle,
   } = useThreadActions();
-  const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
-    reportFailure: false,
-  });
   const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) => {
       toastManager.add({
@@ -3231,33 +3228,11 @@ export default function Sidebar() {
   }, []);
   const cancelThreadRename = useCallback(() => setRenamingThreadKey(null), []);
   const commitThreadRename = useCallback(
-    (threadRef: ScopedThreadRef, title: string, originalTitle: string) => {
-      void (async () => {
-        if (!readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)) return;
-        const trimmed = title.trim();
-        setRenamingThreadKey(null);
-        if (trimmed.length === 0) {
-          toastManager.add({ type: "warning", title: "Thread title cannot be empty" });
-          return;
-        }
-        if (trimmed === originalTitle) return;
-        const result = await updateThreadMetadata({
-          environmentId: threadRef.environmentId,
-          input: { threadId: threadRef.threadId, title: trimmed },
-        });
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Failed to rename thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        }
-      })();
+    (threadRef: ScopedThreadRef, title: string) => {
+      setRenamingThreadKey(null);
+      void renameThread(threadRef, title);
     },
-    [updateThreadMetadata],
+    [renameThread],
   );
 
   const handleThreadClick = useCallback(
@@ -4385,10 +4360,9 @@ export default function Sidebar() {
       }
       if (clicked.value === "regenerate-title") {
         for (const thread of regeneratableTitleThreads) {
-          const result = await updateThreadMetadata({
-            environmentId: thread.environmentId,
-            input: { threadId: thread.id, regenerateTitle: true },
-          });
+          const result = await regenerateThreadTitle(
+            scopeThreadRef(thread.environmentId, thread.id),
+          );
           if (result._tag === "Success") continue;
           if (!isAtomCommandInterrupted(result)) {
             const error = squashAtomCommandFailure(result);
@@ -4478,10 +4452,10 @@ export default function Sidebar() {
       deleteThread,
       markThreadUnread,
       performSnooze,
+      regenerateThreadTitle,
       removeFromSelection,
       serverConfigs,
       settleThreads,
-      updateThreadMetadata,
       timestampFormat,
     ],
   );
@@ -4700,11 +4674,7 @@ export default function Sidebar() {
             startThreadRename(threadRef, thread.title);
             return;
           case "regenerate-title": {
-            if (isRegeneratingTitle) return;
-            const result = await updateThreadMetadata({
-              environmentId: threadRef.environmentId,
-              input: { threadId: threadRef.threadId, regenerateTitle: true },
-            });
+            const result = await regenerateThreadTitle(threadRef);
             if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
               const error = squashAtomCommandFailure(result);
               toastManager.add(
@@ -4820,11 +4790,11 @@ export default function Sidebar() {
       openProjectSettings,
       projectScopeKey,
       projectByKey,
+      regenerateThreadTitle,
       serverConfigs,
       setProjectScopeKey,
       setThreadAutoSettle,
       startThreadRename,
-      updateThreadMetadata,
       timestampFormat,
     ],
   );

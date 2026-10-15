@@ -4,7 +4,11 @@ import {
   scopeThreadRef,
   scopedThreadKey,
 } from "@t3tools/client-runtime/environment";
-import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import {
+  isAtomCommandInterrupted,
+  settlePromise,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import {
@@ -43,6 +47,7 @@ import {
   readEnvironmentSupportsActiveReorder,
   readEnvironmentSupportsSettlement,
   readEnvironmentSupportsSnooze,
+  readEnvironmentSupportsTitleRegeneration,
   readEnvironmentSupportsVisitedTracking,
   readEnvironmentThreadRefs,
   readProject,
@@ -254,6 +259,15 @@ export function useAcknowledgeThreadWoke() {
   );
 }
 
+/** What a rename commit did. The module has already shown any toast. */
+export type ThreadRenameOutcome =
+  | "renamed"
+  | "empty"
+  | "unchanged"
+  | "failed"
+  | "interrupted"
+  | "unavailable";
+
 function threadOperationFailure(target: ScopedThreadRef) {
   return readEnvironmentScope(target.environmentId, AuthOrchestrationOperateScope)
     ? null
@@ -302,6 +316,9 @@ export function useThreadActions() {
     reportFailure: false,
   });
   const unsnoozeThreadMutation = useOrchestrationCommand(threadEnvironment.unsnooze, {
+    reportFailure: false,
+  });
+  const updateThreadMetadataMutation = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
   const markThreadUnread = useMarkThreadUnread();
@@ -973,6 +990,55 @@ export function useThreadActions() {
     [resolveThreadTarget, snoozeThreadMutation, unsnoozeThread],
   );
 
+  /** The one rename commit. Inline title editors call this and toast nothing themselves. */
+  const renameThread = useCallback(
+    async (target: ScopedThreadRef, title: string): Promise<ThreadRenameOutcome> => {
+      if (!readEnvironmentScope(target.environmentId, AuthOrchestrationOperateScope)) {
+        return "unavailable";
+      }
+      const trimmed = title.trim();
+      if (trimmed.length === 0) {
+        toastManager.add({ type: "warning", title: "Thread title cannot be empty" });
+        return "empty";
+      }
+      if (trimmed === readThreadShell(target)?.title) return "unchanged";
+      const result = await updateThreadMetadataMutation({
+        environmentId: target.environmentId,
+        input: { threadId: target.threadId, title: trimmed },
+      });
+      if (result._tag === "Success") return "renamed";
+      if (isAtomCommandInterrupted(result)) return "interrupted";
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to rename thread",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+      return "failed";
+    },
+    [updateThreadMetadataMutation],
+  );
+
+  const regenerateThreadTitle = useCallback(
+    async (target: ScopedThreadRef) => {
+      // A regeneration already in flight finishes on its own; asking again
+      // would only race it.
+      if (
+        !readEnvironmentSupportsTitleRegeneration(target.environmentId) ||
+        readThreadShell(target)?.titleRegeneration != null
+      ) {
+        return AsyncResult.success(undefined);
+      }
+      return updateThreadMetadataMutation({
+        environmentId: target.environmentId,
+        input: { threadId: target.threadId, regenerateTitle: true },
+      });
+    },
+    [updateThreadMetadataMutation],
+  );
+
   const confirmAndDeleteThread = useCallback(
     async (target: ScopedThreadRef) => {
       const permissionFailure = threadOperationFailure(target);
@@ -1021,6 +1087,8 @@ export function useThreadActions() {
       reorderActiveThread,
       markThreadUnread,
       setThreadAutoSettle,
+      renameThread,
+      regenerateThreadTitle,
     }),
     [
       archiveThread,
@@ -1029,6 +1097,8 @@ export function useThreadActions() {
       deleteThread,
       markThreadUnread,
       pinThread,
+      regenerateThreadTitle,
+      renameThread,
       reorderPinnedThread,
       reorderActiveThread,
       setThreadAutoSettle,
