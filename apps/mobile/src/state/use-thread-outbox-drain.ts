@@ -8,6 +8,7 @@ import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import {
   deliverTurn,
+  invalidTurnMessage,
   isTransientDeliveryError,
   type TurnAttachmentAdapter,
   type TurnDeliveryRequest,
@@ -19,6 +20,7 @@ import {
   EnvironmentAuthorizationError,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   type EnvironmentId,
+  type IssueAttemptLink,
   type MessageId,
 } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
@@ -46,6 +48,7 @@ import {
   pendingThreadCreationOutcomesAtom,
   recordPendingThreadCreationOutcome,
 } from "./pending-thread-creation";
+import { issuesEnvironment } from "./issues";
 import { serverEnvironment } from "./server";
 import { readEnvironmentScope, useEnvironmentsWithScope } from "./session";
 import {
@@ -300,12 +303,12 @@ export async function prepareQueuedMessageAttachments(
 }
 
 /**
- * The attachment adapter for one queued message's delivery attempt. Preparation persists upload
- * ids back onto the queued message, so an edit accepted meanwhile wins and the attempt abandons.
- * `delivered` reads the payload and revision the attempt sends, for the removal's compare-and-set.
- * Exported for tests; the drain is the only production caller.
+ * The outbox side of one queued message's delivery attempt. Upload ids and an issue reservation
+ * are written back onto the queued message, revision-checked, so an edit accepted meanwhile wins
+ * and the attempt abandons. `delivered` reads the payload and revision the attempt sends, for the
+ * removal's compare-and-set. Exported for tests; the drain is the only production caller.
  */
-export function queuedMessageTurnAttachments(queuedMessage: QueuedThreadMessage) {
+export function queuedMessageDelivery(queuedMessage: QueuedThreadMessage) {
   let delivered = {
     message: queuedMessage,
     revision: threadOutboxRevision(queuedMessage.messageId),
@@ -325,7 +328,15 @@ export function queuedMessageTurnAttachments(queuedMessage: QueuedThreadMessage)
       return prepared.prepared.attachments;
     },
   };
-  return { adapter, delivered: () => delivered };
+  const persistReservation = async (reservation: IssueAttemptLink) => {
+    const current = delivered;
+    if (current.message.issue === undefined) return "abandoned" as const;
+    const message = { ...current.message, issue: { ...current.message.issue, reservation } };
+    if (!(await updateThreadOutboxMessage(message, current.revision))) return "abandoned" as const;
+    delivered = { message, revision: current.revision + 1 };
+    return undefined;
+  };
+  return { attachments: adapter, persistReservation, delivered: () => delivered };
 }
 
 function isQueuedMessagePayloadCurrent(
@@ -728,6 +739,11 @@ export function useThreadOutboxDrain(): void {
   const setInteractionMode = useAtomCommand(threadEnvironment.setInteractionMode, {
     reportFailure: false,
   });
+  const getIssue = useAtomCommand(issuesEnvironment.get, { reportFailure: false });
+  const reserveAttempt = useAtomCommand(issuesEnvironment.reserveAttempt, { reportFailure: false });
+  const peerIdentity = useAtomCommand(issuesEnvironment.peerIdentity, { reportFailure: false });
+  const grantPeer = useAtomCommand(issuesEnvironment.grantPeer, { reportFailure: false });
+  const registerPeer = useAtomCommand(issuesEnvironment.registerPeer, { reportFailure: false });
   const dispatchingQueuedMessageId = useAtomValue(dispatchingQueuedMessageIdAtom);
   const editingQueuedMessageIds = useAtomValue(editingQueuedMessageIdsAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
@@ -847,19 +863,29 @@ export function useThreadOutboxDrain(): void {
       request: TurnDeliveryRequest<DraftComposerAttachment>,
       onDelivered: (delivered: QueuedThreadMessage, deliveryRevision: number) => Promise<boolean>,
     ): Promise<boolean> => {
-      const attachments = queuedMessageTurnAttachments(queuedMessage);
-      const delivery = await deliverTurn(request, {
-        commands: {
-          updateMetadata: withOperateScope(updateMetadata),
-          setRuntimeMode: withOperateScope(setRuntimeMode),
-          setInteractionMode: withOperateScope(setInteractionMode),
-          startTurn: withOperateScope(startTurn),
+      const outbox = queuedMessageDelivery(queuedMessage);
+      const issue = queuedMessage.issue;
+      const delivery = await deliverTurn(
+        issue === undefined
+          ? request
+          : { ...request, issue: { intent: issue, persist: outbox.persistReservation } },
+        {
+          commands: {
+            updateMetadata: withOperateScope(updateMetadata),
+            setRuntimeMode: withOperateScope(setRuntimeMode),
+            setInteractionMode: withOperateScope(setInteractionMode),
+            startTurn: withOperateScope(startTurn),
+          },
+          issues: { get: getIssue, reserveAttempt, peerIdentity, grantPeer, registerPeer },
+          attachments: outbox.attachments,
+          environment: readServerEnvironment,
         },
-        attachments: attachments.adapter,
-        environment: readServerEnvironment,
-      });
+      );
       if (delivery._tag === "Abandoned") return true;
-      const delivered = attachments.delivered();
+      if (delivery._tag === "Invalid") {
+        return restoreQueuedMessage(queuedMessage, invalidTurnMessage(delivery.reason));
+      }
+      const delivered = outbox.delivered();
       if (delivery._tag === "Delivered") return onDelivered(delivered.message, delivered.revision);
       if (!readEnvironmentScope(queuedMessage.environmentId, AuthOrchestrationOperateScope)) {
         return true;
@@ -890,7 +916,18 @@ export function useThreadOutboxDrain(): void {
         error instanceof Error ? error.message : "The message could not be sent.",
       );
     },
-    [restoreQueuedMessage, setInteractionMode, setRuntimeMode, startTurn, updateMetadata],
+    [
+      getIssue,
+      grantPeer,
+      peerIdentity,
+      registerPeer,
+      reserveAttempt,
+      restoreQueuedMessage,
+      setInteractionMode,
+      setRuntimeMode,
+      startTurn,
+      updateMetadata,
+    ],
   );
 
   const sendQueuedMessage = useCallback(

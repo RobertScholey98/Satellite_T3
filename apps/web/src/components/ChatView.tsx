@@ -183,10 +183,7 @@ import {
 import { flushSync } from "react-dom";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useIssueDraftStore } from "~/issueDraftStore";
-import { issuesEnvironment } from "~/state/issues";
 import { IssueDraftFields } from "./work/IssueDraftFields";
-import { unwrapWorkResult } from "./work/commands";
-import { validWorktreeName } from "./work/work.logic";
 import { ThreadIssueLinks } from "./work/ThreadIssueLinks";
 import { assistantCitationFromLocation } from "../lib/assistantCitationNavigation";
 import { isMacPlatform } from "../lib/utils";
@@ -591,6 +588,7 @@ import { readEnvironmentScope, readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useDeliverTurn } from "../state/turnDelivery";
+import { invalidTurnMessage } from "@t3tools/client-runtime/turn-delivery";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { Button, InlineButton } from "./ui/button";
 import {
@@ -1618,18 +1616,6 @@ export default function ChatView(props: ChatViewProps) {
   const issueDraftIntent = useIssueDraftStore((state) =>
     draftId ? state.intents[draftId] : undefined,
   );
-  const reserveIssueAttempt = useAtomCommand(issuesEnvironment.reserveAttempt, {
-    reportFailure: false,
-  });
-  const readIssueForStart = useAtomCommand(issuesEnvironment.get, { reportFailure: false });
-  const readIssuePeerIdentity = useAtomCommand(issuesEnvironment.peerIdentity, {
-    reportFailure: false,
-  });
-  const grantIssuePeer = useAtomCommand(issuesEnvironment.grantPeer, { reportFailure: false });
-  const registerIssuePeer = useAtomCommand(issuesEnvironment.registerPeer, {
-    reportFailure: false,
-  });
-  const issueReservationInFlight = useRef(false);
   const handleNewThread = useNewThreadHandler();
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -8572,25 +8558,6 @@ export default function ChatView(props: ChatViewProps) {
     },
   ) => {
     e?.preventDefault();
-    if (isIdea && issueDraftIntent) {
-      setThreadError(
-        threadId,
-        "Issue work must start in a standard thread. Open this issue again to start work.",
-      );
-      return;
-    }
-    if (issueDraftIntent && !validWorktreeName(issueDraftIntent.worktreeName)) {
-      setThreadError(threadId, "Enter a valid worktree name before sending.");
-      return;
-    }
-    if (issueDraftIntent && submissionIntent === "background") {
-      setThreadError(threadId, "Send issue work in the foreground so its launch can be tracked.");
-      return;
-    }
-    if (issueDraftIntent && sendEnvMode !== "worktree") {
-      setThreadError(threadId, "Issue work needs a Git project and one model in a new worktree.");
-      return;
-    }
     const keepFullHistory = keepFullHistoryOnceRef.current;
     // Typed out in full rather than picked from the menu. Attachments or contexts
     // mean the user is sending a prompt, so those go through as usual.
@@ -8673,11 +8640,9 @@ export default function ChatView(props: ChatViewProps) {
       notifyDirectAnnotationAttached();
       return;
     }
-    const multipleModelSelections = isIdea ? null : sendCtx.multipleModelSelections;
-    if (issueDraftIntent && multipleModelSelections !== null) {
-      setThreadError(threadId, "Issue work starts one model per attempt.");
-      return;
-    }
+    // Issue work goes through the single-model send, where delivery rejects a model fan-out.
+    const multipleModelSelections =
+      isIdea || issueDraftIntent ? null : sendCtx.multipleModelSelections;
     if (
       multipleModelSelections !== null &&
       serverConfig?.environment.capabilities.requiredWorktreeBootstrap !== true
@@ -9085,83 +9050,6 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
 
-    let issueAttemptForSend = issueDraftIntent?.reservation;
-    let issueContextForSend = "";
-    if (issueDraftIntent && draftId && isFirstMessage) {
-      if (issueReservationInFlight.current) return;
-      issueReservationInFlight.current = true;
-      try {
-        const detail = unwrapWorkResult(
-          await readIssueForStart({
-            environmentId: issueDraftIntent.sourceEnvironmentId,
-            input: { projectId: issueDraftIntent.sourceProjectId, issue: issueDraftIntent.issue },
-          }),
-        );
-        issueContextForSend = `\n\n<attached_issue>\nRepository host: ${detail.ref.host}\nIssue: #${detail.ref.number} ${detail.title}\nURL: ${detail.ref.url}\n\n${detail.body}\n</attached_issue>`;
-        if (
-          !issueAttemptForSend ||
-          issueAttemptForSend.destinationEnvironmentId !== environmentId
-        ) {
-          issueAttemptForSend = unwrapWorkResult(
-            await reserveIssueAttempt({
-              environmentId: issueDraftIntent.sourceEnvironmentId,
-              input: {
-                requestId: `${issueDraftIntent.requestId}:${environmentId}`,
-                boardId: issueDraftIntent.boardId,
-                issue: issueDraftIntent.issue,
-                sourceEnvironmentId: issueDraftIntent.sourceEnvironmentId,
-                destinationEnvironmentId: environmentId,
-              },
-            }),
-          );
-          useIssueDraftStore
-            .getState()
-            .set(draftId, { ...issueDraftIntent, reservation: issueAttemptForSend });
-        }
-        const serverConfigs = appAtomRegistry.get(environmentServerConfigsAtom);
-        const sourceEnvironment = serverConfigs.get(
-          issueDraftIntent.sourceEnvironmentId,
-        )?.environment;
-        // The board's computer collects this work's updates itself; it needs a credential only
-        // this computer can issue, so the start flow hands it over while connected to both.
-        if (
-          issueDraftIntent.sourceEnvironmentId !== environmentId &&
-          sourceEnvironment?.capabilities.issueDelivery === true &&
-          serverConfigs.get(environmentId)?.environment.capabilities.issueDelivery === true
-        ) {
-          const identity = unwrapWorkResult(
-            await readIssuePeerIdentity({
-              environmentId: issueDraftIntent.sourceEnvironmentId,
-              input: {},
-            }),
-          );
-          const grant = unwrapWorkResult(
-            await grantIssuePeer({
-              environmentId,
-              input: {
-                sourceEnvironmentId: issueDraftIntent.sourceEnvironmentId,
-                sourceLabel: sourceEnvironment.label,
-                sourcePublicKey: identity.publicKey,
-              },
-            }),
-          );
-          unwrapWorkResult(
-            await registerIssuePeer({
-              environmentId: issueDraftIntent.sourceEnvironmentId,
-              input: { destinationEnvironmentId: environmentId, ...grant },
-            }),
-          );
-        }
-      } catch (error) {
-        setThreadError(
-          threadIdForSend,
-          error instanceof Error ? error.message : "Could not reserve issue work.",
-        );
-        return;
-      } finally {
-        issueReservationInFlight.current = false;
-      }
-    }
     const composerImagesSnapshot = [...composerImages];
     const composerFilesSnapshot = [...composerFiles];
     const composerAttachmentsSnapshot = [...composerImagesSnapshot, ...composerFilesSnapshot];
@@ -9207,7 +9095,7 @@ export default function ChatView(props: ChatViewProps) {
       model: ctxSelectedModel,
       models: ctxSelectedProviderModels,
       effort: ctxSelectedPromptEffort,
-      text: (messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT) + issueContextForSend,
+      text: messageTextForSend || ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
     });
     if (composerRef.current?.validateProviderInput(outgoingMessageText) === false) {
       return;
@@ -9608,14 +9496,11 @@ export default function ChatView(props: ChatViewProps) {
                   prepareWorktree: {
                     projectCwd: activeProject.workspaceRoot,
                     baseBranch: baseBranchForWorktree,
-                    ...(issueDraftIntent ? { branch: issueDraftIntent.worktreeName } : {}),
-                    ...(issueAttemptForSend ? { requireWorktree: true } : {}),
                     ...(startFromOrigin ? { startFromOrigin: true } : {}),
                   },
                   runSetupScript: true,
                 }
               : {}),
-            ...(issueAttemptForSend ? { issueAttempt: issueAttemptForSend } : {}),
           }
         : undefined;
     const backgroundThreadRef =
@@ -9644,8 +9529,19 @@ export default function ChatView(props: ChatViewProps) {
       },
       ...(isServerThread && serverThread ? { thread: serverThread } : {}),
       ...(localCheckoutBranchMismatch ? { branch: localCheckoutBranchMismatch.currentBranch } : {}),
+      ...(issueDraftIntent && draftId
+        ? {
+            issue: {
+              intent: issueDraftIntent,
+              background: submissionIntent === "background",
+              models: sendCtx.multipleModelSelections?.length ?? 1,
+              persist: (reservation) =>
+                useIssueDraftStore.getState().set(draftId, { ...issueDraftIntent, reservation }),
+            },
+          }
+        : {}),
       ...(compactBeforeSend ? { compactFirst: newMessageId() } : {}),
-      onDispatching: async () => {
+      onDispatching: async ({ text: dispatchedText }) => {
         if (
           shouldDockDraftHeroForSubmission({
             isDraftHeroState,
@@ -9710,7 +9606,7 @@ export default function ChatView(props: ChatViewProps) {
           {
             id: messageIdForSend,
             role: "user",
-            text: outgoingMessageText,
+            text: dispatchedText,
             ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
             ...(outgoingMessageContext !== undefined ? { context: outgoingMessageContext } : {}),
             runId: null,
@@ -9766,6 +9662,11 @@ export default function ChatView(props: ChatViewProps) {
         }
       },
     });
+    if (delivery._tag === "Invalid") {
+      sendInFlightRef.current = false;
+      setThreadError(threadIdForSend, invalidTurnMessage(delivery.reason));
+      return;
+    }
     const failure = delivery._tag === "Failed" ? delivery.failure : null;
     const backgroundDraftOpened = (await backgroundDraftOpening) ?? false;
 
@@ -9779,7 +9680,7 @@ export default function ChatView(props: ChatViewProps) {
           finalizePromotedDraftThreadByRef(ideaThreadRef);
         }
       }
-      if (draftId && issueAttemptForSend) useIssueDraftStore.getState().remove(draftId);
+      if (draftId && issueDraftIntent) useIssueDraftStore.getState().remove(draftId);
       if (embeddedDraft) props.onDraftSubmitted?.(scopeThreadRef(environmentId, threadIdForSend));
       // The turn is under way and will spend quota, so that thread's limits
       // snapshot is stale. Uploads may have outlasted a navigation, so only

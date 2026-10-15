@@ -79,6 +79,7 @@ vi.mock("./threads", async () => {
     environmentThreadShells: { threadShellsAtom: Atom.make([state.thread]) },
   };
 });
+vi.mock("./issues", () => ({ issuesEnvironment: {} }));
 vi.mock("./use-atom-command", () => ({ useAtomCommand: <A>(command: A) => command }));
 vi.mock("../lib/modelOptions", () => ({ isModelSelectionUnavailable: () => false }));
 vi.mock("../lib/uuid", () => ({ uuidv4: () => "uuid", randomHex: () => "abcd" }));

@@ -33,18 +33,3 @@ export function documentsAtStep(
         (document.step.kind === "commit" && document.step.commitSha === step.commitSha)),
   );
 }
-
-export function validWorktreeName(name: string): boolean {
-  return (
-    name.trim() === name &&
-    name.length > 0 &&
-    !/[\s~^:?*\[\\]/.test(name) &&
-    !name.includes("..") &&
-    !name.includes("@{") &&
-    !name.startsWith("-") &&
-    !name.startsWith("/") &&
-    !name.endsWith("/") &&
-    !name.endsWith(".") &&
-    !name.split("/").some((part) => !part || part.startsWith(".") || part.endsWith(".lock"))
-  );
-}

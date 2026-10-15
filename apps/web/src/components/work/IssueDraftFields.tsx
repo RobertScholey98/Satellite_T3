@@ -1,7 +1,7 @@
 import type { DraftId } from "~/composerDraftStore";
 import { useIssueDraftStore } from "~/issueDraftStore";
 import { Input } from "../ui/input";
-import { validWorktreeName } from "./work.logic";
+import { validWorktreeName } from "@t3tools/client-runtime/turn-delivery";
 
 export function IssueDraftFields({ draftId }: { draftId: DraftId }) {
   const intent = useIssueDraftStore((state) => state.intents[draftId]);

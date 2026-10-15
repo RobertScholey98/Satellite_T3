@@ -13,6 +13,7 @@ import {
   ThreadId,
   WS_METHODS,
   type ExecutionEnvironmentDescriptor,
+  type IssueAttemptLink,
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -31,10 +32,14 @@ import { EnvironmentNotRegisteredError } from "./connection/registry.ts";
 import * as EnvironmentSupervisor from "./connection/supervisor.ts";
 import { EnvironmentRpcUnavailableError } from "./rpc/client.ts";
 import type { RpcSession } from "./rpc/session.ts";
+import { createIssuesEnvironmentAtoms } from "./issues.ts";
 import { createThreadEnvironmentAtoms } from "./state/threadCommands.ts";
 import {
   deliverTurn,
+  invalidTurnMessage,
   isTransientDeliveryError,
+  validWorktreeName,
+  type IssueStart,
   type TurnAttachmentAdapter,
   type TurnDeliveryRequest,
   type TurnDeliveryServices,
@@ -115,6 +120,34 @@ function fakeAttachments(calls: string[] = []): TurnAttachmentAdapter<Draft> {
   };
 }
 
+const BOARD_ENVIRONMENT_ID = EnvironmentId.make("desk");
+const ISSUE_REF = {
+  hostKind: "github" as const,
+  host: "github.com",
+  repository: "acme/app",
+  id: "I_7",
+  number: 7,
+  url: "https://github.com/acme/app/issues/7",
+};
+const ISSUE_DETAIL = {
+  ref: ISSUE_REF,
+  title: "Checkout fails",
+  state: "open",
+  updatedAt: "2026-10-14T00:00:00.000Z",
+  labels: [],
+  body: "Paying with a saved card throws.",
+};
+const RESERVATION: IssueAttemptLink = {
+  attemptId: "attempt-1",
+  reservationId: "reservation-1",
+  sourceEnvironmentId: BOARD_ENVIRONMENT_ID,
+  sourceProjectId: ProjectId.make("board-project"),
+  boardId: "board",
+  issue: ISSUE_REF,
+  destinationEnvironmentId: EnvironmentId.make("remote"),
+  sourceGeneration: 0,
+};
+
 type Reply = (
   command: OrchestrationV2Command,
 ) => Effect.Effect<{ sequence: number }, CommandRejected | SocketDropped>;
@@ -125,10 +158,20 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
     readonly attachmentUploads?: boolean;
     readonly attachments?: TurnAttachmentAdapter<Draft>;
     readonly reply?: Reply;
+    readonly launch?: () => Effect.Effect<{ sequence: number }, CommandRejected | SocketDropped>;
+    readonly issueDelivery?: boolean;
   } = {},
 ) {
   const sent: OrchestrationV2Command[] = [];
   const launched: unknown[] = [];
+  const issueCalls: string[] = [];
+  const issueCall =
+    <A>(method: string, value: (input: never) => A) =>
+    (input: never) =>
+      Effect.sync(() => {
+        issueCalls.push(method);
+        return value(input);
+      });
   const reply: Reply = options.reply ?? (() => Effect.succeed({ sequence: 1 }));
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
     target: { environmentId: ENVIRONMENT_ID },
@@ -144,10 +187,28 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
               return reply(command);
             }),
           [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input: unknown) =>
-            Effect.sync(() => {
+            Effect.suspend(() => {
               launched.push(input);
-              return { sequence: 1 };
+              return options.launch?.() ?? Effect.succeed({ sequence: 1 });
             }),
+          [WS_METHODS.issuesGet]: issueCall("get", () => ISSUE_DETAIL),
+          [WS_METHODS.issuesAttemptsReserve]: issueCall(
+            "reserve",
+            (input: { readonly destinationEnvironmentId: EnvironmentId }) => ({
+              ...RESERVATION,
+              destinationEnvironmentId: input.destinationEnvironmentId,
+            }),
+          ),
+          [WS_METHODS.issuesPeersIdentity]: issueCall("identity", () => ({
+            publicKey: "board-key",
+          })),
+          [WS_METHODS.issuesPeersGrant]: issueCall("grant", () => ({
+            credential: "credential",
+            endpoints: ["https://worktree.test"],
+            publicKey: "worktree-key",
+            expiresAt: "2026-11-15T00:00:00.000Z",
+          })),
+          [WS_METHODS.issuesPeersRegister]: issueCall("register", () => undefined),
           [WS_METHODS.assetsPersistChatAttachments]: (input: {
             readonly attachments: ReadonlyArray<{ readonly id?: string; readonly name: string }>;
           }) =>
@@ -180,6 +241,7 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
     ),
   );
   const thread = createThreadEnvironmentAtoms(runtime, () => Atom.make(null));
+  const issues = createIssuesEnvironmentAtoms(runtime);
   const registry = AtomRegistry.make();
   const services: TurnDeliveryServices<Draft> = {
     commands: {
@@ -188,16 +250,25 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
       setInteractionMode: (value) => thread.setInteractionMode.run(registry, value),
       startTurn: (value) => thread.startTurn.run(registry, value),
     },
+    issues: {
+      get: (value) => issues.get.run(registry, value),
+      reserveAttempt: (value) => issues.reserveAttempt.run(registry, value),
+      peerIdentity: (value) => issues.peerIdentity.run(registry, value),
+      grantPeer: (value) => issues.grantPeer.run(registry, value),
+      registerPeer: (value) => issues.registerPeer.run(registry, value),
+    },
     attachments: options.attachments ?? fakeAttachments(),
-    environment: () =>
+    environment: (environmentId) =>
       ({
+        label: environmentId === BOARD_ENVIRONMENT_ID ? "Desk" : "Laptop",
         capabilities: {
+          issueDelivery: options.issueDelivery ?? false,
           inlineMessageContext: options.inlineMessageContext ?? true,
           attachmentUploads: options.attachmentUploads ?? true,
         },
       }) as ExecutionEnvironmentDescriptor,
   };
-  return { sent, launched, services };
+  return { sent, launched, issueCalls, services };
 });
 
 const deliver = (input: TurnDeliveryRequest<Draft>, services: TurnDeliveryServices<Draft>) =>
@@ -582,6 +653,178 @@ describe("deliverTurn", () => {
       ]);
     }),
   );
+});
+
+function issueRequest(
+  issue: Partial<IssueStart> & Pick<IssueStart, "persist">,
+  intent: Partial<IssueStart["intent"]> = {},
+): TurnDeliveryRequest<Draft> {
+  return request({
+    turn: {
+      threadId: THREAD_ID,
+      modelSelection: MODEL,
+      titleSeed: "Fix it",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      bootstrap: {
+        createThread: {
+          projectId: ProjectId.make("project"),
+          title: "Fix it",
+          modelSelection: MODEL,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "main",
+          worktreePath: null,
+          createdAt: "2026-10-15T09:59:00.000Z",
+        },
+        prepareWorktree: { projectCwd: "/repo", baseBranch: "main" },
+        runSetupScript: true,
+      },
+      createdAt: "2026-10-15T10:00:00.000Z",
+    },
+    message: { messageId: MessageId.make("message"), text: "Fix it", attachments: [] },
+    issue: {
+      ...issue,
+      intent: {
+        sourceEnvironmentId: BOARD_ENVIRONMENT_ID,
+        sourceProjectId: ProjectId.make("board-project"),
+        boardId: "board",
+        issue: ISSUE_REF,
+        worktreeName: "issue-7",
+        requestId: "request",
+        ...intent,
+      },
+    },
+  });
+}
+
+describe("deliverTurn issue start", () => {
+  it.effect("attaches the issue, reserves its attempt, and launches in the named worktree", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ issueDelivery: true });
+      const persisted: unknown[] = [];
+      const result = yield* deliver(
+        issueRequest({ persist: (reservation) => void persisted.push(reservation) }),
+        h.services,
+      );
+
+      expect(result).toEqual({ _tag: "Delivered" });
+      expect(h.issueCalls).toEqual(["get", "reserve", "identity", "grant", "register"]);
+      expect(persisted).toEqual([RESERVATION]);
+      expect(h.launched[0]).toMatchObject({
+        issueAttempt: RESERVATION,
+        workspaceStrategy: { type: "worktree", baseRef: "main", branch: "issue-7" },
+        initialMessage: {
+          text: "Fix it\n\n<attached_issue>\nRepository host: github.com\nIssue: #7 Checkout fails\nURL: https://github.com/acme/app/issues/7\n\nPaying with a saved card throws.\n</attached_issue>",
+        },
+      });
+    }),
+  );
+
+  it.effect("reuses the reservation a failed dispatch left behind", () =>
+    Effect.gen(function* () {
+      let launches = 0;
+      const h = yield* makeHarness({
+        launch: () =>
+          ++launches === 1
+            ? Effect.fail(new SocketDropped({ message: "An error occurred during Read" }))
+            : Effect.succeed({ sequence: 1 }),
+      });
+      const persisted: IssueAttemptLink[] = [];
+      const persist = (reservation: IssueAttemptLink) => void persisted.push(reservation);
+
+      const first = yield* deliver(issueRequest({ persist }), h.services);
+      const second = yield* deliver(
+        issueRequest({ persist }, { reservation: persisted[0]! }),
+        h.services,
+      );
+
+      expect(first).toMatchObject({ _tag: "Failed", stage: "dispatch", transient: true });
+      expect(second).toEqual({ _tag: "Delivered" });
+      expect(h.issueCalls).toEqual(["get", "reserve", "get"]);
+      expect(persisted).toEqual([RESERVATION]);
+      expect(h.launched[1]).toMatchObject({ issueAttempt: RESERVATION });
+    }),
+  );
+
+  it.effect.each([
+    [
+      "issue-in-idea-thread",
+      { purpose: "idea" as const },
+      {},
+      "Issue work must start in a standard thread. Open this issue again to start work.",
+    ],
+    [
+      "issue-worktree-name",
+      {},
+      { worktreeName: "bad name" },
+      "Enter a valid worktree name before sending.",
+    ],
+    [
+      "issue-in-background",
+      { background: true },
+      {},
+      "Send issue work in the foreground so its launch can be tracked.",
+    ],
+    [
+      "issue-needs-worktree",
+      { local: true },
+      {},
+      "Issue work needs a Git project and one model in a new worktree.",
+    ],
+    ["issue-multiple-models", { models: 2 }, {}, "Issue work starts one model per attempt."],
+  ] as const)("returns %s before any command", ([reason, facts, intent, message]) =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness();
+      const base = issueRequest(
+        {
+          persist: () => undefined,
+          ...("background" in facts ? { background: facts.background } : {}),
+          ...("models" in facts ? { models: facts.models } : {}),
+        },
+        intent,
+      );
+      const bootstrap = base.turn.bootstrap!;
+      const result = yield* deliver(
+        {
+          ...base,
+          thread: { branch: null, runtimeMode: "approval-required", interactionMode: "plan" },
+          turn: {
+            ...base.turn,
+            bootstrap: {
+              createThread: {
+                ...bootstrap.createThread!,
+                ...("purpose" in facts ? { purpose: facts.purpose } : {}),
+              },
+              ...("local" in facts ? {} : { prepareWorktree: bootstrap.prepareWorktree! }),
+            },
+          },
+        },
+        h.services,
+      );
+
+      expect(result).toEqual({ _tag: "Invalid", reason });
+      expect(result._tag === "Invalid" ? invalidTurnMessage(result.reason) : null).toBe(message);
+      expect([...h.sent, ...h.launched, ...h.issueCalls]).toEqual([]);
+    }),
+  );
+
+  it("accepts only branch names Git can create", () => {
+    expect(validWorktreeName("issue-123")).toBe(true);
+    expect(validWorktreeName("feature/issue-123")).toBe(true);
+    for (const name of [
+      "",
+      "bad name",
+      "foo..bar",
+      "-flag",
+      "foo/.hidden",
+      "branch.lock",
+      "a//b",
+      "a@{b",
+      "a\\b",
+    ])
+      expect(validWorktreeName(name)).toBe(false);
+  });
 });
 
 describe("isTransientDeliveryError", () => {

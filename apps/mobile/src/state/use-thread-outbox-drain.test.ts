@@ -92,6 +92,8 @@ vi.mock("./threads", () => ({
   threadEnvironment: {},
 }));
 
+vi.mock("./issues", () => ({ issuesEnvironment: {} }));
+
 vi.mock("./use-atom-command", () => ({
   useAtomCommand: () => async () => undefined,
 }));
@@ -153,7 +155,7 @@ import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import {
   completeQueuedMessageDelivery,
   prepareQueuedMessageAttachments,
-  queuedMessageTurnAttachments,
+  queuedMessageDelivery,
   recoverEditedCreationAfterDelivery,
   removeAcknowledgedExistingThreadMessage,
   restoreRejectedQueuedMessage,
@@ -389,17 +391,17 @@ describe("thread outbox attachment preparation", () => {
     });
     await harness.manager.enqueue(message);
     const revision = harness.manager.revisionOf(message.messageId);
-    const attachments = queuedMessageTurnAttachments(message);
+    const delivery = queuedMessageDelivery(message);
 
     await expect(
-      attachments.adapter.prepare({
+      delivery.attachments.prepare({
         environmentId: message.environmentId,
         attachments: message.attachments,
         upload: true,
       }),
     ).resolves.toEqual(wire);
     expect(harness.prepareTurnAttachments.mock.calls[0]?.[0].supportsImageUploads).toBe(true);
-    expect(attachments.delivered()).toEqual({
+    expect(delivery.delivered()).toEqual({
       message: { ...message, attachments: uploadedDrafts },
       revision: revision + 1,
     });

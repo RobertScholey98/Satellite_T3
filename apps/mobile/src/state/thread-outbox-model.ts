@@ -7,6 +7,8 @@ import {
   CommandId,
   EnvironmentId,
   IsoDateTime,
+  IssueAttemptLink,
+  IssueRef,
   MessageId,
   ModelSelection,
   OrchestrationMessageContext,
@@ -45,6 +47,17 @@ const QueuedThreadCreationSchema = Schema.Struct({
   startFromOrigin: Schema.optional(Schema.Boolean),
 });
 
+const QueuedIssueStartSchema = Schema.Struct({
+  sourceEnvironmentId: EnvironmentId,
+  sourceProjectId: ProjectId,
+  boardId: Schema.String,
+  issue: IssueRef,
+  title: Schema.String,
+  worktreeName: Schema.String,
+  requestId: Schema.String,
+  reservation: Schema.optional(IssueAttemptLink),
+});
+
 export const QueuedThreadMessageSchema = Schema.Struct({
   purpose: Schema.optional(Schema.Literals(["work", "idea"])),
   schemaVersion: Schema.Literals([1, 2, THREAD_OUTBOX_SCHEMA_VERSION, 4]),
@@ -62,6 +75,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   // Present when the queued item creates a brand-new thread (pending task)
   // instead of appending a turn to an existing one.
   creation: Schema.optional(QueuedThreadCreationSchema),
+  issue: Schema.optional(QueuedIssueStartSchema),
   createdAt: IsoDateTime,
 });
 
@@ -99,6 +113,8 @@ export interface QueuedThreadMessage {
    */
   readonly dispatchMode?: ComposerDispatchMode;
   readonly creation?: QueuedThreadCreation;
+  /** Starts work on a board issue; the reservation is written back once delivery makes it. */
+  readonly issue?: typeof QueuedIssueStartSchema.Type;
   readonly createdAt: string;
 }
 
