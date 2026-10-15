@@ -27,7 +27,7 @@ export function composerTurnAttachments(
       if (!upload) {
         return Promise.all(
           attachments.map(async (attachment) => {
-            if (attachment.type !== "image" || attachment.file === null) {
+            if (attachment.type !== "image") {
               throw new Error("This server does not support file attachments.");
             }
             return {

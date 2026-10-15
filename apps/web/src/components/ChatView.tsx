@@ -9066,8 +9066,7 @@ export default function ChatView(props: ChatViewProps) {
         promptForSend,
       )
       .trim();
-    // Records bind attachments by their local id, which the optimistic row shows; delivery
-    // rebinds them to the wire id and the server to the persisted id.
+    // Records bind attachments by local id, which the optimistic row shows.
     const outgoingMessageContext = buildMessageContext({
       terminalContexts: composerTerminalContextsSnapshot,
       reviewComments: composerReviewCommentsSnapshot,
@@ -9186,8 +9185,8 @@ export default function ChatView(props: ChatViewProps) {
           composerAttachmentsSnapshot[0]?.name ||
           "New thread",
       );
-      // The first request to dispatch clears the draft. Each request then owns its background
-      // thread, and the draft is ready for another prompt while checkout and setup scripts finish.
+      // Each request owns its background thread, so the draft is free for another prompt
+      // while checkout and setup scripts finish.
       const releaseDraftOnce = () => {
         if (clearedDraft) return;
         promptRef.current = "";

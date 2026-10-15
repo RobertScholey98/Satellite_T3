@@ -78,7 +78,7 @@ export interface TurnDeliveryServices<A extends TurnAttachmentDraft> {
   readonly commands: TurnDeliveryCommands;
   readonly issues: IssueStartCommands;
   readonly attachments: TurnAttachmentAdapter<A>;
-  /** The environment as its server last described it. Read at the step that needs it. */
+  /** Read per step: an upload or reservation can span a reconnect that changes capabilities. */
   readonly environment: (
     environmentId: EnvironmentId,
   ) => ExecutionEnvironmentDescriptor | undefined;
@@ -170,11 +170,7 @@ export type TurnDeliveryResult =
       readonly transient: boolean;
     };
 
-/**
- * Delivers one turn: validates it, syncs the thread's settings, prepares attachments, starts
- * issue work, serializes context for the server, and sends the start command. One attempt;
- * retry and persistence belong to the caller.
- */
+/** One delivery attempt; retry and persistence belong to the caller. */
 export async function deliverTurn<A extends TurnAttachmentDraft>(
   request: TurnDeliveryRequest<A>,
   services: TurnDeliveryServices<A>,
@@ -275,7 +271,6 @@ export async function deliverTurn<A extends TurnAttachmentDraft>(
   return started._tag === "Failure" ? failed("dispatch", started) : { _tag: "Delivered" };
 }
 
-/** The issue-start guards, checked before any command is sent. */
 function validateTurnDelivery(
   request: TurnDeliveryRequest<TurnAttachmentDraft>,
 ): TurnDeliveryInvalidReason | null {
