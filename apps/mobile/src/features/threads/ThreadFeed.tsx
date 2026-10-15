@@ -161,7 +161,7 @@ import {
 import {
   failedFeedRunIds,
   deriveThreadFeedPresentation,
-  threadFeedRunIsUnsettled,
+  unsettledRunId,
   isContextCompactionActivityGroup,
   isContextHandoffActivityGroup,
   isSecretRequestActivityGroup,
@@ -2506,7 +2506,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [markdownStyles.assistant, markdownLinkHandlers, renderMarkdownImage, props.skills],
   );
   const reviewCommentColors = useReviewCommentColors();
-  const unsettledTurnId = threadFeedRunIsUnsettled(props.latestRun) ? props.latestRun.runId : null;
+  const unsettledTurnId = unsettledRunId(props.latestRun);
   // LegendList does not invalidate visible rows when only the renderItem closure changes.
   // Include turn completion so unchanged message rows reveal their footer and spacing
   // even when the final message update arrives before the turn settles.

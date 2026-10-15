@@ -3,6 +3,7 @@ import type {
   ThreadPendingUserInput,
   ThreadUserInputQuestion,
 } from "@t3tools/client-runtime/state/thread-requests";
+import { isLatestRunSettled } from "@t3tools/client-runtime/state/models";
 import { turnItemIsWorkspacePreparation } from "@t3tools/client-runtime/state/turn-item-presentation";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
@@ -957,21 +958,8 @@ function maxIsoTimestamp(left: string | null, right: string | null): string | nu
   return Date.parse(right) > Date.parse(left) ? right : left;
 }
 
-function unsettledRunId(latestRun: ThreadFeedLatestRun | null): RunId | null {
-  return threadFeedRunIsUnsettled(latestRun) ? latestRun.runId : null;
-}
-
-export function threadFeedRunIsUnsettled(
-  run: ThreadFeedLatestRun | null,
-): run is ThreadFeedLatestRun {
-  if (run === null || run.status === "queued") return false;
-  return (
-    run.completedAt === null ||
-    run.status === "preparing" ||
-    run.status === "starting" ||
-    run.status === "running" ||
-    run.status === "waiting"
-  );
+export function unsettledRunId(latestRun: ThreadFeedLatestRun | null): RunId | null {
+  return latestRun === null || isLatestRunSettled(latestRun) ? null : latestRun.runId;
 }
 
 export function threadFeedActivityIsVisible(

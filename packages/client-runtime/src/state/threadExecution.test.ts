@@ -29,7 +29,11 @@ import {
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "./threadExecution.ts";
-import { threadRuntimeCanArchive, type ThreadRuntimeSummary } from "./models.ts";
+import {
+  isLatestRunSettled,
+  threadRuntimeCanArchive,
+  type ThreadRuntimeSummary,
+} from "./models.ts";
 
 const now = DateTime.makeUnsafe("2026-07-28T10:00:00.000Z");
 
@@ -275,6 +279,41 @@ describe("thread execution presentation", () => {
     };
 
     expect(threadRuntimeHasInterruptibleRun(runtime)).toBe(true);
+  });
+});
+
+describe("isLatestRunSettled", () => {
+  it.each([
+    ["preparing", false],
+    ["queued", false],
+    ["starting", false],
+    ["running", false],
+    ["waiting", false],
+    ["completed", true],
+    ["interrupted", true],
+    ["failed", true],
+    ["cancelled", true],
+    ["rolled_back", true],
+  ] as const)("reads a %s run as settled: %s, without a completion time", (status, settled) => {
+    const projection = { ...v2Projection, runs: [run("run-1", 1, status)], updatedAt: now };
+
+    expect(isLatestRunSettled(deriveThreadActivityRun(projection))).toBe(settled);
+    expect(isLatestRunSettled(deriveLatestThreadRun(projection))).toBe(settled);
+  });
+
+  it("keeps an executing run and its queued successor unsettled", () => {
+    const projection = {
+      ...v2Projection,
+      runs: [run("run-running", 1, "running"), run("run-queued", 2, "queued")],
+      updatedAt: now,
+    };
+
+    expect(isLatestRunSettled(deriveThreadActivityRun(projection))).toBe(false);
+    expect(isLatestRunSettled(deriveLatestThreadRun(projection))).toBe(false);
+  });
+
+  it("does not call a thread without runs settled", () => {
+    expect(isLatestRunSettled(deriveLatestThreadRun({ ...v2Projection, runs: [] }))).toBe(false);
   });
 });
 

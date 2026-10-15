@@ -30,7 +30,6 @@ import {
   buildThreadFeed,
   deriveThreadFeedPresentation,
   threadFeedActivityIsVisible,
-  threadFeedRunIsUnsettled,
   type ThreadFeedActivity,
   type ThreadFeedEntry,
   togglePendingUserInputOptionSelection,
@@ -574,41 +573,6 @@ describe("buildThreadFeed", () => {
     );
 
     expect(buildThreadFeed([workspacePreparation])).toEqual([]);
-  });
-
-  it("does not treat a queued-only run as live feed activity", () => {
-    expect(
-      threadFeedRunIsUnsettled({
-        runId,
-        status: "queued",
-        startedAt: null,
-        completedAt: null,
-      }),
-    ).toBe(false);
-    expect(
-      threadFeedRunIsUnsettled({
-        runId,
-        status: "running",
-        startedAt: "2026-06-20T00:00:01.000Z",
-        completedAt: null,
-      }),
-    ).toBe(true);
-    expect(
-      threadFeedRunIsUnsettled({
-        runId,
-        status: "completed",
-        startedAt: "2026-06-20T00:00:01.000Z",
-        completedAt: null,
-      }),
-    ).toBe(true);
-    expect(
-      threadFeedRunIsUnsettled({
-        runId,
-        status: "waiting",
-        startedAt: "2026-06-20T00:00:01.000Z",
-        completedAt: null,
-      }),
-    ).toBe(true);
   });
 
   it("adds queued input only after dispatch creates its turn item", () => {

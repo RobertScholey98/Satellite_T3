@@ -24,6 +24,7 @@ import {
 } from "./ChatView.logic";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { useScratchProject } from "../hooks/useScratchProject";
+import { isLatestRunSettled } from "@t3tools/client-runtime/state/models";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
@@ -217,7 +218,6 @@ import {
   deriveCanInterruptRunningThread,
   findLatestProposedPlan,
   hasActionableProposedPlan,
-  isLatestRunSettled,
 } from "../session-logic";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
@@ -2469,13 +2469,13 @@ export default function ChatView(props: ChatViewProps) {
         : nextThreadIds;
     });
   }, [activeTerminalDrawerPresence.present, activeThreadKey, existingOpenTerminalThreadKeys]);
-  const latestRunSettled = isLatestRunSettled(activeLatestRun, activeRuntime);
+  const latestRunSettled = isLatestRunSettled(activeLatestRun);
   const activePlan = useMemo(
     () => deriveActivePlanState(serverProjection, activeActivityRun?.runId),
     [activeActivityRun?.runId, serverProjection],
   );
   const { progress: activeComposerTasksProgress, steps: activeComposerTaskSteps } =
-    useComposerTasks(activePlan, activeActivityRun, activeRuntime);
+    useComposerTasks(activePlan, activeActivityRun);
   const activeProjectRef = useMemo(
     () =>
       activeThread ? scopeProjectRef(activeThread.environmentId, activeThread.projectId) : null,
@@ -3660,7 +3660,7 @@ export default function ChatView(props: ChatViewProps) {
       latestServerUserItem.text.trim().toLowerCase() === "/compact" &&
       latestServerUserItem.attachments.length === 0 &&
       latestServerUserItem.runId === activeActivityRun?.runId &&
-      !isLatestRunSettled(activeActivityRun, activeRuntime));
+      !isLatestRunSettled(activeActivityRun));
   const compactionSettled = serverVisibleTurnItems.some(
     ({ item }) =>
       item.type === "compaction" &&

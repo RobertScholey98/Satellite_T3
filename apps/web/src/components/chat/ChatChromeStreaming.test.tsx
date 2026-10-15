@@ -60,10 +60,7 @@ vi.mock("../../state/threads", async (original) => {
 import * as threads from "../../state/threads";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../../rpc/atomRegistry";
 import { useThreadProjection } from "../../state/entities";
-import {
-  deriveThreadActivityRun,
-  deriveThreadRuntime,
-} from "@t3tools/client-runtime/state/thread-execution";
+import { deriveThreadActivityRun } from "@t3tools/client-runtime/state/thread-execution";
 import {
   deriveActivePlanState,
   deriveTimelineEntriesFromVisibleTurnItems,
@@ -404,11 +401,10 @@ function ChatViewStandIn() {
     optimisticMessages: [],
   });
   const activityRun = projection ? deriveThreadActivityRun(projection) : null;
-  const runtime = projection ? deriveThreadRuntime(projection) : null;
   const activePlan = deriveActivePlanState(projection, activityRun?.runId);
 
   const promptHistoryMessages = usePromptHistoryMessages(timelineEntries);
-  const tasks = useComposerTasks(activePlan, activityRun, runtime);
+  const tasks = useComposerTasks(activePlan, activityRun);
   const pending = useThreadPendingRequests(threadRef);
   const activeContextWindow = useThreadContextWindow(threadRef);
   return (

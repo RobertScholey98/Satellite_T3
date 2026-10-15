@@ -30,7 +30,6 @@ import {
   deriveRevertTurnCountByUserMessageId,
   derivePhase,
   findLatestProposedPlan,
-  isLatestRunSettled,
   selectHandoffImageResources,
   selectMessageImageResources,
   createMessageAttachmentPreviewProjector,
@@ -44,33 +43,6 @@ import { makeStreamingTimelineFixture, makeThreadProjectionFixture } from "./tes
 import type { ChatMessage } from "./types";
 
 describe("V2 session presentation", () => {
-  it("uses run status as the settlement boundary", () => {
-    const runId = RunId.make("run-1");
-    expect(
-      isLatestRunSettled(
-        {
-          runId,
-          status: "completed",
-          startedAt: "2026-06-20T00:00:00.000Z",
-          completedAt: "2026-06-20T00:01:00.000Z",
-        },
-        null,
-      ),
-    ).toBe(true);
-    expect(
-      isLatestRunSettled(
-        { runId, status: "running", startedAt: null, completedAt: null },
-        { status: "running", activeRunId: runId },
-      ),
-    ).toBe(false);
-    expect(
-      isLatestRunSettled(
-        { runId, status: "queued", startedAt: null, completedAt: null },
-        { status: "running", activeRunId: RunId.make("run-active") },
-      ),
-    ).toBe(false);
-  });
-
   it("offers Stop while a run is preparing/starting, not just once it's running (#13392)", () => {
     const runtimeWithStatus = (
       status: ThreadRuntimeSummary["status"],
