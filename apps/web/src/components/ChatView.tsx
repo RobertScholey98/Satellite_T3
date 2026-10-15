@@ -131,6 +131,7 @@ import {
   useThreadPendingRequests,
   useThreadRequestActivities,
   useThreadUserMessages,
+  usePromptHistoryMessages,
 } from "../state/threadViewModel";
 import { useStableCallback } from "../hooks/useStableCallback";
 import {
@@ -4043,6 +4044,7 @@ export default function ChatView(props: ChatViewProps) {
     () => timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
     [timelineEntries],
   );
+  const promptHistoryMessages = usePromptHistoryMessages(timelineEntries);
   const displayedTimeline = resolveThreadSwitchTimeline({
     loading: timelineEntries.length === 0 && threadSyncPhase !== null,
     activeThreadKey,
@@ -11799,6 +11801,7 @@ export default function ChatView(props: ChatViewProps) {
                                 activeThread?.runtime?.providerInstanceId ?? null
                               }
                               activeThreadShell={activeThreadShell}
+                              promptHistoryMessages={promptHistoryMessages}
                               isServerThread={isServerThread}
                               isLocalDraftThread={isLocalDraftThread}
                               forceExpandedOnMobile={

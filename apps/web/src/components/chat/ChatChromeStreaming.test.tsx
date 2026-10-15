@@ -19,7 +19,7 @@ import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { AsyncResult, type Atom } from "effect/reactivity";
-import { act, createRef, memo, Profiler, type ComponentProps } from "react";
+import { act, createRef, memo, Profiler, useLayoutEffect, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -58,7 +58,12 @@ vi.mock("../../state/threads", async (original) => {
 import * as threads from "../../state/threads";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../../rpc/atomRegistry";
 import { useThreadProjection } from "../../state/entities";
-import { useThreadContextWindow, useThreadPendingRequests } from "../../state/threadViewModel";
+import { deriveTimelineEntriesFromVisibleTurnItems } from "../../session-logic";
+import {
+  usePromptHistoryMessages,
+  useThreadContextWindow,
+  useThreadPendingRequests,
+} from "../../state/threadViewModel";
 import { ChatComposer, type ChatComposerProps } from "./ChatComposer";
 import { ChatHeader } from "./ChatHeader";
 
@@ -156,15 +161,33 @@ const baseProjection: OrchestrationV2ThreadProjection = {
   updatedAt: now,
 };
 
+const promptItem: OrchestrationV2TurnItem = {
+  ...assistantItem(""),
+  id: TurnItemId.make("item-prompt"),
+  ordinal: 0,
+  status: "completed",
+  type: "user_message",
+  messageId: MessageId.make("message-user"),
+  inputIntent: "turn_start",
+  text: "Explain the reducer",
+  createdBy: "user",
+  creationSource: "web",
+  attachments: [],
+} as OrchestrationV2TurnItem;
+
 /** One streaming delta: the assistant text grows and nothing else the chrome shows moves. */
 function streamText(text: string): OrchestrationV2ThreadProjection {
   const item = assistantItem(text);
   return {
     ...baseProjection,
-    turnItems: [item],
-    visibleTurnItems: [
-      { position: 0, visibility: "local", sourceThreadId: threadId, sourceItemId: item.id, item },
-    ],
+    turnItems: [promptItem, item],
+    visibleTurnItems: [promptItem, item].map((entry, position) => ({
+      position,
+      visibility: "local" as const,
+      sourceThreadId: threadId,
+      sourceItemId: entry.id,
+      item: entry,
+    })),
     updatedAt: DateTime.add(now, { seconds: text.length }),
   };
 }
@@ -223,8 +246,6 @@ const composerProps = {
   respondingRequestIds: [],
   showPlanFollowUpPrompt: false,
   activeProposedPlan: null,
-  activeTasksProgress: null,
-  activeTaskSteps: null,
   threadSyncPhase: null,
   runtimeMode: "full-access",
   interactionMode: "default",
@@ -285,11 +306,24 @@ const composerProps = {
   onFileOpen: noop,
 } satisfies Omit<
   ChatComposerProps,
-  "pendingApprovals" | "pendingUserInputs" | "activePendingApproval" | "activeContextWindow"
+  | "pendingApprovals"
+  | "pendingUserInputs"
+  | "activePendingApproval"
+  | "activeContextWindow"
+  | "promptHistoryMessages"
+  | "activeTasksProgress"
+  | "activeTaskSteps"
 >;
 
 const commits = { chatView: 0, header: 0, composer: 0 };
-const countChatView = () => (commits.chatView += 1);
+
+/** Counts the stand-in's renders: it takes the projection, so it renders whenever the stand-in does. */
+function ChatViewRenderProbe(_props: { readonly projection: unknown }) {
+  useLayoutEffect(() => {
+    commits.chatView += 1;
+  });
+  return null;
+}
 const countHeader = () => (commits.header += 1);
 const countComposer = () => (commits.composer += 1);
 
@@ -317,11 +351,19 @@ const ProfiledComposer = memo(function ProfiledComposer(props: ChatComposerProps
  * the same view model selectors ChatView uses.
  */
 function ChatViewStandIn() {
-  useThreadProjection(threadRef);
+  const projection = useThreadProjection(threadRef)?.projection ?? null;
+  // ChatView rebuilds these from the projection on every delta.
+  const timelineEntries = deriveTimelineEntriesFromVisibleTurnItems({
+    visibleTurnItems: projection?.visibleTurnItems ?? [],
+    optimisticMessages: [],
+  });
+
+  const promptHistoryMessages = usePromptHistoryMessages(timelineEntries);
   const pending = useThreadPendingRequests(threadRef);
   const activeContextWindow = useThreadContextWindow(threadRef);
   return (
     <>
+      <ChatViewRenderProbe projection={projection} />
       <ProfiledHeader
         activeThreadEnvironmentId={environmentId}
         activeThreadId={threadId}
@@ -337,6 +379,9 @@ function ChatViewStandIn() {
         pendingUserInputs={pending.userInputs}
         activePendingApproval={pending.activeApproval}
         activeContextWindow={activeContextWindow}
+        promptHistoryMessages={promptHistoryMessages}
+        activeTasksProgress={null}
+        activeTaskSteps={null}
       />
     </>
   );
@@ -366,7 +411,7 @@ beforeEach(() => {
   commits.chatView = 0;
   commits.header = 0;
   commits.composer = 0;
-  publish(baseProjection);
+  publish(streamText(""));
 });
 
 async function mountChatView() {
@@ -376,9 +421,7 @@ async function mountChatView() {
   await act(async () => {
     root.render(
       <AppAtomRegistryProvider>
-        <Profiler id="chat-view" onRender={countChatView}>
-          <ChatViewStandIn />
-        </Profiler>
+        <ChatViewStandIn />
       </AppAtomRegistryProvider>,
     );
   });
@@ -408,16 +451,26 @@ describe("chat chrome while a response streams", () => {
 
   it("re-renders the composer once when a sent prompt joins its recall history", async () => {
     const { mounted, unmount } = await mountChatView();
-    const text = await streamDeltas(3);
+    const streamed = streamText(await streamDeltas(3));
+    const followUp = {
+      ...promptItem,
+      id: TurnItemId.make("item-follow-up"),
+      ordinal: 2,
+      messageId: MessageId.make("message-follow-up"),
+      text: "And the projector?",
+    } as OrchestrationV2TurnItem;
     await act(async () =>
       publish({
-        ...streamText(text),
-        messages: [
-          ...baseProjection.messages,
+        ...streamed,
+        turnItems: [...streamed.turnItems, followUp],
+        visibleTurnItems: [
+          ...streamed.visibleTurnItems,
           {
-            ...baseProjection.messages[0]!,
-            id: MessageId.make("message-follow-up"),
-            text: "And the projector?",
+            position: 2,
+            visibility: "local",
+            sourceThreadId: threadId,
+            sourceItemId: followUp.id,
+            item: followUp,
           },
         ],
       }),

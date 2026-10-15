@@ -11,7 +11,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import {
   deriveLatestContextWindowSnapshot,
@@ -22,7 +22,12 @@ import {
   prioritizePendingRequests,
   usePendingRequestStore,
 } from "../pendingRequestStore";
-import { derivePendingApprovals, derivePendingUserInputs } from "../session-logic";
+import {
+  derivePendingApprovals,
+  derivePendingUserInputs,
+  type TimelineEntry,
+} from "../session-logic";
+import type { ChatMessage } from "../types";
 import { environmentThreadDetails } from "./threads";
 
 /*
@@ -122,7 +127,49 @@ const EMPTY_ACTIVITIES_ATOM = Atom.make(EMPTY_ACTIVITIES);
 const EMPTY_PENDING_REQUESTS_ATOM = Atom.make<PendingThreadRequests | null>(null);
 const EMPTY_CONTEXT_WINDOW_ATOM = Atom.make<ContextWindowSnapshot | null>(null);
 
-/** The thread's sent prompts, in order, for the composer's ArrowUp recall. */
+/**
+ * The user messages of the visible timeline: a fork's inherited prompts and
+ * sends the server has not acknowledged yet are in, question answers folded
+ * into their request are out.
+ */
+export function selectPromptHistoryMessages(
+  entries: ReadonlyArray<TimelineEntry>,
+): ReadonlyArray<ChatMessage> {
+  return entries.flatMap((entry) =>
+    entry.kind === "message" &&
+    entry.message.role === "user" &&
+    // An answer paged in without its question still renders as a message.
+    !entry.message.id.startsWith("async-answer:")
+      ? [entry.message]
+      : [],
+  );
+}
+
+function samePrompts(left: ReadonlyArray<ChatMessage>, right: ReadonlyArray<ChatMessage>) {
+  return (
+    left.length === right.length &&
+    left.every(
+      (message, index) => message.id === right[index]?.id && message.text === right[index]?.text,
+    )
+  );
+}
+
+/**
+ * The composer's ArrowUp recall history. The timeline is rebuilt on every
+ * streamed token, so this keeps one identity until a prompt is added,
+ * removed or edited.
+ */
+export function usePromptHistoryMessages(
+  entries: ReadonlyArray<TimelineEntry>,
+): ReadonlyArray<ChatMessage> {
+  const next = selectPromptHistoryMessages(entries);
+  const [current, setCurrent] = useState(next);
+  if (samePrompts(current, next)) return current;
+  setCurrent(next);
+  return next;
+}
+
+/** User messages as the server holds them, including queued sends the timeline does not show yet. */
 export function useThreadUserMessages(
   ref: ScopedThreadRef | null,
 ): ReadonlyArray<OrchestrationV2ConversationMessage> {
