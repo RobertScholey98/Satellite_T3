@@ -425,20 +425,17 @@ export const makeIssueService = (options: {
     const deliveriesFor = Effect.fnUntraced(function* (boardId: string) {
       const destinations = yield* sql<{
         destination: EnvironmentId;
-        active: number;
-      }>`SELECT json_extract(attempts.link_json,'$.destinationEnvironmentId') AS destination,
-        MAX(active.attempt_id IS NOT NULL) AS active
-        FROM issue_attempts attempts
-        LEFT JOIN issue_active_attempts active ON active.attempt_id=attempts.id
-        WHERE attempts.board_id=${boardId}
-          AND json_extract(attempts.link_json,'$.destinationEnvironmentId')<>${options.environmentId}
-        GROUP BY destination ORDER BY destination`;
+      }>`SELECT DISTINCT json_extract(link_json,'$.destinationEnvironmentId') AS destination
+        FROM issue_attempts WHERE board_id=${boardId}
+          AND json_extract(link_json,'$.destinationEnvironmentId')<>${options.environmentId}
+        ORDER BY destination`;
       if (destinations.length === 0) return [];
       const peers = new Map(
         (yield* sql<DeliveryPeerRow>`SELECT destination_environment_id,state,last_error,last_delivered_at
           FROM issue_delivery_peers`).map((row) => [row.destination_environment_id, row]),
       );
-      return destinations.flatMap(({ destination, active }): IssueDeliveryPeer[] => {
+      const unfinished = yield* unfinishedDestinationsOn(boardId);
+      return destinations.flatMap(({ destination }): IssueDeliveryPeer[] => {
         const peer = peers.get(destination);
         if (peer)
           return [
@@ -449,7 +446,7 @@ export const makeIssueService = (options: {
               error: peer.last_error,
             },
           ];
-        return active
+        return unfinished.has(destination)
           ? [
               {
                 destinationEnvironmentId: destination,

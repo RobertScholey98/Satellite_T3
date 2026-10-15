@@ -470,7 +470,18 @@ describe("IssueDelivery", () => {
         .openBoard({ projectId, boardId: test.boardId })
         .pipe(Effect.map((view) => view.sync?.deliveries));
       yield* test.start();
-      assert.deepStrictEqual(yield* deliveries, []);
+      assert.deepStrictEqual(
+        yield* deliveries,
+        [
+          {
+            destinationEnvironmentId: destination,
+            state: "unregistered",
+            lastDeliveredAt: null,
+            error: null,
+          },
+        ],
+        "a reservation with no credential handed over shows from the start",
+      );
       test.peer.reachable = false;
       yield* test.register();
       assert.deepStrictEqual(yield* deliveries, [
