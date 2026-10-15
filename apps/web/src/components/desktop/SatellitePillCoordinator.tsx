@@ -15,11 +15,11 @@ import {
 import { Atom } from "effect/reactivity";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { derivePendingUserInputProgress } from "../../pendingUserInput";
 import {
   buildPendingUserInputAnswers,
-  derivePendingUserInputProgress,
   togglePendingUserInputOptionSelection,
-} from "../../pendingUserInput";
+} from "@t3tools/client-runtime/work-log/user-input";
 import {
   EMPTY_REQUEST_DRAFT,
   createPendingSubmission,

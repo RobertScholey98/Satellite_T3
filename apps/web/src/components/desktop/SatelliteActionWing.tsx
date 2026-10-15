@@ -15,10 +15,8 @@ import {
 } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { hasPendingQuestionAttachments, pendingRequestKey } from "../../pendingRequestStore";
-import {
-  derivePendingUserInputProgress,
-  setPendingUserInputCustomAnswer,
-} from "../../pendingUserInput";
+import { derivePendingUserInputProgress } from "../../pendingUserInput";
+import { setPendingUserInputCustomAnswer } from "@t3tools/client-runtime/work-log/user-input";
 import { ComposerPendingApprovalActions } from "../chat/ComposerPendingApprovalActions";
 import { ComposerPendingApprovalPanel } from "../chat/ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "../chat/ComposerPendingUserInputPanel";
@@ -123,6 +121,7 @@ function RequestEditor({
                     ref: editor.ref,
                     questionId: progress.activeQuestion.id,
                     answer: setPendingUserInputCustomAnswer(
+                      progress.activeQuestion,
                       answers[progress.activeQuestion.id],
                       event.target.value,
                     ),

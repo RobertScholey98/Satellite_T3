@@ -1,7 +1,6 @@
 import type {
   ThreadPendingApproval,
   ThreadPendingUserInput,
-  ThreadUserInputQuestion,
 } from "@t3tools/client-runtime/state/thread-requests";
 import { isLatestRunSettled } from "@t3tools/client-runtime/state/models";
 import { turnItemIsWorkspacePreparation } from "@t3tools/client-runtime/state/turn-item-presentation";
@@ -69,13 +68,6 @@ import * as DateTime from "effect/DateTime";
 
 export type PendingApproval = ThreadPendingApproval;
 export type PendingUserInput = ThreadPendingUserInput;
-
-export interface PendingUserInputDraftAnswer {
-  readonly selectedOptionValues?: ReadonlyArray<string>;
-  readonly customAnswer?: string;
-  readonly attachmentCount?: number;
-  readonly attachmentsBlocked?: boolean;
-}
 
 export interface ThreadFeedActivity {
   readonly id: string;
@@ -336,69 +328,6 @@ export function isSecretRequestActivityGroup(entry: ThreadFeedActivityGroup): bo
 
 function isUserInputActivityGroup(entry: ThreadFeedActivityGroup): boolean {
   return entry.activities.some((activity) => activity.workEntry.questionAnswer !== undefined);
-}
-
-function normalizeDraftAnswer(value: string | undefined): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function resolvePendingUserInputOptionValue(
-  question: ThreadUserInputQuestion,
-  value: string,
-): string | null {
-  if (question.options.some((option) => option.value === value)) {
-    return value;
-  }
-
-  const label = value.trim();
-  return label.length > 0 &&
-    question.options.some((option) => option.value === undefined && option.label.trim() === label)
-    ? label
-    : null;
-}
-
-function normalizeSelectedOptionValues(
-  question: ThreadUserInputQuestion,
-  value: ReadonlyArray<string> | undefined,
-): ReadonlyArray<string> {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return Array.from(
-    new Set(
-      value
-        .map((entry) => resolvePendingUserInputOptionValue(question, entry))
-        .filter((entry): entry is string => entry !== null),
-    ),
-  );
-}
-
-function resolvePendingUserInputAnswer(
-  question: ThreadUserInputQuestion,
-  draft: PendingUserInputDraftAnswer | undefined,
-): string | ReadonlyArray<string> | null {
-  if (draft?.attachmentsBlocked) return null;
-  const customAnswer =
-    question.allowCustomAnswer === false ? null : normalizeDraftAnswer(draft?.customAnswer);
-  if (customAnswer) {
-    return customAnswer;
-  }
-
-  const selectedOptionValues = normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
-  if (question.multiSelect) {
-    return selectedOptionValues.length > 0
-      ? selectedOptionValues
-      : question.allowCustomAnswer !== false && (draft?.attachmentCount ?? 0) > 0
-        ? ""
-        : null;
-  }
-  return (
-    selectedOptionValues[0] ??
-    (question.allowCustomAnswer !== false && (draft?.attachmentCount ?? 0) > 0 ? "" : null)
-  );
 }
 
 function capitalizePhrase(value: string): string {
@@ -1418,93 +1347,6 @@ function liveToolActivitySummary(activity: ThreadFeedActivity, presentTense: boo
     return `${verb} ${program ?? "command"}`;
   }
   return activity.detail ?? activity.summary;
-}
-
-export function setPendingUserInputCustomAnswer(
-  question: ThreadUserInputQuestion,
-  draft: PendingUserInputDraftAnswer | undefined,
-  customAnswer: string,
-): PendingUserInputDraftAnswer {
-  if (question.allowCustomAnswer === false) {
-    return draft ?? {};
-  }
-
-  const selectedOptionValues =
-    customAnswer.trim().length > 0
-      ? undefined
-      : normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
-  return {
-    customAnswer,
-    ...(selectedOptionValues && selectedOptionValues.length > 0 ? { selectedOptionValues } : {}),
-  };
-}
-
-export function isPendingUserInputOptionSelected(
-  question: ThreadUserInputQuestion,
-  draft: PendingUserInputDraftAnswer | undefined,
-  optionValue: string,
-): boolean {
-  if (question.allowCustomAnswer !== false && normalizeDraftAnswer(draft?.customAnswer)) {
-    return false;
-  }
-
-  const resolvedOptionValue = resolvePendingUserInputOptionValue(question, optionValue);
-  return (
-    resolvedOptionValue !== null &&
-    normalizeSelectedOptionValues(question, draft?.selectedOptionValues).includes(
-      resolvedOptionValue,
-    )
-  );
-}
-
-export function togglePendingUserInputOptionSelection(
-  question: ThreadUserInputQuestion,
-  draft: PendingUserInputDraftAnswer | undefined,
-  optionValue: string,
-): PendingUserInputDraftAnswer {
-  const resolvedOptionValue = resolvePendingUserInputOptionValue(question, optionValue);
-  if (resolvedOptionValue === null) {
-    return draft ?? {};
-  }
-
-  if (question.multiSelect) {
-    const selectedOptionValues = normalizeSelectedOptionValues(
-      question,
-      draft?.selectedOptionValues,
-    );
-    const nextSelectedOptionValues = selectedOptionValues.includes(resolvedOptionValue)
-      ? selectedOptionValues.filter((value) => value !== resolvedOptionValue)
-      : [...selectedOptionValues, resolvedOptionValue];
-
-    return {
-      customAnswer: "",
-      ...(nextSelectedOptionValues.length > 0
-        ? { selectedOptionValues: nextSelectedOptionValues }
-        : {}),
-    };
-  }
-
-  return {
-    customAnswer: "",
-    selectedOptionValues: [resolvedOptionValue],
-  };
-}
-
-export function buildPendingUserInputAnswers(
-  questions: ReadonlyArray<ThreadUserInputQuestion>,
-  draftAnswers: Record<string, PendingUserInputDraftAnswer>,
-): Record<string, string | ReadonlyArray<string>> | null {
-  const answers: Record<string, string | ReadonlyArray<string>> = {};
-
-  for (const question of questions) {
-    const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
-    if (answer === null) {
-      return null;
-    }
-    answers[question.id] = answer;
-  }
-
-  return answers;
 }
 
 /**

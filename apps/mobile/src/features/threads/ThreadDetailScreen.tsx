@@ -109,10 +109,10 @@ import { useDelayedStatus } from "../../lib/useDelayedStatus";
 import type {
   PendingApproval,
   PendingUserInput,
-  PendingUserInputDraftAnswer,
   ThreadFeedEntry,
   ThreadFeedLatestRun,
 } from "../../lib/threadActivity";
+import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/work-log/user-input";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { ComposerErrorNotice } from "./ComposerErrorNotice";
 import { ComposerFeedback } from "./ComposerFeedback";

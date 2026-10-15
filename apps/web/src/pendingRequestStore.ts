@@ -14,7 +14,7 @@ import type {
 } from "@t3tools/contracts";
 import { CommandId } from "@t3tools/contracts";
 import { create } from "zustand";
-import type { PendingUserInputDraftAnswer } from "./pendingUserInput";
+import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/work-log/user-input";
 import { randomUUID } from "./lib/utils";
 
 export type PendingResponse =

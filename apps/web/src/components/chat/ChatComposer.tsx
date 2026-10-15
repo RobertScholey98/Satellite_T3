@@ -1106,7 +1106,7 @@ import {
   stepComposerPromptHistory,
   type ComposerPromptHistoryPosition,
 } from "./composerPromptHistory";
-import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
+import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/work-log/user-input";
 import type {
   LatestProposedPlanState,
   PendingApproval,

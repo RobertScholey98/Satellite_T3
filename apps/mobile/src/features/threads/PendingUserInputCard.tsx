@@ -23,9 +23,9 @@ import { ControlPill } from "../../components/ControlPill";
 import { cn } from "../../lib/cn";
 import {
   isPendingUserInputOptionSelected,
-  type PendingUserInput,
   type PendingUserInputDraftAnswer,
-} from "../../lib/threadActivity";
+} from "@t3tools/client-runtime/work-log/user-input";
+import { type PendingUserInput } from "../../lib/threadActivity";
 
 export interface PendingUserInputCardProps {
   readonly canOperateThread: boolean;

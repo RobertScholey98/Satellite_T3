@@ -22,7 +22,7 @@ import {
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
-} from "~/pendingUserInput";
+} from "@t3tools/client-runtime/work-log/user-input";
 import { ComposerPendingApprovalPanel } from "../chat/ComposerPendingApprovalPanel";
 import { ComposerPendingApprovalActions } from "../chat/ComposerPendingApprovalActions";
 import { Badge } from "../ui/badge";
@@ -103,6 +103,7 @@ function TestingQuestion({
                 setAnswers((current) => ({
                   ...current,
                   [question.id]: setPendingUserInputCustomAnswer(
+                    question,
                     current[question.id],
                     event.target.value,
                   ),
