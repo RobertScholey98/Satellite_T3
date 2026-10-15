@@ -61,6 +61,7 @@ type DeliveryWork =
 
 interface PeerRow {
   endpoints_json: string;
+  public_key: string;
   preferred_endpoint: string | null;
   state: string;
   last_error: string | null;
@@ -169,6 +170,7 @@ export const make = Effect.gen(function* () {
             destinationEnvironmentId: destination,
             endpoints: ordered,
             credential: new TextDecoder().decode(credential.value),
+            publicKey: row.public_key,
           });
           return { endpoint: peer.endpoint, ...(yield* collect(destination, peer)) };
         }),
@@ -239,9 +241,10 @@ export const make = Effect.gen(function* () {
           new TextEncoder().encode(input.credential),
         );
         const at = DateTime.formatIso(yield* DateTime.now);
-        yield* sql`INSERT INTO issue_delivery_peers(destination_environment_id,endpoints_json,state,registered_at)
-          VALUES(${input.destinationEnvironmentId},${encodeEndpoints(endpoints)},'pending',${at})
+        yield* sql`INSERT INTO issue_delivery_peers(destination_environment_id,endpoints_json,public_key,state,registered_at)
+          VALUES(${input.destinationEnvironmentId},${encodeEndpoints(endpoints)},${input.publicKey},'pending',${at})
           ON CONFLICT(destination_environment_id) DO UPDATE SET endpoints_json=excluded.endpoints_json,
+            public_key=excluded.public_key,
             preferred_endpoint=NULL,state='pending',last_error=NULL,failures=0,next_attempt_at=0`;
         yield* issues.publishDeliveries(input.destinationEnvironmentId);
         yield* worker.enqueue({ _tag: "peer", destination: input.destinationEnvironmentId });

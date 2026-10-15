@@ -15,6 +15,7 @@ import * as IssueDelivery from "../issues/IssueDelivery.ts";
 import * as IssueHost from "../issues/IssueHost.ts";
 import * as IssueLifecycleReactor from "../issues/IssueLifecycleReactor.ts";
 import * as IssuePeerAccess from "../issues/IssuePeerAccess.ts";
+import * as IssuePeerKeys from "../issues/IssuePeerKeys.ts";
 import * as IssuePeerTransport from "../issues/IssuePeerTransport.ts";
 import * as IssueService from "../issues/IssueService.ts";
 import {
@@ -97,7 +98,7 @@ export const layer = Layer.mergeAll(
     Layer.merge(
       IssueDelivery.layer.pipe(Layer.provide(IssuePeerTransport.layerSocket)),
       IssuePeerAccess.layer,
-    ),
+    ).pipe(Layer.provideMerge(IssuePeerKeys.layer)),
   ),
   Layer.provideMerge(layerIssueService),
   Layer.provideMerge(SatelliteOrchestration.layer),
@@ -143,6 +144,9 @@ export const RevdocToolkitRegistrationLive = toolkitRegistration(
   RevdocToolkit,
   RevdocToolkitHandlersLive,
 );
+
+/** Satellite's HTTP routes. `server.ts` serves them beside upstream's. */
+export const routes = IssuePeerAccess.proofRoute;
 
 /** Registers Satellite's MCP toolkits on the `/mcp` server that `mcpServer` provides. */
 export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) =>

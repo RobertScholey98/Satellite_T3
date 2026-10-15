@@ -16,7 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import { HttpClient } from "effect/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import * as Layer from "effect/Layer";
 import * as RpcClient from "effect/rpc/RpcClient";
@@ -27,6 +27,11 @@ import type * as Scope from "effect/Scope";
 import * as Socket from "effect/socket/Socket";
 
 import { ISSUE_PEER_METHODS, type IssuePeerMethod } from "./IssuePeerAccess.ts";
+import {
+  identityProofMessage,
+  ISSUE_PEER_PROOF_PATH,
+  verifyIssuePeerSignature,
+} from "./IssuePeerKeys.ts";
 
 export class IssuePeerUnreachableError extends Schema.TaggedError<IssuePeerUnreachableError>()(
   "IssuePeerUnreachableError",
@@ -63,6 +68,8 @@ export interface IssuePeer {
   /** Tried in order; the first that answers as the destination is used. */
   readonly endpoints: ReadonlyArray<string>;
   readonly credential: string;
+  /** The destination's identity key from the grant. */
+  readonly publicKey: string;
 }
 
 /** The destination's three peer RPCs over one open connection. */
@@ -100,6 +107,7 @@ export const IssuePeerRpcs = WsSatelliteRpcGroup.omit(
 const isIssueError = Schema.is(IssueOperationError);
 const isAuthorizationError = Schema.is(EnvironmentAuthorizationError);
 const isAuthInvalidError = Schema.is(EnvironmentAuthInvalidError);
+const ProofResponse = Schema.Struct({ signature: Schema.String });
 const REQUEST_TIMEOUT = "10 seconds";
 const CALL_TIMEOUT = "30 seconds";
 
@@ -125,6 +133,30 @@ const makeSocket = Effect.gen(function* () {
       .pipe(Effect.timeout(REQUEST_TIMEOUT), Effect.mapError(unreachable));
     if (descriptor.environmentId !== peer.destinationEnvironmentId)
       return yield* unreachable("A different environment answered on this address.");
+    // The descriptor is public, so anyone can repeat the ID; only the destination holds the key.
+    const nonce = Buffer.from(globalThis.crypto.getRandomValues(new Uint8Array(32))).toString(
+      "base64url",
+    );
+    const proof = yield* HttpClientRequest.post(new URL(ISSUE_PEER_PROOF_PATH, endpoint)).pipe(
+      HttpClientRequest.bodyJsonUnsafe({ nonce, endpoint }),
+      httpClient.execute,
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap(HttpClientResponse.schemaBodyJson(ProofResponse)),
+      Effect.timeout(REQUEST_TIMEOUT),
+      Effect.mapError(unreachable),
+    );
+    if (
+      !verifyIssuePeerSignature({
+        publicKey: peer.publicKey,
+        message: identityProofMessage({
+          environmentId: peer.destinationEnvironmentId,
+          endpoint,
+          nonce,
+        }),
+        signature: proof.signature,
+      })
+    )
+      return yield* unreachable("The computer at this address could not prove its identity.");
     const auth = yield* HttpApiClient.group(EnvironmentHttpApi, {
       httpClient,
       group: "auth",

@@ -236,6 +236,7 @@ const setup = Effect.gen(function* () {
           destinationEnvironmentId: destination,
           credential: value,
           endpoints: ["http://192.168.1.20:3773/"],
+          publicKey: "destination-key",
         })
         .pipe(Effect.andThen(delivery.drain)),
   };

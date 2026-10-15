@@ -23,7 +23,11 @@ import * as Layer from "effect/Layer";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
 
+import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import issueBoardsMigration from "../persistence/Migrations/056_IssueBoards.ts";
+import { freshPeerKeys } from "./IssuePeer.testFixtures.ts";
+import { proofRoute } from "./IssuePeerAccess.ts";
+import { IssuePeerKeys } from "./IssuePeerKeys.ts";
 import { fromAdapters } from "./IssueHost.ts";
 import {
   IssuePeerRpcs,
@@ -54,7 +58,10 @@ const link: IssueAttemptLink = {
   },
 };
 
-/** A destination server: its public descriptor, the ticket exchange, and the peer RPC socket. */
+/**
+ * A destination server: its public descriptor, identity proof, ticket exchange, and peer RPC
+ * socket. Each server mints its own key, so two servers can claim the same environment ID.
+ */
 const destinationServer = (environmentId: EnvironmentId) =>
   Effect.gen(function* () {
     const database = yield* Layer.build(NodeSqliteClient.layer({ filename: ":memory:" }));
@@ -72,7 +79,8 @@ const destinationServer = (environmentId: EnvironmentId) =>
       worktreePath: "/work",
     });
     yield* issues.firstPromptSent({ threadId, eventKey: "send" });
-    const state = { credential, tickets: 0 };
+    const state = { credential, tickets: 0, presented: [] as string[] };
+    const keys = yield* freshPeerKeys();
     const handlers = IssuePeerRpcs.toLayer({
       [SATELLITE_WS_METHODS.issuesAttemptsReceipts]: (input) => issues.listReceipts(input),
       [SATELLITE_WS_METHODS.issuesAttemptsAcknowledge]: (input) =>
@@ -97,6 +105,7 @@ const destinationServer = (environmentId: EnvironmentId) =>
         "/api/auth/websocket-ticket",
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
+          state.presented.push(request.headers.authorization ?? "");
           if (request.headers.authorization !== `Bearer ${state.credential}`)
             return yield* HttpServerResponse.schemaJson(EnvironmentAuthInvalidError)(
               new EnvironmentAuthInvalidError({
@@ -133,13 +142,17 @@ const destinationServer = (environmentId: EnvironmentId) =>
         }).pipe(Effect.provide(Layer.merge(handlers, RpcSerialization.layerJson))),
       ),
     );
+    const identity = Layer.mergeAll(
+      Layer.succeed(IssuePeerKeys, keys),
+      Layer.succeed(ServerEnvironmentIdentity, { getEnvironmentId: Effect.succeed(environmentId) }),
+    );
     const services = yield* Layer.build(
-      HttpRouter.serve(routes, { disableListenLog: true }).pipe(
-        Layer.provideMerge(NodeHttpServer.layerTest),
-      ),
+      HttpRouter.serve(Layer.merge(routes, proofRoute.pipe(Layer.provide(identity))), {
+        disableListenLog: true,
+      }).pipe(Layer.provideMerge(NodeHttpServer.layerTest)),
     );
     const origin = HttpServer.formatAddress(Context.get(services, HttpServer.HttpServer).address);
-    return { origin, issues, state };
+    return { origin, issues, state, publicKey: keys.publicKey };
   });
 
 const transport = Effect.gen(function* () {
@@ -160,6 +173,7 @@ describe("socket peer transport", () => {
             destinationEnvironmentId: destination,
             endpoints: [server.origin],
             credential,
+            publicKey: server.publicKey,
           });
           const page = yield* connection.listReceipts(0);
           yield* connection.acknowledge({
@@ -190,11 +204,12 @@ describe("socket peer transport", () => {
             destinationEnvironmentId: destination,
             endpoints: ["http://127.0.0.1:9", impostor.origin, server.origin],
             credential,
+            publicKey: server.publicKey,
           })
           .pipe(Effect.map((connection) => connection.endpoint)),
       );
       assert.strictEqual(endpoint, server.origin);
-      assert.strictEqual(impostor.state.tickets, 0, "the impostor never saw the credential");
+      assert.deepStrictEqual(impostor.state.presented, [], "the impostor never saw the credential");
     }).pipe(Effect.scoped),
   );
 
@@ -205,10 +220,41 @@ describe("socket peer transport", () => {
       const peers = yield* transport;
       const connect = (endpoints: ReadonlyArray<string>) =>
         Effect.scoped(
-          peers.connect({ destinationEnvironmentId: destination, endpoints, credential }),
+          peers.connect({
+            destinationEnvironmentId: destination,
+            endpoints,
+            credential,
+            publicKey: server.publicKey,
+          }),
         ).pipe(Effect.flip, Effect.map(failureTag));
       assert.strictEqual(yield* connect([server.origin]), "IssuePeerUnauthorizedError");
       assert.strictEqual(yield* connect(["http://127.0.0.1:9"]), "IssuePeerUnreachableError");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("withholds the credential from an impostor that repeats the destination's ID", () =>
+    Effect.gen(function* () {
+      const server = yield* destinationServer(destination);
+      const impostor = yield* destinationServer(destination);
+      const peers = yield* transport;
+      const connect = (endpoints: ReadonlyArray<string>) =>
+        Effect.scoped(
+          peers
+            .connect({
+              destinationEnvironmentId: destination,
+              endpoints,
+              credential,
+              publicKey: server.publicKey,
+            })
+            .pipe(Effect.map((connection) => connection.endpoint)),
+        );
+      assert.strictEqual(
+        yield* connect([impostor.origin]).pipe(Effect.flip, Effect.map(failureTag)),
+        "IssuePeerUnreachableError",
+      );
+      assert.strictEqual(yield* connect([impostor.origin, server.origin]), server.origin);
+      assert.deepStrictEqual(impostor.state.presented, []);
+      assert.deepStrictEqual(server.state.presented, [`Bearer ${credential}`]);
     }).pipe(Effect.scoped),
   );
 });

@@ -11,11 +11,14 @@ import {
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import * as SessionStore from "../auth/SessionStore.ts";
 import { DirectEndpoints } from "../environment/DirectEndpoints.ts";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
+import { identityProofMessage, ISSUE_PEER_PROOF_PATH, IssuePeerKeys } from "./IssuePeerKeys.ts";
 
 const ISSUE_PEER_SUBJECT_PREFIX = "issue-peer:";
 
@@ -55,6 +58,7 @@ export class IssuePeerAccess extends Context.Service<
 export const make = Effect.gen(function* () {
   const sessions = yield* SessionStore.SessionStore;
   const directEndpoints = yield* DirectEndpoints;
+  const keys = yield* IssuePeerKeys;
   const environmentId = yield* (yield* ServerEnvironmentIdentity).getEnvironmentId;
   return IssuePeerAccess.of({
     grant: Effect.fn("IssuePeerAccess.grant")(function* (input, caller) {
@@ -94,9 +98,42 @@ export const make = Effect.gen(function* () {
       return {
         credential: issued.token,
         endpoints: endpoints.map((endpoint) => endpoint.httpBaseUrl),
+        publicKey: keys.publicKey,
       };
     }),
   });
 });
 
 export const layer = Layer.effect(IssuePeerAccess, make);
+
+const ProofRequest = Schema.Struct({
+  nonce: Schema.String.check(Schema.isMinLength(16), Schema.isMaxLength(128)),
+  endpoint: Schema.String.check(Schema.isMaxLength(512)),
+});
+
+/**
+ * Signs a board environment's fresh nonce, the endpoint it dialled, and this environment's ID.
+ * The board environment sends its credential only after the signature verifies against the key
+ * it received with the grant.
+ */
+export const proofRoute = Layer.unwrap(
+  Effect.gen(function* () {
+    const keys = yield* IssuePeerKeys;
+    const environmentId = yield* (yield* ServerEnvironmentIdentity).getEnvironmentId;
+    return HttpRouter.add(
+      "POST",
+      ISSUE_PEER_PROOF_PATH,
+      HttpServerRequest.schemaBodyJson(ProofRequest).pipe(
+        Effect.flatMap((request) =>
+          HttpServerResponse.json({
+            signature: keys.sign(identityProofMessage({ environmentId, ...request })),
+          }),
+        ),
+        Effect.catchTags({
+          SchemaError: () => Effect.succeed(HttpServerResponse.empty({ status: 400 })),
+          HttpServerError: () => Effect.succeed(HttpServerResponse.empty({ status: 400 })),
+        }),
+      ),
+    );
+  }),
+);

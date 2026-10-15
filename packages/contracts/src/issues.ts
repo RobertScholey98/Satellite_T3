@@ -303,6 +303,8 @@ export const IssuePeersRegisterInput = Schema.Struct({
   destinationEnvironmentId: EnvironmentId,
   credential: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
   endpoints: Schema.Array(Id).check(Schema.isMaxLength(16)),
+  /** The destination's identity key; an endpoint must prove it holds the private half. */
+  publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
 });
 export type IssuePeersRegisterInput = typeof IssuePeersRegisterInput.Type;
 export const IssuePeersForgetInput = Schema.Struct({ destinationEnvironmentId: EnvironmentId });
@@ -319,5 +321,6 @@ export type IssuePeersGrantInput = typeof IssuePeersGrantInput.Type;
 export const IssuePeerGrant = Schema.Struct({
   credential: TrimmedNonEmptyString,
   endpoints: Schema.Array(Id),
+  publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
 });
 export type IssuePeerGrant = typeof IssuePeerGrant.Type;

@@ -90,7 +90,9 @@ authorization lets that subject call the three peer RPCs and nothing else, and
 the handlers restrict those calls to the board environment's own attempts.
 Because the session holds no scopes, an HTTP route or RPC that skips the subject
 check still denies it. The session is listed and revoked
-in Connections like any other.
+in Connections like any other. The board environment sends it only after the
+address it dialled signs a fresh nonce with the key the grant named, because a
+private LAN address can belong to a different machine on another network.
 
 ### Reusable dev credential
 

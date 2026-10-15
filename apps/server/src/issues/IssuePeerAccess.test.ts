@@ -52,7 +52,9 @@ import * as SatelliteWsRpc from "../satellite/SatelliteWsRpc.ts";
 import * as IssueDelivery from "./IssueDelivery.ts";
 import { fromAdapters } from "./IssueHost.ts";
 import type { IssueHostAdapter } from "./IssueHostAdapter.ts";
+import { freshPeerKeys } from "./IssuePeer.testFixtures.ts";
 import * as IssuePeerAccess from "./IssuePeerAccess.ts";
+import { IssuePeerKeys } from "./IssuePeerKeys.ts";
 import * as IssuePeerTransport from "./IssuePeerTransport.ts";
 import { IssueService, makeIssueService } from "./IssueService.ts";
 
@@ -107,6 +109,13 @@ const worktreeServer = Effect.gen(function* () {
     getProject: () => Effect.succeed(project),
   }).pipe(Effect.provideContext(context));
   const advertised = { origin: "" };
+  const keys = yield* freshPeerKeys();
+  const identity = Layer.mergeAll(
+    Layer.succeed(IssuePeerKeys, keys),
+    Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+      getEnvironmentId: Effect.succeed(environmentId),
+    }),
+  );
   const peerAccess = yield* IssuePeerAccess.make.pipe(
     Effect.provideService(
       SessionStore.SessionStore,
@@ -115,9 +124,7 @@ const worktreeServer = Effect.gen(function* () {
     Effect.provideService(DirectEndpoints, {
       resolve: () => Effect.sync(() => [{ kind: "lan", httpBaseUrl: advertised.origin }]),
     }),
-    Effect.provideService(ServerEnvironment.ServerEnvironmentIdentity, {
-      getEnvironmentId: Effect.succeed(environmentId),
-    }),
+    Effect.provide(identity),
   );
   const handlerServices = Layer.mergeAll(
     Layer.succeed(IssueService, issues),
@@ -190,9 +197,12 @@ const worktreeServer = Effect.gen(function* () {
     ),
   );
   const server = yield* Layer.build(
-    HttpRouter.serve(routes, { disableListenLog: true }).pipe(
-      Layer.provideMerge(NodeHttpServer.layerTest),
-    ),
+    HttpRouter.serve(
+      Layer.merge(routes, IssuePeerAccess.proofRoute.pipe(Layer.provide(identity))),
+      {
+        disableListenLog: true,
+      },
+    ).pipe(Layer.provideMerge(NodeHttpServer.layerTest)),
   );
   advertised.origin = HttpServer.formatAddress(Context.get(server, HttpServer.HttpServer).address);
   return { auth, environmentId, issues, peerAccess };
