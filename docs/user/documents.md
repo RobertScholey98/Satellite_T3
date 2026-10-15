@@ -4,7 +4,9 @@ Ask the agent to publish a plan, report, or verification checklist to the thread
 Documents panel. Publishing retains a copy, so changing or deleting the original
 working file does not change the version you reviewed. Documents belong to the
 environment running the thread and remain available when you connect remotely.
-In an idea, published documents also appear in the idea's notebook.
+In an idea, published documents also appear in the idea's notebook. Text documents,
+including files you upload to an idea, must be UTF-8 and under 2 MB, and HTML must
+inline its scripts and resources; images and other files can be up to 20 MB.
 
 Open **Documents** from the thread. A review checklist lets you mark each item as
 complete, broken, change requested, skipped, or not checked, and add notes.
