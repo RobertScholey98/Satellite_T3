@@ -9640,30 +9640,36 @@ export default function ChatView(props: ChatViewProps) {
           // The fresh composer opens while the start request is in flight.
           beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
           markPromotedDraftThreadByRef(backgroundThreadRef);
-          backgroundDraftOpening = handleNewThread(
-            scopeProjectRef(activeProject.environmentId, activeProject.id),
-            resolveBackgroundDraftWorkspaceOptions({
-              envMode: sendEnvMode,
-              branch: activeThreadBranch,
-              startFromOrigin,
-            }),
-          ).then(Boolean, (error: unknown) => {
-            clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
-            toastManager.add(
-              stackedThreadToast({
-                type: "warning",
-                title: "Could not open a fresh composer",
-                description: error instanceof Error ? error.message : undefined,
-              }),
-            );
-            return false;
-          });
+          backgroundDraftOpening = Promise.resolve()
+            .then(() =>
+              handleNewThread(
+                scopeProjectRef(activeProject.environmentId, activeProject.id),
+                resolveBackgroundDraftWorkspaceOptions({
+                  envMode: sendEnvMode,
+                  branch: activeThreadBranch,
+                  startFromOrigin,
+                }),
+              ),
+            )
+            .then(Boolean, (error: unknown) => {
+              clearBackgroundDraftSubmissionByRef(backgroundThreadRef);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "warning",
+                  title: "Could not open a fresh composer",
+                  description: error instanceof Error ? error.message : undefined,
+                }),
+              );
+              return false;
+            });
         }
       },
     });
-    if (delivery._tag === "Invalid") {
+    if (delivery._tag === "Invalid" || delivery._tag === "Abandoned") {
       sendInFlightRef.current = false;
-      setThreadError(threadIdForSend, invalidTurnMessage(delivery.reason));
+      if (delivery._tag === "Invalid") {
+        setThreadError(threadIdForSend, invalidTurnMessage(delivery.reason));
+      }
       return;
     }
     const failure = delivery._tag === "Failed" ? delivery.failure : null;

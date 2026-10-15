@@ -160,6 +160,7 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
     readonly reply?: Reply;
     readonly launch?: () => Effect.Effect<{ sequence: number }, CommandRejected | SocketDropped>;
     readonly issueDelivery?: boolean;
+    readonly unconfigured?: boolean;
   } = {},
 ) {
   const sent: OrchestrationV2Command[] = [];
@@ -259,14 +260,16 @@ const makeHarness = Effect.fn("TestTurnDelivery.makeHarness")(function* (
     },
     attachments: options.attachments ?? fakeAttachments(),
     environment: (environmentId) =>
-      ({
-        label: environmentId === BOARD_ENVIRONMENT_ID ? "Desk" : "Laptop",
-        capabilities: {
-          issueDelivery: options.issueDelivery ?? false,
-          inlineMessageContext: options.inlineMessageContext ?? true,
-          attachmentUploads: options.attachmentUploads ?? true,
-        },
-      }) as ExecutionEnvironmentDescriptor,
+      options.unconfigured
+        ? undefined
+        : ({
+            label: environmentId === BOARD_ENVIRONMENT_ID ? "Desk" : "Laptop",
+            capabilities: {
+              issueDelivery: options.issueDelivery ?? false,
+              inlineMessageContext: options.inlineMessageContext ?? true,
+              attachmentUploads: options.attachmentUploads ?? true,
+            },
+          } as ExecutionEnvironmentDescriptor),
   };
   return { sent, launched, issueCalls, services };
 });
@@ -562,6 +565,26 @@ describe("deliverTurn", () => {
         new Error("This server does not support file attachments."),
       );
       expect(h.sent).toEqual([]);
+    }),
+  );
+
+  it.effect("waits for the server config before deciding how attachments travel", () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const h = yield* makeHarness({ unconfigured: true, attachments: fakeAttachments(calls) });
+      const result = yield* deliver(
+        request({
+          message: {
+            messageId: MessageId.make("message"),
+            text: "Read this",
+            attachments: [REPORT],
+          },
+        }),
+        h.services,
+      );
+
+      expect(result).toMatchObject({ _tag: "Failed", stage: "attachments", transient: true });
+      expect([...calls, ...h.sent]).toEqual([]);
     }),
   );
 

@@ -24,6 +24,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 
 import { isTransportConnectionErrorMessage } from "./errors/transport.ts";
+import { EnvironmentRpcUnavailableError } from "./rpc/client.ts";
 import type {
   SetThreadInteractionModeInput,
   SetThreadRuntimeModeInput,
@@ -183,7 +184,22 @@ export async function deliverTurn<A extends TurnAttachmentDraft>(
 
   const { environmentId, turn } = request;
   const drafts = request.message.attachments;
-  const upload = services.environment(environmentId)?.capabilities.attachmentUploads === true;
+  const environment = services.environment(environmentId);
+  if (environment === undefined && drafts.length > 0) {
+    // Without the server's capabilities the upload path is unknown; wait for the config.
+    return failed(
+      "attachments",
+      AsyncResult.failure(
+        Cause.fail(
+          new EnvironmentRpcUnavailableError({
+            environmentId,
+            message: "The environment is not connected.",
+          }),
+        ),
+      ),
+    );
+  }
+  const upload = environment?.capabilities.attachmentUploads === true;
   let attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment> | "abandoned";
   try {
     if (!upload && drafts.some((draft) => draft.type === "file")) {
