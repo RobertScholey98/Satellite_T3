@@ -1,11 +1,4 @@
-import { upgradeLegacyContextMessage } from "@t3tools/shared/composerContextLegacy";
-import { buildProjectThreadStartTurnInput } from "./projectThreadStartTurn";
-import {
-  ProjectId,
-  ProviderInstanceId,
-  ComposerContextId,
-  type OrchestrationMessageContext,
-} from "@t3tools/contracts";
+import { ComposerContextId, type OrchestrationMessageContext } from "@t3tools/contracts";
 import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
 import {
   collectComposerContextReferences,
@@ -21,8 +14,6 @@ import {
   referencedComposerContext,
   reidentifyComposerContext,
   uploadedComposerContext,
-  serializeComposerMessageForServer,
-  pullRequestComposerContext,
 } from "./composerContext";
 
 const terminal = {
@@ -203,71 +194,5 @@ describe("mobile composer context", () => {
     });
     expect(prompt).toContain("4 | build failed\n5 | retry");
     expect(prompt).not.toContain('unavailable="true"');
-  });
-});
-
-describe("host context compatibility", () => {
-  it.each(["existing-thread", "new-task"])("serializes %s sends for an older host", (path) => {
-    const pr = pullRequestComposerContext(
-      {
-        number: 42,
-        title: "Fix checkout",
-        url: "https://github.com/example/repo/pull/42",
-        headBranch: "fix-checkout",
-        baseBranch: "main",
-        state: "open",
-        isDraft: false,
-      },
-      "pr-42",
-    );
-    const review = {
-      ...pr,
-      contextId: ComposerContextId.make("review-1"),
-      sectionId: "review",
-      filePath: "checkout.ts",
-      text: "Handle the empty cart",
-      diff: "- old\n+ new",
-    };
-    const context: OrchestrationMessageContext = { version: 1, records: [terminal, review, pr] };
-    const text = context.records.map(formatComposerContextReference).join(" ");
-    // Missing capability on an old host is treated like false by both dispatch paths.
-    const wire = serializeComposerMessageForServer(text, context, false);
-    const message =
-      path === "existing-thread"
-        ? wire
-        : buildProjectThreadStartTurnInput({
-            ...wire,
-            projectId: ProjectId.make("project"),
-            projectCwd: "/workspace",
-            threadId: "thread",
-            commandId: "command",
-            messageId: "message",
-            createdAt: "2026-01-01T00:00:00Z",
-            uploadedAttachments: [],
-            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            workspaceMode: "local",
-            branch: null,
-            worktreePath: null,
-            startFromOrigin: false,
-            worktreeBranchName: "unused",
-          }).message;
-    expect(message).not.toHaveProperty("context");
-    expect(message.text).not.toContain("t3-context://");
-    expect(
-      upgradeLegacyContextMessage(message.text).records.find(
-        (record) => record.kind === "terminal",
-      ),
-    ).toMatchObject({
-      text: terminal.text,
-      lineStart: terminal.lineStart,
-      lineEnd: terminal.lineEnd,
-    });
-    expect(message.text).toContain(review.text);
-    expect(message.text).toContain(review.diff);
-    expect(message.text).toContain(pr.pullRequest!.url);
-    expect(serializeComposerMessageForServer(text, context, true)).toEqual({ text, context });
-    expect(context.records).toEqual([terminal, review, pr]);
   });
 });

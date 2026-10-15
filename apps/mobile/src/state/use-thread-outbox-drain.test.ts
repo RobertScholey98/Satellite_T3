@@ -153,6 +153,7 @@ import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import {
   completeQueuedMessageDelivery,
   prepareQueuedMessageAttachments,
+  queuedMessageTurnAttachments,
   recoverEditedCreationAfterDelivery,
   removeAcknowledgedExistingThreadMessage,
   restoreRejectedQueuedMessage,
@@ -356,6 +357,52 @@ describe("thread outbox attachment preparation", () => {
     });
     expect(harness.prepareTurnAttachments).not.toHaveBeenCalled();
     expect(remainingMessages()).toEqual([edited]);
+  });
+  it("hands delivery the uploaded wire attachments and the revision it persisted", async () => {
+    const message = queuedMessage({
+      messageId: "message-delivery-adapter",
+      text: "upload this file",
+      fileUri: "file:///documents/t3-composer-attachments/adapter.pdf",
+    });
+    const uploadedDrafts = message.attachments.map((attachment) => ({
+      ...attachment,
+      uploadedAttachmentId: "pending-adapter",
+      uploadEnvironmentId: message.environmentId,
+    }));
+    const wire = [
+      {
+        type: "file" as const,
+        id: "pending-adapter",
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 42,
+      },
+    ];
+    harness.prepareTurnAttachments.mockImplementationOnce(async (input) => {
+      await input.persistUploadedReferences?.(uploadedDrafts);
+      return {
+        status: "ready",
+        attachments: wire,
+        draftAttachments: uploadedDrafts,
+        pendingAttachmentIds: ["pending-adapter"],
+      };
+    });
+    await harness.manager.enqueue(message);
+    const revision = harness.manager.revisionOf(message.messageId);
+    const attachments = queuedMessageTurnAttachments(message);
+
+    await expect(
+      attachments.adapter.prepare({
+        environmentId: message.environmentId,
+        attachments: message.attachments,
+        upload: true,
+      }),
+    ).resolves.toEqual(wire);
+    expect(harness.prepareTurnAttachments.mock.calls[0]?.[0].supportsImageUploads).toBe(true);
+    expect(attachments.delivered()).toEqual({
+      message: { ...message, attachments: uploadedDrafts },
+      revision: revision + 1,
+    });
   });
 });
 

@@ -1,4 +1,3 @@
-import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   clampFileAttachmentUploadBytes,
   fileAttachmentTooLargeMessage,
@@ -257,58 +256,17 @@ export function isQueuedThreadCreationSendable(message: QueuedThreadMessage): bo
   return message.creation.workspaceMode !== "worktree" || Boolean(message.creation.branch);
 }
 
-function errorMessage(error: unknown): string | null {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "object" && error !== null && "message" in error) {
-    return typeof error.message === "string" ? error.message : null;
-  }
-  return typeof error === "string" ? error : null;
-}
-
-/**
- * Only a failure the server actually decided (`OrchestrationDispatchCommandError`,
- * or an authorization rejection) means the payload itself is bad. The other
- * typed failures a queued send can hit are transport-shaped: a socket that
- * dropped mid-request (`RpcClientError` wrapping a Socket read/write/close
- * reason), or an environment that is not connected or not registered. Those
- * are matched by tag, not by message text, because a `SocketReadError` message
- * is just "An error occurred during Read". A wrong answer here restores the
- * pending task into a draft and it disappears from the list.
- */
-export function shouldRetryThreadOutboxDelivery(error: unknown): boolean {
-  if (typeof error === "object" && error !== null && "_tag" in error) {
-    switch (error._tag) {
-      case "OrchestrationDispatchCommandError":
-      case "EnvironmentAuthorizationError":
-        return false;
-      case "ConnectionTransientError":
-      case "RpcClientError":
-      case "EnvironmentRpcUnavailableError":
-      case "EnvironmentNotRegisteredError":
-        return true;
-      default:
-        break;
-    }
-  }
-  return isTransportConnectionErrorMessage(errorMessage(error));
-}
-
 export type ThreadOutboxCommandStage = "settings-sync" | "start-turn";
 export type ThreadOutboxFailureAction = "retry" | "restore";
 
+/**
+ * A settings-sync failure retries even when the server rejected it: the turn never started, so
+ * restoring would discard a message the server never judged. Otherwise only a transient failure
+ * retries; a rejected start goes back to the composer.
+ */
 export function resolveThreadOutboxFailureAction(input: {
   readonly stage: ThreadOutboxCommandStage;
-  readonly error: unknown;
-  readonly interrupted: boolean;
+  readonly transient: boolean;
 }): ThreadOutboxFailureAction {
-  if (
-    input.stage === "settings-sync" ||
-    input.interrupted ||
-    shouldRetryThreadOutboxDelivery(input.error)
-  ) {
-    return "retry";
-  }
-  return "restore";
+  return input.stage === "settings-sync" || input.transient ? "retry" : "restore";
 }

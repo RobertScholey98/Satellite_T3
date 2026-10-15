@@ -3,9 +3,11 @@ import {
   ChatAttachmentId,
   CommandId,
   ComposerContextId,
+  EnvironmentAuthorizationError,
   EnvironmentId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
+  OrchestrationDispatchCommandError,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -20,14 +22,19 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as RpcClientError from "effect/rpc/RpcClientError";
+import * as Socket from "effect/socket/Socket";
 import { Atom, AtomRegistry } from "effect/reactivity";
 
 import * as EnvironmentRegistry from "./connection/registry.ts";
+import { EnvironmentNotRegisteredError } from "./connection/registry.ts";
 import * as EnvironmentSupervisor from "./connection/supervisor.ts";
+import { EnvironmentRpcUnavailableError } from "./rpc/client.ts";
 import type { RpcSession } from "./rpc/session.ts";
 import { createThreadEnvironmentAtoms } from "./state/threadCommands.ts";
 import {
   deliverTurn,
+  isTransientDeliveryError,
   type TurnAttachmentAdapter,
   type TurnDeliveryRequest,
   type TurnDeliveryServices,
@@ -575,4 +582,67 @@ describe("deliverTurn", () => {
       ]);
     }),
   );
+});
+
+describe("isTransientDeliveryError", () => {
+  it("treats transport failures as transient and server decisions as final", () => {
+    expect(isTransientDeliveryError(new Error("Socket is not connected"))).toBe(true);
+    expect(
+      isTransientDeliveryError({
+        _tag: "ConnectionTransientError",
+        message: "temporarily unavailable",
+      }),
+    ).toBe(true);
+    expect(isTransientDeliveryError(new Error("Thread no longer exists"))).toBe(false);
+    expect(
+      isTransientDeliveryError(
+        new OrchestrationDispatchCommandError({ message: "Thread no longer exists" }),
+      ),
+    ).toBe(false);
+    expect(
+      isTransientDeliveryError(
+        new EnvironmentAuthorizationError({
+          message: "Missing scope",
+          requiredScope: "orchestration:operate",
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  // A queued creation drains the moment a phone reconnects, which is when the socket is most
+  // likely to drop again. Every in-flight failure must read as transient, whatever its message.
+  it("matches every in-flight transport failure by tag, not by message text", () => {
+    const socketReasons = [
+      new Socket.SocketReadError({ cause: new Error("The network connection was lost.") }),
+      new Socket.SocketWriteError({ cause: new Error("Broken pipe") }),
+      new Socket.SocketCloseError({ code: 1006 }),
+      new Socket.SocketOpenError({ kind: "Timeout", cause: new Error("timeout") }),
+    ];
+    for (const reason of socketReasons) {
+      expect(isTransientDeliveryError(new RpcClientError.RpcClientError({ reason }))).toBe(true);
+    }
+    expect(
+      isTransientDeliveryError(
+        new RpcClientError.RpcClientError({
+          reason: new RpcClientError.RpcClientDefect({
+            message: "Error decoding message",
+            cause: new Error("Unexpected end of JSON input"),
+          }),
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isTransientDeliveryError(
+        new EnvironmentRpcUnavailableError({
+          environmentId: "environment-1",
+          message: "Home is not connected.",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isTransientDeliveryError(
+        new EnvironmentNotRegisteredError({ environmentId: EnvironmentId.make("environment-1") }),
+      ),
+    ).toBe(true);
+  });
 });
