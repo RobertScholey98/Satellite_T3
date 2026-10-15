@@ -17,6 +17,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -261,6 +262,7 @@ export const make = Effect.gen(function* () {
       return worker.enqueue({ _tag: "peer", destination });
     });
 
+  const registration = yield* Semaphore.make(1);
   const registerPeer: IssueDelivery["Service"]["registerPeer"] = (input) =>
     protect(
       Effect.gen(function* () {
@@ -269,6 +271,12 @@ export const make = Effect.gen(function* () {
             reason: "invalid",
             message: "A board's own environment does not need a delivery peer.",
           });
+        // Each grant replaces the one before it on the destination, so when two starts race,
+        // the credential that expires last is the one still valid there.
+        const stored = yield* sql<{ credential_expires_at: string }>`SELECT credential_expires_at
+          FROM issue_delivery_peers WHERE destination_environment_id=${input.destinationEnvironmentId}`;
+        if (stored[0] && Date.parse(stored[0].credential_expires_at) > Date.parse(input.expiresAt))
+          return;
         const endpoints = [
           ...new Set(input.endpoints.map(httpEndpoint).filter((value) => value !== null)),
         ];
@@ -284,7 +292,7 @@ export const make = Effect.gen(function* () {
             preferred_endpoint=NULL,state='pending',last_error=NULL,failures=0,next_attempt_at=0`;
         yield* issues.publishDeliveries(input.destinationEnvironmentId);
         yield* requestRound(input.destinationEnvironmentId);
-      }),
+      }).pipe(registration.withPermits(1)),
     );
 
   const forgetPeer: IssueDelivery["Service"]["forgetPeer"] = (input) =>

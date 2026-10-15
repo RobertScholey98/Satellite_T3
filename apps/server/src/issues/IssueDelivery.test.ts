@@ -633,4 +633,17 @@ describe("IssueDelivery", () => {
       assert.strictEqual(test.peer.connects, 2, "a request after the round finished runs again");
     }).pipe(Effect.scoped),
   );
+
+  it.effect("keeps the newest credential when two starts register out of order", () =>
+    Effect.gen(function* () {
+      const test = yield* setup;
+      yield* test.start();
+      test.peer.credential = "second-grant";
+      yield* test.register("second-grant", "2099-02-01T00:00:00.000Z");
+      yield* test.register("first-grant", "2099-01-01T00:00:00.000Z");
+      yield* test.nudge;
+      assert.deepStrictEqual(test.writes, ["progress"]);
+      assert.strictEqual((yield* test.peerRow)?.state, "delivered");
+    }).pipe(Effect.scoped),
+  );
 });
