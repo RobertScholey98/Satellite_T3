@@ -8,6 +8,7 @@ import {
   type OrchestrationProjectShell,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -88,11 +89,21 @@ const inProcessTransport = (state: {
   acknowledged: string[];
   connects: number;
   released: number;
+  hold: {
+    readonly started: Deferred.Deferred<void>;
+    readonly release: Deferred.Deferred<void>;
+  } | null;
 }) =>
   IssuePeerTransport.of({
     connect: (peer) =>
       Effect.gen(function* () {
         state.connects++;
+        const held = state.hold;
+        state.hold = null;
+        if (held) {
+          yield* Deferred.succeed(held.started, undefined);
+          yield* Deferred.await(held.release);
+        }
         if (!state.reachable)
           return yield* new IssuePeerUnreachableError({ endpoints: peer.endpoints.length });
         if (peer.credential !== state.credential) return yield* new IssuePeerUnauthorizedError({});
@@ -165,6 +176,10 @@ const setup = Effect.gen(function* () {
     acknowledged: [] as string[],
     connects: 0,
     released: 0,
+    hold: null as {
+      readonly started: Deferred.Deferred<void>;
+      readonly release: Deferred.Deferred<void>;
+    } | null,
   };
   const secrets = memorySecretStore();
   const sourceKeys = yield* freshPeerKeys();
@@ -591,6 +606,31 @@ describe("IssueDelivery", () => {
       assert.strictEqual(test.peer.released, 0);
       assert.strictEqual(test.secrets.size, 0);
       assert.strictEqual(yield* test.peerRow, undefined);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("runs at most one round per destination however often delivery is requested", () =>
+    Effect.gen(function* () {
+      const test = yield* setup;
+      yield* test.start();
+      const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+      test.peer.hold = held;
+      yield* test.delivery.registerPeer({
+        destinationEnvironmentId: destination,
+        credential,
+        endpoints: ["http://192.168.1.20:3773/"],
+        publicKey: "destination-key",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+      yield* Deferred.await(held.started);
+      for (let request = 0; request < 5; request++)
+        yield* test.delivery.deliver({ boardId: test.boardId });
+      yield* Deferred.succeed(held.release, undefined);
+      yield* test.delivery.drain;
+      assert.strictEqual(test.peer.connects, 1);
+      assert.deepStrictEqual(test.writes, ["progress"]);
+      yield* test.nudge;
+      assert.strictEqual(test.peer.connects, 2, "a request after the round finished runs again");
     }).pipe(Effect.scoped),
   );
 });

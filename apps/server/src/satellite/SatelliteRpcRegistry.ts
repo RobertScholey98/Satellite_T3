@@ -33,8 +33,8 @@ export const SATELLITE_RPC_REQUIRED_SCOPES = {
   [SATELLITE_WS_METHODS.issuesPeersRegister]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.issuesPeersForget]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.issuesPeersRelease]: AuthOrchestrationOperateScope,
-  // Like Refresh board: it only collects what the worktree computer already reported.
-  [SATELLITE_WS_METHODS.issuesDeliveriesDeliver]: AuthOrchestrationReadScope,
+  // It makes outbound connections on the caller's behalf, so reading the board is not enough.
+  [SATELLITE_WS_METHODS.issuesDeliveriesDeliver]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.openWorkList]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.openWorkTimeline]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.openWorkLinkFolder]: AuthOrchestrationOperateScope,

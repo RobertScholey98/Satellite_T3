@@ -47,7 +47,9 @@ const services = Layer.mergeAll(
         Effect.as({ receipts: [], nextCursor: 0 }),
       ),
   } as unknown as IssueService["Service"]),
-  Layer.succeed(IssueDelivery, {} as IssueDelivery["Service"]),
+  Layer.succeed(IssueDelivery, {
+    deliver: () => Effect.die("delivery must not run for this caller"),
+  } as unknown as IssueDelivery["Service"]),
   Layer.succeed(IssuePeerAccess, {} as IssuePeerAccess["Service"]),
   Layer.succeed(OpenWorkService, {} as OpenWorkService["Service"]),
 );
@@ -118,6 +120,27 @@ describe("Satellite RPC registration", () => {
         { after: 4, sourceEnvironmentId: "board-environment" },
       ]);
       const denied = yield* client[WS_METHODS.ideasList]({}).pipe(Effect.flip);
+      assert.strictEqual(denied._tag, "EnvironmentAuthorizationError");
+    }).pipe(Effect.scoped, Effect.provide(services)),
+  );
+
+  it.effect("refuses a read-only session that asks for outbound delivery", () =>
+    Effect.gen(function* () {
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (tag): tag is Exclude<RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"], SatelliteWsRpcMethod> =>
+            WsCoreRpcGroup.requests.has(tag),
+        ),
+      );
+      const makeLayer = yield* SatelliteWsRpc.makeConnectionLayer;
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(makeLayer(session), RpcAuthorization.layer([AuthOrchestrationReadScope])),
+        ),
+      );
+      const denied = yield* client[WS_METHODS.issuesDeliveriesDeliver]({ boardId: "board" }).pipe(
+        Effect.flip,
+      );
       assert.strictEqual(denied._tag, "EnvironmentAuthorizationError");
     }).pipe(Effect.scoped, Effect.provide(services)),
   );

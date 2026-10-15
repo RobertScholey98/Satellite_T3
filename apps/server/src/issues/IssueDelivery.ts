@@ -229,26 +229,37 @@ export const make = Effect.gen(function* () {
       Effect.catchCause((cause) => Effect.logWarning("issue delivery round failed", { cause })),
     );
 
-  const roundDuePeers = Effect.gen(function* () {
+  const roundDuePeers: Effect.Effect<void> = Effect.gen(function* () {
     const nowMs = yield* Clock.currentTimeMillis;
     const rows = yield* sql<{
       destination_environment_id: EnvironmentId;
-      credential_expires_at: string;
-    }>`SELECT destination_environment_id,credential_expires_at FROM issue_delivery_peers
+    }>`SELECT destination_environment_id FROM issue_delivery_peers
       WHERE next_attempt_at<=${nowMs} AND state<>'expired'`;
     if (rows.length === 0) return;
     // A destination with no unfinished work stays idle until a start or a manual delivery.
     const unfinished = yield* issues.unfinishedDestinations;
     for (const row of rows)
       if (unfinished.has(row.destination_environment_id))
-        yield* round(row.destination_environment_id);
+        yield* requestRound(row.destination_environment_id);
   }).pipe(
     Effect.catchCause((cause) => Effect.logWarning("issue delivery schedule failed", { cause })),
   );
 
+  // At most one queued or running round per destination, however often delivery is requested.
+  const requested = new Set<EnvironmentId>();
   const worker = yield* makeDrainableWorker((work: DeliveryWork) =>
-    work._tag === "due" ? roundDuePeers : round(work.destination),
+    work._tag === "due"
+      ? roundDuePeers
+      : round(work.destination).pipe(
+          Effect.ensuring(Effect.sync(() => requested.delete(work.destination))),
+        ),
   );
+  const requestRound = (destination: EnvironmentId) =>
+    Effect.suspend(() => {
+      if (requested.has(destination)) return Effect.void;
+      requested.add(destination);
+      return worker.enqueue({ _tag: "peer", destination });
+    });
 
   const registerPeer: IssueDelivery["Service"]["registerPeer"] = (input) =>
     protect(
@@ -272,7 +283,7 @@ export const make = Effect.gen(function* () {
             public_key=excluded.public_key,credential_expires_at=excluded.credential_expires_at,
             preferred_endpoint=NULL,state='pending',last_error=NULL,failures=0,next_attempt_at=0`;
         yield* issues.publishDeliveries(input.destinationEnvironmentId);
-        yield* worker.enqueue({ _tag: "peer", destination: input.destinationEnvironmentId });
+        yield* requestRound(input.destinationEnvironmentId);
       }),
     );
 
@@ -313,8 +324,7 @@ export const make = Effect.gen(function* () {
             .filter((attempt) => attempt.link.destinationEnvironmentId !== environmentId)
             .map((attempt) => attempt.link.destinationEnvironmentId),
         );
-        for (const destination of destinations)
-          yield* worker.enqueue({ _tag: "peer", destination });
+        for (const destination of destinations) yield* requestRound(destination);
       }),
     );
 

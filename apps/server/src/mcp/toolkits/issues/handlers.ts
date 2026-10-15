@@ -7,7 +7,7 @@ import { IssuesToolkit } from "./tools.ts";
 const make = Effect.gen(function* () {
   const delivery = yield* IssueDelivery;
   return {
-    deliver_issue_updates: McpToolAccess.reads((input) => delivery.deliver(input)),
+    deliver_issue_updates: McpToolAccess.writes((input) => delivery.deliver(input)),
   } satisfies McpToolAccess.Handlers<typeof IssuesToolkit.tools>;
 });
 
