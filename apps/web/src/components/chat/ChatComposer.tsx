@@ -239,6 +239,7 @@ import {
 import { matchComposerThreadItems } from "@t3tools/client-runtime/composerThreadItems";
 import { THREAD_CONTEXT_DROP_EVENT, threadContextDropTargetProps } from "./threadContextDrag";
 import { readThreadShell, useThreadShells } from "~/state/entities";
+import { useThreadUserMessages } from "~/state/threadViewModel";
 import { requestConfirmDialog } from "~/confirmDialog";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import type { ComposerContextClipboardFragment, ComposerContextRecord } from "@t3tools/contracts";
@@ -1094,14 +1095,7 @@ import {
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
-import {
-  isVideoAttachment,
-  type ChatMessage,
-  type SessionPhase,
-  type Thread,
-  type ThreadShell,
-  videoMimeType,
-} from "../../types";
+import { isVideoAttachment, type SessionPhase, type ThreadShell, videoMimeType } from "../../types";
 import {
   buildComposerPromptHistoryEntries,
   stepComposerPromptHistory,
@@ -1525,11 +1519,10 @@ export interface ChatComposerProps {
   // Thread context
   activeThreadId: ThreadId | null;
   activeThreadEnvironmentId: EnvironmentId | undefined;
-  activeThread: Thread | undefined;
+  /** The provider instance the thread's session runs on, once it has one. */
+  activeThreadProviderInstanceId: ProviderInstanceId | null;
   /** The routed server thread's shell, present before its detail loads. */
   activeThreadShell: ThreadShell | null;
-  /** Timeline messages including optimistic sends, for ArrowUp prompt recall. */
-  promptHistoryMessages: ReadonlyArray<ChatMessage>;
   isServerThread: boolean;
   isLocalDraftThread: boolean;
   forceExpandedOnMobile: boolean;
@@ -1714,8 +1707,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onMultipleModelSelectionsChange: setMultipleModelSelections,
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
-    activeThread,
-    promptHistoryMessages,
+    activeThreadProviderInstanceId,
     isServerThread: _isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     forceExpandedOnMobile,
@@ -2109,17 +2101,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         entries: providerInstanceEntries,
         candidateInstanceIds: [
           selectedProviderByThreadId,
-          activeThread?.runtime?.providerInstanceId,
+          activeThreadProviderInstanceId,
           activeThreadModelSelection?.instanceId,
           activeProjectDefaultModelSelection?.instanceId,
         ],
         lockedProvider,
-        lockedInstanceId:
-          activeThread?.runtime?.providerInstanceId ?? activeThreadModelSelection?.instanceId,
+        lockedInstanceId: activeThreadProviderInstanceId ?? activeThreadModelSelection?.instanceId,
       }),
     [
       activeProjectDefaultModelSelection?.instanceId,
-      activeThread?.runtime?.providerInstanceId,
+      activeThreadProviderInstanceId,
       activeThreadModelSelection?.instanceId,
       selectedProviderByThreadId,
       lockedProvider,
@@ -3140,12 +3131,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (records.length === 0) return null;
       return encodeComposerContextFragment({
         version: 1,
-        source: { environmentId, ...(activeThread ? { threadId: activeThread.id } : {}) },
+        source: { environmentId, ...(activeThreadId ? { threadId: activeThreadId } : {}) },
         records,
       });
     },
     [
-      activeThread,
+      activeThreadId,
       composerFiles,
       composerImages,
       composerPreviewAnnotations,
@@ -3306,7 +3297,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         const conflicts = existing !== undefined;
         switch (record.kind) {
           case "terminal": {
-            const threadId = activeThread?.id ?? activeThreadId;
+            const threadId = activeThreadId;
             if (!threadId) break;
             const imported = terminalContextDraftFromRecord(record, threadId);
             const draft = conflicts ? { ...imported, id: randomUUID() } : imported;
@@ -3370,7 +3361,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return rewritten;
     },
     [
-      activeThread,
       activeThreadId,
       addComposerDraftPreviewAnnotation,
       addComposerDraftReviewComment,
@@ -4338,6 +4328,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Entries are built on the keypress, not per render: the timeline changes
   // on every streamed delta and ArrowUp is rare.
+  const promptHistoryMessages = useThreadUserMessages(routeThreadRef);
   const promptHistoryMessagesRef = useRef(promptHistoryMessages);
   promptHistoryMessagesRef.current = promptHistoryMessages;
 
@@ -6446,11 +6437,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         );
       },
       addTerminalContext: (selection: TerminalContextSelection) => {
-        if (!activeThread || isChoiceOnlyPendingQuestion) return;
+        if (!activeThreadId || isChoiceOnlyPendingQuestion) return;
         const snapshot = readComposerSnapshot();
         const context = {
           id: randomUUID(),
-          threadId: activeThread.id,
+          threadId: activeThreadId,
           createdAt: new Date().toISOString(),
           ...selection,
         };
@@ -6519,7 +6510,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       },
     }),
     [
-      activeThread,
+      activeThreadId,
       addComposerAttachments,
       foldPastedText,
       composerDraftTarget,

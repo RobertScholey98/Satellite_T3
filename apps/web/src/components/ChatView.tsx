@@ -38,7 +38,6 @@ import {
 } from "@t3tools/shared/usageLimits";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { usageLimitsBannerItem } from "./chat/ComposerUsageLimits";
-import { threadRequestActivities } from "@t3tools/client-runtime/pending-requests";
 import { presentThreadProjectionShell } from "@t3tools/client-runtime/state/shell";
 import { PendingRequestDelivery } from "./chat/PendingRequestDelivery";
 import {
@@ -46,8 +45,6 @@ import {
   createPendingSubmission,
   isPendingDelivery,
   pendingRequestKey,
-  pendingThreadKey,
-  prioritizePendingRequests,
   recordPendingCommandResult,
   usePendingRequestStore,
 } from "../pendingRequestStore";
@@ -129,7 +126,13 @@ import {
   type CodexFeedbackSubmission,
 } from "@t3tools/client-runtime/state/threads";
 import { resolveThreadLastVisitedAt } from "./Sidebar.logic";
-import { derivePendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
+import {
+  useThreadContextWindow,
+  useThreadPendingRequests,
+  useThreadRequestActivities,
+  useThreadUserMessages,
+} from "../state/threadViewModel";
+import { useStableCallback } from "../hooks/useStableCallback";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -206,8 +209,6 @@ import {
   parseStandaloneComposerSlashCommand,
 } from "../composer-logic";
 import {
-  derivePendingApprovals,
-  derivePendingUserInputs,
   derivePhase,
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
   selectHandoffImageResources,
@@ -514,7 +515,6 @@ import {
   hasDismissedResumeCompaction,
   shouldOfferResumeCompaction,
 } from "./chat/ContextWindowMeter.logic";
-import { deriveLatestContextWindowSnapshot } from "../lib/contextWindow";
 import {
   DRAFT_HERO_TRANSITION_ANIMATION_ID,
   DRAFT_HERO_TRANSITION_EASING,
@@ -1759,10 +1759,8 @@ export default function ChatView(props: ChatViewProps) {
         : null),
     [routeServerThreadShell, isIdea, environmentId, serverProjection],
   );
-  const threadActivities = useMemo(
-    () => (serverProjection ? threadRequestActivities(serverProjection) : []),
-    [serverProjection],
-  );
+  const threadActivities = useThreadRequestActivities(routeThreadDetailRef);
+  const threadUserMessages = useThreadUserMessages(routeThreadDetailRef);
   const reportedModelSelection = serverProjection
     ? deriveReportedModelSelection(serverProjection)
     : null;
@@ -1773,17 +1771,6 @@ export default function ChatView(props: ChatViewProps) {
     status: threadStatus,
   });
   const threadDetailLoading = threadSyncPhase === "loading";
-  // Latest provider-reported context usage (#8144): the newest turn that has
-  // a report wins; stale turns keep the meter alive between turns.
-  const activeThreadLiveTokenUsage = useMemo(() => {
-    const turns = serverProjection?.providerTurns;
-    if (!turns || turns.length === 0) return null;
-    for (let index = turns.length - 1; index >= 0; index -= 1) {
-      const usage = turns[index]?.tokenUsage;
-      if (usage !== undefined) return usage;
-    }
-    return null;
-  }, [serverProjection?.providerTurns]);
   const serverVisibleTurnItems = useThreadVisibleTurnItems(routeThreadDetailRef);
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
   const threadHistoryControls = useMemo<MessagesTimelineHistoryControls | undefined>(() => {
@@ -3347,33 +3334,11 @@ export default function ChatView(props: ChatViewProps) {
     conversationProviderStatus !== null &&
     conversationProviderStatus.supportsConversationRollback !== false;
   const phase = derivePhase(activeRuntime);
-  const pendingRequests = useMemo(
-    () =>
-      serverProjection === null
-        ? { approvals: [], userInputs: [] }
-        : derivePendingThreadRequests(serverProjection),
-    [serverProjection],
-  );
-  const requests = useMemo(
-    () => ({
-      approvals: derivePendingApprovals(pendingRequests.approvals),
-      userInputs: derivePendingUserInputs(pendingRequests.userInputs),
-    }),
-    [pendingRequests],
-  );
-  const selectedRequest = usePendingRequestStore((state) =>
-    activeThreadId
-      ? state.threadSelections[pendingThreadKey({ environmentId, threadId: activeThreadId })]
-      : undefined,
-  );
   const {
     approvals: pendingApprovals,
     userInputs: pendingUserInputs,
     activeApproval: activePendingApproval,
-  } = useMemo(
-    () => prioritizePendingRequests(requests, selectedRequest),
-    [requests, selectedRequest],
-  );
+  } = useThreadPendingRequests(routeThreadDetailRef);
   const activePendingUserInput = pendingUserInputs[0] ?? null;
   const activePendingRequestKey =
     activePendingUserInput && activeThreadId
@@ -3752,17 +3717,7 @@ export default function ChatView(props: ChatViewProps) {
     isConnecting ||
     isCompacting ||
     runlessWorkStartedAt !== null;
-  const activeContextWindow = useMemo(
-    () =>
-      deriveLatestContextWindowSnapshot(
-        serverVisibleTurnItems ?? [],
-        activeThreadLiveTokenUsage,
-        serverProjection?.providerThreads.find(
-          (thread) => thread.id === serverProjection.thread.activeProviderThreadId,
-        ),
-      ),
-    [activeThreadLiveTokenUsage, serverVisibleTurnItems, serverProjection],
-  );
+  const activeContextWindow = useThreadContextWindow(routeThreadDetailRef);
   const pendingBackgroundTasks = useMemo(() => {
     if (serverProjection === null || serverProjection === undefined) {
       return [];
@@ -4800,8 +4755,7 @@ export default function ChatView(props: ChatViewProps) {
         messageId: request.messageId,
         originalText: request.text,
         existingAttachments: request.attachments,
-        context: serverProjection?.messages.find((message) => message.id === request.messageId)
-          ?.context,
+        context: threadUserMessages.find((message) => message.id === request.messageId)?.context,
       });
       scheduleComposerFocus();
     },
@@ -4810,7 +4764,7 @@ export default function ChatView(props: ChatViewProps) {
       clearComposerDraftContent,
       editingQueuedRun,
       queuedEditDraftTargetFor,
-      serverProjection,
+      threadUserMessages,
       scheduleComposerFocus,
       setComposerDraftPrompt,
     ],
@@ -4838,6 +4792,41 @@ export default function ChatView(props: ChatViewProps) {
           },
     );
   }, []);
+  // The composer is memoized; everything below keeps its identity while a
+  // response streams so the composer renders only for its own changes.
+  const queuedRunsControl = useMemo(
+    () =>
+      isServerThread && activeThread ? (
+        <QueuedRunsControl
+          ref={queuedRunsControlRef}
+          steerShortcutLabel={shortcutLabelForCommand(keybindings, "thread.steerQueuedMessage", {
+            context: { terminalFocus: false },
+          })}
+          editShortcutLabel={shortcutLabelForCommand(keybindings, "thread.editQueuedMessage", {
+            context: { composerFocus: true },
+          })}
+          environmentId={activeThread.environmentId}
+          threadId={activeThread.id}
+          optimisticMessages={optimisticUserMessages}
+          editingRunId={editingQueuedRun?.runId ?? null}
+          onEditQueuedRun={beginEditingQueuedRun}
+          onCancelEdit={cancelEditingQueuedRun}
+        />
+      ) : null,
+    [
+      activeThread,
+      beginEditingQueuedRun,
+      cancelEditingQueuedRun,
+      editingQueuedRun?.runId,
+      isServerThread,
+      keybindings,
+      optimisticUserMessages,
+    ],
+  );
+  const composerRespondingRequestIds = useMemo(
+    () => [...respondingRequestIds, ...pendingApprovalDelivery],
+    [pendingApprovalDelivery, respondingRequestIds],
+  );
   // Exit edit mode when the edited run leaves the queue (it started, or was
   // cancelled from another client). A dirty edit moves into the thread's own
   // draft when that draft is empty; otherwise it is dropped with a toast.
@@ -10849,6 +10838,10 @@ export default function ChatView(props: ChatViewProps) {
     composerRef,
   ]);
 
+  // Read while rendering the model picker, so it depends on the runtime's
+  // fields rather than the runtime object a streaming delta replaces.
+  const hasStartedSession = activeRuntime !== null;
+  const activeRuntimeProviderInstanceId = activeRuntime?.providerInstanceId ?? null;
   const getModelDisabledReason = useCallback(
     (instanceId: ProviderInstanceId, model: string): string | null => {
       if (!activeThread) {
@@ -10856,15 +10849,21 @@ export default function ChatView(props: ChatViewProps) {
       }
       const reason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
-        hasStartedSession: activeRuntime !== null,
+        hasStartedSession,
         supportsProviderSwitchingViaHandoff,
         currentModelSelection: activeThread.modelSelection,
-        currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
+        currentProviderInstanceId: activeRuntimeProviderInstanceId,
         nextModelSelection: { instanceId, model },
       });
       return reason ? `${reason.description} Start a new thread to use this model.` : null;
     },
-    [activeRuntime, activeThread, providerStatuses, supportsProviderSwitchingViaHandoff],
+    [
+      activeRuntimeProviderInstanceId,
+      activeThread,
+      hasStartedSession,
+      providerStatuses,
+      supportsProviderSwitchingViaHandoff,
+    ],
   );
 
   const onProviderModelSelect = useCallback(
@@ -10960,6 +10959,10 @@ export default function ChatView(props: ChatViewProps) {
       settings,
     ],
   );
+  const stableOnSend = useStableCallback(onSend);
+  const stableOnResume = useStableCallback(onResume);
+  const stableOnCompactContext = useStableCallback(onCompactContext);
+  const stableOnProviderModelSelect = useStableCallback(onProviderModelSelect);
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (multipleModelSelections !== null) return;
@@ -11802,9 +11805,10 @@ export default function ChatView(props: ChatViewProps) {
                               draftId={draftId}
                               activeThreadId={activeThreadId}
                               activeThreadEnvironmentId={activeThread?.environmentId}
-                              activeThread={activeThread}
+                              activeThreadProviderInstanceId={
+                                activeThread?.runtime?.providerInstanceId ?? null
+                              }
                               activeThreadShell={activeThreadShell}
-                              promptHistoryMessages={timelineMessages}
                               isServerThread={isServerThread}
                               isLocalDraftThread={isLocalDraftThread}
                               forceExpandedOnMobile={
@@ -11835,29 +11839,7 @@ export default function ChatView(props: ChatViewProps) {
                                             : projectCloneSendBlockReason
                               }
                               isPreparingWorktree={isPreparingWorktree}
-                              queuedRunsControl={
-                                isServerThread && activeThread ? (
-                                  <QueuedRunsControl
-                                    ref={queuedRunsControlRef}
-                                    steerShortcutLabel={shortcutLabelForCommand(
-                                      keybindings,
-                                      "thread.steerQueuedMessage",
-                                      { context: { terminalFocus: false } },
-                                    )}
-                                    editShortcutLabel={shortcutLabelForCommand(
-                                      keybindings,
-                                      "thread.editQueuedMessage",
-                                      { context: { composerFocus: true } },
-                                    )}
-                                    environmentId={activeThread.environmentId}
-                                    threadId={activeThread.id}
-                                    optimisticMessages={optimisticUserMessages}
-                                    editingRunId={editingQueuedRun?.runId ?? null}
-                                    onEditQueuedRun={beginEditingQueuedRun}
-                                    onCancelEdit={cancelEditingQueuedRun}
-                                  />
-                                ) : null
-                              }
+                              queuedRunsControl={queuedRunsControl}
                               bannerItems={composerBannerItems}
                               resumeCompactionTokens={resumeCompactionTokens}
                               onSendWithFullHistory={sendWithFullHistory}
@@ -11879,10 +11861,7 @@ export default function ChatView(props: ChatViewProps) {
                               activePendingIsResponding={activePendingIsResponding}
                               activePendingDraftAnswers={activePendingDraftAnswers}
                               activePendingQuestionIndex={activePendingQuestionIndex}
-                              respondingRequestIds={[
-                                ...respondingRequestIds,
-                                ...pendingApprovalDelivery,
-                              ]}
+                              respondingRequestIds={composerRespondingRequestIds}
                               showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                               activeProposedPlan={activeProposedPlan}
                               threadSyncPhase={
@@ -11932,9 +11911,9 @@ export default function ChatView(props: ChatViewProps) {
                               onPageScrollKeyDown={onComposerPageScrollKeyDown}
                               onPageScrollKeyUp={onComposerPageScrollKeyUp}
                               onPageScrollRelease={onComposerPageScrollRelease}
-                              onCompactContext={onCompactContext}
-                              onSend={onSend}
-                              onResume={onResume}
+                              onCompactContext={stableOnCompactContext}
+                              onSend={stableOnSend}
+                              onResume={stableOnResume}
                               onInterrupt={onInterrupt}
                               onImplementPlanInNewThread={onImplementPlanInNewThread}
                               onRespondToApproval={onRespondToApproval}
@@ -11949,7 +11928,7 @@ export default function ChatView(props: ChatViewProps) {
                               onChangeActivePendingUserInputCustomAnswer={
                                 onChangeActivePendingUserInputCustomAnswer
                               }
-                              onProviderModelSelect={onProviderModelSelect}
+                              onProviderModelSelect={stableOnProviderModelSelect}
                               onOpenProviderSetup={openProviderSetup}
                               getModelDisabledReason={getModelDisabledReason}
                               toggleInteractionMode={toggleInteractionMode}
