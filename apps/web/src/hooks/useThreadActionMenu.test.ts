@@ -227,3 +227,84 @@ describe("thread menu permissions", () => {
     expect(state.effects).toEqual([effect]);
   });
 });
+
+describe("one registry for every thread menu", () => {
+  const leafIds = (items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>): string[] =>
+    items.flatMap((item) => (item.children ? leafIds(item.children) : [item.id]));
+
+  it("gives the sidebar, legacy sidebar and header the same actions for one thread", () => {
+    state.granted = new Set(["secondary"]);
+    const header = useThreadActionMenu({ startRename: () => {} }).readMenuItems(target);
+    const legacySidebar = useThreadActionMenu({
+      startRename: () => {},
+      openProjectSettings: () => {},
+    }).readMenuItems(target);
+    const sidebar = useThreadActionMenu({
+      startRename: () => {},
+      settle: () => {},
+      snooze: () => {},
+      openProjectSettings: () => {},
+      projectFilter: { read: () => ({ label: "Web", isActive: false }), toggle: () => {} },
+    }).readMenuItems(target);
+
+    const shared = [
+      "new-thread-on-branch",
+      "pin",
+      "settle",
+      "snooze:hour",
+      "snooze:custom",
+      "rename",
+      "regenerate-title",
+      "mark-unread",
+      "auto-settle:enabled",
+      "auto-settle:disabled",
+      "copy-path",
+      "copy-branch",
+      "copy-thread-id",
+      "project-settings",
+      "archive",
+      "delete",
+    ];
+    expect(leafIds(header)).toEqual(shared);
+    expect(leafIds(legacySidebar)).toEqual(shared);
+    expect(leafIds(sidebar)).toEqual([
+      ...shared.slice(0, shared.indexOf("mark-unread") + 1),
+      "filter-by-project",
+      ...shared.slice(shared.indexOf("mark-unread") + 1),
+    ]);
+  });
+
+  it("routes filter-by-project to the sidebar's scope control", async () => {
+    state.granted = new Set(["secondary"]);
+    const toggled: string[] = [];
+    state.show.mockResolvedValue("filter-by-project");
+    useThreadActionMenu({
+      startRename: () => {},
+      projectFilter: {
+        read: () => ({ label: "Web", isActive: false }),
+        toggle: (threadRef) => {
+          toggled.push(threadRef.threadId);
+          state.completed.resolve();
+        },
+      },
+    }).openMenu(target, position);
+    await state.completed.promise;
+    expect(toggled).toEqual(["thread"]);
+  });
+
+  it("lets the sidebar park a thread its own way", async () => {
+    state.granted = new Set(["secondary"]);
+    const parked: string[] = [];
+    state.show.mockResolvedValue("settle");
+    useThreadActionMenu({
+      startRename: () => {},
+      settle: (threadRef) => {
+        parked.push(threadRef.threadId);
+        state.completed.resolve();
+      },
+    }).openMenu(target, position);
+    await state.completed.promise;
+    expect(parked).toEqual(["thread"]);
+    expect(state.effects).toEqual([]);
+  });
+});

@@ -68,12 +68,29 @@ function failureToast(title: string, error: unknown) {
 export interface ThreadActionSurface {
   /** Opens this surface's inline title editor. Committing goes through `renameThread`. */
   readonly startRename: (threadRef: ScopedThreadRef) => void;
+  /**
+   * The sidebar parks a thread and moves the reader to the next card; other
+   * surfaces leave settle and snooze to the module, which stays put.
+   */
+  readonly settle?: (threadRef: ScopedThreadRef) => void;
+  readonly snooze?: (threadRef: ScopedThreadRef, snoozedUntil: string) => void;
+  /** Replaces the module's navigation, for sidebars that close their mobile sheet first. */
+  readonly openProjectSettings?: (threadRef: ScopedThreadRef) => void;
+  /** Only a surface with a project-scoped thread list offers "Filter by project". */
+  readonly projectFilter?: {
+    readonly read: (threadRef: ScopedThreadRef) => ThreadActionMenuState["projectFilter"];
+    readonly toggle: (threadRef: ScopedThreadRef) => void;
+  };
 }
 
 /** Snapshot of everything the thread action registry decides availability from. */
 export function readThreadActionMenuState(
   threadRef: ScopedThreadRef,
-  options: { readonly now: Date; readonly timestampFormat: TimestampFormat },
+  options: {
+    readonly now: Date;
+    readonly timestampFormat: TimestampFormat;
+    readonly projectFilter?: ThreadActionMenuState["projectFilter"];
+  },
 ): ThreadActionMenuState | null {
   const thread = readThreadShell(threadRef);
   if (!thread) return null;
@@ -88,7 +105,7 @@ export function readThreadActionMenuState(
   return {
     canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
     branch: thread.branch ?? null,
-    projectFilter: null,
+    projectFilter: options.projectFilter ?? null,
     isPinned: thread.pinnedAt != null,
     isSettled: supports.settlement && thread.settledOverride === "settled",
     autoSettleEnabled: thread.autoSettleDisabledAt == null,
@@ -138,11 +155,17 @@ export function useThreadRenameRequest(
  * thread actions (context menus, the command palette, keybindings) lists them
  * from `buildThreadActionMenuItems` and runs them here.
  *
- * Settle and snooze never navigate away: the caller is acting on the thread
- * they are reading, and ChatView's parked-thread banner already offers the
- * way back.
+ * Unless the surface parks threads itself, settle and snooze never navigate
+ * away: the caller is acting on the thread they are reading, and ChatView's
+ * parked-thread banner already offers the way back.
  */
-export function useThreadActionMenu({ startRename }: ThreadActionSurface) {
+export function useThreadActionMenu({
+  startRename,
+  settle,
+  snooze,
+  openProjectSettings,
+  projectFilter,
+}: ThreadActionSurface) {
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -196,10 +219,14 @@ export function useThreadActionMenu({ startRename }: ThreadActionSurface) {
 
   const readMenuItems = useCallback(
     (threadRef: ScopedThreadRef): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> => {
-      const state = readThreadActionMenuState(threadRef, { now: new Date(), timestampFormat });
+      const state = readThreadActionMenuState(threadRef, {
+        now: new Date(),
+        timestampFormat,
+        projectFilter: projectFilter?.read(threadRef) ?? null,
+      });
       return state ? buildThreadActionMenuItems(state) : [];
     },
-    [timestampFormat],
+    [projectFilter, timestampFormat],
   );
 
   const runAction = useCallback(
@@ -225,6 +252,10 @@ export function useThreadActionMenu({ startRename }: ThreadActionSurface) {
                 (candidate) => `snooze:${candidate.id}` === action,
               );
         if (!preset) return;
+        if (snooze) {
+          snooze(threadRef, preset.snoozedUntil);
+          return;
+        }
         const result = await snoozeThread(threadRef, preset.snoozedUntil);
         if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
           failureToast("Failed to snooze thread", squashAtomCommandFailure(result));
@@ -241,7 +272,14 @@ export function useThreadActionMenu({ startRename }: ThreadActionSurface) {
         }
       };
       switch (action) {
+        case "filter-by-project":
+          projectFilter?.toggle(threadRef);
+          return;
         case "project-settings": {
+          if (openProjectSettings) {
+            openProjectSettings(threadRef);
+            return;
+          }
           const project = projects.find(
             (candidate) =>
               candidate.environmentId === thread.environmentId && candidate.id === thread.projectId,
@@ -273,6 +311,10 @@ export function useThreadActionMenu({ startRename }: ThreadActionSurface) {
           return;
         }
         case "settle":
+          if (settle) {
+            settle(threadRef);
+            return;
+          }
           await reportFailure("Failed to settle thread", () => settleThread(threadRef));
           return;
         case "unsettle":
@@ -396,13 +438,17 @@ export function useThreadActionMenu({ startRename }: ThreadActionSurface) {
       handleNewThread,
       logicalProjectKeyByPhysicalKey,
       markThreadUnread,
+      openProjectSettings,
       pinThread,
+      projectFilter,
       projectGroupingSettings,
       projects,
       regenerateThreadTitle,
       router,
       setThreadAutoSettle,
+      settle,
       settleThread,
+      snooze,
       snoozeThread,
       startRename,
       timestampFormat,
