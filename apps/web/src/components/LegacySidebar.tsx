@@ -1138,7 +1138,6 @@ interface SidebarProjectItemProps {
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   markThreadUnread: ReturnType<typeof useThreadActions>["markThreadUnread"];
-  renameThread: ReturnType<typeof useThreadActions>["renameThread"];
   threadJumpLabelByKey: ReadonlyMap<string, string>;
   attachThreadListAutoAnimateRef: (node: HTMLElement | null) => void;
   expandThreadListForProject: (projectKey: string) => void;
@@ -1161,7 +1160,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     archiveThread,
     deleteThread,
     markThreadUnread,
-    renameThread,
     threadJumpLabelByKey,
     attachThreadListAutoAnimateRef,
     expandThreadListForProject,
@@ -2121,6 +2119,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     [archiveThread],
   );
 
+  const { openMenu: openThreadActionMenu, renameThread } = useThreadActionMenu();
   const cancelRename = useCallback(() => {
     setRenamingThreadKey(null);
     renamingInputRef.current = null;
@@ -2237,7 +2236,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       params: { projectKey: project.projectKey },
     });
   }, [isMobile, project.projectKey, router, setOpenMobile]);
-  const { openMenu: openThreadActionMenu } = useThreadActionMenu();
   const handleThreadContextMenu = useCallback(
     (threadRef: ScopedThreadRef, position: { x: number; y: number }) =>
       openThreadActionMenu(threadRef, position, {
@@ -2790,7 +2788,6 @@ interface SidebarProjectsContentProps {
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   markThreadUnread: ReturnType<typeof useThreadActions>["markThreadUnread"];
-  renameThread: ReturnType<typeof useThreadActions>["renameThread"];
   sortedProjects: readonly SidebarProjectSnapshot[];
   expandedThreadListsByProject: ReadonlySet<string>;
   activeRouteProjectKey: string | null;
@@ -2834,7 +2831,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     archiveThread,
     deleteThread,
     markThreadUnread,
-    renameThread,
     sortedProjects,
     expandedThreadListsByProject,
     activeRouteProjectKey,
@@ -2978,7 +2974,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         archiveThread={archiveThread}
                         deleteThread={deleteThread}
                         markThreadUnread={markThreadUnread}
-                        renameThread={renameThread}
                         threadJumpLabelByKey={threadJumpLabelByKey}
                         attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
                         expandThreadListForProject={expandThreadListForProject}
@@ -3013,7 +3008,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 archiveThread={archiveThread}
                 deleteThread={deleteThread}
                 markThreadUnread={markThreadUnread}
-                renameThread={renameThread}
                 threadJumpLabelByKey={threadJumpLabelByKey}
                 attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
                 expandThreadListForProject={expandThreadListForProject}
@@ -3049,7 +3043,7 @@ export default function LegacySidebar() {
   const sidebarThreadPreviewCount = useClientSettings((s) => s.sidebarThreadPreviewCount);
   const updateSettings = useUpdateClientSettings();
   const handleNewThread = useNewThreadHandler();
-  const { archiveThread, deleteThread, markThreadUnread, renameThread } = useThreadActions();
+  const { archiveThread, deleteThread, markThreadUnread } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeTarget = useParams({
     strict: false,
@@ -3702,7 +3696,6 @@ export default function LegacySidebar() {
         archiveThread={archiveThread}
         deleteThread={deleteThread}
         markThreadUnread={markThreadUnread}
-        renameThread={renameThread}
         sortedProjects={sortedProjects}
         expandedThreadListsByProject={expandedThreadListsByProject}
         activeRouteProjectKey={activeRouteProjectKey}
