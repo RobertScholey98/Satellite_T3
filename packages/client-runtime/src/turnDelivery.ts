@@ -276,7 +276,7 @@ export async function deliverTurn<A extends TurnAttachmentDraft>(
 }
 
 /** The issue-start guards, checked before any command is sent. */
-export function validateTurnDelivery(
+function validateTurnDelivery(
   request: TurnDeliveryRequest<TurnAttachmentDraft>,
 ): TurnDeliveryInvalidReason | null {
   const issue = request.issue;
