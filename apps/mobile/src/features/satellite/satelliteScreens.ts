@@ -5,6 +5,7 @@ import {
 
 import { ThreadDocumentsScreen } from "../documents/ThreadDocumentsScreen";
 import { IdeaRouteScreen, IdeasRouteScreen } from "../ideas/IdeasRouteScreen";
+import { ProjectIssuesRouteScreen } from "./issues/ProjectIssuesRouteScreen";
 
 /** Satellite's root stack screens. The root stack spreads them into its screen list. */
 export function satelliteScreens(input: {
@@ -21,6 +22,11 @@ export function satelliteScreens(input: {
       screen: IdeaRouteScreen,
       linking: "ideas/:environmentId/:threadId",
       options: input.headerOptions,
+    }),
+    ProjectIssues: createNativeStackScreen({
+      screen: ProjectIssuesRouteScreen,
+      linking: "issues/:environmentId/:projectId",
+      options: { ...input.headerOptions, title: "Issues" },
     }),
     ThreadDocuments: createNativeStackScreen({
       screen: ThreadDocumentsScreen,

@@ -24,6 +24,12 @@ your instructions. The ticket moves into progress after the worktree is ready
 and the agent receives the prompt. Returning tickets offer **Continue existing**;
 choose **New attempt** to keep the previous work and start another thread.
 
+In the mobile app, filter the thread list to a project to see **Ready issues** when that
+project has a connected board. Tap a ticket, keep or change the worktree name, and choose
+**Start**. The new worktree branches from the branch checked out in the project. The work
+queues like any new task, so it starts once the computer is reachable, even if you went
+offline after you chose **Start**.
+
 Dragging a ticket updates the remote board. Automatic moves happen on new work
 events, so refreshing does not undo a manual move. A draft or ready pull request
 moves the active attempt into In PR. The newest linked pull request controls
