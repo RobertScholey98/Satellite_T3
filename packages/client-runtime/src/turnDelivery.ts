@@ -35,8 +35,29 @@ export interface TurnDeliveryCommands {
   readonly startTurn: EnvironmentCommand<StartThreadTurnInput>;
 }
 
-export interface TurnDeliveryServices {
+/** A composer attachment before it reaches the environment. */
+export interface TurnAttachmentDraft {
+  readonly id: string;
+  readonly type: "image" | "file";
+}
+
+/** How a client puts its composer attachments on the wire. */
+export interface TurnAttachmentAdapter<A extends TurnAttachmentDraft> {
+  /**
+   * Resolves the wire attachments in input order. With `upload` the bytes go through the
+   * environment's upload endpoint; without it only images arrive, to be sent inline as data URLs.
+   * "abandoned" means the attachments' owner no longer wants this send.
+   */
+  readonly prepare: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly attachments: ReadonlyArray<A>;
+    readonly upload: boolean;
+  }) => Promise<ReadonlyArray<ChatAttachment | UploadChatAttachment> | "abandoned">;
+}
+
+export interface TurnDeliveryServices<A extends TurnAttachmentDraft> {
   readonly commands: TurnDeliveryCommands;
+  readonly attachments: TurnAttachmentAdapter<A>;
   /** The environment as its server last described it. Read at the step that needs it. */
   readonly environment: (
     environmentId: EnvironmentId,
@@ -50,7 +71,7 @@ export interface ThreadSettings {
   readonly interactionMode: ProviderInteractionMode;
 }
 
-export interface TurnDeliveryRequest {
+export interface TurnDeliveryRequest<A extends TurnAttachmentDraft> {
   readonly environmentId: EnvironmentId;
   /** The start command without its message. `createdAt` also stamps the settings commands. */
   readonly turn: Omit<StartThreadTurnInput, "message"> & { readonly createdAt: string };
@@ -58,8 +79,9 @@ export interface TurnDeliveryRequest {
     readonly messageId: MessageId;
     /** Canonical prose with inline context links. */
     readonly text: string;
+    /** Records bind attachments by their draft id. */
     readonly context?: OrchestrationMessageContext;
-    readonly attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>;
+    readonly attachments: ReadonlyArray<A>;
   };
   /** Present for an existing thread: runtime and interaction modes that differ are synced first. */
   readonly thread?: ThreadSettings;
@@ -71,10 +93,11 @@ export interface TurnDeliveryRequest {
   readonly onDispatching?: (message: { readonly text: string }) => void | Promise<void>;
 }
 
-export type TurnDeliveryStage = "settings" | "dispatch";
+export type TurnDeliveryStage = "settings" | "attachments" | "dispatch";
 
 export type TurnDeliveryResult =
   | { readonly _tag: "Delivered" }
+  | { readonly _tag: "Abandoned" }
   | {
       readonly _tag: "Failed";
       readonly stage: TurnDeliveryStage;
@@ -87,16 +110,33 @@ export type TurnDeliveryResult =
  * Delivers one turn: syncs the thread's settings, serializes context for the server, and sends
  * the start command. One attempt; retry and persistence belong to the caller.
  */
-export async function deliverTurn(
-  request: TurnDeliveryRequest,
-  services: TurnDeliveryServices,
+export async function deliverTurn<A extends TurnAttachmentDraft>(
+  request: TurnDeliveryRequest<A>,
+  services: TurnDeliveryServices<A>,
 ): Promise<TurnDeliveryResult> {
   const settings = await syncThreadSettings(request, services.commands);
   if (settings !== null) return failed("settings", settings);
 
+  const { environmentId, turn } = request;
+  const drafts = request.message.attachments;
+  const upload = services.environment(environmentId)?.capabilities.attachmentUploads === true;
+  let attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment> | "abandoned";
+  try {
+    if (!upload && drafts.some((draft) => draft.type === "file")) {
+      throw new Error("This server does not support file attachments.");
+    }
+    attachments = await services.attachments.prepare({
+      environmentId,
+      attachments: drafts,
+      upload,
+    });
+  } catch (error) {
+    return failed("attachments", AsyncResult.failure(Cause.die(error)));
+  }
+  if (attachments === "abandoned") return { _tag: "Abandoned" };
+
   const text = request.message.text;
   await request.onDispatching?.({ text });
-  const { environmentId, turn } = request;
   if (request.compactFirst !== undefined) {
     const compact = await services.commands.startTurn({
       environmentId,
@@ -117,7 +157,7 @@ export async function deliverTurn(
   }
   const supportsInlineContext =
     services.environment(environmentId)?.capabilities.inlineMessageContext === true;
-  const context = request.message.context;
+  const context = bindAttachments(request.message.context, drafts, attachments);
   const started = await services.commands.startTurn({
     environmentId,
     input: {
@@ -130,16 +170,34 @@ export async function deliverTurn(
           : supportsInlineContext
             ? { text, context }
             : { text: serializeLegacyContextMessage({ text, records: context.records }) }),
-        attachments: request.message.attachments,
+        attachments,
       },
     },
   });
   return started._tag === "Failure" ? failed("dispatch", started) : { _tag: "Delivered" };
 }
 
+/** Rebinds records from each draft's id to the id its wire attachment carries. */
+function bindAttachments(
+  context: OrchestrationMessageContext | undefined,
+  drafts: ReadonlyArray<TurnAttachmentDraft>,
+  attachments: ReadonlyArray<ChatAttachment | UploadChatAttachment>,
+): OrchestrationMessageContext | undefined {
+  if (context === undefined) return undefined;
+  const ids = new Map(drafts.map((draft, index) => [draft.id, attachments[index]?.id]));
+  return {
+    version: 1,
+    records: context.records.map((record) =>
+      "attachmentId" in record
+        ? { ...record, attachmentId: ids.get(record.attachmentId) ?? record.attachmentId }
+        : record,
+    ),
+  };
+}
+
 /** Metadata, then runtime mode, then interaction mode, each only when it differs. */
 async function syncThreadSettings(
-  request: TurnDeliveryRequest,
+  request: TurnDeliveryRequest<TurnAttachmentDraft>,
   commands: TurnDeliveryCommands,
 ): Promise<AsyncResult.Failure<unknown, unknown> | null> {
   const thread = request.thread;

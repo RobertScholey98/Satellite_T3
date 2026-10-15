@@ -1673,7 +1673,6 @@ export default function ChatView(props: ChatViewProps) {
   const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
     reportFailure: false,
   });
-  const deliverTurn = useDeliverTurn();
   const resumeThreadQueue = useOrchestrationCommand(threadEnvironment.resumeThreadQueue, {
     reportFailure: false,
   });
@@ -1740,6 +1739,7 @@ export default function ChatView(props: ChatViewProps) {
     editingQueuedRun === null
       ? baseComposerDraftTarget
       : queuedEditDraftTargetFor(editingQueuedRun.runId);
+  const deliverTurn = useDeliverTurn(composerDraftTarget);
   const draftThread = useComposerDraftStore((store) =>
     routeKind === "server"
       ? store.getDraftSessionByRef(routeThreadRef)

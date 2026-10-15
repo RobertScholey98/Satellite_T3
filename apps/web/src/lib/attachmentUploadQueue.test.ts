@@ -65,6 +65,7 @@ import {
   startAttachmentUpload,
   useAttachmentUploadStore,
 } from "./attachmentUploadQueue";
+import { composerTurnAttachments } from "./turnAttachments";
 
 type ProgressListener = (event: {
   readonly lengthComputable: boolean;
@@ -1034,5 +1035,34 @@ describe("attachmentUploadQueue", () => {
     await Promise.resolve();
     TestXmlHttpRequest.requests[4]!.complete();
     await awaitAttachmentUploads([images[3]!.id]);
+  });
+
+  it("prepares turn attachments through the queue as uploaded references in draft order", async () => {
+    const image = makeImage("turn-image");
+    const file = makeFile("turn-file");
+    const prepared = composerTurnAttachments().prepare({
+      environmentId: firstEnvironment,
+      attachments: [image, file],
+      upload: true,
+    });
+    await Promise.resolve();
+    for (const request of TestXmlHttpRequest.requests) request.complete();
+
+    await expect(prepared).resolves.toEqual([
+      {
+        type: "image",
+        id: "pending-environment-1-turn-image.png",
+        name: "turn-image.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+      },
+      {
+        type: "file",
+        id: "pending-environment-1-turn-file.pdf",
+        name: "turn-file.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 3,
+      },
+    ]);
   });
 });
