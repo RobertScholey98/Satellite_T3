@@ -12,6 +12,8 @@ import * as Stream from "effect/Stream";
 import type * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { DocumentService } from "../documents/DocumentService.ts";
 import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
+import { IssueDelivery } from "../issues/IssueDelivery.ts";
+import { IssuePeerAccess, issuePeerSource } from "../issues/IssuePeerAccess.ts";
 import { IssueService } from "../issues/IssueService.ts";
 import { OpenWorkService } from "../openWork/OpenWorkService.ts";
 import {
@@ -30,6 +32,10 @@ const layer = (session: EnvironmentAuth.AuthenticatedSession) =>
       const revdoc = yield* RevdocService;
       const documents = yield* DocumentService;
       const issues = yield* IssueService;
+      const delivery = yield* IssueDelivery;
+      const peerAccess = yield* IssuePeerAccess;
+      const peerSource = issuePeerSource(session.subject);
+      const peerBinding = peerSource === undefined ? {} : { sourceEnvironmentId: peerSource };
       const openWork = yield* OpenWorkService;
       return WsSatelliteRpcGroup.of({
         [SATELLITE_WS_METHODS.ideasList]: (input) =>
@@ -96,15 +102,19 @@ const layer = (session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.issuesMovesRetry]: (input) => issues.retryMove(input),
         [SATELLITE_WS_METHODS.issuesAttemptsReserve]: (input) => issues.reserveAttempt(input),
         [SATELLITE_WS_METHODS.issuesAttemptsList]: (input) => issues.listAttempts(input),
-        [SATELLITE_WS_METHODS.issuesAttemptsReceipts]: (input) => issues.listReceipts(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsReceipts]: (input) =>
+          issues.listReceipts({ ...input, ...peerBinding }),
         [SATELLITE_WS_METHODS.issuesAttemptsIngest]: (input) =>
           issues
             .ingestReceipts(input)
             .pipe(Effect.map(({ acknowledgedKeys }) => ({ acknowledgedKeys }))),
         [SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations]: (input) =>
-          issues.syncAttemptGenerations(input),
+          issues.syncAttemptGenerations({ ...input, ...peerBinding }),
         [SATELLITE_WS_METHODS.issuesAttemptsAcknowledge]: (input) =>
-          issues.acknowledgeReceipts(input),
+          issues.acknowledgeReceipts({ ...input, ...peerBinding }),
+        [SATELLITE_WS_METHODS.issuesPeersGrant]: (input) => peerAccess.grant(input, session),
+        [SATELLITE_WS_METHODS.issuesPeersRegister]: (input) => delivery.registerPeer(input),
+        [SATELLITE_WS_METHODS.issuesPeersForget]: (input) => delivery.forgetPeer(input),
         [SATELLITE_WS_METHODS.openWorkList]: (input) => openWork.list(input),
         [SATELLITE_WS_METHODS.openWorkTimeline]: (input) => openWork.timeline(input),
         [SATELLITE_WS_METHODS.openWorkLinkFolder]: (input) => openWork.linkFolder(input),

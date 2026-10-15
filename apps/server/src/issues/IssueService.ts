@@ -77,6 +77,10 @@ export interface ObserveIssuePullRequestInput {
   readonly state: "open" | "closed" | "merged";
   readonly source?: string;
 }
+/** Set when a worktree environment answers a board environment: only that board's attempts. */
+export interface IssuePeerBinding {
+  readonly sourceEnvironmentId?: EnvironmentId;
+}
 export interface IngestedIssueReceipts {
   readonly acknowledgedKeys: ReadonlyArray<string>;
   readonly rejected: ReadonlyArray<{ readonly eventKey: string; readonly message: string }>;
@@ -112,17 +116,17 @@ export interface IssueServiceShape {
     input: IssueAttemptsListInput,
   ) => Effect.Effect<ReadonlyArray<IssueAttempt>, IssueOperationError>;
   readonly listReceipts: (
-    input: IssueAttemptsReceiptsInput,
+    input: IssueAttemptsReceiptsInput & IssuePeerBinding,
   ) => Effect.Effect<IssueAttemptsReceiptsResult, IssueOperationError>;
   /** Consumes each receipt on its own; a receipt that cannot apply is rejected, not fatal. */
   readonly ingestReceipts: (input: {
     readonly receipts: ReadonlyArray<IssueLifecycleReceipt>;
   }) => Effect.Effect<IngestedIssueReceipts, IssueOperationError>;
   readonly acknowledgeReceipts: (
-    input: IssueAttemptsAcknowledgeInput,
+    input: IssueAttemptsAcknowledgeInput & IssuePeerBinding,
   ) => Effect.Effect<void, IssueOperationError>;
   readonly syncAttemptGenerations: (
-    input: IssueAttemptsSyncGenerationsInput,
+    input: IssueAttemptsSyncGenerationsInput & IssuePeerBinding,
   ) => Effect.Effect<void, IssueOperationError>;
   readonly attachAttempt: (
     input: AttachIssueAttemptInput,
@@ -1047,7 +1051,9 @@ export const makeIssueService = (options: {
           const rows = yield* sql<{
             sequence: number;
             receipt_json: string;
-          }>`SELECT sequence,receipt_json FROM issue_lifecycle_outbox WHERE acknowledged=0 AND sequence>${input.after ?? 0} ORDER BY sequence LIMIT 100`;
+          }>`SELECT sequence,receipt_json FROM issue_lifecycle_outbox WHERE acknowledged=0 AND sequence>${input.after ?? 0}
+          AND (${input.sourceEnvironmentId ?? null} IS NULL OR json_extract(receipt_json,'$.link.sourceEnvironmentId')=${input.sourceEnvironmentId ?? null})
+          ORDER BY sequence LIMIT 100`;
           return {
             receipts: yield* Effect.forEach(rows, (row) =>
               parse(IssueLifecycleReceipt, row.receipt_json),
@@ -1060,7 +1066,8 @@ export const makeIssueService = (options: {
       lock(
         Effect.gen(function* () {
           for (const key of input.acknowledgedKeys)
-            yield* sql`UPDATE issue_lifecycle_outbox SET acknowledged=1 WHERE event_key=${key}`;
+            yield* sql`UPDATE issue_lifecycle_outbox SET acknowledged=1 WHERE event_key=${key}
+            AND (${input.sourceEnvironmentId ?? null} IS NULL OR json_extract(receipt_json,'$.link.sourceEnvironmentId')=${input.sourceEnvironmentId ?? null})`;
         }),
       );
     const syncAttemptGenerations: IssueServiceShape["syncAttemptGenerations"] = (input) =>
@@ -1077,7 +1084,11 @@ export const makeIssueService = (options: {
                   "This generation update does not match a known issue attempt.",
                 );
               const link = yield* parse(IssueAttemptLink, row.link_json);
-              if (link.destinationEnvironmentId !== options.environmentId)
+              if (
+                link.destinationEnvironmentId !== options.environmentId ||
+                (input.sourceEnvironmentId !== undefined &&
+                  link.sourceEnvironmentId !== input.sourceEnvironmentId)
+              )
                 return yield* error(
                   "invalid",
                   "This attempt does not belong to the destination server.",

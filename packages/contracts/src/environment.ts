@@ -112,6 +112,9 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       servers from before the pull-request workspace shipped, so clients must not probe them. */
   pullRequests: Schema.optionalKey(Schema.Boolean),
   issueBoards: Schema.optionalKey(Schema.Boolean),
+  /** Server collects lifecycle receipts from worktree environments itself, and grants peer
+      credentials so another board environment can collect from it. */
+  issueDelivery: Schema.optionalKey(Schema.Boolean),
   openWork: Schema.optionalKey(Schema.Boolean),
   pullRequestChecks: Schema.optionalKey(Schema.Boolean),
   /** Server understands canonical inline context links plus their message context records.

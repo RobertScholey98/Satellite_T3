@@ -11,8 +11,11 @@ import { IdeaNotebookStore } from "../ideas/IdeaNotebookStore.ts";
 import { IdeaPromotion } from "../ideas/IdeaPromotion.ts";
 import { IdeaRuntime } from "../ideas/IdeaRuntime.ts";
 import { IdeaUpdateReactor } from "../ideas/IdeaUpdateReactor.ts";
+import * as IssueDelivery from "../issues/IssueDelivery.ts";
 import * as IssueHost from "../issues/IssueHost.ts";
 import * as IssueLifecycleReactor from "../issues/IssueLifecycleReactor.ts";
+import * as IssuePeerAccess from "../issues/IssuePeerAccess.ts";
+import * as IssuePeerTransport from "../issues/IssuePeerTransport.ts";
 import * as IssueService from "../issues/IssueService.ts";
 import {
   imageToolRegistration,
@@ -79,6 +82,7 @@ export const layer = Layer.mergeAll(
   Layer.effectDiscard(
     Effect.flatMap(IssueLifecycleReactor.IssueLifecycleReactor, (worker) => worker.start()),
   ).pipe(Layer.provide(IssueLifecycleReactor.layer)),
+  Layer.effectDiscard(Effect.flatMap(IssueDelivery.IssueDelivery, (delivery) => delivery.start())),
   Layer.effectDiscard(Effect.flatMap(IdeaPromotion, (worker) => worker.start())),
 ).pipe(
   Layer.provideMerge(IdeaUpdateReactor.layer),
@@ -87,6 +91,12 @@ export const layer = Layer.mergeAll(
   Layer.provideMerge(DocumentService.layer),
   Layer.provideMerge(WorktreeRegistry.layer),
   Layer.provideMerge(IdeaNotebookStore.layer),
+  Layer.provideMerge(
+    Layer.merge(
+      IssueDelivery.layer.pipe(Layer.provide(IssuePeerTransport.layerSocket)),
+      IssuePeerAccess.layer,
+    ),
+  ),
   Layer.provideMerge(layerIssueService),
   Layer.provideMerge(SatelliteOrchestration.layer),
   Layer.provideMerge(RuntimeLayer.layerEventSink),

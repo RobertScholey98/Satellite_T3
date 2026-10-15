@@ -1622,6 +1622,10 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const readIssueForStart = useAtomCommand(issuesEnvironment.get, { reportFailure: false });
+  const grantIssuePeer = useAtomCommand(issuesEnvironment.grantPeer, { reportFailure: false });
+  const registerIssuePeer = useAtomCommand(issuesEnvironment.registerPeer, {
+    reportFailure: false,
+  });
   const issueReservationInFlight = useRef(false);
   const handleNewThread = useNewThreadHandler();
   const { settleThread, pinThread, confirmAndUnpinThread } = useThreadActions();
@@ -9324,6 +9328,33 @@ export default function ChatView(props: ChatViewProps) {
           useIssueDraftStore
             .getState()
             .set(draftId, { ...issueDraftIntent, reservation: issueAttemptForSend });
+        }
+        const serverConfigs = appAtomRegistry.get(environmentServerConfigsAtom);
+        const sourceEnvironment = serverConfigs.get(
+          issueDraftIntent.sourceEnvironmentId,
+        )?.environment;
+        // The board's computer collects this work's updates itself; it needs a credential only
+        // this computer can issue, so the start flow hands it over while connected to both.
+        if (
+          issueDraftIntent.sourceEnvironmentId !== environmentId &&
+          sourceEnvironment?.capabilities.issueDelivery === true &&
+          serverConfigs.get(environmentId)?.environment.capabilities.issueDelivery === true
+        ) {
+          const grant = unwrapWorkResult(
+            await grantIssuePeer({
+              environmentId,
+              input: {
+                sourceEnvironmentId: issueDraftIntent.sourceEnvironmentId,
+                sourceLabel: sourceEnvironment.label,
+              },
+            }),
+          );
+          unwrapWorkResult(
+            await registerIssuePeer({
+              environmentId: issueDraftIntent.sourceEnvironmentId,
+              input: { destinationEnvironmentId: environmentId, ...grant },
+            }),
+          );
         }
       } catch (error) {
         setThreadError(

@@ -1280,4 +1280,43 @@ describe("IssueService", () => {
         }),
       ),
   );
+  it.effect("answers a peer only about the board environment it was granted to", () =>
+    run(
+      Effect.gen(function* () {
+        const test = yield* setup;
+        const dest = yield* makeIssueService({ ...test.options, environmentId: destination });
+        const other = EnvironmentId.make("issue-test-other-board");
+        const mine = yield* test.reserve("mine", destination);
+        const theirs = { ...mine, attemptId: "theirs", sourceEnvironmentId: other };
+        for (const [link, thread] of [
+          [mine, ThreadId.make("mine")],
+          [theirs, ThreadId.make("theirs")],
+        ] as const) {
+          yield* dest.attachAttempt({ link, threadId: thread, projectId, worktreePath: "/w" });
+          yield* dest.firstPromptSent({ threadId: thread, eventKey: "send" });
+        }
+        const keys = (input: { readonly sourceEnvironmentId?: EnvironmentId }) =>
+          dest
+            .listReceipts(input)
+            .pipe(Effect.map((page) => page.receipts.map((receipt) => receipt.eventKey)));
+        assert.deepStrictEqual(yield* keys({ sourceEnvironmentId: environmentId }), [
+          `start:${mine.attemptId}`,
+        ]);
+        yield* dest.acknowledgeReceipts({
+          acknowledgedKeys: ["start:theirs"],
+          sourceEnvironmentId: environmentId,
+        });
+        assert.deepStrictEqual(yield* keys({ sourceEnvironmentId: other }), ["start:theirs"]);
+        const foreign = yield* dest
+          .syncAttemptGenerations({
+            generations: [
+              { attemptId: "theirs", reservationId: mine.reservationId, sourceGeneration: 2 },
+            ],
+            sourceEnvironmentId: environmentId,
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(foreign.reason, "invalid");
+      }),
+    ),
+  );
 });

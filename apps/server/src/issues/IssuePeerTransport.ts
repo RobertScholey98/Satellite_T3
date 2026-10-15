@@ -26,6 +26,8 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Socket from "effect/socket/Socket";
 
+import { ISSUE_PEER_METHODS, type IssuePeerMethod } from "./IssuePeerAccess.ts";
+
 export class IssuePeerUnreachableError extends Schema.TaggedError<IssuePeerUnreachableError>()(
   "IssuePeerUnreachableError",
   {
@@ -90,19 +92,9 @@ export class IssuePeerTransport extends Context.Service<
   }
 >()("t3/issues/IssuePeerTransport") {}
 
-type PeerMethod =
-  | typeof SATELLITE_WS_METHODS.issuesAttemptsReceipts
-  | typeof SATELLITE_WS_METHODS.issuesAttemptsAcknowledge
-  | typeof SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations;
-/** The destination RPCs a board environment calls. */
-export const ISSUE_PEER_METHODS: ReadonlySet<string> = new Set<PeerMethod>([
-  SATELLITE_WS_METHODS.issuesAttemptsReceipts,
-  SATELLITE_WS_METHODS.issuesAttemptsAcknowledge,
-  SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations,
-]);
 export const IssuePeerRpcs = WsSatelliteRpcGroup.omit(
   ...[...WsSatelliteRpcGroup.requests.keys()].filter(
-    (tag): tag is Exclude<SatelliteWsRpcMethod, PeerMethod> => !ISSUE_PEER_METHODS.has(tag),
+    (tag): tag is Exclude<SatelliteWsRpcMethod, IssuePeerMethod> => !ISSUE_PEER_METHODS.has(tag),
   ),
 );
 const isIssueError = Schema.is(IssueOperationError);

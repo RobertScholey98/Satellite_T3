@@ -294,3 +294,15 @@ export const IssuePeersForgetInput = Schema.Struct({ destinationEnvironmentId: E
 export type IssuePeersForgetInput = typeof IssuePeersForgetInput.Type;
 export const IssueDeliveriesDeliverInput = Schema.Struct({ boardId: Id });
 export type IssueDeliveriesDeliverInput = typeof IssueDeliveriesDeliverInput.Type;
+/** Asks a worktree environment for a credential the board's environment collects receipts with. */
+export const IssuePeersGrantInput = Schema.Struct({
+  sourceEnvironmentId: EnvironmentId,
+  sourceLabel: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+});
+export type IssuePeersGrantInput = typeof IssuePeersGrantInput.Type;
+/** Returned once. `endpoints` are the direct addresses the granting environment listens on. */
+export const IssuePeerGrant = Schema.Struct({
+  credential: TrimmedNonEmptyString,
+  endpoints: Schema.Array(Id),
+});
+export type IssuePeerGrant = typeof IssuePeerGrant.Type;

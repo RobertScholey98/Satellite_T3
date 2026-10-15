@@ -38,6 +38,10 @@ import {
   IssueAttemptsAcknowledgeInput,
   IssueAttemptsSyncGenerationsInput,
   IssueOperationError,
+  IssuePeerGrant,
+  IssuePeersForgetInput,
+  IssuePeersGrantInput,
+  IssuePeersRegisterInput,
 } from "./issues.ts";
 import {
   OpenWorkListInput,
@@ -116,6 +120,9 @@ export const SATELLITE_WS_METHODS = {
   issuesAttemptsIngest: "issues.attempts.ingest",
   issuesAttemptsAcknowledge: "issues.attempts.acknowledge",
   issuesAttemptsSyncGenerations: "issues.attempts.syncGenerations",
+  issuesPeersGrant: "issues.peers.grant",
+  issuesPeersRegister: "issues.peers.register",
+  issuesPeersForget: "issues.peers.forget",
   openWorkList: "openWork.list",
   openWorkTimeline: "openWork.timeline",
   openWorkLinkFolder: "openWork.linkFolder",
@@ -308,6 +315,21 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   }),
   Rpc.make(SATELLITE_WS_METHODS.issuesAttemptsSyncGenerations, {
     payload: IssueAttemptsSyncGenerationsInput,
+    success: Schema.Void,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(SATELLITE_WS_METHODS.issuesPeersGrant, {
+    payload: IssuePeersGrantInput,
+    success: IssuePeerGrant,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(SATELLITE_WS_METHODS.issuesPeersRegister, {
+    payload: IssuePeersRegisterInput,
+    success: Schema.Void,
+    error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(SATELLITE_WS_METHODS.issuesPeersForget, {
+    payload: IssuePeersForgetInput,
     success: Schema.Void,
     error: Schema.Union([IssueOperationError, EnvironmentAuthorizationError]),
   }),

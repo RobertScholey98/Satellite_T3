@@ -32,7 +32,10 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
-import { SATELLITE_RPC_REQUIRED_SCOPES } from "../satellite/SatelliteRpcRegistry.ts";
+import {
+  SATELLITE_RPC_REQUIRED_SCOPES,
+  satelliteSubjectGrantsRpc,
+} from "../satellite/SatelliteRpcRegistry.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
@@ -258,8 +261,9 @@ const requiredScopesForRpcCall = (
 };
 
 /** Authorizes every RPC on one connection against that connection's session scopes. */
-export const layer = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+export const layer = (scopes: ReadonlyArray<AuthEnvironmentScope>, subject = "") =>
   Layer.succeed(RpcScopeAuthorization)((effect, { rpc, payload }) => {
+    if (satelliteSubjectGrantsRpc(subject, rpc._tag)) return effect;
     const requiredScopes = requiredScopesForRpcCall(rpc._tag, payload);
     const requiredScope = requiredScopes.find((scope) => !scopes.includes(scope));
     return requiredScope === undefined ? effect : Effect.fail(rpcAuthorizationError(requiredScope));

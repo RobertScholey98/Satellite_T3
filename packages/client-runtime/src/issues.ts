@@ -74,6 +74,14 @@ export function createIssuesEnvironmentAtoms<R, E>(
       label: "issues:attempts:acknowledge",
       tag: WS_METHODS.issuesAttemptsAcknowledge,
     }),
+    grantPeer: createEnvironmentRpcCommand(runtime, {
+      label: "issues:peers:grant",
+      tag: WS_METHODS.issuesPeersGrant,
+    }),
+    registerPeer: createEnvironmentRpcCommand(runtime, {
+      label: "issues:peers:register",
+      tag: WS_METHODS.issuesPeersRegister,
+    }),
   };
 }
 
