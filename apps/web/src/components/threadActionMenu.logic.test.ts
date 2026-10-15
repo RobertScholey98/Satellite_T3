@@ -1,14 +1,18 @@
+import type { KeybindingCommand } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
+  threadActionForShortcut,
   type ThreadActionMenuState,
 } from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
   canOperate: true,
   branch: null,
+  pullRequestUrl: null,
+  pullRequestUrlPending: false,
   projectFilter: null,
   isPinned: false,
   isSettled: false,
@@ -242,5 +246,55 @@ describe("buildDraftActionMenuItems", () => {
     const items = buildDraftActionMenuItems({ hasPath: true, hasBranch: false, hasProject: false });
     expect(items.map((item) => item.id)).toEqual(["copy", "discard"]);
     expect(items.at(-1)).toMatchObject({ label: "Discard draft", destructive: true });
+  });
+});
+
+describe("threadActionForShortcut", () => {
+  const shortcut = (command: KeybindingCommand, state: ThreadActionMenuState) =>
+    threadActionForShortcut(command, buildThreadActionMenuItems(state), {
+      canOperate: state.canOperate,
+    });
+
+  it.each([
+    ["thread.pin", {}, "pin"],
+    ["thread.pin", { isPinned: true }, "unpin"],
+    ["thread.settle", {}, "settle"],
+    ["thread.settle", { isSettled: true }, "unsettle"],
+    ["thread.copyReference", {}, "copy-thread-id"],
+    ["thread.copyReference", { pullRequestUrl: "https://github.com/o/r/pull/7" }, "copy-reference"],
+  ] as const)("%s with %o runs %s", (command, overrides, expected) => {
+    expect(shortcut(command, { ...baseState, ...overrides })).toBe(expected);
+  });
+
+  it("claims pin and settle without running them when the server lacks the action", () => {
+    expect(
+      shortcut("thread.settle", {
+        ...baseState,
+        supports: { ...baseState.supports, settlement: false },
+      }),
+    ).toBe("unavailable");
+    expect(threadActionForShortcut("thread.pin", [], { canOperate: true })).toBe("unavailable");
+  });
+
+  it("leaves pin and settle to the page on a read-only connection", () => {
+    expect(shortcut("thread.pin", { ...baseState, canOperate: false })).toBeNull();
+    expect(threadActionForShortcut("thread.settle", [], { canOperate: false })).toBeNull();
+    expect(shortcut("terminal.toggle", baseState)).toBeNull();
+  });
+
+  it("still copies a reference on a read-only connection", () => {
+    expect(shortcut("thread.copyReference", { ...baseState, canOperate: false })).toBe(
+      "copy-thread-id",
+    );
+  });
+
+  it("copies nothing while the panel's pull request link is loading", () => {
+    const state = { ...baseState, pullRequestUrlPending: true };
+    expect(shortcut("thread.copyReference", state)).toBe("unavailable");
+    expect(
+      buildThreadActionMenuItems(state)
+        .find((item) => item.id === "copy")
+        ?.children?.find((item) => item.id === "copy-reference"),
+    ).toEqual({ id: "copy-reference", label: "PR link", icon: "link", disabled: true });
   });
 });

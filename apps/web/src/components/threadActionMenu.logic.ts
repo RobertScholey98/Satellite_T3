@@ -1,4 +1,4 @@
-import type { ContextMenuItem } from "@t3tools/contracts";
+import type { ContextMenuItem, KeybindingCommand } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 
 /**
@@ -26,6 +26,7 @@ export type ThreadActionMenuId =
   | "copy"
   | "copy-path"
   | "copy-branch"
+  | "copy-reference"
   | "copy-thread-id"
   | "archive"
   | "delete";
@@ -72,6 +73,9 @@ export function buildDraftActionMenuItems(options: {
 export interface ThreadActionMenuState {
   readonly canOperate: boolean;
   readonly branch: string | null;
+  readonly pullRequestUrl: string | null;
+  /** The right panel shows a pull request whose link has not loaded yet. */
+  readonly pullRequestUrlPending: boolean;
   /**
    * Project scoping for the thread list. Null on surfaces with no scoped
    * list behind the menu (the chat header), where the item must not show.
@@ -110,14 +114,62 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
     "copy",
     "copy-path",
     "copy-branch",
+    "copy-reference",
     "copy-thread-id",
   ].includes(action);
 }
 
+// Keybindings name a thread action, not a direction: the first candidate the
+// menu lists decides, so one key toggles pin or settle, and copying a
+// reference prefers the pull request over the thread ID.
+const SHORTCUT_ACTIONS: Partial<Record<KeybindingCommand, ReadonlyArray<ThreadActionMenuId>>> = {
+  "thread.pin": ["pin", "unpin"],
+  "thread.settle": ["settle", "unsettle"],
+  "thread.copyReference": ["copy-reference", "copy-thread-id"],
+};
+
+function findItem(
+  items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
+  id: ThreadActionMenuId,
+): ContextMenuItem<ThreadActionMenuId> | undefined {
+  for (const item of items) {
+    if (item.id === id) return item;
+    const child = item.children ? findItem(item.children, id) : undefined;
+    if (child) return item.disabled ? { ...child, disabled: true } : child;
+  }
+  return undefined;
+}
+
+export const THREAD_ACTION_SHORTCUT_COMMANDS = Object.keys(
+  SHORTCUT_ACTIONS,
+) as ReadonlyArray<KeybindingCommand>;
+
 /**
- * Single source for the per-thread action menu: the sidebar row's right-click
- * menu and the chat header menu share labels, ordering, and capability gating.
- * Each surface supplies state for the actions it supports.
+ * The registry action a thread keybinding runs. "unavailable" claims the key
+ * without running anything, as the listeners did before: copying a reference
+ * always claims it, pin and settle claim it on connections that can change
+ * threads. Null leaves the key alone.
+ */
+export function threadActionForShortcut(
+  command: KeybindingCommand,
+  items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
+  options: { readonly canOperate: boolean },
+): ThreadActionMenuId | "unavailable" | null {
+  const candidates = SHORTCUT_ACTIONS[command];
+  if (candidates === undefined) return null;
+  for (const id of candidates) {
+    const item = findItem(items, id);
+    if (item === undefined) continue;
+    if (item.disabled !== true) return id;
+    break;
+  }
+  return command === "thread.copyReference" || options.canOperate ? "unavailable" : null;
+}
+
+/**
+ * The thread action registry: both sidebars' row menus, the chat header menu,
+ * the command palette and thread keybindings take labels, ordering, and
+ * availability from here.
  */
 export function buildThreadActionMenuItems(
   state: ThreadActionMenuState,
@@ -225,6 +277,16 @@ export function buildThreadActionMenuItems(
         { id: "copy-path", label: "Path", icon: "folder" },
         ...(state.branch
           ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
+          : []),
+        ...(state.pullRequestUrl || state.pullRequestUrlPending
+          ? [
+              {
+                id: "copy-reference" as const,
+                label: "PR link",
+                icon: "link",
+                ...(state.pullRequestUrl ? {} : { disabled: true }),
+              },
+            ]
           : []),
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
       ],

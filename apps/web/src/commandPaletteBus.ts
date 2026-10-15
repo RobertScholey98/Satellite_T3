@@ -31,6 +31,19 @@ export function onOpenCommandPalette(
   return () => window.removeEventListener(COMMAND_PALETTE_OPEN_EVENT, handler);
 }
 
+let afterClose: (() => void) | null = null;
+
+/** Runs `callback` once the palette has closed, in place of refocusing the composer. */
+export function runAfterCommandPaletteCloses(callback: () => void): void {
+  afterClose = callback;
+}
+
+export function takeCommandPaletteAfterClose(): (() => void) | null {
+  const callback = afterClose;
+  afterClose = null;
+  return callback;
+}
+
 /** Read at event time so consumers do not subscribe to transient dialog state. */
 export function isCommandPaletteOpen(): boolean {
   return (

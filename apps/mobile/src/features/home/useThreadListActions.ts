@@ -244,6 +244,11 @@ function useConfirmDeleteThread(
   );
 }
 
+/**
+ * Mobile's thread actions. Web's registry is buildThreadActionMenuItems in
+ * apps/web/src/components/threadActionMenu.logic.ts; keep the two action
+ * lists in step when either gains or changes an action.
+ */
 export function useThreadListActions(): {
   readonly archiveThread: (thread: EnvironmentThreadShell) => void;
   readonly confirmDeleteThread: (thread: EnvironmentThreadShell) => void;

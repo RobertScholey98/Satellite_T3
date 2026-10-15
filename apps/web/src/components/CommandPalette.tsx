@@ -17,7 +17,6 @@ import {
 } from "@t3tools/client-runtime/operations/projects";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
 import {
   canPreloadBrowsePath,
   createBrowseNavigationCoordinator,
@@ -86,8 +85,14 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import {
+  copyPullRequestLink,
+  requestThreadRename,
+  useThreadActionMenu,
+  type ThreadActionSurface,
+} from "../hooks/useThreadActionMenu";
+import { buildThreadActionPaletteItems } from "./threadActionPalette";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
-import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { useClientSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
 import { useCustomThemes } from "../hooks/useCustomThemes";
@@ -128,7 +133,11 @@ import {
   isUnsupportedWindowsProjectPath,
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
-import { onOpenCommandPalette } from "../commandPaletteBus";
+import {
+  onOpenCommandPalette,
+  runAfterCommandPaletteCloses,
+  takeCommandPaletteAfterClose,
+} from "../commandPaletteBus";
 import { isPreviewFocused } from "../lib/previewFocus";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import {
@@ -666,7 +675,9 @@ function CommandPaletteDialog(props: {
       data-palette-mode={props.mode}
       data-testid="command-palette"
       finalFocus={() => {
-        composerHandleRef?.current?.focusAtEnd();
+        const afterClose = takeCommandPaletteAfterClose();
+        if (afterClose) afterClose();
+        else composerHandleRef?.current?.focusAtEnd();
         return false;
       }}
       onBackdropPointerDown={() => {
@@ -698,6 +709,14 @@ function OpenCommandPaletteDialog(props: {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { clearOpenIntent, openIntent, openOverlayMode, setOpen } = props;
+  // The dialog hands a pending after-close action to finalFocus while it
+  // unmounts; one that never ran must not fire on the next close.
+  useEffect(
+    () => () => {
+      takeCommandPaletteAfterClose();
+    },
+    [],
+  );
   const [query, setQuery] = useState(openIntent?.kind === "search" ? openIntent.query : "");
   const [linkedThreadSearch, setLinkedThreadSearch] = useState(
     openIntent?.kind === "search" ? openIntent : null,
@@ -756,41 +775,21 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
+  const threadActionMenu = useThreadActionMenu();
+  const threadActionSurface: ThreadActionSurface = {
+    openPanelPullRequestUrl,
+    // The palette returns focus to the composer as it closes, which would
+    // blur a title editor opened any earlier.
+    startRename: (threadRef) => runAfterCommandPaletteCloses(() => requestThreadRename(threadRef)),
+  };
+  const activeThreadRef = activeThread
+    ? scopeThreadRef(activeThread.environmentId, activeThread.id)
+    : null;
+  const pullRequestsPageLink =
+    pathname === "/pull-requests" ? (openPanelPullRequestUrl ?? null) : null;
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
-  const activeThreadReferenceCopyTarget =
-    referenceThreadRef === null || (pathname === "/pull-requests" && !openPanelPullRequestUrl)
-      ? null
-      : resolveThreadReferenceCopyTarget({
-          threadId: referenceThreadRef.threadId,
-          openPanelPullRequestUrl,
-          pullRequests: activeThread?.pullRequests,
-          linkedPullRequestUrl:
-            activeThread?.linkedPullRequest?.url ?? activeThread?.branchPullRequest?.url ?? null,
-        });
-  const copyActiveThreadReference = useCallback(async () => {
-    const target = activeThreadReferenceCopyTarget;
-    if (target === null) return;
-    try {
-      const didCopy = await writeTextToClipboard(target.value, target.clipboardTarget);
-      if (!didCopy) return;
-      toastManager.add({
-        type: "success",
-        title: target.successTitle,
-        description: target.value,
-      });
-    } catch (error) {
-      console.error(error);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: target.failureTitle,
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    }
-  }, [activeThreadReferenceCopyTarget]);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -1929,18 +1928,32 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  if (activeThreadReferenceCopyTarget !== null) {
+  if (pullRequestsPageLink !== null) {
     actionItems.push({
       kind: "action",
       value: "action:copy-thread-reference",
-      searchTerms: ["copy", "pull request", "pr link", "thread id", "reference"],
-      title:
-        activeThreadReferenceCopyTarget.kind === "pull-request" ? "Copy PR link" : "Copy thread ID",
-      description: activeThreadReferenceCopyTarget.value,
+      searchTerms: ["copy", "pull request", "pr link", "reference"],
+      title: "Copy PR link",
+      description: pullRequestsPageLink,
       icon: <LinkIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "thread.copyReference",
-      run: copyActiveThreadReference,
+      run: () => copyPullRequestLink(pullRequestsPageLink),
     });
+  }
+
+  if (activeThreadRef !== null) {
+    actionItems.push(
+      ...buildThreadActionPaletteItems({
+        items: threadActionMenu.readMenuItems(activeThreadRef, threadActionSurface),
+        run: (action) => threadActionMenu.runAction(activeThreadRef, action, threadActionSurface),
+        describe: (action) =>
+          action === "copy-reference"
+            ? threadActionMenu.readPullRequestUrl(activeThreadRef, threadActionSurface)
+            : action === "copy-thread-id"
+              ? activeThreadRef.threadId
+              : null,
+      }),
+    );
   }
 
   if (
@@ -3085,12 +3098,24 @@ function OpenCommandPaletteDialog(props: {
       }
       return;
     }
+    const threadAction =
+      activeThreadRef && command
+        ? threadActionMenu.shortcutAction(activeThreadRef, command, threadActionSurface)
+        : null;
+    if (activeThreadRef && threadAction) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (threadAction === "unavailable") return;
+      setOpen(false);
+      void threadActionMenu.runAction(activeThreadRef, threadAction, threadActionSurface);
+      return;
+    }
     if (command === "thread.copyReference") {
       event.preventDefault();
       event.stopPropagation();
-      if (activeThreadReferenceCopyTarget === null) return;
+      if (pullRequestsPageLink === null) return;
       setOpen(false);
-      void copyActiveThreadReference();
+      void copyPullRequestLink(pullRequestsPageLink);
       return;
     }
 

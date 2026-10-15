@@ -1098,7 +1098,6 @@ import {
   isVideoAttachment,
   type ChatMessage,
   type SessionPhase,
-  type Thread,
   type ThreadShell,
   videoMimeType,
 } from "../../types";
@@ -1525,7 +1524,7 @@ export interface ChatComposerProps {
   // Thread context
   activeThreadId: ThreadId | null;
   activeThreadEnvironmentId: EnvironmentId | undefined;
-  activeThread: Thread | undefined;
+  activeThreadProviderInstanceId: ProviderInstanceId | null;
   /** The routed server thread's shell, present before its detail loads. */
   activeThreadShell: ThreadShell | null;
   /** Timeline messages including optimistic sends, for ArrowUp prompt recall. */
@@ -1714,7 +1713,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onMultipleModelSelectionsChange: setMultipleModelSelections,
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
-    activeThread,
+    activeThreadProviderInstanceId,
     promptHistoryMessages,
     isServerThread: _isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
@@ -2109,17 +2108,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         entries: providerInstanceEntries,
         candidateInstanceIds: [
           selectedProviderByThreadId,
-          activeThread?.runtime?.providerInstanceId,
+          activeThreadProviderInstanceId,
           activeThreadModelSelection?.instanceId,
           activeProjectDefaultModelSelection?.instanceId,
         ],
         lockedProvider,
-        lockedInstanceId:
-          activeThread?.runtime?.providerInstanceId ?? activeThreadModelSelection?.instanceId,
+        lockedInstanceId: activeThreadProviderInstanceId ?? activeThreadModelSelection?.instanceId,
       }),
     [
       activeProjectDefaultModelSelection?.instanceId,
-      activeThread?.runtime?.providerInstanceId,
+      activeThreadProviderInstanceId,
       activeThreadModelSelection?.instanceId,
       selectedProviderByThreadId,
       lockedProvider,
@@ -3140,12 +3138,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       if (records.length === 0) return null;
       return encodeComposerContextFragment({
         version: 1,
-        source: { environmentId, ...(activeThread ? { threadId: activeThread.id } : {}) },
+        source: { environmentId, ...(activeThreadId ? { threadId: activeThreadId } : {}) },
         records,
       });
     },
     [
-      activeThread,
+      activeThreadId,
       composerFiles,
       composerImages,
       composerPreviewAnnotations,
@@ -3306,7 +3304,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         const conflicts = existing !== undefined;
         switch (record.kind) {
           case "terminal": {
-            const threadId = activeThread?.id ?? activeThreadId;
+            const threadId = activeThreadId;
             if (!threadId) break;
             const imported = terminalContextDraftFromRecord(record, threadId);
             const draft = conflicts ? { ...imported, id: randomUUID() } : imported;
@@ -3370,7 +3368,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return rewritten;
     },
     [
-      activeThread,
       activeThreadId,
       addComposerDraftPreviewAnnotation,
       addComposerDraftReviewComment,
@@ -6446,11 +6443,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         );
       },
       addTerminalContext: (selection: TerminalContextSelection) => {
-        if (!activeThread || isChoiceOnlyPendingQuestion) return;
+        if (!activeThreadId || isChoiceOnlyPendingQuestion) return;
         const snapshot = readComposerSnapshot();
         const context = {
           id: randomUUID(),
-          threadId: activeThread.id,
+          threadId: activeThreadId,
           createdAt: new Date().toISOString(),
           ...selection,
         };
@@ -6519,7 +6516,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       },
     }),
     [
-      activeThread,
+      activeThreadId,
       addComposerAttachments,
       foldPastedText,
       composerDraftTarget,
