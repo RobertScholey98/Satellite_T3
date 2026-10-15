@@ -19,6 +19,7 @@ function deferred<T>() {
 
 const state = vi.hoisted(() => ({
   granted: new Set<string>(),
+  linkedPullRequestUrl: null as string | null,
   effects: [] as string[],
   completed: deferred<void>(),
   show: vi.fn<
@@ -35,7 +36,8 @@ function recordEffect(action: string) {
 }
 
 vi.mock("../components/CustomSnoozeDialog", () => ({ requestCustomSnooze: vi.fn() }));
-vi.mock("react", () => ({
+vi.mock("react", async (original) => ({
+  ...(await original<typeof import("react")>()),
   useCallback: (callback: unknown) => callback,
   useEffect: () => {},
   useMemo: (factory: () => unknown) => factory(),
@@ -64,6 +66,8 @@ vi.mock("../state/entities", () => ({
     worktreePath: null,
     runtime: null,
     latestRun: null,
+    pullRequests: [],
+    linkedPullRequest: state.linkedPullRequestUrl ? { url: state.linkedPullRequestUrl } : null,
   }),
   useProjects: () => [{ id: "project", environmentId: "secondary" }],
 }));
@@ -112,6 +116,10 @@ vi.mock("../components/Sidebar.snooze", () => ({
 }));
 vi.mock("./useCopyToClipboard", () => ({
   useCopyToClipboard: () => ({ copyToClipboard: () => recordEffect("copy") }),
+  writeTextToClipboard: async (value: string) => {
+    recordEffect("clipboard:" + value);
+    return true;
+  },
 }));
 vi.mock("./useHandleNewThread", () => ({
   useNewThreadHandler: () => async () => recordEffect("draft"),
@@ -155,6 +163,7 @@ vi.mock("./useThreadActions", () => ({
 }));
 
 import { useThreadActionMenu } from "./useThreadActionMenu";
+import { buildThreadActionPaletteItems } from "../components/threadActionPalette";
 
 const target = {
   environmentId: EnvironmentId.make("secondary"),
@@ -168,6 +177,7 @@ const createMenu = () => {
 
 beforeEach(() => {
   state.granted = new Set(["primary"]);
+  state.linkedPullRequestUrl = null;
   state.effects = [];
   state.completed = deferred<void>();
   state.show.mockReset().mockResolvedValue(null);
@@ -232,7 +242,7 @@ describe("one registry for every thread menu", () => {
   const leafIds = (items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>): string[] =>
     items.flatMap((item) => (item.children ? leafIds(item.children) : [item.id]));
 
-  it("gives the sidebar, legacy sidebar and header the same actions for one thread", () => {
+  it("gives both sidebars, the header and the palette the same actions for one thread", () => {
     state.granted = new Set(["secondary"]);
     const header = useThreadActionMenu({ startRename: () => {} }).readMenuItems(target);
     const legacySidebar = useThreadActionMenu({
@@ -267,6 +277,14 @@ describe("one registry for every thread menu", () => {
     ];
     expect(leafIds(header)).toEqual(shared);
     expect(leafIds(legacySidebar)).toEqual(shared);
+    const palette = buildThreadActionPaletteItems({ items: header, run: async () => {} });
+    expect(
+      palette.flatMap((entry) =>
+        entry.kind === "submenu"
+          ? entry.groups.flatMap((group) => group.items.map((child) => child.value))
+          : [entry.value],
+      ),
+    ).toEqual(shared.map((id) => `thread-action:${id}`));
     expect(leafIds(sidebar)).toEqual([
       ...shared.slice(0, shared.indexOf("mark-unread") + 1),
       "filter-by-project",
@@ -306,5 +324,36 @@ describe("one registry for every thread menu", () => {
     await state.completed.promise;
     expect(parked).toEqual(["thread"]);
     expect(state.effects).toEqual([]);
+  });
+});
+
+describe("thread keybindings", () => {
+  const menu = () => useThreadActionMenu({ startRename: () => {} });
+
+  it("resolve to the registry action for the thread's current state", () => {
+    state.granted = new Set(["secondary"]);
+    expect(menu().shortcutAction(target, "thread.pin")).toBe("pin");
+    expect(menu().shortcutAction(target, "thread.settle")).toBe("settle");
+    expect(menu().shortcutAction(target, "thread.copyReference")).toBe("copy-thread-id");
+    expect(menu().shortcutAction(target, "terminal.toggle")).toBeNull();
+  });
+
+  it("copy the linked pull request as the thread's reference", async () => {
+    state.linkedPullRequestUrl = "https://github.com/o/r/pull/7";
+    const actions = menu();
+    const action = actions.shortcutAction(target, "thread.copyReference");
+    expect(action).toBe("copy-reference");
+    await actions.runAction(target, action!);
+    expect(state.effects).toEqual(["clipboard:https://github.com/o/r/pull/7"]);
+  });
+
+  it("prefer the pull request open in the surface's panel", async () => {
+    state.linkedPullRequestUrl = "https://github.com/o/r/pull/7";
+    const actions = useThreadActionMenu({
+      startRename: () => {},
+      openPanelPullRequestUrl: "https://github.com/o/r/pull/9",
+    });
+    await actions.runAction(target, "copy-reference");
+    expect(state.effects).toEqual(["clipboard:https://github.com/o/r/pull/9"]);
   });
 });

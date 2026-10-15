@@ -107,7 +107,8 @@ import {
 import { readPastedComposerContext } from "./composerInlineTokenPaste";
 import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
-import { useAcknowledgeThreadWoke, useThreadActions } from "../hooks/useThreadActions";
+import { useAcknowledgeThreadWoke } from "../hooks/useThreadActions";
+import { requestThreadRename, useThreadActionMenu } from "../hooks/useThreadActionMenu";
 import {
   deriveProviderSubagentStatus,
   deriveReportedModelSelection,
@@ -156,7 +157,6 @@ import {
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
 import { truncate } from "@t3tools/shared/String";
-import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { Debouncer } from "@tanstack/react-pacer";
 import { useAtomValue } from "@effect/atom-react";
@@ -254,7 +254,6 @@ import {
   type Thread,
 } from "../types";
 import { useTheme } from "../hooks/useTheme";
-import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { isCommandPaletteOpen } from "../commandPaletteBus";
 import { subscribeSnapShotComposerFocus } from "../lib/desktopSnapShot";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -1631,7 +1630,6 @@ export default function ChatView(props: ChatViewProps) {
   });
   const issueReservationInFlight = useRef(false);
   const handleNewThread = useNewThreadHandler();
-  const { settleThread, pinThread, confirmAndUnpinThread } = useThreadActions();
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
@@ -7181,48 +7179,10 @@ export default function ChatView(props: ChatViewProps) {
     publishComposerOverlayHeight(composerOverlayElement.getBoundingClientRect().height);
   }, [composerMounted, composerOverlayElement, publishComposerOverlayHeight]);
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(activeThreadRef);
-  const activeThreadReferenceCopyTarget = useMemo(
-    () =>
-      activeThreadId === null || !isServerThread
-        ? null
-        : resolveThreadReferenceCopyTarget({
-            threadId: activeThreadId,
-            openPanelPullRequestUrl,
-            pullRequests: activeThread?.pullRequests,
-            linkedPullRequestUrl: linkedThreadPullRequest?.url ?? null,
-          }),
-    [
-      activeThreadId,
-      isServerThread,
-      activeThread?.pullRequests,
-      linkedThreadPullRequest?.url,
-      openPanelPullRequestUrl,
-    ],
-  );
-  const copyActiveThreadReference = useCallback(() => {
-    const target = activeThreadReferenceCopyTarget;
-    if (target === null) return;
-    void writeTextToClipboard(target.value, target.clipboardTarget).then(
-      (didCopy) => {
-        if (!didCopy) return;
-        toastManager.add({
-          type: "success",
-          title: target.successTitle,
-          description: target.value,
-        });
-      },
-      (error) => {
-        console.error(error);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: target.failureTitle,
-            description: error instanceof Error ? error.message : "An error occurred.",
-          }),
-        );
-      },
-    );
-  }, [activeThreadReferenceCopyTarget]);
+  const { shortcutAction: threadShortcutAction, runAction: runThreadAction } = useThreadActionMenu({
+    startRename: requestThreadRename,
+    openPanelPullRequestUrl,
+  });
   const pullRequestPanelTarget = activeThread
     ? threadPullRequestPanelTarget({
         projectId: activeThread.projectId,
@@ -7239,8 +7199,6 @@ export default function ChatView(props: ChatViewProps) {
   const pullRequestSurfaceAvailable = supportsPullRequests && pullRequestPanelTarget !== null;
   const supportsSettlement = serverConfig?.environment.capabilities.threadSettlement === true;
   const supportsSnooze = serverConfig?.environment.capabilities.threadSnooze === true;
-  const supportsPinning = serverConfig?.environment.capabilities.threadPinning === true;
-  const activeThreadPinned = supportsPinning && activeThreadShell?.pinnedAt != null;
   const activeThreadSnoozed =
     activeThreadShell !== null &&
     supportsSnooze &&
@@ -8094,56 +8052,11 @@ export default function ChatView(props: ChatViewProps) {
       });
       if (!command) return;
 
-      if (command === "thread.copyReference") {
+      const threadAction = activeThreadRef ? threadShortcutAction(activeThreadRef, command) : null;
+      if (activeThreadRef && threadAction) {
         event.preventDefault();
         event.stopPropagation();
-        if (!event.repeat) copyActiveThreadReference();
-        return;
-      }
-
-      if (command === "thread.settle") {
-        if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (!isServerThread || !activeThreadRef || !supportsSettlement) return;
-        if (activeThreadSettled) {
-          void handleUnsettleActiveThread();
-          return;
-        }
-
-        void settleThread(activeThreadRef).then((result) => {
-          if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
-          const error = squashAtomCommandFailure(result);
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Failed to settle thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        });
-        return;
-      }
-
-      if (command === "thread.pin") {
-        if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (!isServerThread || !activeThreadRef || !supportsPinning) return;
-        const pinned = activeThreadPinned;
-        void (pinned ? confirmAndUnpinThread(activeThreadRef) : pinThread(activeThreadRef)).then(
-          (result) => {
-            if (result._tag !== "Failure" || isAtomCommandInterrupted(result)) return;
-            const error = squashAtomCommandFailure(result);
-            toastManager.add(
-              stackedThreadToast({
-                type: "error",
-                title: pinned ? "Failed to unpin thread" : "Failed to pin thread",
-                description: error instanceof Error ? error.message : "An error occurred.",
-              }),
-            );
-          },
-        );
+        if (!event.repeat) void runThreadAction(activeThreadRef, threadAction);
         return;
       }
 
@@ -8347,8 +8260,6 @@ export default function ChatView(props: ChatViewProps) {
     canOperateTerminal,
     addTerminalSurface,
     activeThreadRef,
-    activeThreadPinned,
-    activeThreadSettled,
     canInterruptRunningThread,
     terminalUiState.terminalOpen,
     terminalUiState.activeTerminalId,
@@ -8363,16 +8274,10 @@ export default function ChatView(props: ChatViewProps) {
     splitPanelTerminal,
     keybindings,
     scriptKeybindings,
-    handleUnsettleActiveThread,
-    isServerThread,
     onInterrupt,
     onToggleDiff,
-    pinThread,
-    settleThread,
-    supportsPinning,
-    supportsSettlement,
-    confirmAndUnpinThread,
-    copyActiveThreadReference,
+    runThreadAction,
+    threadShortcutAction,
     getShortcutContext,
     toggleRightPanel,
     toggleThreadPanel,

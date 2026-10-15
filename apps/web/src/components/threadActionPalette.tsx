@@ -27,7 +27,11 @@ import {
   type CommandPaletteActionItem,
   type CommandPaletteSubmenuItem,
 } from "./CommandPalette.logic";
-import type { ThreadActionMenuId } from "./threadActionMenu.logic";
+import {
+  THREAD_ACTION_SHORTCUT_COMMANDS,
+  threadActionForShortcut,
+  type ThreadActionMenuId,
+} from "./threadActionMenu.logic";
 
 const ICONS: Readonly<Record<string, LucideIcon>> = {
   archive: ArchiveIcon,
@@ -72,19 +76,29 @@ export function buildThreadActionPaletteItems(input: {
   readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
   readonly run: (action: ThreadActionMenuId) => Promise<void>;
 }): Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> {
+  const shortcutByAction = new Map(
+    THREAD_ACTION_SHORTCUT_COMMANDS.flatMap((command) => {
+      const target = threadActionForShortcut(command, input.items);
+      return target ? [[target, command] as const] : [];
+    }),
+  );
   const action = (
     item: ContextMenuItem<ThreadActionMenuId>,
     title: string,
     iconName: string | undefined,
-  ): CommandPaletteActionItem => ({
-    kind: "action",
-    value: `thread-action:${item.id}`,
-    searchTerms: [title, "thread"],
-    title,
-    icon: icon(iconName, ITEM_ICON_CLASS),
-    ...(item.disabled ? { disabled: true } : {}),
-    run: () => input.run(item.id),
-  });
+  ): CommandPaletteActionItem => {
+    const shortcutCommand = shortcutByAction.get(item.id);
+    return {
+      kind: "action",
+      value: `thread-action:${item.id}`,
+      searchTerms: [title, "thread"],
+      title,
+      icon: icon(iconName, ITEM_ICON_CLASS),
+      ...(item.disabled ? { disabled: true } : {}),
+      ...(shortcutCommand ? { shortcutCommand } : {}),
+      run: () => input.run(item.id),
+    };
+  };
   return input.items.flatMap(
     (item): Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> => {
       if (!item.children) return [action(item, item.label, item.icon)];

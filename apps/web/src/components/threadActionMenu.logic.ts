@@ -1,4 +1,4 @@
-import type { ContextMenuItem } from "@t3tools/contracts";
+import type { ContextMenuItem, KeybindingCommand } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 
 /**
@@ -26,6 +26,7 @@ export type ThreadActionMenuId =
   | "copy"
   | "copy-path"
   | "copy-branch"
+  | "copy-reference"
   | "copy-thread-id"
   | "archive"
   | "delete";
@@ -72,6 +73,8 @@ export function buildDraftActionMenuItems(options: {
 export interface ThreadActionMenuState {
   readonly canOperate: boolean;
   readonly branch: string | null;
+  /** The pull request a reference to this thread points at, when it has one. */
+  readonly pullRequestUrl: string | null;
   /**
    * Project scoping for the thread list. Null on surfaces with no scoped
    * list behind the menu (the chat header), where the item must not show.
@@ -110,8 +113,41 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
     "copy",
     "copy-path",
     "copy-branch",
+    "copy-reference",
     "copy-thread-id",
   ].includes(action);
+}
+
+// Keybindings name a thread action, not a direction: the first available
+// candidate wins, so one key toggles pin or settle, and copying a reference
+// prefers the pull request over the thread ID.
+const SHORTCUT_ACTIONS: Partial<Record<KeybindingCommand, ReadonlyArray<ThreadActionMenuId>>> = {
+  "thread.pin": ["pin", "unpin"],
+  "thread.settle": ["settle", "unsettle"],
+  "thread.copyReference": ["copy-reference", "copy-thread-id"],
+};
+
+function findEnabledItem(
+  items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
+  id: ThreadActionMenuId,
+): boolean {
+  return items.some(
+    (item) =>
+      item.disabled !== true &&
+      (item.id === id || (item.children !== undefined && findEnabledItem(item.children, id))),
+  );
+}
+
+export const THREAD_ACTION_SHORTCUT_COMMANDS = Object.keys(
+  SHORTCUT_ACTIONS,
+) as ReadonlyArray<KeybindingCommand>;
+
+/** The registry action a keybinding runs for a thread, or null when it has nothing to do. */
+export function threadActionForShortcut(
+  command: KeybindingCommand,
+  items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
+): ThreadActionMenuId | null {
+  return SHORTCUT_ACTIONS[command]?.find((action) => findEnabledItem(items, action)) ?? null;
 }
 
 /**
@@ -225,6 +261,9 @@ export function buildThreadActionMenuItems(
         { id: "copy-path", label: "Path", icon: "folder" },
         ...(state.branch
           ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
+          : []),
+        ...(state.pullRequestUrl
+          ? [{ id: "copy-reference" as const, label: "PR link", icon: "link" }]
           : []),
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
       ],

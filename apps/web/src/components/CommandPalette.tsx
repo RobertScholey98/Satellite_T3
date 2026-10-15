@@ -17,7 +17,6 @@ import {
 } from "@t3tools/client-runtime/operations/projects";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
 import {
   canPreloadBrowsePath,
   createBrowseNavigationCoordinator,
@@ -86,10 +85,13 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { requestThreadRename, useThreadActionMenu } from "../hooks/useThreadActionMenu";
+import {
+  copyPullRequestLink,
+  requestThreadRename,
+  useThreadActionMenu,
+} from "../hooks/useThreadActionMenu";
 import { buildThreadActionPaletteItems } from "./threadActionPalette";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
-import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { useClientSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
 import { useCustomThemes } from "../hooks/useCustomThemes";
@@ -758,42 +760,19 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
-  const threadActionMenu = useThreadActionMenu({ startRename: requestThreadRename });
+  const threadActionMenu = useThreadActionMenu({
+    startRename: requestThreadRename,
+    openPanelPullRequestUrl,
+  });
+  const activeThreadRef = activeThread
+    ? scopeThreadRef(activeThread.environmentId, activeThread.id)
+    : null;
+  // The pull requests page has no thread; its panel's link is the reference.
+  const pullRequestsPageLink =
+    pathname === "/pull-requests" ? (openPanelPullRequestUrl ?? null) : null;
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
-  const activeThreadReferenceCopyTarget =
-    referenceThreadRef === null || (pathname === "/pull-requests" && !openPanelPullRequestUrl)
-      ? null
-      : resolveThreadReferenceCopyTarget({
-          threadId: referenceThreadRef.threadId,
-          openPanelPullRequestUrl,
-          pullRequests: activeThread?.pullRequests,
-          linkedPullRequestUrl:
-            activeThread?.linkedPullRequest?.url ?? activeThread?.branchPullRequest?.url ?? null,
-        });
-  const copyActiveThreadReference = useCallback(async () => {
-    const target = activeThreadReferenceCopyTarget;
-    if (target === null) return;
-    try {
-      const didCopy = await writeTextToClipboard(target.value, target.clipboardTarget);
-      if (!didCopy) return;
-      toastManager.add({
-        type: "success",
-        title: target.successTitle,
-        description: target.value,
-      });
-    } catch (error) {
-      console.error(error);
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: target.failureTitle,
-          description: error instanceof Error ? error.message : "An error occurred.",
-        }),
-      );
-    }
-  }, [activeThreadReferenceCopyTarget]);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -1932,28 +1911,24 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  if (activeThreadReferenceCopyTarget !== null) {
+  if (pullRequestsPageLink !== null) {
     actionItems.push({
       kind: "action",
       value: "action:copy-thread-reference",
-      searchTerms: ["copy", "pull request", "pr link", "thread id", "reference"],
-      title:
-        activeThreadReferenceCopyTarget.kind === "pull-request" ? "Copy PR link" : "Copy thread ID",
-      description: activeThreadReferenceCopyTarget.value,
+      searchTerms: ["copy", "pull request", "pr link", "reference"],
+      title: "Copy PR link",
+      description: pullRequestsPageLink,
       icon: <LinkIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "thread.copyReference",
-      run: copyActiveThreadReference,
+      run: () => copyPullRequestLink(pullRequestsPageLink),
     });
   }
 
-  if (activeThread !== null) {
-    const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+  if (activeThreadRef !== null) {
     actionItems.push(
       ...buildThreadActionPaletteItems({
-        items: threadActionMenu
-          .readMenuItems(threadRef)
-          .filter((item) => item.id === "rename" || item.id === "regenerate-title"),
-        run: (action) => threadActionMenu.runAction(threadRef, action),
+        items: threadActionMenu.readMenuItems(activeThreadRef),
+        run: (action) => threadActionMenu.runAction(activeThreadRef, action),
       }),
     );
   }
@@ -3100,12 +3075,20 @@ function OpenCommandPaletteDialog(props: {
       }
       return;
     }
-    if (command === "thread.copyReference") {
+    const threadAction =
+      activeThreadRef && command ? threadActionMenu.shortcutAction(activeThreadRef, command) : null;
+    if (activeThreadRef && threadAction) {
       event.preventDefault();
       event.stopPropagation();
-      if (activeThreadReferenceCopyTarget === null) return;
       setOpen(false);
-      void copyActiveThreadReference();
+      void threadActionMenu.runAction(activeThreadRef, threadAction);
+      return;
+    }
+    if (command === "thread.copyReference" && pullRequestsPageLink) {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      void copyPullRequestLink(pullRequestsPageLink);
       return;
     }
 

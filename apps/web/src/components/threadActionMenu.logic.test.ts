@@ -1,14 +1,17 @@
+import type { KeybindingCommand } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
+  threadActionForShortcut,
   type ThreadActionMenuState,
 } from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
   canOperate: true,
   branch: null,
+  pullRequestUrl: null,
   projectFilter: null,
   isPinned: false,
   isSettled: false,
@@ -242,5 +245,38 @@ describe("buildDraftActionMenuItems", () => {
     const items = buildDraftActionMenuItems({ hasPath: true, hasBranch: false, hasProject: false });
     expect(items.map((item) => item.id)).toEqual(["copy", "discard"]);
     expect(items.at(-1)).toMatchObject({ label: "Discard draft", destructive: true });
+  });
+});
+
+describe("threadActionForShortcut", () => {
+  const shortcut = (command: KeybindingCommand, state: ThreadActionMenuState) =>
+    threadActionForShortcut(command, buildThreadActionMenuItems(state));
+
+  it.each([
+    ["thread.pin", {}, "pin"],
+    ["thread.pin", { isPinned: true }, "unpin"],
+    ["thread.settle", {}, "settle"],
+    ["thread.settle", { isSettled: true }, "unsettle"],
+    ["thread.copyReference", {}, "copy-thread-id"],
+    ["thread.copyReference", { pullRequestUrl: "https://github.com/o/r/pull/7" }, "copy-reference"],
+  ] as const)("%s with %o runs %s", (command, overrides, expected) => {
+    expect(shortcut(command, { ...baseState, ...overrides })).toBe(expected);
+  });
+
+  it("leaves the key alone when the action is unavailable", () => {
+    expect(shortcut("thread.pin", { ...baseState, canOperate: false })).toBeNull();
+    expect(
+      shortcut("thread.settle", {
+        ...baseState,
+        supports: { ...baseState.supports, settlement: false },
+      }),
+    ).toBeNull();
+    expect(shortcut("terminal.toggle", baseState)).toBeNull();
+  });
+
+  it("still copies a reference on a read-only connection", () => {
+    expect(shortcut("thread.copyReference", { ...baseState, canOperate: false })).toBe(
+      "copy-thread-id",
+    );
   });
 });

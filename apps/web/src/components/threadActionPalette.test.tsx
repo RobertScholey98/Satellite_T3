@@ -7,6 +7,7 @@ import { buildThreadActionPaletteItems } from "./threadActionPalette";
 const state: ThreadActionMenuState = {
   canOperate: true,
   branch: "feature/palette",
+  pullRequestUrl: null,
   projectFilter: null,
   isPinned: false,
   isSettled: false,
@@ -112,5 +113,25 @@ describe("buildThreadActionPaletteItems", () => {
     if (hour.kind !== "action") throw new Error("snooze preset is not an action");
     await hour.run();
     expect(ran).toEqual(["rename", "snooze:hour"]);
+  });
+
+  it("labels each entry with the keybinding that runs the same action", () => {
+    const items = buildThreadActionPaletteItems({
+      items: buildThreadActionMenuItems({
+        ...state,
+        isPinned: true,
+        pullRequestUrl: "https://github.com/o/r/pull/7",
+      }),
+      run: async () => {},
+    });
+    expect(
+      items.flatMap((item) =>
+        item.shortcutCommand ? [[item.title, item.shortcutCommand] as const] : [],
+      ),
+    ).toEqual([
+      ["Unpin thread", "thread.pin"],
+      ["Settle thread", "thread.settle"],
+      ["Copy PR link", "thread.copyReference"],
+    ]);
   });
 });

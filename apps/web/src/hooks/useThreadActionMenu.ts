@@ -10,6 +10,7 @@ import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/threa
 import {
   AuthOrchestrationOperateScope,
   type ContextMenuItem,
+  type KeybindingCommand,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -20,6 +21,7 @@ import { useCallback, useEffect, useMemo } from "react";
 import { resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
   buildThreadActionMenuItems,
+  threadActionForShortcut,
   threadActionRequiresOperate,
   type ThreadActionMenuId,
   type ThreadActionMenuState,
@@ -46,7 +48,8 @@ import {
 } from "../logicalProject";
 import { buildPhysicalToLogicalProjectKeyMap } from "../sidebarProjectGrouping";
 import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
-import { useCopyToClipboard } from "./useCopyToClipboard";
+import { useCopyToClipboard, writeTextToClipboard } from "./useCopyToClipboard";
+import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
@@ -76,6 +79,11 @@ export interface ThreadActionSurface {
   readonly snooze?: (threadRef: ScopedThreadRef, snoozedUntil: string) => void;
   /** Replaces the module's navigation, for sidebars that close their mobile sheet first. */
   readonly openProjectSettings?: (threadRef: ScopedThreadRef) => void;
+  /**
+   * The pull request open in this surface's right panel. A reference copied
+   * from here points at it rather than the thread's current pull request.
+   */
+  readonly openPanelPullRequestUrl?: string | null | undefined;
   /** Only a surface with a project-scoped thread list offers "Filter by project". */
   readonly projectFilter?: {
     readonly read: (threadRef: ScopedThreadRef) => ThreadActionMenuState["projectFilter"];
@@ -90,6 +98,7 @@ export function readThreadActionMenuState(
     readonly now: Date;
     readonly timestampFormat: TimestampFormat;
     readonly projectFilter?: ThreadActionMenuState["projectFilter"];
+    readonly openPanelPullRequestUrl?: string | null | undefined;
   },
 ): ThreadActionMenuState | null {
   const thread = readThreadShell(threadRef);
@@ -105,6 +114,12 @@ export function readThreadActionMenuState(
   return {
     canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
     branch: thread.branch ?? null,
+    pullRequestUrl:
+      options.openPanelPullRequestUrl ??
+      resolveThreadCurrentPullRequestLink(thread.pullRequests)?.url ??
+      thread.linkedPullRequest?.url ??
+      thread.branchPullRequest?.url ??
+      null,
     projectFilter: options.projectFilter ?? null,
     isPinned: thread.pinnedAt != null,
     isSettled: supports.settlement && thread.settledOverride === "settled",
@@ -116,6 +131,16 @@ export function readThreadActionMenuState(
     supports,
     snoozePresets: resolveSnoozePresets(options.now, options.timestampFormat),
   };
+}
+
+/** Copies a pull request link, the one implementation behind every "copy reference" entry point. */
+export async function copyPullRequestLink(url: string): Promise<void> {
+  try {
+    if (!(await writeTextToClipboard(url, "pull request link"))) return;
+    toastManager.add({ type: "success", title: "PR link copied", description: url });
+  } catch (error) {
+    failureToast("Failed to copy PR link", error);
+  }
 }
 
 const THREAD_RENAME_REQUEST_EVENT = "t3code:thread-rename-request";
@@ -164,6 +189,7 @@ export function useThreadActionMenu({
   settle,
   snooze,
   openProjectSettings,
+  openPanelPullRequestUrl,
   projectFilter,
 }: ThreadActionSurface) {
   const router = useRouter();
@@ -223,10 +249,17 @@ export function useThreadActionMenu({
         now: new Date(),
         timestampFormat,
         projectFilter: projectFilter?.read(threadRef) ?? null,
+        openPanelPullRequestUrl,
       });
       return state ? buildThreadActionMenuItems(state) : [];
     },
-    [projectFilter, timestampFormat],
+    [openPanelPullRequestUrl, projectFilter, timestampFormat],
+  );
+
+  const shortcutAction = useCallback(
+    (threadRef: ScopedThreadRef, command: KeybindingCommand) =>
+      threadActionForShortcut(command, readMenuItems(threadRef)),
+    [readMenuItems],
   );
 
   const runAction = useCallback(
@@ -370,6 +403,15 @@ export function useThreadActionMenu({
             copyBranchToClipboard(thread.branch, { branch: thread.branch });
           }
           return;
+        case "copy-reference": {
+          const url = readThreadActionMenuState(threadRef, {
+            now: new Date(),
+            timestampFormat,
+            openPanelPullRequestUrl,
+          })?.pullRequestUrl;
+          if (url) await copyPullRequestLink(url);
+          return;
+        }
         case "copy-thread-id":
           copyThreadIdToClipboard(thread.id, { threadId: thread.id });
           return;
@@ -438,6 +480,7 @@ export function useThreadActionMenu({
       handleNewThread,
       logicalProjectKeyByPhysicalKey,
       markThreadUnread,
+      openPanelPullRequestUrl,
       openProjectSettings,
       pinThread,
       projectFilter,
@@ -478,5 +521,5 @@ export function useThreadActionMenu({
     void readLocalApi()?.contextMenu.close();
   }, []);
 
-  return { openMenu, closeMenu, readMenuItems, runAction, renameThread };
+  return { openMenu, closeMenu, readMenuItems, runAction, shortcutAction, renameThread };
 }

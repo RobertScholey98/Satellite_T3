@@ -132,8 +132,7 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
-import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
-import { toastManager } from "../components/ui/toast";
+import { copyPullRequestLink } from "../hooks/useThreadActionMenu";
 import { useEscapeToGoBack } from "../hooks/useNavigateBack";
 import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations";
 import {
@@ -2334,21 +2333,7 @@ function PullRequestsContent() {
     if (!openPanelPullRequestUrl) return;
     event.preventDefault();
     event.stopPropagation();
-    if (event.repeat) return;
-    const url = openPanelPullRequestUrl;
-    void writeTextToClipboard(url, "pull request link").then(
-      (didCopy) => {
-        if (didCopy)
-          toastManager.add({ type: "success", title: "PR link copied", description: url });
-      },
-      (error) => {
-        toastManager.add({
-          type: "error",
-          title: "Failed to copy PR link",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        });
-      },
-    );
+    if (!event.repeat) void copyPullRequestLink(openPanelPullRequestUrl);
   });
   const closeActiveSurfaceFromShortcut = useEffectEvent((event: KeyboardEvent) => {
     if (activePullRequestSurface === null) return;
