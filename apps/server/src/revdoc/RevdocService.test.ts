@@ -45,6 +45,7 @@ import * as RevdocService from "./RevdocService.ts";
 import type { RevdocGenerationInput, RevdocGenerationResult } from "./RevdocGeneration.ts";
 import { makeCodexTextGeneration } from "../textGeneration/CodexTextGeneration.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as TextGenerationOperations from "../textGeneration/TextGenerationOperations.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
 
 const threadId = ThreadId.make("review-thread");
@@ -349,8 +350,10 @@ describe("worktree Revdoc service", () => {
             ].join("\n"),
           }),
         );
-        const generation = yield* makeCodexTextGeneration(
-          yield* decodeCodexSettings({ binaryPath, homePath: cliDirectory }),
+        const generation = TextGenerationOperations.fromRunner(
+          yield* makeCodexTextGeneration(
+            yield* decodeCodexSettings({ binaryPath, homePath: cliDirectory }),
+          ),
         );
         const env = yield* setup({
           generate: (input) =>

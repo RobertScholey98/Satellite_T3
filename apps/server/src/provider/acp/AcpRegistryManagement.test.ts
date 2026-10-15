@@ -105,14 +105,7 @@ const makeHarness = Effect.fn(function* (
         ),
     },
     orchestrationAdapter: SatelliteTestRuntime.makeProviderAdapter(instanceId),
-    textGeneration: {
-      generateCommitMessage: () => Effect.die("Unused generation"),
-      generatePrContent: () => Effect.die("Unused generation"),
-      generateBranchName: () => Effect.die("Unused generation"),
-      generateThreadTitle: () => Effect.die("Unused generation"),
-      generateRevdoc: () => Effect.die("Unused generation"),
-      generateIdeaUpdate: () => Effect.die("Unused generation"),
-    },
+    textGeneration: () => Effect.die("Unused generation"),
     acpSessionManagement: {
       listSessions: ({ cwd, cursor }) =>
         Effect.sync(() => {

@@ -96,8 +96,8 @@ export const decodeJsonReply = <S extends Schema.Top>(
 const METADATA_TIMEOUT = Duration.minutes(3);
 const DOCUMENT_TIMEOUT = Duration.minutes(30);
 
-/** The text generation service over `run`. `name` prefixes each operation's span. */
-export function fromRunner(name: string, run: Runner): TextGeneration.TextGeneration["Service"] {
+/** The text generation service: every task composed over `run`. */
+export function fromRunner(run: Runner): TextGeneration.TextGeneration["Service"] {
   const runTask = <S extends Schema.Top>(request: Request<S>, timeout: Duration.Duration) =>
     run(request).pipe(
       Effect.timeoutOrElse({
@@ -113,7 +113,7 @@ export function fromRunner(name: string, run: Runner): TextGeneration.TextGenera
     );
 
   const generateCommitMessage: TextGeneration.TextGeneration["Service"]["generateCommitMessage"] =
-    Effect.fn(`${name}.generateCommitMessage`)(function* (input) {
+    Effect.fn("TextGeneration.generateCommitMessage")(function* (input) {
       const generated = yield* runTask(
         {
           operation: "generateCommitMessage",
@@ -140,7 +140,7 @@ export function fromRunner(name: string, run: Runner): TextGeneration.TextGenera
     });
 
   const generatePrContent: TextGeneration.TextGeneration["Service"]["generatePrContent"] =
-    Effect.fn(`${name}.generatePrContent`)(function* (input) {
+    Effect.fn("TextGeneration.generatePrContent")(function* (input) {
       const generated = yield* runTask(
         {
           operation: "generatePrContent",
@@ -163,7 +163,7 @@ export function fromRunner(name: string, run: Runner): TextGeneration.TextGenera
     });
 
   const generateBranchName: TextGeneration.TextGeneration["Service"]["generateBranchName"] =
-    Effect.fn(`${name}.generateBranchName`)(function* (input) {
+    Effect.fn("TextGeneration.generateBranchName")(function* (input) {
       const generated = yield* runTask(
         {
           operation: "generateBranchName",
@@ -183,7 +183,7 @@ export function fromRunner(name: string, run: Runner): TextGeneration.TextGenera
     });
 
   const generateThreadTitle: TextGeneration.TextGeneration["Service"]["generateThreadTitle"] =
-    Effect.fn(`${name}.generateThreadTitle`)(function* (input) {
+    Effect.fn("TextGeneration.generateThreadTitle")(function* (input) {
       const generated = yield* runTask(
         {
           operation: "generateThreadTitle",

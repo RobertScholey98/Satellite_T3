@@ -10,7 +10,11 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { beforeEach, vi } from "vite-plus/test";
 
 import { makeCursorTextGeneration } from "./CursorTextGeneration.ts";
-import { expectRunnerContract } from "./testing/runnerContract.ts";
+import { expectRunnerContract } from "./testing/runners.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+
+const makeTextGeneration = (...args: Parameters<typeof makeCursorTextGeneration>) =>
+  makeCursorTextGeneration(...args).pipe(Effect.map(TextGenerationOperations.fromRunner));
 
 const cursorSdkMock = vi.hoisted(() => ({
   create: vi.fn<(options: unknown) => Promise<unknown>>(),
@@ -77,7 +81,7 @@ describe("CursorTextGeneration", () => {
             result: reply,
           });
           return yield* generate(
-            yield* makeCursorTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" }),
+            yield* makeTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" }),
           );
         }),
     ).pipe(Effect.provide(layerFs)),
@@ -86,7 +90,7 @@ describe("CursorTextGeneration", () => {
   it.effect("resolves the browser credential for every request after an account change", () =>
     Effect.gen(function* () {
       let apiKey = "first-browser-key";
-      const generation = yield* makeCursorTextGeneration(
+      const generation = yield* makeTextGeneration(
         cursorSettings,
         {},
         Effect.sync(() => apiKey),
@@ -112,7 +116,7 @@ describe("CursorTextGeneration", () => {
 
   it.effect("uses the Cursor SDK prompt API with model parameters and API key", () =>
     Effect.gen(function* () {
-      const textGeneration = yield* makeCursorTextGeneration(cursorSettings, {
+      const textGeneration = yield* makeTextGeneration(cursorSettings, {
         CURSOR_API_KEY: "test-cursor-key",
       });
 
@@ -166,7 +170,7 @@ describe("CursorTextGeneration", () => {
           "Local SDK sandboxing was requested, but sandboxing is not supported in this environment. Disable local.sandboxOptions.enabled or remove ~/.cursor/sandbox.json to run without sandboxing.",
         );
       });
-      const textGeneration = yield* makeCursorTextGeneration(cursorSettings, {
+      const textGeneration = yield* makeTextGeneration(cursorSettings, {
         CURSOR_API_KEY: "test-cursor-key",
       });
 
@@ -200,7 +204,7 @@ describe("CursorTextGeneration", () => {
       cursorSdkMock.create.mockImplementationOnce(async () => {
         throw new Error("Cursor SDK network down");
       });
-      const textGeneration = yield* makeCursorTextGeneration(cursorSettings, {
+      const textGeneration = yield* makeTextGeneration(cursorSettings, {
         CURSOR_API_KEY: "test-cursor-key",
       });
 
@@ -227,7 +231,7 @@ describe("CursorTextGeneration", () => {
         result:
           'Sure, here is the JSON:\n```json\n{\n  "subject": "Update README dummy comment with attribution and date",\n  "body": ""\n}\n```\nDone.',
       });
-      const textGeneration = yield* makeCursorTextGeneration(cursorSettings, {
+      const textGeneration = yield* makeTextGeneration(cursorSettings, {
         CURSOR_API_KEY: "test-cursor-key",
       });
 
@@ -254,7 +258,7 @@ describe("CursorTextGeneration", () => {
         status: "finished",
         result: '{"title":"\\"Trim reconnect spinner status after resume.\\""}',
       });
-      const textGeneration = yield* makeCursorTextGeneration(cursorSettings, {
+      const textGeneration = yield* makeTextGeneration(cursorSettings, {
         CURSOR_API_KEY: "test-cursor-key",
       });
 
@@ -281,7 +285,7 @@ describe("CursorTextGeneration", () => {
           result: '{"title":"Partial title from a failed run."}',
         } satisfies RunResult;
         cursorSdkMock.prompt.mockResolvedValueOnce(promptResult);
-        const generation = yield* makeCursorTextGeneration(cursorSettings, {
+        const generation = yield* makeTextGeneration(cursorSettings, {
           CURSOR_API_KEY: "test-cursor-key",
         });
         const failure = yield* Effect.flip(
@@ -308,7 +312,7 @@ describe("CursorTextGeneration", () => {
   it.effect("fails closed when ambient sandbox policy can expand write access", () =>
     Effect.gen(function* () {
       hasCustomPolicy = true;
-      const generation = yield* makeCursorTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" });
+      const generation = yield* makeTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" });
       const failure = yield* Effect.flip(
         generation.generateThreadTitle({
           cwd: "/real-workspace",
@@ -331,7 +335,7 @@ describe("CursorTextGeneration", () => {
         started();
         return new Promise(() => {});
       });
-      const generation = yield* makeCursorTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" });
+      const generation = yield* makeTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" });
       const result = yield* generation
         .generateThreadTitle({
           cwd: "/real-workspace",
@@ -377,7 +381,7 @@ describe("CursorTextGeneration", () => {
           }
           return agent;
         });
-        const generation = yield* makeCursorTextGeneration(cursorSettings, {
+        const generation = yield* makeTextGeneration(cursorSettings, {
           CURSOR_API_KEY: "key",
         });
         const result = yield* generation
@@ -411,7 +415,7 @@ describe("CursorTextGeneration", () => {
 
   it.effect("requires CURSOR_API_KEY before calling the SDK", () =>
     Effect.gen(function* () {
-      const textGeneration = yield* makeCursorTextGeneration(cursorSettings, {});
+      const textGeneration = yield* makeTextGeneration(cursorSettings, {});
 
       const error = yield* Effect.flip(
         textGeneration.generateCommitMessage({

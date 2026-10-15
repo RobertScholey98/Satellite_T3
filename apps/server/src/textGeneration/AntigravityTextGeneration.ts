@@ -307,5 +307,5 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       ),
   );
 
-  return TextGenerationOperations.fromRunner("AntigravityTextGeneration", runAntigravityJson);
+  return runAntigravityJson;
 });

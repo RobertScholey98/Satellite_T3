@@ -19,7 +19,8 @@ import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { makeGrokTextGeneration } from "./GrokTextGeneration.ts";
 import { execScriptSource, writeFakeCli } from "../testUtils/fakeCli.ts";
-import { expectRunnerContract } from "./testing/runnerContract.ts";
+import { expectRunnerContract } from "./testing/runners.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -96,7 +97,7 @@ function withFakeAcpGrok<A, E, R>(
     const textGeneration = yield* makeGrokTextGeneration(config).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fixtureSpawner),
     );
-    return yield* effectFn(textGeneration, tempDir);
+    return yield* effectFn(TextGenerationOperations.fromRunner(textGeneration), tempDir);
   }).pipe(Effect.scoped);
 }
 
@@ -115,23 +116,6 @@ it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
     expectRunnerContract(
       createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
       (reply, generate) => withFakeAcpGrok({ T3_ACP_PROMPT_RESPONSE_TEXT: reply }, generate),
-    ),
-  );
-
-  it.effect("rejects invalid notebook edits", () =>
-    withFakeAcpGrok(
-      { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":"invalid","summary":"Bad update"}' },
-      (generation, cwd) =>
-        Effect.gen(function* () {
-          const error = yield* generation
-            .generateIdeaUpdate({
-              cwd,
-              prompt: "Organize the notebook.",
-              modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
-            })
-            .pipe(Effect.flip);
-          expect(error.detail).toContain("invalid structured output");
-        }),
     ),
   );
 
@@ -283,32 +267,6 @@ it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
           );
           expect(error._tag).toBe("TextGenerationError");
           expect(error.detail).toMatch(/empty/i);
-        }),
-    ),
-  );
-
-  it.effect("decodes a structured PR title + body", () =>
-    withFakeAcpGrok(
-      {
-        T3_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({
-          title: "feat(grok): wire up session/set_model",
-          body: "## Summary\n- Replace `-m` spawn flag with the typed ACP `session/set_model`.\n- Translate `MODEL_SWITCH_INCOMPATIBLE_AGENT` into a validation error.",
-        }),
-      },
-      (textGeneration) =>
-        Effect.gen(function* () {
-          const generated = yield* textGeneration.generatePrContent({
-            cwd: process.cwd(),
-            baseBranch: "main",
-            headBranch: "feat/grok-provider",
-            commitSummary: "feat: add grok provider",
-            diffSummary: "M apps/server/src/provider/Drivers/GrokDriver.ts",
-            diffPatch: "diff --git a/.../GrokDriver.ts b/.../GrokDriver.ts",
-            modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
-          });
-
-          expect(generated.title).toBe("feat(grok): wire up session/set_model");
-          expect(generated.body).toContain("Translate `MODEL_SWITCH_INCOMPATIBLE_AGENT`");
         }),
     ),
   );

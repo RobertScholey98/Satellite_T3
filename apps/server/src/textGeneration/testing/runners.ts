@@ -4,8 +4,34 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import type * as TextGeneration from "../TextGeneration.ts";
+import * as TextGenerationOperations from "../TextGenerationOperations.ts";
 
 const isTextGenerationError = Schema.is(TextGenerationError);
+
+/**
+ * A run step whose model answers each request with `reply`, already
+ * structured, the way Claude's CLI answers. Every request lands in `requests`.
+ */
+export const cannedRunner = (
+  reply: (request: TextGenerationOperations.Request<Schema.Top>) => Effect.Effect<unknown>,
+) => {
+  const requests: Array<TextGenerationOperations.Request<Schema.Top>> = [];
+  const run: TextGenerationOperations.Runner = (request) => {
+    requests.push(request);
+    return reply(request).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(request.outputSchema)),
+      Effect.mapError(
+        (cause) =>
+          new TextGenerationError({
+            operation: request.operation,
+            detail: "The model returned invalid structured output.",
+            cause,
+          }),
+      ),
+    );
+  };
+  return { run, requests };
+};
 
 type GenerateTitle = (
   textGeneration: TextGeneration.TextGeneration["Service"],

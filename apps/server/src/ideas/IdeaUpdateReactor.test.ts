@@ -42,6 +42,7 @@ import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ProviderInstanceRegistry } from "../provider/ProviderInstanceRegistry.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { cannedRunner } from "../textGeneration/testing/runners.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { createIdeaNotebook } from "./IdeaNotebook.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
@@ -111,14 +112,7 @@ const updaterLayer = (generate: (prompt: string) => Effect.Effect<IdeaUpdateResu
               applyUsageLimits: unused,
             },
             orchestrationAdapter: makeProviderAdapter(instanceId),
-            textGeneration: {
-              generateCommitMessage: unused,
-              generatePrContent: unused,
-              generateBranchName: unused,
-              generateThreadTitle: unused,
-              generateRevdoc: unused,
-              generateIdeaUpdate: ({ prompt }) => generate(prompt),
-            },
+            textGeneration: cannedRunner(({ prompt }) => generate(prompt)).run,
           }),
       }),
     ),

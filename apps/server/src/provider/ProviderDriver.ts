@@ -37,7 +37,7 @@ import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
-import type { TextGeneration } from "../textGeneration/TextGeneration.ts";
+import type * as TextGenerationOperations from "../textGeneration/TextGenerationOperations.ts";
 import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
 import type { ProviderDriverError } from "./Errors.ts";
 import type { ProviderAuthController } from "./ProviderAuthService.ts";
@@ -96,7 +96,8 @@ export interface ProviderInstance {
     ProviderDriverError
   >;
   readonly orchestrationAdapter: ProviderAdapterV2Shape;
-  readonly textGeneration: TextGeneration["Service"];
+  /** Runs one text generation request; the TextGeneration service composes tasks on top. */
+  readonly textGeneration: TextGenerationOperations.Runner;
   readonly auth?: ProviderAuthController;
   readonly acpSessionManagement?: {
     readonly listSessions: (input: {

@@ -34,6 +34,7 @@ import {
   resolveLatestProviderVersion,
 } from "../providerMaintenance.ts";
 import { CodexDriver } from "./CodexDriver.ts";
+import * as TextGenerationOperations from "../../textGeneration/TextGenerationOperations.ts";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../../orchestration-v2/ProviderAdapter.ts";
@@ -295,14 +296,14 @@ it.layer(layerTest)("CodexDriver", (it) => {
       const modelSelection = { instanceId, model: "gpt-5.4" };
       const failures = yield* Effect.all([
         Effect.flip(
-          instance.textGeneration.generateThreadTitle({
+          TextGenerationOperations.fromRunner(instance.textGeneration).generateThreadTitle({
             cwd: process.cwd(),
             message: "Repair login",
             modelSelection,
           }),
         ),
         Effect.flip(
-          instance.textGeneration.generateRevdoc({
+          TextGenerationOperations.fromRunner(instance.textGeneration).generateRevdoc({
             cwd: process.cwd(),
             prompt: "Review the worktree.",
             modelSelection,

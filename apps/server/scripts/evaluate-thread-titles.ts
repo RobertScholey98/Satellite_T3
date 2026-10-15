@@ -16,6 +16,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as CodexTextGeneration from "../src/textGeneration/CodexTextGeneration.ts";
+import * as TextGenerationOperations from "../src/textGeneration/TextGenerationOperations.ts";
 import { threadTitleEvaluationCases } from "./threadTitleEvaluationCases.ts";
 import {
   formatThreadTitleContext,
@@ -67,8 +68,8 @@ await Effect.runPromise(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-title-evaluation-" });
-    const generation = yield* CodexTextGeneration.makeCodexTextGeneration(
-      yield* decodeSettings({}),
+    const generation = TextGenerationOperations.fromRunner(
+      yield* CodexTextGeneration.makeCodexTextGeneration(yield* decodeSettings({})),
     );
     const baseline = values.baseline
       ? yield* fs.readFileString(values.baseline).pipe(Effect.flatMap(decodeResults))

@@ -29,7 +29,8 @@ import {
   isAntigravityTextGenerationAvailable,
   makeAntigravityTextGeneration,
 } from "./AntigravityTextGeneration.ts";
-import { expectRunnerContract } from "./testing/runnerContract.ts";
+import { expectRunnerContract } from "./testing/runners.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 
 type TextRuntime = Effect.Success<ReturnType<AntigravityTextGenerationOptions["makeRuntime"]>>;
 
@@ -246,11 +247,9 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
       } satisfies TextRuntime;
     });
 
-  const textGeneration = yield* makeAntigravityTextGeneration({
-    profileDirectory,
-    makeRuntime,
-    withProcess,
-  });
+  const textGeneration = TextGenerationOperations.fromRunner(
+    yield* makeAntigravityTextGeneration({ profileDirectory, makeRuntime, withProcess }),
+  );
   const titleInput = { cwd: projectDirectory, message: "Repair Google login", modelSelection };
   const assertCleaned = Effect.gen(function* () {
     expect(state.closed).toEqual(state.workspaces);

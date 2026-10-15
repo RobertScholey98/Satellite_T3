@@ -27,6 +27,7 @@ import {
   replayOpenCodeServer,
 } from "../testFixtures/opencodeProbeResponses.ts";
 import { OpenCodeDriver, openCodeUpdateFor } from "./OpenCodeDriver.ts";
+import * as TextGenerationOperations from "../../textGeneration/TextGenerationOperations.ts";
 
 const serverStarts: Array<string> = [];
 const reachedServer = (operation: string) =>
@@ -77,7 +78,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       const instance = yield* create({}, noHttp);
       // Text generation goes to the instance's 2.x server, which this test refuses to start.
       yield* Effect.flip(
-        instance.textGeneration.generateThreadTitle({
+        TextGenerationOperations.fromRunner(instance.textGeneration).generateThreadTitle({
           cwd: process.cwd(),
           message: "hello",
           modelSelection: { instanceId: instance.instanceId, model: "opencode/big-pickle" },
@@ -93,14 +94,14 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       const instance = yield* create({}, noHttp);
       const modelSelection = { instanceId: instance.instanceId, model: "opencode/big-pickle" };
       const ideaUpdate = yield* Effect.flip(
-        instance.textGeneration.generateIdeaUpdate({
+        TextGenerationOperations.fromRunner(instance.textGeneration).generateIdeaUpdate({
           cwd: process.cwd(),
           prompt: "Organize the notebook.",
           modelSelection,
         }),
       );
       const revdoc = yield* Effect.flip(
-        instance.textGeneration.generateRevdoc({
+        TextGenerationOperations.fromRunner(instance.textGeneration).generateRevdoc({
           cwd: process.cwd(),
           prompt: "Review the worktree.",
           modelSelection,

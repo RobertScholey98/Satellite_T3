@@ -22,7 +22,8 @@ import * as TextGeneration from "./TextGeneration.ts";
 import { sanitizeThreadTitle } from "./TextGenerationUtils.ts";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
-import { expectRunnerContract } from "./testing/runnerContract.ts";
+import { expectRunnerContract } from "./testing/runners.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 import type { RevdocGenerationActivity } from "../revdoc/RevdocGeneration.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const REVDOC_OUTPUT =
@@ -191,7 +192,7 @@ function withFakeClaudeEnv<A, E, R>(
       undefined,
       Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
     );
-    return yield* effectFn(textGeneration);
+    return yield* effectFn(TextGenerationOperations.fromRunner(textGeneration));
   }).pipe(Effect.scoped);
 }
 
@@ -201,26 +202,6 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       createModelSelection(ProviderInstanceId.make("claudeAgent"), SYNTHETIC_CLAUDE_STANDARD_MODEL),
       (reply, generate) =>
         withFakeClaudeEnv({ output: `{"structured_output":${reply}}` }, generate),
-    ),
-  );
-
-  it.effect("rejects invalid notebook edits", () =>
-    withFakeClaudeEnv(
-      { output: '{"structured_output":{"edits":"invalid","summary":"Bad update"}}' },
-      (generation) =>
-        Effect.gen(function* () {
-          const error = yield* generation
-            .generateIdeaUpdate({
-              cwd: process.cwd(),
-              prompt: "Organize the notebook.",
-              modelSelection: createModelSelection(
-                ProviderInstanceId.make("claudeAgent"),
-                SYNTHETIC_CLAUDE_THINKING_MODEL,
-              ),
-            })
-            .pipe(Effect.flip);
-          expect(error.detail).toContain("invalid structured output");
-        }),
     ),
   );
 
@@ -579,31 +560,6 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
 
         expect(error._tag).toBe("TextGenerationError");
       }),
-    ),
-  );
-
-  it.effect("falls back when Claude thread title normalization becomes whitespace-only", () =>
-    withFakeClaudeEnv(
-      {
-        output: JSON.stringify({
-          structured_output: {
-            title: '  """   """  ',
-          },
-        }),
-      },
-      (textGeneration) =>
-        Effect.gen(function* () {
-          const generated = yield* textGeneration.generateThreadTitle({
-            cwd: process.cwd(),
-            message: "Name this thread.",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("claudeAgent"),
-              model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
-            },
-          });
-
-          expect(generated.title).toBe("New thread");
-        }),
     ),
   );
 });

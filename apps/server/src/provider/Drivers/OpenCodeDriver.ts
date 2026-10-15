@@ -32,7 +32,7 @@ import * as OpenCodeAdapterV2 from "../../orchestration-v2/Adapters/OpenCodeAdap
 import * as OpenCode2AdapterV2 from "../../orchestration-v2/Adapters/OpenCode2AdapterV2.ts";
 import type { ProviderAdapterV2Shape } from "../../orchestration-v2/ProviderAdapter.ts";
 import * as ServerSettings from "../../serverSettings.ts";
-import type { TextGeneration } from "../../textGeneration/TextGeneration.ts";
+import type * as TextGenerationOperations from "../../textGeneration/TextGenerationOperations.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { readOpenCodeGoUsageLimits } from "../openCodeUsageLimits.ts";
 import {
@@ -144,41 +144,10 @@ function selectOpenCodeRuntimeAdapter(input: {
 /** Text generation runs on the server the instance's probe detected, each in its own protocol. */
 function selectOpenCodeRuntimeTextGeneration(
   probe: OpenCodeRuntimeProbe,
-  v1: TextGeneration["Service"],
-  v2: TextGeneration["Service"],
-): TextGeneration["Service"] {
-  return {
-    generateRevdoc: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generateRevdoc(input),
-        v2: v2.generateRevdoc(input),
-      }),
-    generateIdeaUpdate: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generateIdeaUpdate(input),
-        v2: v2.generateIdeaUpdate(input),
-      }),
-    generateCommitMessage: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generateCommitMessage(input),
-        v2: v2.generateCommitMessage(input),
-      }),
-    generatePrContent: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generatePrContent(input),
-        v2: v2.generatePrContent(input),
-      }),
-    generateBranchName: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generateBranchName(input),
-        v2: v2.generateBranchName(input),
-      }),
-    generateThreadTitle: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generateThreadTitle(input),
-        v2: v2.generateThreadTitle(input),
-      }),
-  };
+  v1: TextGenerationOperations.Runner,
+  v2: TextGenerationOperations.Runner,
+): TextGenerationOperations.Runner {
+  return (request) => byOpenCodeRuntime(probe.get, { v1: v1(request), v2: v2(request) });
 }
 
 export type OpenCodeDriverEnv =

@@ -237,30 +237,17 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
     snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
     resolveRuntime,
   );
-  const protect = <A>(operation: string, effect: Effect.Effect<A, TextGenerationError>) =>
-    runtime.auth.controller.withAccess!(effect).pipe(
+  const textGeneration: ProviderInstance["textGeneration"] = (request) =>
+    runtime.auth.controller.withAccess!(nativeGeneration(request)).pipe(
       Effect.scoped,
       Effect.mapError(
         (cause) =>
           new TextGenerationError({
-            operation,
+            operation: request.operation,
             detail: "detail" in cause ? cause.detail : "Codex text generation failed.",
           }),
       ),
     );
-  const textGeneration: ProviderInstance["textGeneration"] = {
-    generateRevdoc: (value) => protect("generateRevdoc", nativeGeneration.generateRevdoc(value)),
-    generateIdeaUpdate: (value) =>
-      protect("generateIdeaUpdate", nativeGeneration.generateIdeaUpdate(value)),
-    generateCommitMessage: (value) =>
-      protect("generateCommitMessage", nativeGeneration.generateCommitMessage(value)),
-    generatePrContent: (value) =>
-      protect("generatePrContent", nativeGeneration.generatePrContent(value)),
-    generateBranchName: (value) =>
-      protect("generateBranchName", nativeGeneration.generateBranchName(value)),
-    generateThreadTitle: (value) =>
-      protect("generateThreadTitle", nativeGeneration.generateThreadTitle(value)),
-  };
   return {
     instanceId,
     driverKind: DRIVER,

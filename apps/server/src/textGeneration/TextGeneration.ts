@@ -3,16 +3,11 @@ import type { RevdocGenerationInput, RevdocGenerationResult } from "../revdoc/Re
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type {
-  BranchNamingOptions,
-  ChatAttachment,
-  ModelSelection,
-  ProviderInstanceId,
-} from "@t3tools/contracts";
+import type { BranchNamingOptions, ChatAttachment, ModelSelection } from "@t3tools/contracts";
 import { TextGenerationError } from "@t3tools/contracts";
 
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
-import type { ProviderInstance } from "../provider/ProviderDriver.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
 import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
@@ -123,65 +118,38 @@ export class TextGeneration extends Context.Service<
   }
 >()("t3/textGeneration/TextGeneration") {}
 
-const resolveInstance = (
-  registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
-  operation: keyof TextGeneration["Service"],
-  instanceId: ProviderInstanceId,
-): Effect.Effect<ProviderInstance["textGeneration"], TextGenerationError> =>
-  registry.getInstance(instanceId).pipe(
-    Effect.flatMap((instance) =>
-      instance
-        ? Effect.succeed(instance.textGeneration)
-        : Effect.fail(
-            new TextGenerationError({
-              operation,
-              detail: `No provider instance registered for id '${instanceId}'.`,
-            }),
-          ),
-    ),
-  );
-
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
+  const tasks = TextGenerationOperations.fromRunner((request) =>
+    registry.getInstance(request.modelSelection.instanceId).pipe(
+      Effect.flatMap((instance) =>
+        instance
+          ? instance.textGeneration(request)
+          : Effect.fail(
+              new TextGenerationError({
+                operation: request.operation,
+                detail: `No provider instance registered for id '${request.modelSelection.instanceId}'.`,
+              }),
+            ),
+      ),
+    ),
+  );
   return TextGeneration.of({
-    generateRevdoc: (input) =>
-      resolveInstance(registry, "generateRevdoc", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generateRevdoc(input)),
-      ),
-    generateIdeaUpdate: (input) =>
-      resolveInstance(registry, "generateIdeaUpdate", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generateIdeaUpdate(input)),
-      ),
-    generateCommitMessage: (input) =>
-      resolveInstance(registry, "generateCommitMessage", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generateCommitMessage(input)),
-      ),
-    generatePrContent: (input) =>
-      resolveInstance(registry, "generatePrContent", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generatePrContent(input)),
-      ),
-    generateBranchName: (input) =>
-      resolveInstance(registry, "generateBranchName", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) => textGeneration.generateBranchName(input)),
-      ),
+    ...tasks,
     generateThreadTitle: (input) =>
-      resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
-        Effect.flatMap((textGeneration) =>
-          Effect.gen(function* () {
-            const linkedContext =
-              input.linkedContext ??
-              (yield* ThreadTitleLinks.resolveThreadTitleLinks(input).pipe(
-                Effect.provideService(
-                  SourceControlProviderRegistry.SourceControlProviderRegistry,
-                  sourceControl,
-                ),
-              ));
-            return yield* textGeneration.generateThreadTitle({ ...input, linkedContext });
-          }),
-        ),
-      ),
+      Effect.gen(function* () {
+        const linkedContext =
+          input.linkedContext ??
+          (yield* ThreadTitleLinks.resolveThreadTitleLinks(input).pipe(
+            Effect.provideService(
+              SourceControlProviderRegistry.SourceControlProviderRegistry,
+              sourceControl,
+            ),
+          ));
+        return yield* tasks.generateThreadTitle({ ...input, linkedContext });
+      }),
   });
 });
 

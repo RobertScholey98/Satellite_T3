@@ -15,7 +15,8 @@ import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 import * as OpenCodeServerOwner from "../provider/OpenCodeServerOwner.ts";
 import * as OpenCodeTextGeneration from "./OpenCodeTextGeneration.ts";
 import * as TextGeneration from "./TextGeneration.ts";
-import { expectRunnerContract } from "./testing/runnerContract.ts";
+import { expectRunnerContract } from "./testing/runners.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 
 const runtimeMock = {
   state: {
@@ -241,7 +242,7 @@ function withOpenCodeTextGeneration<A, E, R>(
       settings,
       environment,
     ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
-    return yield* effectFn(textGeneration);
+    return yield* effectFn(TextGenerationOperations.fromRunner(textGeneration));
   }).pipe(Effect.scoped);
 }
 

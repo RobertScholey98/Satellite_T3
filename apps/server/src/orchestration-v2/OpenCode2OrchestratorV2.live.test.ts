@@ -71,6 +71,7 @@ import * as ProviderContinuationRequests from "./ProviderContinuationRequests.ts
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as TextGenerationOperations from "../textGeneration/TextGenerationOperations.ts";
 
 const binaryPath = process.env.OPENCODE2_BIN;
 const ROOT = process.env.OPENCODE2_LIVE_ROOT ?? "";
@@ -1045,7 +1046,9 @@ describe.runIf(binaryPath !== undefined && ROOT !== "")("OpenCode 2 live orchest
         yield* instance!.snapshot.refresh;
 
         // A thread title, generated in a temporary session on the 2.x server.
-        const title = yield* instance!.textGeneration.generateThreadTitle({
+        const title = yield* TextGenerationOperations.fromRunner(
+          instance!.textGeneration,
+        ).generateThreadTitle({
           cwd: work,
           message: "fix the login redirect loop after oauth",
           modelSelection: MODEL,

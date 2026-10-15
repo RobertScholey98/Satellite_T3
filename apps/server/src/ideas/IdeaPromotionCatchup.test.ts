@@ -91,14 +91,7 @@ const runCatchup = Effect.fn(function* (
       applyUsageLimits: unused,
     },
     orchestrationAdapter: makeProviderAdapter(instanceId, driverKind),
-    textGeneration: {
-      generateBranchName: unused,
-      generateCommitMessage: unused,
-      generatePrContent: unused,
-      generateThreadTitle: unused,
-      generateRevdoc: unused,
-      generateIdeaUpdate: unused,
-    },
+    textGeneration: unused,
   };
   const generateIdeaUpdate: TextGeneration.TextGeneration["Service"]["generateIdeaUpdate"] = (
     input,

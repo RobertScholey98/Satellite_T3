@@ -10,7 +10,8 @@ import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
 import { makePiTextGeneration } from "./PiTextGeneration.ts";
-import { expectRunnerContract } from "./testing/runnerContract.ts";
+import { expectRunnerContract } from "./testing/runners.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 
 const decodeJsonLine = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeJsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -76,7 +77,10 @@ it.effect("keeps the text generation runner contract", () =>
           yield* makePiTextGeneration(
             { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
             {},
-          ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, pi.spawner)),
+          ).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, pi.spawner),
+            Effect.map(TextGenerationOperations.fromRunner),
+          ),
         );
       }),
   ),
@@ -88,7 +92,10 @@ it.effect("puts linked source control context in the Pi thread title prompt", ()
     const textGeneration = yield* makePiTextGeneration(
       { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
       {},
-    ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, pi.spawner));
+    ).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, pi.spawner),
+      Effect.map(TextGenerationOperations.fromRunner),
+    );
 
     const generated = yield* textGeneration.generateThreadTitle({
       cwd: process.cwd(),

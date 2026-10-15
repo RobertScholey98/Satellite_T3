@@ -9,7 +9,8 @@ import * as OpenCode2AdapterV2Testkit from "../orchestration-v2/Adapters/OpenCod
 import * as OpenCode2Server from "../provider/opencode2/OpenCode2Server.ts";
 import * as OpenCode2TextGeneration from "./OpenCode2TextGeneration.ts";
 import { OPENCODE2_TITLE_GENERATION } from "./OpenCode2TextGeneration.fixture.ts";
-import { expectRunnerContract } from "./testing/runnerContract.ts";
+import { expectRunnerContract } from "./testing/runners.ts";
+import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 
 const layer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-opencode2-text-generation-test-",
@@ -41,6 +42,7 @@ it.layer(layer)("OpenCode2TextGeneration", (it) => {
           });
           return yield* generate(
             yield* OpenCode2TextGeneration.make().pipe(
+              Effect.map(TextGenerationOperations.fromRunner),
               Effect.provideService(OpenCode2Server.OpenCode2Server, server),
             ),
           );
@@ -58,6 +60,7 @@ it.layer(layer)("OpenCode2TextGeneration", (it) => {
         entries: [...OPENCODE2_TITLE_GENERATION, { type: "runtime_exit", status: "success" }],
       });
       const textGeneration = yield* OpenCode2TextGeneration.make().pipe(
+        Effect.map(TextGenerationOperations.fromRunner),
         Effect.provideService(OpenCode2Server.OpenCode2Server, server),
       );
       const title = yield* textGeneration.generateThreadTitle({
@@ -120,6 +123,7 @@ it.layer(layer)("OpenCode2TextGeneration", (it) => {
         ],
       });
       const textGeneration = yield* OpenCode2TextGeneration.make().pipe(
+        Effect.map(TextGenerationOperations.fromRunner),
         Effect.provideService(OpenCode2Server.OpenCode2Server, server),
       );
       const failure = yield* textGeneration
@@ -203,6 +207,7 @@ it.layer(layer)("OpenCode2TextGeneration", (it) => {
         ],
       });
       const textGeneration = yield* OpenCode2TextGeneration.make().pipe(
+        Effect.map(TextGenerationOperations.fromRunner),
         Effect.provideService(OpenCode2Server.OpenCode2Server, server),
       );
       const failure = yield* textGeneration
@@ -281,6 +286,7 @@ it.layer(layer)("OpenCode2TextGeneration", (it) => {
         ],
       });
       const textGeneration = yield* OpenCode2TextGeneration.make().pipe(
+        Effect.map(TextGenerationOperations.fromRunner),
         Effect.provideService(OpenCode2Server.OpenCode2Server, server),
       );
       const failure = yield* textGeneration
