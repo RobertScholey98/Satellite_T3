@@ -67,8 +67,12 @@ const FORMAT_MEDIA_TYPES = {
   text: "text/plain",
 } as const;
 const IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-export const isTextMedia = (mediaType: string, name: string) =>
+const isTextMedia = (mediaType: string, name: string) =>
   mediaType.startsWith("text/") || /\.(md|markdown|html?|txt|json|csv|svg)$/i.test(name);
+/** Whether a notebook artifact holds text. Artifacts saved before `textStatus` existed infer it. */
+export const isTextArtifact = (artifact: IdeaArtifact) =>
+  (artifact.textStatus ?? (isTextMedia(artifact.mediaType, artifact.name) ? "available" : null)) ===
+  "available";
 /** The text format of a source named `name`, or null for binary media. */
 const documentFormat = (mediaType: string | null, name: string): Format | null => {
   if (mediaType === "text/html" || /\.html?$/i.test(name)) return "html";
@@ -587,7 +591,7 @@ export const makeDocumentService = (options: {
       );
     });
     const readSource = Effect.fnUntraced(function* (input: PublishRequest) {
-      if (input.content) return { name: input.title, ...input.content };
+      if (input.content) return { name: input.title, ...input.content, isText: false };
       if (input.text !== undefined) {
         if (input.path || !input.mediaType)
           return yield* error("invalid", "Publish either a file path or text with a media type.");
@@ -595,6 +599,7 @@ export const makeDocumentService = (options: {
           name: input.title,
           mediaType: input.mediaType,
           bytes: new TextEncoder().encode(input.text),
+          isText: true,
         };
       }
       if (!input.path || !path.isAbsolute(input.path))
@@ -605,11 +610,13 @@ export const makeDocumentService = (options: {
       const chunks = yield* fs
         .stream(input.path, { bytesToRead: MAX_SNAPSHOT_BYTES + 1 })
         .pipe(Stream.runCollect, Effect.mapError(storageError));
-      return { name: input.path, mediaType: null, bytes: Buffer.concat(chunks) };
+      return { name: input.path, mediaType: null, bytes: Buffer.concat(chunks), isText: false };
     });
     const readSnapshot = Effect.fnUntraced(function* (input: PublishRequest) {
       const source = yield* readSource(input);
-      const format = documentFormat(source.mediaType, source.name);
+      // Inline text is text whatever its media type, such as application/json.
+      const format =
+        documentFormat(source.mediaType, source.name) ?? (source.isText ? "text" : null);
       if (!format) {
         if (!source.mediaType)
           return yield* error(
@@ -747,7 +754,7 @@ export const makeDocumentService = (options: {
         name: document.title,
         mediaType,
         sizeBytes: Number(size.size),
-        textStatus: isTextMedia(mediaType, document.title)
+        textStatus: !revision.snapshot_path.endsWith(`.${BINARY_EXTENSION}`)
           ? "available"
           : IMAGE_MEDIA_TYPES.has(mediaType)
             ? "image"

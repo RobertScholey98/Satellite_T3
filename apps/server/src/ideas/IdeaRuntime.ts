@@ -16,7 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { CommandId, IdeaArtifactId, type ThreadId } from "@t3tools/contracts";
-import { DocumentService, isTextMedia } from "../documents/DocumentService.ts";
+import { DocumentService, isTextArtifact } from "../documents/DocumentService.ts";
 import { ServerConfig } from "../config.ts";
 import { ProcessRunner } from "../processRunner.ts";
 import { OrchestrationEngineService } from "../orchestration-v2/SatelliteOrchestration.ts";
@@ -385,7 +385,7 @@ export class IdeaRuntime extends Context.Service<
               artifactId: IdeaArtifactId.make(input.id),
             })
             .pipe(Effect.mapError(asRuntimeError));
-          if (!isTextMedia(result.artifact.mediaType, result.artifact.name))
+          if (!isTextArtifact(result.artifact))
             return yield* fail(
               "This document cannot be extracted as text. Use idea_read_image for PNG, JPEG, GIF or WebP attachments. Other binary formats need a text export.",
             );

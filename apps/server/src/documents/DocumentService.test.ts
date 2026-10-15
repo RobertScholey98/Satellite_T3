@@ -409,6 +409,53 @@ describe("managed document persistence", () => {
     }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
   );
 
+  it.effect("publishes inline text with a non-text media type as a text document", () =>
+    Effect.gen(function* () {
+      const f = yield* setup;
+      yield* initRepository(f.stateDir);
+      const ideas = yield* IdeaNotebookStore;
+      yield* createIdea;
+      const json = {
+        threadId,
+        title: "Settings",
+        kind: "document" as const,
+        text: '{"ready":true}',
+        mediaType: "application/json",
+      };
+
+      const published = yield* f.service.publish({ ...json, requestId: "json" }, actor);
+      const replayed = yield* f.service.publish({ ...json, requestId: "json" }, actor);
+      const svg = yield* f.service.publish(
+        {
+          requestId: "svg",
+          threadId: ideaThreadId,
+          title: "Diagram",
+          kind: "document",
+          text: "<svg></svg>",
+          mediaType: "image/svg+xml",
+        },
+        actor,
+      );
+
+      assert.deepEqual(
+        [published.revision.format, published.content, replayed.revision.id],
+        ["text", '{"ready":true}', published.revision.id],
+      );
+      assert.deepEqual(
+        (yield* f.service.list({ threadId })).map((document) => document.title).sort(),
+        ["Review", "Settings"],
+      );
+      assert.equal((yield* publishedRows).length, 1);
+      assert.deepEqual(
+        (yield* ideas.requireActive(ideaThreadId)).artifacts.map(({ id, textStatus }) => [
+          id,
+          textStatus,
+        ]),
+        [[IdeaArtifactId.make(svg.document.id), "available"]],
+      );
+    }).pipe(Effect.scoped, Effect.provide(integrationLayer)),
+  );
+
   it.effect("reads idea artifacts saved before ideas used the documents module", () =>
     Effect.gen(function* () {
       const f = yield* setup;

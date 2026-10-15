@@ -29,7 +29,7 @@ import { forkParked } from "../serverActivation.ts";
 import { IdeaNotebookStore } from "./IdeaNotebookStore.ts";
 import { ideaActivityDiscussion } from "./IdeaDiscussion.ts";
 import { IdeaRuntime, IdeaRuntimeError } from "./IdeaRuntime.ts";
-import { DocumentService, isTextMedia } from "../documents/DocumentService.ts";
+import { DocumentService, isTextArtifact } from "../documents/DocumentService.ts";
 import {
   IDEA_UPDATE_INSTRUCTIONS,
   IDEA_UPDATE_OUTPUT_SCHEMA,
@@ -185,7 +185,7 @@ export class IdeaUpdateReactor extends Context.Service<
               sourceSequences.set("artifact:" + event.payload.mutation.artifact.id, event.sequence);
           }
           const documents = yield* Effect.forEach(
-            notebook.artifacts.filter((artifact) => isTextMedia(artifact.mediaType, artifact.name)),
+            notebook.artifacts.filter(isTextArtifact),
             (artifact) =>
               documentService.readIdeaDocument({ threadId, artifactId: artifact.id }).pipe(
                 Effect.map((result) => {
