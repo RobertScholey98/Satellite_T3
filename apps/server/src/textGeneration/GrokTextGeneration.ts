@@ -5,7 +5,6 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/process";
@@ -15,7 +14,6 @@ import { type GrokSettings, TextGenerationError } from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import * as TextGenerationOperations from "./TextGenerationOperations.ts";
-import { textGenerationTimeoutMs } from "./TextGenerationUtils.ts";
 import {
   applyGrokAcpModelSelection,
   currentGrokModelIdFromSessionSetup,
@@ -37,24 +35,22 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
   const path = yield* Path.Path;
 
   const runGrokJson: TextGenerationOperations.Runner = (request) => {
-    const { operation, cwd, prompt, modelSelection, onActivity } = request;
+    const { operation, needs, cwd, prompt, modelSelection, onActivity } = request;
+    const isolated = TextGenerationOperations.isIsolated(needs);
     return Effect.gen(function* () {
       const outputRef = yield* Ref.make("");
-      const runtimeEnvironment =
-        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
-          ? yield* prepareGrokIdeaEnvironment(cwd, environment, "updates").pipe(
-              Effect.provideService(FileSystem.FileSystem, fs),
-              Effect.provideService(Path.Path, path),
-            )
-          : environment;
+      const runtimeEnvironment = isolated
+        ? yield* prepareGrokIdeaEnvironment(cwd, environment, "updates").pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+          )
+        : environment;
       const runtime = yield* makeGrokAcpRuntime({
         grokSettings,
         environment: runtimeEnvironment,
         childProcessSpawner: commandSpawner,
         cwd,
-        ...(operation === "generateIdeaUpdate" || operation === "generateRevdoc"
-          ? { ideaPurpose: "updates" as const }
-          : {}),
+        ...(isolated ? { ideaPurpose: "updates" as const } : {}),
         clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
       }).pipe(Effect.provideService(Crypto.Crypto, crypto));
 
@@ -67,10 +63,9 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         Effect.forkScoped,
       );
 
-      const guard =
-        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
-          ? yield* installTextGenerationToolGuard(runtime, operation)
-          : undefined;
+      const guard = isolated
+        ? yield* installTextGenerationToolGuard(runtime, operation)
+        : undefined;
 
       yield* runtime.handleSessionUpdate((notification) => {
         const update = notification.update;
@@ -124,16 +119,6 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
         });
       }).pipe(
         Effect.raceFirst(guard?.failure ?? Effect.never),
-        Effect.timeoutOption(textGenerationTimeoutMs(operation)),
-        Effect.flatMap(
-          Option.match({
-            onNone: () =>
-              Effect.fail(
-                new TextGenerationError({ operation, detail: "Grok ACP request timed out." }),
-              ),
-            onSome: (value) => Effect.succeed(value),
-          }),
-        ),
         Effect.mapError((cause: EffectAcpErrors.AcpError | TextGenerationError) =>
           isTextGenerationError(cause)
             ? cause

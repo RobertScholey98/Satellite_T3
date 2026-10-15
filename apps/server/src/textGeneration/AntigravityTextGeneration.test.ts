@@ -29,6 +29,7 @@ import {
   isAntigravityTextGenerationAvailable,
   makeAntigravityTextGeneration,
 } from "./AntigravityTextGeneration.ts";
+import { expectRunnerContract } from "./testing/runnerContract.ts";
 
 type TextRuntime = Effect.Success<ReturnType<AntigravityTextGenerationOptions["makeRuntime"]>>;
 
@@ -282,6 +283,15 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
 });
 
 it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
+  it.effect("keeps the text generation runner contract", () =>
+    expectRunnerContract(modelSelection, (reply, generate) =>
+      makeFixture({ outputs: [reply] }).pipe(
+        Effect.flatMap((fixture) => generate(fixture.textGeneration)),
+        Effect.scoped,
+      ),
+    ),
+  );
+
   it.effect("rejects invalid notebook edits and cleans helper state", () =>
     Effect.gen(function* () {
       const fixture = yield* makeFixture({

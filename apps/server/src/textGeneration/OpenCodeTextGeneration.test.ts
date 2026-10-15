@@ -15,6 +15,7 @@ import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
 import * as OpenCodeServerOwner from "../provider/OpenCodeServerOwner.ts";
 import * as OpenCodeTextGeneration from "./OpenCodeTextGeneration.ts";
 import * as TextGeneration from "./TextGeneration.ts";
+import { expectRunnerContract } from "./testing/runnerContract.ts";
 
 const runtimeMock = {
   state: {
@@ -255,6 +256,14 @@ const advanceIdleClock = Effect.gen(function* () {
 });
 
 it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
+  it.effect("keeps the text generation runner contract", () =>
+    expectRunnerContract(DEFAULT_TEST_MODEL_SELECTION, (reply, generate) =>
+      Effect.sync(() => {
+        runtimeMock.state.promptResult = { data: { parts: [{ type: "text", text: reply }] } };
+      }).pipe(Effect.andThen(withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, generate))),
+    ),
+  );
+
   it.effect("rejects invalid notebook edits and deletes the helper session", () =>
     withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (generation) =>
       Effect.gen(function* () {

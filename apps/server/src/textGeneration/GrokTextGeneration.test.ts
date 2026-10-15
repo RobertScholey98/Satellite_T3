@@ -19,6 +19,7 @@ import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { makeGrokTextGeneration } from "./GrokTextGeneration.ts";
 import { execScriptSource, writeFakeCli } from "../testUtils/fakeCli.ts";
+import { expectRunnerContract } from "./testing/runnerContract.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -110,6 +111,13 @@ function readJsonRpcRequests(
 }
 
 it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
+  it.effect("keeps the text generation runner contract", () =>
+    expectRunnerContract(
+      createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
+      (reply, generate) => withFakeAcpGrok({ T3_ACP_PROMPT_RESPONSE_TEXT: reply }, generate),
+    ),
+  );
+
   it.effect("rejects invalid notebook edits", () =>
     withFakeAcpGrok(
       { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":"invalid","summary":"Bad update"}' },

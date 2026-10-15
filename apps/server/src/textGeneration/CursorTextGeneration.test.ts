@@ -10,6 +10,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { beforeEach, vi } from "vite-plus/test";
 
 import { makeCursorTextGeneration } from "./CursorTextGeneration.ts";
+import { expectRunnerContract } from "./testing/runnerContract.ts";
 
 const cursorSdkMock = vi.hoisted(() => ({
   create: vi.fn<(options: unknown) => Promise<unknown>>(),
@@ -65,6 +66,23 @@ beforeEach(() => {
 });
 
 describe("CursorTextGeneration", () => {
+  it.effect("keeps the text generation runner contract", () =>
+    expectRunnerContract(
+      createModelSelection(ProviderInstanceId.make("cursor"), "composer-2"),
+      (reply, generate) =>
+        Effect.gen(function* () {
+          cursorSdkMock.prompt.mockResolvedValue({
+            id: "run-contract",
+            status: "finished",
+            result: reply,
+          });
+          return yield* generate(
+            yield* makeCursorTextGeneration(cursorSettings, { CURSOR_API_KEY: "key" }),
+          );
+        }),
+    ).pipe(Effect.provide(layerFs)),
+  );
+
   it.effect("resolves the browser credential for every request after an account change", () =>
     Effect.gen(function* () {
       let apiKey = "first-browser-key";

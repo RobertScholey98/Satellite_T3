@@ -10,6 +10,7 @@ import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 
 import { makePiTextGeneration } from "./PiTextGeneration.ts";
+import { expectRunnerContract } from "./testing/runnerContract.ts";
 
 const decodeJsonLine = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeJsonLine = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -64,6 +65,22 @@ const makeFakePi = (reply: string) =>
     );
     return { spawner, received };
   });
+
+it.effect("keeps the text generation runner contract", () =>
+  expectRunnerContract(
+    createModelSelection(ProviderInstanceId.make("pi"), "default"),
+    (reply, generate) =>
+      Effect.gen(function* () {
+        const pi = yield* makeFakePi(reply);
+        return yield* generate(
+          yield* makePiTextGeneration(
+            { enabled: true, binaryPath: "pi", launchArgs: "", customModels: [] },
+            {},
+          ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, pi.spawner)),
+        );
+      }),
+  ),
+);
 
 it.effect("puts linked source control context in the Pi thread title prompt", () =>
   Effect.gen(function* () {

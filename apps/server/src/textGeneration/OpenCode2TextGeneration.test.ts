@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, type ProviderReplayEntry } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -9,12 +9,45 @@ import * as OpenCode2AdapterV2Testkit from "../orchestration-v2/Adapters/OpenCod
 import * as OpenCode2Server from "../provider/opencode2/OpenCode2Server.ts";
 import * as OpenCode2TextGeneration from "./OpenCode2TextGeneration.ts";
 import { OPENCODE2_TITLE_GENERATION } from "./OpenCode2TextGeneration.fixture.ts";
+import { expectRunnerContract } from "./testing/runnerContract.ts";
 
 const layer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-opencode2-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
+/** The recorded title generation, with the model's reply replaced by `reply`. */
+const replyingWith = (reply: string): ReadonlyArray<ProviderReplayEntry> =>
+  OPENCODE2_TITLE_GENERATION.map((entry) => {
+    if (entry.type !== "emit_inbound" || entry.label !== "session.text.ended") return entry;
+    const frame = entry.frame as { readonly event: { readonly data: object } };
+    return {
+      ...entry,
+      frame: { ...frame, event: { ...frame.event, data: { ...frame.event.data, text: reply } } },
+    };
+  });
+
 it.layer(layer)("OpenCode2TextGeneration", (it) => {
+  it.effect("keeps the text generation runner contract", () =>
+    expectRunnerContract(
+      { instanceId: ProviderInstanceId.make("opencode"), model: "opencode/big-pickle" },
+      (reply, generate) =>
+        Effect.gen(function* () {
+          const server = yield* OpenCode2AdapterV2Testkit.replayServer({
+            provider: "opencode",
+            protocol: OpenCode2AdapterV2Testkit.OPENCODE2_HTTP_PROTOCOL,
+            version: "2.0.18",
+            scenario: "opencode2_title_generation",
+            entries: [...replyingWith(reply), { type: "runtime_exit", status: "success" }],
+          });
+          return yield* generate(
+            yield* OpenCode2TextGeneration.make().pipe(
+              Effect.provideService(OpenCode2Server.OpenCode2Server, server),
+            ),
+          );
+        }).pipe(Effect.scoped),
+    ),
+  );
+
   it.effect("generates a title in a temporary session on the free tier and removes it", () =>
     Effect.gen(function* () {
       const server = yield* OpenCode2AdapterV2Testkit.replayServer({

@@ -167,6 +167,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
   const runOpenCodeJson = Effect.fn("runOpenCodeJson")(function* <S extends Schema.Top>(
     input: TextGenerationOperations.Request<S>,
   ) {
+    const isolated = TextGenerationOperations.isIsolated(input.needs);
     const parsedModel = OpenCodeRuntime.parseOpenCodeModelSlug(input.modelSelection.model);
     if (!parsedModel) {
       return yield* new TextGenerationError({
@@ -212,7 +213,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
             cwd: input.cwd,
           });
         }
-        if (input.operation === "generateIdeaUpdate" || input.operation === "generateRevdoc") {
+        if (isolated) {
           const sessionID = session.data.id;
           yield* Effect.addFinalizer(() =>
             Effect.tryPromise({
@@ -260,10 +261,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           });
         }
         const responseParts = result.data?.parts ?? [];
-        if (
-          (input.operation === "generateIdeaUpdate" || input.operation === "generateRevdoc") &&
-          responseParts.some((part) => part.type === "tool")
-        ) {
+        if (isolated && responseParts.some((part) => part.type === "tool")) {
           return yield* new TextGenerationError({
             operation: input.operation,
             detail: "Idea updates cannot use tools.",
@@ -324,25 +322,24 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       }),
     );
 
-    const ideaEnvironment =
-      input.operation === "generateIdeaUpdate" || input.operation === "generateRevdoc"
-        ? yield* prepareOpenCodeIdeaEnvironment({
-            directory: input.cwd,
-            environment,
-            purpose: "updates",
-          }).pipe(
-            Effect.provideService(FileSystem.FileSystem, fs),
-            Effect.provideService(Path.Path, path),
-            Effect.mapError(
-              (cause) =>
-                new TextGenerationError({
-                  operation: input.operation,
-                  detail: "Could not prepare the OpenCode idea update runtime.",
-                  cause,
-                }),
-            ),
-          )
-        : undefined;
+    const ideaEnvironment = isolated
+      ? yield* prepareOpenCodeIdeaEnvironment({
+          directory: input.cwd,
+          environment,
+          purpose: "updates",
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.mapError(
+            (cause) =>
+              new TextGenerationError({
+                operation: input.operation,
+                detail: "Could not prepare the OpenCode idea update runtime.",
+                cause,
+              }),
+          ),
+        )
+      : undefined;
     const serverOutput = ideaEnvironment
       ? openCodeRuntime
           .startOpenCodeServerProcess({

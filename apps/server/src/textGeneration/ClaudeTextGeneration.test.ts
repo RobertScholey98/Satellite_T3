@@ -22,6 +22,7 @@ import * as TextGeneration from "./TextGeneration.ts";
 import { sanitizeThreadTitle } from "./TextGenerationUtils.ts";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
+import { expectRunnerContract } from "./testing/runnerContract.ts";
 import type { RevdocGenerationActivity } from "../revdoc/RevdocGeneration.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const REVDOC_OUTPUT =
@@ -195,6 +196,14 @@ function withFakeClaudeEnv<A, E, R>(
 }
 
 it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
+  it.effect("keeps the text generation runner contract", () =>
+    expectRunnerContract(
+      createModelSelection(ProviderInstanceId.make("claudeAgent"), SYNTHETIC_CLAUDE_STANDARD_MODEL),
+      (reply, generate) =>
+        withFakeClaudeEnv({ output: `{"structured_output":${reply}}` }, generate),
+    ),
+  );
+
   it.effect("rejects invalid notebook edits", () =>
     withFakeClaudeEnv(
       { output: '{"structured_output":{"edits":"invalid","summary":"Bad update"}}' },

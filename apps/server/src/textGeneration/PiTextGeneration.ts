@@ -5,7 +5,6 @@
  * auth, custom providers) still applies.
  */
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/process";
@@ -18,8 +17,6 @@ import {
   resolvePiLaunchArgs,
 } from "../orchestration-v2/Adapters/piT3McpInjection.ts";
 import * as TextGenerationOperations from "./TextGenerationOperations.ts";
-
-const PI_TIMEOUT_MS = 180_000;
 
 const isTextGenerationError = Schema.is(TextGenerationError);
 
@@ -100,14 +97,6 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
       }
       return yield* TextGenerationOperations.decodeJsonReply(request, "Pi", text);
     }).pipe(
-      Effect.timeoutOption(PI_TIMEOUT_MS),
-      Effect.flatMap(
-        Option.match({
-          onNone: () =>
-            Effect.fail(new TextGenerationError({ operation, detail: "Pi request timed out." })),
-          onSome: (value) => Effect.succeed(value),
-        }),
-      ),
       Effect.mapError((cause) =>
         isTextGenerationError(cause)
           ? cause

@@ -23,9 +23,6 @@ import * as TextGenerationOperations from "./TextGenerationOperations.ts";
 
 const isTextGenerationError = Schema.is(TextGenerationError);
 
-/** A generation that takes this long is stuck; its session is stopped and removed. */
-const GENERATION_TIMEOUT = "3 minutes";
-
 /**
  * Nothing in a text generation needs a tool, so every tool asks and T3 is not
  * there to answer. Denying `shell` or `read` outright gets the whole session
@@ -154,18 +151,11 @@ const runOnServer = (
       text: input.prompt,
       ...(images.length === 0 ? {} : { files: images }),
     });
+    // A generation abandoned midway is stopped before its session is removed.
     const result = yield* Deferred.await(outcome).pipe(
-      Effect.timeoutOrElse({
-        duration: GENERATION_TIMEOUT,
-        orElse: () =>
-          client.session.interrupt({ sessionID: Session.ID.make(session.id) }).pipe(
-            Effect.ignore,
-            Effect.as<Outcome>({
-              _tag: "failed",
-              detail: "OpenCode did not finish generating in time.",
-            }),
-          ),
-      }),
+      Effect.onInterrupt(() =>
+        client.session.interrupt({ sessionID: Session.ID.make(session.id) }).pipe(Effect.ignore),
+      ),
     );
     if (result._tag === "failed") {
       return yield* new TextGenerationError({

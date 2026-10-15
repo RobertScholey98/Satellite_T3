@@ -1,7 +1,6 @@
 import { prepareCodexIdeaPolicy } from "../ideas/CodexIdeaPolicy.ts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -21,11 +20,7 @@ import * as ServerConfig from "../config.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import { codexExecLaunchArgs, resolveCodexLaunchArgs } from "../provider/codexLaunchArgs.ts";
 import * as TextGenerationOperations from "./TextGenerationOperations.ts";
-import {
-  normalizeCliError,
-  toJsonSchemaObject,
-  textGenerationTimeoutMs,
-} from "./TextGenerationUtils.ts";
+import { normalizeCliError, toJsonSchemaObject } from "./TextGenerationUtils.ts";
 import { codexModelFamily, getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 
@@ -147,6 +142,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
 
   const runCodexJson = Effect.fn("runCodexJson")(function* <S extends Schema.Top>({
     operation,
+    needs,
     cwd,
     prompt,
     outputSchema: outputSchemaJson,
@@ -162,8 +158,10 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       operation,
       toJsonSchemaObject(outputSchemaJson),
     );
+    const isolated = TextGenerationOperations.isIsolated(needs);
+    // The isolation policy writes its own Codex home, so it needs a directory T3 owns.
     const executionCwd =
-      operation === "generateRevdoc"
+      needs === "isolated"
         ? yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-revdoc-" }).pipe(
             Effect.mapError(
               (cause) =>
@@ -175,10 +173,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             ),
           )
         : cwd;
-    const tempDirectory =
-      operation === "generateIdeaUpdate" || operation === "generateRevdoc"
-        ? executionCwd
-        : undefined;
+    const tempDirectory = isolated ? executionCwd : undefined;
     const schemaPath = yield* writeTempFile(operation, "codex-schema", schemaJson, tempDirectory);
     const outputPath = yield* writeTempFile(operation, "codex-output", "", tempDirectory).pipe(
       Effect.onError(() => removeTempFileDir(schemaPath)),
@@ -195,27 +190,26 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
       const effectiveConfig = resolved?.config ?? codexConfig;
       const effectiveEnvironment = resolved?.environment ?? resolvedEnvironment;
       const launchArgs = resolveCodexLaunchArgs(effectiveConfig.launchArgs, effectiveEnvironment);
-      const ideaPolicy =
-        operation === "generateIdeaUpdate" || operation === "generateRevdoc"
-          ? yield* prepareCodexIdeaPolicy({
-              cwd: executionCwd,
-              homePath: effectiveConfig.homePath,
-              launchArgs,
-              environment: effectiveEnvironment,
-              purpose: "updates",
-            }).pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.provideService(Path.Path, path),
-              Effect.mapError((cause) =>
-                normalizeCliError(
-                  "codex",
-                  operation,
-                  cause,
-                  "Could not prepare idea update permissions",
-                ),
+      const ideaPolicy = isolated
+        ? yield* prepareCodexIdeaPolicy({
+            cwd: executionCwd,
+            homePath: effectiveConfig.homePath,
+            launchArgs,
+            environment: effectiveEnvironment,
+            purpose: "updates",
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.mapError((cause) =>
+              normalizeCliError(
+                "codex",
+                operation,
+                cause,
+                "Could not prepare idea update permissions",
               ),
-            )
-          : undefined;
+            ),
+          )
+        : undefined;
       const models = yield* getModels;
       const requestedModel = modelSelection.model;
       const model =
@@ -305,19 +299,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     }).pipe(Effect.asVoid);
 
     return yield* Effect.gen(function* () {
-      yield* runCodexCommand().pipe(
-        Effect.scoped,
-        Effect.timeoutOption(textGenerationTimeoutMs(operation)),
-        Effect.flatMap(
-          Option.match({
-            onNone: () =>
-              Effect.fail(
-                new TextGenerationError({ operation, detail: "Codex CLI request timed out." }),
-              ),
-            onSome: () => Effect.void,
-          }),
-        ),
-      );
+      yield* runCodexCommand().pipe(Effect.scoped);
 
       const decodeOutput = Schema.decodeEffect(Schema.fromJsonString(outputSchemaJson));
 

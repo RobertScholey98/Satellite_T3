@@ -17,6 +17,7 @@ import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
 import { makeCodexTextGeneration } from "./CodexTextGeneration.ts";
 import { writeFakeCli } from "../testUtils/fakeCli.ts";
+import { expectRunnerContract } from "./testing/runnerContract.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DEFAULT_TEST_MODEL_SELECTION = createModelSelection(
@@ -201,6 +202,12 @@ function withFakeCodexEnv<A, E, R>(
 }
 
 it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
+  it.effect("keeps the text generation runner contract", () =>
+    expectRunnerContract(DEFAULT_TEST_MODEL_SELECTION, (reply, generate) =>
+      withFakeCodexEnv({ output: reply }, generate),
+    ),
+  );
+
   it.effect("generates a Revdoc using the selected model and effort with strict output", () => {
     const review = {
       title: "Feature review",

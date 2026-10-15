@@ -19,11 +19,7 @@ import { type ClaudeSettings, TextGenerationError } from "@t3tools/contracts";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import * as TextGenerationOperations from "./TextGenerationOperations.ts";
-import {
-  normalizeCliError,
-  toJsonSchemaObject,
-  textGenerationTimeoutMs,
-} from "./TextGenerationUtils.ts";
+import { normalizeCliError, toJsonSchemaObject } from "./TextGenerationUtils.ts";
 import {
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
@@ -194,6 +190,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
    */
   const runClaudeJson = Effect.fn("runClaudeJson")(function* <S extends Schema.Top>({
     operation,
+    needs,
     cwd,
     prompt,
     outputSchema: outputSchemaJson,
@@ -204,7 +201,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     TextGenerationError,
     S["DecodingServices"]
   > {
-    const streaming = operation === "generateRevdoc";
+    const streaming = onActivity !== undefined;
     const catalog = yield* scopedModelCatalog;
     const resolvedModelSelection = {
       ...modelSelection,
@@ -252,12 +249,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
-      // Titles and notebook updates need only the supplied prompt, not checkout context.
-      // Avoid --bare: it also skips the subscription's OAuth credentials.
+      // Tasks that need no checkout run in an empty directory rather than with --bare,
+      // which also skips the subscription's OAuth credentials.
       const workingDirectory =
-        operation === "generateThreadTitle" ||
-        operation === "generateIdeaUpdate" ||
-        operation === "generateRevdoc"
+        needs !== "checkout"
           ? yield* fileSystem
               .makeTempDirectoryScoped({ prefix: "t3code-claude-title-" })
               .pipe(
@@ -270,7 +265,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         claudeSettings.binaryPath || "claude",
         [
           "-p",
-          ...(operation === "generateIdeaUpdate" || operation === "generateRevdoc"
+          ...(TextGenerationOperations.isIsolated(needs)
             ? ["--no-session-persistence", "--setting-sources", ""]
             : []),
           "--output-format",
@@ -341,19 +336,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       return stdout;
     });
 
-    const rawStdout = yield* runClaudeCommand().pipe(
-      Effect.scoped,
-      Effect.timeoutOption(textGenerationTimeoutMs(operation)),
-      Effect.flatMap(
-        Option.match({
-          onNone: () =>
-            Effect.fail(
-              new TextGenerationError({ operation, detail: "Claude CLI request timed out." }),
-            ),
-          onSome: (value) => Effect.succeed(value),
-        }),
-      ),
-    );
+    const rawStdout = yield* runClaudeCommand().pipe(Effect.scoped);
 
     const output = yield* decodeClaudeOutput(rawStdout).pipe(
       Effect.catchTags({
