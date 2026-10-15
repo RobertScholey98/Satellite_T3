@@ -595,6 +595,7 @@ export async function restoreRejectedQueuedMessage(
       ...(queuedMessage.modelSelection ? { modelSelection: queuedMessage.modelSelection } : {}),
       ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
       ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
+      ...(queuedMessage.issue ? { issue: queuedMessage.issue } : {}),
       ...(queuedMessage.creation
         ? {
             workspaceSelection: {

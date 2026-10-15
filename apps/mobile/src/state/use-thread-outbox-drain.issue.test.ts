@@ -249,4 +249,16 @@ describe("queued issue work", () => {
     expect(state.start.mock.calls[1]![0].input.bootstrap.issueAttempt).toEqual(RESERVATION);
     expect(remaining()).toEqual([]);
   });
+
+  it("sends a task resent from a restored draft with the reservation it kept", async () => {
+    await state.manager.enqueue({
+      ...QUEUED,
+      issue: { ...QUEUED.issue!, reservation: RESERVATION },
+    });
+    await runDrain();
+
+    expect(state.reserve).not.toHaveBeenCalled();
+    expect(state.start.mock.calls[0]![0].input.bootstrap.issueAttempt).toEqual(RESERVATION);
+    expect(remaining()).toEqual([]);
+  });
 });

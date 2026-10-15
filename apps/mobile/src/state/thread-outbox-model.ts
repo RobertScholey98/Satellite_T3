@@ -47,7 +47,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
   startFromOrigin: Schema.optional(Schema.Boolean),
 });
 
-const QueuedIssueStartSchema = Schema.Struct({
+export const QueuedIssueStartSchema = Schema.Struct({
   sourceEnvironmentId: EnvironmentId,
   sourceProjectId: ProjectId,
   boardId: Schema.String,
@@ -57,6 +57,8 @@ const QueuedIssueStartSchema = Schema.Struct({
   requestId: Schema.String,
   reservation: Schema.optional(IssueAttemptLink),
 });
+
+export type QueuedIssueStart = typeof QueuedIssueStartSchema.Type;
 
 export const QueuedThreadMessageSchema = Schema.Struct({
   purpose: Schema.optional(Schema.Literals(["work", "idea"])),
@@ -114,7 +116,7 @@ export interface QueuedThreadMessage {
   readonly dispatchMode?: ComposerDispatchMode;
   readonly creation?: QueuedThreadCreation;
   /** Starts work on a board issue; the reservation is written back once delivery makes it. */
-  readonly issue?: typeof QueuedIssueStartSchema.Type;
+  readonly issue?: QueuedIssueStart;
   readonly createdAt: string;
 }
 

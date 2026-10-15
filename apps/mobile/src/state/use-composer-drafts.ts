@@ -54,7 +54,9 @@ import {
 import {
   decodeQueuedThreadMessage,
   encodeQueuedThreadMessage,
+  QueuedIssueStartSchema,
   QueuedThreadMessageSchema,
+  type QueuedIssueStart,
   type QueuedThreadMessage,
 } from "./thread-outbox-model";
 import { flushThreadOutbox, threadOutboxManager } from "./thread-outbox";
@@ -340,6 +342,8 @@ export interface ComposerDraft {
    * retargeted to another project without changing identity.
    */
   readonly project?: ComposerDraftProject;
+  /** A restored issue creation keeps its issue, so sending again reuses the reservation. */
+  readonly issue?: QueuedIssueStart;
 }
 
 export interface ComposerDraftProject {
@@ -370,6 +374,7 @@ export type ComposerDraftSettingsUpdate = Pick<
   | "workspaceSelection"
   | "project"
   | "purpose"
+  | "issue"
 >;
 
 const ComposerDraftWorkspaceSelectionSchema = Schema.Struct({
@@ -403,6 +408,7 @@ const ComposerDraftSchema = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
   workspaceSelection: Schema.optional(ComposerDraftWorkspaceSelectionSchema),
   project: Schema.optional(ComposerDraftProjectSchema),
+  issue: Schema.optional(QueuedIssueStartSchema),
 });
 
 const PersistedComposerDraftsSchema = Schema.Struct({
@@ -1537,6 +1543,7 @@ export function clearComposerDraftContentState(
     modelSelection,
     workspaceSelection,
     project: _project,
+    issue: _issue,
     ...retained
   } = existing;
   const draft = {

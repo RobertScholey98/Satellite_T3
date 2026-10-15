@@ -806,6 +806,67 @@ describe("thread outbox recovery rollback", () => {
     ).toEqual({ kind: "failed", message, reason: "rejected by server" });
   });
 
+  it("keeps a rejected issue creation's issue and reservation on its restored draft", async () => {
+    const issue = {
+      sourceEnvironmentId: EnvironmentId.make("environment-1"),
+      sourceProjectId: ProjectId.make("project-1"),
+      boardId: "board",
+      issue: {
+        hostKind: "github" as const,
+        host: "github.com",
+        repository: "acme/app",
+        id: "I_7",
+        number: 7,
+        url: "https://github.com/acme/app/issues/7",
+      },
+      title: "Checkout fails",
+      worktreeName: "issue-7",
+      requestId: "request",
+      reservation: {
+        attemptId: "attempt-1",
+        reservationId: "reservation-1",
+        sourceEnvironmentId: EnvironmentId.make("environment-1"),
+        sourceProjectId: ProjectId.make("project-1"),
+        boardId: "board",
+        issue: {
+          hostKind: "github" as const,
+          host: "github.com",
+          repository: "acme/app",
+          id: "I_7",
+          number: 7,
+          url: "https://github.com/acme/app/issues/7",
+        },
+        destinationEnvironmentId: EnvironmentId.make("environment-1"),
+        sourceGeneration: 0,
+      },
+    };
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "message-issue-restore", text: "Work on issue #7" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      creation: {
+        projectId: ProjectId.make("project-1"),
+        workspaceMode: "worktree",
+        branch: "main",
+        worktreePath: null,
+      },
+      issue,
+    };
+    await harness.manager.enqueue(message);
+
+    await expect(restoreRejectedQueuedMessage(message, "rejected by server")).resolves.toBe(
+      "restored",
+    );
+
+    const draftKey = `new-task:restored-${message.messageId}`;
+    expect(composerDrafts.getComposerDraftSnapshot(draftKey).issue).toEqual(issue);
+    expect(
+      composerDrafts.clearComposerDraftContentState(
+        appAtomRegistry.get(composerDrafts.composerDraftsAtom),
+        draftKey,
+      )[draftKey]?.issue,
+    ).toBeUndefined();
+  });
+
   it("drops an earlier recovery error once a rejected new task is restored", async () => {
     const message: QueuedThreadMessage = {
       ...queuedMessage({ messageId: "message-creation-retried", text: "new task text" }),
