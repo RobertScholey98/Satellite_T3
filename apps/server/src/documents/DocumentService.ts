@@ -60,7 +60,6 @@ const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 const MAX_BINARY_BYTES = 20 * 1024 * 1024;
 type Format = typeof DocumentFormat.Type;
 const SNAPSHOT_EXTENSIONS = { html: "html", markdown: "md", text: "txt" } as const;
-/** Binary media, such as images uploaded to an idea, keep their bytes and are never read as text. */
 const BINARY_EXTENSION = "bin";
 const FORMAT_MEDIA_TYPES = {
   html: "text/html",
@@ -103,7 +102,7 @@ type Placement =
   | { readonly kind: "idea" }
   | { readonly kind: "worktree"; readonly worktree: WorktreeIdentity };
 
-/** A publish from a file path or, for idea uploads and imports, from bytes with a media type. */
+/** An upload or import into an idea, as bytes with a media type. */
 export interface IdeaDocumentInput {
   readonly threadId: ThreadId;
   readonly name: string;
@@ -112,6 +111,7 @@ export interface IdeaDocumentInput {
   /** A stable ID makes the publish idempotent, as for an imported attachment. */
   readonly id?: string;
 }
+/** A publish from a file path, inline text, or, for idea uploads and imports, bytes. */
 export type PublishRequest = DocumentsPublishInput & {
   readonly content?: { readonly mediaType: string; readonly bytes: Uint8Array };
   /** Fixes the ID of a new document, such as an imported attachment the agent was told about. */
@@ -607,7 +607,6 @@ export const makeDocumentService = (options: {
         .pipe(Stream.runCollect, Effect.mapError(storageError));
       return { name: input.path, mediaType: null, bytes: Buffer.concat(chunks) };
     });
-    /** Validated snapshot content: text in one of the document formats, or binary media. */
     const readSnapshot = Effect.fnUntraced(function* (input: PublishRequest) {
       const source = yield* readSource(input);
       const format = documentFormat(source.mediaType, source.name);
