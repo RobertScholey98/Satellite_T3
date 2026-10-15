@@ -592,6 +592,7 @@ import { assetEnvironment } from "../state/assets";
 import { readEnvironmentScope, readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { useDeliverTurn } from "../state/turnDelivery";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { Button, InlineButton } from "./ui/button";
 import {
@@ -1672,6 +1673,7 @@ export default function ChatView(props: ChatViewProps) {
   const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
     reportFailure: false,
   });
+  const deliverTurn = useDeliverTurn();
   const resumeThreadQueue = useOrchestrationCommand(threadEnvironment.resumeThreadQueue, {
     reportFailure: false,
   });
@@ -7465,52 +7467,46 @@ export default function ChatView(props: ChatViewProps) {
       const messageId = newMessageId();
       const createdAt = new Date().toISOString();
       sendInFlightRef.current = true;
-      beginLocalDispatch();
       setThreadError(threadId, null);
-      setOptimisticUserMessages((messages) => [
-        ...messages,
-        {
-          id: messageId,
-          role: "user",
-          text,
-          runId: null,
-          createdAt,
-          updatedAt: createdAt,
-          streaming: false,
-        },
-      ]);
-      scrollToEnd();
       try {
-        const settingsResult = await persistThreadSettingsForNextTurn({
-          threadId,
-          createdAt,
+        const delivery = await deliverTurn({
+          environmentId,
+          turn: {
+            threadId,
+            modelSelection: context.selectedModelSelection,
+            runtimeMode,
+            interactionMode: context.interactionMode,
+            createdAt,
+          },
+          message: { messageId, text, attachments: [] },
+          ...(serverThread ? { thread: serverThread } : {}),
           ...(localCheckoutBranchMismatch
             ? { branch: localCheckoutBranchMismatch.currentBranch }
             : {}),
-          runtimeMode,
-          interactionMode: context.interactionMode,
+          onDispatching: () => {
+            beginLocalDispatch();
+            setOptimisticUserMessages((messages) => [
+              ...messages,
+              {
+                id: messageId,
+                role: "user",
+                text,
+                runId: null,
+                createdAt,
+                updatedAt: createdAt,
+                streaming: false,
+              },
+            ]);
+            scrollToEnd();
+          },
         });
-        const result =
-          settingsResult._tag === "Failure"
-            ? settingsResult
-            : await startThreadTurn({
-                environmentId,
-                input: {
-                  threadId,
-                  message: { messageId, role: "user", text, attachments: [] },
-                  modelSelection: context.selectedModelSelection,
-                  runtimeMode,
-                  interactionMode: context.interactionMode,
-                  createdAt,
-                },
-              });
-        if (result._tag === "Failure") {
+        if (delivery._tag === "Failed") {
           setOptimisticUserMessages((messages) =>
             messages.filter((message) => message.id !== messageId),
           );
           resetLocalDispatch();
-          if (!isAtomCommandInterrupted(result)) {
-            const error = squashAtomCommandFailure(result);
+          if (!isAtomCommandInterrupted(delivery.failure)) {
+            const error = squashAtomCommandFailure(delivery.failure);
             setThreadError(threadId, error instanceof Error ? error.message : failureMessage);
           }
         } else {
@@ -7525,16 +7521,16 @@ export default function ChatView(props: ChatViewProps) {
       beginLocalDispatch,
       clientSettingsHydrated,
       composerRef,
+      deliverTurn,
       environmentId,
       localCheckoutBranchMismatch,
-      persistThreadSettingsForNextTurn,
       resetLocalDispatch,
       routeThreadKey,
       runtimeMode,
       scrollToEnd,
       sendInFlightRef,
+      serverThread,
       setThreadError,
-      startThreadTurn,
     ],
   );
   // A native /goal keeps the agent working across turns. Stop pauses a Codex
