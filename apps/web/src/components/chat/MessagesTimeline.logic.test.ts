@@ -35,7 +35,7 @@ import {
   workEntryReadOutput,
   workEntryIsVisibleInGroup,
 } from "./MessagesTimeline.logic";
-import type { WorkLogEntry } from "../../session-logic";
+import type { WorkLogEntry } from "@t3tools/client-runtime/work-log/work-log-entry";
 
 describe("expanded tool group scrolling", () => {
   const entries = [{ id: "first" }, { id: "second" }];
@@ -3075,7 +3075,6 @@ describe("deriveMessagesTimelineRows", () => {
         createdAt,
         entry: {
           id: `tool-${index}`,
-          toolCallId: `call-${index}`,
           createdAt,
           runId,
           label: "t3-code.preview_snapshot",

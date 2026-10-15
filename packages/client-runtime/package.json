@@ -371,6 +371,10 @@
       "types": "./src/work-log/commandLabel.ts",
       "default": "./src/work-log/commandLabel.ts"
     },
+    "./work-log/work-log-entry": {
+      "types": "./src/work-log/workLogEntry.ts",
+      "default": "./src/work-log/workLogEntry.ts"
+    },
     "./work-log/scroll-anchor": {
       "types": "./src/work-log/scrollAnchor.ts",
       "default": "./src/work-log/scrollAnchor.ts"

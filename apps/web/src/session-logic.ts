@@ -9,23 +9,14 @@ import {
   type OrchestrationV2TurnItem,
   type PlanId,
   type RunId,
-  type ToolActivitySurface,
-  type ToolActivityIcon,
-  type ToolActivitySource,
 } from "@t3tools/contracts";
-import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
 import {
-  classifyToolActivity,
-  collectToolFilePaths,
-  formatReadToolLabel,
-  formatSearchToolLabel,
-} from "@t3tools/shared/toolActivity";
+  workLogEntryFromTurnItem,
+  type WorkLogEntry,
+} from "@t3tools/client-runtime/work-log/work-log-entry";
 import type { HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import { htmlRenderFromToolItem } from "@t3tools/shared/toolOutput";
-import {
-  contextCompactionLabel,
-  workEntryIndicatesToolFailure,
-} from "@t3tools/client-runtime/work-log/presentation";
+import { workEntryIndicatesToolFailure } from "@t3tools/client-runtime/work-log/presentation";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
 import type {
   ThreadPendingApproval,
@@ -52,43 +43,6 @@ export {
   workEntryDisplayIndicatesToolFailure,
   workEntryIndicatesToolFailure,
 } from "@t3tools/client-runtime/work-log/presentation";
-
-export type WorkLogToolLifecycleStatus =
-  | "idle"
-  | "inProgress"
-  | "completed"
-  | "failed"
-  | "declined"
-  | "stopped";
-
-export interface WorkLogEntry {
-  readonly questionAnswer?: import("@t3tools/contracts").UserInputAttachmentAnswerPayload;
-  readonly id: string;
-  readonly createdAt: string;
-  readonly runId?: RunId | null;
-  readonly label: string;
-  readonly detail?: string;
-  readonly command?: string;
-  readonly rawCommand?: string;
-  readonly changedFiles?: ReadonlyArray<string>;
-  readonly tone: "thinking" | "tool" | "info" | "error";
-  readonly toolTitle?: string;
-  readonly toolCallId?: string;
-  readonly viewedImagePath?: string;
-  readonly toolSurface?: ToolActivitySurface;
-  readonly toolIcon?: ToolActivityIcon;
-  readonly toolSource?: ToolActivitySource;
-  readonly sourceActivityKind?: string;
-  readonly taskId?: string;
-  readonly agentRole?: string;
-  readonly toolData?: unknown;
-  readonly requestKind?: string;
-  readonly itemType?: OrchestrationV2TurnItem["type"];
-  readonly toolLifecycleStatus?: WorkLogToolLifecycleStatus;
-  readonly structuredPayload?: OrchestrationV2TurnItem;
-  readonly sourceItemType?: OrchestrationV2TurnItem["type"];
-  readonly projectedItem?: OrchestrationV2ProjectedTurnItem;
-}
 
 export type PendingApproval = ThreadPendingApproval;
 export type PendingUserInput = ThreadPendingUserInput;
@@ -320,221 +274,6 @@ function projectedItemCreatedAt(row: OrchestrationV2ProjectedTurnItem): string {
   return DateTime.formatIso(row.item.startedAt ?? row.item.updatedAt);
 }
 
-function projectedWorkEntryStatus(
-  item: OrchestrationV2TurnItem,
-): NonNullable<WorkLogEntry["toolLifecycleStatus"]> {
-  switch (item.status) {
-    case "pending":
-    case "running":
-    case "waiting":
-      return "inProgress";
-    case "completed":
-      return "completed";
-    case "idle":
-      return "idle";
-    case "failed":
-      return "failed";
-    case "cancelled":
-    case "interrupted":
-      return "stopped";
-  }
-}
-
-function projectedWorkEntryTone(item: OrchestrationV2TurnItem): WorkLogEntry["tone"] {
-  if (item.type === "error") return "info";
-  if (item.type === "reasoning") return "thinking";
-  switch (item.type) {
-    case "command_execution":
-    case "file_change":
-    case "file_search":
-    case "web_search":
-    case "dynamic_tool":
-    case "subagent":
-    case "thread_created":
-    case "user_input_request":
-    case "approval_request":
-      return "tool";
-    default:
-      return "info";
-  }
-}
-
-export function providerErrorPresentation(
-  item: Extract<OrchestrationV2TurnItem, { readonly type: "error" }>,
-): { readonly label: string; readonly detail: string } {
-  if (item.retry === undefined) {
-    return {
-      label:
-        item.failure.class === "usage_limit"
-          ? "Usage limit reached"
-          : item.title?.trim() || "Provider error",
-      detail: item.failure.message,
-    };
-  }
-  const progress =
-    item.retry.maxAttempts === null
-      ? `${item.retry.attempt}`
-      : `${item.retry.attempt}/${item.retry.maxAttempts}`;
-  const label =
-    item.status === "running"
-      ? `Retrying provider (${progress})`
-      : item.status === "completed"
-        ? `Provider recovered (${progress} retries)`
-        : item.status === "failed"
-          ? `${item.failure.class === "usage_limit" ? "Usage limit reached" : "Provider error"} after ${progress} retries`
-          : `Provider retry stopped (${progress})`;
-  const retryDelay =
-    item.status === "running" && item.retry.retryDelayMs !== null && item.retry.retryDelayMs > 0
-      ? item.retry.retryDelayMs < 1_000
-        ? ` Retrying in ${item.retry.retryDelayMs}ms.`
-        : ` Retrying in ${(item.retry.retryDelayMs / 1_000).toFixed(1).replace(/\.0$/u, "")}s.`
-      : "";
-  return {
-    label,
-    detail: `${item.failure.message}${retryDelay}`,
-  };
-}
-
-function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry {
-  const { item } = row;
-  const title = item.title?.trim() || null;
-  const common = {
-    id: item.id,
-    createdAt: projectedItemCreatedAt(row),
-    runId: item.runId,
-    tone: projectedWorkEntryTone(item),
-    itemType: item.type,
-    toolLifecycleStatus: projectedWorkEntryStatus(item),
-    structuredPayload: item,
-    projectedItem: row,
-    ...extractToolActivityPresentation(item),
-  } as const;
-
-  switch (item.type) {
-    case "thread_created":
-      return {
-        ...common,
-        label: "Created thread",
-      };
-    case "compaction":
-      return {
-        ...common,
-        label: contextCompactionLabel(item),
-        sourceActivityKind: "context-compaction",
-        ...(item.summary ? { detail: item.summary } : {}),
-      };
-    case "reasoning":
-      return {
-        ...common,
-        label: title ?? "Thinking",
-        ...(item.text ? { detail: item.text } : {}),
-      };
-    case "command_execution":
-      return {
-        ...common,
-        label: title ?? "Ran command",
-        command: item.input,
-        rawCommand: item.input,
-        toolTitle: title ?? "Command",
-        toolData: item,
-      };
-    case "file_change": {
-      return {
-        ...common,
-        label:
-          title ??
-          (item.changes !== undefined && item.changes.length > 1
-            ? `Changed ${item.changes.length} files`
-            : `Changed ${item.fileName}`),
-        changedFiles: item.changes?.map((change) => change.path) ?? [item.fileName],
-        toolTitle: title ?? "File change",
-        toolData: item,
-      };
-    }
-    case "file_search":
-      return {
-        ...common,
-        label: title ?? formatSearchToolLabel(item) ?? "Searched files",
-        ...(item.pattern ? { detail: item.pattern } : {}),
-        toolTitle: title ?? "File search",
-        toolData: item,
-      };
-    case "web_search":
-      return {
-        ...common,
-        label: title ?? "Searched the web",
-        ...(item.patterns?.length ? { detail: item.patterns.join(", ") } : {}),
-        toolTitle: title ?? "Web search",
-        toolData: item,
-      };
-    case "checkpoint":
-      return {
-        ...common,
-        label: title ?? "Checkpoint captured",
-        changedFiles: item.files.map((file) => file.path),
-        toolData: item,
-      };
-    case "system_notice":
-      return {
-        ...common,
-        label: item.message,
-        sourceActivityKind: "runtime.warning",
-      };
-    case "error": {
-      const presentation = providerErrorPresentation(item);
-      return {
-        ...common,
-        ...presentation,
-        ...(item.failure.class === "usage_limit" && item.status !== "completed"
-          ? { sourceActivityKind: "runtime.warning" }
-          : item.retry === undefined
-            ? { sourceActivityKind: "runtime.error" }
-            : {}),
-        toolData: item,
-      };
-    }
-    case "dynamic_tool": {
-      const classified = classifyToolActivity({
-        itemType: "dynamic_tool_call",
-        data: { toolName: item.toolName ?? undefined, input: item.input },
-      });
-      const [readPath] = collectToolFilePaths({ input: item.input });
-      return {
-        ...common,
-        label:
-          title ??
-          (classified === "read"
-            ? formatReadToolLabel(readPath ?? "")
-            : classified === "search"
-              ? (formatSearchToolLabel({ input: item.input }) ?? item.toolName ?? "Tool call")
-              : (item.toolName ?? "Tool call")),
-        toolTitle: title ?? item.toolName ?? "Tool",
-        toolData: { input: item.input, output: item.output },
-      };
-    }
-    case "approval_request":
-      return {
-        ...common,
-        label: title ?? "Approval requested",
-        detail: item.prompt ?? item.requestKind,
-        toolData: item,
-      };
-    case "user_input_request":
-      return {
-        ...common,
-        label: title ?? (item.questionAnswer ? "Answered questions" : "Input requested"),
-        ...(item.questionAnswer ? { questionAnswer: item.questionAnswer } : {}),
-        toolData: item,
-      };
-    default:
-      return {
-        ...common,
-        label: title ?? item.type.replaceAll("_", " "),
-        toolData: item,
-      };
-  }
-}
-
 /**
  * Builds the web timeline in the exact order committed by `visibleTurnItems`.
  * Committed rows are presented directly from their projected item. Queued
@@ -713,7 +452,7 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
       id: item.id,
       kind: "work",
       createdAt,
-      entry: projectedWorkEntry(row),
+      entry: workLogEntryFromTurnItem(row),
       ...attemptMetadata,
     });
   }
