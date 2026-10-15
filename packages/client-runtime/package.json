@@ -55,6 +55,10 @@
       "types": "./src/userMessage.ts",
       "default": "./src/userMessage.ts"
     },
+    "./turn-delivery": {
+      "types": "./src/turnDelivery.ts",
+      "default": "./src/turnDelivery.ts"
+    },
     "./secret-request": {
       "types": "./src/secretRequest.ts",
       "default": "./src/secretRequest.ts"

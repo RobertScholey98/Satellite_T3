@@ -1133,6 +1133,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
         text,
         attachments: draft.attachments,
         context: draft.context,
+        ...(draft.issue ? { issue: draft.issue } : {}),
         modelSelection: draftModelSelection,
         runtimeMode: draft.runtimeMode ?? defaultRuntimeMode,
         interactionMode: resolvePendingTaskInteractionMode({

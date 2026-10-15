@@ -92,6 +92,8 @@ vi.mock("./threads", () => ({
   threadEnvironment: {},
 }));
 
+vi.mock("./issues", () => ({ issuesEnvironment: {} }));
+
 vi.mock("./use-atom-command", () => ({
   useAtomCommand: () => async () => undefined,
 }));
@@ -153,6 +155,7 @@ import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
 import {
   completeQueuedMessageDelivery,
   prepareQueuedMessageAttachments,
+  queuedMessageDelivery,
   recoverEditedCreationAfterDelivery,
   removeAcknowledgedExistingThreadMessage,
   restoreRejectedQueuedMessage,
@@ -356,6 +359,52 @@ describe("thread outbox attachment preparation", () => {
     });
     expect(harness.prepareTurnAttachments).not.toHaveBeenCalled();
     expect(remainingMessages()).toEqual([edited]);
+  });
+  it("hands delivery the uploaded wire attachments and the revision it persisted", async () => {
+    const message = queuedMessage({
+      messageId: "message-delivery-adapter",
+      text: "upload this file",
+      fileUri: "file:///documents/t3-composer-attachments/adapter.pdf",
+    });
+    const uploadedDrafts = message.attachments.map((attachment) => ({
+      ...attachment,
+      uploadedAttachmentId: "pending-adapter",
+      uploadEnvironmentId: message.environmentId,
+    }));
+    const wire = [
+      {
+        type: "file" as const,
+        id: "pending-adapter",
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 42,
+      },
+    ];
+    harness.prepareTurnAttachments.mockImplementationOnce(async (input) => {
+      await input.persistUploadedReferences?.(uploadedDrafts);
+      return {
+        status: "ready",
+        attachments: wire,
+        draftAttachments: uploadedDrafts,
+        pendingAttachmentIds: ["pending-adapter"],
+      };
+    });
+    await harness.manager.enqueue(message);
+    const revision = harness.manager.revisionOf(message.messageId);
+    const delivery = queuedMessageDelivery(message);
+
+    await expect(
+      delivery.attachments.prepare({
+        environmentId: message.environmentId,
+        attachments: message.attachments,
+        upload: true,
+      }),
+    ).resolves.toEqual(wire);
+    expect(harness.prepareTurnAttachments.mock.calls[0]?.[0].supportsImageUploads).toBe(true);
+    expect(delivery.delivered()).toEqual({
+      message: { ...message, attachments: uploadedDrafts },
+      revision: revision + 1,
+    });
   });
 });
 
@@ -755,6 +804,67 @@ describe("thread outbox recovery rollback", () => {
         `${message.environmentId}:${message.threadId}`
       ],
     ).toEqual({ kind: "failed", message, reason: "rejected by server" });
+  });
+
+  it("keeps a rejected issue creation's issue and reservation on its restored draft", async () => {
+    const issue = {
+      sourceEnvironmentId: EnvironmentId.make("environment-1"),
+      sourceProjectId: ProjectId.make("project-1"),
+      boardId: "board",
+      issue: {
+        hostKind: "github" as const,
+        host: "github.com",
+        repository: "acme/app",
+        id: "I_7",
+        number: 7,
+        url: "https://github.com/acme/app/issues/7",
+      },
+      title: "Checkout fails",
+      worktreeName: "issue-7",
+      requestId: "request",
+      reservation: {
+        attemptId: "attempt-1",
+        reservationId: "reservation-1",
+        sourceEnvironmentId: EnvironmentId.make("environment-1"),
+        sourceProjectId: ProjectId.make("project-1"),
+        boardId: "board",
+        issue: {
+          hostKind: "github" as const,
+          host: "github.com",
+          repository: "acme/app",
+          id: "I_7",
+          number: 7,
+          url: "https://github.com/acme/app/issues/7",
+        },
+        destinationEnvironmentId: EnvironmentId.make("environment-1"),
+        sourceGeneration: 0,
+      },
+    };
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "message-issue-restore", text: "Work on issue #7" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      creation: {
+        projectId: ProjectId.make("project-1"),
+        workspaceMode: "worktree",
+        branch: "main",
+        worktreePath: null,
+      },
+      issue,
+    };
+    await harness.manager.enqueue(message);
+
+    await expect(restoreRejectedQueuedMessage(message, "rejected by server")).resolves.toBe(
+      "restored",
+    );
+
+    const draftKey = `new-task:restored-${message.messageId}`;
+    expect(composerDrafts.getComposerDraftSnapshot(draftKey).issue).toEqual(issue);
+    expect(
+      composerDrafts.clearComposerDraftContentState(
+        appAtomRegistry.get(composerDrafts.composerDraftsAtom),
+        draftKey,
+      )[draftKey]?.issue,
+    ).toBeUndefined();
   });
 
   it("drops an earlier recovery error once a rejected new task is restored", async () => {

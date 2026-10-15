@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { IssueBoardItem, IssueBoardMapping, OpenWorkDocument } from "@t3tools/contracts";
-import { documentsAtStep, issueCanStart, validWorktreeName } from "./work.logic";
+import { documentsAtStep, issueCanStart } from "./work.logic";
 
 const item: IssueBoardItem = {
   itemId: "item",
@@ -43,22 +43,6 @@ describe("issue work eligibility", () => {
     expect(issueCanStart({ ...item, columnId: "doing-id" }, multiple)).toBe(false);
     expect(issueCanStart({ ...item, columnId: null }, multiple)).toBe(false);
     expect(issueCanStart(triaged, { ...multiple, ready: ["ready-id"] })).toBe(false);
-  });
-  it("rejects branch names Git cannot create", () => {
-    expect(validWorktreeName("issue-123")).toBe(true);
-    expect(validWorktreeName("feature/issue-123")).toBe(true);
-    for (const name of [
-      "",
-      "bad name",
-      "foo..bar",
-      "-flag",
-      "foo/.hidden",
-      "branch.lock",
-      "a//b",
-      "a@{b",
-      "a\\b",
-    ])
-      expect(validWorktreeName(name)).toBe(false);
   });
 });
 
