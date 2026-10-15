@@ -25,8 +25,14 @@ import {
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
+  isLatestRunSettled,
+  type ActivePlanState,
   type TimelineEntry,
 } from "../session-logic";
+import type {
+  ComposerTaskStep,
+  ComposerTasksProgress,
+} from "../components/chat/ComposerTasksBadge";
 import type { ChatMessage } from "../types";
 import { environmentThreadDetails } from "./threads";
 
@@ -167,6 +173,67 @@ export function usePromptHistoryMessages(
   if (samePrompts(current, next)) return current;
   setCurrent(next);
   return next;
+}
+
+function sameContent(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) {
+    return false;
+  }
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left);
+  return (
+    leftKeys.length === Object.keys(right).length &&
+    leftKeys.every((key) =>
+      sameContent((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]),
+    )
+  );
+}
+
+/** Keeps the previous value while a new one carries the same plain data. */
+function useSameContent<T>(next: T): T {
+  const [current, setCurrent] = useState(next);
+  if (sameContent(current, next)) return current;
+  setCurrent(next);
+  return next;
+}
+
+/**
+ * The composer's task strip for the running turn's own plan. A streamed token
+ * rebuilds the plan, run and runtime objects without changing what the strip
+ * shows, so the result keeps its identity until a step changes.
+ */
+export function useComposerTasks(
+  activePlan: ActivePlanState | null,
+  activityRun: Parameters<typeof isLatestRunSettled>[0],
+  runtime: Parameters<typeof isLatestRunSettled>[1],
+): {
+  readonly progress: ComposerTasksProgress | null;
+  readonly steps: ReadonlyArray<ComposerTaskStep> | null;
+} {
+  // deriveActivePlanState falls back to older runs' plans, which must not
+  // label fresh work.
+  const ownPlan =
+    !isLatestRunSettled(activityRun, runtime) &&
+    activePlan !== null &&
+    activePlan.runId === (activityRun?.runId ?? null) &&
+    activePlan.steps.length > 0
+      ? activePlan
+      : null;
+  const progress = useSameContent(
+    ownPlan === null
+      ? null
+      : {
+          step:
+            ownPlan.steps.find((candidate) => candidate.status === "inProgress")?.step ??
+            ownPlan.steps.find((candidate) => candidate.status === "pending")?.step ??
+            ownPlan.steps.at(-1)!.step,
+          completedSteps: ownPlan.steps.filter((step) => step.status === "completed").length,
+          totalSteps: ownPlan.steps.length,
+        },
+  );
+  const steps = useSameContent(ownPlan?.steps ?? null);
+  return { progress, steps };
 }
 
 /** User messages as the server holds them, including queued sends the timeline does not show yet. */

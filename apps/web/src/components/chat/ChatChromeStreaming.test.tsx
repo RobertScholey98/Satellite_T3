@@ -10,6 +10,8 @@ import {
   ProjectId,
   ProviderInstanceId,
   RunId,
+  NodeId,
+  PlanId,
   ThreadId,
   TurnItemId,
   type OrchestrationV2ThreadProjection,
@@ -58,8 +60,16 @@ vi.mock("../../state/threads", async (original) => {
 import * as threads from "../../state/threads";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../../rpc/atomRegistry";
 import { useThreadProjection } from "../../state/entities";
-import { deriveTimelineEntriesFromVisibleTurnItems } from "../../session-logic";
 import {
+  deriveThreadActivityRun,
+  deriveThreadRuntime,
+} from "@t3tools/client-runtime/state/thread-execution";
+import {
+  deriveActivePlanState,
+  deriveTimelineEntriesFromVisibleTurnItems,
+} from "../../session-logic";
+import {
+  useComposerTasks,
   usePromptHistoryMessages,
   useThreadContextWindow,
   useThreadPendingRequests,
@@ -175,11 +185,47 @@ const promptItem: OrchestrationV2TurnItem = {
   attachments: [],
 } as OrchestrationV2TurnItem;
 
-/** One streaming delta: the assistant text grows and nothing else the chrome shows moves. */
-function streamText(text: string): OrchestrationV2ThreadProjection {
+const runningRun: OrchestrationV2ThreadProjection["runs"][number] = {
+  id: runId,
+  threadId,
+  ordinal: 1,
+  providerInstanceId,
+  modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+  providerThreadId: null,
+  userMessageId: MessageId.make("message-user"),
+  rootNodeId: null,
+  activeAttemptId: null,
+  status: "running",
+  requestedAt: now,
+  startedAt: now,
+  completedAt: null,
+  checkpointId: null,
+  contextHandoffId: null,
+};
+
+const todoPlan: Extract<OrchestrationV2ThreadProjection["plans"][number], { kind: "todo_list" }> = {
+  id: PlanId.make("plan-todo"),
+  threadId,
+  runId,
+  nodeId: NodeId.make("node-plan"),
+  status: "active",
+  kind: "todo_list",
+  steps: [
+    { id: "read", text: "Read the reducer", status: "completed" },
+    { id: "explain", text: "Explain it", status: "running" },
+  ],
+};
+
+/**
+ * One streaming delta: the assistant text grows and nothing else the chrome
+ * shows moves. With `plan`, the turn is running a todo plan that the delta
+ * leaves alone.
+ */
+function streamText(text: string, plan?: typeof todoPlan): OrchestrationV2ThreadProjection {
   const item = assistantItem(text);
   return {
     ...baseProjection,
+    ...(plan ? { runs: [runningRun], plans: [{ ...plan, steps: [...plan.steps] }] } : {}),
     turnItems: [promptItem, item],
     visibleTurnItems: [promptItem, item].map((entry, position) => ({
       position,
@@ -357,8 +403,12 @@ function ChatViewStandIn() {
     visibleTurnItems: projection?.visibleTurnItems ?? [],
     optimisticMessages: [],
   });
+  const activityRun = projection ? deriveThreadActivityRun(projection) : null;
+  const runtime = projection ? deriveThreadRuntime(projection) : null;
+  const activePlan = deriveActivePlanState(projection, activityRun?.runId);
 
   const promptHistoryMessages = usePromptHistoryMessages(timelineEntries);
+  const tasks = useComposerTasks(activePlan, activityRun, runtime);
   const pending = useThreadPendingRequests(threadRef);
   const activeContextWindow = useThreadContextWindow(threadRef);
   return (
@@ -380,8 +430,8 @@ function ChatViewStandIn() {
         activePendingApproval={pending.activeApproval}
         activeContextWindow={activeContextWindow}
         promptHistoryMessages={promptHistoryMessages}
-        activeTasksProgress={null}
-        activeTaskSteps={null}
+        activeTasksProgress={tasks.progress}
+        activeTaskSteps={tasks.steps}
       />
     </>
   );
@@ -428,11 +478,11 @@ async function mountChatView() {
   return { mounted: { ...commits }, unmount: () => act(async () => root.unmount()) };
 }
 
-async function streamDeltas(count: number): Promise<string> {
+async function streamDeltas(count: number, plan?: typeof todoPlan): Promise<string> {
   let text = "";
   for (let delta = 0; delta < count; delta += 1) {
     text += `token-${delta} `;
-    await act(async () => publish(streamText(text)));
+    await act(async () => publish(streamText(text, plan)));
   }
   return text;
 }
@@ -446,6 +496,33 @@ describe("chat chrome while a response streams", () => {
       header: commits.header - mounted.header,
       composer: commits.composer - mounted.composer,
     }).toEqual({ chatView: 20, header: 0, composer: 0 });
+    await unmount();
+  });
+
+  it("keeps the composer still while the running turn works through a todo plan", async () => {
+    publish(streamText("", todoPlan));
+    const { mounted, unmount } = await mountChatView();
+    await streamDeltas(20, todoPlan);
+    expect({
+      chatView: commits.chatView - mounted.chatView,
+      header: commits.header - mounted.header,
+      composer: commits.composer - mounted.composer,
+    }).toEqual({ chatView: 20, header: 0, composer: 0 });
+    await unmount();
+  });
+
+  it("re-renders the composer once when the todo plan advances", async () => {
+    publish(streamText("", todoPlan));
+    const { mounted, unmount } = await mountChatView();
+    await act(async () =>
+      publish(
+        streamText("done", {
+          ...todoPlan,
+          steps: todoPlan.steps.map((step) => ({ ...step, status: "completed" as const })),
+        }),
+      ),
+    );
+    expect(commits.composer - mounted.composer).toBe(1);
     await unmount();
   });
 
