@@ -168,6 +168,20 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     input: TextGenerationOperations.Request<S>,
   ) {
     const isolated = TextGenerationOperations.isIsolated(input.needs);
+    // An isolated task prepares its runtime and server in a temporary directory, never the checkout.
+    const directory =
+      input.needs === "isolated"
+        ? yield* fs.makeTempDirectoryScoped({ prefix: "t3code-opencode-text-" }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new TextGenerationError({
+                  operation: input.operation,
+                  detail: "Could not create a temporary OpenCode workspace.",
+                  cause,
+                }),
+            ),
+          )
+        : input.cwd;
     const parsedModel = OpenCodeRuntime.parseOpenCodeModelSlug(input.modelSelection.model);
     if (!parsedModel) {
       return yield* new TextGenerationError({
@@ -191,7 +205,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       ) {
         const client = openCodeRuntime.createOpenCodeSdkClient({
           baseUrl: server.url,
-          directory: input.cwd,
+          directory,
           ...(server.serverPassword !== undefined ? { serverPassword: server.serverPassword } : {}),
         });
         const session = yield* Effect.tryPromise({
@@ -324,7 +338,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
 
     const ideaEnvironment = isolated
       ? yield* prepareOpenCodeIdeaEnvironment({
-          directory: input.cwd,
+          directory,
           environment,
           purpose: "updates",
         }).pipe(
@@ -344,7 +358,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       ? openCodeRuntime
           .startOpenCodeServerProcess({
             binaryPath: openCodeSettings.binaryPath,
-            directory: input.cwd,
+            directory,
             environment: ideaEnvironment,
           })
           .pipe(Effect.flatMap(runAgainstServer), Effect.scoped)
@@ -352,7 +366,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         ? openCodeRuntime
             .connectToOpenCodeServer({
               binaryPath: openCodeSettings.binaryPath,
-              directory: input.cwd,
+              directory,
               serverUrl: openCodeSettings.serverUrl,
               ...(openCodeSettings.serverPassword
                 ? { serverPassword: openCodeSettings.serverPassword }
@@ -374,7 +388,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     );
 
     return yield* TextGenerationOperations.decodeJsonReply(input, "OpenCode", rawOutput);
-  });
+  }, Effect.scoped);
 
   return runOpenCodeJson;
 });

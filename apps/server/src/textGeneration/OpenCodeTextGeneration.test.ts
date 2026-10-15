@@ -29,6 +29,7 @@ const runtimeMock = {
     sessionPermissions: [] as Array<unknown>,
     selectedModels: [] as Array<unknown>,
     runtimeEnvironments: [] as Array<NodeJS.ProcessEnv | undefined>,
+    serverDirectories: [] as string[],
     deletedSessions: [] as string[],
     connectionError: undefined as Error | undefined,
     sessionCreateError: undefined as unknown,
@@ -48,6 +49,7 @@ const runtimeMock = {
     this.state.sessionPermissions.length = 0;
     this.state.selectedModels.length = 0;
     this.state.runtimeEnvironments.length = 0;
+    this.state.serverDirectories.length = 0;
     this.state.deletedSessions.length = 0;
     this.state.connectionError = undefined;
     this.state.sessionCreateError = undefined;
@@ -58,12 +60,13 @@ const runtimeMock = {
 };
 
 const OpenCodeRuntimeTestDouble: OpenCodeRuntime.OpenCodeRuntimeShape = {
-  startOpenCodeServerProcess: ({ binaryPath, serverPassword, environment }) =>
+  startOpenCodeServerProcess: ({ binaryPath, serverPassword, environment, directory }) =>
     Effect.gen(function* () {
       const index = runtimeMock.state.startCalls.length + 1;
       const url = `http://127.0.0.1:${4_300 + index}`;
       runtimeMock.state.startCalls.push(binaryPath);
       runtimeMock.state.runtimeEnvironments.push(environment);
+      runtimeMock.state.serverDirectories.push(directory);
       // The production runtime binds server lifetime to the caller's scope.
       // Mirror that here so the closeCalls probe observes scope close.
       yield* Effect.addFinalizer(() =>
@@ -262,6 +265,35 @@ it.layer(layerOpenCodeTextGenerationTest)("OpenCodeTextGeneration", (it) => {
       Effect.sync(() => {
         runtimeMock.state.promptResult = { data: { parts: [{ type: "text", text: reply }] } };
       }).pipe(Effect.andThen(withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, generate))),
+    ),
+  );
+
+  it.effect("runs a Revdoc pass from a temporary directory it removes afterwards", () =>
+    withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (generation) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const checkout = yield* fs.makeTempDirectoryScoped({ prefix: "t3-opencode-checkout-" });
+        yield* fs.writeFileString(`${checkout}/keep.txt`, "untouched");
+        runtimeMock.state.promptResult = {
+          data: {
+            parts: [
+              {
+                type: "text",
+                text: '{"title":"Review","summary":"Changes","context":"Verify manually","sections":[]}',
+              },
+            ],
+          },
+        };
+        yield* generation.generateRevdoc({
+          cwd: checkout,
+          prompt: "Review the worktree.",
+          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        });
+        expect(yield* fs.readDirectory(checkout)).toEqual(["keep.txt"]);
+        const [directory] = runtimeMock.state.serverDirectories;
+        expect(directory).toContain("t3code-opencode-text-");
+        expect(yield* fs.exists(directory!)).toBe(false);
+      }),
     ),
   );
 
