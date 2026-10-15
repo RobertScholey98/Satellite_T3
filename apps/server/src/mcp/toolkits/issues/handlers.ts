@@ -7,7 +7,6 @@ import { IssuesToolkit } from "./tools.ts";
 const make = Effect.gen(function* () {
   const delivery = yield* IssueDelivery;
   return {
-    // Collects only what worktree computers already reported, like refreshing the board.
     deliver_issue_updates: McpToolAccess.reads((input) => delivery.deliver(input)),
   } satisfies McpToolAccess.Handlers<typeof IssuesToolkit.tools>;
 });

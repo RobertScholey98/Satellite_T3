@@ -55,6 +55,10 @@ const ROUND_INTERVAL_MS = 30_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
 const SCHEDULE_TICK = "15 seconds";
 
+type DeliveryWork =
+  | { readonly _tag: "due" }
+  | { readonly _tag: "peer"; readonly destination: EnvironmentId };
+
 interface PeerRow {
   endpoints_json: string;
   preferred_endpoint: string | null;
@@ -215,9 +219,8 @@ export const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("issue delivery schedule failed", { cause })),
   );
 
-  /** `null` runs every peer whose next round is due. */
-  const worker = yield* makeDrainableWorker((destination: EnvironmentId | null) =>
-    destination === null ? roundDuePeers : round(destination),
+  const worker = yield* makeDrainableWorker((work: DeliveryWork) =>
+    work._tag === "due" ? roundDuePeers : round(work.destination),
   );
 
   const registerPeer: IssueDelivery["Service"]["registerPeer"] = (input) =>
@@ -241,7 +244,7 @@ export const make = Effect.gen(function* () {
           ON CONFLICT(destination_environment_id) DO UPDATE SET endpoints_json=excluded.endpoints_json,
             preferred_endpoint=NULL,state='pending',last_error=NULL,failures=0,next_attempt_at=0`;
         yield* issues.publishDeliveries(input.destinationEnvironmentId);
-        yield* worker.enqueue(input.destinationEnvironmentId);
+        yield* worker.enqueue({ _tag: "peer", destination: input.destinationEnvironmentId });
       }),
     );
 
@@ -263,7 +266,8 @@ export const make = Effect.gen(function* () {
             .filter((attempt) => attempt.link.destinationEnvironmentId !== environmentId)
             .map((attempt) => attempt.link.destinationEnvironmentId),
         );
-        for (const destination of destinations) yield* worker.enqueue(destination);
+        for (const destination of destinations)
+          yield* worker.enqueue({ _tag: "peer", destination });
       }),
     );
 
@@ -273,7 +277,9 @@ export const make = Effect.gen(function* () {
     deliver,
     start: Effect.fn("IssueDelivery.start")(function* () {
       yield* forkParked(
-        worker.enqueue(null).pipe(Effect.andThen(Effect.sleep(SCHEDULE_TICK)), Effect.forever),
+        worker
+          .enqueue({ _tag: "due" })
+          .pipe(Effect.andThen(Effect.sleep(SCHEDULE_TICK)), Effect.forever),
       );
     }),
     drain: worker.drain,

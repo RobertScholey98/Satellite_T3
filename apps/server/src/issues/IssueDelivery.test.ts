@@ -241,7 +241,6 @@ const setup = Effect.gen(function* () {
   };
 });
 
-/** Lets the delivery schedule run once; the test clock moves only when told to. */
 const tick = TestClock.adjust("15 seconds");
 
 describe("IssueDelivery", () => {

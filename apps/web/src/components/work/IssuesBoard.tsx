@@ -343,7 +343,6 @@ export function IssuesBoard({
 
   const deliveryCapable =
     scopedEnvironment?.serverConfig?.environment.capabilities.issueDelivery === true;
-  // Opening or refreshing a board also collects pending updates from worktree computers.
   const deliverNow = useCallback(
     (boardId: string) => {
       if (scope && connected && deliveryCapable)

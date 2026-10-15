@@ -16,7 +16,6 @@ export function BoardSyncStatus({
   const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   if (!sync) return null;
   const failure = sync.syncing ? null : sync.failure;
-  // Updates collected from worktree computers count as syncing this board too.
   const at =
     failure?.at ??
     [sync.syncedAt, ...(sync.deliveries ?? []).map((delivery) => delivery.lastDeliveredAt)]
