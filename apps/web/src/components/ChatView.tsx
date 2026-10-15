@@ -105,7 +105,7 @@ import { readPastedComposerContext } from "./composerInlineTokenPaste";
 import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
 import { useAcknowledgeThreadWoke, useThreadActions } from "../hooks/useThreadActions";
-import { useThreadActionMenu } from "../hooks/useThreadActionMenu";
+import { useThreadActionMenu, useThreadRenameRequest } from "../hooks/useThreadActionMenu";
 import {
   deriveProviderSubagentStatus,
   deriveReportedModelSelection,
@@ -6149,6 +6149,10 @@ export default function ChatView(props: ChatViewProps) {
       threadKey === routeThreadKey ? null : routeThreadKey,
     );
   }, [canMaximizeRightPanel, routeThreadKey]);
+  // A maximized panel collapses the chat column, header included; restore it
+  // so a rename requested from elsewhere opens a visible title editor.
+  const revealChatHeader = useCallback(() => setMaximizedRightPanelThreadKey(null), []);
+  useThreadRenameRequest(isServerThread ? activeThreadRef : null, revealChatHeader);
   const cleanupRightPanelSurfaces = useCallback(
     (surfaces: readonly RightPanelSurface[]) => {
       if (!activeThreadRef) return;

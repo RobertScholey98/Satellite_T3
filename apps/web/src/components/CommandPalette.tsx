@@ -709,6 +709,14 @@ function OpenCommandPaletteDialog(props: {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { clearOpenIntent, openIntent, openOverlayMode, setOpen } = props;
+  // The dialog hands a pending after-close action to finalFocus while it
+  // unmounts; one that never ran must not fire on the next close.
+  useEffect(
+    () => () => {
+      takeCommandPaletteAfterClose();
+    },
+    [],
+  );
   const [query, setQuery] = useState(openIntent?.kind === "search" ? openIntent.query : "");
   const [linkedThreadSearch, setLinkedThreadSearch] = useState(
     openIntent?.kind === "search" ? openIntent : null,
