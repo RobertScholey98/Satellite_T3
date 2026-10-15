@@ -8,6 +8,7 @@ const state: ThreadActionMenuState = {
   canOperate: true,
   branch: "feature/palette",
   pullRequestUrl: null,
+  pullRequestUrlPending: false,
   projectFilter: null,
   isPinned: false,
   isSettled: false,

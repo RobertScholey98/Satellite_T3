@@ -74,6 +74,8 @@ export interface ThreadActionMenuState {
   readonly canOperate: boolean;
   readonly branch: string | null;
   readonly pullRequestUrl: string | null;
+  /** The right panel shows a pull request whose link has not loaded yet. */
+  readonly pullRequestUrlPending: boolean;
   /**
    * Project scoping for the thread list. Null on surfaces with no scoped
    * list behind the menu (the chat header), where the item must not show.
@@ -117,35 +119,51 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
   ].includes(action);
 }
 
-// Keybindings name a thread action, not a direction: the first available
-// candidate wins, so one key toggles pin or settle, and copying a reference
-// prefers the pull request over the thread ID.
+// Keybindings name a thread action, not a direction: the first candidate the
+// menu lists decides, so one key toggles pin or settle, and copying a
+// reference prefers the pull request over the thread ID.
 const SHORTCUT_ACTIONS: Partial<Record<KeybindingCommand, ReadonlyArray<ThreadActionMenuId>>> = {
   "thread.pin": ["pin", "unpin"],
   "thread.settle": ["settle", "unsettle"],
   "thread.copyReference": ["copy-reference", "copy-thread-id"],
 };
 
-function findEnabledItem(
+function findItem(
   items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
   id: ThreadActionMenuId,
-): boolean {
-  return items.some(
-    (item) =>
-      item.disabled !== true &&
-      (item.id === id || (item.children !== undefined && findEnabledItem(item.children, id))),
-  );
+): ContextMenuItem<ThreadActionMenuId> | undefined {
+  for (const item of items) {
+    if (item.id === id) return item;
+    const child = item.children ? findItem(item.children, id) : undefined;
+    if (child) return item.disabled ? { ...child, disabled: true } : child;
+  }
+  return undefined;
 }
 
 export const THREAD_ACTION_SHORTCUT_COMMANDS = Object.keys(
   SHORTCUT_ACTIONS,
 ) as ReadonlyArray<KeybindingCommand>;
 
+/**
+ * The registry action a thread keybinding runs. "unavailable" claims the key
+ * without running anything, as the listeners did before: copying a reference
+ * always claims it, pin and settle claim it on connections that can change
+ * threads. Null leaves the key alone.
+ */
 export function threadActionForShortcut(
   command: KeybindingCommand,
   items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
-): ThreadActionMenuId | null {
-  return SHORTCUT_ACTIONS[command]?.find((action) => findEnabledItem(items, action)) ?? null;
+  options: { readonly canOperate: boolean },
+): ThreadActionMenuId | "unavailable" | null {
+  const candidates = SHORTCUT_ACTIONS[command];
+  if (candidates === undefined) return null;
+  for (const id of candidates) {
+    const item = findItem(items, id);
+    if (item === undefined) continue;
+    if (item.disabled !== true) return id;
+    break;
+  }
+  return command === "thread.copyReference" || options.canOperate ? "unavailable" : null;
 }
 
 /**
@@ -260,8 +278,15 @@ export function buildThreadActionMenuItems(
         ...(state.branch
           ? [{ id: "copy-branch" as const, label: "Branch", icon: "git-branch" }]
           : []),
-        ...(state.pullRequestUrl
-          ? [{ id: "copy-reference" as const, label: "PR link", icon: "link" }]
+        ...(state.pullRequestUrl || state.pullRequestUrlPending
+          ? [
+              {
+                id: "copy-reference" as const,
+                label: "PR link",
+                icon: "link",
+                ...(state.pullRequestUrl ? {} : { disabled: true }),
+              },
+            ]
           : []),
         { id: "copy-thread-id", label: "Thread ID", icon: "hash" },
       ],

@@ -84,9 +84,15 @@ export interface ThreadActionSurface {
   readonly openProjectSettings?: (threadRef: ScopedThreadRef) => void;
   /**
    * The pull request open in this surface's right panel. A reference copied
-   * from here points at it rather than the thread's current pull request.
+   * from here points at it rather than the thread's current pull request;
+   * null while its link loads, when there is nothing to copy yet.
    */
   readonly openPanelPullRequestUrl?: string | null | undefined;
+  /**
+   * The linked pull request this surface shows, when it differs from the
+   * thread's stored link. ChatView swaps in a replacement for a merged one.
+   */
+  readonly linkedPullRequestUrl?: string | null;
   /** Only a surface with a project-scoped thread list offers "Filter by project". */
   readonly projectFilter?: {
     readonly read: (threadRef: ScopedThreadRef) => ThreadActionMenuState["projectFilter"];
@@ -101,6 +107,7 @@ function readThreadActionMenuState(
     readonly timestampFormat: TimestampFormat;
     readonly projectFilter?: ThreadActionMenuState["projectFilter"];
     readonly openPanelPullRequestUrl?: string | null | undefined;
+    readonly linkedPullRequestUrl?: string | null | undefined;
   },
 ): ThreadActionMenuState | null {
   const thread = readThreadShell(threadRef);
@@ -117,11 +124,14 @@ function readThreadActionMenuState(
     canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
     branch: thread.branch ?? null,
     pullRequestUrl:
-      options.openPanelPullRequestUrl ??
-      resolveThreadCurrentPullRequestLink(thread.pullRequests)?.url ??
-      thread.linkedPullRequest?.url ??
-      thread.branchPullRequest?.url ??
-      null,
+      options.openPanelPullRequestUrl === null
+        ? null
+        : (options.openPanelPullRequestUrl ??
+          resolveThreadCurrentPullRequestLink(thread.pullRequests)?.url ??
+          (options.linkedPullRequestUrl !== undefined
+            ? options.linkedPullRequestUrl
+            : (thread.linkedPullRequest?.url ?? thread.branchPullRequest?.url ?? null))),
+    pullRequestUrlPending: options.openPanelPullRequestUrl === null,
     projectFilter: options.projectFilter ?? null,
     isPinned: thread.pinnedAt != null,
     isSettled: supports.settlement && thread.settledOverride === "settled",
@@ -240,6 +250,7 @@ export function useThreadActionMenu() {
         timestampFormat,
         projectFilter: surface.projectFilter?.read(threadRef) ?? null,
         openPanelPullRequestUrl: surface.openPanelPullRequestUrl,
+        linkedPullRequestUrl: surface.linkedPullRequestUrl,
       });
       return state ? buildThreadActionMenuItems(state) : [];
     },
@@ -248,7 +259,9 @@ export function useThreadActionMenu() {
 
   const shortcutAction = useCallback(
     (threadRef: ScopedThreadRef, command: KeybindingCommand, surface?: ThreadActionSurface) =>
-      threadActionForShortcut(command, readMenuItems(threadRef, surface)),
+      threadActionForShortcut(command, readMenuItems(threadRef, surface), {
+        canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
+      }),
     [readMenuItems],
   );
 
@@ -402,6 +415,7 @@ export function useThreadActionMenu() {
             now: new Date(),
             timestampFormat,
             openPanelPullRequestUrl: surface.openPanelPullRequestUrl,
+            linkedPullRequestUrl: surface.linkedPullRequestUrl,
           })?.pullRequestUrl;
           if (url) await copyPullRequestLink(url);
           return;

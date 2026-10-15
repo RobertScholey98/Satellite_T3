@@ -3091,13 +3091,15 @@ function OpenCommandPaletteDialog(props: {
     if (activeThreadRef && threadAction) {
       event.preventDefault();
       event.stopPropagation();
+      if (threadAction === "unavailable") return;
       setOpen(false);
       void threadActionMenu.runAction(activeThreadRef, threadAction, threadActionSurface);
       return;
     }
-    if (command === "thread.copyReference" && pullRequestsPageLink) {
+    if (command === "thread.copyReference") {
       event.preventDefault();
       event.stopPropagation();
+      if (pullRequestsPageLink === null) return;
       setOpen(false);
       void copyPullRequestLink(pullRequestsPageLink);
       return;

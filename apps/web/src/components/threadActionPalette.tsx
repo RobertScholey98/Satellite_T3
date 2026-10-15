@@ -74,8 +74,8 @@ export function buildThreadActionPaletteItems(input: {
 }): Array<CommandPaletteActionItem | CommandPaletteSubmenuItem> {
   const shortcutByAction = new Map(
     THREAD_ACTION_SHORTCUT_COMMANDS.flatMap((command) => {
-      const target = threadActionForShortcut(command, input.items);
-      return target ? [[target, command] as const] : [];
+      const target = threadActionForShortcut(command, input.items, { canOperate: false });
+      return target && target !== "unavailable" ? [[target, command] as const] : [];
     }),
   );
   const action = (

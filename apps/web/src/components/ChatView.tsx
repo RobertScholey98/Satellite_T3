@@ -8012,14 +8012,19 @@ export default function ChatView(props: ChatViewProps) {
       });
       if (!command) return;
 
-      const threadActionSurface = { openPanelPullRequestUrl };
+      const threadActionSurface = {
+        openPanelPullRequestUrl,
+        linkedPullRequestUrl: linkedThreadPullRequest?.url ?? null,
+      };
       const threadAction = activeThreadRef
         ? threadShortcutAction(activeThreadRef, command, threadActionSurface)
         : null;
       if (activeThreadRef && threadAction) {
         event.preventDefault();
         event.stopPropagation();
-        if (!event.repeat) void runThreadAction(activeThreadRef, threadAction, threadActionSurface);
+        if (!event.repeat && threadAction !== "unavailable") {
+          void runThreadAction(activeThreadRef, threadAction, threadActionSurface);
+        }
         return;
       }
 

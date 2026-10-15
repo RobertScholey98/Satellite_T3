@@ -20,6 +20,7 @@ function deferred<T>() {
 const state = vi.hoisted(() => ({
   granted: new Set<string>(),
   linkedPullRequestUrl: null as string | null,
+  branchPullRequestUrl: null as string | null,
   effects: [] as string[],
   completed: deferred<void>(),
   show: vi.fn<
@@ -68,6 +69,7 @@ vi.mock("../state/entities", () => ({
     latestRun: null,
     pullRequests: [],
     linkedPullRequest: state.linkedPullRequestUrl ? { url: state.linkedPullRequestUrl } : null,
+    branchPullRequest: state.branchPullRequestUrl ? { url: state.branchPullRequestUrl } : null,
   }),
   useProjects: () => [{ id: "project", environmentId: "secondary" }],
 }));
@@ -181,6 +183,7 @@ const createMenu = () => {
 beforeEach(() => {
   state.granted = new Set(["primary"]);
   state.linkedPullRequestUrl = null;
+  state.branchPullRequestUrl = null;
   state.effects = [];
   state.completed = deferred<void>();
   state.show.mockReset().mockResolvedValue(null);
@@ -343,9 +346,8 @@ describe("thread keybindings", () => {
   it("copy the linked pull request as the thread's reference", async () => {
     state.linkedPullRequestUrl = "https://github.com/o/r/pull/7";
     const actions = menu();
-    const action = actions.shortcutAction(target, "thread.copyReference");
-    expect(action).toBe("copy-reference");
-    await actions.runAction(target, action!);
+    expect(actions.shortcutAction(target, "thread.copyReference")).toBe("copy-reference");
+    await actions.runAction(target, "copy-reference");
     expect(state.effects).toEqual(["clipboard:https://github.com/o/r/pull/7"]);
   });
 
@@ -355,5 +357,23 @@ describe("thread keybindings", () => {
       openPanelPullRequestUrl: "https://github.com/o/r/pull/9",
     });
     expect(state.effects).toEqual(["clipboard:https://github.com/o/r/pull/9"]);
+  });
+
+  it("copy nothing while the panel's pull request link is loading", async () => {
+    state.linkedPullRequestUrl = "https://github.com/o/r/pull/7";
+    const surface = { openPanelPullRequestUrl: null };
+    expect(menu().shortcutAction(target, "thread.copyReference", surface)).toBe("unavailable");
+    await menu().runAction(target, "copy-reference", surface);
+    expect(state.effects).toEqual([]);
+  });
+
+  it("follow the surface's linked pull request over the branch's", async () => {
+    state.branchPullRequestUrl = "https://github.com/o/r/pull/3";
+    expect(menu().shortcutAction(target, "thread.copyReference")).toBe("copy-reference");
+    expect(
+      menu().shortcutAction(target, "thread.copyReference", { linkedPullRequestUrl: null }),
+    ).toBe("copy-thread-id");
+    await menu().runAction(target, "copy-reference");
+    expect(state.effects).toEqual(["clipboard:https://github.com/o/r/pull/3"]);
   });
 });
