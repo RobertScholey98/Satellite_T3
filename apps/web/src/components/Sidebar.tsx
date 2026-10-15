@@ -2379,7 +2379,6 @@ export default function Sidebar() {
     unsnoozeThread,
     pinThread,
     unpinThread,
-    confirmAndUnpinThread,
     reorderPinnedThread,
     reorderActiveThread,
     markThreadUnread,
@@ -2387,6 +2386,7 @@ export default function Sidebar() {
     renameThread,
     regenerateThreadTitle,
   } = useThreadActions();
+  const { openMenu: openThreadActionMenu, runAction: runThreadAction } = useThreadActionMenu();
   const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) => {
       toastManager.add({
@@ -3326,40 +3326,12 @@ export default function Sidebar() {
     [attemptSettle],
   );
   const attemptUnsettle = useCallback(
-    (threadRef: ScopedThreadRef) => {
-      void (async () => {
-        const result = await unsettleThread(threadRef);
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Failed to un-settle thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        }
-      })();
-    },
-    [unsettleThread],
+    (threadRef: ScopedThreadRef) => void runThreadAction(threadRef, "unsettle"),
+    [runThreadAction],
   );
   const attemptUnsnooze = useCallback(
-    (threadRef: ScopedThreadRef) => {
-      void (async () => {
-        const result = await unsnoozeThread(threadRef);
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Failed to wake thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        }
-      })();
-    },
-    [unsnoozeThread],
+    (threadRef: ScopedThreadRef) => void runThreadAction(threadRef, "unsnooze"),
+    [runThreadAction],
   );
   const threadListRef = useRef<HTMLUListElement | null>(null);
   const dragLabelOffsetRef = useRef(0);
@@ -3627,22 +3599,8 @@ export default function Sidebar() {
     }
   }, [activeKeys, optimisticDrop, pinnedKeys, threads]);
   const attemptUnpin = useCallback(
-    (threadRef: ScopedThreadRef) => {
-      void (async () => {
-        const result = await confirmAndUnpinThread(threadRef);
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Failed to unpin thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        }
-      })();
-    },
-    [confirmAndUnpinThread],
+    (threadRef: ScopedThreadRef) => void runThreadAction(threadRef, "unpin"),
+    [runThreadAction],
   );
 
   const handleThreadDragStart = useCallback(
@@ -4509,13 +4467,22 @@ export default function Sidebar() {
     },
     [startThreadRename],
   );
-  const { openMenu: openThreadActionMenu } = useThreadActionMenu({
-    startRename: startThreadRenameFromMenu,
-    settle: attemptSettle,
-    snooze: snoozeFromThreadMenu,
-    openProjectSettings: openThreadProjectSettings,
-    projectFilter: threadMenuProjectFilter,
-  });
+  const threadActionSurface = useMemo(
+    () => ({
+      startRename: startThreadRenameFromMenu,
+      settle: attemptSettle,
+      snooze: snoozeFromThreadMenu,
+      openProjectSettings: openThreadProjectSettings,
+      projectFilter: threadMenuProjectFilter,
+    }),
+    [
+      attemptSettle,
+      openThreadProjectSettings,
+      snoozeFromThreadMenu,
+      startThreadRenameFromMenu,
+      threadMenuProjectFilter,
+    ],
+  );
   const handleThreadContextMenu = useCallback(
     (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
       const threadKey = scopedThreadKey(threadRef);
@@ -4524,9 +4491,9 @@ export default function Sidebar() {
         void handleMultiSelectContextMenu(position);
         return;
       }
-      openThreadActionMenu(threadRef, position);
+      openThreadActionMenu(threadRef, position, threadActionSurface);
     },
-    [handleMultiSelectContextMenu, openThreadActionMenu],
+    [handleMultiSelectContextMenu, openThreadActionMenu, threadActionSurface],
   );
 
   // Thread jump (cmd+1..9) and prev/next traversal reuse the same commands as

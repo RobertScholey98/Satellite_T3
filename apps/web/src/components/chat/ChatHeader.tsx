@@ -107,7 +107,7 @@ export const ChatHeader = memo(function ChatHeader({
       title: activeThreadTitle,
     });
   }, [activeThreadEnvironmentId, activeThreadId, activeThreadTitle, isServerThread]);
-  const { openMenu, closeMenu, renameThread } = useThreadActionMenu({ startRename });
+  const { openMenu, closeMenu, renameThread } = useThreadActionMenu();
   useThreadRenameRequest(isServerThread ? activeThreadRef : null, startRename);
   const commitRename = useCallback(
     (title: string) => {

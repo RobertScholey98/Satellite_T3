@@ -85,11 +85,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import {
-  copyPullRequestLink,
-  requestThreadRename,
-  useThreadActionMenu,
-} from "../hooks/useThreadActionMenu";
+import { copyPullRequestLink, useThreadActionMenu } from "../hooks/useThreadActionMenu";
 import { buildThreadActionPaletteItems } from "./threadActionPalette";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { useClientSettings } from "../hooks/useSettings";
@@ -760,10 +756,8 @@ function OpenCommandPaletteDialog(props: {
         ? scopeThreadRef(activeThread.environmentId, activeThread.id)
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
-  const threadActionMenu = useThreadActionMenu({
-    startRename: requestThreadRename,
-    openPanelPullRequestUrl,
-  });
+  const threadActionMenu = useThreadActionMenu();
+  const threadActionSurface = { openPanelPullRequestUrl };
   const activeThreadRef = activeThread
     ? scopeThreadRef(activeThread.environmentId, activeThread.id)
     : null;
@@ -1927,8 +1921,8 @@ function OpenCommandPaletteDialog(props: {
   if (activeThreadRef !== null) {
     actionItems.push(
       ...buildThreadActionPaletteItems({
-        items: threadActionMenu.readMenuItems(activeThreadRef),
-        run: (action) => threadActionMenu.runAction(activeThreadRef, action),
+        items: threadActionMenu.readMenuItems(activeThreadRef, threadActionSurface),
+        run: (action) => threadActionMenu.runAction(activeThreadRef, action, threadActionSurface),
       }),
     );
   }
@@ -3076,12 +3070,14 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
     const threadAction =
-      activeThreadRef && command ? threadActionMenu.shortcutAction(activeThreadRef, command) : null;
+      activeThreadRef && command
+        ? threadActionMenu.shortcutAction(activeThreadRef, command, threadActionSurface)
+        : null;
     if (activeThreadRef && threadAction) {
       event.preventDefault();
       event.stopPropagation();
       setOpen(false);
-      void threadActionMenu.runAction(activeThreadRef, threadAction);
+      void threadActionMenu.runAction(activeThreadRef, threadAction, threadActionSurface);
       return;
     }
     if (command === "thread.copyReference" && pullRequestsPageLink) {

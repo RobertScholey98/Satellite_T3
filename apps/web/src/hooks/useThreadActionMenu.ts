@@ -65,12 +65,16 @@ function failureToast(title: string, error: unknown) {
 }
 
 /**
- * What a surface contributes to the shared thread actions. Everything else
- * (labels, availability, the mutation, failure toasts) is the module's.
+ * What a surface contributes to the shared thread actions, passed with each
+ * call. Everything else (labels, availability, the mutation, failure toasts)
+ * is the module's.
  */
 export interface ThreadActionSurface {
-  /** Opens this surface's inline title editor. Committing goes through `renameThread`. */
-  readonly startRename: (threadRef: ScopedThreadRef) => void;
+  /**
+   * Opens this surface's inline title editor. Committing goes through
+   * `renameThread`. Without one, the chat header's editor opens.
+   */
+  readonly startRename?: (threadRef: ScopedThreadRef) => void;
   /**
    * The sidebar parks a thread and moves the reader to the next card; other
    * surfaces leave settle and snooze to the module, which stays put.
@@ -92,7 +96,7 @@ export interface ThreadActionSurface {
 }
 
 /** Snapshot of everything the thread action registry decides availability from. */
-export function readThreadActionMenuState(
+function readThreadActionMenuState(
   threadRef: ScopedThreadRef,
   options: {
     readonly now: Date;
@@ -146,7 +150,7 @@ export async function copyPullRequestLink(url: string): Promise<void> {
 const THREAD_RENAME_REQUEST_EVENT = "t3code:thread-rename-request";
 
 /** Asks whichever surface shows this thread's title editor to open it. */
-export function requestThreadRename(threadRef: ScopedThreadRef): void {
+function requestThreadRename(threadRef: ScopedThreadRef): void {
   const threadKey = scopedThreadKey(threadRef);
   const dispatch = () =>
     window.dispatchEvent(
@@ -184,14 +188,7 @@ export function useThreadRenameRequest(
  * away: the caller is acting on the thread they are reading, and ChatView's
  * parked-thread banner already offers the way back.
  */
-export function useThreadActionMenu({
-  startRename,
-  settle,
-  snooze,
-  openProjectSettings,
-  openPanelPullRequestUrl,
-  projectFilter,
-}: ThreadActionSurface) {
+export function useThreadActionMenu() {
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -244,26 +241,33 @@ export function useThreadActionMenu({
   });
 
   const readMenuItems = useCallback(
-    (threadRef: ScopedThreadRef): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> => {
+    (
+      threadRef: ScopedThreadRef,
+      surface: ThreadActionSurface = {},
+    ): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> => {
       const state = readThreadActionMenuState(threadRef, {
         now: new Date(),
         timestampFormat,
-        projectFilter: projectFilter?.read(threadRef) ?? null,
-        openPanelPullRequestUrl,
+        projectFilter: surface.projectFilter?.read(threadRef) ?? null,
+        openPanelPullRequestUrl: surface.openPanelPullRequestUrl,
       });
       return state ? buildThreadActionMenuItems(state) : [];
     },
-    [openPanelPullRequestUrl, projectFilter, timestampFormat],
+    [timestampFormat],
   );
 
   const shortcutAction = useCallback(
-    (threadRef: ScopedThreadRef, command: KeybindingCommand) =>
-      threadActionForShortcut(command, readMenuItems(threadRef)),
+    (threadRef: ScopedThreadRef, command: KeybindingCommand, surface?: ThreadActionSurface) =>
+      threadActionForShortcut(command, readMenuItems(threadRef, surface)),
     [readMenuItems],
   );
 
   const runAction = useCallback(
-    async (threadRef: ScopedThreadRef, action: ThreadActionMenuId): Promise<void> => {
+    async (
+      threadRef: ScopedThreadRef,
+      action: ThreadActionMenuId,
+      surface: ThreadActionSurface = {},
+    ): Promise<void> => {
       const api = readLocalApi();
       const thread = readThreadShell(threadRef);
       if (!thread) return;
@@ -285,8 +289,8 @@ export function useThreadActionMenu({
                 (candidate) => `snooze:${candidate.id}` === action,
               );
         if (!preset) return;
-        if (snooze) {
-          snooze(threadRef, preset.snoozedUntil);
+        if (surface.snooze) {
+          surface.snooze(threadRef, preset.snoozedUntil);
           return;
         }
         const result = await snoozeThread(threadRef, preset.snoozedUntil);
@@ -306,11 +310,11 @@ export function useThreadActionMenu({
       };
       switch (action) {
         case "filter-by-project":
-          projectFilter?.toggle(threadRef);
+          surface.projectFilter?.toggle(threadRef);
           return;
         case "project-settings": {
-          if (openProjectSettings) {
-            openProjectSettings(threadRef);
+          if (surface.openProjectSettings) {
+            surface.openProjectSettings(threadRef);
             return;
           }
           const project = projects.find(
@@ -344,8 +348,8 @@ export function useThreadActionMenu({
           return;
         }
         case "settle":
-          if (settle) {
-            settle(threadRef);
+          if (surface.settle) {
+            surface.settle(threadRef);
             return;
           }
           await reportFailure("Failed to settle thread", () => settleThread(threadRef));
@@ -369,7 +373,7 @@ export function useThreadActionMenu({
           );
           return;
         case "rename":
-          startRename(threadRef);
+          (surface.startRename ?? requestThreadRename)(threadRef);
           return;
         case "regenerate-title":
           await reportFailure("Failed to regenerate thread title", () =>
@@ -407,7 +411,7 @@ export function useThreadActionMenu({
           const url = readThreadActionMenuState(threadRef, {
             now: new Date(),
             timestampFormat,
-            openPanelPullRequestUrl,
+            openPanelPullRequestUrl: surface.openPanelPullRequestUrl,
           })?.pullRequestUrl;
           if (url) await copyPullRequestLink(url);
           return;
@@ -480,20 +484,14 @@ export function useThreadActionMenu({
       handleNewThread,
       logicalProjectKeyByPhysicalKey,
       markThreadUnread,
-      openPanelPullRequestUrl,
-      openProjectSettings,
       pinThread,
-      projectFilter,
       projectGroupingSettings,
       projects,
       regenerateThreadTitle,
       router,
       setThreadAutoSettle,
-      settle,
       settleThread,
-      snooze,
       snoozeThread,
-      startRename,
       timestampFormat,
       unsettleThread,
       unsnoozeThread,
@@ -501,17 +499,21 @@ export function useThreadActionMenu({
   );
 
   const openMenu = useCallback(
-    (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
+    (
+      threadRef: ScopedThreadRef,
+      position: { x: number; y: number },
+      surface: ThreadActionSurface = {},
+    ) => {
       void (async () => {
         const api = readLocalApi();
         if (!api) return;
         // Snapshot at open time — the menu is modal, so state read now is
         // what the user is looking at.
-        const items = readMenuItems(threadRef);
+        const items = readMenuItems(threadRef, surface);
         if (items.length === 0) return;
         const clicked = await settlePromise(() => api.contextMenu.show(items, position));
         if (clicked._tag === "Failure" || clicked.value === null) return;
-        await runAction(threadRef, clicked.value);
+        await runAction(threadRef, clicked.value, surface);
       })();
     },
     [readMenuItems, runAction],

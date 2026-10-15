@@ -171,8 +171,11 @@ const target = {
 };
 const position = { x: 10, y: 20 };
 const createMenu = () => {
-  const menu = useThreadActionMenu({ startRename: () => recordEffect("rename") });
-  return { openMenu: (at: typeof position) => menu.openMenu(target, at) };
+  const menu = useThreadActionMenu();
+  return {
+    openMenu: (at: typeof position) =>
+      menu.openMenu(target, at, { startRename: () => recordEffect("rename") }),
+  };
 };
 
 beforeEach(() => {
@@ -244,18 +247,19 @@ describe("one registry for every thread menu", () => {
 
   it("gives both sidebars, the header and the palette the same actions for one thread", () => {
     state.granted = new Set(["secondary"]);
-    const header = useThreadActionMenu({ startRename: () => {} }).readMenuItems(target);
-    const legacySidebar = useThreadActionMenu({
+    const { readMenuItems } = useThreadActionMenu();
+    const header = readMenuItems(target);
+    const legacySidebar = readMenuItems(target, {
       startRename: () => {},
       openProjectSettings: () => {},
-    }).readMenuItems(target);
-    const sidebar = useThreadActionMenu({
+    });
+    const sidebar = readMenuItems(target, {
       startRename: () => {},
       settle: () => {},
       snooze: () => {},
       openProjectSettings: () => {},
       projectFilter: { read: () => ({ label: "Web", isActive: false }), toggle: () => {} },
-    }).readMenuItems(target);
+    });
 
     const shared = [
       "new-thread-on-branch",
@@ -296,8 +300,7 @@ describe("one registry for every thread menu", () => {
     state.granted = new Set(["secondary"]);
     const toggled: string[] = [];
     state.show.mockResolvedValue("filter-by-project");
-    useThreadActionMenu({
-      startRename: () => {},
+    useThreadActionMenu().openMenu(target, position, {
       projectFilter: {
         read: () => ({ label: "Web", isActive: false }),
         toggle: (threadRef) => {
@@ -305,7 +308,7 @@ describe("one registry for every thread menu", () => {
           state.completed.resolve();
         },
       },
-    }).openMenu(target, position);
+    });
     await state.completed.promise;
     expect(toggled).toEqual(["thread"]);
   });
@@ -314,13 +317,12 @@ describe("one registry for every thread menu", () => {
     state.granted = new Set(["secondary"]);
     const parked: string[] = [];
     state.show.mockResolvedValue("settle");
-    useThreadActionMenu({
-      startRename: () => {},
+    useThreadActionMenu().openMenu(target, position, {
       settle: (threadRef) => {
         parked.push(threadRef.threadId);
         state.completed.resolve();
       },
-    }).openMenu(target, position);
+    });
     await state.completed.promise;
     expect(parked).toEqual(["thread"]);
     expect(state.effects).toEqual([]);
@@ -328,7 +330,7 @@ describe("one registry for every thread menu", () => {
 });
 
 describe("thread keybindings", () => {
-  const menu = () => useThreadActionMenu({ startRename: () => {} });
+  const menu = () => useThreadActionMenu();
 
   it("resolve to the registry action for the thread's current state", () => {
     state.granted = new Set(["secondary"]);
@@ -349,11 +351,9 @@ describe("thread keybindings", () => {
 
   it("prefer the pull request open in the surface's panel", async () => {
     state.linkedPullRequestUrl = "https://github.com/o/r/pull/7";
-    const actions = useThreadActionMenu({
-      startRename: () => {},
+    await useThreadActionMenu().runAction(target, "copy-reference", {
       openPanelPullRequestUrl: "https://github.com/o/r/pull/9",
     });
-    await actions.runAction(target, "copy-reference");
     expect(state.effects).toEqual(["clipboard:https://github.com/o/r/pull/9"]);
   });
 });

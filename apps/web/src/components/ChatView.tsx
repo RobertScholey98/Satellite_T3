@@ -104,8 +104,8 @@ import {
 import { readPastedComposerContext } from "./composerInlineTokenPaste";
 import { isPasteAsTextShortcut } from "@t3tools/client-runtime/text-paste";
 import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
-import { useAcknowledgeThreadWoke } from "../hooks/useThreadActions";
-import { requestThreadRename, useThreadActionMenu } from "../hooks/useThreadActionMenu";
+import { useAcknowledgeThreadWoke, useThreadActions } from "../hooks/useThreadActions";
+import { useThreadActionMenu } from "../hooks/useThreadActionMenu";
 import {
   deriveProviderSubagentStatus,
   deriveReportedModelSelection,
@@ -7168,10 +7168,8 @@ export default function ChatView(props: ChatViewProps) {
     publishComposerOverlayHeight(composerOverlayElement.getBoundingClientRect().height);
   }, [composerMounted, composerOverlayElement, publishComposerOverlayHeight]);
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(activeThreadRef);
-  const { shortcutAction: threadShortcutAction, runAction: runThreadAction } = useThreadActionMenu({
-    startRename: requestThreadRename,
-    openPanelPullRequestUrl,
-  });
+  const { shortcutAction: threadShortcutAction, runAction: runThreadAction } =
+    useThreadActionMenu();
   const pullRequestPanelTarget = activeThread
     ? threadPullRequestPanelTarget({
         projectId: activeThread.projectId,
@@ -7249,9 +7247,7 @@ export default function ChatView(props: ChatViewProps) {
   ]);
   const activeThreadSettled =
     supportsSettlement && activeThreadShell?.settledOverride === "settled";
-  const unsettleThreadMutation = useOrchestrationCommand(threadEnvironment.unsettle, {
-    reportFailure: false,
-  });
+  const { unsettleThread, unsnoozeThread } = useThreadActions();
   // Keyed by thread, not a boolean: the pending state must follow the thread
   // it belongs to across navigation, and a request resolving for thread A
   // must never clear (or re-enable) thread B's button.
@@ -7266,10 +7262,7 @@ export default function ChatView(props: ChatViewProps) {
     const threadKey = scopedThreadKey(activeThreadRef);
     setUnsettlingThreadKey(threadKey);
     try {
-      const result = await unsettleThreadMutation({
-        environmentId: activeThreadRef.environmentId,
-        input: { threadId: activeThreadRef.threadId, reason: "user" },
-      });
+      const result = await unsettleThread(activeThreadRef);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         toastManager.add(
@@ -7283,10 +7276,7 @@ export default function ChatView(props: ChatViewProps) {
     } finally {
       setUnsettlingThreadKey((current) => (current === threadKey ? null : current));
     }
-  }, [activeThreadRef, unsettleThreadMutation]);
-  const unsnoozeThreadMutation = useOrchestrationCommand(threadEnvironment.unsnooze, {
-    reportFailure: false,
-  });
+  }, [activeThreadRef, unsettleThread]);
   const [unsnoozingThreadKey, setUnsnoozingThreadKey] = useState<string | null>(null);
   const isUnsnoozing = unsnoozingThreadKey !== null && unsnoozingThreadKey === activeThreadKey;
   const handleUnsnoozeActiveThread = useCallback(async () => {
@@ -7312,10 +7302,7 @@ export default function ChatView(props: ChatViewProps) {
               limitRecovery: { runId: recovery.runId, resetAt: recovery.resetAt, snooze: false },
             },
           })
-        : await unsnoozeThreadMutation({
-            environmentId: activeThreadRef.environmentId,
-            input: { threadId: activeThreadRef.threadId, reason: "user" },
-          });
+        : await unsnoozeThread(activeThreadRef);
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
         toastManager.add(
@@ -7329,7 +7316,7 @@ export default function ChatView(props: ChatViewProps) {
     } finally {
       setUnsnoozingThreadKey((current) => (current === threadKey ? null : current));
     }
-  }, [activeThreadRef, activeThreadShell, unsnoozeThreadMutation, updateThreadMetadata]);
+  }, [activeThreadRef, activeThreadShell, unsnoozeThread, updateThreadMetadata]);
   const [isRestoringThreadBranch, setIsRestoringThreadBranch] = useState(false);
   const [branchRestoreConfirmOpen, setBranchRestoreConfirmOpen] = useState(false);
   // Once revealed for a given mismatch, the banner stays mounted until the
@@ -8041,11 +8028,14 @@ export default function ChatView(props: ChatViewProps) {
       });
       if (!command) return;
 
-      const threadAction = activeThreadRef ? threadShortcutAction(activeThreadRef, command) : null;
+      const threadActionSurface = { openPanelPullRequestUrl };
+      const threadAction = activeThreadRef
+        ? threadShortcutAction(activeThreadRef, command, threadActionSurface)
+        : null;
       if (activeThreadRef && threadAction) {
         event.preventDefault();
         event.stopPropagation();
-        if (!event.repeat) void runThreadAction(activeThreadRef, threadAction);
+        if (!event.repeat) void runThreadAction(activeThreadRef, threadAction, threadActionSurface);
         return;
       }
 

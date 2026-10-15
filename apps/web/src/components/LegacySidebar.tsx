@@ -2237,10 +2237,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       params: { projectKey: project.projectKey },
     });
   }, [isMobile, project.projectKey, router, setOpenMobile]);
-  const { openMenu: handleThreadContextMenu } = useThreadActionMenu({
-    startRename: startThreadRenameFromMenu,
-    openProjectSettings: openProjectSettingsFromMenu,
-  });
+  const { openMenu: openThreadActionMenu } = useThreadActionMenu();
+  const handleThreadContextMenu = useCallback(
+    (threadRef: ScopedThreadRef, position: { x: number; y: number }) =>
+      openThreadActionMenu(threadRef, position, {
+        startRename: startThreadRenameFromMenu,
+        openProjectSettings: openProjectSettingsFromMenu,
+      }),
+    [openProjectSettingsFromMenu, openThreadActionMenu, startThreadRenameFromMenu],
+  );
 
   return (
     <>
