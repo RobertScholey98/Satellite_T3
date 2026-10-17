@@ -663,8 +663,23 @@ export const make = Effect.gen(function* () {
     ).pipe(Effect.map((resolved) => new Map(resolved)));
   };
 
+  /**
+   * A fork's identity names its parent as primary and the fork as `origin`. The feed reads the fork,
+   * plus the parent when asked, without changing the identity every other reader keys by.
+   */
+  const withForkRepositories = (project: OrchestrationProjectShell, includeUpstream: boolean) =>
+    project.repositoryIdentity?.origin === undefined
+      ? Effect.succeed([project])
+      : repositoryIdentities.resolve(project.workspaceRoot, { remoteName: "origin" }).pipe(
+          Effect.map((origin) => {
+            if (origin === null) return [project];
+            const fork = { ...project, repositoryIdentity: origin };
+            return includeUpstream ? [fork, project] : [fork];
+          }),
+        );
+
   const listWorkspaceProjects = (
-    filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host">,
+    filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host" | "includeUpstream">,
   ): Effect.Effect<WorkspaceProjects, PullRequestError> =>
     (filter.projectId === undefined
       ? projects.listShells(
@@ -691,6 +706,13 @@ export const make = Effect.gen(function* () {
                   .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
           { concurrency: REPOSITORY_CONCURRENCY },
         ),
+      ),
+      Effect.flatMap((projects) =>
+        Effect.forEach(
+          projects,
+          (project) => withForkRepositories(project, filter.includeUpstream === true),
+          { concurrency: REPOSITORY_CONCURRENCY },
+        ).pipe(Effect.map((expanded) => expanded.flat())),
       ),
       Effect.flatMap((projects) =>
         refineUnknownProjectKinds(projects, filter).pipe(
@@ -765,11 +787,16 @@ export const make = Effect.gen(function* () {
    * repository.
    */
   const requireProject = (ref: PullRequestRef): Effect.Effect<SupportedProject, PullRequestError> =>
-    listWorkspaceProjects({ projectId: ref.projectId }).pipe(
+    listWorkspaceProjects({ projectId: ref.projectId, includeUpstream: true }).pipe(
       Effect.flatMap(({ supported }): Effect.Effect<SupportedProject, PullRequestError> => {
-        const own = supported[0];
         const repository = ref.repository.trim();
         const host = ref.host?.trim().toLowerCase();
+        const own =
+          supported.find(
+            (candidate) =>
+              candidate.repository.toLowerCase() === repository.toLowerCase() &&
+              (host === undefined || candidate.host === host),
+          ) ?? supported[0];
         if (own !== undefined && own.repository.toLowerCase() === repository.toLowerCase()) {
           if (host === undefined || host === own.host) return Effect.succeed(own);
         }
@@ -788,7 +815,9 @@ export const make = Effect.gen(function* () {
         // Azure SSH and legacy clone hosts differ from the browser URL's host. Compare
         // the complete repository identity before narrowing those checkouts by host.
         return listWorkspaceProjects(
-          repositoryKey.startsWith("dev.azure.com/") ? {} : { host },
+          repositoryKey.startsWith("dev.azure.com/")
+            ? { includeUpstream: true }
+            : { host, includeUpstream: true },
         ).pipe(
           Effect.flatMap(({ supported }) => {
             const onHost = supported.filter((candidate) => candidate.host === host);
@@ -2349,22 +2378,23 @@ export const make = Effect.gen(function* () {
   const listStatsUncached: PullRequestService["Service"]["listStats"] = (input) =>
     Effect.gen(function* () {
       if (input.refs.length === 0) return { stats: [] };
-      const { supported } = yield* listWorkspaceProjects({});
-      const byProject = new Map(supported.map((project) => [project.project.id, project]));
+      const { supported } = yield* listWorkspaceProjects({ includeUpstream: true });
       const wanted = new Map<
         string,
         { readonly project: SupportedProject; readonly number: number }
       >();
       for (const ref of input.refs) {
-        const project = byProject.get(ref.projectId);
-        if (
-          project === undefined ||
-          project.api.listChangeRequestStats === undefined ||
-          project.repository.toLowerCase() !== ref.repository.trim().toLowerCase()
-        ) {
-          continue;
-        }
-        wanted.set(`${project.project.id} ${ref.number}`, { project, number: ref.number });
+        const repository = ref.repository.trim().toLowerCase();
+        const project = supported.find(
+          (candidate) =>
+            candidate.project.id === ref.projectId &&
+            candidate.repository.toLowerCase() === repository,
+        );
+        if (project === undefined || project.api.listChangeRequestStats === undefined) continue;
+        wanted.set(`${project.project.id} ${repository} ${ref.number}`, {
+          project,
+          number: ref.number,
+        });
       }
       const byHost = new Map<string, Array<{ project: SupportedProject; number: number }>>();
       for (const entry of wanted.values()) {
@@ -2704,6 +2734,7 @@ export const make = Effect.gen(function* () {
         limit,
         query,
         cursorEntries,
+        includeUpstream,
       ] = JSON.parse(key) as [
         number,
         string,
@@ -2715,9 +2746,11 @@ export const make = Effect.gen(function* () {
         number | null,
         string | null,
         ReadonlyArray<[string, string]> | null,
+        boolean,
       ];
       return listUncached({
         state,
+        ...(includeUpstream ? { includeUpstream } : {}),
         ...(involvement === null ? {} : { involvement }),
         ...(filters === null ? {} : { filters: filtersOfKey(filters) }),
         ...(projectId === null ? {} : { projectId }),
@@ -2756,6 +2789,7 @@ export const make = Effect.gen(function* () {
       input.cursors === undefined
         ? null
         : Object.entries(input.cursors).toSorted(([left], [right]) => left.localeCompare(right)),
+      input.includeUpstream === true,
     ]);
     // A replacement reader can join a lookup still finishing its previous reader's cancellation.
     return Cache.get(listCache, key).pipe(

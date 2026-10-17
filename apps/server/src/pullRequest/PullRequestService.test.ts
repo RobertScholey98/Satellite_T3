@@ -1345,6 +1345,251 @@ it.effect("reads a repository once when several worktrees share it", () =>
   }),
 );
 
+const FORK_IDENTITY = {
+  canonicalKey: "github.com/robertscholey98/satellite_t3",
+  locator: {
+    source: "git-remote" as const,
+    remoteName: "origin",
+    remoteUrl: "https://github.com/RobertScholey98/Satellite_T3.git",
+  },
+  provider: "github",
+  displayName: "robertscholey98/satellite_t3",
+};
+
+/** A fork checkout as the resolver reports it: the parent is primary, the fork is `origin`. */
+function forkProject(id: string, workspaceRoot: string): OrchestrationProjectShell {
+  return {
+    ...project({ id, title: "satellite", workspaceRoot }),
+    repositoryIdentity: {
+      canonicalKey: "github.com/pingdotgg/t3code",
+      locator: {
+        source: "git-remote",
+        remoteName: "upstream",
+        remoteUrl: "https://github.com/pingdotgg/t3code.git",
+      },
+      provider: "github",
+      displayName: "pingdotgg/t3code",
+      origin: {
+        canonicalKey: FORK_IDENTITY.canonicalKey,
+        displayName: FORK_IDENTITY.displayName,
+      },
+    },
+  };
+}
+
+function makeForkService(input: {
+  readonly projects: ReadonlyArray<OrchestrationProjectShell>;
+  readonly provider: Partial<PullRequestProviderApi>;
+  readonly origin?: typeof FORK_IDENTITY | null;
+}) {
+  return makeService({
+    projects: input.projects,
+    providers: [fakeProvider(SourceControlProviderKind.make("github"), input.provider)],
+    resolveRepositoryIdentity: (_cwd, options) =>
+      Effect.succeed(
+        options?.remoteName === "origin"
+          ? input.origin === undefined
+            ? FORK_IDENTITY
+            : input.origin
+          : null,
+      ),
+  });
+}
+
+function recordListings(listed: string[]): Partial<PullRequestProviderApi> {
+  return {
+    listChangeRequests: ({ repository }) => {
+      listed.push(repository);
+      return Effect.succeed({
+        items: [changeRequest(listed.length, "2026-07-02T00:00:00Z")],
+        truncated: false,
+        continues: false,
+      });
+    },
+  };
+}
+
+it.effect("lists a fork's own pull requests when its parent is the upstream remote", () =>
+  Effect.gen(function* () {
+    const listed: string[] = [];
+    const service = yield* makeForkService({
+      projects: [forkProject("p1", "/fork")],
+      provider: recordListings(listed),
+    });
+
+    const result = yield* service.list({ state: "all" });
+
+    assert.deepStrictEqual(listed, ["robertscholey98/satellite_t3"]);
+    assert.deepStrictEqual(
+      result.entries.map(({ projectId, repository }) => [projectId, repository]),
+      [["p1", "robertscholey98/satellite_t3"]],
+    );
+  }),
+);
+
+it.effect("adds the upstream repository's pull requests to a fork's when asked", () =>
+  Effect.gen(function* () {
+    const listed: string[] = [];
+    const service = yield* makeForkService({
+      projects: [forkProject("p1", "/fork")],
+      provider: recordListings(listed),
+    });
+
+    const result = yield* service.list({ state: "all", includeUpstream: true });
+
+    assert.deepStrictEqual(listed.toSorted(), ["pingdotgg/t3code", "robertscholey98/satellite_t3"]);
+    assert.deepStrictEqual(result.entries.map(({ repository }) => repository).toSorted(), [
+      "pingdotgg/t3code",
+      "robertscholey98/satellite_t3",
+    ]);
+  }),
+);
+
+it.effect("reads the upstream once when another project already lists it", () =>
+  Effect.gen(function* () {
+    const listed: string[] = [];
+    const service = yield* makeForkService({
+      projects: [
+        forkProject("p1", "/fork"),
+        project({
+          id: "p2",
+          title: "t3code",
+          workspaceRoot: "/t3",
+          repository: "pingdotgg/t3code",
+        }),
+      ],
+      provider: recordListings(listed),
+    });
+
+    yield* service.list({ state: "all", includeUpstream: true });
+
+    assert.deepStrictEqual(listed.toSorted(), ["pingdotgg/t3code", "robertscholey98/satellite_t3"]);
+  }),
+);
+
+it.effect("lists one repository when the origin remote names the primary repository", () =>
+  Effect.gen(function* () {
+    const listed: string[] = [];
+    const service = yield* makeForkService({
+      projects: [forkProject("p1", "/fork")],
+      provider: recordListings(listed),
+      origin: {
+        ...FORK_IDENTITY,
+        canonicalKey: "github.com/pingdotgg/t3code",
+        displayName: "pingdotgg/t3code",
+      },
+    });
+
+    yield* service.list({ state: "all" });
+    yield* service.list({ state: "all", includeUpstream: true });
+
+    assert.deepStrictEqual(listed, ["pingdotgg/t3code", "pingdotgg/t3code"]);
+  }),
+);
+
+it.effect("lists the primary repository of a project without a distinct origin", () =>
+  Effect.gen(function* () {
+    const listed: string[] = [];
+    const service = yield* makeForkService({
+      projects: [
+        project({ id: "p1", title: "web", workspaceRoot: "/web", repository: "acme/web" }),
+      ],
+      provider: recordListings(listed),
+    });
+
+    yield* service.list({ state: "all" });
+    yield* service.list({ state: "all", includeUpstream: true });
+
+    assert.deepStrictEqual(listed, ["acme/web", "acme/web"]);
+  }),
+);
+
+it.effect("falls back to the primary repository when the origin remote is gone", () =>
+  Effect.gen(function* () {
+    const listed: string[] = [];
+    const service = yield* makeForkService({
+      projects: [forkProject("p1", "/fork")],
+      provider: recordListings(listed),
+      origin: null,
+    });
+
+    yield* service.list({ state: "all" });
+
+    assert.deepStrictEqual(listed, ["pingdotgg/t3code"]);
+  }),
+);
+
+it.effect("opens and counts pull requests from both a fork and its upstream", () =>
+  Effect.gen(function* () {
+    const read: string[] = [];
+    const counted: Array<ReadonlyArray<{ repository: string; number: number }>> = [];
+    const service = yield* makeForkService({
+      projects: [forkProject("p1", "/fork")],
+      provider: {
+        getChangeRequest: ({ repository }) =>
+          Effect.sync(() => {
+            read.push(repository);
+            return hostedChangeRequest(`from ${repository}`);
+          }),
+        listChangeRequestStats: ({ changeRequests }) => {
+          counted.push(changeRequests);
+          return Effect.succeed(
+            changeRequests.map(({ repository, number }) => ({
+              repository,
+              number,
+              additions: number,
+              deletions: 0,
+            })),
+          );
+        },
+      },
+    });
+
+    const stats = yield* service.listStats({
+      refs: [
+        { projectId: "p1" as ProjectId, repository: "robertscholey98/satellite_t3", number: 7 },
+        { projectId: "p1" as ProjectId, repository: "pingdotgg/t3code", number: 9 },
+      ],
+    });
+    const fork = yield* service.detail({
+      projectId: "p1" as ProjectId,
+      repository: "robertscholey98/satellite_t3",
+      number: 7,
+    });
+    const upstream = yield* service.detail({
+      projectId: "p1" as ProjectId,
+      repository: "pingdotgg/t3code",
+      number: 9,
+    });
+
+    assert.deepStrictEqual(read, ["robertscholey98/satellite_t3", "pingdotgg/t3code"]);
+    assert.strictEqual(fork.body, "from robertscholey98/satellite_t3");
+    assert.strictEqual(upstream.body, "from pingdotgg/t3code");
+    assert.strictEqual(counted.length, 1);
+    assert.deepStrictEqual(
+      counted[0]?.toSorted((left, right) => left.number - right.number),
+      [
+        { repository: "robertscholey98/satellite_t3", number: 7 },
+        { repository: "pingdotgg/t3code", number: 9 },
+      ],
+    );
+    assert.deepStrictEqual(
+      stats.stats
+        .map(({ projectId, repository, number, additions }) => [
+          projectId,
+          repository,
+          number,
+          additions,
+        ])
+        .toSorted((left, right) => Number(left[2]) - Number(right[2])),
+      [
+        ["p1", "robertscholey98/satellite_t3", 7, 7],
+        ["p1", "pingdotgg/t3code", 9, 9],
+      ],
+    );
+  }),
+);
+
 it.effect("keeps healthy repositories when one of them cannot be read", () =>
   Effect.gen(function* () {
     const service = yield* makeService({
