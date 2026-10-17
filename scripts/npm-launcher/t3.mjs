@@ -56,7 +56,7 @@ async function download(url, file) {
         shown = step;
         const percent = total ? ` ${step}%` : "";
         process.stderr.write(
-          `\r\x1b[2Kt3: downloading T3 Code ${version}${percent} (${(received / 1048576).toFixed(1)} MB)`,
+          `\r\x1b[2Kt3: downloading Satellite ${version}${percent} (${(received / 1048576).toFixed(1)} MB)`,
         );
       }
     }
