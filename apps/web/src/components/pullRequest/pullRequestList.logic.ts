@@ -560,18 +560,13 @@ export function mergePullRequestDiffStats(
   return next;
 }
 
-/** The repository is part of it because a fork project lists its upstream's numbers too. */
+/** Includes the repository because a fork project also lists its upstream, whose numbers collide. */
 export const pullRequestDiffStatKey = (row: {
   readonly environmentId: string;
   readonly projectId: string;
   readonly repository: string;
   readonly number: number;
 }) => `${row.environmentId} ${row.projectId} ${row.repository.toLowerCase()} ${row.number}`;
-
-/** Reads the include-upstream flag from route search, where a reload may hand it back as text. */
-export function pullRequestSearchIncludeUpstream(raw: unknown): { includeUpstream?: true } {
-  return raw === true || raw === "true" ? { includeUpstream: true } : {};
-}
 
 export interface MergedPullRequestList {
   readonly viewers: PullRequestViewers;

@@ -40,7 +40,7 @@ export class RepositoryIdentityResolver extends Context.Service<
   {
     readonly resolve: (
       cwd: string,
-      /** `remoteName` resolves that remote's identity instead of the primary one. */
+      /** `remoteName` resolves that remote instead of the primary one; null when it is missing. */
       options?: { readonly refresh?: boolean; readonly remoteName?: string },
     ) => Effect.Effect<RepositoryIdentity | null>;
   }

@@ -26,7 +26,6 @@ import {
   pullRequestStatsRequestBatches,
   mergePullRequestDiffStats,
   pullRequestDiffStatKey,
-  pullRequestSearchIncludeUpstream,
   narrowPullRequestsToFilters,
   partitionPullRequestsWithPriority,
   readPullRequestListSnapshot,
@@ -1288,14 +1287,6 @@ describe("remembered pull request list controls", () => {
     expect(
       pullRequestListPreferences({ involvement: "all", state: "open", includeUpstream: false }),
     ).toEqual({ involvement: "all", state: "open" });
-  });
-
-  it("carries included upstream pull requests through route search, from a reload too", () => {
-    expect(pullRequestSearchIncludeUpstream(true)).toEqual({ includeUpstream: true });
-    expect(pullRequestSearchIncludeUpstream("true")).toEqual({ includeUpstream: true });
-    expect(pullRequestSearchIncludeUpstream(false)).toEqual({});
-    expect(pullRequestSearchIncludeUpstream("yes")).toEqual({});
-    expect(pullRequestSearchIncludeUpstream(undefined)).toEqual({});
   });
 
   it("omits the default sort from storage", () => {

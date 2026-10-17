@@ -1356,7 +1356,6 @@ const FORK_IDENTITY = {
   displayName: "robertscholey98/satellite_t3",
 };
 
-/** A fork checkout as the resolver reports it: the parent is primary, the fork is `origin`. */
 function forkProject(id: string, workspaceRoot: string): OrchestrationProjectShell {
   return {
     ...project({ id, title: "satellite", workspaceRoot }),
