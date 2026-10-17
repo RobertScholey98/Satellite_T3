@@ -66,6 +66,7 @@ import {
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
+  GitBranchIcon,
   MessageSquareDashedIcon,
   LinkIcon,
   MessageSquareIcon,
@@ -2175,6 +2176,25 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
+
+  actionItems.push({
+    kind: "action",
+    value: "action:open-work",
+    searchTerms: [
+      "open work",
+      "worktrees",
+      "worktree",
+      "wip",
+      "uncommitted",
+      "commits",
+      "branches",
+    ],
+    title: "Open work",
+    icon: <GitBranchIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/open-work" });
+    },
+  });
 
   actionItems.push({
     kind: "action",
