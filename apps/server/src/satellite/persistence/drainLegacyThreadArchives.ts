@@ -4,6 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLifecycleService from "../../orchestration-v2/ThreadLifecycleService.ts";
 import { LEGACY_THREAD_ARCHIVE_QUEUE } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
+import * as ServerRuntimeStartup from "../../serverRuntimeStartup.ts";
 
 /**
  * Archives the dev-build Idea and Revdoc threads the ledger repair queued, through upstream's
@@ -53,4 +54,14 @@ export const drainLegacyThreadArchives = Effect.fn("drainLegacyThreadArchives")(
     yield* Effect.logInfo("Archived legacy Satellite Idea and Revdoc threads", { archived });
   }
   return archived;
+});
+
+/**
+ * Runs the drain once upstream accepts commands, which is after legacy import and recovery, so
+ * archive commands never interleave with startup.
+ */
+export const drainLegacyThreadArchivesAfterStartup = Effect.gen(function* () {
+  const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
+  yield* startup.awaitCommandReady;
+  return yield* drainLegacyThreadArchives();
 });

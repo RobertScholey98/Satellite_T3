@@ -2,13 +2,19 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLifecycleService from "../../orchestration-v2/ThreadLifecycleService.ts";
-import { drainLegacyThreadArchives } from "./drainLegacyThreadArchives.ts";
+import * as ServerRuntimeStartup from "../../serverRuntimeStartup.ts";
+import {
+  drainLegacyThreadArchives,
+  drainLegacyThreadArchivesAfterStartup,
+} from "./drainLegacyThreadArchives.ts";
 import {
   layerSatelliteRuntime,
   listTables,
@@ -27,12 +33,7 @@ const archivedEvents = Effect.gen(function* () {
   return rows.map((row) => row.stream_id);
 });
 
-const isOpen = (threadId: string) =>
-  Effect.map(v2ThreadStates, (rows) =>
-    rows.some((row) => row.thread_id === threadId && row.archived_at === null),
-  );
-
-it.live("archives queued dev-build threads through upstream's archive command once", () =>
+const withDevBuild = <A, E, R>(test: Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -43,28 +44,67 @@ it.live("archives queued dev-build threads through upstream's archive command on
       yield* seedSatelliteDevBuild.pipe(
         Effect.provide(NodeSqliteClient.layer({ filename: dbPath })),
       );
-
-      yield* Effect.gen(function* () {
-        assert.include(yield* listTables, "satellite_legacy_thread_archives");
-        assert.deepStrictEqual(yield* archivedEvents, []);
-
-        assert.strictEqual(yield* drainLegacyThreadArchives(), 2);
-
-        assert.deepStrictEqual(yield* archivedEvents, [THREADS.idea, THREADS.revdoc]);
-        assert.isFalse(yield* isOpen(THREADS.idea));
-        assert.isFalse(yield* isOpen(THREADS.revdoc));
-        assert.isTrue(yield* isOpen(THREADS.work));
-        assert.notInclude(yield* listTables, "satellite_legacy_thread_archives");
-        assert.strictEqual(yield* drainLegacyThreadArchives(), 0);
-
-        const lifecycle = yield* ThreadLifecycleService.ThreadLifecycleService;
-        yield* lifecycle.unarchive({
-          commandId: CommandId.make("test:unarchive-idea"),
-          threadId: ThreadId.make(THREADS.idea),
-        });
-        assert.strictEqual(yield* drainLegacyThreadArchives(), 0);
-        assert.isTrue(yield* isOpen(THREADS.idea));
-      }).pipe(Effect.provide(layerSatelliteRuntime(baseDir)));
+      return yield* test.pipe(Effect.provide(layerSatelliteRuntime(baseDir)));
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(NodeServices.layer));
+
+const isOpen = (threadId: string) =>
+  Effect.map(v2ThreadStates, (rows) =>
+    rows.some((row) => row.thread_id === threadId && row.archived_at === null),
+  );
+
+it.live("archives queued dev-build threads through upstream's archive command once", () =>
+  withDevBuild(
+    Effect.gen(function* () {
+      assert.include(yield* listTables, "satellite_legacy_thread_archives");
+      assert.deepStrictEqual(yield* archivedEvents, []);
+
+      assert.strictEqual(yield* drainLegacyThreadArchives(), 2);
+
+      assert.deepStrictEqual(yield* archivedEvents, [THREADS.idea, THREADS.revdoc]);
+      assert.isFalse(yield* isOpen(THREADS.idea));
+      assert.isFalse(yield* isOpen(THREADS.revdoc));
+      assert.isTrue(yield* isOpen(THREADS.work));
+      assert.notInclude(yield* listTables, "satellite_legacy_thread_archives");
+      assert.strictEqual(yield* drainLegacyThreadArchives(), 0);
+
+      const lifecycle = yield* ThreadLifecycleService.ThreadLifecycleService;
+      yield* lifecycle.unarchive({
+        commandId: CommandId.make("test:unarchive-idea"),
+        threadId: ThreadId.make(THREADS.idea),
+      });
+      assert.strictEqual(yield* drainLegacyThreadArchives(), 0);
+      assert.isTrue(yield* isOpen(THREADS.idea));
+    }),
+  ),
+);
+
+it.live("archives nothing until upstream's startup gate opens", () =>
+  withDevBuild(
+    Effect.gen(function* () {
+      const gateAwaited = yield* Deferred.make<void>();
+      const gate = yield* Deferred.make<void>();
+      const drain = yield* drainLegacyThreadArchivesAfterStartup.pipe(
+        Effect.provideService(
+          ServerRuntimeStartup.ServerRuntimeStartup,
+          ServerRuntimeStartup.ServerRuntimeStartup.of({
+            awaitCommandReady: Deferred.succeed(gateAwaited, undefined).pipe(
+              Effect.andThen(Deferred.await(gate)),
+            ),
+            markHttpListening: Effect.void,
+            enqueueCommand: (effect) => effect,
+          }),
+        ),
+        Effect.forkScoped,
+      );
+
+      yield* Deferred.await(gateAwaited);
+      assert.deepStrictEqual(yield* archivedEvents, []);
+      assert.include(yield* listTables, "satellite_legacy_thread_archives");
+
+      yield* Deferred.succeed(gate, undefined);
+      assert.strictEqual(yield* Fiber.join(drain), 2);
+      assert.deepStrictEqual(yield* archivedEvents, [THREADS.idea, THREADS.revdoc]);
+    }),
+  ),
 );

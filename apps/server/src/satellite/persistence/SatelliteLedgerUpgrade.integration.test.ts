@@ -44,12 +44,37 @@ const SATELLITE_1X_TABLES = [
   "issue_peer_grants",
 ];
 
-const LEGACY_55_60 = SATELLITE_LEGACY_LEDGER_ROWS.filter(
-  ([id, name]) => id <= 60 && !(id === 55 && name === "IdeaNotebooks"),
-);
-const LEGACY_DEV_BUILD = SATELLITE_LEGACY_LEDGER_ROWS.filter(
-  ([id, name]) => !(id === 55 && name === "IdeaNotebooks"),
-);
+const LEGACY_55_60 = [
+  [55, "ManagedDocuments"],
+  [56, "IssueBoards"],
+  [57, "OpenWork"],
+  [58, "IdeaNotebooks"],
+  [59, "IssueBoardSnapshots"],
+  [60, "RevdocTesting"],
+] as const;
+const LEGACY_55_62 = [
+  [55, "ManagedDocuments"],
+  [56, "IssueBoards"],
+  [57, "OpenWork"],
+  [58, "IdeaNotebooks"],
+  [59, "IssueBoardSnapshots"],
+  [60, "RevdocTesting"],
+  [61, "ProjectionThreadsCommitRecommendation"],
+  [62, "ProjectionRequestLifecycleIndex"],
+] as const;
+const LEGACY_DEV_BUILD = [
+  [55, "ManagedDocuments"],
+  [56, "IssueBoards"],
+  [57, "OpenWork"],
+  [58, "IdeaNotebooks"],
+  [59, "IssueBoardSnapshots"],
+  [60, "RevdocTesting"],
+  [61, "ProjectionThreadsCommitRecommendation"],
+  [62, "ProjectionRequestLifecycleIndex"],
+  [67, "DocumentPlacements"],
+  [68, "DocumentMediaTypes"],
+  [69, "IssueDeliveryPeers"],
+] as const;
 
 type Seed = (userdata: string) => Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
 
@@ -90,9 +115,7 @@ const CASES: ReadonlyArray<UpgradeCase> = [
   {
     name: "a v1.2.x install at Satellite 55 to 62",
     seed: atPath("state.sqlite", seedSatelliteV1("55-62")),
-    legacyRows: SATELLITE_LEGACY_LEDGER_ROWS.filter(
-      ([id, name]) => id <= 62 && !(id === 55 && name === "IdeaNotebooks"),
-    ),
+    legacyRows: LEGACY_55_62,
     fixtureThreads: true,
   },
   {

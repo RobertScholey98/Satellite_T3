@@ -128,6 +128,12 @@ describe("repairSatelliteLegacyLedger", () => {
         });
         assert.deepStrictEqual(yield* readLedger("effect_sql_migrations"), upstreamThrough54);
         assert.deepStrictEqual(yield* readLedger("satellite_migrations"), expected.moved);
+        assert.deepStrictEqual(
+          yield* SqlClient.SqlClient.pipe(
+            Effect.flatMap((sql) => sql`SELECT DISTINCT created_at FROM satellite_migrations`),
+          ),
+          [{ created_at: "2026-10-04 19:53:37" }],
+        );
         assert.deepStrictEqual(yield* dumpTables(BOARD_TABLES), boards);
         const tables = yield* listTables;
         for (const table of expected.droppedTables) assert.notInclude(tables, table);
@@ -218,6 +224,9 @@ describe("repairSatelliteLegacyLedger", () => {
           deletedForkEvents: 1,
         });
         assert.deepStrictEqual(yield* readLedger("effect_sql_migrations"), upstreamThrough58);
+        assert.deepStrictEqual(yield* sql`SELECT DISTINCT created_at FROM satellite_migrations`, [
+          { created_at: "2026-10-04 19:53:37" },
+        ]);
         assert.deepStrictEqual(
           (yield* sql<{ readonly thread_id: string }>`
             SELECT thread_id FROM satellite_legacy_thread_archives ORDER BY thread_id
