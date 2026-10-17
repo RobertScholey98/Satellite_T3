@@ -66,6 +66,14 @@ describe("rebrand", () => {
     expect(read(".repos/effect/README.md")).toBe("Built for T3 Code.\n");
   });
 
+  it("reads list entries without their trailing notes", () => {
+    const { root } = tree({
+      "list.txt": "# heading\nsrc/a.ts\nsrc/b.ts  # hand-edited\n\n",
+    });
+
+    expect(readFileList(NodePath.join(root, "list.txt"))).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
   it("finds nothing to change in the files this repository rebrands", () => {
     const root = NodePath.dirname(import.meta.dirname);
     const files = readFileList(NodePath.join(import.meta.dirname, "rebrand-files.txt"));

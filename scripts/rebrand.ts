@@ -26,8 +26,8 @@ export const rebrandText = (text: string) =>
 export const readFileList = (listPath: string) =>
   NodeFS.readFileSync(listPath, "utf8")
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line !== "" && !line.startsWith("#"));
+    .map((line) => line.replace(/#.*/, "").trim())
+    .filter((line) => line !== "");
 
 /** Rebrands `files` under `root` and returns the ones that changed, or would change. */
 export function rebrand(input: {

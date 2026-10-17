@@ -27,10 +27,13 @@ fork module and the upstream line it touches, and every later registration adds 
    deletion: `git rm <file>`.
 4. Upstream migrations are never renumbered. Satellite migrations live in their own table, so a new
    upstream migration merges as-is.
-5. A conflict in a file listed in `scripts/rebrand-files.txt` that differs only in the product
-   name resolves by taking upstream's side and running `node scripts/rebrand.ts`. CI's
-   `node scripts/rebrand.ts --check` catches a missed rerun, not a new upstream file that names
-   T3 Code, so add such files to the list when the text is user-facing.
+5. A conflict in a file listed in `scripts/rebrand-files.txt` resolves by taking upstream's side,
+   running `node scripts/rebrand.ts`, then running `vp fmt` on the rewritten files, since the
+   longer name can rewrap lines. For a file the list marks `hand-edited`, re-apply Satellite's
+   other hunks for it afterwards. CI's `node scripts/rebrand.ts --check` catches a missed rerun,
+   not a new upstream file that names T3 Code, so add such files to the list when the text is
+   user-facing. A line that must keep upstream's name, such as text recorded in a replay
+   fixture, carries a `rebrand:keep` comment.
 6. An identity seam (a name, home directory, profile, app id, icon, or release URL) resolves by
    taking upstream's line and reading the value from
    [`productIdentity.ts`](../../packages/contracts/src/productIdentity.ts) again.
