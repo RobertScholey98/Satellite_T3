@@ -332,6 +332,7 @@ export function OpenWorkView({
                             repository: pullRequest.repository,
                             number: pullRequest.number,
                             selectedProjectId: pullRequest.projectId,
+                            ...(pullRequest.host ? { selectedHost: pullRequest.host } : {}),
                             selectedEnvironmentId: environmentId,
                           },
                         })
@@ -424,7 +425,7 @@ function PickerMenu({
       <MenuPopup align="start">
         <MenuRadioGroup value={value} onValueChange={(next) => onChange(String(next))}>
           {options.map((option) => (
-            <MenuRadioItem key={option.value} value={option.value}>
+            <MenuRadioItem key={option.value} value={option.value} closeOnClick>
               {option.label}
             </MenuRadioItem>
           ))}
@@ -475,7 +476,7 @@ function WorktreeMenu({
           {worktrees.map((worktree) => {
             const title = ownerTitle(worktree.path);
             return (
-              <MenuRadioItem key={worktree.path} value={worktree.path}>
+              <MenuRadioItem key={worktree.path} value={worktree.path} closeOnClick>
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <div className="flex min-w-0 items-center gap-2 text-sm">
                     <span className="truncate">{worktreeName(worktree)}</span>
@@ -628,9 +629,16 @@ function Timeline({
             );
           })
         )}
-        {timeline.wip.truncated ? (
+        {timeline.wip.untrackedTruncated ? (
           <p className="text-xs text-muted-foreground">
-            Showing the first {timeline.wip.files.length} files.
+            Showing the first{" "}
+            {timeline.wip.files.filter((file) => file.layer === "untracked").length} untracked
+            files.
+          </p>
+        ) : null}
+        {timeline.wip.trackedTruncated ? (
+          <p className="text-xs text-muted-foreground">
+            Some staged or unstaged changes are missing: the diff was larger than Git's read limit.
           </p>
         ) : null}
       </li>

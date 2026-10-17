@@ -1,5 +1,5 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import type { EnvironmentId, OpenWorktreeSummary } from "@t3tools/contracts";
+import type { EnvironmentId, OpenWorktreeSummary, ProjectId } from "@t3tools/contracts";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 
 type OwnerCandidate = Pick<
@@ -36,8 +36,44 @@ function outranks(candidate: OwnerCandidate, current: OwnerCandidate) {
   return Date.parse(candidate.updatedAt) > Date.parse(current.updatedAt);
 }
 
-export function ownerPullRequest(owner: OwnerCandidate | null) {
-  return owner?.linkedPullRequest ?? owner?.branchPullRequest ?? null;
+type PullRequestSource = Pick<
+  EnvironmentThreadShell,
+  "projectId" | "pullRequests" | "linkedPullRequest" | "branchPullRequest"
+>;
+
+export interface OwnerPullRequest {
+  readonly projectId: ProjectId;
+  readonly repository: string;
+  readonly number: number;
+  readonly host: string | null;
+}
+
+/**
+ * The owner's pull request: the newest one linked to the thread, else its single linked pull
+ * request, else the one open for its branch. The link dialog fills only the list.
+ */
+export function ownerPullRequest(owner: PullRequestSource | null): OwnerPullRequest | null {
+  if (owner === null) return null;
+  const newest = owner.pullRequests
+    .filter((link) => link.source !== "stack-dismissed")
+    .toSorted((left, right) => right.linkedAt.localeCompare(left.linkedAt))[0];
+  if (newest) {
+    return {
+      projectId: owner.projectId,
+      repository: newest.repository,
+      number: newest.number,
+      host: newest.host,
+    };
+  }
+  const single = owner.linkedPullRequest ?? owner.branchPullRequest;
+  return single
+    ? {
+        projectId: single.projectId,
+        repository: single.repository,
+        number: single.number,
+        host: null,
+      }
+    : null;
 }
 
 export type WorktreeSelection =
