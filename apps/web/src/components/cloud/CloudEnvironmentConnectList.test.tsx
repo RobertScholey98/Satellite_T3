@@ -1,4 +1,4 @@
-import { RELAY_TUNNEL_RELEASED_MESSAGE, type Discovery } from "@t3tools/client-runtime/relay";
+import { type Discovery } from "@t3tools/client-runtime/relay";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId, ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -182,7 +182,9 @@ describe("cloud environment offline reasons", () => {
         error: Option.none(),
       });
     });
-    expect(rowText()).toContain(RELAY_TUNNEL_RELEASED_MESSAGE);
+    expect(rowText()).toContain(
+      "Offline for a while, so its T3 Connect tunnel was removed. Start Satellite on that computer and update it to the latest version to reconnect.",
+    );
   });
 });
 

@@ -86,15 +86,18 @@ export function relayRequestFailureDetail(error: {
   return null;
 }
 
-export const RELAY_TUNNEL_RELEASED_MESSAGE =
-  "Offline for a while, so its T3 Connect tunnel was removed. Start T3 Code on that computer and update it to the latest version to reconnect.";
+export const relayTunnelReleasedMessage = (productName: string) =>
+  `Offline for a while, so its T3 Connect tunnel was removed. Start ${productName} on that computer and update it to the latest version to reconnect.`;
+
+export const RELAY_TUNNEL_RELEASED_MESSAGE = relayTunnelReleasedMessage("T3 Code");
 
 export function relayOfflineReasonMessage(
   status: Pick<RelayEnvironmentStatusResponse, "offlineReason">,
+  productName = "T3 Code",
 ): string | null {
   switch (status.offlineReason) {
     case "tunnel_released":
-      return RELAY_TUNNEL_RELEASED_MESSAGE;
+      return relayTunnelReleasedMessage(productName);
     case undefined:
       return null;
   }

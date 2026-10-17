@@ -21,6 +21,7 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as Socket from "effect/socket/Socket";
 
 import { fetchRemoteEnvironmentDescriptor } from "../environment/descriptor.ts";
+import * as ClientCapabilities from "../platform/capabilities.ts";
 import { makeWsRpcProtocolClient, PING_TIMEOUT } from "../rpc/protocol.ts";
 import { isLegacyUpdateHandoffLoss, resolveServerUpdateProgressResult } from "../state/server.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
@@ -57,6 +58,9 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
     const resolver = yield* ConnectionResolver.ConnectionResolver;
     const webSocketConstructor = yield* Socket.WebSocketConstructor;
     const httpClient = yield* HttpClient.HttpClient;
+    const productName =
+      Option.getOrUndefined(yield* Effect.serviceOption(ClientCapabilities.ClientPresentation))
+        ?.productName ?? "T3 Code";
     const entry = (yield* SubscriptionRef.get(registry.entries)).get(environmentId);
     if (entry === undefined) {
       return yield* new EnvironmentRegistry.EnvironmentNotRegisteredError({ environmentId });
@@ -72,7 +76,7 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
     ) {
       return yield* new OutdatedHostUpdateError({
         environmentId,
-        message: `Update T3 Code on ${descriptor.label} manually; it cannot update itself.`,
+        message: `Update ${productName} on ${descriptor.label} manually; it cannot update itself.`,
       });
     }
 
@@ -182,7 +186,7 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
     if (Option.isNone(resumed)) {
       return yield* new OutdatedHostUpdateError({
         environmentId,
-        message: `${descriptor.label} did not come back on a compatible T3 Code version.`,
+        message: `${descriptor.label} did not come back on a compatible ${productName} version.`,
       });
     }
 
