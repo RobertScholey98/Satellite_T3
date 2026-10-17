@@ -145,9 +145,15 @@ describe("electron development launcher", () => {
     const development = resolveMacLauncherIconPaths("/runtime", true);
     const production = resolveMacLauncherIconPaths("/runtime", false);
 
-    assert.match(development.sourceIconPath, /assets[\\/]dev[\\/]blueprint-macos-1024\.png$/);
+    assert.match(
+      development.sourceIconPath,
+      /assets[\\/]satellite[\\/]dev[\\/]satellite-dev-macos-1024\.png$/,
+    );
     assert.equal(development.generatedIconPath, "/runtime/icon-dev.icns");
-    assert.match(production.sourceIconPath, /assets[\\/]prod[\\/]black-macos-1024\.png$/);
+    assert.match(
+      production.sourceIconPath,
+      /assets[\\/]satellite[\\/]prod[\\/]satellite-macos-1024\.png$/,
+    );
     assert.equal(production.generatedIconPath, "/runtime/icon-prod.icns");
   });
 });
