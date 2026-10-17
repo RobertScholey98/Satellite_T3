@@ -1,11 +1,21 @@
-import type { AuthEnvironmentScope, SatelliteWsRpcMethod } from "@t3tools/contracts";
+import {
+  type AuthEnvironmentScope,
+  AuthFilesystemReadScope,
+  AuthOrchestrationReadScope,
+  SATELLITE_WS_METHODS,
+  type SatelliteWsRpcMethod,
+} from "@t3tools/contracts";
 
 /** The scope each Satellite RPC requires. `RPC_REQUIRED_SCOPES` spreads it. */
-export const SATELLITE_RPC_REQUIRED_SCOPES = {} as const satisfies Readonly<
-  Record<SatelliteWsRpcMethod, AuthEnvironmentScope>
->;
+export const SATELLITE_RPC_REQUIRED_SCOPES = {
+  [SATELLITE_WS_METHODS.openWorkList]: AuthOrchestrationReadScope,
+  [SATELLITE_WS_METHODS.openWorkTimeline]: AuthOrchestrationReadScope,
+  [SATELLITE_WS_METHODS.openWorkDiff]: AuthFilesystemReadScope,
+} as const satisfies Readonly<Record<SatelliteWsRpcMethod, AuthEnvironmentScope>>;
 
 /** The `rpc.aggregate` span label of each Satellite RPC. `RPC_AGGREGATES` spreads it. */
-export const SATELLITE_RPC_AGGREGATES = {} as const satisfies Readonly<
-  Record<SatelliteWsRpcMethod, string>
->;
+export const SATELLITE_RPC_AGGREGATES = {
+  [SATELLITE_WS_METHODS.openWorkList]: "openWork",
+  [SATELLITE_WS_METHODS.openWorkTimeline]: "openWork",
+  [SATELLITE_WS_METHODS.openWorkDiff]: "openWork",
+} as const satisfies Readonly<Record<SatelliteWsRpcMethod, string>>;

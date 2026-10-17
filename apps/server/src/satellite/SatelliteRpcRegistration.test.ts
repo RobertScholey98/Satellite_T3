@@ -11,6 +11,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as OpenWork from "../openWork/OpenWork.ts";
 import { SATELLITE_RPC_AGGREGATES, SATELLITE_RPC_REQUIRED_SCOPES } from "./SatelliteRpcRegistry.ts";
 import * as SatelliteWsRpc from "./SatelliteWsRpc.ts";
 
@@ -22,6 +23,16 @@ const session = {
 } as const;
 
 const satelliteMethods = [...WsSatelliteRpcGroup.requests.keys()].toSorted();
+
+// Building the handler layer only captures services; no handler runs here.
+const unusedServices = Layer.succeed(
+  OpenWork.OpenWork,
+  OpenWork.OpenWork.of({
+    list: () => Effect.die("unused"),
+    timeline: () => Effect.die("unused"),
+    diff: () => Effect.die("unused"),
+  }),
+);
 
 describe("Satellite RPC registration", () => {
   it("serves upstream's RPCs plus Satellite's, with no Satellite RPC shadowing upstream", () => {
@@ -53,7 +64,7 @@ describe("Satellite RPC registration", () => {
         .map((entry) => entry.tag)
         .toSorted();
       expect(handledMethods).toEqual(satelliteMethods);
-    }).pipe(Effect.scoped),
+    }).pipe(Effect.scoped, Effect.provide(unusedServices)),
   );
 });
 

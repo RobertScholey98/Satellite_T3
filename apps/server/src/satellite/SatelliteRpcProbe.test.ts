@@ -82,9 +82,11 @@ const servedProbeGroup = () => {
 
 const callProbe = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
   Effect.gen(function* () {
-    const makeLayer = yield* SatelliteWsRpc.makeConnectionLayer;
-    // The mocked module serves the probe; its declared type is the shipped, empty one.
-    const handlers = makeLayer(session) as unknown as Layer.Layer<Rpc.Handler<typeof probe.method>>;
+    // The mocked module serves the probe and needs no services; its declared type is the shipped one.
+    const makeLayer = yield* SatelliteWsRpc.makeConnectionLayer as unknown as Effect.Effect<
+      (forSession: typeof session) => Layer.Layer<Rpc.Handler<typeof probe.method>>
+    >;
+    const handlers = makeLayer(session);
     const client = yield* RpcTest.makeClient(servedProbeGroup()).pipe(
       Effect.provide(
         Layer.mergeAll(handlers, RpcAuthorization.layer(scopes), rpcInstrumentationLayer),
