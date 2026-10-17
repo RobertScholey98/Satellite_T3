@@ -38,8 +38,8 @@ import * as WorkspacePaths from "../../../workspace/WorkspacePaths.ts";
  */
 export type SatelliteV1Ledger = "55-60" | "55-62" | "55-56" | "early-ideas";
 
-export const LEGACY_CREATED_AT = "2026-10-04 19:53:37";
-export const PROJECT_ID = "project:satellite";
+const LEGACY_CREATED_AT = "2026-10-04 19:53:37";
+const PROJECT_ID = "project:satellite";
 export const THREADS = {
   work: "thread:satellite:work",
   idea: "thread:satellite:idea",
