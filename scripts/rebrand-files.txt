@@ -175,7 +175,6 @@ packages/provider-acp-registry/src/server/driver.ts
 packages/provider-acp/src/server/mcpOverAcpBridge.ts
 packages/provider-core/src/server/orchestrationInstructions.test.ts
 packages/provider-core/src/server/orchestrationInstructions.ts
-packages/provider-core/src/server/runtimeInstructions.ts
 packages/provider-core/src/server/textGenerationPrompts.test.ts
 packages/provider-core/src/server/textGenerationPrompts.ts
 packages/provider-cursor/src/server/accountUsage.test.ts
