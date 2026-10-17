@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
+import { migrationManifest, runMigrations } from "../../Migrations.ts";
 import { repairSatelliteLegacyLedger } from "./repairSatelliteLegacyLedger.ts";
 import {
   ARCHIVED_IDEA_AT,
@@ -20,7 +20,7 @@ import {
   seedSatelliteV1,
   THREADS,
   threadStates,
-} from "./testing/satelliteLegacyFixtures.ts";
+} from "../../../satellite/persistence/testing/satelliteLegacyFixtures.test.helpers.ts";
 
 const withDatabase = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.gen(function* () {

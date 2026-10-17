@@ -4,7 +4,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
 import { runMigrations } from "../../persistence/Migrations.ts";
-import { repairSatelliteLegacyLedger } from "./repairSatelliteLegacyLedger.ts";
+import { repairSatelliteLegacyLedger } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
 
 /**
  * Ids 55 to 69 of `satellite_migrations` hold rows the ledger repair moved out of upstream's

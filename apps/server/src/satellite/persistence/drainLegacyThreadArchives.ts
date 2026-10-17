@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLifecycleService from "../../orchestration-v2/ThreadLifecycleService.ts";
-import { LEGACY_THREAD_ARCHIVE_QUEUE } from "./repairSatelliteLegacyLedger.ts";
+import { LEGACY_THREAD_ARCHIVE_QUEUE } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
 
 /**
  * Archives the dev-build Idea and Revdoc threads the ledger repair queued, through upstream's

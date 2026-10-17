@@ -16,7 +16,7 @@ import {
   readLedger,
   seedSatelliteDevBuild,
   seedSatelliteV1,
-} from "./testing/satelliteLegacyFixtures.ts";
+} from "./testing/satelliteLegacyFixtures.test.helpers.ts";
 
 const withDatabase = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));

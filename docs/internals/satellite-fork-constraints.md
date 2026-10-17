@@ -54,7 +54,7 @@ would run on fresh installs and be skipped on upgraded ones.
 Ids 55 to 69 in `satellite_migrations` are records of what a database once ran, never pending work.
 Satellite 1.x recorded 55 to 60 in upstream's table (55 to 62 from v1.1.12). Dev builds since
 2026-10-09 also recorded upstream's V2 migrations at 63 to 66 and their own at 67 to 69.
-[`repairSatelliteLegacyLedger.ts`](../../apps/server/src/satellite/persistence/repairSatelliteLegacyLedger.ts)
+[`repairSatelliteLegacyLedger.ts`](../../apps/server/src/persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts)
 moves those rows into `satellite_migrations` with their ids, names and timestamps, renumbers 63 to 66
 back to upstream's 55 to 58, drops the schema of features the port does not carry, and keeps the
 issue board tables for the boards migration. It runs in one transaction on `statev2.sqlite` after

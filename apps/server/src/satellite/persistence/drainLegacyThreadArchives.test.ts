@@ -15,7 +15,7 @@ import {
   seedSatelliteDevBuild,
   THREADS,
   v2ThreadStates,
-} from "./testing/satelliteLegacyFixtures.ts";
+} from "./testing/satelliteLegacyFixtures.test.helpers.ts";
 
 const archivedEvents = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

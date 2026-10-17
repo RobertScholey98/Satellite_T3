@@ -10,7 +10,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as LegacyV1ThreadImporter from "../../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import { migrationManifest } from "../../persistence/Migrations.ts";
 import { drainLegacyThreadArchives } from "./drainLegacyThreadArchives.ts";
-import { SATELLITE_LEGACY_LEDGER_ROWS } from "./repairSatelliteLegacyLedger.ts";
+import { SATELLITE_LEGACY_LEDGER_ROWS } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
 import { runMigrationsWithSatellite } from "./SatelliteMigrations.ts";
 import {
   ARCHIVED_IDEA_AT,
@@ -25,7 +25,7 @@ import {
   seedSatelliteDevBuild,
   seedSatelliteV1,
   THREADS,
-} from "./testing/satelliteLegacyFixtures.ts";
+} from "./testing/satelliteLegacyFixtures.test.helpers.ts";
 
 const SATELLITE_1X_TABLES = [
   "managed_documents",
