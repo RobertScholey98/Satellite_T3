@@ -26,7 +26,7 @@ permissions:
 jobs:
   test:
     name: Test (${{ inputs.package || 'all non-server' }})
-    runs-on: blacksmith-8vcpu-windows-2025
+    runs-on: windows-2025
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -58,7 +58,7 @@ jobs:
           key: windows-tests-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Install
-        run: vp install
+        run: vp install --frozen-lockfile
 
       - name: Ensure Electron runtime is installed
         if: inputs.package == '' || inputs.package == 'apps/desktop'
@@ -68,9 +68,12 @@ jobs:
       # so file-scoped runs call `vp test run` inside the package instead.
       - name: Test
         shell: pwsh
+        env:
+          TEST_PACKAGE: ${{ inputs.package }}
+          TEST_FILES: ${{ inputs.files }}
         run: |
-          $package = '${{ inputs.package }}'
-          $files = '${{ inputs.files }}'
+          $package = $env:TEST_PACKAGE
+          $files = $env:TEST_FILES
           if ($package -eq '') {
             vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' test
           } elseif ($files -eq '') {
