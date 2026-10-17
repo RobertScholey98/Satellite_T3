@@ -6,9 +6,8 @@ Open work lists every git worktree of the projects on an environment, including 
 hand, by delegated tasks, or in a custom worktree location. Open it from the **Open Work** tab at
 the top of the Pull Requests page, or choose **Open work** in the command palette.
 
-Each worktree shows its branch, or its commit when HEAD is detached, how many commits it is ahead
-of and behind main, and whether it has uncommitted changes. The repository's own checkout is marked
-**Primary**. Main is the first of `origin/main`, `main`, the branch `origin/HEAD` points at,
+Each worktree shows its branch, or its commit when HEAD is detached, and how many commits it is
+ahead of and behind main. The repository's own checkout is marked **Primary**. Main is the first of `origin/main`, `main`, the branch `origin/HEAD` points at,
 `origin/master`, and `master` that exists. When none exists, the worktree says **No main found** and
 shows only its uncommitted changes.
 

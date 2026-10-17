@@ -28,17 +28,18 @@ import {
   BASE_REF_CANDIDATES,
   BASE_REF_FORMAT,
   type BaseRef,
+  type WorktreeRecord,
   groupWip,
   LOG_FORMAT,
   parseDiffRecords,
   parseLogRecords,
-  parsePorcelainStatus,
+  parseWorktreeList,
   selectBaseRef,
 } from "./openWorkGit.ts";
 
 const READ_CONCURRENCY = 4;
 const LOG_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
-const STATUS_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const WIP_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const PATCH_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DIFF_ARGS = [
   "diff",
@@ -147,13 +148,32 @@ const make = Effect.gen(function* () {
     return byCommonDir;
   });
 
-  /** Canonical worktree paths, the primary checkout first as git lists it. */
-  const worktreePaths = Effect.fn("OpenWork.worktreePaths")(function* (cwd: string) {
-    const listed = yield* git
-      .listWorktreePaths(cwd)
-      .pipe(Effect.mapError(toGitError("OpenWork.worktreePaths")));
-    const resolved = yield* Effect.forEach(listed, canonical, { concurrency: READ_CONCURRENCY });
-    return resolved.map(Option.getOrNull);
+  /** Worktrees as git lists them, primary first, with canonical paths. */
+  const listWorktrees = Effect.fn("OpenWork.listWorktrees")(function* (cwd: string) {
+    const listed = yield* probe("OpenWork.listWorktrees", cwd, [
+      "worktree",
+      "list",
+      "--porcelain",
+      "-z",
+    ]);
+    // Git before 2.36 has no -z for worktree list; paths with newlines are then unreadable anyway.
+    const stdout =
+      listed.exitCode === 0
+        ? listed.stdout
+        : (yield* run("OpenWork.listWorktrees", cwd, [
+            "worktree",
+            "list",
+            "--porcelain",
+          ])).stdout.replaceAll("\n", "\0");
+    const resolved = yield* Effect.forEach(
+      parseWorktreeList(stdout),
+      (record) =>
+        canonical(path.resolve(cwd, record.path)).pipe(
+          Effect.map(Option.map((canonicalPath) => ({ ...record, path: canonicalPath }))),
+        ),
+      { concurrency: READ_CONCURRENCY },
+    );
+    return resolved.flatMap((record) => (Option.isSome(record) ? [record.value] : []));
   });
 
   const resolveBase = Effect.fn("OpenWork.resolveBase")(function* (cwd: string) {
@@ -181,76 +201,50 @@ const make = Effect.gen(function* () {
     return { ahead: ahead ?? null, behind: behind ?? null };
   });
 
-  /** One porcelain status read. None for entries that are not a work tree, such as a bare one. */
-  const readStatus = (cwd: string, untracked: "normal" | "all") =>
-    probe(
-      "OpenWork.status",
-      cwd,
-      ["status", "--porcelain=v2", "--branch", "-z", `--untracked-files=${untracked}`],
-      { maxOutputBytes: STATUS_MAX_OUTPUT_BYTES },
-    ).pipe(
-      Effect.map((result) =>
-        result.exitCode === 0 ? Option.some(parsePorcelainStatus(result.stdout)) : Option.none(),
-      ),
-    );
-
   const summarize = Effect.fn("OpenWork.summarize")(function* (
-    worktree: { readonly path: string; readonly primary: boolean },
+    worktree: WorktreeRecord & { readonly primary: boolean },
     repository: Repository,
     base: BaseRef | null,
-    status: { readonly head: string | null; readonly branch: string | null; changeCount: number },
   ) {
-    const divergence = yield* countDivergence(worktree.path, base, status.head);
+    const divergence = yield* countDivergence(worktree.path, base, worktree.head);
     return {
       path: worktree.path,
       projectIds: repository.projectIds,
-      branch: status.branch,
-      head: status.head,
-      baseRef: status.head ? (base?.name ?? null) : null,
+      branch: worktree.branch,
+      head: worktree.head,
+      baseRef: worktree.head ? (base?.name ?? null) : null,
       ...divergence,
-      hasChanges: status.changeCount > 0,
       primary: worktree.primary,
     } satisfies OpenWorktreeSummary;
   });
 
   const list: OpenWork["Service"]["list"] = Effect.fn("OpenWork.list")(function* (input) {
-    const seen = new Set<string>();
-    const worktrees: OpenWorktreeSummary[] = [];
-    for (const repository of (yield* repositories(input.projectIds)).values()) {
-      const [paths, base] = yield* Effect.all([
-        worktreePaths(repository.cwd),
-        resolveBase(repository.cwd),
-      ]);
-      const summaries = yield* Effect.forEach(
-        paths.map((worktreePath, index) => ({ worktreePath, primary: index === 0 })),
-        ({ worktreePath, primary }) =>
-          Effect.gen(function* () {
-            if (worktreePath === null || seen.has(worktreePath)) return null;
-            seen.add(worktreePath);
-            const status = yield* readStatus(worktreePath, "normal");
-            if (Option.isNone(status)) return null;
-            return yield* summarize(
-              { path: worktreePath, primary },
-              repository,
-              base,
-              status.value,
-            );
-          }),
-        { concurrency: READ_CONCURRENCY },
-      );
-      worktrees.push(
-        ...summaries
-          .filter((summary) => summary !== null)
-          .toSorted((left, right) =>
+    // A worktree belongs to exactly one common directory, so repositories never share a path.
+    const perRepository = yield* Effect.forEach(
+      (yield* repositories(input.projectIds)).values(),
+      (repository) =>
+        Effect.gen(function* () {
+          const [listed, base] = yield* Effect.all([
+            listWorktrees(repository.cwd),
+            resolveBase(repository.cwd),
+          ]);
+          // No git status here: on large checkouts it costs seconds per worktree.
+          const summaries = yield* Effect.forEach(
+            listed,
+            (worktree) => summarize(worktree, repository, base),
+            { concurrency: READ_CONCURRENCY },
+          );
+          return summaries.toSorted((left, right) =>
             left.primary !== right.primary
               ? Number(right.primary) - Number(left.primary)
               : left.path < right.path
                 ? -1
                 : 1,
-          ),
-      );
-    }
-    return { worktrees };
+          );
+        }),
+      { concurrency: 2 },
+    );
+    return { worktrees: perRepository.flat() };
   });
 
   /** Accepts a path only when it is a listed worktree of a registered project's repository. */
@@ -260,9 +254,10 @@ const make = Effect.gen(function* () {
     if (Option.isNone(found)) return yield* notFound;
     const repository = (yield* repositories()).get(found.value.commonDir);
     if (!repository) return yield* notFound;
-    const index = (yield* worktreePaths(found.value.root)).indexOf(found.value.root);
-    if (index < 0) return yield* notFound;
-    return { path: found.value.root, primary: index === 0, repository };
+    const root = found.value.root;
+    const worktree = (yield* listWorktrees(root)).find((listed) => listed.path === root);
+    if (!worktree) return yield* notFound;
+    return { worktree, repository };
   });
 
   const readCommits = Effect.fn("OpenWork.readCommits")(function* (cwd: string, base: BaseRef) {
@@ -301,28 +296,30 @@ const make = Effect.gen(function* () {
 
   const readLayer = (operation: string, cwd: string, args: ReadonlyArray<string>) =>
     run(operation, cwd, ["diff", ...args, "--raw", "--numstat", "-z", "--find-renames", "--"], {
-      maxOutputBytes: STATUS_MAX_OUTPUT_BYTES,
+      maxOutputBytes: WIP_MAX_OUTPUT_BYTES,
     }).pipe(Effect.map((result) => parseDiffRecords(result.stdout.split("\0"))));
 
   const timeline: OpenWork["Service"]["timeline"] = Effect.fn("OpenWork.timeline")(
     function* (input) {
-      const worktree = yield* resolveWorktree(input.path);
-      const [status, base, staged, unstaged] = yield* Effect.all(
+      const { worktree, repository } = yield* resolveWorktree(input.path);
+      const [base, staged, unstaged, untracked] = yield* Effect.all(
         [
-          readStatus(worktree.path, "all"),
           resolveBase(worktree.path),
           readLayer("OpenWork.wip.staged", worktree.path, ["--cached"]),
           readLayer("OpenWork.wip.unstaged", worktree.path, []),
+          run(
+            "OpenWork.wip.untracked",
+            worktree.path,
+            ["ls-files", "--others", "--exclude-standard", "-z"],
+            { maxOutputBytes: WIP_MAX_OUTPUT_BYTES },
+          ).pipe(Effect.map((result) => result.stdout.split("\0").filter(Boolean))),
         ],
         { concurrency: READ_CONCURRENCY },
       );
-      if (Option.isNone(status)) {
-        return yield* new OpenWorkWorktreeNotFoundError({ path: input.path });
-      }
       const [summary, history] = yield* Effect.all(
         [
-          summarize(worktree, worktree.repository, base, status.value),
-          base && status.value.head
+          summarize(worktree, repository, base),
+          base && worktree.head
             ? readCommits(worktree.path, base)
             : Effect.succeed({ commits: [], commitsTruncated: false }),
         ],
@@ -331,10 +328,7 @@ const make = Effect.gen(function* () {
       return {
         worktree: summary,
         ...history,
-        wip: groupWip(
-          { staged, unstaged, untracked: status.value.untracked },
-          OPEN_WORK_MAX_WIP_FILES,
-        ),
+        wip: groupWip({ staged, unstaged, untracked }, OPEN_WORK_MAX_WIP_FILES),
       };
     },
   );
@@ -416,7 +410,7 @@ const make = Effect.gen(function* () {
   });
 
   const diff: OpenWork["Service"]["diff"] = Effect.fn("OpenWork.diff")(function* (input) {
-    const worktree = yield* resolveWorktree(input.path);
+    const { worktree } = yield* resolveWorktree(input.path);
     return input.step.kind === "commit"
       ? yield* commitDiff(worktree.path, { ...input, step: input.step })
       : yield* wipDiff(worktree.path, input);

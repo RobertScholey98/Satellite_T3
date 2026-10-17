@@ -28,7 +28,6 @@ const worktree = (path: string) =>
     baseRef: null,
     ahead: null,
     behind: null,
-    hasChanges: false,
     primary: false,
   }) satisfies OpenWorktreeSummary;
 

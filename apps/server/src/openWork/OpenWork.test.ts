@@ -164,7 +164,6 @@ describe("Open work timeline", () => {
           ahead: view.worktree.ahead,
           behind: view.worktree.behind,
           primary: view.worktree.primary,
-          hasChanges: view.worktree.hasChanges,
           projectIds: view.worktree.projectIds,
         },
         {
@@ -174,7 +173,6 @@ describe("Open work timeline", () => {
           ahead: 3,
           behind: 2,
           primary: false,
-          hasChanges: false,
           projectIds: [ProjectId.make("project")],
         },
       );
@@ -334,10 +332,7 @@ describe("Open work timeline", () => {
           ["new folder/untracked.txt", "untracked", "added", 0],
         ],
       );
-      assert.deepStrictEqual(
-        [view.wip.insertions, view.wip.deletions, view.worktree.hasChanges],
-        [4, 3, true],
-      );
+      assert.deepStrictEqual([view.wip.insertions, view.wip.deletions], [4, 3]);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });

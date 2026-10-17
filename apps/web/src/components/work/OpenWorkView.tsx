@@ -449,11 +449,6 @@ function WorktreeMenu({
                         Primary
                       </Badge>
                     ) : null}
-                    {worktree.hasChanges ? (
-                      <Badge variant="warning" size="sm">
-                        Uncommitted
-                      </Badge>
-                    ) : null}
                     <span className="ml-auto shrink-0 pl-3 text-xs">
                       <Divergence worktree={worktree} />
                     </span>

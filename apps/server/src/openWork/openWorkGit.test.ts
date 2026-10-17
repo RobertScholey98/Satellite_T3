@@ -5,7 +5,7 @@ import {
   LOG_RECORD_MARKER,
   parseDiffRecords,
   parseLogRecords,
-  parsePorcelainStatus,
+  parseWorktreeList,
   selectBaseRef,
 } from "./openWorkGit.ts";
 
@@ -115,33 +115,62 @@ describe("parseLogRecords", () => {
   });
 });
 
-describe("parsePorcelainStatus", () => {
-  it("reads HEAD, branch, changes, and untracked paths with spaces and a rename's second path", () => {
+describe("parseWorktreeList", () => {
+  it("reads branch, detached and unborn heads, and leaves out bare and prunable entries", () => {
     const stdout = [
-      `# branch.oid ${SHA_A}`,
-      "# branch.head feature/with/slashes",
-      "# branch.ab +1 -0",
-      `1 .M N... 100644 100644 100644 ${SHA_A} ${SHA_A} file with spaces.txt`,
-      `2 R. N... 100644 100644 100644 ${SHA_A} ${SHA_A} R100 new name.txt`,
-      "? untracked.txt",
-      `u UU N... 100644 100644 100644 100644 ${SHA_A} ${SHA_A} ${SHA_A} conflict.txt`,
-      "? folder/new file.txt",
+      "worktree /repos/bare.git",
+      "bare",
+      "",
+      "worktree /repos/feature with\nnewline",
+      `HEAD ${SHA_A}`,
+      "branch refs/heads/feature/with/slashes",
+      "",
+      "worktree /repos/detached",
+      `HEAD ${SHA_B}`,
+      "detached",
+      "locked",
+      "",
+      "worktree /repos/gone",
+      `HEAD ${SHA_B}`,
+      "detached",
+      "prunable gitdir file points to non-existent location",
+      "",
+      "worktree /repos/fresh",
+      `HEAD ${"0".repeat(40)}`,
+      "branch refs/heads/main",
+      "",
       "",
     ].join("\0");
-    // The rename's original path looks like an untracked entry, and must not count as one.
-    const withOriginal = stdout.replace("new name.txt\0", "new name.txt\0? old name.txt\0");
-    assert.deepStrictEqual(parsePorcelainStatus(withOriginal), {
-      head: SHA_A,
-      branch: "feature/with/slashes",
-      changeCount: 5,
-      untracked: ["untracked.txt", "folder/new file.txt"],
-    });
+    assert.deepStrictEqual(parseWorktreeList(stdout), [
+      {
+        path: "/repos/feature with\nnewline",
+        head: SHA_A,
+        branch: "feature/with/slashes",
+        primary: false,
+      },
+      { path: "/repos/detached", head: SHA_B, branch: null, primary: false },
+      { path: "/repos/fresh", head: null, branch: "main", primary: false },
+    ]);
   });
 
-  it("reports an unborn HEAD and a detached HEAD as null", () => {
+  it("marks the first listed worktree as the primary checkout", () => {
+    const stdout = [
+      "worktree /repos/main",
+      `HEAD ${SHA_A}`,
+      "branch refs/heads/main",
+      "",
+      "worktree /repos/linked",
+      `HEAD ${SHA_B}`,
+      "detached",
+      "",
+      "",
+    ].join("\0");
     assert.deepStrictEqual(
-      parsePorcelainStatus("# branch.oid (initial)\0# branch.head (detached)\0"),
-      { head: null, branch: null, changeCount: 0, untracked: [] },
+      parseWorktreeList(stdout).map(({ path, primary }) => [path, primary]),
+      [
+        ["/repos/main", true],
+        ["/repos/linked", false],
+      ],
     );
   });
 });

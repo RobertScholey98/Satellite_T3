@@ -86,42 +86,41 @@ export function parseLogRecords(stdout: string): LogRecord[] {
     });
 }
 
-export interface PorcelainStatus {
+export interface WorktreeRecord {
+  readonly path: string;
   /** Null before the first commit. */
   readonly head: string | null;
   /** Null for a detached HEAD. */
   readonly branch: string | null;
-  readonly changeCount: number;
-  readonly untracked: string[];
 }
 
-/** `git status --porcelain=v2 --branch -z`. */
-export function parsePorcelainStatus(stdout: string): PorcelainStatus {
-  const fields = stdout.split("\0");
-  let head: string | null = null;
-  let branch: string | null = null;
-  let changeCount = 0;
-  const untracked: string[] = [];
-  for (let index = 0; index < fields.length; index++) {
-    const field = fields[index]!;
-    if (field.startsWith("# branch.oid ")) {
-      const oid = field.slice("# branch.oid ".length);
-      head = oid === "(initial)" ? null : oid;
-    } else if (field.startsWith("# branch.head ")) {
-      const name = field.slice("# branch.head ".length);
-      branch = name === "(detached)" ? null : name;
-    } else if (field.startsWith("? ")) {
-      changeCount++;
-      untracked.push(field.slice(2));
-    } else if (field.startsWith("1 ") || field.startsWith("u ")) {
-      changeCount++;
-    } else if (field.startsWith("2 ")) {
-      changeCount++;
-      // A rename or copy names its original path in the next field.
-      index++;
-    }
-  }
-  return { head, branch, changeCount, untracked };
+/**
+ * Worktrees from `git worktree list --porcelain -z`, in git's order with the primary checkout
+ * first. Bare and prunable entries are left out, so the primary is index 0 only when it exists.
+ */
+export function parseWorktreeList(stdout: string): Array<WorktreeRecord & { primary: boolean }> {
+  return stdout
+    .split("\0\0")
+    .map((record) => record.split("\0"))
+    .flatMap((fields, index) => {
+      const path = fields.find((field) => field.startsWith("worktree "))?.slice("worktree ".length);
+      if (
+        path === undefined ||
+        fields.some((field) => field === "bare" || field.startsWith("prunable"))
+      ) {
+        return [];
+      }
+      const head = fields.find((field) => field.startsWith("HEAD "))?.slice("HEAD ".length);
+      const branch = fields.find((field) => field.startsWith("branch "))?.slice("branch ".length);
+      return [
+        {
+          path,
+          head: head && !/^0+$/.test(head) ? head : null,
+          branch: branch ? branch.replace(/^refs\/heads\//, "") : null,
+          primary: index === 0,
+        },
+      ];
+    });
 }
 
 /** Candidates for main, best first. Also the patterns Open work passes to `git for-each-ref`. */

@@ -65,7 +65,6 @@ export const OpenWorktreeSummary = Schema.Struct({
   baseRef: Schema.NullOr(Schema.String),
   ahead: Schema.NullOr(NonNegativeInt),
   behind: Schema.NullOr(NonNegativeInt),
-  hasChanges: Schema.Boolean,
   /** The repository's main checkout rather than a linked worktree. */
   primary: Schema.Boolean,
 });
