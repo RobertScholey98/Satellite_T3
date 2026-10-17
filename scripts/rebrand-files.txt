@@ -5,8 +5,6 @@ apps/desktop/gnome-extension/captureFeedback.js
 apps/desktop/gnome-extension/captureService.js
 apps/desktop/gnome-extension/captureService.test.js
 apps/desktop/gnome-extension/metadata.json
-apps/desktop/resources/dmg/dmg-background-latest.svg
-apps/desktop/resources/dmg/dmg-background-nightly.svg
 apps/desktop/scripts/electron-launcher.mjs
 apps/desktop/scripts/electron-launcher.test.mjs
 apps/desktop/src/app/DesktopApp.ts
