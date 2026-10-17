@@ -90,12 +90,33 @@ describe("brand-assets", () => {
       BRAND_ASSET_PATHS.nightlyIconComposerProject,
       BRAND_ASSET_PATHS.productionIconComposerProject,
     ]).toEqual([
-      "assets/dev/app-icon.icon",
-      "assets/nightly/app-icon.icon",
-      "assets/prod/app-icon.icon",
+      "assets/satellite/dev/app-icon.icon",
+      "assets/satellite/nightly/app-icon.icon",
+      "assets/satellite/prod/app-icon.icon",
     ]);
-    expect(BRAND_ASSET_PATHS.developmentDesktopIconPng).toMatch(/^assets\/dev\/blueprint-/);
-    expect(BRAND_ASSET_PATHS.nightlyMacIconPng).toMatch(/^assets\/nightly\/nightly-/);
-    expect(BRAND_ASSET_PATHS.productionMacIconPng).toMatch(/^assets\/prod\/black-/);
+  });
+
+  it("resolves every channel's icons to Satellite's own asset directory", () => {
+    const paths = Object.entries(BRAND_ASSET_PATHS);
+    expect(paths.filter(([, path]) => !path.startsWith("assets/satellite/"))).toEqual([]);
+    expect(
+      paths
+        .filter(([role]) => role.startsWith("development"))
+        .every(([, path]) => path.startsWith("assets/satellite/dev/")),
+    ).toBe(true);
+    expect(
+      paths
+        .filter(([role]) => role.startsWith("nightly"))
+        .every(([, path]) => path.startsWith("assets/satellite/nightly/")),
+    ).toBe(true);
+    expect(
+      paths
+        .filter(([role]) => role.startsWith("production"))
+        .every(([, path]) => path.startsWith("assets/satellite/prod/")),
+    ).toBe(true);
+    expect(resolveWebIconOverrides("production", "dist/client")[0]).toEqual({
+      sourceRelativePath: "assets/satellite/prod/satellite-web-favicon.ico",
+      targetRelativePath: "dist/client/favicon.ico",
+    });
   });
 });
