@@ -11,7 +11,8 @@ ahead of and behind main. The repository's own checkout is marked **Primary**. M
 `origin/master`, and `master` that exists. When none exists, the worktree says **No main found** and
 shows only its uncommitted changes.
 
-Select a worktree to see its commits beyond main, oldest first, followed by **Work in progress**:
+Select a worktree to see its commits beyond main, oldest first, each with its file and line
+totals. Select a commit's file count to list its files. **Work in progress** follows the commits:
 the staged, unstaged, and untracked files that are not committed yet. A file that was staged and
 then edited again appears in both the staged and unstaged groups. Select any file to open its diff
 beside the timeline. A commit's diff compares with that commit's first parent, so it does not
