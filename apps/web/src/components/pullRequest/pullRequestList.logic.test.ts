@@ -25,6 +25,8 @@ import {
   pullRequestStatsRefreshBatches,
   pullRequestStatsRequestBatches,
   mergePullRequestDiffStats,
+  pullRequestDiffStatKey,
+  pullRequestSearchIncludeUpstream,
   narrowPullRequestsToFilters,
   partitionPullRequestsWithPriority,
   readPullRequestListSnapshot,
@@ -115,6 +117,7 @@ describe("visible pull request line-count targets", () => {
       {
         environmentId: ENV_1,
         projectId: "project-1",
+        repository: "pingdotgg/t3code",
         number: 1,
         additions: 1,
         deletions: 1,
@@ -176,6 +179,7 @@ describe("visible pull request line-count targets", () => {
       {
         environmentId: ENV_1,
         projectId: "project-1",
+        repository: "pingdotgg/t3code",
         number: 1,
         additions: 1,
         deletions: 1,
@@ -215,6 +219,7 @@ describe("visible pull request line-count targets", () => {
       entries.map((item) => ({
         environmentId: ENV_1,
         projectId: item.projectId,
+        repository: item.repository,
         number: item.number,
         additions: item.additions,
         deletions: item.deletions,
@@ -293,6 +298,7 @@ describe("visible pull request line-count targets", () => {
       entries.map((item) => ({
         environmentId: ENV_1,
         projectId: item.projectId,
+        repository: item.repository,
         number: item.number,
         additions: item.additions,
         deletions: item.deletions,
@@ -983,7 +989,7 @@ describe("blocked-on-me ranking", () => {
 });
 
 describe("line counts that arrive after the rows", () => {
-  const stats = new Map([["env-1 project-1 7", { additions: 42, deletions: 3 }]]);
+  const stats = new Map([["env-1 project-1 pingdotgg/t3code 7", { additions: 42, deletions: 3 }]]);
 
   it("fills in a row whose host left the counts for later", () => {
     const row = entry({ number: 7, additions: 0, deletions: 0 });
@@ -1004,32 +1010,100 @@ describe("line counts that arrive after the rows", () => {
 describe("merging line counts across keyed stats queries", () => {
   it("keeps counts already held while a fresh batch says nothing about them", () => {
     const held = mergePullRequestDiffStats(new Map(), [
-      { environmentId: "env-1", projectId: "project-1", number: 1, additions: 10, deletions: 2 },
-      { environmentId: "env-1", projectId: "project-1", number: 2, additions: 5, deletions: 1 },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        number: 1,
+        additions: 10,
+        deletions: 2,
+      },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        number: 2,
+        additions: 5,
+        deletions: 1,
+      },
     ]);
     const merged = mergePullRequestDiffStats(held, []);
-    expect(merged.get("env-1 project-1 1")).toEqual({ additions: 10, deletions: 2 });
-    expect(merged.get("env-1 project-1 2")).toEqual({ additions: 5, deletions: 1 });
+    expect(merged.get("env-1 project-1 pingdotgg/t3code 1")).toEqual({
+      additions: 10,
+      deletions: 2,
+    });
+    expect(merged.get("env-1 project-1 pingdotgg/t3code 2")).toEqual({
+      additions: 5,
+      deletions: 1,
+    });
   });
 
   it("replaces a count once its replacement arrives, keeping its neighbours", () => {
     const held = mergePullRequestDiffStats(new Map(), [
-      { environmentId: "env-1", projectId: "project-1", number: 1, additions: 10, deletions: 2 },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        number: 1,
+        additions: 10,
+        deletions: 2,
+      },
     ]);
     const merged = mergePullRequestDiffStats(held, [
-      { environmentId: "env-1", projectId: "project-1", number: 1, additions: 11, deletions: 2 },
-      { environmentId: "env-1", projectId: "project-1", number: 3, additions: 7, deletions: 0 },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        number: 1,
+        additions: 11,
+        deletions: 2,
+      },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        number: 3,
+        additions: 7,
+        deletions: 0,
+      },
     ]);
-    expect(merged.get("env-1 project-1 1")).toEqual({ additions: 11, deletions: 2 });
-    expect(merged.get("env-1 project-1 3")).toEqual({ additions: 7, deletions: 0 });
+    expect(merged.get("env-1 project-1 pingdotgg/t3code 1")).toEqual({
+      additions: 11,
+      deletions: 2,
+    });
+    expect(merged.get("env-1 project-1 pingdotgg/t3code 3")).toEqual({
+      additions: 7,
+      deletions: 0,
+    });
+  });
+
+  it("keeps a fork's and its upstream's counts apart when their numbers match", () => {
+    const fork = { environmentId: "env-1", projectId: "project-1", number: 7 };
+    const merged = mergePullRequestDiffStats(new Map(), [
+      { ...fork, repository: "robertscholey98/satellite_t3", additions: 3, deletions: 1 },
+      { ...fork, repository: "pingdotgg/t3code", additions: 40, deletions: 9 },
+    ]);
+    expect(
+      merged.get(pullRequestDiffStatKey({ ...fork, repository: "RobertScholey98/Satellite_T3" })),
+    ).toEqual({ additions: 3, deletions: 1 });
+    expect(merged.get(pullRequestDiffStatKey({ ...fork, repository: "pingdotgg/t3code" }))).toEqual(
+      { additions: 40, deletions: 9 },
+    );
   });
 
   it("does not mutate the map it was handed", () => {
-    const held = new Map([["env-1 project-1 1", { additions: 1, deletions: 1 }]]);
+    const held = new Map([["env-1 project-1 pingdotgg/t3code 1", { additions: 1, deletions: 1 }]]);
     mergePullRequestDiffStats(held, [
-      { environmentId: "env-1", projectId: "project-1", number: 1, additions: 2, deletions: 2 },
+      {
+        environmentId: "env-1",
+        projectId: "project-1",
+        repository: "pingdotgg/t3code",
+        number: 1,
+        additions: 2,
+        deletions: 2,
+      },
     ]);
-    expect(held.get("env-1 project-1 1")).toEqual({ additions: 1, deletions: 1 });
+    expect(held.get("env-1 project-1 pingdotgg/t3code 1")).toEqual({ additions: 1, deletions: 1 });
   });
 });
 
@@ -1203,10 +1277,25 @@ describe("remembered pull request list controls", () => {
       author: "octocat",
       labels: ["bug", "priority"],
       sort: "largest",
+      includeUpstream: true,
     } as const;
 
     writePullRequestListPreferences(preferences, storage);
     expect(readPullRequestListPreferences(storage)).toEqual(preferences);
+  });
+
+  it("remembers upstream pull requests only while they are included", () => {
+    expect(
+      pullRequestListPreferences({ involvement: "all", state: "open", includeUpstream: false }),
+    ).toEqual({ involvement: "all", state: "open" });
+  });
+
+  it("carries included upstream pull requests through route search, from a reload too", () => {
+    expect(pullRequestSearchIncludeUpstream(true)).toEqual({ includeUpstream: true });
+    expect(pullRequestSearchIncludeUpstream("true")).toEqual({ includeUpstream: true });
+    expect(pullRequestSearchIncludeUpstream(false)).toEqual({});
+    expect(pullRequestSearchIncludeUpstream("yes")).toEqual({});
+    expect(pullRequestSearchIncludeUpstream(undefined)).toEqual({});
   });
 
   it("omits the default sort from storage", () => {
@@ -1285,6 +1374,18 @@ describe("merging the environments' own listings", () => {
     expect(merged?.entries.map((row) => [row.environmentId, row.number])).toEqual([
       [ENV_2, 2],
       [ENV_1, 1],
+    ]);
+  });
+
+  it("lists an upstream pull request once when two environments both read it", () => {
+    const upstream = entry({ number: 5, repository: "pingdotgg/t3code" });
+    const merged = mergePullRequestLists([
+      [ENV_1, answer({ entries: [upstream, entry({ number: 6, repository: "fork/t3code" })] })],
+      [ENV_2, answer({ entries: [{ ...upstream, repository: "PingDotGG/T3Code" }] })],
+    ]);
+    expect(merged?.entries.map((row) => [row.environmentId, row.repository, row.number])).toEqual([
+      [ENV_1, "pingdotgg/t3code", 5],
+      [ENV_1, "fork/t3code", 6],
     ]);
   });
 

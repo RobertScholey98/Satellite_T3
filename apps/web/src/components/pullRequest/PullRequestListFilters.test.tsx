@@ -42,6 +42,17 @@ function findLabeledGroup(node: ReactNode, label: string): ReactNode {
   return undefined;
 }
 
+function badgeCount(node: ReactNode): number {
+  for (const child of Children.toArray(node)) {
+    if (!isValidElement(child)) continue;
+    const props = child.props as { readonly children?: ReactNode };
+    if (typeof props.children === "number") return props.children;
+    const nested = badgeCount(props.children);
+    if (nested > 0) return nested;
+  }
+  return 0;
+}
+
 function menu(overrides: Partial<Parameters<typeof PullRequestFiltersMenu>[0]>) {
   return PullRequestFiltersMenu({
     state: "open",
@@ -66,6 +77,8 @@ function menu(overrides: Partial<Parameters<typeof PullRequestFiltersMenu>[0]>) 
     projectEnvironmentId: undefined,
     unavailable: new Map(),
     onProject: () => undefined,
+    includeUpstream: false,
+    onIncludeUpstream: () => undefined,
     ...overrides,
   });
 }
@@ -163,6 +176,12 @@ describe("pull request filters menu", () => {
       pullRequestProjectKey({ id: projectId, environmentId: "env-2" as EnvironmentId }),
     );
     expect(onProject).toHaveBeenCalledWith(projectId, "env-2");
+  });
+
+  it("counts included upstream pull requests as a filter", () => {
+    expect(badgeCount(menu({}))).toBe(0);
+    expect(badgeCount(menu({ includeUpstream: true }))).toBe(1);
+    expect(badgeCount(menu({ includeUpstream: true, state: "closed" }))).toBe(2);
   });
 
   it("does not collide when environment and project ids contain spaces", () => {
