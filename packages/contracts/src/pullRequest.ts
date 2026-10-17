@@ -361,6 +361,8 @@ export const PullRequestListInput = Schema.Struct({
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 500 }))),
   cursors: Schema.optional(PullRequestListCursors),
   query: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+  /** A fork lists its own `origin` repository; this adds the upstream it was forked from. */
+  includeUpstream: Schema.optional(Schema.Boolean),
 });
 export type PullRequestListInput = typeof PullRequestListInput.Type;
 

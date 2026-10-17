@@ -118,6 +118,13 @@ describe("PullRequestListInput", () => {
     expect(decodeListInput({ state: "open", query: "  page  " }).query).toBe("page");
   });
 
+  it("asks for upstream rows only when told to, and leaves the default request unchanged", () => {
+    expect(decodeListInput({ state: "open" })).toStrictEqual({ state: "open" });
+    expect(decodeListInput({ state: "open", includeUpstream: true }).includeUpstream).toBe(true);
+    expect(decodeListInput({ state: "open", includeUpstream: false }).includeUpstream).toBe(false);
+    expect(() => decodeListInput({ state: "open", includeUpstream: "true" })).toThrow();
+  });
+
   it("has no search when none was asked for", () => {
     expect(decodeListInput({ state: "open" }).query).toBeUndefined();
   });
