@@ -1,0 +1,93 @@
+# Satellite fork constraints
+
+Satellite is re-ported onto upstream T3 Code and merges upstream forward. These rules keep that
+merge cheap and keep upstream's clients working against a Satellite server. Each rule names the
+mistake it prevents. The procedure for a sync is in the [upstream sync runbook](../operations/upstream-sync.md).
+
+## Mobile wire compatibility
+
+The official T3 Code mobile app connects to Satellite servers. Satellite does not ship its own
+mobile client and makes no changes to `apps/mobile`, so every contract the mobile app reads must
+keep upstream's shape.
+
+- Satellite contract changes are additive only: new WS methods, new union members, and new optional
+  fields. Never rename, remove, or reshape an upstream contract, and never make an upstream optional
+  field required.
+- Satellite keeps upstream's `ORCHESTRATION_PROTOCOL_VERSION` in
+  [`environment.ts`](../../packages/contracts/src/environment.ts) and follows upstream's bumps. A
+  Satellite-only bump would make upstream clients treat the server as incompatible.
+- Web and mobile tests run in CI because they are the cheapest check that a contract change stayed
+  additive.
+
+## Release version
+
+The mobile app checks upstream's CLI releases and offers a server update when upstream's newest
+version is greater than the version the server reports. See `findEnvironmentUpdate` in
+[`environment-maintenance.ts`](../../apps/mobile/src/features/settings/environment-maintenance.ts).
+A Satellite server reporting a lower version than upstream would be offered an upstream update that
+replaces Satellite.
+
+Satellite's major version therefore stays above upstream's major. That is why Satellite 2.x ships
+while upstream is at 0.x. If upstream's major ever reaches Satellite's, Satellite bumps its major
+before its next release. Do not propose version schemes that track upstream's numbers.
+
+## Migration ledger
+
+Upstream's migrator records each migration's id and name in `effect_sql_migrations`. It skips every
+id up to the highest one recorded, whatever name was recorded there. From the first V2 migration
+(id 55) on, `assertV2MigrationsCanRun` in
+[`Migrations.ts`](../../apps/server/src/persistence/Migrations.ts) refuses to start when a recorded
+name differs from upstream's.
+
+Any Satellite id in upstream's list therefore collides with a future upstream migration, and
+renumbering upstream's migrations to make room breaks every database that later meets upstream's
+numbering. Satellite migrations run from their own Satellite table with their own ids. Never add an
+id to upstream's migration list and never renumber an upstream migration.
+
+Satellite 1.x recorded its own migrations as ids 55 to 60 in upstream's table. The one-time repair
+for those databases is documented here when it lands.
+
+## Confined footprint
+
+Satellite code is additive. Features are new services, new contracts files, new web components,
+and new MCP tools. Edits to upstream files are limited to registration points:
+
+- handler tables, RPC groups, and method tables
+- route lists and layer composition in the server entry
+- authorization and instrumentation tables
+- settings schema extensions
+- one mount in the web root route
+- the one persistence seam that runs Satellite migrations and the ledger repair
+
+Every PR lists the upstream files it edits and why. Measure the footprint as the number of upstream
+files Satellite modifies or deletes relative to the upstream merge base:
+
+```bash
+git fetch upstream
+git diff --name-only --no-renames --diff-filter=MD "$(git merge-base HEAD upstream/main)" HEAD | wc -l
+```
+
+Run it before and after a change. Growth outside registration points needs a reason in the PR.
+
+## Registration module shape
+
+Satellite reaches upstream through a small set of fork-owned modules. Each touches an upstream file
+through a line or two, so a merge conflict at that line resolves by keeping both sides. Later
+features register through these modules instead of editing upstream handler code.
+
+- One server registration module provides Satellite layers, HTTP routes, and MCP toolkits. It
+  merges into upstream's server with one line.
+- One WS RPC module provides Satellite handlers. Its connection layer merges into upstream's WS
+  handler.
+- One RPC registry holds Satellite's scope table and subject grants. Upstream's authorization and
+  instrumentation tables spread it.
+- One Satellite RPC contracts file holds Satellite methods. Upstream's WS method table and RPC group
+  spread it.
+- One product identity contract holds the names, icons, and update feed that every surface reads.
+- One web root coordinator component holds Satellite's app-level effects. It mounts once in
+  upstream's root route.
+
+Each module arrives with the first change that needs it. For scale, these touch points on Satellite's
+pre-port main measured +5/-2 lines in the RPC contracts file, +11 in the server file, +7/-1 in
+authorization, +2 in instrumentation, and +2 in the web root route. A WS handler edit is a few
+lines. A large diff in an upstream file means the feature is not registered through its module.

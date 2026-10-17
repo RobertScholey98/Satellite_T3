@@ -1,4 +1,8 @@
-# T3 Code docs
+# Satellite docs
+
+Start with the [README](../README.md) for Satellite's purpose, Windows and macOS
+installation, and source setup. Guides for inherited features remain available; references to
+T3's hosted services and app-store clients describe upstream infrastructure.
 
 ## Using T3 Code
 
@@ -37,6 +41,8 @@ source alone does not explain. Most code changes do not need an internal documen
 
 - [Architecture overview](./internals/overview.md)
 - [Glossary](./internals/glossary.md)
+- [Satellite fork constraints](./internals/satellite-fork-constraints.md)
+- [Revdoc review model](./internals/revdoc-review-model.md)
 - [Connection runtime](./internals/connection-runtime.md)
 - [Providers](./internals/providers.md)
 - [Adding a provider](./internals/adding-a-provider.md)
@@ -58,6 +64,7 @@ source alone does not explain. Most code changes do not need an internal documen
 ### Runbooks
 
 - [Development and local builds](./operations/development.md)
+- [Upstream sync](./operations/upstream-sync.md)
 - [T3 Connect setup](./operations/connect-setup.md)
 - [Release](./operations/release.md)
 - [Observability](./operations/observability.md)

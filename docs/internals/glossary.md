@@ -62,3 +62,26 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Attachment inventory | The ordered image records shown as thumbnails above the prose, including images with no inline references.                          |
 
 See [composer context references](./composer-context-references.md) for the contract and lifecycle.
+
+## Issue boards
+
+| Term               | Meaning                                                                                                                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Board connection   | One environment's link to a remote issue board, a GitHub Project or an Azure DevOps board. Several environments may connect to the same board. The remote board is the source of truth. |
+| Attempt            | A thread and worktree started from a ticket. Owned by the environment that started it. Ownership never moves.                                                                           |
+| Owning environment | The only environment that moves a ticket on behalf of its attempt. It writes directly to the remote board. Other environments only refresh their stored copy.                           |
+| Manual move        | A ticket move made by a person on any machine. Wins over an automatic move that arrives later from an attempt.                                                                          |
+
+## Revdoc
+
+| Term         | Meaning                                                                                                                                                                    |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Review       | Revdoc's single living checklist for one worktree. Exactly one per worktree. Service-owned. Transient.                                                                     |
+| Item         | One reviewable check inside a Review, with a stable id, check text, the person's outcome and note, and the latest AI result with evidence. Identity survives regeneration. |
+| Outcome      | The person's verdict on an item: complete, broken, change requested, skipped, or not checked. Separate from the AI result.                                                 |
+| Result       | The latest AI test result for an item, with observed behavior and evidence.                                                                                                |
+| Pass         | One Revdoc generation or test run against a Review. A generation pass receives the current Review and returns an upsert.                                                   |
+| Stale item   | An item the latest generation pass no longer proposes. Marked, not deleted, until the person dismisses it.                                                                 |
+| Needs retest | An item whose check text or covered code changed since its last result or outcome. Keeps the person's note.                                                                |
+
+See the [Revdoc review model](./revdoc-review-model.md) for how passes reconcile with a Review.
