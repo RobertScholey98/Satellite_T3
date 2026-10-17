@@ -67,8 +67,7 @@ const worktreeName = (worktree: OpenWorktreeSummary) =>
 
 /**
  * Every worktree of the environment's registered projects, and for the selected one its commits
- * beyond main and a live work-in-progress step. Rereads on arrival, Refresh, window focus, a
- * local status change in the selected worktree, and a cleanup that removed a worktree.
+ * beyond main and a live work-in-progress step.
  */
 export function OpenWorkView({
   target,

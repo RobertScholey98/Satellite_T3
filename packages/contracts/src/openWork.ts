@@ -11,7 +11,7 @@ export const OPEN_WORK_WS_METHODS = {
   openWorkDiff: "openWork.diff",
 } as const;
 
-/** Server-side payload caps. The view says so when a result hits one. */
+/** Server-side payload caps. */
 export const OPEN_WORK_MAX_COMMITS = 200;
 export const OPEN_WORK_MAX_FILES_PER_COMMIT = 200;
 export const OPEN_WORK_MAX_WIP_FILES = 500;

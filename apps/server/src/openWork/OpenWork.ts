@@ -393,7 +393,8 @@ const make = Effect.gen(function* () {
   });
 
   const wipDiff = Effect.fn("OpenWork.wipDiff")(function* (cwd: string, input: OpenWorkDiffInput) {
-    // Open work checked the repository itself, so worktrees outside upstream's managed folders work.
+    // Calls the driver, not ReviewService: resolveWorktree already authorized the path, and
+    // ReviewService rejects worktrees outside upstream's managed folders.
     const preview = yield* git
       .getReviewDiffPreview({
         cwd,

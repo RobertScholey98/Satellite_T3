@@ -23,10 +23,7 @@ export class OpenWorkUnsupportedError extends Schema.TaggedError<OpenWorkUnsuppo
 const isUnknownRequestTag = (defect: unknown) =>
   typeof defect === "string" && defect.startsWith("Unknown request tag:");
 
-/**
- * Open work queries. Each keeps its last result per input, so a revisit paints cached history at
- * once and a refresh replaces it in place. No refresh interval: the view rereads on demand.
- */
+/** Open work queries. No refresh interval: the view rereads on demand. */
 export function createOpenWorkEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {

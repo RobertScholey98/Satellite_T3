@@ -32,10 +32,7 @@ export interface OpenWorkDiffTarget {
   readonly file: { readonly path: string; readonly previousPath: string | null };
 }
 
-/**
- * One file's diff beside the timeline. A commit compares with its first parent; a WIP file shows
- * its whole uncommitted change against HEAD. `revision` rereads WIP diffs when the timeline does.
- */
+/** One file's diff beside the timeline. */
 export function OpenWorkDiffPanel({
   environmentId,
   worktreePath,
@@ -50,6 +47,7 @@ export function OpenWorkDiffPanel({
   readonly target: OpenWorkDiffTarget;
   /** The files of the same step, for previous and next. */
   readonly siblings: ReadonlyArray<OpenWorkDiffTarget>;
+  /** Changes when the timeline rereads, so a WIP diff rereads with it. */
   readonly revision: number;
   readonly onSelect: (target: OpenWorkDiffTarget) => void;
   readonly onClose: () => void;

@@ -36,7 +36,6 @@ function outranks(candidate: OwnerCandidate, current: OwnerCandidate) {
   return Date.parse(candidate.updatedAt) > Date.parse(current.updatedAt);
 }
 
-/** The owner's linked pull request, or else the pull request open for its branch. */
 export function ownerPullRequest(owner: OwnerCandidate | null) {
   return owner?.linkedPullRequest ?? owner?.branchPullRequest ?? null;
 }
