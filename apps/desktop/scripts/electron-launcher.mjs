@@ -401,7 +401,7 @@ function buildMacLauncher(electronBinaryPath) {
   patchHelperBundleInfoPlists(targetAppBundlePath);
   if (isDevelopment) {
     // Launching the node_modules copy makes macOS associate the process (and Dock label) with
-    // Electron.app even though this bundle's Info.plist has the T3 Code name. Its conventional
+    // Electron.app even though this bundle's Info.plist has the Satellite name. Its conventional
     // executable name also keeps Electron's default-app runtime in development mode instead of
     // making app.isPackaged report true.
     writeDevelopmentEnvironmentScript();

@@ -10567,7 +10567,7 @@ export default function ChatView(props: ChatViewProps) {
     ) : renderedRightPanelSurface?.kind === "pull-request" && !supportsPullRequests ? (
       <PullRequestsUnavailableState
         title="Pull requests unavailable"
-        error="Update this environment's T3 Code server to browse pull requests."
+        error="Update this environment's Satellite server to browse pull requests."
       />
     ) : renderedRightPanelSurface?.kind === "pull-request" ? (
       <PullRequestDetailPanel
