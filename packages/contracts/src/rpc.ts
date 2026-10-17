@@ -4,6 +4,7 @@ import {
   OrchestrationV2SearchThreadResult,
 } from "./orchestrationV2.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
+import { SATELLITE_WS_METHODS, WsSatelliteRpcGroup } from "./satelliteRpc.ts";
 import {
   McpAppCallToolInput,
   McpAppCallToolResult,
@@ -372,6 +373,7 @@ import { VcsError } from "./vcs.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
+  ...SATELLITE_WS_METHODS,
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
@@ -1849,7 +1851,7 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
-export const WsRpcGroup = RpcGroup.make(
+export const WsCoreRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2046,3 +2048,5 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
 ).middleware(RpcScopeAuthorization);
+export const WsRpcGroup =
+  WsCoreRpcGroup.merge(WsSatelliteRpcGroup).middleware(RpcScopeAuthorization);
