@@ -104,11 +104,14 @@ features register through these modules instead of editing upstream handler code
   `rpc.ts` spreads `SATELLITE_WS_METHODS` into `WS_METHODS` and defines `WsRpcGroup` as upstream's
   `WsCoreRpcGroup` merged with `WsSatelliteRpcGroup`. The client runtime resubscribes its stream
   methods on reconnect through `SatelliteWsSubscriptionMethod`.
-- One product identity contract holds the names, icons, and update feed that every surface reads.
+- [`productIdentity.ts`](../../packages/contracts/src/productIdentity.ts) holds the names, home
+  directory, desktop profiles, app ids, icons, and release repository that every surface reads.
+  Every release fetch builds its URL from that repository, so no default path reaches upstream's
+  releases.
 - One web root coordinator component holds Satellite's app-level effects. It mounts once in
   upstream's root route.
 
-The last two arrive with the first change that needs them.
+The last one arrives with the first change that needs it.
 [`SatelliteRpcRegistration.test.ts`](../../apps/server/src/satellite/SatelliteRpcRegistration.test.ts)
 fails when a Satellite method lacks a scope, a label, or a handler, or shadows an upstream method.
 
