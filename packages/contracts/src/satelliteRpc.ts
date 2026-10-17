@@ -3,6 +3,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import {
   OPEN_WORK_WS_METHODS,
+  WsOpenWorkCommitFilesRpc,
   WsOpenWorkDiffRpc,
   WsOpenWorkListRpc,
   WsOpenWorkTimelineRpc,
@@ -26,6 +27,7 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsOpenWorkListRpc,
   WsOpenWorkTimelineRpc,
   WsOpenWorkDiffRpc,
+  WsOpenWorkCommitFilesRpc,
 );
 
 type SatelliteWsRpc = RpcGroup.Rpcs<typeof WsSatelliteRpcGroup>;

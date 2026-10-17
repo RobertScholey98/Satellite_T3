@@ -9,6 +9,7 @@ export const OPEN_WORK_WS_METHODS = {
   openWorkList: "openWork.list",
   openWorkTimeline: "openWork.timeline",
   openWorkDiff: "openWork.diff",
+  openWorkCommitFiles: "openWork.commitFiles",
 } as const;
 
 /** Server-side payload caps. */
@@ -75,9 +76,10 @@ export const OpenWorkCommit = Schema.Struct({
   parents: Schema.Array(Schema.String),
   subject: Schema.String,
   committedAt: Schema.String,
-  /** Compared with the first parent, so a merge lists what it brought in. */
-  files: Schema.Array(OpenWorkFile),
-  filesTruncated: Schema.Boolean,
+  /** Totals against the first parent. `openWork.commitFiles` lists the files. */
+  fileCount: NonNegativeInt,
+  insertions: NonNegativeInt,
+  deletions: NonNegativeInt,
 });
 export type OpenWorkCommit = typeof OpenWorkCommit.Type;
 
@@ -91,8 +93,12 @@ export const OpenWorkListResult = Schema.Struct({
 });
 export type OpenWorkListResult = typeof OpenWorkListResult.Type;
 
+/** The project the worktree was listed under. Without it the server checks every project. */
+const OpenWorkProjectHint = Schema.optionalKey(ProjectId);
+
 export const OpenWorkTimelineInput = Schema.Struct({
   path: TrimmedNonEmptyString,
+  projectId: OpenWorkProjectHint,
 });
 export type OpenWorkTimelineInput = typeof OpenWorkTimelineInput.Type;
 
@@ -105,17 +111,17 @@ export const OpenWorkTimelineResult = Schema.Struct({
 });
 export type OpenWorkTimelineResult = typeof OpenWorkTimelineResult.Type;
 
+const CommitSha = Schema.String.check(Schema.isPattern(/^[0-9a-f]{4,64}$/i));
+
 export const OpenWorkStep = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("commit"),
-    sha: Schema.String.check(Schema.isPattern(/^[0-9a-f]{4,64}$/i)),
-  }),
+  Schema.Struct({ kind: Schema.Literal("commit"), sha: CommitSha }),
   Schema.Struct({ kind: Schema.Literal("wip") }),
 ]);
 export type OpenWorkStep = typeof OpenWorkStep.Type;
 
 export const OpenWorkDiffInput = Schema.Struct({
   path: TrimmedNonEmptyString,
+  projectId: OpenWorkProjectHint,
   step: OpenWorkStep,
   file: Schema.Struct({
     path: Schema.NonEmptyString,
@@ -134,6 +140,21 @@ export const OpenWorkDiffResult = Schema.Struct({
   files: Schema.Array(ReviewDiffFileStat),
 });
 export type OpenWorkDiffResult = typeof OpenWorkDiffResult.Type;
+
+export const OpenWorkCommitFilesInput = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  projectId: OpenWorkProjectHint,
+  sha: CommitSha,
+});
+export type OpenWorkCommitFilesInput = typeof OpenWorkCommitFilesInput.Type;
+
+export const OpenWorkCommitFilesResult = Schema.Struct({
+  sha: Schema.String,
+  /** Compared with the first parent, so a merge lists what it brought in. */
+  files: Schema.Array(OpenWorkFile),
+  truncated: Schema.Boolean,
+});
+export type OpenWorkCommitFilesResult = typeof OpenWorkCommitFilesResult.Type;
 
 /** The path is gone, is not a worktree, or belongs to no registered project's repository. */
 export class OpenWorkWorktreeNotFoundError extends Schema.TaggedError<OpenWorkWorktreeNotFoundError>()(
@@ -175,5 +196,11 @@ export const WsOpenWorkTimelineRpc = Rpc.make(OPEN_WORK_WS_METHODS.openWorkTimel
 export const WsOpenWorkDiffRpc = Rpc.make(OPEN_WORK_WS_METHODS.openWorkDiff, {
   payload: OpenWorkDiffInput,
   success: OpenWorkDiffResult,
+  error: OpenWorkError,
+});
+
+export const WsOpenWorkCommitFilesRpc = Rpc.make(OPEN_WORK_WS_METHODS.openWorkCommitFiles, {
+  payload: OpenWorkCommitFilesInput,
+  success: OpenWorkCommitFilesResult,
   error: OpenWorkError,
 });

@@ -31,6 +31,7 @@ const unusedServices = Layer.succeed(
     list: () => Effect.die("unused"),
     timeline: () => Effect.die("unused"),
     diff: () => Effect.die("unused"),
+    commitFiles: () => Effect.die("unused"),
   }),
 );
 

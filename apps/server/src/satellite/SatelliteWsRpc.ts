@@ -16,6 +16,7 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.openWorkList]: (input) => openWork.list(input),
         [SATELLITE_WS_METHODS.openWorkTimeline]: (input) => openWork.timeline(input),
         [SATELLITE_WS_METHODS.openWorkDiff]: (input) => openWork.diff(input),
+        [SATELLITE_WS_METHODS.openWorkCommitFiles]: (input) => openWork.commitFiles(input),
       });
     }),
   );

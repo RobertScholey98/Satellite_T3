@@ -11,6 +11,7 @@ export const SATELLITE_RPC_REQUIRED_SCOPES = {
   [SATELLITE_WS_METHODS.openWorkList]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.openWorkTimeline]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.openWorkDiff]: AuthFilesystemReadScope,
+  [SATELLITE_WS_METHODS.openWorkCommitFiles]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<SatelliteWsRpcMethod, AuthEnvironmentScope>>;
 
 /** The `rpc.aggregate` span label of each Satellite RPC. `RPC_AGGREGATES` spreads it. */
@@ -18,4 +19,5 @@ export const SATELLITE_RPC_AGGREGATES = {
   [SATELLITE_WS_METHODS.openWorkList]: "openWork",
   [SATELLITE_WS_METHODS.openWorkTimeline]: "openWork",
   [SATELLITE_WS_METHODS.openWorkDiff]: "openWork",
+  [SATELLITE_WS_METHODS.openWorkCommitFiles]: "openWork",
 } as const satisfies Readonly<Record<SatelliteWsRpcMethod, string>>;

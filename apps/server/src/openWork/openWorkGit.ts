@@ -38,8 +38,10 @@ export function parseDiffRecords(fields: ReadonlyArray<string>): OpenWorkFile[] 
     if (raw) {
       const code = raw[1]!;
       const pairs = code === "R" || code === "C";
-      const first = fields[++index] ?? "";
-      const path = pairs ? (fields[++index] ?? "") : first;
+      const first = fields[++index];
+      const path = pairs ? fields[++index] : first;
+      // Output cut at a size limit can end between a record and its paths.
+      if (first === undefined || path === undefined) break;
       files.push({
         path,
         previousPath: pairs ? first : null,
@@ -66,24 +68,45 @@ export interface LogRecord {
   readonly parents: string[];
   readonly subject: string;
   readonly committedAt: string;
-  readonly files: OpenWorkFile[];
+  readonly fileCount: number;
+  readonly insertions: number;
+  readonly deletions: number;
 }
 
-/** Commits from `git log` with `LOG_FORMAT`, `--raw --numstat -z`, in the order git printed them. */
+const shortstatCount = (text: string, pattern: RegExp) => Number(pattern.exec(text)?.[1] ?? 0);
+
+/** Commits from `git log` with `LOG_FORMAT` and `--shortstat`, in the order git printed them. */
 export function parseLogRecords(stdout: string): LogRecord[] {
   return stdout
     .split(LOG_RECORD_SPLIT)
     .slice(1)
     .map((record) => {
-      const fields = record.split("\0");
+      const [sha = "", parents = "", subject = "", committedAt = "", ...rest] = record.split("\0");
+      const shortstat = rest.join(" ");
       return {
-        sha: fields[0]!,
-        parents: fields[1]!.split(" ").filter(Boolean),
-        subject: fields[2]!,
-        committedAt: fields[3]!,
-        files: parseDiffRecords(fields.slice(4)),
+        sha,
+        parents: parents.split(" ").filter(Boolean),
+        subject,
+        committedAt,
+        fileCount: shortstatCount(shortstat, /(\d+) files? changed/),
+        insertions: shortstatCount(shortstat, /(\d+) insertions?\(\+\)/),
+        deletions: shortstatCount(shortstat, /(\d+) deletions?\(-\)/),
       };
     });
+}
+
+/**
+ * Splits `-z` output into fields. Output cut at a size limit ends in a partial field and git's
+ * truncation marker, so everything after the last separator is dropped.
+ */
+export function completeFields(stdout: string, truncated: boolean): string[] {
+  return (truncated ? stdout.slice(0, Math.max(0, stdout.lastIndexOf("\0"))) : stdout).split("\0");
+}
+
+/** A comparable form of a path. Windows paths compare without regard to case or separators. */
+export function pathKey(value: string, platform: string): string {
+  const trimmed = value.length > 1 ? value.replace(/[\\/]+$/, "") : value;
+  return platform === "win32" ? trimmed.replaceAll("/", "\\").toLowerCase() : trimmed;
 }
 
 export interface WorktreeRecord {
@@ -169,6 +192,8 @@ export function groupWip(
     readonly staged: ReadonlyArray<OpenWorkFile>;
     readonly unstaged: ReadonlyArray<OpenWorkFile>;
     readonly untracked: ReadonlyArray<string>;
+    /** A layer git stopped reading at its output limit. */
+    readonly cut: boolean;
   },
   maxFiles: number,
 ): OpenWorkWip {
@@ -194,6 +219,6 @@ export function groupWip(
     files: files.slice(0, maxFiles),
     insertions: files.reduce((sum, file) => sum + file.insertions, 0),
     deletions: files.reduce((sum, file) => sum + file.deletions, 0),
-    truncated: files.length > maxFiles,
+    truncated: layers.cut || files.length > maxFiles,
   };
 }

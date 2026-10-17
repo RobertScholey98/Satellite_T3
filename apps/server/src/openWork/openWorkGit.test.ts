@@ -1,11 +1,13 @@
 import { assert, describe, it } from "@effect/vitest";
 
 import {
+  completeFields,
   groupWip,
   LOG_RECORD_MARKER,
   parseDiffRecords,
   parseLogRecords,
   parseWorktreeList,
+  pathKey,
   selectBaseRef,
 } from "./openWorkGit.ts";
 
@@ -58,60 +60,92 @@ describe("parseDiffRecords", () => {
 });
 
 describe("parseLogRecords", () => {
-  it("splits commits only at real record markers", () => {
+  it("splits commits only at real record markers and reads each shortstat", () => {
     const stdout = [
       "",
       LOG_RECORD_MARKER,
       SHA_A,
       "",
-      `${LOG_RECORD_MARKER} in a subject`,
+      `${LOG_RECORD_MARKER} in a subject, 9 files changed`,
       "2026-10-01T10:00:00+02:00",
-      "\n:000000 100644 0000000 aaaaaaa A",
-      LOG_RECORD_MARKER,
-      `2\t0\t${LOG_RECORD_MARKER}`,
       "",
+      "\n 1 file changed, 2 insertions(+)\n",
       LOG_RECORD_MARKER,
       SHA_B,
       SHA_A,
       "second",
       "2026-10-02T10:00:00Z",
-      "\n:100644 100644 aaaaaaa bbbbbbb M",
+      "",
+      "\n 3 files changed, 1 insertion(+), 4 deletions(-)\n",
       LOG_RECORD_MARKER,
-      `1\t1\t${LOG_RECORD_MARKER}`,
+      "c".repeat(40),
+      SHA_B,
+      "empty",
+      "2026-10-03T10:00:00Z",
       "",
     ].join("\0");
     assert.deepStrictEqual(parseLogRecords(stdout), [
       {
         sha: SHA_A,
         parents: [],
-        subject: `${LOG_RECORD_MARKER} in a subject`,
+        subject: `${LOG_RECORD_MARKER} in a subject, 9 files changed`,
         committedAt: "2026-10-01T10:00:00+02:00",
-        files: [
-          {
-            path: LOG_RECORD_MARKER,
-            previousPath: null,
-            status: "added",
-            insertions: 2,
-            deletions: 0,
-          },
-        ],
+        fileCount: 1,
+        insertions: 2,
+        deletions: 0,
       },
       {
         sha: SHA_B,
         parents: [SHA_A],
         subject: "second",
         committedAt: "2026-10-02T10:00:00Z",
-        files: [
-          {
-            path: LOG_RECORD_MARKER,
-            previousPath: null,
-            status: "modified",
-            insertions: 1,
-            deletions: 1,
-          },
-        ],
+        fileCount: 3,
+        insertions: 1,
+        deletions: 4,
+      },
+      {
+        sha: "c".repeat(40),
+        parents: [SHA_B],
+        subject: "empty",
+        committedAt: "2026-10-03T10:00:00Z",
+        fileCount: 0,
+        insertions: 0,
+        deletions: 0,
       },
     ]);
+  });
+});
+
+describe("completeFields", () => {
+  it("drops the partial field and marker of cut output", () => {
+    assert.deepStrictEqual(completeFields("a\0b\0par[truncated]", true), ["a", "b"]);
+    assert.deepStrictEqual(completeFields("a\0b\0", false), ["a", "b", ""]);
+  });
+
+  it("parses cut diff records up to the last complete one", () => {
+    const fields = completeFields(
+      [
+        ":000000 100644 0000000 aaaaaaa A",
+        "kept.txt",
+        ":000000 100644 0000000 bbbbbbb A",
+        "cut",
+      ].join("\0"),
+      true,
+    );
+    assert.deepStrictEqual(parseDiffRecords(fields), [
+      { path: "kept.txt", previousPath: null, status: "added", insertions: 0, deletions: 0 },
+    ]);
+  });
+});
+
+describe("pathKey", () => {
+  it("matches Windows paths across drive-letter case, separators, and a trailing separator", () => {
+    assert.strictEqual(
+      pathKey("C:\\Repos\\Satellite\\", "win32"),
+      pathKey("c:/repos/satellite", "win32"),
+    );
+    assert.notStrictEqual(pathKey("/Repos/A", "darwin"), pathKey("/repos/a", "darwin"));
+    assert.strictEqual(pathKey("/repos/a/", "linux"), "/repos/a");
   });
 });
 
@@ -222,6 +256,7 @@ describe("groupWip", () => {
         staged: [file("b.txt", 2)],
         unstaged: [file("b.txt", 3), file("a.txt", 4)],
         untracked: ["c/new.txt"],
+        cut: false,
       },
       3,
     );

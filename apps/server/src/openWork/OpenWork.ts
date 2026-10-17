@@ -5,6 +5,8 @@ import {
   OpenWorkGitError,
   OpenWorkWorktreeNotFoundError,
   type GitCommandError,
+  type OpenWorkCommitFilesInput,
+  type OpenWorkCommitFilesResult,
   type OpenWorkDiffInput,
   type OpenWorkDiffResult,
   type OpenWorkListInput,
@@ -20,6 +22,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -28,18 +31,22 @@ import {
   BASE_REF_CANDIDATES,
   BASE_REF_FORMAT,
   type BaseRef,
+  completeFields,
   type WorktreeRecord,
   groupWip,
   LOG_FORMAT,
   parseDiffRecords,
   parseLogRecords,
   parseWorktreeList,
+  pathKey,
   selectBaseRef,
 } from "./openWorkGit.ts";
 
 const READ_CONCURRENCY = 4;
-const LOG_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
-const WIP_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+// Output past these limits is cut, never an error; results built from it say they are truncated.
+const LOG_MAX_OUTPUT_BYTES = 1024 * 1024;
+const DIFF_RECORDS_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const UNTRACKED_MAX_OUTPUT_BYTES = OPEN_WORK_MAX_WIP_FILES * 1024;
 const PATCH_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DIFF_ARGS = [
   "diff",
@@ -63,6 +70,9 @@ export class OpenWork extends Context.Service<
     readonly diff: (
       input: OpenWorkDiffInput,
     ) => Effect.Effect<OpenWorkDiffResult, OpenWorkWorktreeNotFoundError | OpenWorkGitError>;
+    readonly commitFiles: (
+      input: OpenWorkCommitFilesInput,
+    ) => Effect.Effect<OpenWorkCommitFilesResult, OpenWorkWorktreeNotFoundError | OpenWorkGitError>;
   }
 >()("t3/openWork/OpenWork") {}
 
@@ -77,6 +87,8 @@ const make = Effect.gen(function* () {
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const platform = yield* HostProcess.Platform;
+  const keyOf = (value: string) => pathKey(path.normalize(value), platform);
 
   const toGitError =
     (operation: string) =>
@@ -90,6 +102,17 @@ const make = Effect.gen(function* () {
     options: { readonly maxOutputBytes?: number; readonly stdin?: string } = {},
   ) =>
     git.execute({ operation, cwd, args, ...options }).pipe(Effect.mapError(toGitError(operation)));
+
+  /** Reads up to `maxOutputBytes`, then cuts the output and reports it as truncated. */
+  const runCapped = (
+    operation: string,
+    cwd: string,
+    args: ReadonlyArray<string>,
+    maxOutputBytes: number,
+  ) =>
+    git
+      .execute({ operation, cwd, args, maxOutputBytes, appendTruncationMarker: true })
+      .pipe(Effect.mapError(toGitError(operation)));
 
   /** Exit code instead of failure, for reads that may legitimately not apply. */
   const probe = (operation: string, cwd: string, args: ReadonlyArray<string>) =>
@@ -132,10 +155,10 @@ const make = Effect.gen(function* () {
     const byCommonDir = new Map<string, Repository>();
     for (const { shell, found } of identities) {
       if (Option.isNone(found)) continue;
-      const known = byCommonDir.get(found.value.commonDir);
+      const known = byCommonDir.get(keyOf(found.value.commonDir));
       if (known) known.projectIds.push(shell.id);
       else
-        byCommonDir.set(found.value.commonDir, {
+        byCommonDir.set(keyOf(found.value.commonDir), {
           cwd: found.value.root,
           projectIds: [shell.id],
         });
@@ -242,21 +265,30 @@ const make = Effect.gen(function* () {
     return { worktrees: perRepository.flat() };
   });
 
-  /** Accepts a path only when it is a listed worktree of a registered project's repository. */
-  const resolveWorktree = Effect.fn("OpenWork.resolveWorktree")(function* (requested: string) {
+  /**
+   * Accepts a path only when it is a listed worktree of a registered project's repository. With a
+   * project hint only that project is checked; without one, every registered project is.
+   */
+  const resolveWorktree = Effect.fn("OpenWork.resolveWorktree")(function* (
+    requested: string,
+    projectId: ProjectId | undefined,
+  ) {
     const notFound = new OpenWorkWorktreeNotFoundError({ path: requested });
     const found = yield* identify(requested);
     if (Option.isNone(found)) return yield* notFound;
-    const repository = (yield* repositories()).get(found.value.commonDir);
+    const known = yield* repositories(projectId === undefined ? undefined : [projectId]);
+    const repository = known.get(keyOf(found.value.commonDir));
     if (!repository) return yield* notFound;
-    const root = found.value.root;
-    const worktree = (yield* listWorktrees(root)).find((listed) => listed.path === root);
+    const rootKey = keyOf(found.value.root);
+    const worktree = (yield* listWorktrees(found.value.root)).find(
+      (listed) => keyOf(listed.path) === rootKey,
+    );
     if (!worktree) return yield* notFound;
     return { worktree, repository };
   });
 
   const readCommits = Effect.fn("OpenWork.readCommits")(function* (cwd: string, base: BaseRef) {
-    const result = yield* run(
+    const result = yield* runCapped(
       "OpenWork.log",
       cwd,
       [
@@ -267,47 +299,65 @@ const make = Effect.gen(function* () {
         LOG_FORMAT,
         "--diff-merges=first-parent",
         "--root",
-        "--raw",
-        "--numstat",
-        "-z",
+        "--shortstat",
         "--find-renames",
         `${base.ref}..HEAD`,
         "--",
       ],
-      { maxOutputBytes: LOG_MAX_OUTPUT_BYTES },
+      LOG_MAX_OUTPUT_BYTES,
     );
-    // Git limits before reversing, so the extra commit is the oldest one.
-    const records = parseLogRecords(result.stdout);
-    const truncated = records.length > OPEN_WORK_MAX_COMMITS;
+    const parsed = parseLogRecords(result.stdout);
+    // A cut log ends in a partial record. Git limits before reversing, so a full log's extra
+    // commit is the oldest one.
+    const records = result.stdoutTruncated ? parsed.slice(0, -1) : parsed;
+    const truncated = result.stdoutTruncated || records.length > OPEN_WORK_MAX_COMMITS;
     return {
       commitsTruncated: truncated,
-      commits: (truncated ? records.slice(1) : records).map((record) => ({
-        ...record,
-        files: record.files.slice(0, OPEN_WORK_MAX_FILES_PER_COMMIT),
-        filesTruncated: record.files.length > OPEN_WORK_MAX_FILES_PER_COMMIT,
-      })),
+      commits: records.length > OPEN_WORK_MAX_COMMITS ? records.slice(1) : records,
     };
   });
 
-  const readLayer = (operation: string, cwd: string, args: ReadonlyArray<string>) =>
-    run(operation, cwd, ["diff", ...args, "--raw", "--numstat", "-z", "--find-renames", "--"], {
-      maxOutputBytes: WIP_MAX_OUTPUT_BYTES,
-    }).pipe(Effect.map((result) => parseDiffRecords(result.stdout.split("\0"))));
+  /** Files from a `--raw --numstat -z` read, cut at the output limit rather than failing. */
+  const readDiffRecords = (
+    operation: string,
+    cwd: string,
+    command: ReadonlyArray<string>,
+    operands: ReadonlyArray<string>,
+  ) =>
+    runCapped(
+      operation,
+      cwd,
+      [...command, "--raw", "--numstat", "-z", "--find-renames", ...operands],
+      DIFF_RECORDS_MAX_OUTPUT_BYTES,
+    ).pipe(
+      Effect.map((result) => ({
+        files: parseDiffRecords(completeFields(result.stdout, result.stdoutTruncated)),
+        cut: result.stdoutTruncated,
+      })),
+    );
+
+  const readUntracked = (cwd: string) =>
+    runCapped(
+      "OpenWork.wip.untracked",
+      cwd,
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      UNTRACKED_MAX_OUTPUT_BYTES,
+    ).pipe(
+      Effect.map((result) => ({
+        paths: completeFields(result.stdout, result.stdoutTruncated).filter(Boolean),
+        cut: result.stdoutTruncated,
+      })),
+    );
 
   const timeline: OpenWork["Service"]["timeline"] = Effect.fn("OpenWork.timeline")(
     function* (input) {
-      const { worktree, repository } = yield* resolveWorktree(input.path);
+      const { worktree, repository } = yield* resolveWorktree(input.path, input.projectId);
       const [base, staged, unstaged, untracked] = yield* Effect.all(
         [
           resolveBase(worktree.path),
-          readLayer("OpenWork.wip.staged", worktree.path, ["--cached"]),
-          readLayer("OpenWork.wip.unstaged", worktree.path, []),
-          run(
-            "OpenWork.wip.untracked",
-            worktree.path,
-            ["ls-files", "--others", "--exclude-standard", "-z"],
-            { maxOutputBytes: WIP_MAX_OUTPUT_BYTES },
-          ).pipe(Effect.map((result) => result.stdout.split("\0").filter(Boolean))),
+          readDiffRecords("OpenWork.wip.staged", worktree.path, ["diff", "--cached"], ["--"]),
+          readDiffRecords("OpenWork.wip.unstaged", worktree.path, ["diff"], ["--"]),
+          readUntracked(worktree.path),
         ],
         { concurrency: READ_CONCURRENCY },
       );
@@ -323,7 +373,32 @@ const make = Effect.gen(function* () {
       return {
         worktree: summary,
         ...history,
-        wip: groupWip({ staged, unstaged, untracked }, OPEN_WORK_MAX_WIP_FILES),
+        wip: groupWip(
+          {
+            staged: staged.files,
+            unstaged: unstaged.files,
+            untracked: untracked.paths,
+            cut: staged.cut || unstaged.cut || untracked.cut,
+          },
+          OPEN_WORK_MAX_WIP_FILES,
+        ),
+      };
+    },
+  );
+
+  const commitFiles: OpenWork["Service"]["commitFiles"] = Effect.fn("OpenWork.commitFiles")(
+    function* (input) {
+      const { worktree } = yield* resolveWorktree(input.path, input.projectId);
+      const { files, cut } = yield* readDiffRecords(
+        "OpenWork.commitFiles",
+        worktree.path,
+        ["diff-tree", "-r", "--root", "--diff-merges=first-parent", "--no-commit-id"],
+        [input.sha],
+      );
+      return {
+        sha: input.sha,
+        files: files.slice(0, OPEN_WORK_MAX_FILES_PER_COMMIT),
+        truncated: cut || files.length > OPEN_WORK_MAX_FILES_PER_COMMIT,
       };
     },
   );
@@ -405,13 +480,13 @@ const make = Effect.gen(function* () {
   });
 
   const diff: OpenWork["Service"]["diff"] = Effect.fn("OpenWork.diff")(function* (input) {
-    const { worktree } = yield* resolveWorktree(input.path);
+    const { worktree } = yield* resolveWorktree(input.path, input.projectId);
     return input.step.kind === "commit"
       ? yield* commitDiff(worktree.path, { ...input, step: input.step })
       : yield* wipDiff(worktree.path, input);
   });
 
-  return OpenWork.of({ list, timeline, diff });
+  return OpenWork.of({ list, timeline, diff, commitFiles });
 });
 
 export const layer = Layer.effect(OpenWork, make);

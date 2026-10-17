@@ -149,11 +149,16 @@ describe("Open work timeline", () => {
       const f = yield* makeDiverged;
       const view = yield* f.service.timeline({ path: f.a });
       assert.deepStrictEqual(
-        view.commits.map((commit) => [commit.subject, commit.files.map((file) => file.path)]),
+        view.commits.map((commit) => [
+          commit.subject,
+          commit.fileCount,
+          commit.insertions,
+          commit.deletions,
+        ]),
         [
-          ["a1", ["a1.txt"]],
-          ["a2", ["a2.txt"]],
-          ["a3", ["a3.txt"]],
+          ["a1", 1, 1, 0],
+          ["a2", 1, 1, 0],
+          ["a3", 1, 1, 0],
         ],
       );
       assert.deepStrictEqual(
@@ -201,8 +206,13 @@ describe("Open work timeline", () => {
       yield* git(f.a, ["merge", "-q", "--no-ff", "side", "-m", "merge side"]);
 
       const view = yield* f.service.timeline({ path: f.a });
-      const rename = view.commits.find((commit) => commit.subject === "rename and delete");
-      assert.deepStrictEqual(rename?.files, [
+      const filesOf = (subject: string) =>
+        Effect.gen(function* () {
+          const commit = view.commits.find((candidate) => candidate.subject === subject);
+          assert.isDefined(commit);
+          return (yield* f.service.commitFiles({ path: f.a, sha: commit.sha })).files;
+        });
+      assert.deepStrictEqual(yield* filesOf("rename and delete"), [
         { path: "a2.txt", previousPath: null, status: "deleted", insertions: 0, deletions: 1 },
         {
           path: "renamed a1.txt",
@@ -213,9 +223,11 @@ describe("Open work timeline", () => {
         },
       ]);
       const merge = view.commits.at(-1);
-      assert.strictEqual(merge?.subject, "merge side");
-      assert.strictEqual(merge?.parents[0], firstParent);
-      assert.deepStrictEqual(merge?.files, [
+      assert.deepStrictEqual(
+        [merge?.subject, merge?.parents[0], merge?.fileCount, merge?.insertions],
+        ["merge side", firstParent, 1, 1],
+      );
+      assert.deepStrictEqual(yield* filesOf("merge side"), [
         { path: "side.txt", previousPath: null, status: "added", insertions: 1, deletions: 0 },
       ]);
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
@@ -231,15 +243,12 @@ describe("Open work timeline", () => {
 
       const root = yield* f.service.timeline({ path: orphan });
       assert.deepStrictEqual(
-        root.commits.map((commit) => ({ parents: commit.parents, files: commit.files })),
-        [
-          {
-            parents: [],
-            files: [
-              { path: "new.txt", previousPath: null, status: "added", insertions: 1, deletions: 0 },
-            ],
-          },
-        ],
+        root.commits.map((commit) => [commit.parents, commit.fileCount, commit.insertions]),
+        [[[], 1, 1]],
+      );
+      assert.deepStrictEqual(
+        (yield* f.service.commitFiles({ path: orphan, sha: root.commits[0]!.sha })).files,
+        [{ path: "new.txt", previousPath: null, status: "added", insertions: 1, deletions: 0 }],
       );
       const primary = yield* f.service.timeline({ path: f.repo });
       assert.deepStrictEqual(
@@ -282,6 +291,7 @@ describe("Open work timeline", () => {
       for (let file = 0; file < 501; file++) yield* write(f.a, `loose/${file}.txt`, "x\n");
 
       const view = yield* f.service.timeline({ path: f.a });
+      const wide = yield* f.service.commitFiles({ path: f.a, sha: view.commits.at(-1)!.sha });
       // a1..a3, 198 bulk commits, and "wide" make 202; the two oldest drop.
       assert.deepStrictEqual(
         {
@@ -289,8 +299,9 @@ describe("Open work timeline", () => {
           truncated: view.commitsTruncated,
           oldest: view.commits[0]?.subject,
           newest: view.commits.at(-1)?.subject,
-          newestFiles: view.commits.at(-1)?.files.length,
-          newestTruncated: view.commits.at(-1)?.filesTruncated,
+          newestFileCount: view.commits.at(-1)?.fileCount,
+          newestFiles: wide.files.length,
+          newestTruncated: wide.truncated,
           wipFiles: view.wip.files.length,
           wipTruncated: view.wip.truncated,
           ahead: view.worktree.ahead,
@@ -300,6 +311,7 @@ describe("Open work timeline", () => {
           truncated: true,
           oldest: "a3",
           newest: "wide",
+          newestFileCount: 201,
           newestFiles: 200,
           newestTruncated: true,
           wipFiles: 500,
@@ -540,10 +552,67 @@ describe("Open work payload", () => {
       const view = yield* service.timeline({ path: f.repo });
       const bytes = new TextEncoder().encode(JSON.stringify(encodeTimeline(view))).byteLength;
       assert.deepStrictEqual(
-        [view.commits.length, view.commits.every((commit) => commit.files.length === 8)],
+        [view.commits.length, view.commits.every((commit) => commit.fileCount === 8)],
         [50, true],
       );
       assert.isAtMost(bytes, 64 * 1024);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+});
+
+describe("Open work limits", () => {
+  it.effect("encodes a timeline at the 200-commit cap within 64 KB", () =>
+    Effect.gen(function* () {
+      const f = yield* makeRepository;
+      const head = yield* git(f.repo, ["rev-parse", "HEAD"]);
+      yield* git(f.repo, ["switch", "-q", "-c", "feature"]);
+      yield* git(f.repo, ["branch", "-q", "-f", "main", head]);
+      yield* fastImport(f.repo, { branch: "feature", from: head, commits: 250, filesPerCommit: 8 });
+      const service = yield* openWorkFor([{ id: "project", workspaceRoot: f.repo }]);
+
+      const view = yield* service.timeline({ path: f.repo });
+      const bytes = new TextEncoder().encode(JSON.stringify(encodeTimeline(view))).byteLength;
+      assert.deepStrictEqual(
+        [view.commits.length, view.commitsTruncated, view.commits[0]?.subject],
+        [200, true, "bulk 51"],
+      );
+      assert.isAtMost(bytes, 64 * 1024);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("cuts an untracked tree past the output limit instead of failing", () =>
+    Effect.gen(function* () {
+      const f = yield* makeDiverged;
+      const deep = ["d".repeat(200), "e".repeat(200), "f".repeat(200)].join("/");
+      for (let file = 0; file < 700; file++) {
+        yield* write(f.a, `${deep}/${String(file).padStart(4, "0")}-${"g".repeat(150)}.txt`, "");
+      }
+
+      const view = yield* f.service.timeline({ path: f.a });
+      assert.deepStrictEqual(
+        [view.wip.files.length, view.wip.truncated, view.wip.files[0]?.layer],
+        [500, true, "untracked"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("checks only the hinted project when a project id is given", () =>
+    Effect.gen(function* () {
+      const f = yield* makeDiverged;
+      const other = yield* makeRepository;
+      const service = yield* openWorkFor([
+        { id: "project", workspaceRoot: f.repo },
+        { id: "other", workspaceRoot: other.repo },
+      ]);
+      const hinted = (projectId: string) =>
+        service.timeline({ path: f.a, projectId: ProjectId.make(projectId) }).pipe(
+          Effect.map((view) => view.worktree.path),
+          Effect.catch((error) => Effect.succeed(error._tag)),
+        );
+      assert.deepStrictEqual(
+        [yield* hinted("project"), yield* hinted("other")],
+        [f.a, "OpenWorkWorktreeNotFoundError"],
+      );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 });
