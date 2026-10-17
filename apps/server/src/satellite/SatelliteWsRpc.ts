@@ -5,9 +5,6 @@ import * as Layer from "effect/Layer";
 import type * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as OpenWork from "../openWork/OpenWork.ts";
 
-/** Server-lifetime services Satellite handlers use. Add one when a handler needs it. */
-type SatelliteWsRpcServices = OpenWork.OpenWork;
-
 const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
   WsSatelliteRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -20,6 +17,9 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
       });
     }),
   );
+
+/** Server-lifetime services Satellite handlers use, inferred from the handler table. */
+type SatelliteWsRpcServices = Layer.Services<ReturnType<typeof layer>>;
 
 /**
  * Captures Satellite's handler services once and returns each connection's handler layer.

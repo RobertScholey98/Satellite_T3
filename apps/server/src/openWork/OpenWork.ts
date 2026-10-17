@@ -490,3 +490,14 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(OpenWork, make);
+
+/** Open work on an environment with no registered projects: nothing listed, every path refused. */
+export const testLayer = Layer.succeed(
+  OpenWork,
+  OpenWork.of({
+    list: () => Effect.succeed({ worktrees: [] }),
+    timeline: ({ path }) => Effect.fail(new OpenWorkWorktreeNotFoundError({ path })),
+    diff: ({ path }) => Effect.fail(new OpenWorkWorktreeNotFoundError({ path })),
+    commitFiles: ({ path }) => Effect.fail(new OpenWorkWorktreeNotFoundError({ path })),
+  }),
+);

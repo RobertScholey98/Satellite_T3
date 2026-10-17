@@ -23,5 +23,11 @@ export const layer = Layer.mergeAll(
   OpenWork.layer,
 );
 
+/**
+ * Satellite's services with test stand-ins for their dependencies, for tests that build Satellite
+ * handlers. Each feature adds its test layer here beside its line in `layer`.
+ */
+export const testLayer = Layer.mergeAll(OpenWork.testLayer);
+
 /** Where Satellite's MCP toolkits join `/mcp`, via `McpHttpServer.toolkitRegistration`. */
 export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) => mcpServer;
