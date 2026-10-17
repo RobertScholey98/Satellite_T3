@@ -14,12 +14,14 @@ import {
   DESKTOP_APP_USER_MODEL_IDS,
   DESKTOP_DMG_BACKGROUND_PATHS,
   DESKTOP_PACKAGING,
+  ISSUES_URL,
   PRODUCT_ICON_PATHS,
   PRODUCT_NAME,
   PRODUCT_SHORT_NAME,
   PRODUCT_STAGE_LABEL,
   RELEASE_REPOSITORY,
   RELEASES_URL,
+  REPOSITORY_URL,
 } from "../../packages/contracts/src/productIdentity.ts";
 
 const repoRoot = NodePath.resolve(import.meta.dirname, "../..");
@@ -94,6 +96,17 @@ describe("static identity consumers", () => {
     ).toEqual([
       PRODUCT_ICON_PATHS.development.macIconPng,
       PRODUCT_ICON_PATHS.production.macIconPng,
+    ]);
+  });
+
+  it("the Linux metainfo links Satellite's repository and issues", () => {
+    const metainfo = read("apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml");
+    const url = (type: string) =>
+      new RegExp(`<url type="${type}">([^<]*)</url>`).exec(metainfo)?.[1];
+    expect([url("homepage"), url("bugtracker"), url("vcs-browser")]).toEqual([
+      DESKTOP_PACKAGING.homepage,
+      ISSUES_URL,
+      REPOSITORY_URL,
     ]);
   });
 

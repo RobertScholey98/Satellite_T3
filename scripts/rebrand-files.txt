@@ -11,7 +11,7 @@ apps/desktop/gnome-extension/captureFeedback.js
 apps/desktop/gnome-extension/captureService.js
 apps/desktop/gnome-extension/captureService.test.js
 apps/desktop/gnome-extension/metadata.json  # hand-edited
-apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml
+apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml  # hand-edited
 apps/desktop/scripts/electron-launcher.mjs  # hand-edited
 apps/desktop/scripts/electron-launcher.test.mjs  # hand-edited
 apps/desktop/src/app/DesktopApp.ts
@@ -69,6 +69,7 @@ apps/server/src/cli/updateProgress.test.ts
 apps/server/src/cli/updateProgress.ts
 apps/server/src/cloud/bootService.ts
 apps/server/src/cloud/cliAuthHtml.ts
+apps/server/src/cloud/relayResponse.ts
 apps/server/src/cloud/selfUpdate.ts
 apps/server/src/cloud/servicePreflight.test.ts
 apps/server/src/cloud/servicePreflight.ts
@@ -166,7 +167,6 @@ docs/README.md  # hand-edited
 docs/operations/release.md
 docs/user/source-control.md  # hand-edited
 docs/user/thread-migration.md
-packages/client-runtime/src/connection/outdatedHostUpdate.ts
 packages/client-runtime/src/state/pullRequestDiffHttp.test.ts
 packages/client-runtime/src/state/pullRequestDiffHttp.ts
 packages/contracts/src/browserImport.ts
