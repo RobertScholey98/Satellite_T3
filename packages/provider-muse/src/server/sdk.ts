@@ -152,7 +152,7 @@ export function museServeArgs(
 
 export function museInitializeParams(readOnly = false) {
   return {
-    clientInfo: { name: "t3_code", title: "T3 Code", version: "1" },
+    clientInfo: { name: "t3_code", title: "T3 Code", version: "1" }, // rebrand:keep (recorded in replay fixtures)
     capabilities: { requestedCapabilities: readOnly ? [] : ["sessionMcp"] },
   };
 }

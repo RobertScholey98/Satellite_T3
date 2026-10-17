@@ -183,7 +183,7 @@ export const makeCursorAuth = Effect.fn("makeCursorAuth")(function* (options: Cu
             openBrowser: false,
             store: pendingStore,
             signal,
-            apiKeyName: `T3 Code - ${options.displayName}`,
+            apiKeyName: `Satellite - ${options.displayName}`,
             onLoginUrl: (authorizationUrl) => {
               if (active === flow) Queue.offerUnsafe(urls, authorizationUrl);
             },
