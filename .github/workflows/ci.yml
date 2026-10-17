@@ -87,8 +87,8 @@ jobs:
       - name: Verify preload bundle output
         run: node apps/desktop/scripts/verify-preload-bundle.mjs
 
-  # Every package except `t3` (apps/server), which shards below. Web and mobile
-  # run here because they catch contract changes that break upstream's clients.
+  # Every package except `t3` (apps/server), which shards below. Mobile runs
+  # although Satellite does not ship it, to catch contract changes that break it.
   test:
     name: Test
     runs-on: ubuntu-24.04
@@ -103,8 +103,7 @@ jobs:
             !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
           sparse-checkout-cone-mode: false
 
-      # ACP process-tree tests compile a pthread fixture with `cc` and soft-skip
-      # without it; desktop tests compile the browser secret helper.
+      # Desktop tests compile the browser secret helper.
       - name: Install C toolchain and browser secret helper build libraries
         run: |
           sudo apt-get update
@@ -143,6 +142,10 @@ jobs:
             !/.repos/
             !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
           sparse-checkout-cone-mode: false
+
+      # ACP process-tree tests compile a pthread fixture and soft-skip without `cc`.
+      - name: Require a C compiler for process-tree fixtures
+        run: command -v cc
 
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
@@ -232,8 +235,6 @@ jobs:
             !/.repos/
           sparse-checkout-cone-mode: false
 
-      # setup-vp's own cache restores a Linux-shaped store on Windows, which is
-      # slower than no cache. Cache each platform's pnpm store directly.
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:

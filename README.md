@@ -104,8 +104,7 @@ pnpm run dist:desktop:win:x64
 | `pnpm run dev:satellite` | `<checkout>/.t3/satellite/userdata` |
 | Installed SatelliteT3    | `~/.satellite-t3/userdata`          |
 
-The development launcher disables automatic updates and URL-handler registration.
-It does not migrate existing T3 or Satellite data. Development and installed
+The development launcher disables automatic updates. It does not migrate existing T3 or Satellite data. Development and installed
 builds keep separate server data.
 
 ## Guides

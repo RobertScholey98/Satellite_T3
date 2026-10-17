@@ -2,7 +2,6 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-// Use the upstream desktop runner, with this checkout's own data and ports.
 const root = NodePath.dirname(NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)));
 const env = {
   ...process.env,
@@ -10,8 +9,6 @@ const env = {
   T3CODE_HOME: NodePath.join(root, ".t3", "satellite"),
   T3CODE_DEV_INSTANCE: "satellite-t3",
   T3CODE_DESKTOP_APP_USER_MODEL_ID: "com.satellitet3.prototype.dev",
-  // Do not replace the user's installed T3 Code URL-handler registration.
-  T3CODE_DESKTOP_PROTOCOL_REGISTRATION_MANAGED: "1",
   T3CODE_DISABLE_AUTO_UPDATE: "1",
 };
 delete env.VITE_HTTP_URL;
