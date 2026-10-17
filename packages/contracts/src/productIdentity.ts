@@ -35,8 +35,9 @@ export const DESKTOP_APP_USER_MODEL_IDS = {
 
 /** The only GitHub repository any Satellite release fetch may read, as `owner/name`. */
 export const RELEASE_REPOSITORY = "RobertScholey98/Satellite_T3";
-const REPOSITORY_URL = `https://github.com/${RELEASE_REPOSITORY}`;
+export const REPOSITORY_URL = `https://github.com/${RELEASE_REPOSITORY}`;
 export const RELEASES_URL = `${REPOSITORY_URL}/releases`;
+export const ISSUES_URL = `${REPOSITORY_URL}/issues`;
 
 /**
  * Installer metadata. The stable product name sets the Windows executable and install folder.
