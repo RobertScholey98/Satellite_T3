@@ -63,7 +63,6 @@ import {
   mergePullRequestDiffStats,
   partitionPullRequestsWithPriority,
   pullRequestDiffStatKey,
-  pullRequestSearchIncludeUpstream,
   pullRequestEntryKey,
   pullRequestEntryViewer,
   rankPullRequestMatches,
@@ -327,7 +326,7 @@ export const Route = createFileRoute("/_chat/pull-requests")({
       ? { author: raw.author.trim().slice(0, 200) }
       : {}),
     ...pullRequestSearchLabels(raw.labels),
-    ...pullRequestSearchIncludeUpstream(raw.includeUpstream),
+    ...(raw.includeUpstream === true ? { includeUpstream: true } : {}),
   }),
   component: PullRequestsRouteView,
 });
