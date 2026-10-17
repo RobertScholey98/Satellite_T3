@@ -31,6 +31,19 @@ describe("rebrand", () => {
     expect(rebrand({ root, files: ["src/title.ts"], write: true })).toEqual([]);
   });
 
+  it("leaves lines marked rebrand:keep alone", () => {
+    const { root, read } = tree({
+      "src/client.ts":
+        'const clientName = "T3 Code"; // rebrand:keep\nconst message = "Restart T3 Code.";\n',
+    });
+
+    rebrand({ root, files: ["src/client.ts"], write: true });
+    expect(read("src/client.ts")).toBe(
+      'const clientName = "T3 Code"; // rebrand:keep\nconst message = "Restart Satellite.";\n',
+    );
+    expect(rebrand({ root, files: ["src/client.ts"], write: false })).toEqual([]);
+  });
+
   it("names a planted upstream literal in check mode without writing", () => {
     const { root, read } = tree({
       "src/clean.ts": 'export const name = "Satellite";\n',

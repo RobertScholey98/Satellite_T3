@@ -12,8 +12,16 @@ import * as NodePath from "node:path";
 import { PRODUCT_NAME } from "../packages/contracts/src/productIdentity.ts";
 
 const UPSTREAM_PRODUCT_NAME = "T3 Code";
+/** A line carrying this marker keeps upstream's name, for text recorded in replay fixtures. */
+const KEEP_MARKER = "rebrand:keep";
 
-export const rebrandText = (text: string) => text.replaceAll(UPSTREAM_PRODUCT_NAME, PRODUCT_NAME);
+export const rebrandText = (text: string) =>
+  text
+    .split("\n")
+    .map((line) =>
+      line.includes(KEEP_MARKER) ? line : line.replaceAll(UPSTREAM_PRODUCT_NAME, PRODUCT_NAME),
+    )
+    .join("\n");
 
 export const readFileList = (listPath: string) =>
   NodeFS.readFileSync(listPath, "utf8")
