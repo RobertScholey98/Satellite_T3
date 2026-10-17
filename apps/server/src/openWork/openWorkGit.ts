@@ -183,42 +183,47 @@ export function selectBaseRef(stdout: string): BaseRef | null {
 
 const LAYER_ORDER: Record<OpenWorkWipLayer, number> = { staged: 0, unstaged: 1, untracked: 2 };
 
+const byPathThenLayer = (left: OpenWorkWipFile, right: OpenWorkWipFile) =>
+  left.path === right.path
+    ? LAYER_ORDER[left.layer] - LAYER_ORDER[right.layer]
+    : left.path < right.path
+      ? -1
+      : 1;
+
 /**
- * The WIP step: staged and unstaged files from their diffs, untracked files from status with zero
- * counts. Sorted by path, then layer, and capped at `maxFiles`. Totals cover every file.
+ * The WIP step: every staged and unstaged file from their diffs, then untracked files with zero
+ * counts in whatever room `maxFiles` leaves. Sorted by path, then layer.
  */
 export function groupWip(
   layers: {
     readonly staged: ReadonlyArray<OpenWorkFile>;
     readonly unstaged: ReadonlyArray<OpenWorkFile>;
     readonly untracked: ReadonlyArray<string>;
-    /** A layer git stopped reading at its output limit. */
-    readonly cut: boolean;
+    /** Git stopped reading the staged or unstaged diff at its output limit. */
+    readonly trackedCut: boolean;
+    /** Git stopped reading the untracked listing at its output limit. */
+    readonly untrackedCut: boolean;
   },
   maxFiles: number,
 ): OpenWorkWip {
-  const files: OpenWorkWipFile[] = [
+  const tracked: OpenWorkWipFile[] = [
     ...layers.staged.map((file) => ({ ...file, layer: "staged" as const })),
     ...layers.unstaged.map((file) => ({ ...file, layer: "unstaged" as const })),
-    ...layers.untracked.map((path) => ({
-      path,
-      previousPath: null,
-      status: "added" as const,
-      insertions: 0,
-      deletions: 0,
-      layer: "untracked" as const,
-    })),
-  ].toSorted((left, right) =>
-    left.path === right.path
-      ? LAYER_ORDER[left.layer] - LAYER_ORDER[right.layer]
-      : left.path < right.path
-        ? -1
-        : 1,
-  );
+  ];
+  const room = Math.max(0, maxFiles - tracked.length);
+  const untracked = layers.untracked.slice(0, room).map((path) => ({
+    path,
+    previousPath: null,
+    status: "added" as const,
+    insertions: 0,
+    deletions: 0,
+    layer: "untracked" as const,
+  }));
   return {
-    files: files.slice(0, maxFiles),
-    insertions: files.reduce((sum, file) => sum + file.insertions, 0),
-    deletions: files.reduce((sum, file) => sum + file.deletions, 0),
-    truncated: layers.cut || files.length > maxFiles,
+    files: [...tracked, ...untracked].toSorted(byPathThenLayer),
+    insertions: tracked.reduce((sum, file) => sum + file.insertions, 0),
+    deletions: tracked.reduce((sum, file) => sum + file.deletions, 0),
+    trackedTruncated: layers.trackedCut,
+    untrackedTruncated: layers.untrackedCut || layers.untracked.length > room,
   };
 }

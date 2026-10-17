@@ -185,7 +185,8 @@ describe("Open work timeline", () => {
         files: [],
         insertions: 0,
         deletions: 0,
-        truncated: false,
+        trackedTruncated: false,
+        untrackedTruncated: false,
       });
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
@@ -303,7 +304,7 @@ describe("Open work timeline", () => {
           newestFiles: wide.files.length,
           newestTruncated: wide.truncated,
           wipFiles: view.wip.files.length,
-          wipTruncated: view.wip.truncated,
+          wipTruncated: view.wip.untrackedTruncated,
           ahead: view.worktree.ahead,
         },
         {
@@ -590,8 +591,39 @@ describe("Open work limits", () => {
 
       const view = yield* f.service.timeline({ path: f.a });
       assert.deepStrictEqual(
-        [view.wip.files.length, view.wip.truncated, view.wip.files[0]?.layer],
+        [view.wip.files.length, view.wip.untrackedTruncated, view.wip.files[0]?.layer],
         [500, true, "untracked"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("lists every tracked change before filling the cap with untracked files", () =>
+    Effect.gen(function* () {
+      const f = yield* makeDiverged;
+      yield* write(f.a, "a1.txt", "staged\n");
+      yield* git(f.a, ["add", "a1.txt"]);
+      yield* write(f.a, "a3.txt", "unstaged\n");
+      // Sorts ahead of every tracked path, so a path-ordered cap would drop the tracked rows.
+      for (let file = 0; file < 600; file++) yield* write(f.a, `0-bulk/${file}.txt`, "");
+
+      const view = yield* f.service.timeline({ path: f.a });
+      const byLayer = (layer: string) =>
+        view.wip.files.filter((file) => file.layer === layer).map((file) => file.path);
+      assert.deepStrictEqual(
+        {
+          staged: byLayer("staged"),
+          unstaged: byLayer("unstaged"),
+          untracked: byLayer("untracked").length,
+          untrackedTruncated: view.wip.untrackedTruncated,
+          trackedTruncated: view.wip.trackedTruncated,
+        },
+        {
+          staged: ["a1.txt"],
+          unstaged: ["a3.txt"],
+          untracked: 498,
+          untrackedTruncated: true,
+          trackedTruncated: false,
+        },
       );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );

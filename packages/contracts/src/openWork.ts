@@ -51,7 +51,10 @@ export const OpenWorkWip = Schema.Struct({
   files: Schema.Array(OpenWorkWipFile),
   insertions: NonNegativeInt,
   deletions: NonNegativeInt,
-  truncated: Schema.Boolean,
+  /** Git's read limit cut the staged or unstaged changes, so some tracked files are missing. */
+  trackedTruncated: Schema.Boolean,
+  /** Untracked files past the cap are missing. Tracked changes are always listed first. */
+  untrackedTruncated: Schema.Boolean,
 });
 export type OpenWorkWip = typeof OpenWorkWip.Type;
 

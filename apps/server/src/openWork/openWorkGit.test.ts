@@ -250,27 +250,46 @@ describe("groupWip", () => {
     deletions: 1,
   });
 
-  it("orders by path then layer, caps the list, and totals every file", () => {
+  it("keeps every tracked change and fills the remaining room with untracked files", () => {
     const wip = groupWip(
       {
         staged: [file("b.txt", 2)],
-        unstaged: [file("b.txt", 3), file("a.txt", 4)],
-        untracked: ["c/new.txt"],
-        cut: false,
+        unstaged: [file("b.txt", 3), file("d.txt", 4)],
+        untracked: ["a/new.txt", "c/new.txt", "e/new.txt"],
+        trackedCut: false,
+        untrackedCut: false,
       },
-      3,
+      4,
     );
     assert.deepStrictEqual(
       wip.files.map(({ path, layer }) => [path, layer]),
       [
-        ["a.txt", "unstaged"],
+        ["a/new.txt", "untracked"],
         ["b.txt", "staged"],
         ["b.txt", "unstaged"],
+        ["d.txt", "unstaged"],
       ],
     );
     assert.deepStrictEqual(
-      { insertions: wip.insertions, deletions: wip.deletions, truncated: wip.truncated },
-      { insertions: 9, deletions: 3, truncated: true },
+      [wip.insertions, wip.deletions, wip.trackedTruncated, wip.untrackedTruncated],
+      [9, 3, false, true],
+    );
+  });
+
+  it("lists tracked changes past the cap and reports a cut diff", () => {
+    const wip = groupWip(
+      {
+        staged: [file("a.txt", 1), file("b.txt", 1)],
+        unstaged: [],
+        untracked: [],
+        trackedCut: true,
+        untrackedCut: false,
+      },
+      1,
+    );
+    assert.deepStrictEqual(
+      [wip.files.length, wip.trackedTruncated, wip.untrackedTruncated],
+      [2, true, false],
     );
   });
 });
