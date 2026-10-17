@@ -11,6 +11,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  DESKTOP_APP_USER_MODEL_IDS,
   DESKTOP_DMG_BACKGROUND_PATHS,
   DESKTOP_PACKAGING,
   PRODUCT_ICON_PATHS,
@@ -24,14 +25,24 @@ import {
 const repoRoot = NodePath.resolve(import.meta.dirname, "../..");
 const read = (file: string) => NodeFS.readFileSync(NodePath.join(repoRoot, file), "utf8");
 
-/** Upstream release paths that stay, each with the reason Satellite never runs them. */
-const UPSTREAM_RELEASE_URL_ALLOWLIST = [
+/** Paths that may still name upstream's repository, each with the reason Satellite never runs them. */
+const UPSTREAM_REPOSITORY_ALLOWLIST = [
   // Upstream's marketing site, which Satellite does not deploy.
   "apps/marketing/",
   // Upstream's AUR packages. Satellite removed the workflow that publishes them.
   "packaging/aur/",
   // Still upstream's until Satellite's release workflow is ported; delete this entry then.
   ".github/workflows/release.yml",
+  // The curl installers move to Satellite's repository with the release runbook; delete these then.
+  "scripts/install.sh",
+  "scripts/install.ps1",
+  // The model manifest is upstream's provider data, not a release.
+  "apps/server/src/provider/ModelManifest.ts",
+  // Evaluation and mock-agent inputs that quote upstream URLs as sample data.
+  "apps/server/scripts/acp-mock-agent.ts",
+  "apps/server/scripts/threadTitleEvaluationCases.ts",
+  // Sample data for upstream's mobile store screenshots.
+  "scripts/mobile-showcase-environment.ts",
 ];
 
 describe("static identity consumers", () => {
@@ -67,6 +78,23 @@ describe("static identity consumers", () => {
         .exec(read("apps/desktop/scripts/electron-launcher.mjs"))
         ?.slice(1),
     ).toEqual([`${PRODUCT_NAME} (Dev)`, DESKTOP_PACKAGING.productNames.stable]);
+  });
+
+  it("the desktop dev launcher uses the 1.x app ids and Satellite's icons", () => {
+    const launcher = read("apps/desktop/scripts/electron-launcher.mjs");
+    expect(
+      /const APP_BUNDLE_ID = isDevelopment\s*\? `([^$`]*)\.\$\{[^`]*`\s*: "([^"]*)";/
+        .exec(launcher)
+        ?.slice(1),
+    ).toEqual([DESKTOP_APP_USER_MODEL_IDS.development, DESKTOP_APP_USER_MODEL_IDS.production]);
+    expect(
+      [...launcher.matchAll(/NodePath\.join\(\s*repoRoot,\s*"([^"]*)",?\s*\)/g)].map(
+        (match) => match[1],
+      ),
+    ).toEqual([
+      PRODUCT_ICON_PATHS.development.macIconPng,
+      PRODUCT_ICON_PATHS.production.macIconPng,
+    ]);
   });
 
   it("the npm launcher downloads from Satellite's releases by default", () => {
@@ -129,9 +157,8 @@ describe("release sources", () => {
     );
   });
 
-  it("no tracked source defaults to upstream's release downloads or index", () => {
-    const upstreamRelease =
-      /github\.com\/pingdotgg\/t3code\/releases|api\.github\.com\/repos\/pingdotgg\/t3code\/releases/;
+  it("no tracked source names upstream's repository, so none can fetch its releases", () => {
+    const upstreamRepository = /pingdotgg\/t3code/;
     // The official T3 Code mobile app is upstream's and checks upstream's releases.
     const sources = NodeChildProcess.execFileSync(
       "git",
@@ -146,9 +173,9 @@ describe("release sources", () => {
       );
     const hits = sources.filter(
       (file) =>
-        !UPSTREAM_RELEASE_URL_ALLOWLIST.some((allowed) => file.startsWith(allowed)) &&
+        !UPSTREAM_REPOSITORY_ALLOWLIST.some((allowed) => file.startsWith(allowed)) &&
         NodeFS.existsSync(NodePath.join(repoRoot, file)) &&
-        upstreamRelease.test(read(file)),
+        upstreamRepository.test(read(file)),
     );
     expect(hits).toEqual([]);
   });

@@ -4,5 +4,5 @@
   "description": "Allows Satellite to capture the focused window, identify it for optional accessibility text, and animate it into Satellite. Disable this extension to revoke access.",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "version": 2,
-  "url": "https://github.com/pingdotgg/t3code"
+  "url": "https://github.com/RobertScholey98/Satellite_T3"
 }
