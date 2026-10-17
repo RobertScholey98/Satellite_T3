@@ -3,7 +3,7 @@
 ## Open work
 
 Open work lists every git worktree of the projects on an environment, including worktrees made by
-hand, by delegated tasks, or in a custom worktree location. Open it from the **Open Work** tab at
+hand, by delegated tasks, or in a custom worktree location. Open it from the **Open work** tab at
 the top of the Pull Requests page, or choose **Open work** in the command palette.
 
 Each worktree shows its branch, or its commit when HEAD is detached, and how many commits it is

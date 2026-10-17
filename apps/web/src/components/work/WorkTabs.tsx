@@ -16,7 +16,7 @@ const WORK_TABS = [
   // Open work restores its own last selection when opened without a target.
   {
     id: "open-work",
-    label: "Open Work",
+    label: "Open work",
     icon: GitBranchIcon,
     link: () => linkOptions({ to: "/open-work" }),
   },

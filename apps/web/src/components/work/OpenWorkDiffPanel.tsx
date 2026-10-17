@@ -1,4 +1,4 @@
-import type { EnvironmentId, OpenWorkStep } from "@t3tools/contracts";
+import type { EnvironmentId, OpenWorkStep, ProjectId } from "@t3tools/contracts";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -36,6 +36,7 @@ export interface OpenWorkDiffTarget {
 export function OpenWorkDiffPanel({
   environmentId,
   worktreePath,
+  projectId,
   target,
   siblings,
   revision,
@@ -44,6 +45,7 @@ export function OpenWorkDiffPanel({
 }: {
   readonly environmentId: EnvironmentId;
   readonly worktreePath: string;
+  readonly projectId: ProjectId | undefined;
   readonly target: OpenWorkDiffTarget;
   /** The files of the same step, for previous and next. */
   readonly siblings: ReadonlyArray<OpenWorkDiffTarget>;
@@ -61,7 +63,13 @@ export function OpenWorkDiffPanel({
   const query = useEnvironmentQuery(
     openWorkEnvironment.diff({
       environmentId,
-      input: { path: worktreePath, step: target.step, file: target.file, ignoreWhitespace },
+      input: {
+        path: worktreePath,
+        ...(projectId === undefined ? {} : { projectId }),
+        step: target.step,
+        file: target.file,
+        ignoreWhitespace,
+      },
     }),
   );
   const refreshDiff = query.refresh;

@@ -3,6 +3,7 @@ import { OpenWorkUnsupportedError } from "@t3tools/client-runtime/state/open-wor
 import {
   type EnvironmentId,
   type OpenWorkCommit,
+  type OpenWorkCommitFilesResult,
   type OpenWorkFile,
   type OpenWorkTimelineResult,
   type OpenWorkWipFile,
@@ -14,6 +15,7 @@ import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import {
   ChevronDownIcon,
+  ChevronRightIcon,
   CopyIcon,
   GitBranchIcon,
   GitCommitHorizontalIcon,
@@ -29,7 +31,7 @@ import { buildThreadRouteParams } from "~/threadRoutes";
 import { useProjects, useThreadShells } from "~/state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { openWorkEnvironment } from "~/state/openWork";
-import { useEnvironmentQuery } from "~/state/query";
+import { type EnvironmentQueryView, useEnvironmentQuery } from "~/state/query";
 import { serverEnvironment } from "~/state/server";
 import { vcsEnvironment } from "~/state/vcs";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
@@ -112,10 +114,14 @@ export function OpenWorkView({
     : null;
   const selected = selection?.kind === "selected" ? selection.worktree : null;
   const selectedPath = selected?.path ?? null;
+  // The project the worktree was listed under, so the server checks only its repository.
+  const projectHint = selected?.projectIds[0];
+  const worktreeInput = (path: string) =>
+    projectHint === undefined ? { path } : { path, projectId: projectHint };
 
   const timelineQuery = useEnvironmentQuery(
     environmentId && selectedPath
-      ? openWorkEnvironment.timeline({ environmentId, input: { path: selectedPath } })
+      ? openWorkEnvironment.timeline({ environmentId, input: worktreeInput(selectedPath) })
       : null,
   );
   const timeline = timelineQuery.data?.worktree.path === selectedPath ? timelineQuery.data : null;
@@ -202,6 +208,26 @@ export function OpenWorkView({
   const setDiffTarget = (target: OpenWorkDiffTarget | null) =>
     setOpenDiff(target ? { worktreeKey, target } : null);
   useEscapeToGoBack(diffTarget ? () => setDiffTarget(null) : undefined);
+
+  // One commit at a time lists its files; they load on expand and stay cached per SHA.
+  const [expanded, setExpanded] = useState<{
+    readonly worktreeKey: string;
+    readonly sha: string;
+  } | null>(null);
+  const expandedSha = expanded?.worktreeKey === worktreeKey ? expanded.sha : null;
+  const toggleCommit = (sha: string) =>
+    setExpanded(expandedSha === sha ? null : { worktreeKey, sha });
+  const commitFilesAtom = (sha: string | null) =>
+    environmentId && timeline && sha
+      ? openWorkEnvironment.commitFiles({
+          environmentId,
+          input: { ...worktreeInput(timeline.worktree.path), sha },
+        })
+      : null;
+  const expandedFiles = useEnvironmentQuery(commitFilesAtom(expandedSha));
+  const diffCommitFiles = useEnvironmentQuery(
+    commitFilesAtom(diffTarget?.step.kind === "commit" ? diffTarget.step.sha : null),
+  ).data;
 
   const selectWorktreePath = (path: string) => {
     if (environmentId) onTargetChange({ environmentId, worktreePath: path });
@@ -314,7 +340,14 @@ export function OpenWorkView({
               />
             ) : null}
             {timeline ? (
-              <Timeline timeline={timeline} diffTarget={diffTarget} onOpenDiff={setDiffTarget} />
+              <Timeline
+                timeline={timeline}
+                diffTarget={diffTarget}
+                onOpenDiff={setDiffTarget}
+                expandedSha={expandedSha}
+                expandedFiles={expandedFiles}
+                onToggleCommit={toggleCommit}
+              />
             ) : null}
           </WorkspacePageContainer>
         </div>
@@ -326,8 +359,9 @@ export function OpenWorkView({
             <OpenWorkDiffPanel
               environmentId={environmentId}
               worktreePath={timeline.worktree.path}
+              projectId={projectHint}
               target={diffTarget}
-              siblings={diffSiblings(timeline, diffTarget)}
+              siblings={diffSiblings(timeline, diffTarget, diffCommitFiles?.files ?? [])}
               revision={timelineQuery.dataUpdatedAt}
               onSelect={setDiffTarget}
               onClose={() => setDiffTarget(null)}
@@ -342,11 +376,12 @@ export function OpenWorkView({
 function diffSiblings(
   timeline: OpenWorkTimelineResult,
   target: OpenWorkDiffTarget,
+  commitFiles: ReadonlyArray<OpenWorkFile>,
 ): ReadonlyArray<OpenWorkDiffTarget> {
   const step = target.step;
   const files =
     step.kind === "commit"
-      ? (timeline.commits.find((commit) => commit.sha === step.sha)?.files ?? [])
+      ? commitFiles
       : timeline.wip.files.filter(
           (file, index, all) => all.findIndex((other) => other.path === file.path) === index,
         );
@@ -520,10 +555,16 @@ function Timeline({
   timeline,
   diffTarget,
   onOpenDiff,
+  expandedSha,
+  expandedFiles,
+  onToggleCommit,
 }: {
   timeline: OpenWorkTimelineResult;
   diffTarget: OpenWorkDiffTarget | null;
   onOpenDiff: (target: OpenWorkDiffTarget) => void;
+  expandedSha: string | null;
+  expandedFiles: EnvironmentQueryView<OpenWorkCommitFilesResult>;
+  onToggleCommit: (sha: string) => void;
 }) {
   const isOpen = (sha: string | null, file: OpenWorkFile) =>
     diffTarget?.file.path === file.path &&
@@ -541,6 +582,8 @@ function Timeline({
         <CommitStep
           key={commit.sha}
           commit={commit}
+          files={commit.sha === expandedSha ? expandedFiles : null}
+          onToggle={() => onToggleCommit(commit.sha)}
           isOpen={(file) => isOpen(commit.sha, file)}
           onOpenFile={(file) =>
             onOpenDiff({
@@ -597,44 +640,69 @@ function Timeline({
 
 function CommitStep({
   commit,
+  files,
+  onToggle,
   isOpen,
   onOpenFile,
 }: {
   commit: OpenWorkCommit;
+  /** The commit's file query while it is expanded. */
+  files: EnvironmentQueryView<OpenWorkCommitFilesResult> | null;
+  onToggle: () => void;
   isOpen: (file: OpenWorkFile) => boolean;
   onOpenFile: (file: OpenWorkFile) => void;
 }) {
-  const insertions = commit.files.reduce((sum, file) => sum + file.insertions, 0);
-  const deletions = commit.files.reduce((sum, file) => sum + file.deletions, 0);
+  const listed = files?.data?.sha === commit.sha ? files.data : null;
   return (
     <li className="flex flex-col gap-1">
       <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
         <GitCommitHorizontalIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
         <span className="truncate">{commit.subject}</span>
       </div>
-      <p className="pl-6 text-xs text-muted-foreground">
-        <span className="font-mono">{shortSha(commit.sha)}</span> ·{" "}
-        {commitTime.format(new Date(commit.committedAt))} · {commit.files.length}{" "}
-        {commit.files.length === 1 ? "file" : "files"} ·{" "}
+      <div className="flex items-center gap-1 pl-6 text-xs text-muted-foreground">
+        <span className="font-mono">{shortSha(commit.sha)}</span>
+        <span>· {commitTime.format(new Date(commit.committedAt))} ·</span>
+        <Button
+          size="micro"
+          variant="ghost-muted"
+          aria-expanded={files !== null}
+          disabled={commit.fileCount === 0}
+          onClick={onToggle}
+        >
+          {files !== null ? <ChevronDownIcon /> : <ChevronRightIcon />}
+          {commit.fileCount} {commit.fileCount === 1 ? "file" : "files"}
+        </Button>
         <span className="font-mono tabular-nums">
-          +{insertions} −{deletions}
+          +{commit.insertions} −{commit.deletions}
         </span>
-      </p>
-      <div className="flex flex-col pl-4">
-        {commit.files.map((file) => (
-          <FileRow
-            key={file.path}
-            file={file}
-            open={isOpen(file)}
-            onOpen={() => onOpenFile(file)}
-          />
-        ))}
-        {commit.filesTruncated ? (
-          <p className="px-2 text-xs text-muted-foreground">
-            Showing the first {commit.files.length} files.
-          </p>
-        ) : null}
       </div>
+      {files === null ? null : (
+        <div className="flex flex-col pl-4">
+          {listed ? (
+            listed.files.map((file) => (
+              <FileRow
+                key={file.path}
+                file={file}
+                open={isOpen(file)}
+                onOpen={() => onOpenFile(file)}
+              />
+            ))
+          ) : files.error ? (
+            <p role="alert" className="px-2 text-xs text-destructive">
+              {files.error}
+            </p>
+          ) : (
+            <p role="status" className="px-2 text-xs text-muted-foreground">
+              Loading files…
+            </p>
+          )}
+          {listed?.truncated ? (
+            <p className="px-2 text-xs text-muted-foreground">
+              Showing the first {listed.files.length} files.
+            </p>
+          ) : null}
+        </div>
+      )}
     </li>
   );
 }

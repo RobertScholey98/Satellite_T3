@@ -43,6 +43,12 @@ export function createOpenWorkEnvironmentAtoms<R, E>(
       label: "environment-data:open-work:timeline",
       tag: WS_METHODS.openWorkTimeline,
     }),
+    // A commit's files never change, so they are read once per SHA.
+    commitFiles: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:open-work:commit-files",
+      tag: WS_METHODS.openWorkCommitFiles,
+      staleTimeMs: Number.POSITIVE_INFINITY,
+    }),
     diff: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:open-work:diff",
       tag: WS_METHODS.openWorkDiff,
