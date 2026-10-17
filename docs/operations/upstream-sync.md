@@ -27,7 +27,16 @@ fork module and the upstream line it touches, and every later registration adds 
    deletion: `git rm <file>`.
 4. Upstream migrations are never renumbered. Satellite migrations live in their own table, so a new
    upstream migration merges as-is.
-5. Resolve the remaining conflicts by hand. These are real behavior changes.
+5. A conflict in a file listed in `scripts/rebrand-files.txt` that differs only in the product
+   name resolves by taking upstream's side and running `node scripts/rebrand.ts`. CI's
+   `node scripts/rebrand.ts --check` catches a missed rerun, not a new upstream file that names
+   T3 Code, so add such files to the list when the text is user-facing.
+6. An identity seam (a name, home directory, profile, app id, icon, or release URL) resolves by
+   taking upstream's line and reading the value from
+   [`productIdentity.ts`](../../packages/contracts/src/productIdentity.ts) again.
+   `scripts/lib/product-identity-consumers.test.ts` fails when a static file drifts from it or a
+   source defaults to upstream's releases.
+7. Resolve the remaining conflicts by hand. These are real behavior changes.
 
 Report the footprint before and after a sync. It counts the upstream files Satellite modifies or
 deletes relative to the upstream merge base:
