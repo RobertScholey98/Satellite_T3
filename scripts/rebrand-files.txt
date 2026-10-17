@@ -96,8 +96,6 @@ docs/README.md
 docs/operations/release.md
 docs/user/source-control.md
 docs/user/thread-migration.md
-packages/client-runtime/src/connection/compatibility.ts
-packages/client-runtime/src/connection/resolver.test.ts
 packages/client-runtime/src/state/pullRequestDiffHttp.test.ts
 packages/client-runtime/src/state/pullRequestDiffHttp.ts
 packages/contracts/src/pullRequest.ts
