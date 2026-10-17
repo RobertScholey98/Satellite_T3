@@ -97,6 +97,7 @@ docs/operations/release.md
 docs/user/source-control.md
 docs/user/thread-migration.md
 packages/client-runtime/src/connection/compatibility.ts
+packages/client-runtime/src/connection/resolver.test.ts
 packages/client-runtime/src/state/pullRequestDiffHttp.test.ts
 packages/client-runtime/src/state/pullRequestDiffHttp.ts
 packages/contracts/src/pullRequest.ts
@@ -108,8 +109,6 @@ packages/provider-cursor/src/server/accountUsage.ts
 packages/provider-cursor/src/server/usageLimits.ts
 packages/provider-grok/src/server/status.ts
 packages/provider-opencode/src/server/OpenCodeRuntime.ts
-packages/provider-opencode/src/server/textGeneration.ts
-packages/provider-opencode/src/server/v2/textGeneration.ts
 packages/provider-opencode/src/server/versionProbe.ts
 packages/shared/src/codexAuthCallback.ts
 packages/shared/src/codexAuthHandoff.ts
