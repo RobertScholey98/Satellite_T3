@@ -106,6 +106,27 @@ describe("rebrand", () => {
     expect(readUpstreamBase(listPath)).toBe("a".repeat(40));
   });
 
+  it("keeps upstream's name only on the lines that must keep it", () => {
+    const root = NodePath.dirname(import.meta.dirname);
+    const files = readFileList(NodePath.join(import.meta.dirname, "rebrand-files.txt"));
+    const kept = files.flatMap((file) =>
+      NodeFS.readFileSync(NodePath.join(root, file), "utf8")
+        .split("\n")
+        .filter((line) => line.includes("rebrand:keep"))
+        .map((line) => `${file}: ${line.replace(/\s*\/\/ rebrand:keep.*$/, "").trim()}`),
+    );
+
+    expect(kept).toEqual([
+      `apps/desktop/src/app/DesktopCliShim.ts: export const MARKER = "Written by T3 Code: runs the desktop app's bundled t3 CLI.";`,
+      'apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts: { url: "https://t3.codes", snippet: "T3 Code page" },',
+      "apps/server/src/provider/CodexDeveloperInstructions.test.ts: NodeAssert.match(instructions, /T3 Code/);",
+      'apps/server/src/provider/CodexProvider.ts: const CODEX_CLIENT_NAME = "T3 Code";',
+      'packages/provider-muse/src/server/sdk.ts: clientInfo: { name: "t3_code", title: "T3 Code", version: "1" },',
+      "packages/provider-opencode/src/server/textGeneration.ts: title: `T3 Code ${input.operation}`,",
+      "packages/provider-opencode/src/server/v2/textGeneration.ts: title: `T3 Code ${input.operation}`,",
+    ]);
+  });
+
   it("finds nothing to change in the files this repository rebrands", () => {
     const root = NodePath.dirname(import.meta.dirname);
     const files = readFileList(NodePath.join(import.meta.dirname, "rebrand-files.txt"));
