@@ -6,14 +6,12 @@
  * environment variables stay upstream's and are not listed here.
  */
 
-/** The product name every surface shows. */
 export const PRODUCT_NAME = "Satellite";
 /** @public Read by the web manifest drift check. */
 export const PRODUCT_SHORT_NAME = "Satellite";
 /** Shown after the name on stable builds, as in "Satellite (Alpha)". */
 export const PRODUCT_STAGE_LABEL = "Alpha";
 
-/** Directory under the user's home that holds installed Satellite's T3 home. */
 export const PRODUCT_HOME_DIRECTORY_NAME = ".satellite-t3";
 
 /**
@@ -27,10 +25,8 @@ export const DESKTOP_PROFILE_NAMES = {
   development: "satellite-t3-dev",
 } as const;
 
-/**
- * The 1.x values. Windows matches them to upgrade the same app and keep taskbar pins.
- * @public Read by the desktop build.
- */
+// The 1.x values. Windows matches them to upgrade the same app and keep taskbar pins.
+/** @public Read by the desktop build. */
 export const DESKTOP_APP_ID = "com.satellitet3.prototype";
 export const DESKTOP_APP_USER_MODEL_IDS = {
   production: "com.satellitet3.prototype",
@@ -39,11 +35,8 @@ export const DESKTOP_APP_USER_MODEL_IDS = {
 
 /** The only GitHub repository any Satellite release fetch may read, as `owner/name`. */
 export const RELEASE_REPOSITORY = "RobertScholey98/Satellite_T3";
-/** @public */
-export const REPOSITORY_URL = `https://github.com/${RELEASE_REPOSITORY}`;
+const REPOSITORY_URL = `https://github.com/${RELEASE_REPOSITORY}`;
 export const RELEASES_URL = `${REPOSITORY_URL}/releases`;
-/** @public */
-export const ISSUES_URL = `${REPOSITORY_URL}/issues`;
 
 /**
  * Installer metadata. The stable product name sets the Windows executable and install folder.
