@@ -1,9 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off
-import * as NodeCrypto from "node:crypto";
-
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -135,10 +133,10 @@ const CASES: ReadonlyArray<UpgradeCase> = [
 const sha256 = (file: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const crypto = yield* Crypto.Crypto;
     if (!(yield* fs.exists(file))) return undefined;
-    return NodeCrypto.createHash("sha256")
-      .update(yield* fs.readFile(file))
-      .digest("hex");
+    const digest = yield* crypto.digest("SHA-256", yield* fs.readFile(file));
+    return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
   });
 
 const satelliteRowsIn = Effect.map(readLedger("effect_sql_migrations"), (rows) =>
@@ -154,7 +152,6 @@ const start = Effect.gen(function* () {
   const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   yield* importer.reconcileShells;
   yield* drainLegacyThreadArchives();
-  // Projection rebuilds and event catch-up read strictly and fail on an unknown event type.
   yield* readAllV2Events;
   const sql = yield* SqlClient.SqlClient;
   return {
@@ -205,7 +202,6 @@ describe("Satellite ledger upgrade", () => {
         assert.deepStrictEqual(first.boards, source.boards);
         for (const table of SATELLITE_1X_TABLES) assert.notInclude(first.tables, table);
         assert.notInclude(first.tables, "satellite_legacy_thread_archives");
-        // Every V1 thread reaches V2.
         assert.deepStrictEqual(
           first.v2Threads.map((row) => row.thread_id).toSorted(),
           first.v1Threads.map((row) => row.thread_id).toSorted(),

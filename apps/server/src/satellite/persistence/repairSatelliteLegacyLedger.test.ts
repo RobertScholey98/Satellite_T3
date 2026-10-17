@@ -233,7 +233,6 @@ describe("repairSatelliteLegacyLedger", () => {
           yield* sql`SELECT event_id FROM orchestration_events WHERE event_type LIKE 'idea.%'`,
           [],
         );
-        // Upstream applies only what this database is missing.
         assert.deepStrictEqual(
           yield* runMigrations(),
           migrationManifest.filter(([id]) => id >= 59),

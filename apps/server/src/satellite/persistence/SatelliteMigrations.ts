@@ -21,7 +21,6 @@ export type SatelliteMigration = readonly [
   migration: Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient>,
 ];
 
-/** Append new migrations here with the next free id. */
 export const satelliteMigrationEntries: ReadonlyArray<SatelliteMigration> = [];
 
 const run = Migrator.make({});

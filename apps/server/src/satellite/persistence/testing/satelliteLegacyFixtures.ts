@@ -1,6 +1,6 @@
 /**
  * Builds databases in the shapes Satellite builds left behind, for tests of the ledger repair and
- * of later Satellite migrations. Satellite DDL is copied verbatim from origin/main's migrations
+ * of later Satellite migrations. Satellite DDL is copied verbatim from origin/main's (2a9c7b9b26) migrations
  * 055 to 069. Rows are synthetic.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -553,7 +553,6 @@ export const dumpTables = (tables: ReadonlyArray<string>) =>
     return dump;
   });
 
-/** Schema and every row of every table, for comparing a database before and after a run. */
 export const dumpDatabase = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const schema = yield* sql`
@@ -596,7 +595,6 @@ const unusedEnrichment = {
  * Upstream's orchestration runtime and thread lifecycle service over the real persistence config
  * layer, so the V1 copy, the ledger repair and every migration run as they do at startup. The
  * database is `<baseDir>/userdata/statev2.sqlite`, copied from `state.sqlite` beside it if absent.
- * Mirrors upstream's ProjectSettingsUpgrade integration test.
  */
 export const layerSatelliteRuntime = (baseDir: string) => {
   const layerPlatform = Layer.merge(

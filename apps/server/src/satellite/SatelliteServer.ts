@@ -3,10 +3,7 @@ import * as Layer from "effect/Layer";
 
 import { drainLegacyThreadArchives } from "./persistence/drainLegacyThreadArchives.ts";
 
-/**
- * Satellite's server-lifetime services, reactors and startup steps. `server.ts` provides it once
- * beside upstream's core services, and it takes what it needs from them.
- */
+/** Satellite's server-lifetime services, reactors and startup steps. Provided once in server.ts. */
 export const layer = Layer.effectDiscard(
   drainLegacyThreadArchives().pipe(
     Effect.catch((cause) =>
@@ -16,5 +13,5 @@ export const layer = Layer.effectDiscard(
   ),
 );
 
-/** Registers Satellite's MCP toolkits on the `/mcp` server through `toolkitRegistration`. */
+/** Where Satellite's MCP toolkits join `/mcp`, via `McpHttpServer.toolkitRegistration`. */
 export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) => mcpServer;

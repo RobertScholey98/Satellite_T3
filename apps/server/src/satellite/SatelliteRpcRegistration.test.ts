@@ -67,6 +67,6 @@ void satelliteHandlerRequirementsAreTyped;
 
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
-// Clients resubscribe exactly these on reconnect. List each Satellite stream RPC here.
+// Pins the derived set so a new stream RPC is a reviewed change to reconnect resubscription.
 const subscriptionsFollowTheGroup: Equals<SatelliteWsSubscriptionMethod, never> = true;
 void subscriptionsFollowTheGroup;

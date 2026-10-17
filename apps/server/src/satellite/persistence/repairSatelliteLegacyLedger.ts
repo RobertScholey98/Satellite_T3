@@ -30,8 +30,8 @@ const FORK_NUMBERED_UPSTREAM_ROWS = [
   [66, 58, "WebhookRelayDeliveries"],
 ] as const;
 
-// Children before parents, so enforced foreign keys never block a drop. The ten issue_* board
-// tables stay; the boards migration translates them.
+// Children before parents: foreign keys are enforced. The ten issue_* board tables stay for a
+// later Satellite migration.
 const ORPHAN_TABLES = [
   "document_placements",
   "document_submissions",
