@@ -19,6 +19,8 @@ delete env.T3CODE_PORT;
 delete env.T3CODE_PORT_OFFSET;
 delete env.ELECTRON_RUN_AS_NODE;
 
+// oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone launcher runs before any Effect runtime exists.
+const isWindows = process.platform === "win32";
 const child = NodeChildProcess.spawn(
   process.execPath,
   [
@@ -28,14 +30,19 @@ const child = NodeChildProcess.spawn(
     env.T3CODE_HOME,
     ...process.argv.slice(2),
   ],
-  { cwd: root, env, stdio: "inherit", windowsHide: true },
+  { cwd: root, env, stdio: "inherit", windowsHide: true, detached: !isWindows },
 );
 child.on("error", (error) => {
   console.error(`SatelliteT3 could not start: ${error.message}`);
   process.exitCode = 1;
 });
+// The dev tasks below the runner do not forward signals, so stop the runner's whole process
+// group, as a terminal does on Ctrl+C. Windows has no process groups; Ctrl+C reaches the console.
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => child.kill(signal));
+  process.on(signal, () => {
+    if (isWindows) child.kill(signal);
+    else process.kill(-child.pid, signal);
+  });
 }
 child.on("exit", (code, signal) => {
   process.exitCode = code ?? 128 + NodeOS.constants.signals[signal];
