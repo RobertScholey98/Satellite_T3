@@ -638,7 +638,7 @@ function Timeline({
         ) : null}
         {timeline.wip.trackedTruncated ? (
           <p className="text-xs text-muted-foreground">
-            Some staged or unstaged changes are missing: the diff was larger than Git's read limit.
+            Some staged or unstaged changes are not listed; the totals count them.
           </p>
         ) : null}
       </li>

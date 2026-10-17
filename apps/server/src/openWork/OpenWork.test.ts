@@ -628,6 +628,33 @@ describe("Open work limits", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("caps a sweep of tracked modifications at 500 rows", () =>
+    Effect.gen(function* () {
+      const f = yield* makeDiverged;
+      for (let file = 0; file < 600; file++) yield* write(f.a, `sweep/${file}.txt`, "one\n");
+      yield* commitAll(f.a, "sweep");
+      for (let file = 0; file < 600; file++) yield* write(f.a, `sweep/${file}.txt`, "two\n");
+
+      const view = yield* f.service.timeline({ path: f.a });
+      assert.deepStrictEqual(
+        {
+          rows: view.wip.files.length,
+          layers: [...new Set(view.wip.files.map((file) => file.layer))],
+          insertions: view.wip.insertions,
+          trackedTruncated: view.wip.trackedTruncated,
+          untrackedTruncated: view.wip.untrackedTruncated,
+        },
+        {
+          rows: 500,
+          layers: ["unstaged"],
+          insertions: 600,
+          trackedTruncated: true,
+          untrackedTruncated: false,
+        },
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("checks only the hinted project when a project id is given", () =>
     Effect.gen(function* () {
       const f = yield* makeDiverged;

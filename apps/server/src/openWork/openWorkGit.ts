@@ -191,8 +191,9 @@ const byPathThenLayer = (left: OpenWorkWipFile, right: OpenWorkWipFile) =>
       : 1;
 
 /**
- * The WIP step: every staged and unstaged file from their diffs, then untracked files with zero
- * counts in whatever room `maxFiles` leaves. Sorted by path, then layer.
+ * The WIP step, at most `maxFiles` rows: staged then unstaged files from their diffs fill it first,
+ * untracked files with zero counts take what room is left. Sorted by path, then layer. Totals
+ * cover every tracked change read, listed or not.
  */
 export function groupWip(
   layers: {
@@ -210,7 +211,8 @@ export function groupWip(
     ...layers.staged.map((file) => ({ ...file, layer: "staged" as const })),
     ...layers.unstaged.map((file) => ({ ...file, layer: "unstaged" as const })),
   ];
-  const room = Math.max(0, maxFiles - tracked.length);
+  const listedTracked = tracked.slice(0, maxFiles);
+  const room = maxFiles - listedTracked.length;
   const untracked = layers.untracked.slice(0, room).map((path) => ({
     path,
     previousPath: null,
@@ -220,10 +222,10 @@ export function groupWip(
     layer: "untracked" as const,
   }));
   return {
-    files: [...tracked, ...untracked].toSorted(byPathThenLayer),
+    files: [...listedTracked, ...untracked].toSorted(byPathThenLayer),
     insertions: tracked.reduce((sum, file) => sum + file.insertions, 0),
     deletions: tracked.reduce((sum, file) => sum + file.deletions, 0),
-    trackedTruncated: layers.trackedCut,
+    trackedTruncated: layers.trackedCut || tracked.length > maxFiles,
     untrackedTruncated: layers.untrackedCut || layers.untracked.length > room,
   };
 }

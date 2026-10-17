@@ -276,20 +276,21 @@ describe("groupWip", () => {
     );
   });
 
-  it("lists tracked changes past the cap and reports a cut diff", () => {
+  it("caps tracked changes in their diff order and leaves no room for untracked files", () => {
     const wip = groupWip(
       {
-        staged: [file("a.txt", 1), file("b.txt", 1)],
-        unstaged: [],
-        untracked: [],
-        trackedCut: true,
+        staged: [file("b.txt", 1)],
+        unstaged: [file("a.txt", 1)],
+        untracked: ["c/new.txt"],
+        trackedCut: false,
         untrackedCut: false,
       },
       1,
     );
     assert.deepStrictEqual(
-      [wip.files.length, wip.trackedTruncated, wip.untrackedTruncated],
-      [2, true, false],
+      [wip.files.map(({ path, layer }) => [path, layer]), wip.insertions],
+      [[["b.txt", "staged"]], 2],
     );
+    assert.deepStrictEqual([wip.trackedTruncated, wip.untrackedTruncated], [true, true]);
   });
 });
