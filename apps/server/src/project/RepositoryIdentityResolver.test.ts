@@ -354,6 +354,41 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         canonicalKey: "github.com/julius/t3code-fork",
         displayName: "julius/t3code-fork",
       });
+
+      const fork = yield* resolver.resolve(cwd, { remoteName: "origin" });
+      expect(fork?.canonicalKey).toBe("github.com/julius/t3code-fork");
+      expect(fork?.displayName).toBe("julius/t3code-fork");
+      expect(fork?.locator.remoteName).toBe("origin");
+      expect(fork?.origin).toBeUndefined();
+      expect(yield* resolver.resolve(cwd, { remoteName: "missing" })).toBeNull();
+      expect(yield* resolver.resolve(cwd)).toEqual(identity);
+    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+  );
+
+  it.effect("caches a named remote apart from the primary identity", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-named-remote-test-",
+      });
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:julius/t3code-fork.git"]);
+      yield* git(cwd, ["remote", "add", "upstream", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const primary = yield* resolver.resolve(cwd);
+      expect((yield* resolver.resolve(cwd, { remoteName: "origin" }))?.canonicalKey).toBe(
+        "github.com/julius/t3code-fork",
+      );
+
+      yield* git(cwd, ["remote", "set-url", "origin", "git@github.com:julius/renamed-fork.git"]);
+      expect((yield* resolver.resolve(cwd, { remoteName: "origin" }))?.canonicalKey).toBe(
+        "github.com/julius/t3code-fork",
+      );
+      const refreshed = yield* resolver.resolve(cwd, { remoteName: "origin", refresh: true });
+      expect(refreshed?.canonicalKey).toBe("github.com/julius/renamed-fork");
+      expect(yield* resolver.resolve(cwd)).toEqual(primary);
     }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 
