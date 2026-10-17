@@ -223,6 +223,10 @@
       "types": "./src/state/review.ts",
       "default": "./src/state/review.ts"
     },
+    "./state/open-work": {
+      "types": "./src/state/openWork.ts",
+      "default": "./src/state/openWork.ts"
+    },
     "./state/runtime": {
       "types": "./src/state/runtime.ts",
       "default": "./src/state/runtime.ts"
