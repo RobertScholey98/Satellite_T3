@@ -92,14 +92,9 @@ const make = Effect.gen(function* () {
     git.execute({ operation, cwd, args, ...options }).pipe(Effect.mapError(toGitError(operation)));
 
   /** Exit code instead of failure, for reads that may legitimately not apply. */
-  const probe = (
-    operation: string,
-    cwd: string,
-    args: ReadonlyArray<string>,
-    options: { readonly maxOutputBytes?: number } = {},
-  ) =>
+  const probe = (operation: string, cwd: string, args: ReadonlyArray<string>) =>
     git
-      .execute({ operation, cwd, args, allowNonZeroExit: true, ...options })
+      .execute({ operation, cwd, args, allowNonZeroExit: true })
       .pipe(Effect.mapError(toGitError(operation)));
 
   const canonical = (value: string) => fileSystem.realPath(path.resolve(value)).pipe(Effect.option);
