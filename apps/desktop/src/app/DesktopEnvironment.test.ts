@@ -14,9 +14,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+  appPath: "/Applications/Satellite.app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
+  resourcesPath: "/Applications/Satellite.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -76,7 +76,8 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.serverRoot, "/repo");
       assert.equal(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assert.equal(environment.backendCwd, "/repo");
-      assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev");
+      assert.equal(environment.appUserModelId, "com.satellitet3.prototype.dev");
+      assert.equal(environment.displayName, "Satellite (Dev)");
       assert.equal(environment.linuxWmClass, "t3code-dev");
       assert.equal(environment.linuxDesktopEntryName, "com.t3tools.T3Code.Development.desktop");
       assert.deepEqual(
@@ -162,8 +163,24 @@ describe("DesktopEnvironment", () => {
       );
       const production = yield* makeEnvironment();
 
-      assert.equal(development.stateDir, "/Users/alice/.t3/dev");
-      assert.equal(production.stateDir, "/Users/alice/.t3/userdata");
+      assert.equal(development.stateDir, "/Users/alice/.satellite-t3/dev");
+      assert.equal(production.stateDir, "/Users/alice/.satellite-t3/userdata");
+    }),
+  );
+
+  it.effect("names stable and nightly builds Satellite with the 1.x app user model id", () =>
+    Effect.gen(function* () {
+      const stable = yield* makeEnvironment({ appVersion: "2.0.0" });
+      const nightly = yield* makeEnvironment({ appVersion: "2.0.1-nightly.20261017.3" });
+
+      assert.deepEqual(stable.branding, {
+        baseName: "Satellite",
+        stageLabel: "Alpha",
+        displayName: "Satellite (Alpha)",
+      });
+      assert.equal(nightly.displayName, "Satellite (Nightly)");
+      assert.equal(stable.appUserModelId, "com.satellitet3.prototype");
+      assert.equal(stable.baseDir, "/Users/alice/.satellite-t3");
     }),
   );
 

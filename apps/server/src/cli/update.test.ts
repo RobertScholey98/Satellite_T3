@@ -5,8 +5,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { HttpClient, HttpClientResponse } from "effect/http";
 
-import { repointLauncher, resolveLauncherPath } from "./update.ts";
+import * as BootService from "../cloud/bootService.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import { repointLauncher, resolveLauncherPath, runUpdate } from "./update.ts";
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
   it.effect("repoints a symlink that lives in a runtime versions tree", () =>
@@ -98,6 +101,71 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       assert.equal(bare, launcher);
       assert.equal(relative, launcher);
       assert.equal(absent, undefined);
+    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
+  );
+
+  it.effect("reports a Satellite release with no CLI archive without downloading elsewhere", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
+      const requests: Array<string> = [];
+      const httpClient = HttpClient.make((request) => {
+        requests.push(request.url);
+        const response = request.url.includes("api.github.com")
+          ? new Response(JSON.stringify([{ tag_name: "v900.0.0" }, { tag_name: "v800.0.0" }]))
+          : request.url.includes("/v800.0.0/")
+            ? new Response(`${"a".repeat(64)}  SatelliteT3-800.0.0-arm64.dmg\n`)
+            : new Response("Not Found", { status: 404 });
+        return Effect.succeed(HttpClientResponse.fromWeb(request, response));
+      });
+
+      const update = (requestedVersion: string | undefined) =>
+        runUpdate({
+          baseDir,
+          logsDir: path.join(baseDir, "logs"),
+          serverRuntimeStatePath: path.join(baseDir, "server-runtime.json"),
+          channel: "stable",
+          requestedVersion,
+          allowDowngrade: true,
+          assumeYes: true,
+        }).pipe(
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.provideService(
+            BootService.BootService,
+            BootService.BootService.of({
+              status: Effect.succeed({
+                supported: false,
+                installed: false,
+                current: false,
+                unitPath: path.join(baseDir, "unit"),
+                logPath: path.join(baseDir, "boot.log"),
+              }),
+              withStopped: (operation) => operation,
+              restart: Effect.die("restart"),
+              install: () => Effect.die("install"),
+              uninstall: Effect.die("uninstall"),
+            }),
+          ),
+          Effect.provideService(
+            ProcessRunner.ProcessRunner,
+            ProcessRunner.ProcessRunner.of({ run: () => Effect.die("no process expected") }),
+          ),
+          Effect.provideService(HostProcess.Architecture, "x64"),
+          Effect.provideService(HostProcess.Environment, {}),
+          Effect.flip,
+        );
+
+      const missing = yield* update(undefined);
+      const desktopOnly = yield* update("800.0.0");
+
+      assert.equal(missing.message, "No release archive was published for t3@900.0.0.");
+      assert.equal(desktopOnly.message, "No release archive was published for t3@800.0.0.");
+      assert.deepStrictEqual(requests, [
+        "https://api.github.com/repos/RobertScholey98/Satellite_T3/releases?per_page=100&page=1",
+        "https://github.com/RobertScholey98/Satellite_T3/releases/download/v900.0.0/SHA256SUMS",
+        "https://github.com/RobertScholey98/Satellite_T3/releases/download/v800.0.0/SHA256SUMS",
+      ]);
     }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
   );
 });
