@@ -472,8 +472,10 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     Effect.catchIf(
       (error): error is PinnedRuntimeInstallError =>
         error._tag === "PinnedRuntimeInstallError" &&
-        error.step.startsWith("downloading the t3 release checksums") &&
-        String(error.cause).includes("404"),
+        ((error.step.startsWith("downloading the t3 release checksums") &&
+          String(error.cause).includes("404")) ||
+          // A desktop-only release publishes checksums that list no CLI archive.
+          /^finding t3-.+ in the t3 release checksums$/.test(error.step)),
       () =>
         Effect.fail(
           new CliUpdateError({

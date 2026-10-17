@@ -113,50 +113,58 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       const httpClient = HttpClient.make((request) => {
         requests.push(request.url);
         const response = request.url.includes("api.github.com")
-          ? new Response(JSON.stringify([{ tag_name: "v900.0.0" }]))
-          : new Response("Not Found", { status: 404 });
+          ? new Response(JSON.stringify([{ tag_name: "v900.0.0" }, { tag_name: "v800.0.0" }]))
+          : request.url.includes("/v800.0.0/")
+            ? new Response(`${"a".repeat(64)}  SatelliteT3-800.0.0-arm64.dmg\n`)
+            : new Response("Not Found", { status: 404 });
         return Effect.succeed(HttpClientResponse.fromWeb(request, response));
       });
 
-      const error = yield* runUpdate({
-        baseDir,
-        logsDir: path.join(baseDir, "logs"),
-        serverRuntimeStatePath: path.join(baseDir, "server-runtime.json"),
-        channel: "stable",
-        requestedVersion: undefined,
-        allowDowngrade: false,
-        assumeYes: true,
-      }).pipe(
-        Effect.provideService(HttpClient.HttpClient, httpClient),
-        Effect.provideService(
-          BootService.BootService,
-          BootService.BootService.of({
-            status: Effect.succeed({
-              supported: false,
-              installed: false,
-              current: false,
-              unitPath: path.join(baseDir, "unit"),
-              logPath: path.join(baseDir, "boot.log"),
+      const update = (requestedVersion: string | undefined) =>
+        runUpdate({
+          baseDir,
+          logsDir: path.join(baseDir, "logs"),
+          serverRuntimeStatePath: path.join(baseDir, "server-runtime.json"),
+          channel: "stable",
+          requestedVersion,
+          allowDowngrade: true,
+          assumeYes: true,
+        }).pipe(
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+          Effect.provideService(
+            BootService.BootService,
+            BootService.BootService.of({
+              status: Effect.succeed({
+                supported: false,
+                installed: false,
+                current: false,
+                unitPath: path.join(baseDir, "unit"),
+                logPath: path.join(baseDir, "boot.log"),
+              }),
+              withStopped: (operation) => operation,
+              restart: Effect.die("restart"),
+              install: () => Effect.die("install"),
+              uninstall: Effect.die("uninstall"),
             }),
-            withStopped: (operation) => operation,
-            restart: Effect.die("restart"),
-            install: () => Effect.die("install"),
-            uninstall: Effect.die("uninstall"),
-          }),
-        ),
-        Effect.provideService(
-          ProcessRunner.ProcessRunner,
-          ProcessRunner.ProcessRunner.of({ run: () => Effect.die("no process expected") }),
-        ),
-        Effect.provideService(HostProcess.Architecture, "x64"),
-        Effect.provideService(HostProcess.Environment, {}),
-        Effect.flip,
-      );
+          ),
+          Effect.provideService(
+            ProcessRunner.ProcessRunner,
+            ProcessRunner.ProcessRunner.of({ run: () => Effect.die("no process expected") }),
+          ),
+          Effect.provideService(HostProcess.Architecture, "x64"),
+          Effect.provideService(HostProcess.Environment, {}),
+          Effect.flip,
+        );
 
-      assert.equal(error.message, "No release archive was published for t3@900.0.0.");
+      const missing = yield* update(undefined);
+      const desktopOnly = yield* update("800.0.0");
+
+      assert.equal(missing.message, "No release archive was published for t3@900.0.0.");
+      assert.equal(desktopOnly.message, "No release archive was published for t3@800.0.0.");
       assert.deepStrictEqual(requests, [
         "https://api.github.com/repos/RobertScholey98/Satellite_T3/releases?per_page=100&page=1",
         "https://github.com/RobertScholey98/Satellite_T3/releases/download/v900.0.0/SHA256SUMS",
+        "https://github.com/RobertScholey98/Satellite_T3/releases/download/v800.0.0/SHA256SUMS",
       ]);
     }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
   );
