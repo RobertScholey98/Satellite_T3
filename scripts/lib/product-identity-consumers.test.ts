@@ -30,7 +30,7 @@ const UPSTREAM_RELEASE_URL_ALLOWLIST = [
   "apps/marketing/",
   // Upstream's AUR packages. Satellite removed the workflow that publishes them.
   "packaging/aur/",
-  // The release workflow is rebased onto Satellite's in PR-04.
+  // Still upstream's until Satellite's release workflow is ported; delete this entry then.
   ".github/workflows/release.yml",
 ];
 
