@@ -44,6 +44,8 @@ export class ClientPresentation extends Context.Service<
   ClientPresentation,
   {
     readonly metadata: AuthClientPresentationMetadata;
+    /** Names the app in messages that tell the user what to update. Defaults to "T3 Code". */
+    readonly productName?: string;
   }
 >()("@t3tools/client-runtime/platform/capabilities/ClientPresentation") {}
 

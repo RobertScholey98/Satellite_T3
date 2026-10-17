@@ -12,6 +12,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   type EnvironmentId,
+  PRODUCT_NAME,
   resolveEnvironmentMachineKind,
   type ServerConfig,
 } from "@t3tools/contracts";
@@ -43,7 +44,9 @@ function discoveredCompatibilityError(
   status: Option.Option<RelayEnvironmentStatusResponse> | undefined,
 ) {
   const descriptor = status === undefined ? undefined : Option.getOrNull(status)?.descriptor;
-  return descriptor === undefined ? null : orchestrationProtocolCompatibilityError(descriptor);
+  return descriptor === undefined
+    ? null
+    : orchestrationProtocolCompatibilityError(descriptor, PRODUCT_NAME);
 }
 
 export interface SavedCloudEnvironmentConnection {
