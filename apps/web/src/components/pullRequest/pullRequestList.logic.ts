@@ -543,6 +543,7 @@ export function mergePullRequestDiffStats(
   stats: ReadonlyArray<{
     readonly environmentId: string;
     readonly projectId: string;
+    readonly repository: string;
     readonly number: number;
     readonly additions: number;
     readonly deletions: number;
@@ -559,11 +560,13 @@ export function mergePullRequestDiffStats(
   return next;
 }
 
+/** Includes the repository because a fork project also lists its upstream, whose numbers collide. */
 export const pullRequestDiffStatKey = (row: {
   readonly environmentId: string;
   readonly projectId: string;
+  readonly repository: string;
   readonly number: number;
-}) => `${row.environmentId} ${row.projectId} ${row.number}`;
+}) => `${row.environmentId} ${row.projectId} ${row.repository.toLowerCase()} ${row.number}`;
 
 export interface MergedPullRequestList {
   readonly viewers: PullRequestViewers;
@@ -586,6 +589,8 @@ export function mergePullRequestLists(
   const errors: EnvironmentPullRequestError[] = [];
   const nextCursors: Record<string, PullRequestListCursors> = {};
   let truncated = false;
+  // An upstream repository can be listed by a fork in one environment and a clone in another.
+  const listed = new Set<string>();
   for (const [environmentId, answer] of answers) {
     for (const [host, login] of Object.entries(answer.viewers)) {
       viewers[`${environmentId} ${host}`] = login;
@@ -604,7 +609,12 @@ export function mergePullRequestLists(
             },
       );
     }
-    entries.push(...answer.entries.map((entry) => ({ ...entry, environmentId })));
+    for (const entry of answer.entries) {
+      const key = `${entry.host} ${entry.repository.toLowerCase()} ${entry.number}`;
+      if (listed.has(key)) continue;
+      listed.add(key);
+      entries.push({ ...entry, environmentId });
+    }
     errors.push(...answer.errors.map((error) => ({ ...error, environmentId })));
     truncated ||= answer.truncated;
     if (answer.truncated) truncatedEnvironments.push(environmentId);

@@ -326,6 +326,7 @@ export const Route = createFileRoute("/_chat/pull-requests")({
       ? { author: raw.author.trim().slice(0, 200) }
       : {}),
     ...pullRequestSearchLabels(raw.labels),
+    ...(raw.includeUpstream === true ? { includeUpstream: true } : {}),
   }),
   component: PullRequestsRouteView,
 });
@@ -500,6 +501,7 @@ function PullRequestsRouteView() {
             ...(next.checks ? { checks: next.checks } : {}),
             ...(next.author ? { author: next.author } : {}),
             ...(next.labels && next.labels.length > 0 ? { labels: next.labels } : {}),
+            ...(next.includeUpstream ? { includeUpstream: true } : {}),
           };
         },
         replace: true,
@@ -599,7 +601,7 @@ function PullRequestsRouteView() {
   const turnRefreshToken = turnRefreshes
     .map(([environmentId, revision]) => `${environmentId}:${revision}`)
     .join("|");
-  const scopeKey = `${environmentKey}:${assignmentKey}:${search.state}:${search.involvement}:${scopedProjectId ?? ""}:${search.host ?? ""}:${search.draft ?? ""}:${search.review ?? ""}:${search.checks ?? ""}:${search.author ?? ""}:${search.labels?.join("\u0000") ?? ""}`;
+  const scopeKey = `${environmentKey}:${assignmentKey}:${search.state}:${search.involvement}:${scopedProjectId ?? ""}:${search.host ?? ""}:${search.draft ?? ""}:${search.review ?? ""}:${search.checks ?? ""}:${search.author ?? ""}:${search.labels?.join("\u0000") ?? ""}:${search.includeUpstream ? "upstream" : ""}`;
   const filterKey = `${scopeKey}:${sentQuery}`;
   const statsScopeRef = useRef<PullRequestStatsScope>({ key: filterKey, policy: statsPolicy });
   statsScopeRef.current = { key: filterKey, policy: statsPolicy };
@@ -639,6 +641,7 @@ function PullRequestsRouteView() {
               ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
               ...(projectIds ? { projectIds } : {}),
               ...(search.host ? { host: search.host } : {}),
+              ...(search.includeUpstream ? { includeUpstream: true } : {}),
               ...(hasFilters ? { filters } : {}),
               ...(sentParsed.text ? { query: sentParsed.text } : {}),
               ...(cursors === undefined ? {} : { cursors }),
@@ -653,6 +656,7 @@ function PullRequestsRouteView() {
       environmentQueries,
       scopedProjectId,
       search.host,
+      search.includeUpstream,
       search.involvement,
       search.state,
       sentCursors,
@@ -678,6 +682,7 @@ function PullRequestsRouteView() {
           ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
           ...(projectIds ? { projectIds } : {}),
           ...(search.host ? { host: search.host } : {}),
+          ...(search.includeUpstream ? { includeUpstream: true } : {}),
           ...(menuFiltered ? { filters: menuFilters } : {}),
         } satisfies PullRequestListInput,
       })),
@@ -687,6 +692,7 @@ function PullRequestsRouteView() {
       environmentQueries,
       scopedProjectId,
       search.host,
+      search.includeUpstream,
       search.involvement,
       search.state,
     ],
@@ -708,9 +714,17 @@ function PullRequestsRouteView() {
         ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
         ...(projectIds ? { projectIds } : {}),
         ...(search.host ? { host: search.host } : {}),
+        ...(search.includeUpstream ? { includeUpstream: true } : {}),
       } satisfies PullRequestListInput,
     }));
-  }, [environmentQueries, filtersOpen, scopedProjectId, search.host, search.involvement]);
+  }, [
+    environmentQueries,
+    filtersOpen,
+    scopedProjectId,
+    search.host,
+    search.includeUpstream,
+    search.involvement,
+  ]);
   const facetQuery = usePullRequestList(facetTargets);
   const partitionsWanted = search.involvement === "all" && typedQuery.length === 0;
   const partitionTargets = useMemo(() => {
@@ -734,6 +748,7 @@ function PullRequestsRouteView() {
           ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
           ...(projectIds ? { projectIds } : {}),
           ...(search.host ? { host: search.host } : {}),
+          ...(search.includeUpstream ? { includeUpstream: true } : {}),
           ...(menuFiltered ? { filters: menuFilters } : {}),
         } satisfies PullRequestListInput,
       }));
@@ -746,6 +761,7 @@ function PullRequestsRouteView() {
     environmentQueries,
     scopedProjectId,
     search.host,
+    search.includeUpstream,
     search.state,
   ]);
   const authoredQuery = usePullRequestList(partitionTargets.authored);
@@ -1813,6 +1829,8 @@ function PullRequestsRouteView() {
       onProject={(projectId, environmentId) =>
         updateListScope(environmentId === undefined ? { projectId } : { projectId, environmentId })
       }
+      includeUpstream={search.includeUpstream === true}
+      onIncludeUpstream={(includeUpstream) => updateListScope({ includeUpstream })}
     />
   );
   const columnProps = {

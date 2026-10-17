@@ -9,8 +9,15 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import * as ProcessRunner from "../processRunner.ts";
+
+const IdentityCacheKey = Schema.fromJsonString(
+  Schema.Tuple([Schema.String, Schema.NullOr(Schema.String)]),
+);
+const encodeIdentityCacheKey = Schema.encodeSync(IdentityCacheKey);
+const decodeIdentityCacheKey = Schema.decodeUnknownSync(IdentityCacheKey);
 
 const DEFAULT_REPOSITORY_IDENTITY_CACHE_CAPACITY = 512;
 // Background sweeps resolve every project each minute. A long TTL keeps them
@@ -33,7 +40,8 @@ export class RepositoryIdentityResolver extends Context.Service<
   {
     readonly resolve: (
       cwd: string,
-      options?: { readonly refresh?: boolean },
+      /** `remoteName` resolves that remote instead of the primary one; null when it is missing. */
+      options?: { readonly refresh?: boolean; readonly remoteName?: string },
     ) => Effect.Effect<RepositoryIdentity | null>;
   }
 >()("t3/project/RepositoryIdentityResolver") {}
@@ -128,7 +136,19 @@ const resolveRepositoryIdentityCacheKey = Effect.fn("RepositoryIdentityResolver.
       })
       .pipe(Effect.option);
     if (topLevelResult._tag === "None" || topLevelResult.value.code !== 0) {
-      return null;
+      // git refuses --show-toplevel in a bare repository container, but remote -v works there.
+      const bareResult = yield* processRunner
+        .run({
+          command: "git",
+          args: ["-C", cwd, "rev-parse", "--is-bare-repository"],
+          timeoutBehavior: "timedOutResult",
+        })
+        .pipe(Effect.option);
+      return bareResult._tag === "Some" &&
+        bareResult.value.code === 0 &&
+        bareResult.value.stdout.trim() === "true"
+        ? cwd
+        : null;
     }
 
     const candidate = topLevelResult.value.stdout.trim();
@@ -140,6 +160,7 @@ const resolveRepositoryIdentityFromCacheKey = Effect.fn(
   "RepositoryIdentityResolver.resolveFromCacheKey",
 )(function* (
   cacheKey: string,
+  remoteName: string | undefined,
 ): Effect.fn.Return<RepositoryIdentity | null, never, ProcessRunner.ProcessRunner> {
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const remoteResult = yield* processRunner
@@ -154,7 +175,13 @@ const resolveRepositoryIdentityFromCacheKey = Effect.fn(
   }
 
   const remotes = parseRemoteFetchUrls(remoteResult.value.stdout);
-  const remote = pickPrimaryRemote(remotes);
+  const namedRemoteUrl = remoteName === undefined ? undefined : remotes.get(remoteName);
+  const remote =
+    remoteName === undefined
+      ? pickPrimaryRemote(remotes)
+      : namedRemoteUrl === undefined
+        ? null
+        : { remoteName, remoteUrl: namedRemoteUrl };
   return remote
     ? buildRepositoryIdentity({ ...remote, originUrl: remotes.get("origin"), rootPath: cacheKey })
     : null;
@@ -184,14 +211,16 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
   );
 
   const repositoryIdentityCache = yield* Cache.makeWith<string, RepositoryIdentity | null>(
-    (cacheKey) =>
-      resolveRepositoryIdentityFromCacheKey(cacheKey).pipe(
+    (identityKey) => {
+      const [rootPath, remoteName] = decodeIdentityCacheKey(identityKey);
+      return resolveRepositoryIdentityFromCacheKey(rootPath, remoteName ?? undefined).pipe(
         Effect.provideService(ProcessRunner.ProcessRunner, processRunner),
         Effect.filterOrElse(
           (identity): identity is null => identity === null,
           (identity) => refine(identity).pipe(Effect.orElseSucceed(() => identity)),
         ),
-      ),
+      );
+    },
     { capacity: cacheCapacity, timeToLive },
   );
 
@@ -200,8 +229,9 @@ export const make = Effect.fn("RepositoryIdentityResolver.make")(function* (
       if (options?.refresh) yield* Cache.invalidate(repositoryRootCache, cwd);
       const cacheKey = yield* Cache.get(repositoryRootCache, cwd);
       if (cacheKey === null) return null;
-      if (options?.refresh) yield* Cache.invalidate(repositoryIdentityCache, cacheKey);
-      return yield* Cache.get(repositoryIdentityCache, cacheKey);
+      const identityKey = encodeIdentityCacheKey([cacheKey, options?.remoteName ?? null]);
+      if (options?.refresh) yield* Cache.invalidate(repositoryIdentityCache, identityKey);
+      return yield* Cache.get(repositoryIdentityCache, identityKey);
     },
   );
 

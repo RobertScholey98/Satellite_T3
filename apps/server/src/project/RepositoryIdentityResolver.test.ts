@@ -136,14 +136,16 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       run: (input) =>
         Effect.sync(() => {
           calls.push(input.args);
-          const rootLookup = input.args.includes("rev-parse");
+          const rootLookup = input.args.includes("--show-toplevel");
           const failed = rootLookup && rootAttempts++ === 0;
           return {
             stdout: rootLookup
               ? failed
                 ? ""
                 : "/repo\n"
-              : "origin\tgit@github.com:T3Tools/t3code.git (fetch)\n",
+              : input.args.includes("--is-bare-repository")
+                ? "false\n"
+                : "origin\tgit@github.com:T3Tools/t3code.git (fetch)\n",
             stderr: failed ? "temporary Git failure" : "",
             code: ChildProcessSpawner.ExitCode(failed ? 1 : 0),
             timedOut: false,
@@ -169,6 +171,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
       expect(recovered?.rootPath).toBe("/repo");
       expect(calls).toEqual([
         ["-C", "/repo/packages/web", "rev-parse", "--show-toplevel"],
+        ["-C", "/repo/packages/web", "rev-parse", "--is-bare-repository"],
         ["-C", "/repo/packages/web", "rev-parse", "--show-toplevel"],
         ["-C", "/repo", "remote", "-v"],
       ]);
@@ -251,6 +254,48 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 
+  it.effect("resolves the identity of a bare repository container", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const container = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-bare-container-test-",
+      });
+
+      yield* git(container, ["init", "--bare", ".bare"]);
+      yield* fileSystem.writeFileString(path.join(container, ".git"), "gitdir: ./.bare\n");
+      yield* git(container, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const identity = yield* resolver.resolve(container);
+      const resolvedIdentityRoot =
+        identity?.rootPath === undefined ? "" : NodeFS.realpathSync.native(identity.rootPath);
+      const resolvedContainer = NodeFS.realpathSync.native(container);
+
+      expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
+      expect(identity?.locator.remoteName).toBe("origin");
+      expect(normalizeResolvedPath(resolvedIdentityRoot)).toBe(
+        normalizeResolvedPath(resolvedContainer),
+      );
+    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+  );
+
+  it.effect("returns null for a bare repository container without remotes", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const container = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-bare-no-remote-test-",
+      });
+
+      yield* git(container, ["init", "--bare", ".bare"]);
+      yield* fileSystem.writeFileString(path.join(container, ".git"), "gitdir: ./.bare\n");
+
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      expect(yield* resolver.resolve(container)).toBeNull();
+    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+  );
+
   it.effect.each(["add", "replace"] as const)(
     "refreshes the primary upstream after %s before cache expiry",
     (change) =>
@@ -309,6 +354,41 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         canonicalKey: "github.com/julius/t3code-fork",
         displayName: "julius/t3code-fork",
       });
+
+      const fork = yield* resolver.resolve(cwd, { remoteName: "origin" });
+      expect(fork?.canonicalKey).toBe("github.com/julius/t3code-fork");
+      expect(fork?.displayName).toBe("julius/t3code-fork");
+      expect(fork?.locator.remoteName).toBe("origin");
+      expect(fork?.origin).toBeUndefined();
+      expect(yield* resolver.resolve(cwd, { remoteName: "missing" })).toBeNull();
+      expect(yield* resolver.resolve(cwd)).toEqual(identity);
+    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+  );
+
+  it.effect("caches a named remote apart from the primary identity", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-named-remote-test-",
+      });
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:julius/t3code-fork.git"]);
+      yield* git(cwd, ["remote", "add", "upstream", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const primary = yield* resolver.resolve(cwd);
+      expect((yield* resolver.resolve(cwd, { remoteName: "origin" }))?.canonicalKey).toBe(
+        "github.com/julius/t3code-fork",
+      );
+
+      yield* git(cwd, ["remote", "set-url", "origin", "git@github.com:julius/renamed-fork.git"]);
+      expect((yield* resolver.resolve(cwd, { remoteName: "origin" }))?.canonicalKey).toBe(
+        "github.com/julius/t3code-fork",
+      );
+      const refreshed = yield* resolver.resolve(cwd, { remoteName: "origin", refresh: true });
+      expect(refreshed?.canonicalKey).toBe("github.com/julius/renamed-fork");
+      expect(yield* resolver.resolve(cwd)).toEqual(primary);
     }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 

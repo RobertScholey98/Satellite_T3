@@ -38,6 +38,27 @@ describe("one server per repository", () => {
     expect(plain(assignment)).toEqual({ "env-1": ["a1", "b1"], "env-2": ["c2"] });
   });
 
+  it("keeps a fork checkout and a plain upstream clone on two servers both listed", () => {
+    const fork = (id: string, environmentId: string): AssignableProject => ({
+      id: id as ProjectId,
+      environmentId: environmentId as EnvironmentId,
+      repositoryIdentity: {
+        canonicalKey: "github.com/pingdotgg/t3code",
+        origin: { canonicalKey: "github.com/robertscholey98/satellite_t3" },
+      },
+    });
+    const assignment = assignProjectsToEnvironments(
+      [
+        fork("f1", "env-1"),
+        project("u2", "env-2", "github.com/pingdotgg/t3code"),
+        fork("f2", "env-2"),
+      ],
+      envs("env-1", "env-2"),
+      "env-1" as EnvironmentId,
+    );
+    expect(plain(assignment)).toEqual({ "env-1": ["f1"], "env-2": ["u2"] });
+  });
+
   it("prefers the named server over the first one", () => {
     const assignment = assignProjectsToEnvironments(
       [
