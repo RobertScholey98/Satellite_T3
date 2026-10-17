@@ -71,6 +71,7 @@ apps/web/src/components/desktop/SshPasswordPromptDialog.tsx
 apps/web/src/components/desktopUpdate.logic.test.ts
 apps/web/src/components/desktopUpdate.logic.ts
 apps/web/src/components/onboarding/FirstRunGate.tsx
+apps/web/src/components/onboarding/WelcomeWizard.tsx
 apps/web/src/components/preview/PreviewPanel.tsx
 apps/web/src/components/settings/BrowserImportWizard.tsx
 apps/web/src/components/settings/CaptureShortcutConfig.tsx

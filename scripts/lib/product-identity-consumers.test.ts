@@ -94,6 +94,16 @@ describe("static identity consumers", () => {
     expect(drifted).toEqual([]);
   });
 
+  it("web renders the Satellite mark, never upstream's T3 wordmark", () => {
+    const sources = NodeChildProcess.execFileSync("git", ["ls-files", "--", "apps/web/src"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((file) => /\.tsx?$/.test(file));
+    expect(sources.filter((file) => read(file).includes("T3Wordmark"))).toEqual([]);
+  });
+
   it("every icon and disk image reference resolves to a file", () => {
     const references = [
       ...Object.values(PRODUCT_ICON_PATHS).flatMap((channel) => Object.values(channel)),
