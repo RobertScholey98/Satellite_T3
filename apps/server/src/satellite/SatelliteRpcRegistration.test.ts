@@ -11,6 +11,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as SatelliteServer from "./SatelliteServer.ts";
 import { SATELLITE_RPC_AGGREGATES, SATELLITE_RPC_REQUIRED_SCOPES } from "./SatelliteRpcRegistry.ts";
 import * as SatelliteWsRpc from "./SatelliteWsRpc.ts";
 
@@ -53,7 +54,7 @@ describe("Satellite RPC registration", () => {
         .map((entry) => entry.tag)
         .toSorted();
       expect(handledMethods).toEqual(satelliteMethods);
-    }).pipe(Effect.scoped),
+    }).pipe(Effect.scoped, Effect.provide(SatelliteServer.testLayer)),
   );
 });
 
