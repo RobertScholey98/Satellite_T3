@@ -2,8 +2,10 @@
 # product name in each; run the formatter afterwards. apps/mobile is never listed: the official
 # T3 Code mobile app connects to Satellite servers and Satellite ships no mobile changes.
 # Files marked "hand-edited" also carry Satellite edits the script cannot reproduce (identity
-# reads, rebrand:keep markers). After taking upstream's side of one, rerun the script and
-# re-apply Satellite's other hunks for that file.
+# reads, rebrand:keep markers, other Satellite changes). After taking upstream's side of one,
+# rerun the script and re-apply Satellite's other hunks for that file.
+# The merge-forward that changes upstream's side updates this line; --verify reads it.
+# upstream-base: e58a4857130a93cc58b45dd6ebee14cf08df04ec
 .github/triage/PLAYBOOK.md  # hand-edited
 apps/desktop/gnome-extension/captureFeedback.js
 apps/desktop/gnome-extension/captureService.js
@@ -156,19 +158,19 @@ apps/web/src/connection/clientMetadata.test.ts
 apps/web/src/desktopAppActivation.ts
 apps/web/src/lib/bootError.ts
 apps/web/src/routes/_chat.index.tsx
-apps/web/src/routes/_chat.pull-requests.tsx
+apps/web/src/routes/_chat.pull-requests.tsx  # hand-edited
 apps/web/src/routes/_chat.tsx
 apps/web/src/versionSkew.test.ts
 apps/web/src/versionSkew.ts
-docs/README.md
+docs/README.md  # hand-edited
 docs/operations/release.md
-docs/user/source-control.md
+docs/user/source-control.md  # hand-edited
 docs/user/thread-migration.md
 packages/client-runtime/src/connection/outdatedHostUpdate.ts
 packages/client-runtime/src/state/pullRequestDiffHttp.test.ts
 packages/client-runtime/src/state/pullRequestDiffHttp.ts
 packages/contracts/src/browserImport.ts
-packages/contracts/src/pullRequest.ts
+packages/contracts/src/pullRequest.ts  # hand-edited
 packages/contracts/src/t3ProjectFile.ts
 packages/effect-codex-app-server/scripts/generate.ts
 packages/provider-acp-registry/src/server/driver.ts

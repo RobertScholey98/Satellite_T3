@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { readFileList, rebrand } from "./rebrand.ts";
+import { readFileList, readListEntries, readUpstreamBase, rebrand, verify } from "./rebrand.ts";
 
 const roots: Array<string> = [];
 afterEach(() => {
@@ -72,6 +72,38 @@ describe("rebrand", () => {
     });
 
     expect(readFileList(NodePath.join(root, "list.txt"))).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("flags a listed file carrying an edit the script does not make", () => {
+    const upstream: Record<string, string> = {
+      "src/rewrapped.ts": 'fail("T3 Code could not open the project in time");\n',
+      "src/stray.ts": 'export const name = "T3 Code";\n',
+    };
+    const { root } = tree({
+      "src/rewrapped.ts": 'fail(\n  "Satellite could not open the project in time",\n);\n',
+      "src/stray.ts": 'export const name = "Satellite";\nexport const extra = 1;\n',
+    });
+
+    expect(
+      verify({
+        root,
+        files: ["src/rewrapped.ts", "src/stray.ts"],
+        readUpstream: (file) => upstream[file] ?? "",
+      }),
+    ).toEqual(["src/stray.ts"]);
+  });
+
+  it("reads hand-edited marks and the upstream base from the list", () => {
+    const { root } = tree({
+      "list.txt": `# upstream-base: ${"a".repeat(40)}\nsrc/a.ts\nsrc/b.ts  # hand-edited\n`,
+    });
+    const listPath = NodePath.join(root, "list.txt");
+
+    expect(readListEntries(listPath)).toEqual([
+      { file: "src/a.ts", handEdited: false },
+      { file: "src/b.ts", handEdited: true },
+    ]);
+    expect(readUpstreamBase(listPath)).toBe("a".repeat(40));
   });
 
   it("finds nothing to change in the files this repository rebrands", () => {

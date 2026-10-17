@@ -51,7 +51,10 @@ jobs:
         run: vp run --filter @t3tools/source-control-github generate --check
 
       - name: Check rebrand
-        run: node scripts/rebrand.ts --check
+        run: |
+          node scripts/rebrand.ts --check
+          git fetch --no-tags --depth=1 origin "$(sed -n 's/^# upstream-base: //p' scripts/rebrand-files.txt)"
+          node scripts/rebrand.ts --verify
 
       - name: Check
         run: vp check
