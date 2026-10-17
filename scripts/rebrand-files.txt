@@ -97,7 +97,7 @@ apps/server/src/provider/CodexAuthCallback.ts
 apps/server/src/provider/CodexAuthCallbackPage.ts
 apps/server/src/provider/CodexChatGptAuth.test.ts
 apps/server/src/provider/CodexChatGptAuth.ts
-apps/server/src/provider/CodexDeveloperInstructions.test.ts
+apps/server/src/provider/CodexDeveloperInstructions.test.ts  # hand-edited
 apps/server/src/provider/CodexDeveloperInstructions.ts
 apps/server/src/provider/CodexInstallation.ts
 apps/server/src/provider/CodexProvider.ts  # hand-edited
