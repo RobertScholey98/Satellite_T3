@@ -1113,7 +1113,9 @@ export const make = Effect.gen(function* () {
         viewerRoots,
       } = yield* listWorkspaceProjects(input);
       const projectCounts = new Map<string, number>();
-      for (const { host } of projects) {
+      for (const host of new Map(
+        projects.map((entry) => [`${entry.host} ${entry.project.id}`, entry.host]),
+      ).values()) {
         projectCounts.set(host, (projectCounts.get(host) ?? 0) + 1);
       }
 
@@ -2378,7 +2380,16 @@ export const make = Effect.gen(function* () {
   const listStatsUncached: PullRequestService["Service"]["listStats"] = (input) =>
     Effect.gen(function* () {
       if (input.refs.length === 0) return { stats: [] };
-      const { supported } = yield* listWorkspaceProjects({ includeUpstream: true });
+      // Each ref names its project, so it is resolved among that project's own repositories, as a
+      // detail read is. A workspace-wide read would drop a repository another project also lists.
+      const supported = yield* Effect.forEach(
+        new Set(input.refs.map((ref) => ref.projectId)),
+        (projectId) =>
+          listWorkspaceProjects({ projectId, includeUpstream: true }).pipe(
+            Effect.map((projects) => projects.supported),
+          ),
+        { concurrency: REPOSITORY_CONCURRENCY },
+      ).pipe(Effect.map((perProject) => perProject.flat()));
       const wanted = new Map<
         string,
         { readonly project: SupportedProject; readonly number: number }

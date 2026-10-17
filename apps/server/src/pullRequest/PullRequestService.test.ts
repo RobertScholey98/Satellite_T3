@@ -1441,6 +1441,7 @@ it.effect("adds the upstream repository's pull requests to a fork's when asked",
       "pingdotgg/t3code",
       "robertscholey98/satellite_t3",
     ]);
+    assert.strictEqual(result.providers[0]?.projectCount, 1);
   }),
 );
 
@@ -1516,6 +1517,81 @@ it.effect("falls back to the primary repository when the origin remote is gone",
 
     assert.deepStrictEqual(listed, ["pingdotgg/t3code"]);
   }),
+);
+
+const FORK_AND_CLONE_PROVIDER: Partial<PullRequestProviderApi> = {
+  listChangeRequests: ({ repository }) =>
+    Effect.succeed({
+      items: [changeRequest(repository === "pingdotgg/t3code" ? 2 : 1, "2026-07-02T00:00:00Z")],
+      truncated: false,
+      continues: false,
+    }),
+  listChangeRequestStats: ({ changeRequests }) =>
+    Effect.succeed(
+      changeRequests.map(({ repository, number }) => ({
+        repository,
+        number,
+        additions: number * 10,
+        deletions: number,
+      })),
+    ),
+};
+
+it.effect.each([false, true])(
+  "counts lines for every row of a fork and a plain clone of its upstream, includeUpstream %s",
+  (includeUpstream) =>
+    Effect.gen(function* () {
+      const service = yield* makeForkService({
+        projects: [
+          forkProject("p1", "/fork"),
+          project({
+            id: "p2",
+            title: "t3code",
+            workspaceRoot: "/t3",
+            repository: "pingdotgg/t3code",
+          }),
+        ],
+        provider: FORK_AND_CLONE_PROVIDER,
+      });
+
+      const listed = yield* service.list({ state: "all", includeUpstream });
+      const stats = yield* service.listStats({
+        refs: listed.entries.map(({ projectId, repository, number }) => ({
+          projectId,
+          repository,
+          number,
+        })),
+      });
+
+      const expected = includeUpstream
+        ? [
+            ["p1", "robertscholey98/satellite_t3", 1, 10],
+            ["p1", "pingdotgg/t3code", 2, 20],
+          ]
+        : [
+            ["p1", "robertscholey98/satellite_t3", 1, 10],
+            ["p2", "pingdotgg/t3code", 2, 20],
+          ];
+      const byNumber = (left: ReadonlyArray<unknown>, right: ReadonlyArray<unknown>) =>
+        Number(left[2]) - Number(right[2]);
+      assert.deepStrictEqual(
+        listed.entries
+          .map(({ projectId, repository, number }) => [projectId, repository, number, number * 10])
+          .toSorted(byNumber),
+        expected,
+      );
+      assert.deepStrictEqual(
+        stats.stats
+          .map(({ projectId, repository, number, additions }) => [
+            projectId,
+            repository,
+            number,
+            additions,
+          ])
+          .toSorted(byNumber),
+        expected,
+      );
+    }),
 );
 
 it.effect("opens and counts pull requests from both a fork and its upstream", () =>
