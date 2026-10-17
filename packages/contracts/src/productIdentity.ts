@@ -8,6 +8,7 @@
 
 /** The product name every surface shows. */
 export const PRODUCT_NAME = "Satellite";
+/** @public Read by the web manifest drift check. */
 export const PRODUCT_SHORT_NAME = "Satellite";
 /** Shown after the name on stable builds, as in "Satellite (Alpha)". */
 export const PRODUCT_STAGE_LABEL = "Alpha";
@@ -26,7 +27,10 @@ export const DESKTOP_PROFILE_NAMES = {
   development: "satellite-t3-dev",
 } as const;
 
-/** The 1.x values. Windows matches them to upgrade the same app and keep taskbar pins. */
+/**
+ * The 1.x values. Windows matches them to upgrade the same app and keep taskbar pins.
+ * @public Read by the desktop build.
+ */
 export const DESKTOP_APP_ID = "com.satellitet3.prototype";
 export const DESKTOP_APP_USER_MODEL_IDS = {
   production: "com.satellitet3.prototype",
@@ -35,11 +39,16 @@ export const DESKTOP_APP_USER_MODEL_IDS = {
 
 /** The only GitHub repository any Satellite release fetch may read, as `owner/name`. */
 export const RELEASE_REPOSITORY = "RobertScholey98/Satellite_T3";
+/** @public */
 export const REPOSITORY_URL = `https://github.com/${RELEASE_REPOSITORY}`;
 export const RELEASES_URL = `${REPOSITORY_URL}/releases`;
+/** @public */
 export const ISSUES_URL = `${REPOSITORY_URL}/issues`;
 
-/** Installer metadata. The stable product name sets the Windows executable and install folder. */
+/**
+ * Installer metadata. The stable product name sets the Windows executable and install folder.
+ * @public Read by the desktop build.
+ */
 export const DESKTOP_PACKAGING = {
   productNames: {
     stable: `${PRODUCT_NAME} (${PRODUCT_STAGE_LABEL})`,
@@ -57,7 +66,7 @@ export const DESKTOP_PACKAGING = {
   },
 } as const;
 
-/** Repository-relative icon paths for each build channel. */
+/** @public Repository-relative icon paths for each build channel, read by the brand asset map. */
 export const PRODUCT_ICON_PATHS = {
   development: {
     iconComposerProject: "assets/satellite/dev/app-icon.icon",
@@ -95,7 +104,7 @@ export const PRODUCT_ICON_PATHS = {
   },
 } as const;
 
-/** macOS disk image backgrounds by update channel. */
+/** @public macOS disk image backgrounds by update channel, read by the desktop build. */
 export const DESKTOP_DMG_BACKGROUND_PATHS = {
   latest: "assets/satellite/dmg/dmg-background-latest.svg",
   nightly: "assets/satellite/dmg/dmg-background-nightly.svg",
