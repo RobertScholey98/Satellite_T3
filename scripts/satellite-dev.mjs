@@ -1,4 +1,5 @@
 import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
@@ -33,6 +34,9 @@ child.on("error", (error) => {
   console.error(`SatelliteT3 could not start: ${error.message}`);
   process.exitCode = 1;
 });
-child.on("exit", (code) => {
-  process.exitCode = code ?? 1;
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => child.kill(signal));
+}
+child.on("exit", (code, signal) => {
+  process.exitCode = code ?? 128 + NodeOS.constants.signals[signal];
 });
