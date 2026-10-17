@@ -8,7 +8,7 @@ import { drainLegacyThreadArchivesAfterStartup } from "./persistence/drainLegacy
  * above upstream's runtime so it can wait for `ServerRuntimeStartup`.
  */
 export const layer = Layer.effectDiscard(
-  drainLegacyThreadArchivesAfterStartup.pipe(
+  drainLegacyThreadArchivesAfterStartup().pipe(
     Effect.catchTags({
       // Upstream reports a failed or interrupted startup itself.
       ServerRuntimeStartupError: () => Effect.void,

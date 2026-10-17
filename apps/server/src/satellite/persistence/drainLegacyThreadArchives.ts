@@ -1,9 +1,13 @@
 import { CommandId, ThreadId } from "@t3tools/contracts";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 
 import * as ThreadLifecycleService from "../../orchestration-v2/ThreadLifecycleService.ts";
 import { LEGACY_THREAD_ARCHIVE_QUEUE } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
+import * as ServerLifecycleEvents from "../../serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "../../serverRuntimeStartup.ts";
 
 /**
@@ -56,12 +60,30 @@ export const drainLegacyThreadArchives = Effect.fn("drainLegacyThreadArchives")(
   return archived;
 });
 
+/** Waits for the lifecycle `ready` event, which upstream publishes once startup is complete. */
+const awaitServerReady = Effect.gen(function* () {
+  const lifecycle = yield* ServerLifecycleEvents.ServerLifecycleEvents;
+  // Subscribe before reading the snapshot so a `ready` published in between is not missed.
+  const nextReady = yield* lifecycle.stream.pipe(
+    Stream.filter((event) => event.type === "ready"),
+    Stream.runHead,
+    Effect.forkScoped({ startImmediately: true }),
+  );
+  const { events } = yield* lifecycle.snapshot;
+  if (events.some((event) => event.type === "ready")) return;
+  yield* Fiber.join(nextReady);
+}).pipe(Effect.scoped);
+
 /**
- * Runs the drain once upstream accepts commands, which is after legacy import and recovery, so
- * archive commands never interleave with startup.
+ * Runs the drain after upstream accepts commands and reports ready, then waits `settle` more,
+ * because startup output and the first client syncs still run just after ready. The archive
+ * commands then neither interleave with legacy import and recovery nor delay readiness.
  */
-export const drainLegacyThreadArchivesAfterStartup = Effect.gen(function* () {
-  const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-  yield* startup.awaitCommandReady;
-  return yield* drainLegacyThreadArchives();
-});
+export const drainLegacyThreadArchivesAfterStartup = (settle: Duration.Input = "1 second") =>
+  Effect.gen(function* () {
+    const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
+    yield* startup.awaitCommandReady;
+    yield* awaitServerReady;
+    yield* Effect.sleep(settle);
+    return yield* drainLegacyThreadArchives();
+  });
