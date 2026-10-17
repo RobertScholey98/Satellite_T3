@@ -30,18 +30,51 @@ const child = NodeChildProcess.spawn(
     env.T3CODE_HOME,
     ...process.argv.slice(2),
   ],
-  { cwd: root, env, stdio: "inherit", windowsHide: true, detached: !isWindows },
+  { cwd: root, env, stdio: "inherit", windowsHide: true },
 );
 child.on("error", (error) => {
   console.error(`SatelliteT3 could not start: ${error.message}`);
   process.exitCode = 1;
 });
-// The dev tasks below the runner do not forward signals, so stop the runner's whole process
-// group, as a terminal does on Ctrl+C. Windows has no process groups; Ctrl+C reaches the console.
+const ps = (args) =>
+  NodeChildProcess.execFileSync("ps", args, { encoding: "utf8" })
+    .trim()
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).map(Number));
+
+// Ctrl+C in a terminal already signalled every process in its foreground group; signalling them
+// again would read as a second Ctrl+C.
+const terminalSignalledOurGroup = () => {
+  const [[pgid, terminalPgid]] = ps(["-o", "pgid=,tpgid=", "-p", String(process.pid)]);
+  return pgid === terminalPgid;
+};
+
+const descendantsOf = (rootPid) => {
+  const rows = ps(["-axo", "pid=,ppid="]);
+  const found = [rootPid];
+  for (let index = 0; index < found.length; index++) {
+    for (const [pid, ppid] of rows) if (ppid === found[index]) found.push(pid);
+  }
+  return found;
+};
+
+// Signalling only the launcher's PID reaches nothing below the runner: its tasks do not forward
+// signals, and the backend Electron starts runs in its own process group. On Windows, Ctrl+C
+// already reaches every console process.
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
-    if (isWindows) child.kill(signal);
-    else process.kill(-child.pid, signal);
+    if (isWindows) {
+      child.kill(signal);
+      return;
+    }
+    if (signal === "SIGINT" && terminalSignalledOurGroup()) return;
+    for (const pid of descendantsOf(child.pid)) {
+      try {
+        process.kill(pid, signal);
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
   });
 }
 child.on("exit", (code, signal) => {
