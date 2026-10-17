@@ -44,8 +44,23 @@ renumbering upstream's migrations to make room breaks every database that later 
 numbering. Satellite migrations run from their own Satellite table with their own ids. Never add an
 id to upstream's migration list and never renumber an upstream migration.
 
-Satellite 1.x recorded its own migrations as ids 55 to 60 in upstream's table. The one-time repair
-for those databases is documented here when it lands.
+Satellite's schema lives in `satellite_migrations`. The Satellite migrator in
+[`SatelliteMigrations.ts`](../../apps/server/src/satellite/persistence/SatelliteMigrations.ts) is
+Effect's migrator on that table, run after upstream's from the one migration call in
+[`Sqlite.ts`](../../apps/server/src/persistence/Sqlite.ts). It has the same skip rule, so Satellite
+ids start at 100 and the migrator refuses a lower id at startup. A Satellite migration at 55 to 99
+would run on fresh installs and be skipped on upgraded ones.
+
+Ids 55 to 69 in `satellite_migrations` are records of what a database once ran, never pending work.
+Satellite 1.x recorded 55 to 60 in upstream's table (55 to 62 from v1.1.12). Dev builds since
+2026-10-09 also recorded upstream's V2 migrations at 63 to 66 and their own at 67 to 69.
+[`repairSatelliteLegacyLedger.ts`](../../apps/server/src/satellite/persistence/repairSatelliteLegacyLedger.ts)
+moves those rows into `satellite_migrations` with their ids, names and timestamps, renumbers 63 to 66
+back to upstream's 55 to 58, drops the schema of features the port does not carry, and keeps the
+issue board tables for the boards migration. It runs in one transaction on `statev2.sqlite` after
+upstream's copy from `state.sqlite` (see [legacy orchestration migration](./legacy-orchestration-migration.md))
+and before upstream's migrator. It is the only Satellite code that writes upstream's ledger, and it
+matches exact id and name pairs so it never touches a row upstream wrote.
 
 ## Confined footprint
 
@@ -75,19 +90,29 @@ Satellite reaches upstream through a small set of fork-owned modules. Each touch
 through a line or two, so a merge conflict at that line resolves by keeping both sides. Later
 features register through these modules instead of editing upstream handler code.
 
-- One server registration module provides Satellite layers, HTTP routes, and MCP toolkits. It
-  merges into upstream's server with one line.
-- One WS RPC module provides Satellite handlers. Its connection layer merges into upstream's WS
-  handler.
-- One RPC registry holds Satellite's scope table and subject grants. Upstream's authorization and
-  instrumentation tables spread it.
-- One Satellite RPC contracts file holds Satellite methods. Upstream's WS method table and RPC group
-  spread it.
+- [`SatelliteServer.ts`](../../apps/server/src/satellite/SatelliteServer.ts) provides Satellite's
+  services, reactors and startup steps as `layer`, which `server.ts` provides with one
+  `Layer.provideMerge`, and its MCP toolkits through `withMcpToolkits`, one line in the
+  `McpHttpServer.layer` pipe. HTTP routes join it with the first feature that needs one.
+- [`SatelliteWsRpc.ts`](../../apps/server/src/satellite/SatelliteWsRpc.ts) provides Satellite
+  handlers. `ws.ts` captures `makeConnectionLayer` once, merges its layer per connection, and builds
+  upstream's handlers from `WsCoreRpcGroup`.
+- [`SatelliteRpcRegistry.ts`](../../apps/server/src/satellite/SatelliteRpcRegistry.ts) holds
+  Satellite's scope table and aggregate-label table, each typed to need one entry per Satellite
+  method. `RpcAuthorization.ts` and `RpcInstrumentation.ts` spread them.
+- [`satelliteRpc.ts`](../../packages/contracts/src/satelliteRpc.ts) holds Satellite methods.
+  `rpc.ts` spreads `SATELLITE_WS_METHODS` into `WS_METHODS` and defines `WsRpcGroup` as upstream's
+  `WsCoreRpcGroup` merged with `WsSatelliteRpcGroup`. The client runtime resubscribes its stream
+  methods on reconnect through `SatelliteWsSubscriptionMethod`.
 - One product identity contract holds the names, icons, and update feed that every surface reads.
 - One web root coordinator component holds Satellite's app-level effects. It mounts once in
   upstream's root route.
 
-Each module arrives with the first change that needs it. For scale, these touch points on Satellite's
-pre-port main measured +5/-2 lines in the RPC contracts file, +11 in the server file, +7/-1 in
-authorization, +2 in instrumentation, and +2 in the web root route. A WS handler edit is a few
-lines. A large diff in an upstream file means the feature is not registered through its module.
+The last two arrive with the first change that needs them.
+[`SatelliteRpcRegistration.test.ts`](../../apps/server/src/satellite/SatelliteRpcRegistration.test.ts)
+fails when a Satellite method lacks a scope, a label, or a handler, or shadows an upstream method.
+
+For scale, these touch points on Satellite's pre-port main measured +5/-2 lines in the RPC
+contracts file, +11 in the server file, +7/-1 in authorization, +2 in instrumentation, and +2 in the
+web root route. A WS handler edit is a few lines. A large diff in an upstream file means the feature
+is not registered through its module.
