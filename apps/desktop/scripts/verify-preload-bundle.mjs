@@ -72,6 +72,9 @@ const createSandboxModules = (exposedGlobals) => {
     webUtils: {
       getPathForFile: () => "",
     },
+    webFrame: {
+      getZoomFactor: () => 1,
+    },
   };
 
   return new Map([
@@ -88,6 +91,7 @@ const createSandboxModules = (exposedGlobals) => {
 };
 
 const executeBundle = (source, sandboxModules) => {
+  const windowEvents = new NodeEvents.EventEmitter();
   const sandboxProcess = {
     contextIsolated: true,
     // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone CI verifier supplies the preload's host platform without loading Effect.
@@ -108,12 +112,23 @@ const executeBundle = (source, sandboxModules) => {
     {
       process: sandboxProcess,
       require: requireSandboxModule,
+      window: {
+        addEventListener: (name, listener, options) => {
+          if (options?.once) windowEvents.once(name, listener);
+          else windowEvents.on(name, listener);
+        },
+      },
+      document: {
+        documentElement: { style: { setProperty: () => {} } },
+      },
     },
     {
       filename: "desktop-preload.cjs",
       timeout: preloadExecutionTimeoutMs,
     },
   );
+  // On macOS the preload sizes the native window controls once the DOM is ready.
+  windowEvents.emit("DOMContentLoaded");
 };
 
 export const verifyPreloadBundle = (source) => {

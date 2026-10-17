@@ -14,7 +14,29 @@ const validPreload = `
   });
 `;
 
+const darwinWindowControls = (onReady) => `
+  ${validPreload}
+  window.addEventListener("DOMContentLoaded", () => {
+    ${onReady}
+  }, { once: true });
+  window.addEventListener("resize", () => {});
+`;
+
 describe("desktop preload bundle verifier", () => {
+  it("runs the macOS window control setup against window, document, and webFrame", () => {
+    assert.doesNotThrow(() =>
+      verifyPreloadBundle(
+        darwinWindowControls(
+          'document.documentElement.style.setProperty("--desktop-window-controls-inset", `${90 / electron.webFrame.getZoomFactor()}px`);',
+        ),
+      ),
+    );
+    assert.throws(
+      () => verifyPreloadBundle(darwinWindowControls('throw new Error("dom ready ran");')),
+      /dom ready ran/,
+    );
+  });
+
   it("rejects required API names that only appear in strings", () => {
     assert.throws(
       () =>
