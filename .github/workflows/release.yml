@@ -1,9 +1,7 @@
 name: SatelliteT3 Release
 
 # Satellite's release: Windows x64 with the fork's update feed, and unsigned
-# macOS arm64 and x64 builds for manual install. The JS bundle is built once
-# and each target is packaged by upstream's reusable release-desktop.yml.
-# See docs/operations/release.md.
+# macOS arm64 and x64 builds for manual install. See docs/operations/release.md.
 
 on:
   push:
@@ -121,7 +119,6 @@ jobs:
       - name: Install browser secret helper build libraries
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
-      # No Clerk or relay values: T3 Connect stays unconfigured in Satellite.
       - name: Build JS bundle
         run: vp run build:desktop
 

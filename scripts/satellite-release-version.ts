@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-/**
- * Validates a Satellite release version and prints `version`, `tag`, and `prerelease` as
- * `key=value` lines for `$GITHUB_OUTPUT`. Exits 1 with a reason on stderr when the version is
- * rejected.
- *
- *   node scripts/satellite-release-version.ts 2.0.0-beta.1 >> "$GITHUB_OUTPUT"
- */
 
 export interface SatelliteReleaseVersion {
   readonly version: string;
