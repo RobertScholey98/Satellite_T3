@@ -31,13 +31,6 @@ const read = (file: string) => NodeFS.readFileSync(NodePath.join(repoRoot, file)
 const UPSTREAM_REPOSITORY_ALLOWLIST = [
   // Upstream's marketing site, which Satellite does not deploy.
   "apps/marketing/",
-  // Upstream's AUR packages. Satellite removed the workflow that publishes them.
-  "packaging/aur/",
-  // Still upstream's until Satellite's release workflow is ported; delete this entry then.
-  ".github/workflows/release.yml",
-  // The curl installers move to Satellite's repository with the release runbook; delete these then.
-  "scripts/install.sh",
-  "scripts/install.ps1",
   // The model manifest is upstream's provider data, not a release.
   "apps/server/src/provider/ModelManifest.ts",
   // Evaluation and mock-agent inputs that quote upstream URLs as sample data.
@@ -116,6 +109,13 @@ describe("static identity consumers", () => {
         read("scripts/npm-launcher/t3.mjs"),
       )?.[1],
     ).toBe(`${RELEASES_URL}/download`);
+  });
+
+  it("the curl installers download from Satellite's releases", () => {
+    expect([
+      /^repo="([^"]*)"$/m.exec(read("scripts/install.sh"))?.[1],
+      /^\$repo = "([^"]*)"$/m.exec(read("scripts/install.ps1"))?.[1],
+    ]).toEqual([RELEASE_REPOSITORY, RELEASE_REPOSITORY]);
   });
 
   it("the committed web icons are Satellite's production icons", () => {

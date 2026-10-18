@@ -164,7 +164,7 @@ apps/web/src/routes/_chat.tsx
 apps/web/src/versionSkew.test.ts
 apps/web/src/versionSkew.ts
 docs/README.md  # hand-edited
-docs/operations/release.md
+docs/operations/release.md  # hand-edited
 docs/user/source-control.md  # hand-edited
 docs/user/thread-migration.md
 packages/client-runtime/src/state/pullRequestDiffHttp.test.ts

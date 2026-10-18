@@ -1,0 +1,7 @@
+paths:
+  .github/workflows/release-desktop.yml:
+    ignore:
+      # The unquoted $(security list-keychains ...) in upstream's "Import macOS
+      # signing certificate for the CLI archive" step, which Satellite never runs
+      # (cli_archive is off). actionlint reports script-relative positions only.
+      - "SC2046:warning:15:48:"
