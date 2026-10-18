@@ -82,6 +82,31 @@ describe("getOrphanedWorktreePathForThread", () => {
     const result = getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"));
     expect(result).toBe("/tmp/repo/worktrees/feature-a");
   });
+
+  it("does not count the thread's own subagents as sharing its worktree", () => {
+    const worktreePath = "/tmp/repo/worktrees/feature-a";
+    const subagent = (id: string, parent: string) =>
+      makeThread({
+        id: ThreadId.make(id),
+        worktreePath,
+        lineage: {
+          parentThreadId: ThreadId.make(parent),
+          relationshipToParent: "subagent",
+          rootThreadId: ThreadId.make("thread-1"),
+        },
+      });
+    const owner = makeThread({ id: ThreadId.make("thread-1"), worktreePath });
+    const threads = [owner, subagent("child", "thread-1"), subagent("grandchild", "child")];
+    expect(getOrphanedWorktreePathForThread(threads, owner.id)).toBe(worktreePath);
+    // Another thread's subagent still shares it.
+    const other = makeThread({ id: ThreadId.make("thread-2"), worktreePath: "/tmp/elsewhere" });
+    expect(
+      getOrphanedWorktreePathForThread(
+        [...threads, other, subagent("foreign", "thread-2")],
+        owner.id,
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("formatWorktreePathForDisplay", () => {
