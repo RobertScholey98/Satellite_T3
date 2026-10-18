@@ -101,7 +101,6 @@ export function RevdocSettings() {
             settingKeys={[row.key]}
             {...searchableSetting(row.search)}
             description={row.description}
-            status={configured === null ? "Automatic" : undefined}
             resetAction={
               configured !== null ? (
                 <SettingResetButton label={row.label} onClick={() => setModel(row.key, null)} />

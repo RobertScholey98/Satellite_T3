@@ -193,6 +193,31 @@ export function draftFixRequest(items: ReadonlyArray<RevdocItemDetail>): string 
 export const appendToDraft = (draft: string, addition: string) =>
   draft.trim() === "" ? addition : `${draft.replace(/\s+$/, "")}\n\n${addition}`;
 
+/**
+ * A note being edited on one device. The save is based on the item revision the edit began at,
+ * not the live one, so another device's save in between is refused rather than overwritten.
+ */
+export interface RevdocNoteDraft {
+  readonly text: string;
+  readonly baseRevision: number;
+  /** The other device's note after a refused save; saving again replaces that version. */
+  readonly conflict: { readonly note: string; readonly revision: number } | null;
+}
+
+export const startNoteDraft = (note: string, revision: number): RevdocNoteDraft => ({
+  text: note,
+  baseRevision: revision,
+  conflict: null,
+});
+
+export const noteDraftSaveRevision = (draft: RevdocNoteDraft) =>
+  draft.conflict?.revision ?? draft.baseRevision;
+
+export const withNoteConflict = (
+  draft: RevdocNoteDraft,
+  current: { readonly note: string; readonly revision: number },
+): RevdocNoteDraft => ({ ...draft, conflict: { note: current.note, revision: current.revision } });
+
 export function createRevdocEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {

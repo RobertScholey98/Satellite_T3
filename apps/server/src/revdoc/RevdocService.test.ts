@@ -162,6 +162,7 @@ describe("RevdocService", () => {
         writeFile(root, "c.ts", "c\n");
         const { passId } = yield* revdoc.generate(target());
         yield* Deferred.await(started);
+        assert.strictEqual(readExport(root).activePass?.kind, "generate");
         yield* edit(before.get("Open a.ts")!, { _tag: "set_outcome", outcome: "skipped" });
         yield* Deferred.succeed(release, undefined);
         const pass = yield* awaitPass(passId);

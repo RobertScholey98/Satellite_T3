@@ -1,4 +1,10 @@
-import { REVDOC_OUTCOME_LABELS } from "@t3tools/client-runtime/revdoc";
+import {
+  noteDraftSaveRevision,
+  REVDOC_OUTCOME_LABELS,
+  type RevdocNoteDraft,
+  startNoteDraft,
+  withNoteConflict,
+} from "@t3tools/client-runtime/revdoc";
 import type {
   AssetResource,
   EnvironmentId,
@@ -71,9 +77,7 @@ export const RevdocItemRow = memo(function RevdocItemRow(props: RevdocItemRowPro
   const environmentId = threadRef.environmentId;
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<RevdocItemDetail | null>(null);
-  const [editingNote, setEditingNote] = useState(false);
-  const [draftNote, setDraftNote] = useState("");
-  const [conflictNote, setConflictNote] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState<RevdocNoteDraft | null>(null);
   const getItems = useAtomCommand(revdocEnvironment.getItems, { reportFailure: false });
   const editItem = useAtomCommand(revdocEnvironment.editItem, { reportFailure: false });
 
@@ -102,7 +106,8 @@ export const RevdocItemRow = memo(function RevdocItemRow(props: RevdocItemRowPro
     const failure = revdocFailure(result);
     if (failure?.code === "conflict" && failure.currentItem) {
       if (change._tag === "set_note") {
-        setConflictNote(failure.currentItem.note);
+        const current = failure.currentItem;
+        setNoteDraft((draft) => (draft ? withNoteConflict(draft, current) : draft));
       } else {
         toastRevdocFailure("Another device changed this check first", result);
       }
@@ -112,14 +117,13 @@ export const RevdocItemRow = memo(function RevdocItemRow(props: RevdocItemRowPro
     return false;
   };
 
-  const saveNote = async (expectedRevision?: number) => {
-    if (draftNote === fullNote && expectedRevision === undefined) {
-      setEditingNote(false);
+  const saveNote = async (draft: RevdocNoteDraft) => {
+    if (draft.conflict === null && draft.text === fullNote) {
+      setNoteDraft(null);
       return;
     }
-    if (await save({ _tag: "set_note", note: draftNote }, expectedRevision)) {
-      setConflictNote(null);
-      setEditingNote(false);
+    if (await save({ _tag: "set_note", note: draft.text }, noteDraftSaveRevision(draft))) {
+      setNoteDraft(null);
     }
   };
 
@@ -288,39 +292,34 @@ export const RevdocItemRow = memo(function RevdocItemRow(props: RevdocItemRowPro
           ) : (
             <span className="text-muted-foreground">Loading details…</span>
           )}
-          {editingNote ? (
+          {noteDraft ? (
             <div className="flex flex-col gap-1">
               <Textarea
                 size="sm"
-                value={draftNote}
+                value={noteDraft.text}
                 autoFocus
                 aria-label="Note"
                 disabled={props.editingDisabled}
-                onChange={(event) => setDraftNote(event.target.value)}
+                onChange={(event) => {
+                  const text = event.target.value;
+                  setNoteDraft((draft) => (draft ? { ...draft, text } : draft));
+                }}
               />
-              {conflictNote !== null ? (
+              {noteDraft.conflict !== null ? (
                 <span className="text-warning-foreground">
-                  Another device saved this note first: “{conflictNote || "(empty)"}”. Your draft is
-                  kept.
+                  Another device saved this note first: “{noteDraft.conflict.note || "(empty)"}”.
+                  Your draft is kept.
                 </span>
               ) : null}
               <div className="flex gap-1">
                 <Button
                   size="xs"
                   disabled={props.editingDisabled}
-                  onClick={() => void saveNote(conflictNote !== null ? item.revision : undefined)}
+                  onClick={() => void saveNote(noteDraft)}
                 >
-                  {conflictNote !== null ? "Save mine" : "Save note"}
+                  {noteDraft.conflict !== null ? "Save mine" : "Save note"}
                 </Button>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  onClick={() => {
-                    setDraftNote(fullNote ?? "");
-                    setConflictNote(null);
-                    setEditingNote(false);
-                  }}
-                >
+                <Button size="xs" variant="ghost" onClick={() => setNoteDraft(null)}>
                   Cancel
                 </Button>
               </div>
@@ -334,10 +333,7 @@ export const RevdocItemRow = memo(function RevdocItemRow(props: RevdocItemRowPro
                 size="xs"
                 variant="ghost"
                 disabled={props.editingDisabled || item.dismissed || fullNote === null}
-                onClick={() => {
-                  setDraftNote(fullNote ?? "");
-                  setEditingNote(true);
-                }}
+                onClick={() => setNoteDraft(startNoteDraft(fullNote ?? "", item.revision))}
               >
                 {item.note ? "Edit note" : "Add note"}
               </Button>

@@ -1,4 +1,5 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { useEffect } from "react";
 
 import { useRevdocWorktree, useRevdocWorktreeStore } from "~/revdocWorktreeStore";
 import { useRevdocWorktrees } from "~/state/revdoc";
@@ -25,6 +26,12 @@ export function RevdocWorktreePicker({ threadRef }: { readonly threadRef: Scoped
     ),
   };
   const value = picked !== null && picked in items ? picked : THREAD_DEFAULT;
+  // A picked worktree that was removed falls back to the thread's own.
+  const pickedGone =
+    worktrees != null && picked !== null && !worktrees.worktrees.some((w) => w.path === picked);
+  useEffect(() => {
+    if (pickedGone) useRevdocWorktreeStore.getState().setWorktree(threadRef, null);
+  }, [pickedGone, threadRef]);
   return (
     <Select
       value={value}

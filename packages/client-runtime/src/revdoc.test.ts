@@ -16,7 +16,10 @@ import {
   appendToDraft,
   draftFixRequest,
   EMPTY_REVDOC_STATE,
+  noteDraftSaveRevision,
+  startNoteDraft,
   summarizeRevdoc,
+  withNoteConflict,
 } from "./revdoc.ts";
 
 const header = (revision: number): RevdocReviewHeader => ({
@@ -213,5 +216,21 @@ describe("Revdoc payload budgets", () => {
     expect(
       bytes(encodeDetail({ items: Array.from({ length: 20 }, (_, index) => detail(index)) })),
     ).toBeLessThanOrEqual(64 * 1024);
+  });
+});
+
+describe("note drafts", () => {
+  it("save from the revision the edit began at, even after live updates moved the item", () => {
+    const draft = { ...startNoteDraft("Original", 3), text: "Mine" };
+    // Another device saved at revision 4 while this draft was open; the draft still claims 3.
+    expect(noteDraftSaveRevision(draft)).toBe(3);
+    const refused = withNoteConflict(draft, { note: "Theirs", revision: 4 });
+    expect(refused).toEqual({
+      text: "Mine",
+      baseRevision: 3,
+      conflict: { note: "Theirs", revision: 4 },
+    });
+    // Choosing to keep mine replaces exactly the version that was shown.
+    expect(noteDraftSaveRevision(refused)).toBe(4);
   });
 });

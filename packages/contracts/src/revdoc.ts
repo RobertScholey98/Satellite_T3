@@ -357,9 +357,21 @@ export const WsRevdocGenerateRpc = revdocRpc(
   RevdocGenerateInput,
   RevdocPassStarted,
 );
-export const WsRevdocTestRpc = revdocRpc(REVDOC_WS_METHODS.revdocTest, RevdocTestInput, RevdocPassStarted);
-export const WsRevdocCancelRpc = revdocRpc(REVDOC_WS_METHODS.revdocCancel, RevdocTarget, Schema.Struct({}));
-export const WsRevdocRefreshRpc = revdocRpc(REVDOC_WS_METHODS.revdocRefresh, RevdocTarget, Schema.Struct({}));
+export const WsRevdocTestRpc = revdocRpc(
+  REVDOC_WS_METHODS.revdocTest,
+  RevdocTestInput,
+  RevdocPassStarted,
+);
+export const WsRevdocCancelRpc = revdocRpc(
+  REVDOC_WS_METHODS.revdocCancel,
+  RevdocTarget,
+  Schema.Struct({}),
+);
+export const WsRevdocRefreshRpc = revdocRpc(
+  REVDOC_WS_METHODS.revdocRefresh,
+  RevdocTarget,
+  Schema.Struct({}),
+);
 export const WsRevdocEditItemRpc = revdocRpc(
   REVDOC_WS_METHODS.revdocEditItem,
   RevdocEditItemInput,

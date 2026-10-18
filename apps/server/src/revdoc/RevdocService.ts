@@ -547,6 +547,7 @@ const make = Effect.gen(function* () {
           passId: running.value.id,
         });
       }
+      yield* exportReview(pass);
       yield* publishPass(pass);
     });
 
