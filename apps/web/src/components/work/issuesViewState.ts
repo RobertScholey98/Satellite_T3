@@ -130,9 +130,9 @@ export interface MoveBanner {
 const sentence = (text: string) => text.trim().replace(/[.\s]+$/, "");
 
 /**
- * Skipped and failed moves need a person: a skipped automatic move waits for Retry, and so does a
- * move that failed for a lasting reason. Only each ticket's latest move counts; a later move
- * settles earlier ones.
+ * Skipped and failed moves need a person: a skipped move waits for Retry, and so does a move that
+ * failed for a lasting reason. A move the server is still retrying shows too, so it is never
+ * silent. Only each ticket's latest move counts; a later move settles earlier ones.
  */
 export function selectMoveBanners(
   moves: ReadonlyArray<IssueMove>,
@@ -147,12 +147,17 @@ export function selectMoveBanners(
   return [...latest.values()].flatMap((move): MoveBanner[] => {
     const target = columnTitle(move.columnId);
     if (move.status === "skipped") {
+      const kind = move.origin === "automatic" ? "Automatic move" : "Move";
       return [
         {
           move,
-          message: `Automatic move to ${target} skipped: ${sentence(move.error ?? "moved by hand")}.`,
+          message: `${kind} to ${target} skipped: ${sentence(move.error ?? "moved by hand")}.`,
         },
       ];
+    }
+    // A move waiting out a host failure is retried by the server; it stays visible meanwhile.
+    if (move.status === "pending" && move.error !== null) {
+      return [{ move, message: `Retrying move to ${target}: ${sentence(move.error)}.` }];
     }
     if (move.status === "failed") {
       return [
@@ -196,10 +201,13 @@ export function canResumeAttempt(
   attempt: IssueAttempt,
   attempts: ReadonlyArray<IssueAttempt>,
 ): boolean {
+  // A failed run leaves a thread to continue; a failed launch leaves nothing to resume.
+  const resumable =
+    (attempt.status === "ended" && attempt.endedReason === "user") ||
+    (attempt.status === "failed" && attempt.endedReason !== "launch-failed");
   return (
     !attempt.active &&
-    attempt.status === "ended" &&
-    attempt.endedReason === "user" &&
+    resumable &&
     !attempts.some((other) => other.active && sameIssue(other.issue, attempt.issue))
   );
 }

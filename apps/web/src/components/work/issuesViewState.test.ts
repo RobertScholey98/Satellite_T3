@@ -80,6 +80,27 @@ describe("selectMoveBanners", () => {
     ]);
   });
 
+  it("names a skipped manual move as a move, not an automatic one", () => {
+    const skipped: IssueMove = {
+      ...move("manual-skip", 1, "skipped", "2026-10-01T00:00:00Z"),
+      origin: "manual",
+      error: "Moved by hand to Blocked before this move reached the board.",
+    };
+    expect(selectMoveBanners([skipped], columnTitle).map((banner) => banner.message)).toEqual([
+      "Move to In progress skipped: Moved by hand to Blocked before this move reached the board.",
+    ]);
+  });
+
+  it("shows a move the server is still retrying", () => {
+    const banners = selectMoveBanners(
+      [move("retrying", 1, "pending", "2026-10-01T00:00:00Z", "GitHub did not answer.")],
+      columnTitle,
+    );
+    expect(banners.map((banner) => banner.message)).toEqual([
+      "Retrying move to In progress: GitHub did not answer.",
+    ]);
+  });
+
   it("hides applied, superseded, and pending moves", () => {
     expect(
       selectMoveBanners(
@@ -165,6 +186,16 @@ describe("canResumeAttempt", () => {
     ).toBe(false);
     const superseded = attempt("superseded", { endedReason: "superseded" });
     expect(canResumeAttempt(superseded, [superseded])).toBe(false);
+  });
+
+  it("offers Resume after a failed run but not after a failed launch", () => {
+    const runFailed = attempt("run-failed", { status: "failed", endedReason: null });
+    expect(canResumeAttempt(runFailed, [runFailed])).toBe(true);
+    const launchFailed = attempt("launch-failed", {
+      status: "failed",
+      endedReason: "launch-failed",
+    });
+    expect(canResumeAttempt(launchFailed, [launchFailed])).toBe(false);
   });
 });
 

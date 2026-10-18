@@ -529,6 +529,15 @@ export function IssuesBoard({
   };
   const query = useDeferredValue(preferences.query);
 
+  // A remembered board that is gone falls back to another; its ticket and filter do not carry over.
+  const [fellBack, setFellBack] = useState(false);
+  useEffect(() => {
+    if (!requestedBoardMissing) return;
+    setFellBack(true);
+    updatePreferences({ query: "", issueState: "all", issueHost: "all" });
+    navigate({ boardId: boardId ?? undefined, ticket: undefined }, true);
+  }, [requestedBoardMissing]);
+
   // The repository's issues, loaded when list mode first shows them.
   const [issueList, setIssueList] = useState<{
     key: string;
@@ -916,13 +925,22 @@ export function IssuesBoard({
         ) : environment && projects.length === 0 ? (
           <Notice>Add a project to {environment.label} to connect its board.</Notice>
         ) : null}
-        {requestedBoardMissing ? (
+        {requestedBoardMissing || fellBack ? (
           <Notice>The requested board is no longer connected. Showing this project's board.</Notice>
         ) : null}
         {visibleError ? <Notice tone="error">{visibleError}</Notice> : null}
         {mode === "board"
           ? banners.map(({ move, message }) => (
-              <Alert key={move.id} variant={move.status === "failed" ? "error" : "warning"}>
+              <Alert
+                key={move.id}
+                variant={
+                  move.status === "failed"
+                    ? "error"
+                    : move.status === "pending"
+                      ? "info"
+                      : "warning"
+                }
+              >
                 <AlertDescription>
                   #{move.issue.number} · {message}
                 </AlertDescription>
@@ -933,7 +951,7 @@ export function IssuesBoard({
                     disabled={!connected}
                     onClick={() => void retry(move)}
                   >
-                    Retry
+                    {move.status === "pending" ? "Retry now" : "Retry"}
                   </Button>
                 </AlertAction>
               </Alert>
