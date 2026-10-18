@@ -2731,7 +2731,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
-  if (!isDesktopPreviewVersion(version)) {
+  // Squirrel.Mac installs only Developer ID signed updates, so ad-hoc signed
+  // macOS builds are installed by hand. null also stops electron-builder
+  // detecting a repository and writing a feed on its own.
+  const manualMacInstall = platform === "mac" && !signed && !mockUpdates;
+  if (manualMacInstall) {
+    buildConfig.publish = null;
+  } else if (!isDesktopPreviewVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
@@ -2782,7 +2788,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           role: "Viewer",
         },
       ],
-      ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      ...(signed
+        ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") }
+        : { identity: "-", hardenedRuntime: false }),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,

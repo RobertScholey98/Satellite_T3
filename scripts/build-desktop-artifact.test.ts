@@ -381,7 +381,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "mac",
         "dmg",
         "0.0.33-pr.8182.1",
-        false,
+        true,
         false,
         undefined,
         undefined,
@@ -390,7 +390,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "mac",
         "dmg",
         "0.0.33",
-        false,
+        true,
         false,
         undefined,
         undefined,
@@ -400,7 +400,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "mac",
         "dmg",
         "0.0.41-preview.20260912.1589",
-        false,
+        true,
         false,
         undefined,
         undefined,
@@ -420,6 +420,56 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.provide(
         ConfigProvider.layer(
           ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("ships unsigned macOS builds for manual install with no update feed", () =>
+    Effect.gen(function* () {
+      for (const arch of ["arm64", "x64"] as const) {
+        const config = yield* createBuildConfig(
+          "mac",
+          "dmg",
+          "2.0.0",
+          false,
+          false,
+          undefined,
+          undefined,
+          false,
+          arch,
+        );
+        assert.isNull(config.publish);
+        assert.include(config.mac, { identity: "-", hardenedRuntime: false });
+        assert.deepStrictEqual((config.mac as Record<string, unknown>).target, ["dmg", "zip"]);
+      }
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "RobertScholey98/Satellite_T3" } }),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("points release Windows builds at the Actions repository feed", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "win",
+        "nsis",
+        "2.0.0",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      assert.deepStrictEqual(config.publish, [
+        { provider: "github", owner: "someone", repo: "fork", releaseType: "release" },
+      ]);
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "someone/fork" } }),
         ),
       ),
     ),
