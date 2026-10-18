@@ -16,6 +16,7 @@ import {
   issuesEnvironment,
   supportsIssueBoards,
   unwrapIssueResult,
+  useIssueBoardSync,
 } from "./issuesState";
 import { canResumeAttempt } from "./issuesViewState";
 
@@ -66,6 +67,19 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
   const attempt =
     attempts.find((candidate) => candidate.active) ??
     attempts.toSorted((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+  // Moves and attempt changes bump the board's revision, so the chip follows them while open.
+  const boardRevision = useIssueBoardSync(
+    enabled && attempt
+      ? {
+          environmentId: threadRef.environmentId,
+          projectId: attempt.projectId,
+          boardId: attempt.boardId,
+        }
+      : null,
+  )?.revision;
+  useEffect(() => {
+    if (boardRevision !== undefined) load();
+  }, [boardRevision, load]);
   if (!attempt) return null;
 
   const paused = attempt.active && attempt.automaticMoves === "paused";
