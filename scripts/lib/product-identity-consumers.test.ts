@@ -33,9 +33,6 @@ const UPSTREAM_REPOSITORY_ALLOWLIST = [
   "apps/marketing/",
   // Upstream's AUR packages. Satellite removed the workflow that publishes them.
   "packaging/aur/",
-  // The curl installers move to Satellite's repository with the release runbook; delete these then.
-  "scripts/install.sh",
-  "scripts/install.ps1",
   // The model manifest is upstream's provider data, not a release.
   "apps/server/src/provider/ModelManifest.ts",
   // Evaluation and mock-agent inputs that quote upstream URLs as sample data.
@@ -114,6 +111,13 @@ describe("static identity consumers", () => {
         read("scripts/npm-launcher/t3.mjs"),
       )?.[1],
     ).toBe(`${RELEASES_URL}/download`);
+  });
+
+  it("the curl installers download from Satellite's releases", () => {
+    expect([
+      /^repo="([^"]*)"$/m.exec(read("scripts/install.sh"))?.[1],
+      /^\$repo = "([^"]*)"$/m.exec(read("scripts/install.ps1"))?.[1],
+    ]).toEqual([RELEASE_REPOSITORY, RELEASE_REPOSITORY]);
   });
 
   it("the committed web icons are Satellite's production icons", () => {
