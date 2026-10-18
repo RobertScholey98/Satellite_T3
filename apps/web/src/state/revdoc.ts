@@ -26,6 +26,16 @@ export function useRevdocReview(
   useEffect(() => {
     if (state.gap) refresh();
   }, [state.gap, refresh]);
+  // A deleted Review usually means its worktree went; refetch the list the picker reads.
+  const worktrees = useEnvironmentQuery(
+    environmentId === null || target === null
+      ? null
+      : revdocEnvironment.worktrees({ environmentId, input: { threadId: target.threadId } }),
+  );
+  const refreshWorktrees = worktrees.refresh;
+  useEffect(() => {
+    if (state.deleted) refreshWorktrees();
+  }, [state.deleted, refreshWorktrees]);
   return { state, error: query.error };
 }
 

@@ -60,3 +60,15 @@ export function useRevdocWorktree(ref: ScopedThreadRef | null): string | null {
 export function readRevdocWorktree(ref: ScopedThreadRef): string | null {
   return useRevdocWorktreeStore.getState().byThreadKey[scopedThreadKey(ref)] ?? null;
 }
+
+/**
+ * The picked worktree while the repository still lists it; a removed one falls back to the
+ * thread's own. Before the list loads, the pick stands.
+ */
+export const resolveRevdocWorktree = (
+  picked: string | null,
+  worktrees: { readonly worktrees: ReadonlyArray<{ readonly path: string }> } | null | undefined,
+) =>
+  picked === null || worktrees == null || worktrees.worktrees.some((w) => w.path === picked)
+    ? picked
+    : null;

@@ -12,8 +12,8 @@ import type * as Cause from "effect/Cause";
 import { useCallback, useMemo } from "react";
 
 import { useRightPanelStore } from "~/rightPanelStore";
-import { useRevdocWorktree } from "~/revdocWorktreeStore";
-import { revdocEnvironment } from "~/state/revdoc";
+import { resolveRevdocWorktree, useRevdocWorktree } from "~/revdocWorktreeStore";
+import { revdocEnvironment, useRevdocWorktrees } from "~/state/revdoc";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { toastManager } from "../ui/toast";
@@ -36,7 +36,10 @@ export function toastRevdocFailure(title: string, result: CommandFailure) {
 
 /** The thread's Revdoc target: its own worktree unless the person picked another one. */
 function useRevdocTarget(threadRef: ScopedThreadRef): RevdocTarget {
-  const worktreePath = useRevdocWorktree(threadRef);
+  const worktreePath = resolveRevdocWorktree(
+    useRevdocWorktree(threadRef),
+    useRevdocWorktrees(threadRef.environmentId, threadRef.threadId),
+  );
   return useMemo(
     () => ({ threadId: threadRef.threadId, ...(worktreePath ? { worktreePath } : {}) }),
     [threadRef.threadId, worktreePath],
