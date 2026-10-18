@@ -83,7 +83,7 @@ function BoardConnectionRow({
     }
   };
   useEffect(() => {
-    // oxlint-disable-next-line react/set-state-in-effect -- open sets state only after the stored board arrives.
+    // oxlint-disable-next-line react/set-state-in-effect -- open sets state only after the request answers.
     if (connected) void open(false);
   }, [connected, open]);
 

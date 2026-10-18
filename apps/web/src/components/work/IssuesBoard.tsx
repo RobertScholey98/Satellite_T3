@@ -461,9 +461,7 @@ export function IssuesBoard({
       ? { environmentId, projectId, boardId }
       : null,
   );
-  // undefined while unknown, null once the server dropped the board.
-  const serverSyncRevision =
-    serverSync === undefined ? undefined : serverSync === null ? null : serverSync.revision;
+  const serverSyncRevision = serverSync === null ? null : serverSync?.revision;
   const followServerSync = useStableCallback(
     (revision: number | null | undefined, key: string | null) => {
       if (!view?.sync || !key || revision === undefined) return;
@@ -483,7 +481,7 @@ export function IssuesBoard({
   const hasView = view !== null;
   const lastFocusRefresh = useRef(0);
   useEffect(() => {
-    // viewKey re-arms the listeners for another board, dropping a pending refresh of the last.
+    // Switching boards cancels a pending focus refresh; the new board loads on its own.
     if (!hasView || !connected || !viewKey) return;
     let timeout: number | null = null;
     const schedule = () => {

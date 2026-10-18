@@ -2750,7 +2750,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         },
       ];
     } else {
-      // A hand-built installer must still check Satellite's feed, never upstream's.
+      // Local builds have no repository env, so they use Satellite's release feed.
       buildConfig.publish = [githubPublishConfig(RELEASE_REPOSITORY, updateChannel)];
     }
   }

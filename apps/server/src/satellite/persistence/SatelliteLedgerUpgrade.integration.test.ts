@@ -44,7 +44,6 @@ const SATELLITE_1X_TABLES = [
   "issue_peer_grants",
 ];
 
-// Upstream's 63 DropUnusedV1Projections drops these after the repair, on every upgrade path.
 const DROPPED_V1_PROJECTIONS = [
   "projection_thread_activities",
   "projection_turns",
