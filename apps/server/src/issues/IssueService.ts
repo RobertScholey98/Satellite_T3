@@ -1138,27 +1138,30 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
             }),
           );
           if (row.status === "launching") {
-            const detail = yield* scope(input.projectId).pipe(
+            // The ticket read is part of the launch: if either fails the attempt is failed, never
+            // left launching without a thread.
+            const launched = yield* scope(input.projectId).pipe(
               Effect.flatMap((found) =>
                 issueHost(found).pipe(
                   Effect.flatMap((adapter) => adapter.get({ cwd: found.cwd, ref: input.issue })),
                 ),
               ),
+              Effect.flatMap((detail) =>
+                deps.launchThread({
+                  commandId: CommandId.make(`issue-attempt:${input.requestId}`),
+                  threadId: ThreadId.make(row.thread_id),
+                  projectId: input.projectId,
+                  title: `#${detail.ref.number} ${detail.title}`.slice(0, 200),
+                  text: `${input.prompt}${attachedIssueBlock(detail)}`,
+                  branch: input.branch,
+                  baseRef: input.baseRef,
+                  modelSelection: input.modelSelection,
+                  runtimeMode: input.runtimeMode,
+                  interactionMode: input.interactionMode,
+                }),
+              ),
+              Effect.result,
             );
-            const launched = yield* deps
-              .launchThread({
-                commandId: CommandId.make(`issue-attempt:${input.requestId}`),
-                threadId: ThreadId.make(row.thread_id),
-                projectId: input.projectId,
-                title: `#${detail.ref.number} ${detail.title}`.slice(0, 200),
-                text: `${input.prompt}${attachedIssueBlock(detail)}`,
-                branch: input.branch,
-                baseRef: input.baseRef,
-                modelSelection: input.modelSelection,
-                runtimeMode: input.runtimeMode,
-                interactionMode: input.interactionMode,
-              })
-              .pipe(Effect.result);
             if (launched._tag === "Failure") {
               yield* lock(
                 Effect.gen(function* () {

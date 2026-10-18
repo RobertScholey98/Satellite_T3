@@ -477,4 +477,22 @@ describe("IssueService Start", () => {
       }),
     ),
   );
+
+  it.effect("a failed ticket read fails the attempt instead of leaving it launching", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.fail("get", remoteFailure("GitHub did not answer the issue read."));
+        const failure = yield* test.startAttempt(1).pipe(Effect.flip);
+
+        assert.strictEqual(failure.message, "GitHub did not answer the issue read.");
+        assert.deepStrictEqual(
+          (yield* test.attemptsOf(1)).map((attempt) => [attempt.status, attempt.active]),
+          [["failed", false]],
+        );
+        assert.deepStrictEqual(test.launches, []);
+        assert.strictEqual(test.remoteColumn(1), "ready");
+      }),
+    ),
+  );
 });
