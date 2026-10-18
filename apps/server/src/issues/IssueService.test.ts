@@ -704,6 +704,106 @@ describe("IssueService after the merge and on retried moves", () => {
     ),
   );
 
+  it.effect("completes a merged attempt whose Done move a manual move to Done superseded", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { test } = yield* mergedWithDoneMoveFailing(remoteFailure());
+        yield* test.service.move({
+          requestId: "drag-done",
+          boardId: BOARD_ID,
+          issue: issueRef(1),
+          columnId: "done",
+          expectedPlacement: "pr",
+        });
+        yield* test.service.sweep;
+
+        const [attempt] = yield* test.attemptsOf(1);
+        assert.deepStrictEqual(
+          [test.remoteColumn(1), attempt?.active, attempt?.endedReason],
+          ["done", false, "completed"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("completes a merged attempt whose failed Done move is no longer wanted", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { test } = yield* mergedWithDoneMoveFailing(authenticationFailure());
+        assert.strictEqual((yield* test.latestMove(1))?.status, "failed");
+        yield* test.configureBoard({ moveOnMerge: false }, "stop-moving-on-merge");
+        yield* test.service.sweep;
+
+        const [attempt] = yield* test.attemptsOf(1);
+        assert.deepStrictEqual(
+          [test.remoteColumn(1), attempt?.active, attempt?.endedReason],
+          ["pr", false, "completed"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("completes a merged attempt reconnected with moving on merge off", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { test } = yield* mergedWithDoneMoveFailing(remoteFailure());
+        yield* test.service.disconnectBoard({ requestId: "disconnect", boardId: BOARD_ID });
+        yield* test.configureBoard({ moveOnMerge: false }, "reconnect");
+
+        const [attempt] = yield* test.attemptsOf(1);
+        assert.deepStrictEqual(
+          [test.remoteColumn(1), attempt?.active, attempt?.endedReason],
+          ["pr", false, "completed"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("a failed Retry of an active attempt's move leaves its later moves automatic", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const { threadId } = yield* test.startAttempt(1);
+        yield* test.threadRunning(threadId);
+        yield* test.service.reconcileThread(threadId);
+        yield* test.fail("move", authenticationFailure());
+        yield* test.linkPullRequest(threadId, 7, "open");
+        yield* test.service.reconcileThread(threadId);
+        const failed = yield* test.latestMove(1);
+        yield* test.service.retryMove({ requestId: "retry-early", moveId: failed!.id });
+        assert.strictEqual((yield* test.latestMove(1))?.status, "failed");
+
+        yield* test.fail("move", null);
+        yield* test.setPullRequest(threadId, 7, "merged");
+        yield* test.service.reconcileThread(threadId);
+        assert.strictEqual(test.remoteColumn(1), "done");
+      }),
+    ),
+  );
+
+  it.effect("Retry applies a failed move after its attempt was stopped", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const { threadId, attempt } = yield* test.startAttempt(1);
+        yield* test.threadRunning(threadId);
+        yield* test.service.reconcileThread(threadId);
+        yield* test.fail("move", authenticationFailure());
+        yield* test.linkPullRequest(threadId, 7, "open");
+        yield* test.service.reconcileThread(threadId);
+        const failed = yield* test.latestMove(1);
+        yield* test.service.endAttempt({ requestId: "stop", attemptId: attempt.id });
+        yield* test.fail("move", null);
+
+        const retried = yield* test.service.retryMove({ requestId: "retry", moveId: failed!.id });
+        assert.deepStrictEqual(
+          [retried.origin, retried.status, test.remoteColumn(1)],
+          ["manual", "applied", "pr"],
+        );
+      }),
+    ),
+  );
+
   it.effect("settles a retried manual move as applied when its first write already landed", () =>
     withDatabase(
       Effect.gen(function* () {

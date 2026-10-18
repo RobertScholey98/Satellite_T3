@@ -672,4 +672,15 @@ describe("GitHubIssueHost issues", () => {
       assert.deepStrictEqual(reasons, ["authentication", "not-found", "invalid", "remote"]);
     }),
   );
+
+  it.effect("says how to fix a refused credential", () =>
+    Effect.gen(function* () {
+      const { adapter } = harness(() => json({ message: "Bad credentials" }, 401));
+      const failure = yield* (yield* adapter).list(scope).pipe(Effect.flip);
+      assert.strictEqual(
+        failure.message,
+        "GitHub refused the credential for github.com. Update the token in Settings, Source control, or run `gh auth login --hostname github.com`, then Retry.",
+      );
+    }),
+  );
 });

@@ -784,9 +784,18 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
         if (row.active !== 1) return false;
         // Merged is terminal; only a Done move a disconnect superseded is queued again.
         const merged = yield* findBoard(row.board_id);
-        return merged?.mapping
-          ? yield* requeueSupersededMove(row, merged.mapping, "merged")
-          : false;
+        if (!merged?.mapping) return false;
+        if (yield* requeueSupersededMove(row, merged.mapping, "merged")) return true;
+        // Nothing is left to do when the Done move was superseded and not queued again, or when
+        // it failed and moving on merge has since been turned off.
+        const last = yield* sql<{ status: string }>`SELECT status FROM issue_moves
+          WHERE request_key=${automaticRequestKey(row.id, row.transition_index)}`;
+        const settled =
+          last[0]?.status === "superseded" ||
+          (last[0]?.status === "failed" && !merged.mapping.moveOnMerge);
+        if (!settled) return false;
+        yield* sql`UPDATE issue_board_attempts SET active=0,ended_reason='completed' WHERE id=${row.id}`;
+        return true;
       }
       if (!RUNNING_STAGES.has(row.status) || (row.status !== "launching" && row.active !== 1))
         return false;
@@ -1214,13 +1223,21 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
             (yield* sql<MoveRow>`SELECT * FROM issue_moves WHERE id=${input.moveId}`)[0];
           if (!previous) return yield* error("not-found", "The board move was not found.");
           let id = previous.id;
-          if (previous.status === "failed" && previous.origin === "manual")
+          const attemptActive =
+            previous.attempt_id !== null &&
+            (yield* sql`SELECT 1 FROM issue_board_attempts WHERE id=${previous.attempt_id} AND active=1`)
+              .length > 0;
+          if (previous.status === "failed" && previous.origin === "automatic" && attemptActive)
+            // The attempt still owns the ticket, so its move stays automatic and keeps later
+            // automatic moves unblocked if this try fails too.
+            yield* sql`UPDATE issue_moves SET status='pending',error=NULL,retry_at=NULL WHERE id=${previous.id}`;
+          else if (previous.status === "failed" && previous.origin === "manual")
             // Retry is the newest manual decision, so it no longer waits on the column seen before.
             yield* sql`UPDATE issue_moves SET status='pending',error=NULL,retry_at=NULL,expected_json=NULL
               WHERE id=${previous.id}`;
           else if (previous.status === "failed" || previous.status === "skipped")
-            // Applying a skipped or failed automatic move is a deliberate manual move: it applies even
-            // after the attempt ended, and the attempt resumes from there.
+            // Applying a skipped automatic move, or a failed one whose attempt ended, is a deliberate
+            // manual move: it applies whatever the attempt's state, and the attempt resumes from there.
             id = yield* enqueueMove({
               requestKey: `manual:${input.requestId}`,
               boardId: previous.board_id,
