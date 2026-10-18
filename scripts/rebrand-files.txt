@@ -5,7 +5,7 @@
 # reads, rebrand:keep markers, other Satellite changes). After taking upstream's side of one,
 # rerun the script and re-apply Satellite's other hunks for that file.
 # The merge-forward that changes upstream's side updates this line; --verify reads it.
-# upstream-base: e58a4857130a93cc58b45dd6ebee14cf08df04ec
+# upstream-base: d8e9fd267e26b7680f035edc0b40db09d2685dbb
 .github/triage/PLAYBOOK.md  # hand-edited
 apps/desktop/gnome-extension/captureFeedback.js
 apps/desktop/gnome-extension/captureService.js
@@ -52,6 +52,7 @@ apps/server/src/binCli.ts
 apps/server/src/cli/acpMcpBridge.ts
 apps/server/src/cli/app.test.ts
 apps/server/src/cli/app.ts
+apps/server/src/cli/config.test.ts
 apps/server/src/cli/config.ts
 apps/server/src/cli/connect.ts
 apps/server/src/cli/doctor.ts
@@ -89,6 +90,7 @@ apps/server/src/orchestration-v2/ContextHandoffService.ts
 apps/server/src/orchestration-v2/PullRequestWatchReactor.ts
 apps/server/src/orchestration-v2/RestartContinuation.test.ts
 apps/server/src/orchestration-v2/RestartContinuation.ts
+apps/server/src/orchestration-v2/UserFacingErrors.ts
 apps/server/src/orchestration-v2/pullRequestWatch.ts
 apps/server/src/orchestration-v2/runtimeLayer.test.ts
 apps/server/src/persistence/DatabaseMaintenance.ts
@@ -118,10 +120,10 @@ apps/server/src/startupAccess.ts
 apps/server/src/vcs/GitVcsDriver.ts
 apps/web/src/bootstrap.test.ts
 apps/web/src/cloud/linkEnvironment.ts
-apps/web/src/components/ChatView.tsx  # hand-edited
 apps/web/src/components/RightPanelTabs.tsx  # hand-edited
 apps/web/src/components/ServerUpdateAction.tsx
 apps/web/src/components/chat/MessagesTimeline.tsx  # hand-edited
+apps/web/src/components/chat/RightPanelSurfaceContent.tsx  # hand-edited
 apps/web/src/components/cloud/RelayClientInstallDialog.tsx
 apps/web/src/components/desktop/DesktopAppActivationCoordinator.tsx
 apps/web/src/components/desktop/SshPasswordPromptDialog.tsx
@@ -175,6 +177,9 @@ packages/contracts/src/t3ProjectFile.ts
 packages/effect-codex-app-server/scripts/generate.ts
 packages/provider-acp-registry/src/server/driver.ts
 packages/provider-acp/src/server/mcpOverAcpBridge.ts
+packages/provider-core/src/server/maintenance.ts
+packages/provider-core/src/server/maintenanceResolver.test.ts
+packages/provider-core/src/server/maintenanceResolver.ts
 packages/provider-core/src/server/orchestrationInstructions.test.ts
 packages/provider-core/src/server/orchestrationInstructions.ts
 packages/provider-core/src/server/textGenerationPrompts.test.ts

@@ -2731,13 +2731,14 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
+  // A missing `publish` makes electron-builder infer a GitHub feed from
+  // GH_TOKEN/GITHUB_TOKEN. The staged app has no repository to resolve it
+  // against, so writing update manifests then crashes on a null config.
   // Squirrel.Mac installs only Developer ID signed updates, so ad-hoc signed
-  // macOS builds are installed by hand. null also stops electron-builder
-  // detecting a repository and writing a feed on its own.
+  // macOS builds are installed by hand and get no feed at all.
+  buildConfig.publish = null;
   const manualMacInstall = platform === "mac" && !signed && !mockUpdates;
-  if (manualMacInstall) {
-    buildConfig.publish = null;
-  } else if (!isDesktopPreviewVersion(version)) {
+  if (!manualMacInstall && !isDesktopPreviewVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
