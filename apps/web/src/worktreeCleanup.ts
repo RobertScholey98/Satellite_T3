@@ -8,11 +8,28 @@ function normalizeWorktreePath(path: string | null): string | null {
   return trimmed;
 }
 
-type WorktreeThread = Pick<ThreadShell, "id" | "worktreePath" | "lineage">;
+type WorktreeThread = Pick<ThreadShell, "id" | "worktreePath" | "lineage" | "runtime">;
+
+const IDLE_STATUSES: ReadonlySet<string> = new Set([
+  "idle",
+  "completed",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "rolled_back",
+]);
+
+function isIdle(thread: WorktreeThread): boolean {
+  return (
+    thread.runtime === null ||
+    (thread.runtime.activeRunId === null && IDLE_STATUSES.has(thread.runtime.status))
+  );
+}
 
 /**
  * Subagent threads are hidden in the sidebar and belong to the thread that delegated them, as
- * in server worktree cleanup, so they do not keep that thread's worktree shared.
+ * in server worktree cleanup. Once idle they do not keep that thread's worktree shared; a running
+ * one does, because deleting the thread does not stop it.
  */
 function isSubagentOf(
   byId: ReadonlyMap<string, WorktreeThread>,
@@ -45,7 +62,7 @@ export function getOrphanedWorktreePathForThread(
 
   const byId = new Map(threads.map((thread) => [thread.id as string, thread]));
   const isShared = threads.some((thread) => {
-    if (thread.id === threadId || isSubagentOf(byId, thread, threadId)) {
+    if (thread.id === threadId || (isSubagentOf(byId, thread, threadId) && isIdle(thread))) {
       return false;
     }
     return normalizeWorktreePath(thread.worktreePath) === targetWorktreePath;
