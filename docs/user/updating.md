@@ -5,6 +5,17 @@ When a server is behind your web or desktop app, an update notice appears in the
 conversation and **Settings → Connections**. Update the machine named in that
 notice.
 
+## Satellite desktop updates
+
+Only the Windows app updates itself. It checks
+[Satellite's releases](https://github.com/RobertScholey98/Satellite_T3/releases)
+for new stable versions and installs over the existing app. Prereleases are never
+offered to it.
+
+The macOS app does not update itself. Download the new DMG from Satellite's
+releases and replace the app in Applications; see
+[Install](./install.md#desktop-app) for the first launch.
+
 ## Update everything at once
 
 The update button at the bottom of the sidebar updates every connected machine

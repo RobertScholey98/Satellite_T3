@@ -62,20 +62,25 @@ update it with `git pull` and a rebuild.
 
 ## Desktop app
 
-Download a release from [GitHub Releases](https://github.com/pingdotgg/t3code/releases),
-or use a package manager:
+Download Satellite from
+[Satellite's releases](https://github.com/RobertScholey98/Satellite_T3/releases):
 
-| Platform           | Install                            |
-| ------------------ | ---------------------------------- |
-| Windows            | `winget install T3Tools.T3Code`    |
-| macOS              | `brew install --cask t3-code`      |
-| Debian, Ubuntu     | `sudo apt install ./T3-Code-*.deb` |
-| Arch Linux         | `yay -S t3code-bin`                |
-| Arch Linux nightly | `yay -S t3code-nightly-bin`        |
+| Platform            | Download                          |
+| ------------------- | --------------------------------- |
+| Windows             | `SatelliteT3-<version>-x64.exe`   |
+| macOS Apple Silicon | `SatelliteT3-<version>-arm64.dmg` |
+| macOS Intel         | `SatelliteT3-<version>-x64.dmg`   |
 
-The `.deb` updates itself like the other desktop builds. It asks for your
-password to install each update. If your desktop has no password prompt, the
-update fails. Download the new `.deb` and install it the same way.
+There is no Linux build. Each release lists checksums in `SHA256SUMS`; to check
+a download, run `shasum -a 256 -c SHA256SUMS --ignore-missing` in its folder.
+
+The builds are not code signed, so the first launch needs one extra step:
+
+- **Windows:** if SmartScreen says Windows protected your PC, choose **More info**,
+  then **Run anyway**. Installing 2.x over Satellite 1.x upgrades it in place.
+- **macOS:** drag Satellite to Applications and open it. When macOS says it cannot
+  verify the app, open **System Settings → Privacy & Security** and choose
+  **Open Anyway** next to the message about Satellite.
 
 ### The `t3` command
 
