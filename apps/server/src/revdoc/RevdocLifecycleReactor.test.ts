@@ -131,6 +131,8 @@ describe("RevdocLifecycleReactor", () => {
         yield* Fiber.join(deleted);
         yield* Deferred.await(interrupted);
         assert.strictEqual(yield* reviewCount, 0);
+        // Ending the pass exports once more; that must not bring the removed worktree back.
+        assert.isFalse(NodeFS.existsSync(root));
       }),
     ),
   );
@@ -195,6 +197,7 @@ describe("RevdocLifecycleReactor", () => {
         yield* Fiber.join(deleted);
         yield* Deferred.await(interrupted);
         assert.strictEqual(yield* reviewCount, 0);
+        assert.isFalse(NodeFS.existsSync(root));
       }),
     ),
   );

@@ -69,6 +69,12 @@ export class RevdocExport extends Context.Service<
     readonly write: (snapshot: ExportSnapshot) => Effect.Effect<void, string>;
     /** Removes the export and the evidence screenshots of a deleted Review. */
     readonly remove: (worktreePath: string) => Effect.Effect<void>;
+    /** Saves a screenshot under `.revdoc/evidence` and returns its worktree-relative path. */
+    readonly writeEvidence: (
+      worktreePath: string,
+      id: string,
+      png: Uint8Array,
+    ) => Effect.Effect<string, string>;
   }
 >()("t3/revdoc/RevdocExport") {}
 
@@ -86,16 +92,36 @@ const make = Effect.gen(function* () {
     return lock;
   };
 
+  /**
+   * `.revdoc` inside a worktree that still exists, created if missing. Never creates the worktree
+   * itself (a removed worktree must stay removed) and never follows `.revdoc` or a folder under it
+   * out of the worktree.
+   */
+  const revdocFolder = Effect.fn("RevdocExport.revdocFolder")(function* (
+    worktreePath: string,
+    ...subfolders: ReadonlyArray<string>
+  ) {
+    if (!(yield* fs.exists(worktreePath))) return null;
+    const root = yield* fs.realPath(worktreePath);
+    let folder = path.join(worktreePath, ".revdoc");
+    let expected = path.join(root, ".revdoc");
+    for (const name of ["", ...subfolders]) {
+      if (name !== "") {
+        folder = path.join(folder, name);
+        expected = path.join(expected, name);
+      }
+      yield* fs.makeDirectory(folder, { recursive: false }).pipe(Effect.ignore);
+      if ((yield* fs.realPath(folder)) !== expected) return yield* Effect.fail("symbolic link");
+    }
+    return folder;
+  });
+
   const writeNow = Effect.fn("RevdocExport.writeNow")(function* (snapshot: ExportSnapshot) {
     const { review } = snapshot;
     if ((written.get(review.id) ?? 0) > review.revision) return;
-    const directory = path.join(review.worktreePath, ".revdoc");
+    const directory = yield* revdocFolder(review.worktreePath);
+    if (directory === null) return;
     const file = path.join(directory, "review.json");
-    yield* fs.makeDirectory(directory, { recursive: true });
-    const root = yield* fs.realPath(review.worktreePath);
-    if ((yield* fs.realPath(directory)) !== path.join(root, ".revdoc")) {
-      return yield* Effect.fail("symbolic link");
-    }
     const gitignore = path.join(directory, ".gitignore");
     if (!(yield* fs.exists(gitignore))) yield* fs.writeFileString(gitignore, "*\n");
     if (!written.has(review.id) && (yield* fs.exists(file))) {
@@ -119,11 +145,23 @@ const make = Effect.gen(function* () {
       ),
     remove: (worktreePath) =>
       Effect.gen(function* () {
-        if (!(yield* fs.exists(worktreePath))) return;
-        const directory = path.join(worktreePath, ".revdoc");
+        if (!(yield* fs.exists(path.join(worktreePath, ".revdoc")))) return;
+        const directory = yield* revdocFolder(worktreePath);
+        if (directory === null) return;
         yield* fs.remove(path.join(directory, "review.json"), { force: true });
-        yield* fs.remove(path.join(directory, "evidence"), { recursive: true, force: true });
+        const evidence = path.join(directory, "evidence");
+        if (!(yield* fs.exists(evidence))) return;
+        if ((yield* fs.realPath(evidence)) !== path.join(yield* fs.realPath(directory), "evidence"))
+          return;
+        yield* fs.remove(evidence, { recursive: true, force: true });
       }).pipe(Effect.ignore),
+    writeEvidence: (worktreePath, id, png) =>
+      Effect.gen(function* () {
+        const folder = yield* revdocFolder(worktreePath, "evidence");
+        if (folder === null) return yield* Effect.fail("missing worktree");
+        yield* fs.writeFile(path.join(folder, `${id}.png`), png);
+        return `.revdoc/evidence/${id}.png`;
+      }).pipe(Effect.mapError(() => "Revdoc could not save the screenshot.")),
   });
 });
 

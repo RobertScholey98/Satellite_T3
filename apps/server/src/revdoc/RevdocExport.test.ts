@@ -221,4 +221,42 @@ describe("RevdocExport", () => {
       assert.deepStrictEqual(NodeFS.readdirSync(elsewhere), []);
     });
   });
+
+  it.live("never removes or writes evidence through a symlinked .revdoc", () => {
+    const root = worktree();
+    const elsewhere = worktree();
+    NodeFS.writeFileSync(NodePath.join(elsewhere, "review.json"), "someone else's");
+    NodeFS.mkdirSync(NodePath.join(elsewhere, "evidence"));
+    NodeFS.writeFileSync(NodePath.join(elsewhere, "evidence/keep.png"), "png");
+    NodeFS.symlinkSync(elsewhere, NodePath.join(root, ".revdoc"));
+    return withExport(
+      Effect.gen(function* () {
+        const exporter = yield* RevdocExport.RevdocExport;
+        yield* exporter.remove(root);
+        const refused = yield* Effect.flip(
+          exporter.writeEvidence(root, "ev-1", new Uint8Array([1])),
+        );
+        assert.strictEqual(refused, "Revdoc could not save the screenshot.");
+        assert.deepStrictEqual(NodeFS.readdirSync(elsewhere).toSorted(), [
+          "evidence",
+          "review.json",
+        ]);
+        assert.deepStrictEqual(NodeFS.readdirSync(NodePath.join(elsewhere, "evidence")), [
+          "keep.png",
+        ]);
+      }),
+    );
+  });
+
+  it.live("never recreates a removed worktree", () => {
+    const root = NodePath.join(worktree(), "removed");
+    return withExport(
+      Effect.gen(function* () {
+        const exporter = yield* RevdocExport.RevdocExport;
+        yield* exporter.write({ review: header(root, 1), items: [], activePass: null });
+        yield* exporter.remove(root);
+        assert.isFalse(NodeFS.existsSync(root));
+      }),
+    );
+  });
 });
