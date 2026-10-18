@@ -31,8 +31,6 @@ const read = (file: string) => NodeFS.readFileSync(NodePath.join(repoRoot, file)
 const UPSTREAM_REPOSITORY_ALLOWLIST = [
   // Upstream's marketing site, which Satellite does not deploy.
   "apps/marketing/",
-  // Upstream's AUR packages. Satellite removed the workflow that publishes them.
-  "packaging/aur/",
   // The model manifest is upstream's provider data, not a release.
   "apps/server/src/provider/ModelManifest.ts",
   // Evaluation and mock-agent inputs that quote upstream URLs as sample data.
