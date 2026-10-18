@@ -20,6 +20,7 @@ import { PrimaryConnectionTarget } from "./model.ts";
 import { updateOutdatedHost } from "./outdatedHostUpdate.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import * as ConnectionResolver from "./resolver.ts";
+import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 
 const TARGET = new PrimaryConnectionTarget({
@@ -266,10 +267,25 @@ describe("updateOutdatedHost", () => {
               opened = true;
               throw new Error("unused");
             }),
+            Layer.succeed(
+              ClientCapabilities.ClientPresentation,
+              ClientCapabilities.ClientPresentation.of({
+                metadata: {
+                  label: "Satellite Web",
+                  deviceType: "desktop",
+                  os: "macos",
+                  surface: "web",
+                },
+                productName: "Satellite",
+              }),
+            ),
           ),
         ),
       );
-      expect(error).toMatchObject({ _tag: "OutdatedHostUpdateError" });
+      expect(error).toMatchObject({
+        _tag: "OutdatedHostUpdateError",
+        message: "Update Satellite on Build Mac manually; it cannot update itself.",
+      });
       expect(opened).toBe(false);
     }),
   );

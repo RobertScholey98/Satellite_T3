@@ -1,4 +1,6 @@
 {
+  "name": "Satellite",
+  "short_name": "Satellite",
   "id": "/",
   "start_url": "/",
   "scope": "/",

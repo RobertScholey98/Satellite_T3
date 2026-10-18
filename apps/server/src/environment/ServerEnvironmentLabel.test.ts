@@ -286,4 +286,27 @@ describe("resolveServerEnvironmentLabel", () => {
       expect(result).toBe("t3code");
     }),
   );
+
+  it.effect("names a server with no hostname or cwd a Satellite environment", () =>
+    Effect.gen(function* () {
+      runMock.mockReturnValueOnce(
+        Effect.succeed({
+          stdout: " ",
+          stderr: "",
+          code: ChildProcessSpawner.ExitCode(0),
+          timedOut: false,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          stdoutInvalidUtf8: false,
+          stderrInvalidUtf8: false,
+        }),
+      );
+
+      const result = yield* ServerEnvironmentLabel.resolveServerEnvironmentLabel({
+        cwdBaseName: " ",
+      }).pipe(Effect.provide(withHostPlatform(layerTest, "linux", "   ")));
+
+      expect(result).toBe("Satellite environment");
+    }),
+  );
 });

@@ -29,6 +29,7 @@ import {
   type DesktopSshEnvironmentTarget,
   type EnvironmentId,
   PRIMARY_LOCAL_ENVIRONMENT_ID,
+  PRODUCT_NAME,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -225,6 +226,7 @@ const layerCapabilities = Layer.effectContext(
   Effect.sync(() => {
     const presentation = ClientCapabilities.ClientPresentation.of({
       metadata: clientMetadata(),
+      productName: PRODUCT_NAME,
     });
     const cloudSession = ClientCapabilities.CloudSession.of({
       identity: Effect.sync(() =>

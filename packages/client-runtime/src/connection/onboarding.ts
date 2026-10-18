@@ -113,7 +113,10 @@ export const preparePairingRegistration = Effect.fn(
   ) {
     return yield* differentMachineError(descriptor.label);
   }
-  const compatibilityError = orchestrationProtocolCompatibilityError(descriptor);
+  const compatibilityError = orchestrationProtocolCompatibilityError(
+    descriptor,
+    presentation.productName,
+  );
   // An outdated server is still saved so it can be updated from this client.
   if (compatibilityError !== null && compatibilityError.serverUpdateRequired !== true) {
     return yield* compatibilityError;

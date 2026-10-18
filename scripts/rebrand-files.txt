@@ -1,0 +1,218 @@
+# Upstream files Satellite rebrands. scripts/rebrand.ts rewrites "T3 Code" to the identity module's
+# product name in each; run the formatter afterwards. apps/mobile is never listed: the official
+# T3 Code mobile app connects to Satellite servers and Satellite ships no mobile changes.
+# Files marked "hand-edited" also carry Satellite edits the script cannot reproduce (identity
+# reads, rebrand:keep markers, other Satellite changes). After taking upstream's side of one,
+# rerun the script and re-apply Satellite's other hunks for that file.
+# The merge-forward that changes upstream's side updates this line; --verify reads it.
+# upstream-base: e58a4857130a93cc58b45dd6ebee14cf08df04ec
+.github/triage/PLAYBOOK.md  # hand-edited
+apps/desktop/gnome-extension/captureFeedback.js
+apps/desktop/gnome-extension/captureService.js
+apps/desktop/gnome-extension/captureService.test.js
+apps/desktop/gnome-extension/metadata.json  # hand-edited
+apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml  # hand-edited
+apps/desktop/scripts/electron-launcher.mjs  # hand-edited
+apps/desktop/scripts/electron-launcher.test.mjs  # hand-edited
+apps/desktop/src/app/DesktopApp.ts
+apps/desktop/src/app/DesktopAppActivation.ts
+apps/desktop/src/app/DesktopAppActivationBroker.ts
+apps/desktop/src/app/DesktopCliShim.ts  # hand-edited
+apps/desktop/src/app/DesktopEnvironment.test.ts  # hand-edited
+apps/desktop/src/backend/DesktopBackendPool.ts
+apps/desktop/src/backend/DesktopLocalEnvironmentAuth.ts
+apps/desktop/src/electron/WindowsForeground.ts
+apps/desktop/src/permissions/MacPermissionHelper.test.ts
+apps/desktop/src/permissions/MacPermissionHelper.ts
+apps/desktop/src/snapShot/DesktopSnapShot.test.ts
+apps/desktop/src/snapShot/DesktopSnapShot.ts
+apps/desktop/src/snapShot/GnomeCaptureSetup.ts
+apps/desktop/src/snapShot/HyprlandSnapShot.ts
+apps/desktop/src/snapShot/KdeSnapShot.ts
+apps/desktop/src/snapShot/LinuxSnapShot.test.ts
+apps/desktop/src/snapShot/LinuxSnapShot.ts
+apps/desktop/src/snapShot/MacModifierPairShortcutProcess.ts
+apps/desktop/src/snapShot/NiriCaptureShortcut.ts
+apps/desktop/src/snapShot/NiriSnapShot.test.ts
+apps/desktop/src/snapShot/NiriSnapShot.ts
+apps/desktop/src/snapShot/PortalCaptureShortcut.test.ts
+apps/desktop/src/snapShot/PortalCaptureShortcut.ts
+apps/desktop/src/snapShot/SnapShotTransition.ts
+apps/desktop/src/snapShot/snapShot.ts
+apps/desktop/src/ssh/DesktopSshEnvironment.test.ts
+apps/desktop/src/ssh/DesktopSshEnvironment.ts
+apps/desktop/src/ssh/DesktopSshPasswordPrompts.ts
+apps/desktop/src/window/DesktopApplicationMenu.test.ts
+apps/desktop/src/window/DesktopApplicationMenu.ts
+apps/desktop/src/wsl/DesktopWslBackend.test.ts
+apps/desktop/src/wsl/DesktopWslBackend.ts
+apps/desktop/src/wsl/DesktopWslEnvironment.test.ts
+apps/desktop/src/wsl/DesktopWslEnvironment.ts
+apps/server/src/binCli.ts
+apps/server/src/cli/acpMcpBridge.ts
+apps/server/src/cli/app.test.ts
+apps/server/src/cli/app.ts
+apps/server/src/cli/config.ts
+apps/server/src/cli/connect.ts
+apps/server/src/cli/doctor.ts
+apps/server/src/cli/pair.test.ts
+apps/server/src/cli/pair.ts
+apps/server/src/cli/server.ts
+apps/server/src/cli/service.test.ts
+apps/server/src/cli/service.ts
+apps/server/src/cli/theme.ts
+apps/server/src/cli/triage.ts
+apps/server/src/cli/triagePrompt.ts  # hand-edited
+apps/server/src/cli/uninstall.ts
+apps/server/src/cli/update.ts  # hand-edited
+apps/server/src/cli/updateProgress.test.ts
+apps/server/src/cli/updateProgress.ts
+apps/server/src/cloud/bootService.ts
+apps/server/src/cloud/cliAuthHtml.ts
+apps/server/src/cloud/relayResponse.ts
+apps/server/src/cloud/selfUpdate.ts
+apps/server/src/cloud/servicePreflight.test.ts
+apps/server/src/cloud/servicePreflight.ts
+apps/server/src/desktopUpdate/DesktopAppUpdate.test.ts
+apps/server/src/desktopUpdate/DesktopAppUpdate.ts
+apps/server/src/mcp/AcpMcpStdioBridge.ts
+apps/server/src/mcp/McpHttpServer.test.ts
+apps/server/src/mcp/McpHttpServer.ts  # hand-edited
+apps/server/src/mcp/McpInvocationContext.ts
+apps/server/src/mcp/WorktreeMcpService.ts
+apps/server/src/mcp/toolkits/orchestrator/tools.ts
+apps/server/src/mcp/toolkits/project/tools.ts
+apps/server/src/mcp/toolkits/pullRequests/tools.ts
+apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts  # hand-edited
+apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts
+apps/server/src/orchestration-v2/ContextHandoffService.ts
+apps/server/src/orchestration-v2/PullRequestWatchReactor.ts
+apps/server/src/orchestration-v2/RestartContinuation.test.ts
+apps/server/src/orchestration-v2/RestartContinuation.ts
+apps/server/src/orchestration-v2/pullRequestWatch.ts
+apps/server/src/orchestration-v2/runtimeLayer.test.ts
+apps/server/src/persistence/DatabaseMaintenance.ts
+apps/server/src/preview/PreviewBrowserHost.ts
+apps/server/src/project/ManagedProjectFolders.ts  # hand-edited
+apps/server/src/provider/AntigravityProvider.ts
+apps/server/src/provider/ClaudeProvider.ts
+apps/server/src/provider/CodexAuthCallback.ts
+apps/server/src/provider/CodexAuthCallbackPage.ts
+apps/server/src/provider/CodexChatGptAuth.test.ts
+apps/server/src/provider/CodexChatGptAuth.ts
+apps/server/src/provider/CodexDeveloperInstructions.test.ts  # hand-edited
+apps/server/src/provider/CodexDeveloperInstructions.ts
+apps/server/src/provider/CodexInstallation.ts
+apps/server/src/provider/CodexProvider.ts  # hand-edited
+apps/server/src/provider/Drivers/claudeUsage.ts
+apps/server/src/provider/ProviderAuthService.ts
+apps/server/src/provider/ProviderRegistry.test.ts
+apps/server/src/provider/providerCompatibility.ts
+apps/server/src/provider/providerInstallation.ts
+apps/server/src/provider/providerMaintenanceRunner.ts
+apps/server/src/provider/providerStatusCache.test.ts
+apps/server/src/serverOwnership.ts
+apps/server/src/serverRuntimeStartup.ts
+apps/server/src/serviceLauncher.ts
+apps/server/src/startupAccess.ts
+apps/server/src/vcs/GitVcsDriver.ts
+apps/web/src/bootstrap.test.ts
+apps/web/src/cloud/linkEnvironment.ts
+apps/web/src/components/ChatView.tsx
+apps/web/src/components/RightPanelTabs.tsx
+apps/web/src/components/ServerUpdateAction.tsx
+apps/web/src/components/chat/MessagesTimeline.tsx  # hand-edited
+apps/web/src/components/cloud/RelayClientInstallDialog.tsx
+apps/web/src/components/desktop/DesktopAppActivationCoordinator.tsx
+apps/web/src/components/desktop/SshPasswordPromptDialog.tsx
+apps/web/src/components/desktopUpdate.logic.test.ts  # hand-edited
+apps/web/src/components/desktopUpdate.logic.ts  # hand-edited
+apps/web/src/components/onboarding/FirstRunGate.tsx
+apps/web/src/components/onboarding/WelcomeWizard.tsx  # hand-edited
+apps/web/src/components/preview/PreviewPanel.tsx
+apps/web/src/components/preview/PreviewView.tsx
+apps/web/src/components/promptLinks/NewThreadLinkView.tsx
+apps/web/src/components/promptLinks/linkedPrompt.ts
+apps/web/src/components/settings/BrowserImportWizard.tsx
+apps/web/src/components/settings/CaptureShortcutConfig.tsx
+apps/web/src/components/settings/ChatGptWelcomeCoordinator.tsx
+apps/web/src/components/settings/CliCommandSettingsRow.tsx
+apps/web/src/components/settings/CodexSetupSection.tsx
+apps/web/src/components/settings/ConnectionsSettings.tsx
+apps/web/src/components/settings/IntegrationsSettings.tsx
+apps/web/src/components/settings/KeybindingsSettings.tsx
+apps/web/src/components/settings/LocalEnvironmentSetting.tsx
+apps/web/src/components/settings/NotificationSettings.tsx
+apps/web/src/components/settings/SettingsPanels.logic.test.ts
+apps/web/src/components/settings/SettingsPanels.logic.ts
+apps/web/src/components/settings/SettingsPanels.tsx
+apps/web/src/components/settings/SnapShotSettings.tsx
+apps/web/src/components/settings/SnapShotSetupDialog.tsx
+apps/web/src/components/settings/ThemeImportDialog.tsx
+apps/web/src/components/settings/ThemePreviewCircles.tsx
+apps/web/src/components/settings/providerStatus.ts
+apps/web/src/components/settings/scopedSettings.test.ts
+apps/web/src/components/settings/scopedSettings.ts
+apps/web/src/components/settings/settingsSearch.ts
+apps/web/src/components/sidebar/updateEverythingRun.tsx
+apps/web/src/connection/clientMetadata.test.ts
+apps/web/src/desktopAppActivation.ts
+apps/web/src/lib/bootError.ts
+apps/web/src/routes/_chat.index.tsx
+apps/web/src/routes/_chat.pull-requests.tsx  # hand-edited
+apps/web/src/routes/_chat.tsx
+apps/web/src/versionSkew.test.ts
+apps/web/src/versionSkew.ts
+docs/README.md  # hand-edited
+docs/operations/release.md
+docs/user/source-control.md  # hand-edited
+docs/user/thread-migration.md
+packages/client-runtime/src/state/pullRequestDiffHttp.test.ts
+packages/client-runtime/src/state/pullRequestDiffHttp.ts
+packages/contracts/src/browserImport.ts
+packages/contracts/src/pullRequest.ts  # hand-edited
+packages/contracts/src/t3ProjectFile.ts
+packages/effect-codex-app-server/scripts/generate.ts
+packages/provider-acp-registry/src/server/driver.ts
+packages/provider-acp/src/server/mcpOverAcpBridge.ts
+packages/provider-core/src/server/orchestrationInstructions.test.ts
+packages/provider-core/src/server/orchestrationInstructions.ts
+packages/provider-core/src/server/textGenerationPrompts.test.ts
+packages/provider-core/src/server/textGenerationPrompts.ts
+packages/provider-cursor/src/server/accountUsage.test.ts
+packages/provider-cursor/src/server/accountUsage.ts
+packages/provider-cursor/src/server/adapter.ts
+packages/provider-cursor/src/server/auth.ts
+packages/provider-cursor/src/server/status.ts
+packages/provider-cursor/src/server/textGeneration.ts
+packages/provider-cursor/src/server/usageLimits.ts
+packages/provider-grok/src/server/status.ts
+packages/provider-muse/src/server/adapter.ts
+packages/provider-muse/src/server/sdk.ts  # hand-edited
+packages/provider-muse/src/server/status.ts
+packages/provider-muse/src/server/textGeneration.ts
+packages/provider-opencode/src/server/OpenCodeRuntime.ts
+packages/provider-opencode/src/server/OpenCodeServerLedger.ts
+packages/provider-opencode/src/server/status.ts
+packages/provider-opencode/src/server/textGeneration.ts  # hand-edited
+packages/provider-opencode/src/server/v2/adapter.ts
+packages/provider-opencode/src/server/v2/textGeneration.ts  # hand-edited
+packages/provider-opencode/src/server/versionProbe.ts
+packages/provider-opencode/src/settings.ts
+packages/provider-pi/src/server/mcpExtensionSource.ts
+packages/provider-pi/src/server/mcpInjection.test.ts
+packages/provider-pi/src/server/mcpInjection.ts
+packages/provider-pi/src/server/status.ts
+packages/shared/src/codexAuthCallback.ts
+packages/shared/src/codexAuthHandoff.ts
+packages/shared/src/otelEnvironment.test.ts
+packages/shared/src/otelEnvironment.ts
+packages/shared/src/promptLinks.ts
+packages/shared/src/relayClient.ts
+packages/source-control-gitcafe/src/server/GitCafePullRequestProvider.ts
+packages/source-control-github/src/server/githubStackRebase.ts
+packages/ssh/src/auth.ts
+scripts/build-desktop-artifact.ts  # hand-edited
+scripts/build-npm-launcher.ts
+scripts/dev-runner.ts
+scripts/npm-launcher/t3.mjs  # hand-edited

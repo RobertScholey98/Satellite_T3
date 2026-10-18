@@ -1,4 +1,5 @@
-const CLI_RELEASE_REPOSITORY = "pingdotgg/t3code";
+import { RELEASE_REPOSITORY } from "@t3tools/contracts";
+
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 
@@ -45,7 +46,7 @@ export function cliArchiveFileName(version: string, platformKey: CliArchivePlatf
   return `t3-${version}-${platformKey}.${platformKey.startsWith("win32") ? "zip" : "tar.gz"}`;
 }
 
-const CLI_RELEASE_DEFAULT_BASE_URL = `https://github.com/${CLI_RELEASE_REPOSITORY}/releases/download`;
+const CLI_RELEASE_DEFAULT_BASE_URL = `https://github.com/${RELEASE_REPOSITORY}/releases/download`;
 
 export function cliReleaseDownloadBaseUrl(
   version: string,
@@ -82,7 +83,7 @@ export function cliReleaseChannelOf(version: string): CliReleaseChannel {
  * preview or stable release past any single page.
  */
 export function cliReleaseIndexPageUrl(page: number): string {
-  return `https://api.github.com/repos/${CLI_RELEASE_REPOSITORY}/releases?per_page=100&page=${page}`;
+  return `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases?per_page=100&page=${page}`;
 }
 
 /**

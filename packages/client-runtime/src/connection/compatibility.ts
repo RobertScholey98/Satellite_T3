@@ -8,6 +8,7 @@ import { ConnectionBlockedError } from "./model.ts";
 
 export function orchestrationProtocolCompatibilityError(
   descriptor: ExecutionEnvironmentDescriptor,
+  productName = "T3 Code",
 ): ConnectionBlockedError | null {
   // Servers shipped before negotiation use the original wire protocol.
   const serverProtocolVersion = descriptor.orchestrationProtocolVersion ?? 1;
@@ -21,7 +22,7 @@ export function orchestrationProtocolCompatibilityError(
       })
     : new ConnectionBlockedError({
         reason: "unsupported",
-        detail: `This client requires a newer server. Update T3 Code on ${descriptor.label} to connect.`,
+        detail: `This client requires a newer server. Update ${productName} on ${descriptor.label} to connect.`,
         ...(canSelfUpdate(descriptor) ? { serverUpdateRequired: true } : {}),
       });
 }

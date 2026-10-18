@@ -1,7 +1,9 @@
 import {
   CommandId,
   type GitManagerServiceError,
+  PRODUCT_NAME,
   ProjectId,
+  REPOSITORY_URL,
   type ThreadId,
   VcsProcessSpawnError,
 } from "@t3tools/contracts";
@@ -182,7 +184,7 @@ function namedProjectReadme(name: string): string {
     "",
     `# ${name}`,
     "",
-    "Created in [T3 Code](https://t3.codes).",
+    `Created in [${PRODUCT_NAME}](${REPOSITORY_URL}).`,
     "",
   ].join("\n");
 }

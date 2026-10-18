@@ -116,7 +116,7 @@ export const PanelAnimationDurationMs = Schema.Int.check(
   }),
 );
 export type PanelAnimationDurationMs = typeof PanelAnimationDurationMs.Type;
-const DEFAULT_PANEL_ANIMATION_DURATION_MS: PanelAnimationDurationMs = 0;
+const DEFAULT_PANEL_ANIMATION_DURATION_MS: PanelAnimationDurationMs = 200;
 
 export const MIN_INTERFACE_FONT_SIZE = 12;
 export const MAX_INTERFACE_FONT_SIZE = 20;
@@ -305,8 +305,9 @@ export const ClientSettingsSchema = Schema.Struct({
   appearanceContrast: AppearanceContrast.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_CONTRAST)),
   ),
-  // Panel motion defaults to zero because width and height transitions cause
-  // layout work on every frame, which is noticeable on lower-power clients.
+  // Width and height transitions cause layout work on every frame, which is
+  // noticeable on lower-power clients. Satellite still animates by default and
+  // users can set 0 to turn it off.
   panelAnimationDurationMs: PanelAnimationDurationMs.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PANEL_ANIMATION_DURATION_MS)),
   ),

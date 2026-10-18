@@ -4,6 +4,7 @@ import type {
   DesktopRuntimeArch,
   DesktopRuntimeInfo,
 } from "@t3tools/contracts";
+import { DESKTOP_APP_USER_MODEL_IDS, PRODUCT_NAME, PRODUCT_STAGE_LABEL } from "@t3tools/contracts";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -85,7 +86,7 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Code";
+const APP_BASE_NAME = PRODUCT_NAME;
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -95,7 +96,7 @@ function resolveDesktopAppStageLabel(input: {
     return "Dev";
   }
 
-  return isNightlyDesktopVersion(input.appVersion) ? "Nightly" : "Beta";
+  return isNightlyDesktopVersion(input.appVersion) ? "Nightly" : PRODUCT_STAGE_LABEL;
 }
 
 export function resolveDesktopAppBranding(input: {
@@ -228,7 +229,9 @@ const make = Effect.fn("desktop.environment.make")(function* (
     branding,
     displayName,
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
-      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+      isDevelopment
+        ? DESKTOP_APP_USER_MODEL_IDS.development
+        : DESKTOP_APP_USER_MODEL_IDS.production,
     ),
     linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
     linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
