@@ -51,7 +51,7 @@ export type ThreadTicketResult = typeof ThreadTicketResult.Type;
 
 const ReadThreadTicketTool = Tool.make("read_thread_ticket", {
   description:
-    "Read the issue board ticket this thread was started from: its title, body, labels, current board column and latest comments. Use it to recheck requirements that may have changed since the thread began. Ticket moves follow the thread's pull requests automatically.",
+    "Read the issue board ticket this thread was started from: its title, body, labels, current board column and latest comments. Use it to recheck requirements that may have changed since the thread began. Ticket moves follow the pull requests linked to this thread automatically.",
   parameters: Tool.EmptyParams,
   success: ThreadTicketResult,
   failure: Schema.Union([
