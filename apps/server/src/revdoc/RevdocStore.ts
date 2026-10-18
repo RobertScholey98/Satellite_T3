@@ -202,7 +202,9 @@ export class RevdocStore extends Context.Service<
       threadId: ThreadId,
     ) => Effect.Effect<void, RevdocError>;
     readonly isTestingThread: (threadId: ThreadId) => Effect.Effect<boolean, RevdocError>;
-    readonly forgetTestingThreads: (key: ReviewKey) => Effect.Effect<void, RevdocError>;
+    readonly forgetTestingThreads: (
+      match: { readonly worktreePath: string } | { readonly projectId: ProjectId },
+    ) => Effect.Effect<void, RevdocError>;
     /** Inserts a running pass unless the worktree already has one, which it returns instead. */
     readonly startPass: (pass: PassRecord) => Effect.Effect<Option.Option<PassRecord>, RevdocError>;
     readonly putPass: (pass: PassRecord) => Effect.Effect<void, RevdocError>;
@@ -526,11 +528,12 @@ const make = Effect.gen(function* () {
           Effect.map((rows) => rows.length > 0),
         ),
       ),
-    forgetTestingThreads: (key) =>
-      guard(sql`
-        DELETE FROM revdoc_testing_threads
-        WHERE project_id = ${key.projectId} AND worktree_path = ${key.worktreePath}
-      `).pipe(Effect.asVoid),
+    forgetTestingThreads: (match) =>
+      guard(
+        "worktreePath" in match
+          ? sql`DELETE FROM revdoc_testing_threads WHERE worktree_path = ${match.worktreePath}`
+          : sql`DELETE FROM revdoc_testing_threads WHERE project_id = ${match.projectId}`,
+      ).pipe(Effect.asVoid),
     startPass: (pass) =>
       transaction(
         Effect.gen(function* () {

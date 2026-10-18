@@ -1291,13 +1291,9 @@ const make = Effect.gen(function* () {
       return yield* fail("invalid_request", "The screenshot was not a PNG under 10 MB.");
     }
     const id = newRevdocId("ev");
-    const relative = `.revdoc/evidence/${id}.png`;
-    yield* fs
-      .makeDirectory(path.join(pass.worktreePath, ".revdoc/evidence"), { recursive: true })
-      .pipe(
-        Effect.andThen(fs.writeFile(path.join(pass.worktreePath, relative), png)),
-        Effect.mapError(() => fail("storage", "Revdoc could not save the screenshot.")),
-      );
+    const relative = yield* exporter
+      .writeEvidence(pass.worktreePath, id, png)
+      .pipe(Effect.mapError((message) => fail("storage", message)));
     const evidence: RevdocEvidence = {
       id,
       caption: input.caption,
@@ -1501,7 +1497,7 @@ const make = Effect.gen(function* () {
       const active = yield* activePassFor(key);
       if (active) yield* cancelPass(active);
       yield* store.deleteReview(key);
-      yield* store.forgetTestingThreads(key);
+      yield* store.forgetTestingThreads({ worktreePath: key.worktreePath });
       yield* exporter.remove(key.worktreePath);
       yield* publish(key, { _tag: "deleted", revision: 0 });
     }).pipe(
@@ -1536,6 +1532,10 @@ const make = Effect.gen(function* () {
       const paths = new Set([worktreePath, yield* realPathOf(worktreePath)]);
       const keys = yield* keysWhere((key) => paths.has(key.worktreePath));
       yield* Effect.forEach(keys, forgetKey, { discard: true });
+      // Testing children outlive a Review deleted by hand; they go with the worktree.
+      yield* Effect.forEach(paths, (worktreePath) => store.forgetTestingThreads({ worktreePath }), {
+        discard: true,
+      });
     }).pipe(Effect.ignore);
 
   const recover = Effect.gen(function* () {
@@ -1619,6 +1619,7 @@ const make = Effect.gen(function* () {
     forgetProject: (projectId) =>
       keysWhere((key) => key.projectId === projectId).pipe(
         Effect.flatMap((keys) => Effect.forEach(keys, forgetKey, { discard: true })),
+        Effect.andThen(store.forgetTestingThreads({ projectId })),
         Effect.ignore,
       ),
     recover,

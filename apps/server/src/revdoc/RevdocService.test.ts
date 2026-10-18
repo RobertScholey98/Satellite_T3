@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as RevdocService from "./RevdocService.ts";
+import * as RevdocStore from "./RevdocStore.ts";
 import {
   answering,
   awaitPass,
@@ -406,6 +407,34 @@ describe("RevdocService test passes", () => {
       Effect.provide(layerRevdoc({ root, reviewer: reviewerRef(), threads: delegatingThreads() })),
     );
   });
+
+  it.live(
+    "forgets testing children with the worktree even after the Review was deleted by hand",
+    () => {
+      const root = makeRepository();
+      writeFile(root, "a.ts", "a\n");
+      return Effect.gen(function* () {
+        const revdoc = yield* RevdocService.RevdocService;
+        const store = yield* RevdocStore.RevdocStore;
+        yield* generated();
+        const { passId } = yield* revdoc.test(
+          { ...target(), selection: "remaining" },
+          { threadId: THREAD_ID },
+        );
+        yield* revdoc.cancel(target());
+        yield* awaitPass(passId);
+        const review = (yield* revdoc.read(target(), { attentionOnly: false })).review!;
+        yield* revdoc.deleteReview({ ...target(), expectedRevision: review.revision });
+        assert.isTrue(yield* store.isTestingThread(childThreadId));
+        yield* revdoc.forgetWorktree(root);
+        assert.isFalse(yield* store.isTestingThread(childThreadId));
+      }).pipe(
+        Effect.provide(
+          layerRevdoc({ root, reviewer: reviewerRef(), threads: delegatingThreads() }),
+        ),
+      );
+    },
+  );
 
   it.live("refuses passes started by a Revdoc testing child", () => {
     const root = makeRepository();
