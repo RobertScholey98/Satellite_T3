@@ -199,6 +199,8 @@ export const appendToDraft = (draft: string, addition: string) =>
  */
 export interface RevdocNoteDraft {
   readonly text: string;
+  /** The note when the edit began. */
+  readonly original: string;
   readonly baseRevision: number;
   /** The other device's note after a refused save; saving again replaces that version. */
   readonly conflict: { readonly note: string; readonly revision: number } | null;
@@ -206,6 +208,7 @@ export interface RevdocNoteDraft {
 
 export const startNoteDraft = (note: string, revision: number): RevdocNoteDraft => ({
   text: note,
+  original: note,
   baseRevision: revision,
   conflict: null,
 });
@@ -213,10 +216,22 @@ export const startNoteDraft = (note: string, revision: number): RevdocNoteDraft 
 export const noteDraftSaveRevision = (draft: RevdocNoteDraft) =>
   draft.conflict?.revision ?? draft.baseRevision;
 
-export const withNoteConflict = (
+/**
+ * After a refused save: when only something other than the note moved the item on (an outcome,
+ * an AI result), save again at the current revision; when the note itself changed, show it.
+ */
+export const resolveNoteConflict = (
   draft: RevdocNoteDraft,
   current: { readonly note: string; readonly revision: number },
-): RevdocNoteDraft => ({ ...draft, conflict: { note: current.note, revision: current.revision } });
+):
+  | { readonly _tag: "retry"; readonly draft: RevdocNoteDraft }
+  | { readonly _tag: "conflict"; readonly draft: RevdocNoteDraft } =>
+  current.note === (draft.conflict?.note ?? draft.original)
+    ? { _tag: "retry", draft: { ...draft, baseRevision: current.revision, conflict: null } }
+    : {
+        _tag: "conflict",
+        draft: { ...draft, conflict: { note: current.note, revision: current.revision } },
+      };
 
 export function createRevdocEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,

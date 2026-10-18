@@ -2,8 +2,8 @@ import {
   noteDraftSaveRevision,
   REVDOC_OUTCOME_LABELS,
   type RevdocNoteDraft,
+  resolveNoteConflict,
   startNoteDraft,
-  withNoteConflict,
 } from "@t3tools/client-runtime/revdoc";
 import type {
   AssetResource,
@@ -97,34 +97,51 @@ export const RevdocItemRow = memo(function RevdocItemRow(props: RevdocItemRowPro
     };
   }, [detailStale, environmentId, expanded, getItems, item.id, props.target]);
 
-  const save = async (change: RevdocItemChange, expectedRevision = item.revision) => {
+  const save = async (change: RevdocItemChange) => {
     const result = await editItem({
       environmentId,
-      input: { ...props.target, itemId: item.id, expectedRevision, change },
+      input: { ...props.target, itemId: item.id, expectedRevision: item.revision, change },
     });
-    if (result._tag === "Success") return true;
-    const failure = revdocFailure(result);
-    if (failure?.code === "conflict" && failure.currentItem) {
-      if (change._tag === "set_note") {
-        const current = failure.currentItem;
-        setNoteDraft((draft) => (draft ? withNoteConflict(draft, current) : draft));
-      } else {
-        toastRevdocFailure("Another device changed this check first", result);
-      }
-      return false;
-    }
-    toastRevdocFailure("Could not save the check", result);
-    return false;
+    if (result._tag === "Success") return;
+    toastRevdocFailure(
+      revdocFailure(result)?.code === "conflict"
+        ? "Another device changed this check first"
+        : "Could not save the check",
+      result,
+    );
   };
 
-  const saveNote = async (draft: RevdocNoteDraft) => {
-    if (draft.conflict === null && draft.text === fullNote) {
+  const saveNote = async (start: RevdocNoteDraft) => {
+    if (start.conflict === null && start.text === fullNote) {
       setNoteDraft(null);
       return;
     }
-    if (await save({ _tag: "set_note", note: draft.text }, noteDraftSaveRevision(draft))) {
-      setNoteDraft(null);
+    let draft = start;
+    // Outcomes and AI results move the item on too; those refusals are retried, a few times at most.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = await editItem({
+        environmentId,
+        input: {
+          ...props.target,
+          itemId: item.id,
+          expectedRevision: noteDraftSaveRevision(draft),
+          change: { _tag: "set_note", note: draft.text },
+        },
+      });
+      if (result._tag === "Success") {
+        setNoteDraft(null);
+        return;
+      }
+      const failure = revdocFailure(result);
+      if (failure?.code !== "conflict" || !failure.currentItem) {
+        toastRevdocFailure("Could not save the check", result);
+        return;
+      }
+      const next = resolveNoteConflict(draft, failure.currentItem);
+      draft = next.draft;
+      if (next._tag === "conflict") break;
     }
+    setNoteDraft(draft);
   };
 
   const resultBadge = item.result ? RESULT_BADGES[item.result.state] : null;

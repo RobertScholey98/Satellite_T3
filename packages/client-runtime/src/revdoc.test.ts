@@ -17,9 +17,9 @@ import {
   draftFixRequest,
   EMPTY_REVDOC_STATE,
   noteDraftSaveRevision,
+  resolveNoteConflict,
   startNoteDraft,
   summarizeRevdoc,
-  withNoteConflict,
 } from "./revdoc.ts";
 
 const header = (revision: number): RevdocReviewHeader => ({
@@ -224,13 +224,24 @@ describe("note drafts", () => {
     const draft = { ...startNoteDraft("Original", 3), text: "Mine" };
     // Another device saved at revision 4 while this draft was open; the draft still claims 3.
     expect(noteDraftSaveRevision(draft)).toBe(3);
-    const refused = withNoteConflict(draft, { note: "Theirs", revision: 4 });
+    const refused = resolveNoteConflict(draft, { note: "Theirs", revision: 4 });
     expect(refused).toEqual({
-      text: "Mine",
-      baseRevision: 3,
-      conflict: { note: "Theirs", revision: 4 },
+      _tag: "conflict",
+      draft: {
+        text: "Mine",
+        original: "Original",
+        baseRevision: 3,
+        conflict: { note: "Theirs", revision: 4 },
+      },
     });
     // Choosing to keep mine replaces exactly the version that was shown.
-    expect(noteDraftSaveRevision(refused)).toBe(4);
+    expect(noteDraftSaveRevision(refused.draft)).toBe(4);
+  });
+
+  it("retry silently when only an outcome or AI result moved the item on", () => {
+    const draft = { ...startNoteDraft("Original", 3), text: "Mine" };
+    const retried = resolveNoteConflict(draft, { note: "Original", revision: 7 });
+    expect(retried._tag).toBe("retry");
+    expect(noteDraftSaveRevision(retried.draft)).toBe(7);
   });
 });
