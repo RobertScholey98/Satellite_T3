@@ -496,3 +496,238 @@ describe("IssueService Start", () => {
     ),
   );
 });
+
+describe("IssueService after a hand move, a disconnect, a merge or a failed run", () => {
+  it.effect("drops a retried manual move once the ticket was moved by hand on the host", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.fail("move", remoteFailure());
+        const pending = yield* test.service.move({
+          requestId: "drag",
+          boardId: BOARD_ID,
+          issue: issueRef(1),
+          columnId: "progress",
+          expectedPlacement: "ready",
+        });
+        assert.strictEqual(pending.status, "pending");
+        yield* test.fail("move", null);
+        yield* test.moveByHand(1, "blocked");
+        yield* TestClock.adjust("1 minute");
+        yield* test.service.sweep;
+
+        assert.deepStrictEqual(
+          {
+            remote: test.remoteColumn(1),
+            writes: test.writes,
+            stored: yield* test.storedColumn(1),
+          },
+          { remote: "blocked", writes: [], stored: "blocked" },
+        );
+        const move = yield* test.latestMove(1);
+        assert.deepStrictEqual(
+          [move?.status, move?.error],
+          ["skipped", "Moved by hand to Blocked before this move reached the board."],
+        );
+      }),
+    ),
+  );
+
+  it.effect("applies a retried manual move whose ticket is still where the person saw it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.fail("move", remoteFailure());
+        yield* test.service.move({
+          requestId: "drag",
+          boardId: BOARD_ID,
+          issue: issueRef(1),
+          columnId: "progress",
+          expectedPlacement: "ready",
+        });
+        yield* test.fail("move", null);
+        yield* TestClock.adjust("1 minute");
+        yield* test.service.sweep;
+
+        assert.deepStrictEqual(test.writes, [{ ticket: 1, columnId: "progress" }]);
+        assert.strictEqual((yield* test.latestMove(1))?.status, "applied");
+      }),
+    ),
+  );
+
+  it.effect("queues the attempt's move again after a disconnect superseded it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const { threadId } = yield* test.startAttempt(1);
+        yield* test.fail("move", remoteFailure());
+        yield* test.threadRunning(threadId);
+        yield* test.service.reconcileThread(threadId);
+        assert.strictEqual((yield* test.latestMove(1))?.status, "pending");
+        yield* test.fail("move", null);
+        yield* test.service.disconnectBoard({ requestId: "disconnect", boardId: BOARD_ID });
+        yield* test.configureBoard({}, "reconnect");
+        yield* test.service.sweep;
+
+        const [attempt] = yield* test.attemptsOf(1);
+        assert.deepStrictEqual(
+          {
+            remote: test.remoteColumn(1),
+            status: attempt?.status,
+            active: attempt?.active,
+            automaticMoves: attempt?.automaticMoves,
+          },
+          { remote: "progress", status: "working", active: true, automaticMoves: "on" },
+        );
+      }),
+    ),
+  );
+
+  it.effect("ends a merged attempt, so unlinking its pull request leaves the ticket in Done", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const { threadId } = yield* test.startAttempt(1);
+        yield* test.threadRunning(threadId);
+        yield* test.service.reconcileThread(threadId);
+        yield* test.linkPullRequest(threadId, 7, "open");
+        yield* test.service.reconcileThread(threadId);
+        yield* test.setPullRequest(threadId, 7, "merged");
+        yield* test.service.reconcileThread(threadId);
+        assert.strictEqual(test.remoteColumn(1), "done");
+        const [merged] = yield* test.attemptsOf(1);
+        assert.deepStrictEqual(
+          [merged?.status, merged?.active, merged?.endedReason],
+          ["merged", false, "completed"],
+        );
+
+        yield* test.unlinkPullRequest(threadId, 7);
+        yield* test.service.reconcileThread(threadId);
+        assert.strictEqual(test.remoteColumn(1), "done");
+      }),
+    ),
+  );
+
+  it.effect(
+    "resumes an attempt whose first run failed, and its pull request then moves the ticket",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const test = yield* configured;
+          const { threadId, attempt } = yield* test.startAttempt(1);
+          yield* test.firstRunFailed(threadId);
+          yield* test.service.reconcileThread(threadId);
+          assert.deepStrictEqual(
+            (yield* test.attemptsOf(1)).map((entry) => [entry.status, entry.endedReason]),
+            [["failed", null]],
+          );
+
+          const resumed = yield* test.service.resumeAttempt({
+            requestId: "resume",
+            attemptId: attempt.id,
+          });
+          assert.deepStrictEqual([resumed.status, resumed.active], ["working", true]);
+          yield* test.linkPullRequest(threadId, 7, "open");
+          yield* test.service.reconcileThread(threadId);
+          assert.strictEqual(test.remoteColumn(1), "pr");
+        }),
+      ),
+  );
+
+  it.effect("keeps an attempt whose launch failed failed, with New attempt the way on", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.fail("launch", remoteFailure("The thread could not be launched."));
+        yield* test.startAttempt(1).pipe(Effect.flip);
+        const [failed] = yield* test.attemptsOf(1);
+        assert.strictEqual(failed?.endedReason, "launch-failed");
+
+        const refused = yield* test.service
+          .resumeAttempt({ requestId: "resume", attemptId: failed!.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.message, "Only an attempt you stopped can be resumed.");
+      }),
+    ),
+  );
+});
+
+describe("IssueService Start replays and restarts", () => {
+  it.effect("repeating a start whose launch failed returns the failure", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.fail("launch", remoteFailure("The thread could not be launched."));
+        yield* test.startAttempt(1).pipe(Effect.flip);
+        yield* test.fail("launch", null);
+        const repeated = yield* test.startAttempt(1).pipe(Effect.flip);
+
+        assert.deepStrictEqual(
+          [repeated.reason, repeated.message],
+          ["remote", "The thread could not be launched."],
+        );
+        assert.strictEqual(test.launches.length, 1);
+      }),
+    ),
+  );
+
+  it.effect("relaunches an attempt the server stopped before its thread existed", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const { threadId } = yield* test.startAttempt(1);
+        yield* test.loseLaunch(threadId);
+        yield* test.service.resumeLaunches;
+
+        assert.deepStrictEqual(
+          test.launches.map((launch) => [launch.commandId, launch.threadId]),
+          [
+            ["issue-attempt:start-1", threadId],
+            ["issue-attempt:start-1", threadId],
+          ],
+        );
+        assert.deepStrictEqual(
+          (yield* test.attemptsOf(1)).map((attempt) => attempt.status),
+          ["launching"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("fails a relaunch that fails", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const { threadId } = yield* test.startAttempt(1);
+        yield* test.loseLaunch(threadId);
+        yield* test.fail("launch", remoteFailure("The thread could not be launched."));
+        yield* test.service.resumeLaunches;
+
+        assert.deepStrictEqual(
+          (yield* test.attemptsOf(1)).map((attempt) => [attempt.status, attempt.endedReason]),
+          [["failed", "launch-failed"]],
+        );
+      }),
+    ),
+  );
+
+  it.effect("a board view carries active attempts and each ticket's latest attempt only", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const first = yield* test.startAttempt(1, "first");
+        yield* test.service.endAttempt({ requestId: "stop", attemptId: first.attempt.id });
+        const second = yield* test.startAttempt(1, "second");
+        yield* test.service.endAttempt({ requestId: "stop-2", attemptId: second.attempt.id });
+        const third = yield* test.startAttempt(1, "third");
+
+        const view = yield* test.openBoard();
+        assert.deepStrictEqual(
+          view.attempts.map((attempt) => attempt.id),
+          [third.attempt.id],
+        );
+        assert.strictEqual((yield* test.attemptsOf(1)).length, 3);
+      }),
+    ),
+  );
+});

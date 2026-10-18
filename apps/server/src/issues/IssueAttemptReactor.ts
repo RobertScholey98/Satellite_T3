@@ -15,7 +15,8 @@ import { IssueService } from "./IssueService.ts";
 /**
  * Drives attempt transitions from upstream's thread events. The live event stream starts at the
  * latest event, so a sweep at startup and every minute recovers whatever happened while the server
- * was down. A second sweep every five minutes refreshes watched or worked boards.
+ * was down; before the first sweep, attempts stopped between recording and launch launch again. A
+ * second sweep every five minutes refreshes watched or worked boards.
  */
 export class IssueAttemptReactor extends Context.Service<
   IssueAttemptReactor,
@@ -60,13 +61,15 @@ export const make = Effect.gen(function* () {
       }).pipe(Effect.catchCause(logFailure("issue attempt event stream failed"))),
     );
     yield* forkParked(
-      worker
-        .enqueue({ _tag: "sweep" })
-        .pipe(
-          Effect.andThen(worker.drain),
-          Effect.repeat(Schedule.spaced("1 minute")),
-          Effect.asVoid,
+      issues.resumeLaunches.pipe(
+        Effect.catchCause(logFailure("issue attempt relaunch failed")),
+        Effect.andThen(
+          worker
+            .enqueue({ _tag: "sweep" })
+            .pipe(Effect.andThen(worker.drain), Effect.repeat(Schedule.spaced("1 minute"))),
         ),
+        Effect.asVoid,
+      ),
     );
     yield* forkParked(
       issues.refreshStaleBoards.pipe(

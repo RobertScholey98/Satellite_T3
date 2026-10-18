@@ -163,11 +163,14 @@ export const IssueAttemptStatus = Schema.Literals([
 ]);
 export type IssueAttemptStatus = typeof IssueAttemptStatus.Type;
 
+/** For a failed attempt, `launch-failed` means no thread was created and New attempt is the way on. */
 export const IssueAttemptEndedReason = Schema.Literals([
   "user",
   "superseded",
   "thread-deleted",
   "migrated-without-board",
+  "completed",
+  "launch-failed",
 ]);
 export type IssueAttemptEndedReason = typeof IssueAttemptEndedReason.Type;
 

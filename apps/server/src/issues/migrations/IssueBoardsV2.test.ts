@@ -438,6 +438,8 @@ const carried = (
   controlling_pr_key: fields.prKey ?? null,
   controlling_pr_json: fields.prJson ?? null,
   launch_request_id: null,
+  launch_json: null,
+  failure: null,
   created_at: fields.createdAt,
   started_at: fields.startedAt,
 });
@@ -516,7 +518,7 @@ const MERGED_ATTEMPT = carried("att-merged", {
   issue: 7,
   board: "board-2",
   status: "merged",
-  active: 1,
+  endedReason: "completed",
   baseline: "pr-2",
   prKey: "github.com/acme/app#17",
   prJson: '{"host":"github.com","repository":"acme/app","number":17}',
@@ -610,6 +612,7 @@ describe("IssueBoardsV2", () => {
           "created_at",
           "origin",
           "retry_at",
+          "expected_json",
         ]);
         assert.deepStrictEqual(yield* listColumns("issue_board_attempts"), [
           "id",
@@ -628,6 +631,8 @@ describe("IssueBoardsV2", () => {
           "controlling_pr_key",
           "controlling_pr_json",
           "launch_request_id",
+          "launch_json",
+          "failure",
           "created_at",
           "started_at",
         ]);

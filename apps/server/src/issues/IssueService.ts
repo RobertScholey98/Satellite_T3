@@ -4,6 +4,7 @@ import * as NodeCrypto from "node:crypto";
 import {
   CommandId,
   IssueAttempt,
+  IssueAttemptsStartInput,
   IssueBoardColumn,
   IssueBoardItem,
   IssueBoardLocator,
@@ -17,7 +18,6 @@ import {
   type IssueAttemptsEndInput,
   type IssueAttemptsListInput,
   type IssueAttemptsResumeInput,
-  type IssueAttemptsStartInput,
   type IssueAttemptsStartResult,
   type IssueBoardSync,
   type IssueBoardSyncEvent,
@@ -170,6 +170,8 @@ export interface IssueServiceShape {
   ) => Effect.Effect<IssueThreadTicket | null, IssueOperationError>;
   /** Brings the thread's attempts up to date with the thread and queues their automatic moves. */
   readonly reconcileThread: (threadId: ThreadId) => Effect.Effect<void, IssueOperationError>;
+  /** Re-issues the launch of attempts the server stopped between recording and launching them. */
+  readonly resumeLaunches: Effect.Effect<void, IssueOperationError>;
   /** Reconciles every running attempt and applies due moves. Recovers events missed while down. */
   readonly sweep: Effect.Effect<void, IssueOperationError>;
   /** Queues a refresh for watched or worked boards whose stored copy is older than five minutes. */
@@ -191,6 +193,7 @@ const hash = (value: unknown) => digest(json(value));
 const decodeBoardValue = Schema.decodeEffect(IssueBoardSummary);
 const decodeAttemptValue = Schema.decodeUnknownEffect(IssueAttempt);
 const decodeMoveValue = Schema.decodeUnknownEffect(IssueMove);
+const encodeLaunch = Schema.encodeSync(Schema.fromJsonString(IssueAttemptsStartInput));
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
   Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(storageError));
 const RemoteBoard = Schema.Struct({
@@ -238,6 +241,8 @@ interface AttemptRow {
   readonly controlling_pr_key: string | null;
   readonly controlling_pr_json: string | null;
   readonly launch_request_id: string | null;
+  readonly launch_json: string | null;
+  readonly failure: string | null;
   readonly created_at: string;
   readonly started_at: string | null;
 }
@@ -254,6 +259,7 @@ interface MoveRow {
   readonly status: string;
   readonly error: string | null;
   readonly retry_at: string | null;
+  readonly expected_json: string | null;
   readonly created_at: string;
 }
 
@@ -261,7 +267,8 @@ const attemptedAt = (row: SyncRow) =>
   Math.max(Date.parse(row.synced_at), row.failed_at === null ? 0 : Date.parse(row.failed_at));
 const automaticRequestKey = (attemptId: string, transitionIndex: number) =>
   `auto:${attemptId}:${transitionIndex}`;
-const LIVE_STAGES = new Set(["launching", "working", "in-pr", "merged"]);
+/** Stages an attempt can leave. Merged is terminal, so unlinking its pull request moves nothing. */
+const RUNNING_STAGES = new Set(["launching", "working", "in-pr"]);
 
 /** Board ids are derived from project and locator, so reconnecting a board finds its attempts. */
 export const issueBoardId = (projectId: ProjectId, locator: IssueBoardLocator) =>
@@ -596,6 +603,19 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
         }),
       );
 
+    /**
+     * The attempts a board view carries: active ones and each ticket's latest. Earlier attempts
+     * load with the ticket's detail through `listAttempts`.
+     */
+    const boardAttempts = (boardId: string) =>
+      protect(
+        sql<AttemptRow>`SELECT * FROM issue_board_attempts a WHERE board_id=${boardId}
+          AND (active=1 OR a.rowid=(SELECT b.rowid FROM issue_board_attempts b
+            WHERE b.board_id=a.board_id AND b.issue_key=a.issue_key
+            ORDER BY b.created_at DESC, b.rowid DESC LIMIT 1))
+          ORDER BY active DESC, created_at DESC`.pipe(Effect.flatMap(decodeAttempts)),
+      );
+
     /** Finds the board item for a ticket in the stored copy, reading the board when it is missing. */
     const locateItem = Effect.fnUntraced(function* (
       boardId: string,
@@ -628,6 +648,8 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
       readonly columnId: string;
       readonly attemptId: string | null;
       readonly origin: "manual" | "automatic";
+      /** The column a person saw; a retry is dropped once the remote board shows another. */
+      readonly expected?: string | null;
     }) {
       const existing =
         yield* sql<MoveRow>`SELECT * FROM issue_moves WHERE request_key=${input.requestKey}`;
@@ -637,8 +659,9 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
         yield* sql`UPDATE issue_moves SET status='superseded',error=NULL
           WHERE board_id=${input.boardId} AND issue_key=${key} AND status IN ('pending','failed')`;
       const id = NodeCrypto.randomUUID();
-      yield* sql`INSERT INTO issue_moves(id,request_key,board_id,issue_key,issue_json,column_id,attempt_id,origin,status,error,created_at)
-        VALUES(${id},${input.requestKey},${input.boardId},${key},${json(input.issue)},${input.columnId},${input.attemptId},${input.origin},'pending',NULL,${yield* now})`;
+      const expected = input.expected === undefined ? null : json(input.expected);
+      yield* sql`INSERT INTO issue_moves(id,request_key,board_id,issue_key,issue_json,column_id,attempt_id,origin,status,error,created_at,expected_json)
+        VALUES(${id},${input.requestKey},${input.boardId},${key},${json(input.issue)},${input.columnId},${input.attemptId},${input.origin},'pending',NULL,${yield* now},${expected})`;
       return id;
     });
 
@@ -652,6 +675,7 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
     const processMove = Effect.fnUntraced(function* (move: MoveRow) {
       const board = yield* findBoard(move.board_id);
       if (!board) return yield* settleMove(move.id, "superseded", null);
+      let observed: { readonly column: string | null } | undefined;
       const outcome = yield* Effect.gen(function* () {
         const cwd = (yield* project(board.projectId)).workspaceRoot;
         let attempt: AttemptRow | undefined;
@@ -666,7 +690,22 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
             return { status: "superseded" as const, reason: null };
         }
         const remote = yield* freshItem(board.id, cwd, board.locator, move.issue_key);
+        observed = { column: remote.columnId };
         const columns = (yield* storedBoard(board.id))?.columns ?? [];
+        const columnTitle = (id: string | null) =>
+          columns.find((column) => column.id === id)?.title ?? "no column";
+        if (
+          move.origin === "manual" &&
+          move.expected_json !== null &&
+          (yield* parse(Schema.NullOr(Schema.String), move.expected_json)) !== remote.columnId
+        ) {
+          // The latest manual move wins wherever it was made, including on the host's own page.
+          yield* storeItem(board.id, remote);
+          return {
+            status: "skipped" as const,
+            reason: `Moved by hand to ${columnTitle(remote.columnId)} before this move reached the board.`,
+          };
+        }
         if (!columns.some((column) => column.id === move.column_id))
           return yield* error(
             "invalid",
@@ -683,7 +722,7 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
             target: move.column_id,
             baseline: attempt.baseline_column_id,
             readyColumns: board.mapping ? issueReadyColumnIds(board.mapping) : [],
-            columnTitle: (id) => columns.find((column) => column.id === id)?.title ?? "no column",
+            columnTitle,
           });
           if (decision._tag === "Skipped") {
             yield* storeItem(board.id, remote);
@@ -709,6 +748,8 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
         return yield* settleMove(move.id, outcome.success.status, outcome.success.reason);
       const failure = preserveError(outcome.failure);
       const waited = (yield* nowMillis) - Date.parse(move.created_at);
+      if (move.origin === "manual" && move.expected_json === null && observed !== undefined)
+        yield* sql`UPDATE issue_moves SET expected_json=${json(observed.column)} WHERE id=${move.id}`;
       if (isTransientFailure(failure) && waited < MOVE_RETRY_WINDOW_MS) {
         const retryAt = DateTime.formatIso(
           DateTime.makeUnsafe((yield* nowMillis) + moveRetryDelayMs(waited)),
@@ -738,7 +779,7 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
     });
     /** Records the attempt's derived stage and queues the automatic move for a new stage. */
     const reconcileRow = Effect.fnUntraced(function* (row: AttemptRow) {
-      if (!LIVE_STAGES.has(row.status) || (row.status !== "launching" && row.active !== 1))
+      if (!RUNNING_STAGES.has(row.status) || (row.status !== "launching" && row.active !== 1))
         return false;
       // A disconnected board pauses its attempts; reconnecting lets the next sweep catch up.
       const board = yield* findBoard(row.board_id);
@@ -763,16 +804,16 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
           controlling_pr_json=${prJson} WHERE id=${row.id}`;
       const stage = deriveStage({
         worktreeReady: facts.worktreePath !== null,
-        firstRun: facts.firstRun,
+        // Once the agent has started, a later failed run does not undo the attempt.
+        firstRun: row.status === "launching" ? facts.firstRun : "running",
         controllingPullRequest: pr,
       });
       if (stage === "failed") {
-        if (row.status !== "launching") return false;
         yield* sql`UPDATE issue_board_attempts SET status='failed' WHERE id=${row.id}`;
         return true;
       }
-      if (stage === row.status) return false;
       if (stage === "launching") return false;
+      if (stage === row.status) return yield* requeueSupersededMove(row, board.mapping, stage);
       const index = row.transition_index + 1;
       yield* transaction(
         Effect.gen(function* () {
@@ -796,21 +837,62 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
       );
       return true;
     });
+    /**
+     * Queues the attempt's move again when its last one was superseded, as disconnecting a board
+     * does, and the stored copy shows the ticket away from where the stage puts it. The move then
+     * runs the normal manual-wins checks.
+     */
+    const requeueSupersededMove = Effect.fnUntraced(function* (
+      row: AttemptRow,
+      mapping: IssueBoardMapping,
+      stage: AttemptStage,
+    ) {
+      const target = stageColumn(stage, mapping);
+      if (target === null) return false;
+      const last = yield* sql<{ status: string }>`SELECT status FROM issue_moves
+        WHERE request_key=${automaticRequestKey(row.id, row.transition_index)}`;
+      if (last[0]?.status !== "superseded") return false;
+      const stored = (yield* storedBoard(row.board_id))?.items.find(
+        (item) => canonicalIssueKey(item.issue.ref) === row.issue_key,
+      );
+      if (!stored || stored.columnId === target) return false;
+      const index = row.transition_index + 1;
+      yield* transaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE issue_board_attempts SET transition_index=${index} WHERE id=${row.id}`;
+          yield* enqueueMove({
+            requestKey: automaticRequestKey(row.id, index),
+            boardId: row.board_id,
+            issue: yield* parse(IssueRef, row.issue_json),
+            columnId: target,
+            attemptId: row.id,
+            origin: "automatic",
+          });
+        }),
+      );
+      return true;
+    });
+    /** A merged attempt is finished once its last move settled; it stops holding the ticket. */
+    const completeMergedAttempts = sql<{ board_id: string }>`UPDATE issue_board_attempts
+      SET active=0, ended_reason='completed'
+      WHERE status='merged' AND active=1 AND NOT EXISTS (
+        SELECT 1 FROM issue_moves m WHERE m.attempt_id=issue_board_attempts.id
+          AND m.origin='automatic' AND m.status='pending')
+      RETURNING board_id`;
     const reconcileRows = Effect.fnUntraced(function* (rows: ReadonlyArray<AttemptRow>) {
       const changed = new Set<string>();
       for (const row of rows) if (yield* reconcileRow(row)) changed.add(row.board_id);
       yield* flushLocked();
+      for (const completed of yield* completeMergedAttempts) changed.add(completed.board_id);
       for (const boardId of changed) yield* bumpRevision(boardId);
     });
     const reconcileThread: IssueServiceShape["reconcileThread"] = (threadId) =>
       lock(
         sql<AttemptRow>`SELECT * FROM issue_board_attempts WHERE thread_id=${threadId}
-          AND status IN ('launching','working','in-pr','merged')`.pipe(
-          Effect.flatMap(reconcileRows),
-        ),
+          AND status IN ('launching','working','in-pr')`.pipe(Effect.flatMap(reconcileRows)),
       );
     const sweep: IssueServiceShape["sweep"] = lock(
-      sql<AttemptRow>`SELECT * FROM issue_board_attempts WHERE status IN ('launching','working','in-pr','merged')`.pipe(
+      sql<AttemptRow>`SELECT * FROM issue_board_attempts WHERE status IN ('launching','working','in-pr')`.pipe(
         Effect.flatMap(reconcileRows),
       ),
     );
@@ -869,7 +951,7 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
             board: { ...board, title: remote.title, locator: remote.locator },
             columns: remote.columns,
             items: remote.items,
-            attempts: saved ? yield* listAttempts({ boardId: board.id }) : [],
+            attempts: saved ? yield* boardAttempts(board.id) : [],
             moves: saved ? yield* latestMoves(board.id) : [],
             ...(sync ? { sync } : {}),
           };
@@ -1057,6 +1139,7 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
                 columnId: input.columnId,
                 attemptId: null,
                 origin: "manual",
+                expected: remote.columnId,
               });
               yield* remember(input.requestId, input, id);
               return id;
@@ -1077,7 +1160,9 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
           if (!previous) return yield* error("not-found", "The board move was not found.");
           let id = previous.id;
           if (previous.status === "failed")
-            yield* sql`UPDATE issue_moves SET status='pending',error=NULL,retry_at=NULL WHERE id=${previous.id}`;
+            // Retry is the newest manual decision, so it no longer waits on the column seen before.
+            yield* sql`UPDATE issue_moves SET status='pending',error=NULL,retry_at=NULL,expected_json=NULL
+              WHERE id=${previous.id}`;
           else if (previous.status === "skipped")
             // Applying a skipped automatic move is a deliberate manual move; the attempt resumes from there.
             id = yield* enqueueMove({
@@ -1093,6 +1178,49 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
           return yield* readMove(id);
         }),
       );
+
+    /**
+     * Reads the ticket and launches the attempt's thread through upstream's launch service, keyed
+     * by the start request id. Either failing fails the attempt, so none stays launching without a
+     * thread.
+     */
+    const launchAttempt = Effect.fnUntraced(function* (
+      row: AttemptRow,
+      input: IssueAttemptsStartInput,
+    ) {
+      const launched = yield* scope(input.projectId).pipe(
+        Effect.flatMap((found) =>
+          issueHost(found).pipe(
+            Effect.flatMap((adapter) => adapter.get({ cwd: found.cwd, ref: input.issue })),
+          ),
+        ),
+        Effect.flatMap((detail) =>
+          deps.launchThread({
+            commandId: CommandId.make(`issue-attempt:${input.requestId}`),
+            threadId: ThreadId.make(row.thread_id),
+            projectId: input.projectId,
+            title: `#${detail.ref.number} ${detail.title}`.slice(0, 200),
+            text: `${input.prompt}${attachedIssueBlock(detail)}`,
+            branch: input.branch,
+            baseRef: input.baseRef,
+            modelSelection: input.modelSelection,
+            runtimeMode: input.runtimeMode,
+            interactionMode: input.interactionMode,
+          }),
+        ),
+        Effect.result,
+      );
+      if (launched._tag === "Success") return;
+      const failure = preserveError(launched.failure);
+      yield* lock(
+        Effect.gen(function* () {
+          yield* sql`UPDATE issue_board_attempts SET status='failed',ended_reason='launch-failed',
+            failure=${failure.message} WHERE id=${row.id} AND status='launching'`;
+          yield* bumpRevision(row.board_id);
+        }),
+      );
+      return yield* failure;
+    });
 
     const startAttempt: IssueServiceShape["startAttempt"] = (input) =>
       protect(
@@ -1127,9 +1255,9 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
               yield* transaction(
                 Effect.gen(function* () {
                   yield* sql`INSERT INTO issue_board_attempts(id,board_id,issue_key,issue_json,project_id,thread_id,status,active,
-                    start_column_id,launch_request_id,created_at)
+                    start_column_id,launch_request_id,launch_json,created_at)
                     VALUES(${id},${board.id},${canonicalIssueKey(item.issue.ref)},${json(item.issue.ref)},${input.projectId},
-                    ${threadId},'launching',0,${item.columnId},${input.requestId},${yield* now})`;
+                    ${threadId},'launching',0,${item.columnId},${input.requestId},${encodeLaunch(input)},${yield* now})`;
                   yield* remember(input.requestId, input, id);
                 }),
               );
@@ -1137,44 +1265,32 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
               return yield* readAttemptRow(id);
             }),
           );
-          if (row.status === "launching") {
-            // The ticket read is part of the launch: if either fails the attempt is failed, never
-            // left launching without a thread.
-            const launched = yield* scope(input.projectId).pipe(
-              Effect.flatMap((found) =>
-                issueHost(found).pipe(
-                  Effect.flatMap((adapter) => adapter.get({ cwd: found.cwd, ref: input.issue })),
-                ),
-              ),
-              Effect.flatMap((detail) =>
-                deps.launchThread({
-                  commandId: CommandId.make(`issue-attempt:${input.requestId}`),
-                  threadId: ThreadId.make(row.thread_id),
-                  projectId: input.projectId,
-                  title: `#${detail.ref.number} ${detail.title}`.slice(0, 200),
-                  text: `${input.prompt}${attachedIssueBlock(detail)}`,
-                  branch: input.branch,
-                  baseRef: input.baseRef,
-                  modelSelection: input.modelSelection,
-                  runtimeMode: input.runtimeMode,
-                  interactionMode: input.interactionMode,
-                }),
-              ),
-              Effect.result,
-            );
-            if (launched._tag === "Failure") {
-              yield* lock(
-                Effect.gen(function* () {
-                  yield* sql`UPDATE issue_board_attempts SET status='failed' WHERE id=${row.id} AND status='launching'`;
-                  yield* bumpRevision(row.board_id);
-                }),
-              );
-              return yield* launched.failure;
-            }
-          }
+          if (row.status === "failed" && row.ended_reason === "launch-failed")
+            return yield* error("remote", row.failure ?? "This start failed. Start a new attempt.");
+          if (row.status === "launching") yield* launchAttempt(row, input);
           return { attempt: yield* readAttempt(row.id), threadId: ThreadId.make(row.thread_id) };
         }),
       );
+
+    const resumeLaunches: IssueServiceShape["resumeLaunches"] = protect(
+      Effect.gen(function* () {
+        const rows = yield* sql<AttemptRow>`SELECT * FROM issue_board_attempts
+          WHERE status='launching' AND launch_json IS NOT NULL`;
+        for (const row of rows) {
+          // Launch is idempotent on the command id, so a thread that exists is left to the sweep.
+          if ((yield* threadFacts(row)) !== null) continue;
+          const input = yield* parse(IssueAttemptsStartInput, row.launch_json!);
+          yield* launchAttempt(row, input).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not relaunch an issue attempt", {
+                attemptId: row.id,
+                cause: cause.message,
+              }),
+            ),
+          );
+        }
+      }),
+    );
 
     const endAttempt: IssueServiceShape["endAttempt"] = (input) =>
       lock(
@@ -1223,7 +1339,10 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
           const replay = yield* requestReplay(input.requestId, input);
           if (replay) return yield* readAttempt(input.attemptId);
           const row = yield* readAttemptRow(input.attemptId);
-          if (row.status !== "ended" || row.ended_reason !== "user")
+          const stopped = row.status === "ended" && row.ended_reason === "user";
+          // A failed run leaves a thread to continue in; a failed launch leaves nothing to resume.
+          const runFailed = row.status === "failed" && row.ended_reason !== "launch-failed";
+          if (!stopped && !runFailed)
             return yield* error("conflict", "Only an attempt you stopped can be resumed.");
           const others = yield* sql`SELECT 1 FROM issue_board_attempts
             WHERE board_id=${row.board_id} AND issue_key=${row.issue_key} AND active=1`;
@@ -1238,7 +1357,7 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
           const pr = controllingPullRequestOf(facts.pullRequests);
           const derived = deriveStage({
             worktreeReady: facts.worktreePath !== null,
-            firstRun: facts.firstRun,
+            firstRun: "running",
             controllingPullRequest: pr,
           });
           const stage: AttemptStage =
@@ -1256,6 +1375,7 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
           yield* transaction(
             Effect.gen(function* () {
               yield* sql`UPDATE issue_board_attempts SET status=${stage},active=1,ended_reason=NULL,
+                started_at=COALESCE(started_at,${yield* now}),
                 baseline_column_id=${baseline},transition_index=${index} WHERE id=${row.id}`;
               const target = stageColumn(stage, board.mapping!);
               if (target !== null)
@@ -1359,6 +1479,7 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
       resumeAttempt,
       threadTicket,
       reconcileThread,
+      resumeLaunches,
       sweep,
       refreshStaleBoards,
       drainRefreshes: refreshes.drain,

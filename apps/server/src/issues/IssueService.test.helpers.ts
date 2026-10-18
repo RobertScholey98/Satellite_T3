@@ -21,7 +21,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
-import type * as SqlClient from "effect/sql/SqlClient";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { fromAdapters } from "./IssueHost.ts";
 import {
@@ -369,6 +369,14 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
         ...facts,
         pullRequests: facts.pullRequests.filter((link) => link.number !== number),
       })),
+    /** As if the server stopped after recording an attempt and before its thread existed. */
+    loseLaunch: (threadId: ThreadId) =>
+      Effect.gen(function* () {
+        threads.delete(threadId);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE issue_board_attempts SET status='launching',ended_reason=NULL,failure=NULL
+          WHERE thread_id=${threadId}`;
+      }),
     deleteThread: (threadId: ThreadId) =>
       updateThread(threadId, (facts) => ({ ...facts, deleted: true })),
   };

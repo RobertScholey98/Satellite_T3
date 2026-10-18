@@ -141,13 +141,16 @@ export const IssueBoardsV2 = Effect.gen(function* () {
     request_key TEXT NOT NULL UNIQUE, board_id TEXT NOT NULL, issue_key TEXT NOT NULL,
     issue_json TEXT NOT NULL, column_id TEXT NOT NULL, attempt_id TEXT,
     status TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL,
-    origin TEXT NOT NULL DEFAULT 'manual', retry_at TEXT
+    origin TEXT NOT NULL DEFAULT 'manual', retry_at TEXT, expected_json TEXT
   )`;
   if (!(yield* columnExists("issue_moves", "origin"))) {
     yield* sql`ALTER TABLE issue_moves ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'`;
   }
   if (!(yield* columnExists("issue_moves", "retry_at"))) {
     yield* sql`ALTER TABLE issue_moves ADD COLUMN retry_at TEXT`;
+  }
+  if (!(yield* columnExists("issue_moves", "expected_json"))) {
+    yield* sql`ALTER TABLE issue_moves ADD COLUMN expected_json TEXT`;
   }
   yield* sql`CREATE INDEX IF NOT EXISTS issue_moves_pending ON issue_moves(status, sequence)`;
   yield* sql`CREATE INDEX IF NOT EXISTS issue_moves_issue ON issue_moves(board_id, issue_key, sequence)`;
@@ -169,6 +172,8 @@ export const IssueBoardsV2 = Effect.gen(function* () {
     controlling_pr_key TEXT,
     controlling_pr_json TEXT,
     launch_request_id TEXT UNIQUE,
+    launch_json TEXT,
+    failure TEXT,
     created_at TEXT NOT NULL,
     started_at TEXT
   )`;
@@ -247,11 +252,11 @@ export const IssueBoardsV2 = Effect.gen(function* () {
             row.controlling_pr_key === null
               ? undefined
               : observations.get(`${row.id}\n${row.controlling_pr_key}`);
-          return {
-            status: startedStage(observed, row.completed_at),
-            active: true,
-            endedReason: null,
-          };
+          const stage = startedStage(observed, row.completed_at);
+          // A merged attempt is finished; it neither moves its ticket again nor holds the ticket.
+          return stage === "merged"
+            ? { status: stage, active: false, endedReason: "completed" }
+            : { status: stage, active: true, endedReason: null };
         }
         default:
           return null;
