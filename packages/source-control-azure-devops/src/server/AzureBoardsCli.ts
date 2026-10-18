@@ -29,7 +29,12 @@ export type AzureBoardsCliError =
   | AzureBoardsRejectedError
   | PlatformError.PlatformError;
 
-const REJECTION_CODE = /\b(TF\d{5,6}|VS\d{6})\b/;
+/**
+ * Work item rule and validation errors: a field rule (TF401320), an invalid field value (TF401326),
+ * an unknown area or iteration path (TF401347), an unknown field (TF51535), and the VS402xxx
+ * validation family. Other codes, such as TF400898 (internal error), can heal on a retry.
+ */
+const REJECTION_CODE = /\b(TF401320|TF401326|TF401347|TF51535|VS402\d{3})\b/;
 const exitKind = (stderr: string) => {
   const text = stderr.toLowerCase();
   if (/az (devops )?login|unauthorized|authentication failed/.test(text)) return "authentication";

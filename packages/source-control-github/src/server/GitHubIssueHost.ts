@@ -80,9 +80,11 @@ const lacksProjectScope = (error: GraphQLClientError.GraphQLClientError) =>
  * failures may heal on a retry.
  */
 const graphQlAnswerError = (error: GraphQLClientError.GraphQLClientError) => {
-  // Not-found and rate-limit answers keep the client's own mapping.
+  // Not-found, rate-limit and 5xx answers keep the client's own mapping. GitHub reports a query
+  // timeout as HTTP 502 with an `errors` body, which can succeed on a retry.
   if (
     error.reason._tag !== "ResponseError" ||
+    (error.reason.status ?? 200) >= 500 ||
     GitHubGraphQlClient.isNotFoundOnly(error) ||
     error.reason.errors.some((entry) => entry["type"] === "RATE_LIMITED")
   )

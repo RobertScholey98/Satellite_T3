@@ -482,6 +482,29 @@ describe("GitHubIssueHost boards", () => {
     }),
   );
 
+  it.effect("keeps a GraphQL timeout answered with HTTP 502 retryable", () =>
+    Effect.gen(function* () {
+      const { adapter } = harness(() =>
+        json(
+          {
+            data: null,
+            errors: [
+              {
+                message:
+                  "Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug.",
+              },
+            ],
+          },
+          502,
+        ),
+      );
+      const failure = yield* (yield* adapter).boards
+        .move("/repo", connected, boardItem("PVTI_1", 1, "opt_todo"), "opt_doing")
+        .pipe(Effect.flip);
+      assert.strictEqual(failure.reason, "remote");
+    }),
+  );
+
   it.effect("routes an enterprise host's Projects calls to its own API", () =>
     Effect.gen(function* () {
       const { adapter, sent } = harness((request) => {

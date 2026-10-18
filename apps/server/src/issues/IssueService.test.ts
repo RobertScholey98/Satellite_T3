@@ -652,6 +652,84 @@ describe("IssueService after a hand move, a disconnect, a merge or a failed run"
   );
 });
 
+describe("IssueService after the merge and on retried moves", () => {
+  const mergedWithDoneMoveFailing = (failure: ReturnType<typeof remoteFailure>) =>
+    Effect.gen(function* () {
+      const test = yield* configured;
+      const { threadId, attempt } = yield* test.startAttempt(1);
+      yield* test.threadRunning(threadId);
+      yield* test.service.reconcileThread(threadId);
+      yield* test.linkPullRequest(threadId, 7, "open");
+      yield* test.service.reconcileThread(threadId);
+      yield* test.fail("move", failure);
+      yield* test.setPullRequest(threadId, 7, "merged");
+      yield* test.service.reconcileThread(threadId);
+      yield* test.fail("move", null);
+      return { test, threadId, attemptId: attempt.id };
+    });
+
+  it.effect("Retry on a failed Done move applies it after the attempt merged", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { test, threadId } = yield* mergedWithDoneMoveFailing(
+          authenticationFailure("Azure DevOps refused the change: TF401320."),
+        );
+        const failed = yield* test.latestMove(1);
+        assert.deepStrictEqual([failed?.status, test.remoteColumn(1)], ["failed", "pr"]);
+
+        const retried = yield* test.service.retryMove({ requestId: "retry", moveId: failed!.id });
+        assert.deepStrictEqual([retried.status, test.remoteColumn(1)], ["applied", "done"]);
+        yield* test.service.reconcileThread(threadId);
+        const [attempt] = yield* test.attemptsOf(1);
+        assert.deepStrictEqual([attempt?.active, attempt?.endedReason], [false, "completed"]);
+      }),
+    ),
+  );
+
+  it.effect("a Done move a disconnect superseded is queued again on reconnect", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { test } = yield* mergedWithDoneMoveFailing(remoteFailure());
+        assert.strictEqual((yield* test.latestMove(1))?.status, "pending");
+        yield* test.service.disconnectBoard({ requestId: "disconnect", boardId: BOARD_ID });
+        yield* test.service.sweep;
+        yield* test.configureBoard({}, "reconnect");
+        yield* test.service.sweep;
+
+        const [attempt] = yield* test.attemptsOf(1);
+        assert.deepStrictEqual(
+          [test.remoteColumn(1), attempt?.status, attempt?.active, attempt?.endedReason],
+          ["done", "merged", false, "completed"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("settles a retried manual move as applied when its first write already landed", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.fail("move", remoteFailure());
+        yield* test.service.move({
+          requestId: "drag",
+          boardId: BOARD_ID,
+          issue: issueRef(1),
+          columnId: "progress",
+          expectedPlacement: "ready",
+        });
+        yield* test.fail("move", null);
+        // The host applied the first write after all.
+        yield* test.moveByHand(1, "progress");
+        yield* TestClock.adjust("1 minute");
+        yield* test.service.sweep;
+
+        const move = yield* test.latestMove(1);
+        assert.deepStrictEqual([move?.status, move?.error, test.writes], ["applied", null, []]);
+      }),
+    ),
+  );
+});
+
 describe("IssueService Start replays and restarts", () => {
   it.effect("repeating a start whose launch failed returns the failure", () =>
     withDatabase(

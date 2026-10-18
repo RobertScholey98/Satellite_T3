@@ -542,14 +542,16 @@ describe("AzureBoardsIssueHost boards", () => {
 
   it.effect("keeps a move failure without a rule code retryable", () =>
     Effect.gen(function* () {
-      const host = boardHost({
-        ids: [42],
-        update: new AzureExit(1, "ERROR: Max retries exceeded with url: /_apis/wit\n"),
-      });
-      const failure = yield* (yield* host.adapter).boards
-        .move("/repo", locator, boardItem(42), "doing")
-        .pipe(Effect.flip);
-      assert.strictEqual(failure.reason, "remote");
+      for (const stderr of [
+        "ERROR: Max retries exceeded with url: /_apis/wit\n",
+        "ERROR: TF400898: An Internal Error Occurred. Activity Id: 1f6a.\n",
+      ]) {
+        const host = boardHost({ ids: [42], update: new AzureExit(1, stderr) });
+        const failure = yield* (yield* host.adapter).boards
+          .move("/repo", locator, boardItem(42), "doing")
+          .pipe(Effect.flip);
+        assert.strictEqual(failure.reason, "remote");
+      }
     }),
   );
 

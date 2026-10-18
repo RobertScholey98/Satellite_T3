@@ -386,7 +386,7 @@ const readAttempts = Effect.gen(function* () {
 
 const readMoves = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql`SELECT id, origin, status, error, retry_at FROM issue_moves ORDER BY sequence`;
+  return yield* sql`SELECT id, origin, status, error, retry_at, expected_json FROM issue_moves ORDER BY sequence`;
 });
 
 const NEW_TABLES = [
@@ -527,13 +527,21 @@ const MERGED_ATTEMPT = carried("att-merged", {
 });
 
 const TRANSLATED_MOVES = [
-  { id: "move-manual-pending", origin: "manual", status: "pending", error: null, retry_at: null },
+  {
+    id: "move-manual-pending",
+    origin: "manual",
+    status: "pending",
+    error: null,
+    retry_at: null,
+    expected_json: null,
+  },
   {
     id: "move-manual-failed",
     origin: "manual",
     status: "failed",
     error: "The board could not be reached.",
     retry_at: null,
+    expected_json: null,
   },
   {
     id: "move-event-pending",
@@ -541,6 +549,7 @@ const TRANSLATED_MOVES = [
     status: "superseded",
     error: null,
     retry_at: null,
+    expected_json: null,
   },
   {
     id: "move-event-barrier",
@@ -548,6 +557,7 @@ const TRANSLATED_MOVES = [
     status: "skipped",
     error: "Moved by hand.",
     retry_at: null,
+    expected_json: null,
   },
   {
     id: "move-event-failed",
@@ -555,6 +565,7 @@ const TRANSLATED_MOVES = [
     status: "failed",
     error: "The item no longer exists.",
     retry_at: null,
+    expected_json: null,
   },
   {
     id: "move-event-applied",
@@ -562,6 +573,7 @@ const TRANSLATED_MOVES = [
     status: "applied",
     error: null,
     retry_at: null,
+    expected_json: null,
   },
   {
     id: "move-event-superseded",
@@ -569,6 +581,7 @@ const TRANSLATED_MOVES = [
     status: "superseded",
     error: null,
     retry_at: null,
+    expected_json: null,
   },
 ];
 
