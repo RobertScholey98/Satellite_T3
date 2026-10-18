@@ -64,6 +64,12 @@ on:
         required: false
         default: false
         type: boolean
+      # Whether Windows embeds the same-arch Linux CLI archive as the WSL
+      # runtime. Off, the job neither waits for nor downloads that archive.
+      wsl_runtime:
+        required: false
+        default: true
+        type: boolean
       version:
         required: true
         type: string
@@ -349,7 +355,7 @@ jobs:
       # after all other setup. It stops early if the Linux job ended without
       # uploading the archive.
       - name: Wait for Linux CLI archive
-        if: inputs.platform == 'win'
+        if: inputs.platform == 'win' && inputs.wsl_runtime
         shell: pwsh
         timeout-minutes: 40
         env:
@@ -397,7 +403,7 @@ jobs:
           }
 
       - name: Download Linux CLI archive for WSL
-        if: inputs.platform == 'win'
+        if: inputs.platform == 'win' && inputs.wsl_runtime
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: cli-linux-${{ inputs.arch }}
@@ -468,7 +474,9 @@ jobs:
           elif [[ "${{ inputs.platform }}" == "win" ]]; then
             # Embed the Linux CLI archive built by the same-arch Linux job as
             # the WSL runtime. Required for a working WSL backend on Windows.
-            args+=(--wsl-runtime "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-${{ inputs.arch }}.tar.gz)
+            if [[ "${{ inputs.wsl_runtime }}" == "true" ]]; then
+              args+=(--wsl-runtime "$GITHUB_WORKSPACE"/wsl-runtime/t3-*-linux-${{ inputs.arch }}.tar.gz)
+            fi
             if has_all \
               "$AZURE_TENANT_ID" \
               "$AZURE_CLIENT_ID" \
