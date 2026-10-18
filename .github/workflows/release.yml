@@ -18,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      release_notes:
+        description: "Notes shown above the generated pull request list"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   # release-desktop.yml asks for actions: read.
@@ -33,6 +38,9 @@ jobs:
     name: Resolve release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      checks: read
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -84,6 +92,20 @@ jobs:
             exit 1
           fi
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      # The release jobs run no tests, so CI's required Check must already
+      # have passed on this exact commit.
+      - name: Require passing CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.tag.outputs.commit }}
+        run: |
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT/check-runs?check_name=Check&per_page=100" \
+            --jq '[.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success")] | length')
+          if [[ "$passed" -eq 0 ]]; then
+            echo "CI's Check has not passed on $COMMIT. Wait for SatelliteT3 CI to pass on that commit, then rerun." >&2
+            exit 1
+          fi
 
   build_bundle:
     name: Build JS bundle
@@ -302,8 +324,12 @@ jobs:
           RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
           RELEASE_EVENT: ${{ github.event_name }}
           PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           args=(--target "$RELEASE_COMMIT" --generate-notes --title "SatelliteT3 $RELEASE_TAG")
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            args+=(--notes "$RELEASE_NOTES")
+          fi
           if [[ "$RELEASE_EVENT" != "workflow_dispatch" ]]; then
             args+=(--verify-tag)
           fi

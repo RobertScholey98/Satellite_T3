@@ -13,18 +13,21 @@ The workflow runs on GitHub-hosted runners and needs no secrets beyond the built
 1. Choose a version (see [Version rules](#version-rules)). Publish prereleases such as
    `2.0.0-beta.1` before a stable version: installed Windows builds follow the latest stable
    release, and an update migrates their data.
-2. Start the workflow in either of two ways:
+2. Make sure **SatelliteT3 CI** passed on the commit you will release. The release jobs run no
+   tests, so **Resolve release** refuses a commit whose CI `Check` has not passed.
+3. Start the workflow in either of two ways:
    - **Actions → SatelliteT3 Release → Run workflow.** Select the branch to build, usually
      `main`, and enter the version without the `v`. The workflow creates the `v` tag on that
-     branch's commit when it publishes.
+     branch's commit when it publishes. Optionally fill in **release_notes**; they appear above
+     the generated notes, so a stable release has its notes the moment it becomes latest.
    - **Push a tag:** `git tag v2.0.0 <commit> && git push origin v2.0.0`. The workflow builds
-     the tagged commit.
-3. Wait for **Publish GitHub Release**. Release notes are generated from merged pull requests.
+     the tagged commit. Edit the release afterwards to add notes.
+4. Wait for **Publish GitHub Release**. Release notes are generated from merged pull requests.
 
 To test the pipeline, tick **Dry run**, or run
 `gh workflow run release.yml --ref <branch> -f version=2.0.0-alpha.1 -f dry_run=true`. A dry
 run builds and checks every asset, uploads them with `SHA256SUMS` as the `release-assets` run
-artifact, and creates no tag or release.
+artifact, and creates no tag or release. It also needs passing CI on the branch's commit.
 
 A failed run can be rerun with the same version from the same commit. A version whose tag
 already names a different commit fails in **Resolve release**; pick a new version.
@@ -46,7 +49,8 @@ already names a different commit fails in **Resolve release**; pick a new versio
 
 ## What the workflow does
 
-1. **Resolve release** validates the version and checks the remote tag.
+1. **Resolve release** validates the version, checks the remote tag, and requires CI's `Check`
+   to have passed on the commit.
 2. **Build JS bundle** builds the server, web client, and Electron main once, with no T3 Connect
    configuration, and shares them with every target as the `js-bundle` artifact.
 3. **Desktop Windows x64**, **Desktop macOS arm64**, and **Desktop macOS x64** each call
