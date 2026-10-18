@@ -86,7 +86,7 @@ export function relayRequestFailureDetail(error: {
   return null;
 }
 
-export const relayTunnelReleasedMessage = (productName: string) =>
+const relayTunnelReleasedMessage = (productName: string) =>
   `Offline for a while, so its T3 Connect tunnel was removed. Start ${productName} on that computer and update it to the latest version to reconnect.`;
 
 export const RELAY_TUNNEL_RELEASED_MESSAGE = relayTunnelReleasedMessage("T3 Code");
