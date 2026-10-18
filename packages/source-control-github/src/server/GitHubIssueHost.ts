@@ -74,6 +74,34 @@ const lacksProjectScope = (error: GraphQLClientError.GraphQLClientError) =>
     (entry) => entry["type"] === "INSUFFICIENT_SCOPES" || mentionsProjectScope(entry.message),
   );
 
+/**
+ * GraphQL `errors` are GitHub's own answer, so they are lasting: a denied permission is an
+ * authentication problem and anything else an invalid request. Only transport and decode
+ * failures may heal on a retry.
+ */
+const graphQlAnswerError = (error: GraphQLClientError.GraphQLClientError) => {
+  // Not-found and rate-limit answers keep the client's own mapping.
+  if (
+    error.reason._tag !== "ResponseError" ||
+    GitHubGraphQlClient.isNotFoundOnly(error) ||
+    error.reason.errors.some((entry) => entry["type"] === "RATE_LIMITED")
+  )
+    return null;
+  const [first] = error.reason.errors;
+  const denied = error.reason.errors.find(
+    (entry) => entry["type"] === "FORBIDDEN" || /resource not accessible/i.test(entry.message),
+  );
+  return denied
+    ? new IssueOperationError({
+        reason: "authentication",
+        message: `GitHub refused this request: ${denied.message}`,
+      })
+    : new IssueOperationError({
+        reason: "invalid",
+        message: `GitHub refused this request: ${first.message}`,
+      });
+};
+
 const toIssueError = (error: GitHubFailure, onProjects: boolean): IssueOperationError => {
   switch (error._tag) {
     case "IssueOperationError":
@@ -205,9 +233,11 @@ export const make = Effect.gen(function* () {
     ) =>
       effect.pipe(
         Effect.mapError((error) =>
-          GraphQLClientError.isGraphQLClientError(error) && lacksProjectScope(error)
-            ? projectScopeError()
-            : error,
+          !GraphQLClientError.isGraphQLClientError(error)
+            ? error
+            : lacksProjectScope(error)
+              ? projectScopeError()
+              : (graphQlAnswerError(error) ?? error),
         ),
         GitHubGraphQlClient.call({ host, operation, maxResponseBytes: ISSUE_RESPONSE_LIMIT_BYTES }),
         Effect.mapError((error) => toIssueError(error, true)),

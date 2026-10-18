@@ -13,7 +13,9 @@ import {
   type IssueBoardLocator,
   type IssueRef,
 } from "@t3tools/contracts";
+import type * as SourceControlHost from "@t3tools/source-control-core/server/SourceControlHost";
 import { CredentialScope } from "@t3tools/source-control-core/server/SourceControlRateLimit";
+import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSourceControlHost";
 
 import * as AzureBoardsCli from "./AzureBoardsCli.ts";
 import * as AzureBoardsIssueHost from "./AzureBoardsIssueHost.ts";
@@ -49,6 +51,16 @@ const ORGANIZATION_ARGS = [
   "--output",
   "json",
 ];
+
+/** An answer for an `az` that exits non-zero with this stderr. */
+class AzureExit {
+  readonly code: number;
+  readonly stderr: string;
+  constructor(code: number, stderr: string) {
+    this.code = code;
+    this.stderr = stderr;
+  }
+}
 
 /** An `az` for the "org" organization that answers what `answer` returns and dies on anything else. */
 const azureOn = (
@@ -87,6 +99,14 @@ const azureOn = (
       const resolved = yield* answer(request);
       if (resolved === undefined)
         return yield* Effect.die(`Unexpected Azure request ${args.join(" ")}`);
+      if (resolved instanceof AzureExit)
+        return {
+          exitCode: ChildProcessSpawner.ExitCode(resolved.code),
+          stdout: "",
+          stderr: resolved.stderr,
+          stdoutTruncated: false,
+          stderrTruncated: false,
+        };
       return {
         exitCode: ChildProcessSpawner.ExitCode(0),
         stdout: typeof resolved === "string" ? resolved : JSON.stringify(resolved),
@@ -95,8 +115,12 @@ const azureOn = (
         stderrTruncated: false,
       };
     });
+  // Work item updates run `az` through the host so a rejection keeps its stderr.
+  const run: SourceControlHost.SourceControlHost["Service"]["process"]["run"] = (input) =>
+    execute({ cwd: input.cwd, args: input.args }).pipe(Effect.orDie);
   const layer = AzureBoardsCli.layer.pipe(
     Layer.provide(Layer.mock(AzureDevOpsCli.AzureDevOpsCli)({ execute })),
+    Layer.provide(TestSourceControlHost.layer({ process: { run } })),
     Layer.provide(NodeServices.layer),
   );
   return { adapter: AzureBoardsIssueHost.make.pipe(Effect.provide(layer)), requests };
@@ -349,10 +373,11 @@ const boardHost = (options: {
   readonly ids: ReadonlyArray<number>;
   readonly team?: unknown;
   readonly doneField?: boolean;
+  readonly update?: unknown;
 }) => {
   const present = new Set(options.ids);
   return azureAnswering((request) => {
-    if (request.command === "boards work-item update") return workItem(42);
+    if (request.command === "boards work-item update") return options.update ?? workItem(42);
     if (request.resource === "boards") return boardMetadata(options.doneField ?? true);
     if (request.resource === "teamfieldvalues") return options.team ?? teamAreas;
     if (request.resource === "wiql") return { workItems: options.ids.map((id) => ({ id })) };
@@ -490,6 +515,41 @@ describe("AzureBoardsIssueHost boards", () => {
       assert.deepStrictEqual(host.requests.at(-1)?.values("--fields"), [
         "WEF_TEAM_Kanban.Column=Building",
       ]);
+    }),
+  );
+
+  it.effect("fails a move Azure DevOps refuses as lasting, naming the rule", () =>
+    Effect.gen(function* () {
+      const host = boardHost({
+        ids: [42],
+        update: new AzureExit(
+          1,
+          "ERROR: TF401320: Rule Error for field State. Error code: Required, InvalidEmpty.\n",
+        ),
+      });
+      const failure = yield* (yield* host.adapter).boards
+        .move("/repo", locator, boardItem(42), "doing")
+        .pipe(Effect.flip);
+      assert.deepStrictEqual(
+        [failure.reason, failure.message],
+        [
+          "invalid",
+          "Azure DevOps refused the change: ERROR: TF401320: Rule Error for field State. Error code: Required, InvalidEmpty.",
+        ],
+      );
+    }),
+  );
+
+  it.effect("keeps a move failure without a rule code retryable", () =>
+    Effect.gen(function* () {
+      const host = boardHost({
+        ids: [42],
+        update: new AzureExit(1, "ERROR: Max retries exceeded with url: /_apis/wit\n"),
+      });
+      const failure = yield* (yield* host.adapter).boards
+        .move("/repo", locator, boardItem(42), "doing")
+        .pipe(Effect.flip);
+      assert.strictEqual(failure.reason, "remote");
     }),
   );
 

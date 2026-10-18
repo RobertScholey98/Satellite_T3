@@ -458,6 +458,30 @@ describe("GitHubIssueHost boards", () => {
     }),
   );
 
+  it.effect("fails a refused move as lasting, naming GitHub's reason", () =>
+    Effect.gen(function* () {
+      const answers = [
+        [
+          { type: "FORBIDDEN", message: "Resource not accessible by personal access token" },
+          "authentication",
+        ],
+        [{ message: "The single select option Id does not belong to the field" }, "invalid"],
+      ] as const;
+      for (const [entry, reason] of answers) {
+        const { adapter } = harness(() =>
+          json({ data: { updateProjectV2ItemFieldValue: null }, errors: [entry] }),
+        );
+        const failure = yield* (yield* adapter).boards
+          .move("/repo", connected, boardItem("PVTI_1", 1, "opt_todo"), "opt_doing")
+          .pipe(Effect.flip);
+        assert.deepStrictEqual(
+          [failure.reason, failure.message],
+          [reason, `GitHub refused this request: ${entry.message}`],
+        );
+      }
+    }),
+  );
+
   it.effect("routes an enterprise host's Projects calls to its own API", () =>
     Effect.gen(function* () {
       const { adapter, sent } = harness((request) => {

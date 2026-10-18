@@ -100,6 +100,8 @@ const toIssueError = (error: AzureBoardsCli.AzureBoardsCliError): IssueOperation
       return new IssueOperationError({ reason: "authentication", message: AUTHENTICATION_MESSAGE });
     case "AzureDevOpsCliUnavailableError":
       return new IssueOperationError({ reason: "unavailable", message: error.detail });
+    case "AzureBoardsRejectedError":
+      return new IssueOperationError({ reason: "invalid", message: error.message });
     case "AzureDevOpsPullRequestNotFoundError":
       return new IssueOperationError({
         reason: "not-found",
