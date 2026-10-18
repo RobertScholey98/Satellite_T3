@@ -40,7 +40,12 @@ wins over an automatic move that arrives later.
   baseline, so automation resumes from there. Putting the ticket back at the baseline also
   resumes it.
 - A manual move carries the column the person saw. The service refuses it when the remote item
-  differs.
+  differs, and a manual move retried after a host failure is skipped once the remote item no
+  longer shows that column, so the most recent manual move wins wherever it was made. Until it
+  settles, a pending manual move also skips the ticket's automatic moves.
+- Host failures are transient only when they can heal on their own (network, timeouts, rate
+  limits). A refusal from the host, such as a GitHub permission error or an Azure rule error like
+  TF401320, fails the move at once with Retry.
 
 All moves run through one queue under the service lock, so moves on a board never interleave.
 Transitions are keyed `auto:<attempt>:<transition index>`, which makes duplicate events, restarts
@@ -51,7 +56,9 @@ and sweeps converge on one move.
 The attempt stage is derived from the thread (worktree ready, first run reached running, the
 newest non-stack pull request) by [`attemptStage.ts`](../../apps/server/src/issues/attemptStage.ts).
 [`IssueAttemptReactor.ts`](../../apps/server/src/issues/IssueAttemptReactor.ts) reconciles a
-thread's attempts on run, pull request link, pull request sync and deletion events. Upstream's
+thread's attempts on run, pull request link, pull request sync and deletion events. Merged is
+terminal: once its last move settles the attempt ends as completed, so later link changes move
+nothing. Upstream's
 live event stream starts at the latest event, so the reactor also sweeps every running attempt at
 startup and every minute; without the sweep a transition that happened while the server was down
 would never move its ticket.
