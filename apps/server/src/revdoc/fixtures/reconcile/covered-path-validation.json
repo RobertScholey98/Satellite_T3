@@ -1,0 +1,57 @@
+{
+  "name": "covered-path-validation",
+  "description": "Paths outside the worktree, absolute paths, and the export are dropped; duplicates collapse.",
+  "mode": "full",
+  "hashesBefore": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "hashesNow": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "current": [],
+  "proposal": [
+    {
+      "id": null,
+      "area": "General",
+      "check": "Paths",
+      "expected": "",
+      "coveredPaths": [
+        "../outside.ts",
+        "/etc/passwd",
+        "C:\\x.ts",
+        "src/a.ts",
+        "./src/b.ts",
+        ".revdoc/review.json",
+        "src\\c.ts",
+        "src/a.ts",
+        "deleted/file.ts"
+      ]
+    }
+  ],
+  "expected": {
+    "items": [
+      {
+        "id": "new-1",
+        "position": 0,
+        "area": "General",
+        "check": "Paths",
+        "coveredPaths": ["src/a.ts", "src/b.ts", "src/c.ts", "deleted/file.ts"],
+        "outcome": "not_checked",
+        "note": "",
+        "stale": false,
+        "dismissed": false,
+        "retest": null
+      }
+    ],
+    "report": {
+      "added": 1,
+      "updated": 0,
+      "staled": 0,
+      "unstaled": 0,
+      "unknownIds": 0,
+      "dropped": 0
+    }
+  }
+}

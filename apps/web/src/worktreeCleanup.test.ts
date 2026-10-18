@@ -1,4 +1,4 @@
-import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
@@ -81,6 +81,44 @@ describe("getOrphanedWorktreePathForThread", () => {
     ];
     const result = getOrphanedWorktreePathForThread(threads, ThreadId.make("thread-1"));
     expect(result).toBe("/tmp/repo/worktrees/feature-a");
+  });
+
+  it("does not count the thread's own subagents as sharing its worktree", () => {
+    const worktreePath = "/tmp/repo/worktrees/feature-a";
+    const subagent = (id: string, parent: string) =>
+      makeThread({
+        id: ThreadId.make(id),
+        worktreePath,
+        lineage: {
+          parentThreadId: ThreadId.make(parent),
+          relationshipToParent: "subagent",
+          rootThreadId: ThreadId.make("thread-1"),
+        },
+      });
+    const owner = makeThread({ id: ThreadId.make("thread-1"), worktreePath });
+    const threads = [owner, subagent("child", "thread-1"), subagent("grandchild", "child")];
+    expect(getOrphanedWorktreePathForThread(threads, owner.id)).toBe(worktreePath);
+    // A subagent still running keeps it shared until it is idle.
+    const running = {
+      ...subagent("running", "thread-1"),
+      runtime: {
+        status: "running" as const,
+        activeRunId: RunId.make("run-1"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerName: null,
+        lastError: null,
+        updatedAt: "2026-02-13T00:00:00.000Z",
+      },
+    };
+    expect(getOrphanedWorktreePathForThread([...threads, running], owner.id)).toBeNull();
+    // Another thread's subagent still shares it.
+    const other = makeThread({ id: ThreadId.make("thread-2"), worktreePath: "/tmp/elsewhere" });
+    expect(
+      getOrphanedWorktreePathForThread(
+        [...threads, other, subagent("foreign", "thread-2")],
+        owner.id,
+      ),
+    ).toBeNull();
   });
 });
 

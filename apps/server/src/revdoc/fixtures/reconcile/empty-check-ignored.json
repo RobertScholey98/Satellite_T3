@@ -1,0 +1,54 @@
+{
+  "name": "empty-check-ignored",
+  "description": "A proposal with no check text is ignored, even with an existing id, so it cannot blank that check.",
+  "mode": "full",
+  "hashesBefore": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "hashesNow": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "current": [
+    {
+      "id": "a",
+      "check": "Open settings",
+      "outcome": "complete",
+      "note": "Fine"
+    }
+  ],
+  "proposal": [
+    {
+      "id": "a",
+      "area": "General",
+      "check": "   ",
+      "expected": "",
+      "coveredPaths": []
+    }
+  ],
+  "expected": {
+    "items": [
+      {
+        "id": "a",
+        "position": 0,
+        "area": "General",
+        "check": "Open settings",
+        "coveredPaths": [],
+        "outcome": "complete",
+        "note": "Fine",
+        "stale": true,
+        "dismissed": false,
+        "retest": null
+      }
+    ],
+    "report": {
+      "added": 0,
+      "updated": 0,
+      "staled": 1,
+      "unstaled": 0,
+      "unknownIds": 0,
+      "dropped": 0
+    }
+  }
+}

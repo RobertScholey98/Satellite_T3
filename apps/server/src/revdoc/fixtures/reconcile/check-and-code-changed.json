@@ -1,0 +1,56 @@
+{
+  "name": "check-and-code-changed",
+  "description": "Both sides changing reports both.",
+  "mode": "full",
+  "hashesBefore": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "hashesNow": {
+    "src/settings.ts": "h2",
+    "src/login.ts": "h1"
+  },
+  "current": [
+    {
+      "id": "a",
+      "check": "Open settings",
+      "expected": "Settings open",
+      "coveredPaths": ["src/settings.ts"],
+      "outcome": "broken",
+      "note": "Crashes"
+    }
+  ],
+  "proposal": [
+    {
+      "id": "a",
+      "area": "General",
+      "check": "Open settings",
+      "expected": "Settings open without a crash",
+      "coveredPaths": ["src/settings.ts"]
+    }
+  ],
+  "expected": {
+    "items": [
+      {
+        "id": "a",
+        "position": 0,
+        "area": "General",
+        "check": "Open settings",
+        "coveredPaths": ["src/settings.ts"],
+        "outcome": "broken",
+        "note": "Crashes",
+        "stale": false,
+        "dismissed": false,
+        "retest": "both"
+      }
+    ],
+    "report": {
+      "added": 0,
+      "updated": 1,
+      "staled": 0,
+      "unstaled": 0,
+      "unknownIds": 0,
+      "dropped": 0
+    }
+  }
+}

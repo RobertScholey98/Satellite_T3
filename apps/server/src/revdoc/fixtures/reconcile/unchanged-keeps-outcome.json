@@ -1,0 +1,56 @@
+{
+  "name": "unchanged-keeps-outcome",
+  "description": "An unchanged check keeps its outcome and note.",
+  "mode": "full",
+  "hashesBefore": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "hashesNow": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "current": [
+    {
+      "id": "a",
+      "check": "Open settings",
+      "expected": "Settings open",
+      "coveredPaths": ["src/settings.ts"],
+      "outcome": "complete",
+      "note": "Looks right"
+    }
+  ],
+  "proposal": [
+    {
+      "id": "a",
+      "area": "General",
+      "check": "Open settings",
+      "expected": "Settings open",
+      "coveredPaths": ["src/settings.ts"]
+    }
+  ],
+  "expected": {
+    "items": [
+      {
+        "id": "a",
+        "position": 0,
+        "area": "General",
+        "check": "Open settings",
+        "coveredPaths": ["src/settings.ts"],
+        "outcome": "complete",
+        "note": "Looks right",
+        "stale": false,
+        "dismissed": false,
+        "retest": null
+      }
+    ],
+    "report": {
+      "added": 0,
+      "updated": 0,
+      "staled": 0,
+      "unstaled": 0,
+      "unknownIds": 0,
+      "dropped": 0
+    }
+  }
+}

@@ -33,3 +33,29 @@ A file-arbitrated design loses that case. Two writers race on the file, and the 
 design with one document per pass loses it too, because Monday's document does not carry Friday's
 outcomes. One service-owned Review per worktree, reconciled by upsert against a revision, keeps
 them.
+
+## Implementation
+
+- [`RevdocReconcile.ts`](../../apps/server/src/revdoc/RevdocReconcile.ts) applies the rules above
+  as one pure function; its literal fixtures sit beside it. Needs retest is derived on read in
+  [`RevdocFingerprint.ts`](../../apps/server/src/revdoc/RevdocFingerprint.ts) from the fingerprints
+  an outcome or result was recorded against. The person's outcome wins over an older AI result, so a
+  new outcome clears the marker.
+- [`RevdocStore.ts`](../../apps/server/src/revdoc/RevdocStore.ts) commits every change in one
+  transaction that checks the expected revision. The tables are Satellite migration 100. Passes
+  are keyed by worktree, not by Review, because the first generation pass runs before its Review
+  exists.
+- A batched generation pass commits partial upserts that never stale, and saves each batch on its
+  pass row with the server ids its partial commit assigned. That is what lets a resumed pass
+  match the checks it already created instead of adding duplicates.
+- Generation calls upstream's text generation through the optional `generateStructured` operation.
+  Providers that cannot run it leave it out (ACP registry, Muse) or refuse it (OpenCode 2).
+- A test pass is an upstream delegated task. Upstream accepts delegation only under an active parent
+  run, so a pass started from an idle thread first posts a short kick-off message. Each later section
+  is a follow-up message to the same child. The pass advances when the section's delegated task row
+  on the parent settles, not when the child's run ends. Upstream records a follow-up as a new row
+  only after the previous row has its result, so advancing on the run end loses that row.
+- Worktree removal reaches Revdoc through a decorated git workflow service that
+  [`SatelliteServer.ts`](../../apps/server/src/satellite/SatelliteServer.ts) provides above
+  upstream's transports. Settled-worktree cleanup removes worktrees with raw git, so the lifecycle
+  reactor listens to its report stream instead.

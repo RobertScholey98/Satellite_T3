@@ -11,6 +11,7 @@ import { useT3ProjectFileScripts } from "../../hooks/useT3ProjectFileScripts";
 import { type EnvMode, type EnvironmentOption } from "../BranchToolbar.logic";
 import { BranchToolbar } from "../BranchToolbar";
 import BaseGitActionsControl from "../GitActionsControl";
+import { RevdocControl } from "../revdoc/RevdocControl";
 import ProjectScriptsControl, {
   type NewProjectScriptInput,
   type ProjectScriptActionResult,
@@ -166,6 +167,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                     {...(props.draftId ? { draftId: props.draftId } : {})}
                     {...(props.onOpenChanges ? { onOpenChanges: props.onOpenChanges } : {})}
                   />
+                ) : null}
+                {props.isGitRepo && !props.draftId ? (
+                  <RevdocControl threadRef={activeThreadRef} />
                 ) : null}
               </div>
             </ThreadDetailsSection>

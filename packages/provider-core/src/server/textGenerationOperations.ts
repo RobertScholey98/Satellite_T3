@@ -168,11 +168,15 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const generateStructured: NonNullable<ProviderTextGeneration["generateStructured"]> = (input) =>
+    run({ operation: "generateStructured", ...input });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateStructured,
   } satisfies ProviderTextGeneration;
 }

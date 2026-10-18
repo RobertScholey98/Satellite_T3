@@ -5,6 +5,7 @@ import type * as SqlError from "effect/sql/SqlError";
 
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { repairSatelliteLegacyLedger } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
+import RevdocReviews from "../../revdoc/migrations/RevdocReviews.ts";
 
 /**
  * Ids 55 to 69 of `satellite_migrations` hold rows the ledger repair moved out of upstream's
@@ -21,7 +22,9 @@ export type SatelliteMigration = readonly [
   migration: Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient>,
 ];
 
-export const satelliteMigrationEntries: ReadonlyArray<SatelliteMigration> = [];
+export const satelliteMigrationEntries: ReadonlyArray<SatelliteMigration> = [
+  [100, "RevdocReviews", RevdocReviews],
+];
 
 const run = Migrator.make({});
 

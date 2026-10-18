@@ -1,0 +1,88 @@
+{
+  "name": "partial-never-stales",
+  "description": "A partial upsert from a finished batch adds and updates but never stales.",
+  "mode": "partial",
+  "hashesBefore": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "hashesNow": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "current": [
+    {
+      "id": "a",
+      "check": "A"
+    },
+    {
+      "id": "b",
+      "check": "B",
+      "outcome": "complete"
+    }
+  ],
+  "proposal": [
+    {
+      "id": null,
+      "area": "General",
+      "check": "New",
+      "expected": "",
+      "coveredPaths": []
+    },
+    {
+      "id": "b",
+      "area": "General",
+      "check": "B",
+      "expected": "",
+      "coveredPaths": []
+    }
+  ],
+  "expected": {
+    "items": [
+      {
+        "id": "new-1",
+        "position": 0,
+        "area": "General",
+        "check": "New",
+        "coveredPaths": [],
+        "outcome": "not_checked",
+        "note": "",
+        "stale": false,
+        "dismissed": false,
+        "retest": null
+      },
+      {
+        "id": "b",
+        "position": 1,
+        "area": "General",
+        "check": "B",
+        "coveredPaths": [],
+        "outcome": "complete",
+        "note": "",
+        "stale": false,
+        "dismissed": false,
+        "retest": null
+      },
+      {
+        "id": "a",
+        "position": 2,
+        "area": "General",
+        "check": "A",
+        "coveredPaths": [],
+        "outcome": "not_checked",
+        "note": "",
+        "stale": false,
+        "dismissed": false,
+        "retest": null
+      }
+    ],
+    "report": {
+      "added": 1,
+      "updated": 0,
+      "staled": 0,
+      "unstaled": 0,
+      "unknownIds": 0,
+      "dropped": 0
+    }
+  }
+}

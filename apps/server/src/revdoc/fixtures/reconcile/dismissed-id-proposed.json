@@ -1,0 +1,66 @@
+{
+  "name": "dismissed-id-proposed",
+  "description": "A dismissed id proposed again becomes a new check; the dismissed one stays dismissed.",
+  "mode": "full",
+  "hashesBefore": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "hashesNow": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "current": [
+    {
+      "id": "d",
+      "check": "Old check",
+      "stale": true,
+      "dismissed": true
+    }
+  ],
+  "proposal": [
+    {
+      "id": "d",
+      "area": "General",
+      "check": "Old check",
+      "expected": "",
+      "coveredPaths": []
+    }
+  ],
+  "expected": {
+    "items": [
+      {
+        "id": "new-1",
+        "position": 0,
+        "area": "General",
+        "check": "Old check",
+        "coveredPaths": [],
+        "outcome": "not_checked",
+        "note": "",
+        "stale": false,
+        "dismissed": false,
+        "retest": null
+      },
+      {
+        "id": "d",
+        "position": 1,
+        "area": "General",
+        "check": "Old check",
+        "coveredPaths": [],
+        "outcome": "not_checked",
+        "note": "",
+        "stale": true,
+        "dismissed": true,
+        "retest": null
+      }
+    ],
+    "report": {
+      "added": 1,
+      "updated": 0,
+      "staled": 0,
+      "unstaled": 0,
+      "unknownIds": 1,
+      "dropped": 0
+    }
+  }
+}

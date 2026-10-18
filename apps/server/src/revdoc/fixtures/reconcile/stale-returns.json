@@ -1,0 +1,54 @@
+{
+  "name": "stale-returns",
+  "description": "Proposing a stale id again clears the marker.",
+  "mode": "full",
+  "hashesBefore": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "hashesNow": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "current": [
+    {
+      "id": "a",
+      "check": "First",
+      "stale": true,
+      "outcome": "skipped"
+    }
+  ],
+  "proposal": [
+    {
+      "id": "a",
+      "area": "General",
+      "check": "First",
+      "expected": "",
+      "coveredPaths": []
+    }
+  ],
+  "expected": {
+    "items": [
+      {
+        "id": "a",
+        "position": 0,
+        "area": "General",
+        "check": "First",
+        "coveredPaths": [],
+        "outcome": "skipped",
+        "note": "",
+        "stale": false,
+        "dismissed": false,
+        "retest": null
+      }
+    ],
+    "report": {
+      "added": 0,
+      "updated": 0,
+      "staled": 0,
+      "unstaled": 1,
+      "unknownIds": 0,
+      "dropped": 0
+    }
+  }
+}

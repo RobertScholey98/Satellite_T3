@@ -1,0 +1,55 @@
+{
+  "name": "check-text-changed",
+  "description": "Reworded check text needs retest and keeps the note and previous outcome.",
+  "mode": "full",
+  "hashesBefore": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "hashesNow": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "current": [
+    {
+      "id": "a",
+      "check": "Open settings",
+      "expected": "Settings open",
+      "outcome": "change_requested",
+      "note": "Use the new icon"
+    }
+  ],
+  "proposal": [
+    {
+      "id": "a",
+      "area": "General",
+      "check": "Open settings from the sidebar",
+      "expected": "Settings open",
+      "coveredPaths": []
+    }
+  ],
+  "expected": {
+    "items": [
+      {
+        "id": "a",
+        "position": 0,
+        "area": "General",
+        "check": "Open settings from the sidebar",
+        "coveredPaths": [],
+        "outcome": "change_requested",
+        "note": "Use the new icon",
+        "stale": false,
+        "dismissed": false,
+        "retest": "check"
+      }
+    ],
+    "report": {
+      "added": 0,
+      "updated": 1,
+      "staled": 0,
+      "unstaled": 0,
+      "unknownIds": 0,
+      "dropped": 0
+    }
+  }
+}

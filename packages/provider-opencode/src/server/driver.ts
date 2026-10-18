@@ -1,4 +1,4 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind, TextGenerationError } from "@t3tools/contracts";
 import { OpenCodeSettings } from "../settings.ts";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -158,6 +158,17 @@ function selectOpenCodeRuntimeTextGeneration(
       byOpenCodeRuntime(probe.get, {
         v1: v1.generateReviewGuide(input),
         v2: v2.generateReviewGuide(input),
+      }),
+    // OpenCode 2's shared server applies one configuration to every session, so only v1 runs it.
+    generateStructured: (input) =>
+      byOpenCodeRuntime(probe.get, {
+        v1: v1.generateStructured!(input),
+        v2: Effect.fail(
+          new TextGenerationError({
+            operation: "generateStructured",
+            detail: "OpenCode 2 does not support structured text generation.",
+          }),
+        ),
       }),
   };
 }

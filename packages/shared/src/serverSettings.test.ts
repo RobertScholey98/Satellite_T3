@@ -1147,3 +1147,22 @@ describe("synchronized model preferences", () => {
     });
   });
 });
+
+describe("Revdoc settings", () => {
+  it("replaces each Revdoc model selection whole and patches it back to Automatic", () => {
+    const withOptions = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4", [
+      { id: "reasoningEffort", value: "high" },
+    ]);
+    const plain = createModelSelection(ProviderInstanceId.make("claudeAgent"), "sonnet");
+    for (const key of [
+      "revdocModelSelection",
+      "revdocLargeModelSelection",
+      "revdocTestingModelSelection",
+    ] as const) {
+      const first = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, { [key]: withOptions });
+      const second = applyServerSettingsPatch(first, { [key]: plain });
+      expect(second[key]).toEqual(plain);
+      expect(applyServerSettingsPatch(second, { [key]: null })[key]).toBeNull();
+    }
+  });
+});
