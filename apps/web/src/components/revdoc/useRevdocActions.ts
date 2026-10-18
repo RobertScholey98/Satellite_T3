@@ -9,7 +9,6 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import type * as Cause from "effect/Cause";
-import { useCallback, useMemo } from "react";
 
 import { useRightPanelStore } from "~/rightPanelStore";
 import { resolveRevdocWorktree, useRevdocWorktree } from "~/revdocWorktreeStore";
@@ -40,10 +39,7 @@ function useRevdocTarget(threadRef: ScopedThreadRef): RevdocTarget {
     useRevdocWorktree(threadRef),
     useRevdocWorktrees(threadRef.environmentId, threadRef.threadId),
   );
-  return useMemo(
-    () => ({ threadId: threadRef.threadId, ...(worktreePath ? { worktreePath } : {}) }),
-    [threadRef.threadId, worktreePath],
-  );
+  return { threadId: threadRef.threadId, ...(worktreePath ? { worktreePath } : {}) };
 }
 
 /** Pass controls for a thread's Revdoc target. */
@@ -56,43 +52,37 @@ export function useRevdocActions(threadRef: ScopedThreadRef) {
   const cancelCommand = useAtomCommand(revdocEnvironment.cancel, { reportFailure: false });
   const refreshCommand = useAtomCommand(revdocEnvironment.refresh, { reportFailure: false });
 
-  const openPanel = useCallback(() => {
+  const openPanel = () => {
     useRightPanelStore.getState().open(threadRef, "revdoc");
-  }, [threadRef]);
+  };
 
-  const generate = useCallback(
-    async (action?: RevdocAction) => {
-      openPanel();
-      const result = await generateCommand({
-        environmentId,
-        input: { ...target, ...(action ? { action } : {}) },
-      });
-      if (result._tag === "Failure") toastRevdocFailure("Could not start Revdoc", result);
-    },
-    [environmentId, generateCommand, openPanel, target],
-  );
+  const generate = async (action?: RevdocAction) => {
+    openPanel();
+    const result = await generateCommand({
+      environmentId,
+      input: { ...target, ...(action ? { action } : {}) },
+    });
+    if (result._tag === "Failure") toastRevdocFailure("Could not start Revdoc", result);
+  };
 
-  const test = useCallback(
-    async (selection: RevdocTestSelection, itemIds?: ReadonlyArray<string>) => {
-      openPanel();
-      const result = await testCommand({
-        environmentId,
-        input: { ...target, selection, ...(itemIds ? { itemIds } : {}) },
-      });
-      if (result._tag === "Failure") toastRevdocFailure("Could not start AI testing", result);
-    },
-    [environmentId, openPanel, target, testCommand],
-  );
+  const test = async (selection: RevdocTestSelection, itemIds?: ReadonlyArray<string>) => {
+    openPanel();
+    const result = await testCommand({
+      environmentId,
+      input: { ...target, selection, ...(itemIds ? { itemIds } : {}) },
+    });
+    if (result._tag === "Failure") toastRevdocFailure("Could not start AI testing", result);
+  };
 
-  const cancel = useCallback(async () => {
+  const cancel = async () => {
     const result = await cancelCommand({ environmentId, input: target });
     if (result._tag === "Failure") toastRevdocFailure("Could not cancel the pass", result);
-  }, [cancelCommand, environmentId, target]);
+  };
 
-  const refresh = useCallback(async () => {
+  const refresh = async () => {
     const result = await refreshCommand({ environmentId, input: target });
     if (result._tag === "Failure") toastRevdocFailure("Could not refresh the review", result);
-  }, [environmentId, refreshCommand, target]);
+  };
 
   return { target, canOperate, openPanel, generate, test, cancel, refresh };
 }

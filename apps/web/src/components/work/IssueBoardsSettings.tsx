@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { PlusIcon, TicketIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useProjects } from "~/state/entities";
 import { usePrimaryEnvironmentId } from "~/state/environments";
@@ -64,28 +64,26 @@ function BoardConnectionRow({
   );
 
   // The stored copy carries the column titles the mapping summary needs; it costs no host call.
-  const open = useCallback(
-    async (refresh: boolean) => {
-      try {
-        const result = unwrapIssueResult(
-          await openBoard({
-            environmentId,
-            input: {
-              projectId: board.projectId,
-              boardId: board.id,
-              ...(refresh ? { refresh: true } : {}),
-            },
-          }),
-        );
-        setView(result);
-        setError(null);
-      } catch (failure) {
-        setError(issueErrorMessage(failure));
-      }
-    },
-    [board.id, board.projectId, environmentId, openBoard],
-  );
+  const open = async (refresh: boolean) => {
+    try {
+      const result = unwrapIssueResult(
+        await openBoard({
+          environmentId,
+          input: {
+            projectId: board.projectId,
+            boardId: board.id,
+            ...(refresh ? { refresh: true } : {}),
+          },
+        }),
+      );
+      setView(result);
+      setError(null);
+    } catch (failure) {
+      setError(issueErrorMessage(failure));
+    }
+  };
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- open sets state only after the stored board arrives.
     if (connected) void open(false);
   }, [connected, open]);
 
@@ -164,12 +162,8 @@ export function IssueBoardsSettings() {
   const environmentId = environment?.environmentId ?? null;
   const connected = environment?.connection.phase === "connected";
   const allProjects = useProjects();
-  const projects = useMemo(
-    () =>
-      allProjects.filter(
-        (project) => project.environmentId === environmentId && project.isScratch !== true,
-      ),
-    [allProjects, environmentId],
+  const projects = allProjects.filter(
+    (project) => project.environmentId === environmentId && project.isScratch !== true,
   );
 
   const listBoards = useAtomCommand(issuesEnvironment.listBoards, { reportFailure: false });
@@ -182,6 +176,7 @@ export function IssueBoardsSettings() {
   useEffect(() => {
     if (!environmentId || !connected) return;
     let current = true;
+    // oxlint-disable-next-line react/set-state-in-effect -- A new list request hides the previous request's error.
     setError(null);
     void listBoards({ environmentId, input: { connectedOnly: true } })
       .then(unwrapIssueResult)
@@ -194,9 +189,15 @@ export function IssueBoardsSettings() {
     return () => {
       current = false;
     };
-  }, [connected, environmentId, listBoards, revision]);
+  }, [
+    connected,
+    environmentId,
+    listBoards,
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Bumping the revision lists the boards again.
+    revision,
+  ]);
   const boards = listed?.environmentId === environmentId ? listed.boards : null;
-  const groups = useMemo(() => {
+  const groups = (() => {
     const byProject = new Map<string, IssueBoardSummary[]>();
     for (const board of boards ?? []) {
       byProject.set(board.projectId, [...(byProject.get(board.projectId) ?? []), board]);
@@ -207,7 +208,7 @@ export function IssueBoardsSettings() {
         projects.find((project) => project.id === projectId)?.title ?? "Project not on this list",
       boards: projectBoards,
     }));
-  }, [boards, projects]);
+  })();
 
   const [configuring, setConfiguring] = useState<IssueBoardView | "new" | null>(null);
   const relist = () => setRevision((value) => value + 1);

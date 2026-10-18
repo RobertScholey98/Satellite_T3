@@ -15,7 +15,6 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useCallback, useMemo } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
 import { connectionAtomRuntime } from "~/connection/runtime";
@@ -60,7 +59,7 @@ export function supportsIssueBoards(environment: EnvironmentPresentation | undef
 /** Environments whose server offers issue boards, connected or not. */
 export function useIssueBoardEnvironments(): ReadonlyArray<EnvironmentPresentation> {
   const { environments } = useEnvironments();
-  return useMemo(() => environments.filter(supportsIssueBoards), [environments]);
+  return environments.filter(supportsIssueBoards);
 }
 
 interface IssueBoardRef {
@@ -120,25 +119,22 @@ export function readOpenIssueBoardRefresh(): (() => void) | null {
 export function useDisconnectIssueBoard() {
   const listAttempts = useAtomCommand(issuesEnvironment.listAttempts, { reportFailure: false });
   const disconnect = useAtomCommand(issuesEnvironment.disconnectBoard, { reportFailure: false });
-  return useCallback(
-    async (environmentId: EnvironmentId, board: IssueBoardSummary): Promise<boolean> => {
-      const attempts = await listAttempts({ environmentId, input: { boardId: board.id } });
-      const active =
-        attempts._tag === "Success" ? attempts.value.filter((attempt) => attempt.active).length : 0;
-      const message = [
-        `Disconnect ${board.title}?`,
-        active > 0
-          ? `${active === 1 ? "1 active attempt" : `${active} active attempts`} on this computer will stop moving ${active === 1 ? "its ticket" : "their tickets"}. Connecting this board again resumes them.`
-          : "You can connect it again later.",
-      ].join("\n");
-      const confirmed = await (requestConfirmDialog(message, { variant: "destructive" }) ??
-        Promise.resolve(window.confirm(message)));
-      if (!confirmed) return false;
-      unwrapIssueResult(
-        await disconnect({ environmentId, input: { requestId: randomUUID(), boardId: board.id } }),
-      );
-      return true;
-    },
-    [disconnect, listAttempts],
-  );
+  return async (environmentId: EnvironmentId, board: IssueBoardSummary): Promise<boolean> => {
+    const attempts = await listAttempts({ environmentId, input: { boardId: board.id } });
+    const active =
+      attempts._tag === "Success" ? attempts.value.filter((attempt) => attempt.active).length : 0;
+    const message = [
+      `Disconnect ${board.title}?`,
+      active > 0
+        ? `${active === 1 ? "1 active attempt" : `${active} active attempts`} on this computer will stop moving ${active === 1 ? "its ticket" : "their tickets"}. Connecting this board again resumes them.`
+        : "You can connect it again later.",
+    ].join("\n");
+    const confirmed = await (requestConfirmDialog(message, { variant: "destructive" }) ??
+      Promise.resolve(window.confirm(message)));
+    if (!confirmed) return false;
+    unwrapIssueResult(
+      await disconnect({ environmentId, input: { requestId: randomUUID(), boardId: board.id } }),
+    );
+    return true;
+  };
 }

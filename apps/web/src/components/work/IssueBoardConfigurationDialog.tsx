@@ -162,6 +162,7 @@ export function IssueBoardConfigurationDialog({
   useEffect(() => {
     if (initial) return;
     let current = true;
+    // oxlint-disable-next-line react/set-state-in-effect -- A new discovery request hides the previous request's boards and error.
     setDiscovered(null);
     setDiscoveryError(null);
     void listBoards({ environmentId, input: { projectId } })
@@ -175,7 +176,14 @@ export function IssueBoardConfigurationDialog({
     return () => {
       current = false;
     };
-  }, [discoveryAttempt, environmentId, initial, listBoards, projectId]);
+  }, [
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Retry bumps the attempt to run discovery again.
+    discoveryAttempt,
+    environmentId,
+    initial,
+    listBoards,
+    projectId,
+  ]);
 
   const locator: IssueBoardLocator =
     kind === "github-project"

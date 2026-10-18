@@ -17,7 +17,7 @@ import type {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { type ComposerThreadTarget, useComposerDraftStore } from "~/composerDraftStore";
 import { requestConfirmDialog } from "~/confirmDialog";
@@ -156,7 +156,7 @@ export function RevdocPanel(props: {
   const [showDismissed, setShowDismissed] = useState(false);
   const [areaOverrides, setAreaOverrides] = useState<Record<string, boolean>>({});
 
-  const summary = useMemo(() => summarizeRevdoc(state.items), [state.items]);
+  const summary = summarizeRevdoc(state.items);
   const pass = state.activePass;
   const generating = pass?.kind === "generate";
   const editingDisabled = generating || !actions.canOperate;
@@ -165,7 +165,7 @@ export function RevdocPanel(props: {
   const latestTest = state.latestPasses.find((candidate) => candidate.kind === "test");
   const hasFindings = state.items.some(needsFix);
 
-  const { groups, dismissed } = useMemo(() => {
+  const { groups, dismissed } = (() => {
     const query = search.trim().toLowerCase();
     const byArea = new Map<string, RevdocItemSummary[]>();
     const hidden: RevdocItemSummary[] = [];
@@ -181,7 +181,7 @@ export function RevdocPanel(props: {
       byArea.set(item.area, [...(byArea.get(item.area) ?? []), item]);
     }
     return { groups: [...byArea.entries()], dismissed: hidden };
-  }, [attentionOnly, outcomeFilter, search, state.items]);
+  })();
 
   const renderRow = (item: RevdocItemSummary) => (
     <RevdocItemRow

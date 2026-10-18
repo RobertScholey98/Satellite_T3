@@ -10,7 +10,7 @@ import {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { ExternalLinkIcon, TicketIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { randomUUID } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -71,8 +71,17 @@ export function IssueDetailDialog({
   readonly onAttemptsChanged: () => void;
 }) {
   const navigate = useNavigate();
-  const ticketKey = [item.issue.ref.host, item.issue.ref.repository, item.issue.ref.id].join("\n");
-  const ref = useMemo(() => item.issue.ref, [ticketKey]);
+  // Rebuilt from its fields so a board refresh that hands over a new item for the same ticket
+  // keeps the identity the detail and attempt reads depend on.
+  const issueRef = item.issue.ref;
+  const ref = {
+    hostKind: issueRef.hostKind,
+    host: issueRef.host,
+    repository: issueRef.repository,
+    id: issueRef.id,
+    number: issueRef.number,
+    url: issueRef.url,
+  };
   const boardId = view?.board.id ?? null;
   const [detail, setDetail] = useState<IssueDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -102,7 +111,7 @@ export function IssueDetailDialog({
     };
   }, [connected, environmentId, get, projectId, ref]);
 
-  const loadAttempts = useCallback(() => {
+  const loadAttempts = () => {
     if (!connected || boardId === null) return () => {};
     let current = true;
     void listAttempts({ environmentId, input: { boardId, issue: ref } })
@@ -116,7 +125,7 @@ export function IssueDetailDialog({
     return () => {
       current = false;
     };
-  }, [boardId, connected, environmentId, listAttempts, ref]);
+  };
   useEffect(() => loadAttempts(), [loadAttempts]);
 
   const attempts =
