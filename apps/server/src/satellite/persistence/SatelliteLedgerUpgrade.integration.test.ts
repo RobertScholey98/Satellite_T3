@@ -11,7 +11,7 @@ import * as LegacyV1ThreadImporter from "../../orchestration-v2/legacy/LegacyV1T
 import { migrationManifest } from "../../persistence/Migrations.ts";
 import { drainLegacyThreadArchives } from "./drainLegacyThreadArchives.ts";
 import { SATELLITE_LEGACY_LEDGER_ROWS } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
-import { runMigrationsWithSatellite } from "./SatelliteMigrations.ts";
+import { runMigrationsWithSatellite, satelliteMigrationEntries } from "./SatelliteMigrations.ts";
 import {
   ARCHIVED_IDEA_AT,
   BOARD_TABLES,
@@ -218,10 +218,10 @@ describe("Satellite ledger upgrade", () => {
 
         assert.strictEqual(yield* sha256(v1Path), v1Hash);
         assert.deepStrictEqual(first.upstreamLedger, migrationManifest);
-        assert.deepStrictEqual(
-          first.satelliteLedger,
-          upgrade.legacyRows === "source" ? source.satellite : upgrade.legacyRows,
-        );
+        assert.deepStrictEqual(first.satelliteLedger, [
+          ...(upgrade.legacyRows === "source" ? source.satellite : upgrade.legacyRows),
+          ...satelliteMigrationEntries.map(([id, name]) => [id, name] as const),
+        ]);
         assert.deepStrictEqual(first.boards, source.boards);
         for (const table of SATELLITE_1X_TABLES) assert.notInclude(first.tables, table);
         assert.notInclude(first.tables, "satellite_legacy_thread_archives");

@@ -1204,3 +1204,27 @@ describe("server model preferences", () => {
     });
   });
 });
+
+describe("ServerSettings Revdoc keys", () => {
+  it("defaults the three models to Automatic and the action to generate", () => {
+    const settings = decodeServerSettings({});
+    expect([
+      settings.revdocModelSelection,
+      settings.revdocLargeModelSelection,
+      settings.revdocTestingModelSelection,
+      settings.revdocDefaultAction,
+    ]).toEqual([null, null, null, "generate"]);
+  });
+
+  it("keeps Satellite 1.x values", () => {
+    const settings = decodeServerSettings({
+      revdocModelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      revdocDefaultAction: "generate-and-test",
+    });
+    expect(settings.revdocModelSelection).toEqual({ instanceId: "codex", model: "gpt-5.4" });
+    expect(settings.revdocDefaultAction).toBe("generate-and-test");
+    expect(decodeServerSettingsPatch({ revdocTestingModelSelection: null })).toEqual({
+      revdocTestingModelSelection: null,
+    });
+  });
+});

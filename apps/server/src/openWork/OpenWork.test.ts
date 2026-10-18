@@ -21,6 +21,7 @@ import * as RpcTest from "effect/rpc/RpcTest";
 import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as SatelliteServer from "../satellite/SatelliteServer.ts";
 import * as SatelliteWsRpc from "../satellite/SatelliteWsRpc.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OpenWork from "./OpenWork.ts";
@@ -689,6 +690,7 @@ describe("Open work RPCs", () => {
       const f = yield* makeDiverged;
       const makeLayer = yield* SatelliteWsRpc.makeConnectionLayer.pipe(
         Effect.provideService(OpenWork.OpenWork, f.service),
+        Effect.provide(SatelliteServer.testLayer),
       );
       const client = yield* RpcTest.makeClient(
         WsSatelliteRpcGroup.middleware(RpcScopeAuthorization),

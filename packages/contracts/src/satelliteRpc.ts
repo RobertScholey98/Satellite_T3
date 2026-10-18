@@ -8,6 +8,18 @@ import {
   WsOpenWorkListRpc,
   WsOpenWorkTimelineRpc,
 } from "./openWork.ts";
+import {
+  REVDOC_WS_METHODS,
+  WsRevdocCancelRpc,
+  WsRevdocDeleteRpc,
+  WsRevdocEditItemRpc,
+  WsRevdocGenerateRpc,
+  WsRevdocGetItemsRpc,
+  WsRevdocRefreshRpc,
+  WsRevdocSubscribeRpc,
+  WsRevdocTestRpc,
+  WsRevdocWorktreesRpc,
+} from "./revdoc.ts";
 
 /**
  * Satellite's WebSocket method names. `WS_METHODS` spreads this table, so clients call Satellite
@@ -16,6 +28,7 @@ import {
  */
 export const SATELLITE_WS_METHODS = {
   ...OPEN_WORK_WS_METHODS,
+  ...REVDOC_WS_METHODS,
 } as const;
 
 /**
@@ -28,6 +41,15 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsOpenWorkTimelineRpc,
   WsOpenWorkDiffRpc,
   WsOpenWorkCommitFilesRpc,
+  WsRevdocWorktreesRpc,
+  WsRevdocSubscribeRpc,
+  WsRevdocGetItemsRpc,
+  WsRevdocGenerateRpc,
+  WsRevdocTestRpc,
+  WsRevdocCancelRpc,
+  WsRevdocRefreshRpc,
+  WsRevdocEditItemRpc,
+  WsRevdocDeleteRpc,
 );
 
 type SatelliteWsRpc = RpcGroup.Rpcs<typeof WsSatelliteRpcGroup>;

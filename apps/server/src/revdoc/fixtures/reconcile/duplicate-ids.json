@@ -1,0 +1,72 @@
+{
+  "name": "duplicate-ids",
+  "description": "The first proposal with an id matches; a repeat is new.",
+  "mode": "full",
+  "hashesBefore": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "hashesNow": {
+    "src/settings.ts": "h1",
+    "src/login.ts": "h1"
+  },
+  "current": [
+    {
+      "id": "a",
+      "check": "First",
+      "outcome": "complete"
+    }
+  ],
+  "proposal": [
+    {
+      "id": "a",
+      "area": "General",
+      "check": "First",
+      "expected": "",
+      "coveredPaths": []
+    },
+    {
+      "id": "a",
+      "area": "General",
+      "check": "First again",
+      "expected": "",
+      "coveredPaths": []
+    }
+  ],
+  "expected": {
+    "items": [
+      {
+        "id": "a",
+        "position": 0,
+        "area": "General",
+        "check": "First",
+        "coveredPaths": [],
+        "outcome": "complete",
+        "note": "",
+        "stale": false,
+        "dismissed": false,
+        "retest": null
+      },
+      {
+        "id": "new-1",
+        "position": 1,
+        "area": "General",
+        "check": "First again",
+        "coveredPaths": [],
+        "outcome": "not_checked",
+        "note": "",
+        "stale": false,
+        "dismissed": false,
+        "retest": null
+      }
+    ],
+    "report": {
+      "added": 1,
+      "updated": 0,
+      "staled": 0,
+      "unstaled": 0,
+      "unknownIds": 1,
+      "dropped": 0
+    }
+  }
+}

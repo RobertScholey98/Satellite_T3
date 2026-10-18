@@ -138,6 +138,7 @@ import {
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { RevdocSettings } from "../revdoc/RevdocSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -3302,6 +3303,7 @@ export function GeneralSettingsPanel() {
             )
           }
         />
+        <RevdocSettings />
       </SettingsSection>
 
       <SettingsSection id="about" title="About">

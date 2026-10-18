@@ -45,6 +45,7 @@ import {
   ProviderDriverKind,
 } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import { RevdocAction } from "./revdoc.ts";
 
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
@@ -1216,6 +1217,18 @@ export const ServerSettings = Schema.Struct({
   usageModelAliases: Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+
+  // Satellite Revdoc. Null model selections mean Automatic.
+  revdocModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  revdocLargeModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  revdocTestingModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  revdocDefaultAction: RevdocAction.pipe(Schema.withDecodingDefault(Effect.succeed("generate"))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -1477,6 +1490,11 @@ export const ServerSettingsPatch = Schema.Struct({
   usageModelAliases: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(TrimmedNonEmptyString)),
   ),
+
+  revdocModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  revdocLargeModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  revdocTestingModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  revdocDefaultAction: Schema.optionalKey(RevdocAction),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

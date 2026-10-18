@@ -6,6 +6,7 @@ import type {
   TextGenerationError,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
+import type * as Schema from "effect/Schema";
 
 import type { TextGenerationPolicy } from "./textGenerationPolicy.ts";
 
@@ -113,4 +114,21 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  /**
+   * Runs a caller-owned prompt and output schema through the provider's structured runner,
+   * without investigation. Absent on providers that cannot run arbitrary structured prompts.
+   */
+  readonly generateStructured?: <S extends StructuredOutputSchema>(
+    input: StructuredGenerationInput<S>,
+  ) => Effect.Effect<S["Type"], TextGenerationError>;
+}
+
+export type StructuredOutputSchema = Schema.Top & { readonly DecodingServices: never };
+
+export interface StructuredGenerationInput<S extends StructuredOutputSchema> {
+  readonly cwd: string;
+  readonly prompt: string;
+  readonly outputSchema: S;
+  readonly modelSelection: ModelSelection;
 }

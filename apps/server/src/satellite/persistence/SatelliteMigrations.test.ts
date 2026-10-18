@@ -21,8 +21,13 @@ import {
 const withDatabase = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 
+// Shipped Satellite migrations, then a probe after them: the migrator skips ids below the highest
+// recorded one, so the probe is 100 only while the manifest is empty.
+const shippedLedger = satelliteMigrationEntries.map(([id, name]) => [id, name] as const);
+const probeId = Math.max(FIRST_SATELLITE_MIGRATION_ID - 1, ...shippedLedger.map(([id]) => id)) + 1;
+
 const probe: SatelliteMigration = [
-  100,
+  probeId,
   "Probe",
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -43,18 +48,18 @@ describe("Satellite migrations", () => {
     }
   });
 
-  it.effect("creates an empty Satellite ledger on a fresh install", () =>
+  it.effect("records exactly the shipped Satellite migrations on a fresh install", () =>
     withDatabase(
       Effect.gen(function* () {
         assert.deepStrictEqual(yield* runMigrationsWithSatellite(), migrationManifest);
         assert.deepStrictEqual(yield* readLedger("effect_sql_migrations"), migrationManifest);
-        assert.deepStrictEqual(yield* readLedger("satellite_migrations"), []);
+        assert.deepStrictEqual(yield* readLedger("satellite_migrations"), shippedLedger);
       }),
     ),
   );
 
   it.effect.each(["fresh", "55-60", "dev-build"] as const)(
-    "runs a migration at 100 exactly once on a %s database",
+    "runs a new migration exactly once on a %s database",
     (shape) =>
       withDatabase(
         Effect.gen(function* () {
@@ -62,7 +67,7 @@ describe("Satellite migrations", () => {
           if (shape === "dev-build") yield* seedSatelliteDevBuild;
           yield* runMigrationsWithSatellite();
 
-          assert.deepStrictEqual(yield* runSatelliteMigrations([probe]), [[100, "Probe"]]);
+          assert.deepStrictEqual(yield* runSatelliteMigrations([probe]), [[probeId, "Probe"]]);
           assert.deepStrictEqual(yield* runSatelliteMigrations([probe]), []);
           assert.strictEqual(yield* probeRuns, 1);
         }),
@@ -88,11 +93,12 @@ describe("Satellite migrations", () => {
           [67, "DocumentPlacements"],
           [68, "DocumentMediaTypes"],
           [69, "IssueDeliveryPeers"],
-          [100, "Probe"],
+          ...shippedLedger,
+          [probeId, "Probe"],
         ]);
         assert.deepStrictEqual(yield* readLedger("effect_sql_migrations"), migrationManifest);
         for (const [id] of (yield* readLedger("satellite_migrations")) ?? []) {
-          if (id === FIRST_SATELLITE_MIGRATION_ID) continue;
+          if (id >= FIRST_SATELLITE_MIGRATION_ID) continue;
           assert.isAtLeast(id, SATELLITE_LEGACY_MIGRATION_IDS.first);
           assert.isAtMost(id, SATELLITE_LEGACY_MIGRATION_IDS.last);
         }
