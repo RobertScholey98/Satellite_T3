@@ -7,9 +7,11 @@ import {
   type RevdocState,
 } from "@t3tools/client-runtime/revdoc";
 import type { EnvironmentId, RevdocTarget, ThreadId } from "@t3tools/contracts";
-import { Atom } from "effect/reactivity";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironmentQuery } from "./query";
 import { environmentThreadShells } from "./threads";
 
@@ -64,4 +66,16 @@ export function useRevdocWorktrees(environmentId: EnvironmentId | null, threadId
     refresh();
   }, [changes, refresh]);
   return query.data;
+}
+
+/**
+ * The worktree list the picker already loaded, for one-off reads such as a palette command.
+ * Null until it has loaded, which keeps the stored pick.
+ */
+export function readRevdocWorktrees(environmentId: EnvironmentId, threadId: ThreadId) {
+  return Option.getOrNull(
+    AsyncResult.value(
+      appAtomRegistry.get(revdocEnvironment.worktrees({ environmentId, input: { threadId } })),
+    ),
+  );
 }

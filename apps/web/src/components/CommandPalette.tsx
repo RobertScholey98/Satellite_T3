@@ -156,7 +156,7 @@ import {
 } from "../rightPanelStore";
 import { getLatestThreadForProject, sortThreads } from "../lib/threadSort";
 import { readRevdocWorktree, resolveRevdocWorktree } from "../revdocWorktreeStore";
-import { revdocEnvironment, useRevdocWorktrees } from "../state/revdoc";
+import { readRevdocWorktrees, revdocEnvironment } from "../state/revdoc";
 import { toastRevdocFailure } from "./revdoc/useRevdocActions";
 import {
   cn,
@@ -645,10 +645,6 @@ function OpenCommandPaletteDialog(props: {
   const availableSettingsSearchItems = useAvailableSettingsSearchItems();
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
-  const revdocWorktrees = useRevdocWorktrees(
-    activeThread?.environmentId ?? null,
-    activeThread?.id ?? null,
-  );
   const paletteRouteTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -1959,7 +1955,7 @@ function OpenCommandPaletteDialog(props: {
           useRightPanelStore.getState().open(revdocThreadRef, "revdoc");
           const worktreePath = resolveRevdocWorktree(
             readRevdocWorktree(revdocThreadRef),
-            revdocWorktrees,
+            readRevdocWorktrees(revdocThreadRef.environmentId, revdocThreadRef.threadId),
           );
           const result = await generateRevdoc({
             environmentId: revdocThreadRef.environmentId,
