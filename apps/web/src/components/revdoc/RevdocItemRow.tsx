@@ -140,6 +140,7 @@ export const RevdocItemRow = memo(function RevdocItemRow(props: RevdocItemRowPro
       const next = resolveNoteConflict(draft, failure.currentItem);
       draft = next.draft;
       if (next._tag === "conflict") break;
+      if (attempt === 2) toastRevdocFailure("Another device kept changing this check", result);
     }
     setNoteDraft(draft);
   };

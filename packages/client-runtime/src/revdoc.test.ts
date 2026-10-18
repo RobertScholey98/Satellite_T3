@@ -244,4 +244,21 @@ describe("note drafts", () => {
     expect(retried._tag).toBe("retry");
     expect(noteDraftSaveRevision(retried.draft)).toBe(7);
   });
+
+  it("compares later refusals with the note the person last overrode", () => {
+    const draft = { ...startNoteDraft("Original", 3), text: "Mine" };
+    const shown = resolveNoteConflict(draft, { note: "Theirs", revision: 4 }).draft;
+    // "Save mine" is refused because an outcome moved the item on: retry, now based on "Theirs".
+    const retried = resolveNoteConflict(shown, { note: "Theirs", revision: 5 });
+    expect(retried).toEqual({
+      _tag: "retry",
+      draft: { text: "Mine", original: "Theirs", baseRevision: 5, conflict: null },
+    });
+    // Another outcome change is no conflict either.
+    expect(resolveNoteConflict(retried.draft, { note: "Theirs", revision: 6 })._tag).toBe("retry");
+    // A device setting the note back to the pre-edit text is a real change.
+    expect(resolveNoteConflict(retried.draft, { note: "Original", revision: 6 })._tag).toBe(
+      "conflict",
+    );
+  });
 });

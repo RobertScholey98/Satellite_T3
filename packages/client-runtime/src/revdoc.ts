@@ -229,7 +229,10 @@ export const resolveNoteConflict = (
   | { readonly _tag: "retry"; readonly draft: RevdocNoteDraft }
   | { readonly _tag: "conflict"; readonly draft: RevdocNoteDraft } =>
   current.note === (draft.conflict?.note ?? draft.original)
-    ? { _tag: "retry", draft: { ...draft, baseRevision: current.revision, conflict: null } }
+    ? {
+        _tag: "retry",
+        draft: { ...draft, original: current.note, baseRevision: current.revision, conflict: null },
+      }
     : {
         _tag: "conflict",
         draft: { ...draft, conflict: { note: current.note, revision: current.revision } },
