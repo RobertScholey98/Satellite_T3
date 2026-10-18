@@ -1,0 +1,5 @@
+paths:
+  # Upstream's CLI signing step; Satellite does not build CLI archives.
+  .github/workflows/release-desktop.yml:
+    ignore:
+      - "SC2046"

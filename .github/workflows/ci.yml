@@ -38,6 +38,13 @@ jobs:
             exit 1
           fi
 
+      # Also checks the inputs release.yml passes to release-desktop.yml, so an
+      # upstream change to them fails here instead of in a release.
+      - name: Lint workflows
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
+          "$RUNNER_TEMP/actionlint" -color
+
       - name: Setup Vite+
         uses: ./.github/actions/setup-ci-deps
 
