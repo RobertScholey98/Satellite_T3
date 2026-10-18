@@ -96,6 +96,7 @@ import {
   sectionPrompt,
   selectItems,
   sendSection,
+  deleteTestingChildren,
   stopChild,
   UNRECORDED_IN_SECTION,
 } from "./RevdocTesting.ts";
@@ -1153,6 +1154,10 @@ const make = Effect.gen(function* () {
 
   const onOrchestrationEvent = (event: OrchestrationV2DomainEvent) =>
     Effect.gen(function* () {
+      if (event.type === "thread.deleted") {
+        yield* provideRuntime(deleteTestingChildren(event.threadId, store.isTestingThread));
+        return;
+      }
       if (event.type === "subagent.updated") {
         const task = event.payload;
         if (task.childThreadId === null || !TASK_ENDED.has(task.status)) return;

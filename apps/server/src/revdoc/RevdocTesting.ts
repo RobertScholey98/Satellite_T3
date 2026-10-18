@@ -320,6 +320,35 @@ export const disposeCompletionDelivery = (input: {
     Effect.catch((cause) => Effect.logWarning("Revdoc could not dispose a delivery", { cause })),
   );
 
+/**
+ * Deletes a parent's Revdoc testing children once the parent is deleted. Upstream keeps delegated
+ * children, which are hidden from the sidebar, so ours would otherwise outlive the parent and keep
+ * its worktree looking shared.
+ */
+export const deleteTestingChildren = (
+  parentThreadId: ThreadId,
+  isTestingThread: (threadId: ThreadId) => Effect.Effect<boolean, RevdocError>,
+) =>
+  Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const parent = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
+    const childIds = new Set(
+      parent.subagents.flatMap((task) => (task.childThreadId === null ? [] : [task.childThreadId])),
+    );
+    for (const childThreadId of childIds) {
+      if (!(yield* isTestingThread(childThreadId))) continue;
+      yield* threads.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make(`revdoc-delete-child:${childThreadId}`),
+        threadId: childThreadId,
+      });
+    }
+  }).pipe(
+    Effect.catch((cause) =>
+      Effect.logWarning("Revdoc could not delete a deleted thread's testing agents", { cause }),
+    ),
+  );
+
 /** The same stop upstream's task cancel sends. */
 export const stopChild = (passId: string, childThreadId: ThreadId) =>
   Effect.flatMap(ThreadManagement.ThreadManagementService, (threads) =>

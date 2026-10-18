@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -354,4 +355,39 @@ describe("Revdoc test pass as a delegated task", () => {
       });
     },
   );
+
+  it.live("deletes its testing child with the parent so the worktree is no longer shared", () => {
+    const root = makeRepository();
+    writeFile(root, "a.ts", "a\n");
+    return Effect.gen(function* () {
+      const turns = yield* makeTurns;
+      const { layer } = layerStack(root, turns);
+      yield* Effect.gen(function* () {
+        const revdoc = yield* RevdocService.RevdocService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        yield* setup(root);
+        const { passId } = yield* revdoc.test({ ...target(), selection: "remaining" });
+        const childThreadId = yield* awaitChild(passId);
+        yield* open(turns, THREAD_ID, 1);
+        yield* open(turns, childThreadId, 1);
+        yield* awaitPass(passId);
+
+        const childDeleted = yield* threads
+          .streamStoredEventsFrom({
+            threadId: childThreadId,
+            afterSequence: 0,
+            eventType: "thread.deleted",
+          })
+          .pipe(Stream.runHead, Effect.forkChild({ startImmediately: true }));
+        yield* threads.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("command:revdoc-parent:delete"),
+          threadId: THREAD_ID,
+        });
+        assert.isTrue((yield* Fiber.join(childDeleted))._tag === "Some");
+        const child = yield* threads.getThreadProjection(childThreadId);
+        assert.isNotNull(child.thread.deletedAt);
+      }).pipe(Effect.provide(layer));
+    });
+  });
 });
