@@ -530,10 +530,12 @@ export function IssuesBoard({
   const query = useDeferredValue(preferences.query);
 
   // A remembered board that is gone falls back to another; its ticket and filter do not carry over.
-  const [fellBack, setFellBack] = useState(false);
+  // The notice stays until the person picks another board or project.
+  const [fellBackTo, setFellBackTo] = useState<string | null>(null);
+  const fellBack = fellBackTo !== null && fellBackTo === viewKey;
   useEffect(() => {
     if (!requestedBoardMissing) return;
-    setFellBack(true);
+    setFellBackTo(viewKey);
     updatePreferences({ query: "", issueState: "all", issueHost: "all" });
     navigate({ boardId: boardId ?? undefined, ticket: undefined }, true);
   }, [requestedBoardMissing]);

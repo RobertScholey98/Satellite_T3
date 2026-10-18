@@ -67,9 +67,10 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
   const attempt =
     attempts.find((candidate) => candidate.active) ??
     attempts.toSorted((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
-  // Moves and attempt changes bump the board's revision, so the chip follows them while open.
+  // Moves and attempt changes bump the board's revision, so the chip follows them while open. An
+  // ended attempt changes only through this chip, so it does not keep the board watched.
   const boardRevision = useIssueBoardSync(
-    enabled && attempt
+    enabled && attempt?.active
       ? {
           environmentId: threadRef.environmentId,
           projectId: attempt.projectId,
