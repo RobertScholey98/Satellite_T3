@@ -566,8 +566,8 @@ describe("IssueService after a hand move, a disconnect, a merge or a failed run"
         assert.strictEqual((yield* test.latestMove(1))?.status, "pending");
         yield* test.fail("move", null);
         yield* test.service.disconnectBoard({ requestId: "disconnect", boardId: BOARD_ID });
+        // Reconnecting applies the due move itself, without waiting for the minute sweep.
         yield* test.configureBoard({}, "reconnect");
-        yield* test.service.sweep;
 
         const [attempt] = yield* test.attemptsOf(1);
         assert.deepStrictEqual(
@@ -694,7 +694,6 @@ describe("IssueService after the merge and on retried moves", () => {
         yield* test.service.disconnectBoard({ requestId: "disconnect", boardId: BOARD_ID });
         yield* test.service.sweep;
         yield* test.configureBoard({}, "reconnect");
-        yield* test.service.sweep;
 
         const [attempt] = yield* test.attemptsOf(1);
         assert.deepStrictEqual(
@@ -725,6 +724,59 @@ describe("IssueService after the merge and on retried moves", () => {
 
         const move = yield* test.latestMove(1);
         assert.deepStrictEqual([move?.status, move?.error, test.writes], ["applied", null, []]);
+      }),
+    ),
+  );
+});
+
+describe("IssueService moves the host cannot read", () => {
+  const drag = (test: IssueHarness) =>
+    test.service.move({
+      requestId: "drag",
+      boardId: BOARD_ID,
+      issue: issueRef(1),
+      columnId: "progress",
+      expectedPlacement: "ready",
+    });
+
+  it.effect(
+    "records a drag refused for access as failed, and Retry applies it once access is back",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const test = yield* configured;
+          const refused =
+            "GitHub refused the credential for github.com. Update the token in Settings, Source control, or run `gh auth login --hostname github.com`, then Retry.";
+          yield* test.fail("readItem", authenticationFailure(refused));
+          const move = yield* drag(test);
+          assert.deepStrictEqual([move.status, move.error, test.writes], ["failed", refused, []]);
+          assert.deepStrictEqual(
+            (yield* test.openBoard()).moves.map((entry) => [entry.status, entry.columnId]),
+            [["failed", "progress"]],
+          );
+
+          yield* test.fail("readItem", null);
+          const retried = yield* test.service.retryMove({ requestId: "retry", moveId: move.id });
+          assert.deepStrictEqual([retried.status, test.remoteColumn(1)], ["applied", "progress"]);
+        }),
+      ),
+  );
+
+  it.effect("records a drag the host could not answer as retrying, and the sweep applies it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.fail("readItem", remoteFailure("GitHub did not answer."));
+        const move = yield* drag(test);
+        assert.deepStrictEqual([move.status, move.error], ["pending", "GitHub did not answer."]);
+
+        yield* test.fail("readItem", null);
+        yield* TestClock.adjust("1 minute");
+        yield* test.service.sweep;
+        assert.deepStrictEqual(
+          [(yield* test.latestMove(1))?.status, test.remoteColumn(1)],
+          ["applied", "progress"],
+        );
       }),
     ),
   );

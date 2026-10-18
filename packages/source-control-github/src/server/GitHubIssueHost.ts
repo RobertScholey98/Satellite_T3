@@ -114,8 +114,13 @@ const toIssueError = (error: GitHubFailure, onProjects: boolean): IssueOperation
     case "GitHubNotSignedInError":
     case "GitHubHostDisabledError":
     case "GitHubCliFailedError":
-    case "GitHubApiAuthenticationError":
       return new IssueOperationError({ reason: "authentication", message: error.message });
+    case "GitHubApiAuthenticationError":
+      // A saved token outranks gh, so the fix may be either.
+      return new IssueOperationError({
+        reason: "authentication",
+        message: `GitHub refused the credential for ${error.host}. Update the token in Settings, Source control, or run \`gh auth login --hostname ${error.host}\`, then Retry.`,
+      });
     case "GitHubApiNotFoundError":
       return new IssueOperationError({ reason: "not-found", message: error.message });
     case "GitHubApiRateLimitError":

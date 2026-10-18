@@ -439,7 +439,7 @@ describe("IssueAttemptReactor", () => {
     ),
   );
 
-  it.effect("a disconnected board keeps its attempts and the sweep catches up on reconnect", () =>
+  it.effect("a disconnected board keeps its attempts and catches up as soon as it reconnects", () =>
     withDatabase(
       Effect.gen(function* () {
         const { test, reactor, threadId, attemptId } = yield* working();
@@ -447,14 +447,12 @@ describe("IssueAttemptReactor", () => {
         yield* test.linkPullRequest(threadId, 7, "open");
         yield* reactor.emit("thread.pull-request-link-updated", threadId);
         assert.strictEqual(test.remoteColumn(1), "progress");
+        assert.strictEqual((yield* attemptOf(test, attemptId)).status, "working");
 
         yield* test.configureBoard({}, "reconnect");
-        const kept = yield* attemptOf(test, attemptId);
-        assert.deepStrictEqual([kept.status, kept.active], ["working", true]);
-
-        yield* reactor.minuteSweep;
         assert.strictEqual(test.remoteColumn(1), "pr");
-        assert.strictEqual((yield* attemptOf(test, attemptId)).status, "in-pr");
+        const caughtUp = yield* attemptOf(test, attemptId);
+        assert.deepStrictEqual([caughtUp.status, caughtUp.active], ["in-pr", true]);
       }),
     ),
   );

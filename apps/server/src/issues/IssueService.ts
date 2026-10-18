@@ -1051,6 +1051,11 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
               yield* remember(input.requestId, input, id);
             }),
           );
+          // Reconnecting picks up attempts the disconnect paused, without waiting for the sweep.
+          yield* reconcileRows(
+            yield* sql<AttemptRow>`SELECT * FROM issue_board_attempts WHERE board_id=${id}
+              AND (status IN ('launching','working','in-pr') OR (status='merged' AND active=1))`,
+          );
           return yield* openBoard({ projectId: input.projectId, boardId: id });
         }),
       );
@@ -1125,12 +1130,48 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
           if (replay) return yield* readMove(yield* parse(Schema.String, replay));
           const board = yield* readBoard(input.boardId);
           const cwd = (yield* project(board.projectId)).workspaceRoot;
-          const remote = yield* freshItem(
+          const columns = (yield* storedBoard(board.id))?.columns ?? [];
+          if (!columns.some((column) => column.id === input.columnId))
+            return yield* error("invalid", "The selected board column no longer exists.");
+          const read = yield* freshItem(
             board.id,
             cwd,
             board.locator,
             canonicalIssueKey(input.issue),
-          );
+          ).pipe(Effect.result);
+          if (read._tag === "Failure") {
+            const failure = preserveError(read.failure);
+            if (failure.reason === "not-found" || failure.reason === "storage")
+              return yield* failure;
+            // The person's move survives a host that cannot be read: it is recorded, shown with
+            // Retry, and a transient failure is retried by the sweep.
+            const id = yield* transaction(
+              Effect.gen(function* () {
+                const id = yield* enqueueMove({
+                  requestKey: `manual:${input.requestId}`,
+                  boardId: board.id,
+                  issue: input.issue,
+                  columnId: input.columnId,
+                  attemptId: null,
+                  origin: "manual",
+                  ...(input.expectedPlacement === undefined
+                    ? {}
+                    : { expected: input.expectedPlacement }),
+                });
+                yield* remember(input.requestId, input, id);
+                return id;
+              }),
+            );
+            if (isTransientFailure(failure)) {
+              const retryAt = DateTime.formatIso(
+                DateTime.makeUnsafe((yield* nowMillis) + moveRetryDelayMs(0)),
+              );
+              yield* sql`UPDATE issue_moves SET error=${failure.message},retry_at=${retryAt} WHERE id=${id}`;
+            } else yield* settleMove(id, "failed", failure.message);
+            yield* bumpRevision(board.id);
+            return yield* readMove(id);
+          }
+          const remote = read.success;
           if (
             decideManualMove({
               expected: input.expectedPlacement,
@@ -1144,9 +1185,6 @@ export const makeIssueService = (deps: IssueServiceDependencies) =>
               "This ticket moved on another device. Refresh before moving it again.",
             );
           }
-          const columns = (yield* storedBoard(board.id))?.columns ?? [];
-          if (!columns.some((column) => column.id === input.columnId))
-            return yield* error("invalid", "The selected board column no longer exists.");
           const id = yield* transaction(
             Effect.gen(function* () {
               const id = yield* enqueueMove({
