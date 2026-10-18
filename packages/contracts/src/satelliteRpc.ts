@@ -20,6 +20,22 @@ import {
   WsRevdocTestRpc,
   WsRevdocWorktreesRpc,
 } from "./revdoc.ts";
+import {
+  ISSUES_WS_METHODS,
+  WsIssuesAttemptsEndRpc,
+  WsIssuesAttemptsListRpc,
+  WsIssuesAttemptsResumeRpc,
+  WsIssuesAttemptsStartRpc,
+  WsIssuesBoardsConfigureRpc,
+  WsIssuesBoardsDisconnectRpc,
+  WsIssuesBoardsListRpc,
+  WsIssuesBoardsMoveRpc,
+  WsIssuesBoardsOpenRpc,
+  WsIssuesBoardsSubscribeRpc,
+  WsIssuesGetRpc,
+  WsIssuesListRpc,
+  WsIssuesMovesRetryRpc,
+} from "./issues.ts";
 
 /**
  * Satellite's WebSocket method names. `WS_METHODS` spreads this table, so clients call Satellite
@@ -29,6 +45,7 @@ import {
 export const SATELLITE_WS_METHODS = {
   ...OPEN_WORK_WS_METHODS,
   ...REVDOC_WS_METHODS,
+  ...ISSUES_WS_METHODS,
 } as const;
 
 /**
@@ -50,6 +67,19 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsRevdocRefreshRpc,
   WsRevdocEditItemRpc,
   WsRevdocDeleteRpc,
+  WsIssuesListRpc,
+  WsIssuesGetRpc,
+  WsIssuesBoardsListRpc,
+  WsIssuesBoardsOpenRpc,
+  WsIssuesBoardsSubscribeRpc,
+  WsIssuesBoardsConfigureRpc,
+  WsIssuesBoardsDisconnectRpc,
+  WsIssuesBoardsMoveRpc,
+  WsIssuesMovesRetryRpc,
+  WsIssuesAttemptsListRpc,
+  WsIssuesAttemptsStartRpc,
+  WsIssuesAttemptsEndRpc,
+  WsIssuesAttemptsResumeRpc,
 );
 
 type SatelliteWsRpc = RpcGroup.Rpcs<typeof WsSatelliteRpcGroup>;

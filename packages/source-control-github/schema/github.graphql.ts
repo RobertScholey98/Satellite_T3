@@ -87,6 +87,15 @@ export const FileViewedState = Schema.Literals(["DISMISSED", "UNVIEWED", "VIEWED
 export type FileViewedState = typeof FileViewedState.Type
 
 /**
+ * The possible states of an issue.
+ *
+ * - `CLOSED`: An issue that has been closed
+ * - `OPEN`: An issue that is still open
+ */
+export const IssueState = Schema.Literals(["CLOSED", "OPEN"])
+export type IssueState = typeof IssueState.Type
+
+/**
  * Detailed status information about a pull request merge.
  *
  * - `BEHIND`: The head ref is out of date.
@@ -365,6 +374,18 @@ export declare namespace Typename {
     | "TransferredEvent" | "Tree" | "UnassignedEvent" | "UnlabeledEvent" | "UnlockedEvent" | "UnmarkedAsDuplicateEvent"
     | "UnpinnedEvent" | "UnsubscribedEvent" | "User" | "UserBlockedEvent" | "UserContentEdit" | "UserList"
     | "UserNamespaceRepository" | "UserStatus" | "VerifiableDomain" | "Workflow" | "WorkflowRun" | "WorkflowRunFile"
+  /** Every possible `__typename` of union `ProjectV2FieldConfiguration`. */
+  export type ProjectV2FieldConfiguration =
+    | "ProjectV2Field" | "ProjectV2IterationField" | "ProjectV2MultiSelectField" | "ProjectV2SingleSelectField"
+  /** Every possible `__typename` of union `ProjectV2ItemContent`. */
+  export type ProjectV2ItemContent = "DraftIssue" | "Issue" | "PullRequest"
+  /** Every possible `__typename` of union `ProjectV2ItemFieldValue`. */
+  export type ProjectV2ItemFieldValue =
+    | "ProjectV2ItemFieldDateValue" | "ProjectV2ItemFieldIterationValue" | "ProjectV2ItemFieldLabelValue"
+    | "ProjectV2ItemFieldMilestoneValue" | "ProjectV2ItemFieldMultiSelectValue" | "ProjectV2ItemFieldNumberValue"
+    | "ProjectV2ItemFieldPullRequestValue" | "ProjectV2ItemFieldRepositoryValue" | "ProjectV2ItemFieldReviewerValue"
+    | "ProjectV2ItemFieldSingleSelectValue" | "ProjectV2ItemFieldTextValue" | "ProjectV2ItemFieldUserValue"
+    | "ProjectV2ItemIssueFieldValue"
   /** Every possible `__typename` of union `PullRequestTimelineItems`. */
   export type PullRequestTimelineItems =
     | "AddedToMergeQueueEvent" | "AddedToProjectEvent" | "AddedToProjectV2Event" | "AddedToStackEvent" | "AssignedEvent"

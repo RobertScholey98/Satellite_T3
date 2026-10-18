@@ -26,7 +26,8 @@ export type SettingsPath =
   | "/settings/source-control"
   | "/settings/storage"
   | "/settings/connections"
-  | "/settings/archived";
+  | "/settings/archived"
+  | "/settings/issue-boards";
 
 export type SettingsSearchScope =
   | "environment"
@@ -85,6 +86,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/storage": "Storage",
   "/settings/connections": "Connections",
   "/settings/archived": "Archive",
+  "/settings/issue-boards": "Issue boards",
 };
 
 export function keybindingSearchAnchorId<Command extends KeybindingCommand>(command: Command) {
@@ -1003,6 +1005,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/archived",
     searchTerms: ["restore reopen deleted history projects"],
   },
+  {
+    id: "issue-boards",
+    title: "Issue board connections",
+    to: "/settings/issue-boards",
+    searchTerms: ["issues tickets github projects azure devops boards connect disconnect"],
+  },
+  {
+    id: "issue-board-columns",
+    title: "Issue board columns",
+    to: "/settings/issue-boards",
+    searchTerms: ["ready in progress in pr completed mapping move on merge"],
+  },
 ] as const satisfies ReadonlyArray<SettingsSearchItem>;
 
 export type SettingsSearchItemId = (typeof SETTINGS_SEARCH_ITEMS)[number]["id"];
@@ -1023,6 +1037,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/connections": "connections",
   "/settings/scheduled-tasks": null,
   "/settings/archived": "project-defaults",
+  "/settings/issue-boards": null,
 };
 
 export function getSettingsSearchTargetScope(targetId: string) {

@@ -19,6 +19,10 @@
       "types": "./src/server/driver.ts",
       "import": "./src/server/driver.ts"
     },
+    "./server/IssueHostAdapter": {
+      "types": "./src/server/IssueHostAdapter.ts",
+      "import": "./src/server/IssueHostAdapter.ts"
+    },
     "./server/mergeMessage": {
       "types": "./src/server/mergeMessage.ts",
       "import": "./src/server/mergeMessage.ts"

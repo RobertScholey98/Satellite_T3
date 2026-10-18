@@ -65,6 +65,7 @@ export * from "./rpc.ts";
 export * from "./satelliteRpc.ts";
 export * from "./openWork.ts";
 export * from "./productIdentity.ts";
+export * from "./issues.ts";
 export * from "./worktreeSetup.ts";
 export * from "./secretRequest.ts";
 export * from "./clientRpcPermissions.ts";

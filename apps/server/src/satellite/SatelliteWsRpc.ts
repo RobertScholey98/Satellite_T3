@@ -5,12 +5,14 @@ import * as Layer from "effect/Layer";
 import type * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as OpenWork from "../openWork/OpenWork.ts";
 import * as RevdocService from "../revdoc/RevdocService.ts";
+import { IssueService } from "../issues/IssueService.ts";
 
 const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
   WsSatelliteRpcGroup.toLayer(
     Effect.gen(function* () {
       const openWork = yield* OpenWork.OpenWork;
       const revdoc = yield* RevdocService.RevdocService;
+      const issues = yield* IssueService;
       return WsSatelliteRpcGroup.of({
         [SATELLITE_WS_METHODS.openWorkList]: (input) => openWork.list(input),
         [SATELLITE_WS_METHODS.openWorkTimeline]: (input) => openWork.timeline(input),
@@ -26,6 +28,19 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.revdocEditItem]: (input) => revdoc.editItem(input),
         [SATELLITE_WS_METHODS.revdocDelete]: (input) =>
           revdoc.deleteReview(input).pipe(Effect.as({})),
+        [SATELLITE_WS_METHODS.issuesList]: (input) => issues.list(input),
+        [SATELLITE_WS_METHODS.issuesGet]: (input) => issues.get(input),
+        [SATELLITE_WS_METHODS.issuesBoardsList]: (input) => issues.listBoards(input),
+        [SATELLITE_WS_METHODS.issuesBoardsOpen]: (input) => issues.openBoard(input),
+        [SATELLITE_WS_METHODS.issuesBoardsSubscribe]: (input) => issues.subscribeBoard(input),
+        [SATELLITE_WS_METHODS.issuesBoardsConfigure]: (input) => issues.configureBoard(input),
+        [SATELLITE_WS_METHODS.issuesBoardsDisconnect]: (input) => issues.disconnectBoard(input),
+        [SATELLITE_WS_METHODS.issuesBoardsMove]: (input) => issues.move(input),
+        [SATELLITE_WS_METHODS.issuesMovesRetry]: (input) => issues.retryMove(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsList]: (input) => issues.listAttempts(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsStart]: (input) => issues.startAttempt(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsEnd]: (input) => issues.endAttempt(input),
+        [SATELLITE_WS_METHODS.issuesAttemptsResume]: (input) => issues.resumeAttempt(input),
       });
     }),
   );

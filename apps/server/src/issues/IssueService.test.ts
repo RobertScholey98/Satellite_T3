@@ -1,0 +1,480 @@
+import { assert, describe, it } from "@effect/vitest";
+import type { IssueBoardSyncEvent } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
+
+import {
+  authenticationFailure,
+  BOARD_ID,
+  EPOCH,
+  issueRef,
+  makeIssueHarness,
+  PROJECT_ID,
+  remoteFailure,
+  withDatabase,
+  type IssueHarness,
+} from "./IssueService.test.helpers.ts";
+
+const AFTER_31S = "1970-01-01T00:00:31.000Z";
+
+const sync = (revision: number, syncedAt: string, syncing = false) => ({
+  revision,
+  syncedAt,
+  syncing,
+  failure: null,
+});
+
+/** Collects `count` sync events, returning once the subscription has delivered its first one. */
+const collectSyncEvents = Effect.fn("collectSyncEvents")(function* (
+  test: IssueHarness,
+  count: number,
+) {
+  const events: IssueBoardSyncEvent[] = [];
+  const subscribed = yield* Deferred.make<void>();
+  const fiber = yield* test.service
+    .subscribeBoard({ projectId: PROJECT_ID, boardId: BOARD_ID })
+    .pipe(
+      Stream.take(count),
+      Stream.runForEach((event) =>
+        Effect.sync(() => events.push(event)).pipe(
+          Effect.andThen(Deferred.succeed(subscribed, undefined)),
+        ),
+      ),
+      Effect.forkChild,
+    );
+  yield* Deferred.await(subscribed);
+  return { events, done: Fiber.join(fiber) };
+});
+
+const configured = Effect.gen(function* () {
+  const test = yield* makeIssueHarness();
+  yield* test.configureBoard();
+  return test;
+});
+
+describe("IssueService stored copy", () => {
+  it.effect("opens a configured board from its stored copy, even after a restart", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        assert.strictEqual(test.calls.reads, 1);
+
+        const view = yield* test.openBoard();
+        assert.deepStrictEqual(view.sync, sync(1, EPOCH));
+        assert.strictEqual(view.board.title, "Acme roadmap");
+        assert.deepStrictEqual(
+          view.items.map((item) => [item.issue.ref.number, item.columnId]),
+          [
+            [1, "ready"],
+            [2, "ready"],
+            [3, "ready"],
+          ],
+        );
+
+        const restarted = yield* test.restart;
+        const reopened = yield* restarted.openBoard({ projectId: PROJECT_ID, boardId: BOARD_ID });
+        assert.deepStrictEqual(reopened.sync, sync(1, EPOCH));
+        assert.strictEqual(reopened.items.length, 3);
+        assert.strictEqual(test.calls.reads, 1);
+      }),
+    ),
+  );
+
+  it.effect("serves the stored copy while one background refresh reads an aged board", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* TestClock.adjust("31 seconds");
+        yield* test.moveByHand(1, "progress");
+        const held = yield* test.holdNextRead;
+
+        const views = yield* Effect.forEach([1, 2, 3, 4, 5], () => test.openBoard());
+        for (const view of views) {
+          assert.deepStrictEqual(view.sync, sync(1, EPOCH, true));
+          assert.strictEqual(view.items[0]?.columnId, "ready");
+        }
+
+        yield* Deferred.succeed(held.release, undefined);
+        yield* test.service.drainRefreshes;
+        const refreshed = yield* test.openBoard();
+        assert.deepStrictEqual(refreshed.sync, sync(2, AFTER_31S));
+        assert.strictEqual(refreshed.items[0]?.columnId, "progress");
+        assert.strictEqual(test.calls.reads, 2);
+      }),
+    ),
+  );
+
+  it.effect("keeps the revision when a refresh finds the board unchanged", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* TestClock.adjust("31 seconds");
+        yield* test.openBoard();
+        yield* test.service.drainRefreshes;
+
+        assert.deepStrictEqual((yield* test.openBoard()).sync, sync(1, AFTER_31S));
+        assert.strictEqual(test.calls.reads, 2);
+      }),
+    ),
+  );
+
+  it.effect("a refresh that read the board before a move never undoes the move", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* TestClock.adjust("31 seconds");
+        const held = yield* test.holdNextRead;
+        yield* test.openBoard();
+        yield* Deferred.await(held.started);
+
+        const move = yield* test.service.move({
+          requestId: "move-during-refresh",
+          boardId: BOARD_ID,
+          issue: issueRef(1),
+          columnId: "progress",
+          expectedPlacement: "ready",
+        });
+        assert.strictEqual(move.status, "applied");
+
+        yield* Deferred.succeed(held.release, undefined);
+        yield* test.service.drainRefreshes;
+        assert.strictEqual(yield* test.storedColumn(1), "progress");
+        assert.strictEqual(test.remoteColumn(1), "progress");
+      }),
+    ),
+  );
+
+  it.effect("a failed refresh keeps the stored board and records the failure", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* TestClock.adjust("31 seconds");
+        yield* test.fail("read", remoteFailure("Board unavailable"));
+        yield* test.openBoard();
+        yield* test.service.drainRefreshes;
+
+        const failed = yield* test.openBoard();
+        assert.deepStrictEqual(failed.sync, {
+          revision: 1,
+          syncedAt: EPOCH,
+          syncing: false,
+          failure: { at: AFTER_31S, message: "Board unavailable" },
+        });
+        assert.strictEqual(failed.items.length, 3);
+
+        yield* test.fail("read", null);
+        yield* test.openBoard(true);
+        yield* test.service.drainRefreshes;
+        assert.deepStrictEqual((yield* test.openBoard()).sync, sync(1, AFTER_31S));
+        assert.strictEqual(test.calls.reads, 3);
+      }),
+    ),
+  );
+
+  it.effect("a subscription follows the stored revision through a refresh and a move", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const subscription = yield* collectSyncEvents(test, 5);
+        yield* TestClock.adjust("31 seconds");
+        yield* test.openBoard();
+        yield* test.service.drainRefreshes;
+        yield* test.service.move({
+          requestId: "move-while-subscribed",
+          boardId: BOARD_ID,
+          issue: issueRef(1),
+          columnId: "progress",
+        });
+        yield* subscription.done;
+
+        assert.deepStrictEqual(
+          subscription.events.map((event) => event.sync),
+          [
+            sync(1, EPOCH),
+            sync(1, EPOCH, true),
+            sync(1, AFTER_31S),
+            sync(2, AFTER_31S),
+            sync(3, AFTER_31S),
+          ],
+        );
+      }),
+    ),
+  );
+
+  it.effect("disconnecting publishes a null sync and leaves nothing stored", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const subscription = yield* collectSyncEvents(test, 2);
+        yield* test.service.disconnectBoard({ requestId: "disconnect", boardId: BOARD_ID });
+        yield* subscription.done;
+
+        assert.deepStrictEqual(subscription.events, [
+          { boardId: BOARD_ID, sync: sync(1, EPOCH) },
+          { boardId: BOARD_ID, sync: null },
+        ]);
+        const reopened = yield* test.openBoard().pipe(Effect.flip);
+        assert.strictEqual(reopened.reason, "not-found");
+      }),
+    ),
+  );
+
+  it.effect(
+    "the five-minute sweep refreshes boards with a live subscriber or an active attempt",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const test = yield* configured;
+          const sweepAfterSixMinutes = Effect.gen(function* () {
+            yield* TestClock.adjust("6 minutes");
+            yield* test.service.refreshStaleBoards;
+            yield* test.service.drainRefreshes;
+          });
+
+          yield* sweepAfterSixMinutes;
+          assert.strictEqual(test.calls.reads, 1, "an idle board is left alone");
+
+          const subscription = yield* collectSyncEvents(test, 3);
+          yield* sweepAfterSixMinutes;
+          yield* subscription.done;
+          assert.strictEqual(test.calls.reads, 2, "a watched board is refreshed");
+
+          const { threadId } = yield* test.startAttempt(1);
+          yield* test.threadRunning(threadId);
+          yield* test.service.reconcileThread(threadId);
+          yield* sweepAfterSixMinutes;
+          assert.strictEqual(test.calls.reads, 3, "a worked board is refreshed");
+        }),
+      ),
+  );
+
+  it.effect("keeps a 300-ticket board view under 160 KB", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* makeIssueHarness({ tickets: 300 });
+        const view = yield* test.configureBoard();
+        assert.strictEqual(view.items.length, 300);
+        assert.isBelow(JSON.stringify(view).length, 160 * 1024);
+      }),
+    ),
+  );
+});
+
+describe("IssueService manual moves", () => {
+  it.effect("writes a move and stores the placement the host confirmed", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const move = yield* test.service.move({
+          requestId: "move",
+          boardId: BOARD_ID,
+          issue: issueRef(1),
+          columnId: "progress",
+          expectedPlacement: "ready",
+        });
+
+        assert.strictEqual(move.status, "applied");
+        assert.strictEqual(move.origin, "manual");
+        assert.deepStrictEqual(test.writes, [{ ticket: 1, columnId: "progress" }]);
+        assert.strictEqual(yield* test.storedColumn(1), "progress");
+      }),
+    ),
+  );
+
+  it.effect("refuses a move when the ticket moved elsewhere since the board was read", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.moveByHand(1, "blocked");
+        const refused = yield* test.service
+          .move({
+            requestId: "move",
+            boardId: BOARD_ID,
+            issue: issueRef(1),
+            columnId: "progress",
+            expectedPlacement: "ready",
+          })
+          .pipe(Effect.flip);
+
+        assert.strictEqual(refused.reason, "conflict");
+        assert.strictEqual(
+          refused.message,
+          "This ticket moved on another device. Refresh before moving it again.",
+        );
+        assert.deepStrictEqual(test.writes, []);
+        assert.strictEqual(yield* test.storedColumn(1), "blocked");
+      }),
+    ),
+  );
+
+  it.effect(
+    "keeps a move pending through a transient failure and applies it after the retry time",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const test = yield* configured;
+          yield* test.fail("move", remoteFailure());
+          const move = yield* test.service.move({
+            requestId: "move",
+            boardId: BOARD_ID,
+            issue: issueRef(1),
+            columnId: "progress",
+          });
+          assert.strictEqual(move.status, "pending");
+          assert.strictEqual(move.error, "The repository host did not answer.");
+
+          yield* test.fail("move", null);
+          yield* test.service.sweep;
+          assert.strictEqual((yield* test.latestMove(1))?.status, "pending");
+          assert.deepStrictEqual(test.writes, []);
+
+          yield* TestClock.adjust("1 minute");
+          yield* test.service.sweep;
+          assert.strictEqual((yield* test.latestMove(1))?.status, "applied");
+          assert.deepStrictEqual(test.writes, [{ ticket: 1, columnId: "progress" }]);
+        }),
+      ),
+  );
+
+  it.effect("fails a move on a lasting failure and Retry applies it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.fail("move", authenticationFailure());
+        const failed = yield* test.service.move({
+          requestId: "move",
+          boardId: BOARD_ID,
+          issue: issueRef(1),
+          columnId: "progress",
+        });
+        assert.strictEqual(failed.status, "failed");
+        assert.strictEqual(failed.error, "The GitHub token has expired.");
+
+        yield* test.fail("move", null);
+        const retried = yield* test.service.retryMove({ requestId: "retry", moveId: failed.id });
+        assert.strictEqual(retried.id, failed.id);
+        assert.strictEqual(retried.status, "applied");
+        assert.strictEqual(test.remoteColumn(1), "progress");
+      }),
+    ),
+  );
+
+  it.effect("replays a repeated request id and refuses one reused for a different move", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const input = {
+          requestId: "move",
+          boardId: BOARD_ID,
+          issue: issueRef(1),
+          columnId: "progress",
+        };
+        const first = yield* test.service.move(input);
+        const again = yield* test.service.move(input);
+        assert.deepStrictEqual(again, first);
+        assert.deepStrictEqual(test.writes, [{ ticket: 1, columnId: "progress" }]);
+
+        const reused = yield* test.service.move({ ...input, columnId: "done" }).pipe(Effect.flip);
+        assert.strictEqual(reused.reason, "conflict");
+        assert.strictEqual(
+          reused.message,
+          "This request ID was already used for a different issue operation.",
+        );
+        assert.strictEqual(test.remoteColumn(1), "progress");
+      }),
+    ),
+  );
+});
+
+describe("IssueService Start", () => {
+  it.effect("refuses Start unless the remote board shows the ticket in a Ready column", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.moveByHand(1, "progress");
+        const refused = yield* test.startAttempt(1).pipe(Effect.flip);
+
+        assert.strictEqual(refused.reason, "conflict");
+        assert.deepStrictEqual(test.launches, []);
+        assert.deepStrictEqual(yield* test.attemptsOf(1), []);
+      }),
+    ),
+  );
+
+  it.effect("launches one worktree thread with the prompt and the attached ticket", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const started = yield* test.startAttempt(1, "start-request");
+
+        assert.strictEqual(started.threadId, "thread-1");
+        assert.strictEqual(started.attempt.status, "launching");
+        assert.strictEqual(started.attempt.active, false);
+        assert.deepStrictEqual(
+          test.launches.map(({ commandId, threadId, title, text, branch, baseRef }) => ({
+            commandId,
+            threadId,
+            title,
+            text,
+            branch,
+            baseRef,
+          })),
+          [
+            {
+              commandId: "issue-attempt:start-request",
+              threadId: "thread-1",
+              title: "#1 Ticket 1: make the board load faster on large projects",
+              text: "Fix this ticket.\n\n<attached_issue>\nRepository host: github.com\nIssue: #1 Ticket 1: make the board load faster on large projects\nURL: https://github.com/acme/app/issues/1\n\nSteps to reproduce ticket 1.\n</attached_issue>",
+              branch: "issue-1",
+              baseRef: "main",
+            },
+          ],
+        );
+        assert.deepStrictEqual(test.writes, []);
+      }),
+    ),
+  );
+
+  it.effect("pressing Start twice with one request id gives one attempt on one thread", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        const first = yield* test.startAttempt(1, "start-request");
+        const second = yield* test.startAttempt(1, "start-request");
+
+        assert.strictEqual(second.threadId, first.threadId);
+        assert.strictEqual(second.attempt.id, first.attempt.id);
+        assert.strictEqual((yield* test.attemptsOf(1)).length, 1);
+        // Upstream's launch is idempotent on the command id, so a repeat launches nothing new.
+        assert.deepStrictEqual(
+          test.launches.map((launch) => [launch.commandId, launch.threadId]),
+          [
+            ["issue-attempt:start-request", "thread-1"],
+            ["issue-attempt:start-request", "thread-1"],
+          ],
+        );
+      }),
+    ),
+  );
+
+  it.effect("a failed launch marks the attempt failed and leaves the ticket alone", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const test = yield* configured;
+        yield* test.fail("launch", remoteFailure("The thread could not be launched."));
+        const failure = yield* test.startAttempt(1).pipe(Effect.flip);
+
+        assert.strictEqual(failure.message, "The thread could not be launched.");
+        assert.deepStrictEqual(
+          (yield* test.attemptsOf(1)).map((attempt) => [attempt.status, attempt.active]),
+          [["failed", false]],
+        );
+        assert.strictEqual(test.remoteColumn(1), "ready");
+        assert.deepStrictEqual(test.writes, []);
+      }),
+    ),
+  );
+});

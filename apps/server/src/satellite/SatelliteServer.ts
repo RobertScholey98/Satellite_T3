@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as Issues from "../issues/Issues.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as RevdocHandlers from "../mcp/toolkits/revdoc/handlers.ts";
 import { RevdocToolkit } from "../mcp/toolkits/revdoc/tools.ts";
@@ -31,6 +32,7 @@ export const layer = Layer.mergeAll(
   OpenWork.layer,
   RevdocWorktreeRemoval.layer,
   RevdocLifecycleReactor.layer,
+  Issues.layer,
 ).pipe(Layer.provideMerge(RevdocService.layer));
 
 /**
@@ -40,9 +42,14 @@ export const layer = Layer.mergeAll(
 export const testLayer = Layer.mergeAll(
   OpenWork.testLayer,
   RevdocService.testLayer,
+  Issues.testLayer,
   // One feature per line, as in `layer`, so features append without touching each other's lines.
 );
 
 /** Where Satellite's MCP toolkits join `/mcp`, via `McpHttpServer.toolkitRegistration`. */
 export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) =>
-  Layer.merge(mcpServer, McpHttpServer.toolkitRegistration(RevdocToolkit, RevdocHandlers.layer));
+  Layer.mergeAll(
+    mcpServer,
+    McpHttpServer.toolkitRegistration(RevdocToolkit, RevdocHandlers.layer),
+    Issues.mcpToolkit,
+  );

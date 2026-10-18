@@ -31,6 +31,10 @@
       "types": "./src/server/GitHubCredentials.ts",
       "import": "./src/server/GitHubCredentials.ts"
     },
+    "./server/GitHubIssueHost": {
+      "types": "./src/server/GitHubIssueHost.ts",
+      "import": "./src/server/GitHubIssueHost.ts"
+    },
     "./server/GitHubRequestPolicy": {
       "types": "./src/server/GitHubRequestPolicy.ts",
       "import": "./src/server/GitHubRequestPolicy.ts"
