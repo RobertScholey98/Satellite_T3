@@ -1747,7 +1747,7 @@ function OpenCommandPaletteDialog(props: {
   }
 
   if (activeThread !== null) {
-    const revdocThreadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+    const thread = activeThread;
     actionItems.push(
       {
         kind: "action",
@@ -1756,7 +1756,9 @@ function OpenCommandPaletteDialog(props: {
         title: "Open Revdoc review",
         icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
-          useRightPanelStore.getState().open(revdocThreadRef, "revdoc");
+          useRightPanelStore
+            .getState()
+            .open(scopeThreadRef(thread.environmentId, thread.id), "revdoc");
         },
       },
       {
@@ -1766,6 +1768,7 @@ function OpenCommandPaletteDialog(props: {
         title: "Run Revdoc pass",
         icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
         run: async () => {
+          const revdocThreadRef = scopeThreadRef(thread.environmentId, thread.id);
           useRightPanelStore.getState().open(revdocThreadRef, "revdoc");
           const worktreePath = resolveRevdocWorktree(
             readRevdocWorktree(revdocThreadRef),

@@ -8,9 +8,9 @@ import {
   TextWrapIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
+import { updateClientSettings, useClientSettings } from "~/hooks/useSettings";
 import { useTheme } from "~/hooks/useTheme";
 import {
   buildFileDiffContentVersion,
@@ -56,7 +56,6 @@ export function OpenWorkDiffPanel({
 }) {
   const { resolvedTheme } = useTheme();
   const settings = useClientSettings();
-  const updateClientSettings = useUpdateClientSettings();
   const [wordWrap, setWordWrap] = useState(settings.wordWrap);
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(settings.diffIgnoreWhitespace);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -81,25 +80,18 @@ export function OpenWorkDiffPanel({
 
   const result = query.data;
   const scope = JSON.stringify([environmentId, worktreePath, target, ignoreWhitespace]);
-  const patch = useMemo(
-    () =>
-      getRenderablePatch(result?.diff, `open-work:${scope}:${resolvedTheme}`, {
-        compactPartialHunkOffsets: true,
-      }),
-    [result?.diff, scope, resolvedTheme],
-  );
-  const items = useMemo(
-    () =>
-      patch?.kind === "files"
-        ? patch.files.map((fileDiff) => ({
-            id: buildFileDiffIdentityKey(fileDiff),
-            type: "diff" as const,
-            fileDiff,
-            version: buildFileDiffContentVersion(fileDiff),
-          }))
-        : [],
-    [patch],
-  );
+  const patch = getRenderablePatch(result?.diff, `open-work:${scope}:${resolvedTheme}`, {
+    compactPartialHunkOffsets: true,
+  });
+  const items =
+    patch?.kind === "files"
+      ? patch.files.map((fileDiff) => ({
+          id: buildFileDiffIdentityKey(fileDiff),
+          type: "diff" as const,
+          fileDiff,
+          version: buildFileDiffContentVersion(fileDiff),
+        }))
+      : [];
   const index = siblings.findIndex(
     (sibling) => sibling.file.path === target.file.path && sibling.step.kind === target.step.kind,
   );
