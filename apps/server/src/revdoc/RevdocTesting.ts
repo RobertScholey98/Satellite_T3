@@ -320,10 +320,24 @@ export const disposeCompletionDelivery = (input: {
     Effect.catch((cause) => Effect.logWarning("Revdoc could not dispose a delivery", { cause })),
   );
 
+/** Deletes one testing child. The command id is fixed, so deleting it twice is harmless. */
+export const deleteTestingThread = (childThreadId: ThreadId) =>
+  Effect.flatMap(ThreadManagement.ThreadManagementService, (threads) =>
+    threads.dispatch({
+      type: "thread.delete",
+      commandId: CommandId.make(`revdoc-delete-child:${childThreadId}`),
+      threadId: childThreadId,
+    }),
+  ).pipe(
+    Effect.asVoid,
+    Effect.catch((cause) =>
+      Effect.logWarning("Revdoc could not delete a testing agent", { cause, childThreadId }),
+    ),
+  );
+
 /**
  * Deletes a parent's Revdoc testing children once the parent is deleted. Upstream keeps delegated
- * children, which are hidden from the sidebar, so ours would otherwise outlive the parent and keep
- * its worktree looking shared.
+ * children, which are hidden from the sidebar, so ours would otherwise outlive the parent.
  */
 export const deleteTestingChildren = (
   parentThreadId: ThreadId,
@@ -336,16 +350,11 @@ export const deleteTestingChildren = (
       parent.subagents.flatMap((task) => (task.childThreadId === null ? [] : [task.childThreadId])),
     );
     for (const childThreadId of childIds) {
-      if (!(yield* isTestingThread(childThreadId))) continue;
-      yield* threads.dispatch({
-        type: "thread.delete",
-        commandId: CommandId.make(`revdoc-delete-child:${childThreadId}`),
-        threadId: childThreadId,
-      });
+      if (yield* isTestingThread(childThreadId)) yield* deleteTestingThread(childThreadId);
     }
   }).pipe(
     Effect.catch((cause) =>
-      Effect.logWarning("Revdoc could not delete a deleted thread's testing agents", { cause }),
+      Effect.logWarning("Revdoc could not find a deleted thread's testing agents", { cause }),
     ),
   );
 

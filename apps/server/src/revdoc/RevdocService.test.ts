@@ -4,8 +4,10 @@ import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
 import {
+  ProjectId,
   ProviderInstanceId,
   REVDOC_LIMITS,
+  RevdocError,
   type RevdocItemSummary,
   ThreadId,
 } from "@t3tools/contracts";
@@ -25,14 +27,32 @@ import {
   failingReviewer,
   layerRevdoc,
   makeRepository,
+  PROJECT_ID,
   readExport,
   type Reviewer,
   target,
   THREAD_ID,
+  type ThreadsDouble,
   writeFile,
 } from "./testing/revdocService.test.helpers.ts";
 
 const reviewerRef = (reviewer: Reviewer = answering()) => ({ current: reviewer });
+
+/** Delegates like a parent agent and records each thread deletion; `failing` fails to delete. */
+const recordingDeletes = (deleted: Array<string>, failing?: ThreadId): ThreadsDouble => {
+  const threads = delegatingThreads();
+  const dispatch = threads.dispatch!;
+  return {
+    ...threads,
+    dispatch: ((command: { readonly type: string; readonly threadId?: ThreadId }) => {
+      if (command.type !== "thread.delete") return dispatch(command as never);
+      deleted.push(command.threadId!);
+      return command.threadId === failing
+        ? Effect.fail(new RevdocError({ code: "invalid_request", message: "delete failed" }))
+        : Effect.succeed({ sequence: 1, storedEvents: [] });
+    }) as never,
+  };
+};
 
 const generated = (action?: "generate") =>
   Effect.gen(function* () {
@@ -413,6 +433,7 @@ describe("RevdocService test passes", () => {
     () => {
       const root = makeRepository();
       writeFile(root, "a.ts", "a\n");
+      const deleted: Array<string> = [];
       return Effect.gen(function* () {
         const revdoc = yield* RevdocService.RevdocService;
         const store = yield* RevdocStore.RevdocStore;
@@ -428,13 +449,72 @@ describe("RevdocService test passes", () => {
         assert.isTrue(yield* store.isTestingThread(childThreadId));
         yield* revdoc.forgetWorktree(root);
         assert.isFalse(yield* store.isTestingThread(childThreadId));
+        assert.deepStrictEqual(deleted, [childThreadId]);
       }).pipe(
         Effect.provide(
-          layerRevdoc({ root, reviewer: reviewerRef(), threads: delegatingThreads() }),
+          layerRevdoc({ root, reviewer: reviewerRef(), threads: recordingDeletes(deleted) }),
         ),
       );
     },
   );
+
+  it.live("forgets a project's testing children and leaves other projects' alone", () => {
+    const root = makeRepository();
+    const deleted: Array<string> = [];
+    const ours = ThreadId.make("thread-revdoc-ours");
+    const theirs = ThreadId.make("thread-revdoc-theirs");
+    return Effect.gen(function* () {
+      const revdoc = yield* RevdocService.RevdocService;
+      const store = yield* RevdocStore.RevdocStore;
+      yield* store.addTestingThread({ projectId: PROJECT_ID, worktreePath: root }, ours);
+      yield* store.addTestingThread(
+        { projectId: ProjectId.make("project-other"), worktreePath: `${root}-other` },
+        theirs,
+      );
+      yield* revdoc.forgetProject(PROJECT_ID);
+      assert.isFalse(yield* store.isTestingThread(ours));
+      assert.isTrue(yield* store.isTestingThread(theirs));
+      assert.deepStrictEqual(deleted, [ours]);
+    }).pipe(
+      Effect.provide(
+        layerRevdoc({ root, reviewer: reviewerRef(), threads: recordingDeletes(deleted) }),
+      ),
+    );
+  });
+
+  it.live("deletes only Revdoc's children of a deleted thread, past a failed deletion", () => {
+    const root = makeRepository();
+    const deleted: Array<string> = [];
+    const failing = ThreadId.make("thread-revdoc-failing");
+    const second = ThreadId.make("thread-revdoc-second");
+    const upstreamChild = ThreadId.make("thread-upstream-child");
+    const threads = recordingDeletes(deleted, failing);
+    return Effect.gen(function* () {
+      const revdoc = yield* RevdocService.RevdocService;
+      const store = yield* RevdocStore.RevdocStore;
+      yield* store.addTestingThread({ projectId: PROJECT_ID, worktreePath: root }, failing);
+      yield* store.addTestingThread({ projectId: PROJECT_ID, worktreePath: root }, second);
+      yield* revdoc.onOrchestrationEvent({
+        type: "thread.deleted",
+        threadId: THREAD_ID,
+      } as never);
+      assert.deepStrictEqual(deleted, [failing, second]);
+    }).pipe(
+      Effect.provide(
+        layerRevdoc({
+          root,
+          reviewer: reviewerRef(),
+          threads: {
+            ...threads,
+            subagents: (threadId) =>
+              threadId === THREAD_ID
+                ? [failing, upstreamChild, second].map((childThreadId) => ({ childThreadId }))
+                : [],
+          },
+        }),
+      ),
+    );
+  });
 
   it.live("refuses passes started by a Revdoc testing child", () => {
     const root = makeRepository();

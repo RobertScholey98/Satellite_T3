@@ -30,6 +30,11 @@ export interface ReviewKey {
   readonly worktreePath: string;
 }
 
+/** Testing children go with their worktree, or with the project. */
+export type TestingThreadMatch =
+  | { readonly worktreePath: string }
+  | { readonly projectId: ProjectId };
+
 export interface ReviewRecord extends ReviewKey {
   readonly id: string;
   readonly revision: number;
@@ -202,9 +207,10 @@ export class RevdocStore extends Context.Service<
       threadId: ThreadId,
     ) => Effect.Effect<void, RevdocError>;
     readonly isTestingThread: (threadId: ThreadId) => Effect.Effect<boolean, RevdocError>;
-    readonly forgetTestingThreads: (
-      match: { readonly worktreePath: string } | { readonly projectId: ProjectId },
-    ) => Effect.Effect<void, RevdocError>;
+    readonly testingThreads: (
+      match: TestingThreadMatch,
+    ) => Effect.Effect<ReadonlyArray<ThreadId>, RevdocError>;
+    readonly forgetTestingThreads: (match: TestingThreadMatch) => Effect.Effect<void, RevdocError>;
     /** Inserts a running pass unless the worktree already has one, which it returns instead. */
     readonly startPass: (pass: PassRecord) => Effect.Effect<Option.Option<PassRecord>, RevdocError>;
     readonly putPass: (pass: PassRecord) => Effect.Effect<void, RevdocError>;
@@ -527,6 +533,17 @@ const make = Effect.gen(function* () {
         sql`SELECT 1 FROM revdoc_testing_threads WHERE thread_id = ${threadId}`.pipe(
           Effect.map((rows) => rows.length > 0),
         ),
+      ),
+    testingThreads: (match) =>
+      guard(
+        ("worktreePath" in match
+          ? sql<{ readonly thread_id: string }>`
+              SELECT thread_id FROM revdoc_testing_threads WHERE worktree_path = ${match.worktreePath}
+            `
+          : sql<{ readonly thread_id: string }>`
+              SELECT thread_id FROM revdoc_testing_threads WHERE project_id = ${match.projectId}
+            `
+        ).pipe(Effect.map((rows) => rows.map((row) => ThreadId.make(row.thread_id)))),
       ),
     forgetTestingThreads: (match) =>
       guard(

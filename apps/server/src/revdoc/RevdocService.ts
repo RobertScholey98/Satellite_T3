@@ -97,6 +97,7 @@ import {
   selectItems,
   sendSection,
   deleteTestingChildren,
+  deleteTestingThread,
   stopChild,
   UNRECORDED_IN_SECTION,
 } from "./RevdocTesting.ts";
@@ -1497,12 +1498,25 @@ const make = Effect.gen(function* () {
     yield* cancelPass(active);
   });
 
+  /**
+   * Deletes the testing children first: once their rows are gone, a parent deletion handled
+   * later no longer recognises them.
+   */
+  const forgetTestingThreads = (match: RevdocStore.TestingThreadMatch) =>
+    Effect.gen(function* () {
+      const childIds = yield* store.testingThreads(match);
+      yield* Effect.forEach(childIds, (id) => provideRuntime(deleteTestingThread(id)), {
+        discard: true,
+      });
+      yield* store.forgetTestingThreads(match);
+    });
+
   const forgetKey = (key: ReviewKey) =>
     Effect.gen(function* () {
       const active = yield* activePassFor(key);
       if (active) yield* cancelPass(active);
       yield* store.deleteReview(key);
-      yield* store.forgetTestingThreads({ worktreePath: key.worktreePath });
+      yield* forgetTestingThreads({ worktreePath: key.worktreePath });
       yield* exporter.remove(key.worktreePath);
       yield* publish(key, { _tag: "deleted", revision: 0 });
     }).pipe(
@@ -1538,7 +1552,7 @@ const make = Effect.gen(function* () {
       const keys = yield* keysWhere((key) => paths.has(key.worktreePath));
       yield* Effect.forEach(keys, forgetKey, { discard: true });
       // Testing children outlive a Review deleted by hand; they go with the worktree.
-      yield* Effect.forEach(paths, (worktreePath) => store.forgetTestingThreads({ worktreePath }), {
+      yield* Effect.forEach(paths, (worktreePath) => forgetTestingThreads({ worktreePath }), {
         discard: true,
       });
     }).pipe(Effect.ignore);
@@ -1624,7 +1638,7 @@ const make = Effect.gen(function* () {
     forgetProject: (projectId) =>
       keysWhere((key) => key.projectId === projectId).pipe(
         Effect.flatMap((keys) => Effect.forEach(keys, forgetKey, { discard: true })),
-        Effect.andThen(store.forgetTestingThreads({ projectId })),
+        Effect.andThen(forgetTestingThreads({ projectId })),
         Effect.ignore,
       ),
     recover,
