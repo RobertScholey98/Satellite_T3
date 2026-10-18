@@ -79,6 +79,7 @@ import {
   SquarePenIcon,
   SunIcon,
   TextSearchIcon,
+  TicketIcon,
 } from "lucide-react";
 import { requestThreadFindOpen } from "./chat/threadFindActionBus";
 import {
@@ -250,6 +251,8 @@ import {
 import type { Project } from "../types";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
+import { readIssuesNavigation } from "~/components/work/issuesNavigation";
+import { readOpenIssueBoardRefresh } from "~/components/work/issuesState";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
@@ -2238,6 +2241,52 @@ function OpenCommandPaletteDialog(props: {
       await navigate({ to: "/open-work" });
     },
   });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:issues",
+    searchTerms: ["issues", "tickets", "board", "github projects", "azure boards", "kanban"],
+    title: "Open issues",
+    icon: <TicketIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/issues", search: readIssuesNavigation() });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:connect-issue-board",
+    searchTerms: ["connect issue board", "github project", "azure board", "tickets", "issues"],
+    title: "Connect issue board",
+    icon: <TicketIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({
+        to: "/issues",
+        search: contextualProjectRef
+          ? {
+              environmentId: contextualProjectRef.environmentId,
+              projectId: contextualProjectRef.projectId,
+              mode: "board",
+              connect: true,
+            }
+          : { mode: "board", connect: true },
+      });
+    },
+  });
+
+  const refreshIssueBoard = pathname === "/issues" ? readOpenIssueBoardRefresh() : null;
+  if (refreshIssueBoard) {
+    actionItems.push({
+      kind: "action",
+      value: "action:refresh-issue-board",
+      searchTerms: ["refresh issue board", "sync board", "tickets", "issues"],
+      title: "Refresh issue board",
+      icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        refreshIssueBoard();
+      },
+    });
+  }
 
   actionItems.push({
     kind: "action",

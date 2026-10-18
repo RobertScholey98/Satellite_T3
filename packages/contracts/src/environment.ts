@@ -149,6 +149,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       "server"`) and streams them over `/api/preview-stream`. Clients
       without a local browser runtime open server tabs here. */
   serverBrowser: Schema.optionalKey(Schema.Boolean),
+  /** Satellite: the environment serves `issues.*` board methods. */
+  issueBoards: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

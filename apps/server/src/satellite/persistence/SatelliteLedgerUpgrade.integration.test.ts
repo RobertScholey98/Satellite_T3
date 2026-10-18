@@ -76,6 +76,103 @@ const LEGACY_DEV_BUILD = [
   [69, "IssueDeliveryPeers"],
 ] as const;
 
+/** What Satellite 101 leaves of the issue board tables; the rest of `BOARD_TABLES` is dropped. */
+const ISSUE_TABLES_AFTER_101 = [
+  "issue_boards",
+  "issue_board_snapshots",
+  "issue_board_attempts",
+  "issue_moves",
+  "issue_requests",
+  "issue_maintenance",
+];
+
+const NO_ISSUE_ROWS = {
+  issue_boards: [],
+  issue_board_snapshots: [],
+  issue_board_attempts: [],
+  issue_moves: [],
+  issue_requests: [],
+  issue_maintenance: [],
+};
+
+/** The fixture's board, its snapshot, and attempt-1 translated by 101 into `status`. */
+const carriedIssueRows = (status: "working" | "merged", baseline: string) => ({
+  ...NO_ISSUE_ROWS,
+  issue_boards: [
+    {
+      id: "board-1",
+      project_id: "project:satellite",
+      locator_key: "gh:acme/1",
+      title: "Acme board",
+      locator_json:
+        '{"kind":"github-project","host":"github.com","owner":"acme","ownerKind":"organization","projectNumber":1}',
+      mapping_json:
+        '{"ready":"col-ready","inProgress":"col-prog","inPullRequest":"col-pr","completed":"col-done","moveOnMerge":true}',
+    },
+  ],
+  issue_board_snapshots: [
+    {
+      board_id: "board-1",
+      revision: 3,
+      content_hash: "hash",
+      board_json: '{"columns":[]}',
+      synced_at: "2026-10-01T00:00:00.000Z",
+      failed_at: null,
+      failure: null,
+    },
+  ],
+  issue_board_attempts: [
+    {
+      id: "attempt-1",
+      board_id: "board-1",
+      issue_key: "github:github.com/acme/app#7",
+      issue_json:
+        '{"hostKind":"github","host":"github.com","repository":"acme/app","id":"I_7","number":7,"url":"https://github.com/acme/app/issues/7"}',
+      project_id: "project:satellite",
+      thread_id: THREADS.work,
+      worktree_path: "/work/satellite/.worktrees/7",
+      status,
+      // A merged attempt is finished and no longer holds the ticket.
+      active: status === "merged" ? 0 : 1,
+      ended_reason: status === "merged" ? "completed" : null,
+      baseline_column_id: baseline,
+      start_column_id: null,
+      transition_index: 0,
+      controlling_pr_key: null,
+      controlling_pr_json: null,
+      launch_request_id: null,
+      launch_json: null,
+      failure: null,
+      created_at: "2026-10-01T00:00:00.000Z",
+      started_at: "2026-10-01T00:01:00.000Z",
+    },
+  ],
+});
+
+/** The shared fixture stores a stub link; 101 discards attempts whose link it cannot read. */
+const withAttemptLink = <A, E>(seed: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE issue_attempts SET link_json = ${JSON.stringify({
+      attemptId: "attempt-1",
+      reservationId: "res-1",
+      sourceEnvironmentId: "env-1",
+      sourceProjectId: "project:satellite",
+      boardId: "board-1",
+      issue: {
+        hostKind: "github",
+        host: "github.com",
+        repository: "acme/app",
+        id: "I_7",
+        number: 7,
+        url: "https://github.com/acme/app/issues/7",
+      },
+      destinationEnvironmentId: "env-1",
+      sourceGeneration: 0,
+    })} WHERE id = 'attempt-1'`;
+  });
+
 type Seed = (userdata: string) => Effect.Effect<void, never, FileSystem.FileSystem | Path.Path>;
 
 interface UpgradeCase {
@@ -84,6 +181,8 @@ interface UpgradeCase {
   /** Rows the Satellite ledger must hold after the upgrade; `source` reads them from state.sqlite. */
   readonly legacyRows: ReadonlyArray<readonly [number, string]> | "source";
   readonly fixtureThreads: boolean;
+  /** Rows of `ISSUE_TABLES_AFTER_101` after the upgrade; a snapshot's are not known in advance. */
+  readonly issueRows: Record<string, ReadonlyArray<unknown>> | "unchecked";
 }
 
 const seedFile = <A, E>(file: string, seed: Effect.Effect<A, E, SqlClient.SqlClient>) =>
@@ -105,36 +204,47 @@ const both =
 const snapshot = process.env.SATELLITE_UPGRADE_SNAPSHOT;
 
 const CASES: ReadonlyArray<UpgradeCase> = [
-  { name: "a fresh install", seed: () => Effect.void, legacyRows: [], fixtureThreads: false },
+  {
+    name: "a fresh install",
+    seed: () => Effect.void,
+    legacyRows: [],
+    fixtureThreads: false,
+    issueRows: NO_ISSUE_ROWS,
+  },
   {
     name: "a 1.x install at Satellite 55 to 60",
-    seed: atPath("state.sqlite", seedSatelliteV1("55-60")),
+    seed: atPath("state.sqlite", withAttemptLink(seedSatelliteV1("55-60"))),
     legacyRows: LEGACY_55_60,
     fixtureThreads: true,
+    issueRows: carriedIssueRows("working", "col-prog"),
   },
   {
     name: "a v1.2.x install at Satellite 55 to 62",
-    seed: atPath("state.sqlite", seedSatelliteV1("55-62")),
+    seed: atPath("state.sqlite", withAttemptLink(seedSatelliteV1("55-62"))),
     legacyRows: LEGACY_55_62,
     fixtureThreads: true,
+    issueRows: carriedIssueRows("working", "col-prog"),
   },
   {
     name: "a dev build's existing statev2.sqlite",
     seed: both(
-      atPath("state.sqlite", seedSatelliteV1("55-62")),
-      atPath("statev2.sqlite", seedSatelliteDevBuild),
+      atPath("state.sqlite", withAttemptLink(seedSatelliteV1("55-62"))),
+      atPath("statev2.sqlite", withAttemptLink(seedSatelliteDevBuild)),
     ),
     legacyRows: LEGACY_DEV_BUILD,
     fixtureThreads: true,
+    // The dev build recorded the merge in completed_at.
+    issueRows: carriedIssueRows("merged", "col-done"),
   },
   {
     name: "a database this port already repaired",
     seed: atPath(
       "statev2.sqlite",
-      Effect.andThen(seedSatelliteV1("55-60"), runMigrationsWithSatellite()),
+      Effect.andThen(withAttemptLink(seedSatelliteV1("55-60")), runMigrationsWithSatellite()),
     ),
     legacyRows: LEGACY_55_60,
     fixtureThreads: true,
+    issueRows: carriedIssueRows("working", "col-prog"),
   },
   ...(snapshot === undefined
     ? []
@@ -149,6 +259,7 @@ const CASES: ReadonlyArray<UpgradeCase> = [
             }).pipe(Effect.orDie),
           legacyRows: "source" as const,
           fixtureThreads: false,
+          issueRows: "unchecked" as const,
         },
       ]),
 ];
@@ -182,7 +293,7 @@ const start = Effect.gen(function* () {
     upstreamLedger: yield* readLedger("effect_sql_migrations"),
     satelliteLedger: yield* readLedger("satellite_migrations"),
     tables: yield* listTables,
-    boards: yield* dumpTables(BOARD_TABLES),
+    issueRows: yield* dumpTables(ISSUE_TABLES_AFTER_101),
     v1Threads: yield* sql<{ readonly thread_id: string }>`SELECT thread_id FROM projection_threads`,
     v2Threads: yield* sql<{
       readonly thread_id: string;
@@ -207,11 +318,8 @@ describe("Satellite ledger upgrade", () => {
 
         const sourcePath = (yield* fs.exists(v2Path)) ? v2Path : v1Path;
         const source = (yield* fs.exists(sourcePath))
-          ? yield* seedFile(
-              sourcePath,
-              Effect.all({ boards: dumpTables(BOARD_TABLES), satellite: satelliteRowsIn }),
-            )
-          : { boards: {}, satellite: [] };
+          ? yield* seedFile(sourcePath, Effect.all({ satellite: satelliteRowsIn }))
+          : { satellite: [] };
         const v1Hash = yield* sha256(v1Path);
 
         const first = yield* start.pipe(Effect.provide(layerSatelliteRuntime(baseDir)));
@@ -222,7 +330,12 @@ describe("Satellite ledger upgrade", () => {
           ...(upgrade.legacyRows === "source" ? source.satellite : upgrade.legacyRows),
           ...satelliteMigrationEntries.map(([id, name]) => [id, name] as const),
         ]);
-        assert.deepStrictEqual(first.boards, source.boards);
+        if (upgrade.issueRows !== "unchecked") {
+          assert.deepStrictEqual(first.issueRows, upgrade.issueRows);
+        }
+        for (const table of BOARD_TABLES) {
+          if (!ISSUE_TABLES_AFTER_101.includes(table)) assert.notInclude(first.tables, table);
+        }
         for (const table of SATELLITE_1X_TABLES) assert.notInclude(first.tables, table);
         assert.notInclude(first.tables, "satellite_legacy_thread_archives");
         assert.deepStrictEqual(

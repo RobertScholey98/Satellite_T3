@@ -227,6 +227,10 @@
       "types": "./src/state/review.ts",
       "default": "./src/state/review.ts"
     },
+    "./state/issues": {
+      "types": "./src/state/issues.ts",
+      "default": "./src/state/issues.ts"
+    },
     "./state/open-work": {
       "types": "./src/state/openWork.ts",
       "default": "./src/state/openWork.ts"

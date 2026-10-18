@@ -1,9 +1,11 @@
 import { Link, linkOptions } from "@tanstack/react-router";
-import { GitBranchIcon } from "lucide-react";
+import { GitBranchIcon, TicketIcon } from "lucide-react";
+import { useEffect } from "react";
 
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { Spinner } from "../ui/spinner";
+import { readIssuesNavigation } from "./issuesNavigation";
 
 /** The work pages, in strip order. */
 const WORK_TABS = [
@@ -12,6 +14,12 @@ const WORK_TABS = [
     label: "Pull Requests",
     icon: PullRequestGlyph.pullRequest,
     link: () => linkOptions({ to: "/pull-requests", search: readPullRequestListPreferences() }),
+  },
+  {
+    id: "issues",
+    label: "Issues",
+    icon: TicketIcon,
+    link: () => linkOptions({ to: "/issues", search: readIssuesNavigation() }),
   },
   // Open work restores its own last selection when opened without a target.
   {
@@ -23,6 +31,31 @@ const WORK_TABS = [
 ] as const;
 
 export type WorkTabId = (typeof WORK_TABS)[number]["id"];
+
+const LAST_WORK_TAB_KEY = "satellite:work:last-tab:v1";
+
+function readLastWorkTab(): WorkTabId {
+  try {
+    const stored = window.localStorage.getItem(LAST_WORK_TAB_KEY);
+    return WORK_TABS.find((tab) => tab.id === stored)?.id ?? "pull-requests";
+  } catch {
+    return "pull-requests";
+  }
+}
+
+function rememberWorkTab(id: WorkTabId) {
+  try {
+    window.localStorage.setItem(LAST_WORK_TAB_KEY, id);
+  } catch {
+    // Reopening falls back to Pull Requests when storage is unavailable.
+  }
+}
+
+/** Where the sidebar's work entry goes: the work page this device used last. */
+export function lastWorkTabLink() {
+  const id = readLastWorkTab();
+  return (WORK_TABS.find((tab) => tab.id === id) ?? WORK_TABS[0]).link();
+}
 
 /**
  * The header strip linking the work pages. The current page's label is its heading. `compact`
@@ -37,6 +70,7 @@ export function WorkTabs({
   readonly compact?: boolean;
   readonly syncing?: boolean;
 }) {
+  useEffect(() => rememberWorkTab(current), [current]);
   return (
     <div className="flex min-w-0 items-center gap-3">
       {WORK_TABS.map((tab) =>
