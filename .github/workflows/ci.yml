@@ -100,7 +100,7 @@ jobs:
       - name: Verify preload bundle output
         run: node apps/desktop/scripts/verify-preload-bundle.mjs
 
-  # Every package except `t3` (apps/server), which shards below. Mobile runs
+  # Every package except `t3` (apps/server) and the web app, which run below. Mobile runs
   # although Satellite does not ship it, to catch contract changes that break it.
   test:
     name: Test
@@ -129,6 +129,27 @@ jobs:
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
 
+      - name: Test
+        run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/web' --filter '!@t3tools/monorepo' test
+
+  # Web browser tests are timing-sensitive, so they get a runner of their own.
+  test_web:
+    name: Test Web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
       # The browser project runs React tests in headless Chromium. Same cache key as
       # test_server, so both jobs share one downloaded browser.
       - name: Resolve Playwright version
@@ -155,7 +176,7 @@ jobs:
           fi
 
       - name: Test
-        run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' test
+        run: vp run --filter @t3tools/web test
 
   # apps/server runs its test files one at a time (`fileParallelism: false`), so
   # shards spread them over runners. apps/server/src/testUtils/weightedShardSequencer.ts
@@ -318,7 +339,7 @@ jobs:
   check:
     name: Check
     if: ${{ always() }}
-    needs: [lint, build, test, test_server, rust, desktop]
+    needs: [lint, build, test, test_web, test_server, rust, desktop]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
