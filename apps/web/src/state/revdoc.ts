@@ -1,15 +1,23 @@
-import { useEffect } from "react";
+import { useAtomValue } from "@effect/atom-react";
+import { useEffect, useRef } from "react";
 import {
   createRevdocEnvironmentAtoms,
+  createRevdocWorktreeChangesAtom,
   EMPTY_REVDOC_STATE,
   type RevdocState,
 } from "@t3tools/client-runtime/revdoc";
 import type { EnvironmentId, RevdocTarget, ThreadId } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { useEnvironmentQuery } from "./query";
+import { environmentThreadShells } from "./threads";
 
 export const revdocEnvironment = createRevdocEnvironmentAtoms(connectionAtomRuntime);
+const worktreeChanges = createRevdocWorktreeChangesAtom(
+  environmentThreadShells.environmentThreadsAtom,
+);
+const NO_WORKTREE_CHANGES = Atom.make("");
 
 /** The live Review for a thread's worktree. A revision gap restarts the subscription. */
 export function useRevdocReview(
@@ -45,5 +53,15 @@ export function useRevdocWorktrees(environmentId: EnvironmentId | null, threadId
       ? null
       : revdocEnvironment.worktrees({ environmentId, input: { threadId } }),
   );
+  const changes = useAtomValue(
+    environmentId === null ? NO_WORKTREE_CHANGES : worktreeChanges(environmentId),
+  );
+  const seen = useRef(changes);
+  const { refresh } = query;
+  useEffect(() => {
+    if (seen.current === changes) return;
+    seen.current = changes;
+    refresh();
+  }, [changes, refresh]);
   return query.data;
 }

@@ -1,4 +1,5 @@
 import {
+  type EnvironmentId,
   type RevdocEvent,
   type RevdocItemDetail,
   type RevdocItemSummary,
@@ -9,7 +10,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
-import type { Atom } from "effect/reactivity";
+import { Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "./connection/registry.ts";
 import {
@@ -17,6 +18,7 @@ import {
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./state/runtime.ts";
+import { vcsRefsCacheStateAtom } from "./state/vcsRefInvalidation.ts";
 
 /** A client's copy of one worktree's Review, built from a snapshot and the deltas after it. */
 export interface RevdocState {
@@ -281,3 +283,24 @@ export function createRevdocEnvironmentAtoms<R, E>(
     }),
   };
 }
+
+/**
+ * Changes when a thread gains or drops a worktree, which is how worktrees the server creates
+ * arrive, and when this client's own worktree create or remove settles. Worktree lists refetch on
+ * it.
+ */
+export const createRevdocWorktreeChangesAtom = (
+  threadsAtom: (
+    environmentId: EnvironmentId,
+  ) => Atom.Atom<ReadonlyArray<{ readonly worktreePath: string | null }>>,
+) =>
+  Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) => {
+      const paths = new Set<string>();
+      for (const thread of get(threadsAtom(environmentId))) {
+        if (thread.worktreePath) paths.add(thread.worktreePath);
+      }
+      const { revision } = get(vcsRefsCacheStateAtom({ environmentId }));
+      return [revision, ...[...paths].sort()].join("\n");
+    }).pipe(Atom.withLabel(`environment-data:revdoc:worktree-changes:${environmentId}`)),
+  );
