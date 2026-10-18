@@ -206,9 +206,8 @@ export function IssueBoardConfigurationDialog({
       setMapping(result.board.mapping ?? EMPTY_MAPPING);
     } catch (failure) {
       setError(issueErrorMessage(failure));
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
 
   const save = async () => {
@@ -225,9 +224,8 @@ export function IssueBoardConfigurationDialog({
       onConfigured(result);
     } catch (failure) {
       setError(issueErrorMessage(failure));
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
 
   const mappingComplete =

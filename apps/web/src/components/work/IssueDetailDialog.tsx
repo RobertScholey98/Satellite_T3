@@ -159,9 +159,8 @@ export function IssueDetailDialog({
       onAttemptsChanged();
     } catch (failure) {
       setActionError(issueErrorMessage(failure));
-    } finally {
-      setActing(false);
     }
+    setActing(false);
   };
   const stop = (attempt: IssueAttempt, returnToColumnId?: string) =>
     runAttemptAction(async () =>

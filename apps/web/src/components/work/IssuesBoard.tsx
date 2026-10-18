@@ -570,9 +570,8 @@ export function IssuesBoard({
       }));
     } catch (failure) {
       setListError(issueErrorMessage(failure));
-    } finally {
-      setListPending(false);
     }
+    setListPending(false);
   });
   const listLoaded = listedIssues !== null;
   useEffect(() => {
@@ -660,10 +659,9 @@ export function IssuesBoard({
           ? MOVED_ELSEWHERE
           : issueErrorMessage(failure),
       );
-    } finally {
-      setMoving(false);
-      void openView(false);
     }
+    setMoving(false);
+    void openView(false);
   };
 
   const retry = async (move: IssueMove) => {
@@ -675,9 +673,8 @@ export function IssuesBoard({
       );
     } catch (failure) {
       setActionError(issueErrorMessage(failure));
-    } finally {
-      void openView(false);
     }
+    void openView(false);
   };
 
   const disconnect = async () => {

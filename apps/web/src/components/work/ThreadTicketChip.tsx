@@ -93,10 +93,9 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
     } catch (failure) {
       const description = issueErrorMessage(failure);
       if (description) toastManager.add({ type: "error", title, description });
-    } finally {
-      setActing(false);
-      load();
     }
+    setActing(false);
+    load();
   };
 
   return (

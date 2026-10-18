@@ -94,9 +94,8 @@ function BoardConnectionRow({
       if (await disconnectBoard(environmentId, board)) onDisconnected();
     } catch (failure) {
       setError(issueErrorMessage(failure));
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
 
   const mapping = board.mapping ?? view?.board.mapping ?? null;
