@@ -29,10 +29,7 @@ function IssuesRouteView() {
   useEffect(() => {
     if (arrival) void navigate({ search: arrival, replace: true });
   }, [arrival, navigate]);
-  useEffect(() => {
-    // oxlint-disable-next-line react/set-state-in-effect -- The router reports the URL catching up only after the navigation commits.
-    if (arrival && canonical(search) === canonical(arrival)) setArrival(null);
-  }, [arrival, search]);
+  if (arrival && canonical(search) === canonical(arrival)) setArrival(null);
   return (
     <IssuesBoard
       search={arrival ?? search}

@@ -172,11 +172,16 @@ export function IssueBoardsSettings() {
   } | null>(null);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // A new list request hides the previous request's error.
+  const listRequest = environmentId && connected ? `${environmentId}\n${revision}` : null;
+  const [lastListRequest, setLastListRequest] = useState(listRequest);
+  if (lastListRequest !== listRequest) {
+    setLastListRequest(listRequest);
+    if (listRequest !== null) setError(null);
+  }
   useEffect(() => {
     if (!environmentId || !connected) return;
     let current = true;
-    // oxlint-disable-next-line react/set-state-in-effect -- A new list request hides the previous request's error.
-    setError(null);
     void listBoards({ environmentId, input: { connectedOnly: true } })
       .then(unwrapIssueResult)
       .then((boards) => {
