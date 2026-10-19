@@ -44,6 +44,15 @@ const SATELLITE_1X_TABLES = [
   "issue_peer_grants",
 ];
 
+const DROPPED_V1_PROJECTIONS = [
+  "projection_thread_activities",
+  "projection_turns",
+  "projection_thread_proposed_plans",
+  "projection_pending_approvals",
+  "projection_state",
+  "checkpoint_diff_blobs",
+];
+
 const LEGACY_55_60 = [
   [55, "ManagedDocuments"],
   [56, "IssueBoards"],
@@ -326,6 +335,8 @@ describe("Satellite ledger upgrade", () => {
 
         assert.strictEqual(yield* sha256(v1Path), v1Hash);
         assert.deepStrictEqual(first.upstreamLedger, migrationManifest);
+        assert.deepStrictEqual(first.upstreamLedger?.at(-1), [63, "DropUnusedV1Projections"]);
+        for (const table of DROPPED_V1_PROJECTIONS) assert.notInclude(first.tables, table);
         assert.deepStrictEqual(first.satelliteLedger, [
           ...(upgrade.legacyRows === "source" ? source.satellite : upgrade.legacyRows),
           ...satelliteMigrationEntries.map(([id, name]) => [id, name] as const),

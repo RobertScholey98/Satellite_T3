@@ -1,7 +1,7 @@
 import type { IssueAttempt, ScopedThreadRef } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { TicketIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { randomUUID } from "~/lib/utils";
 import { ensureLocalApi } from "~/localApi";
@@ -38,7 +38,7 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
   const [acting, setActing] = useState(false);
   const threadKey = `${threadRef.environmentId}\n${threadRef.threadId}`;
 
-  const load = useCallback(() => {
+  const load = () => {
     if (!enabled) return;
     void listAttempts({
       environmentId: threadRef.environmentId,
@@ -46,7 +46,7 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
     }).then((result) => {
       if (result._tag === "Success") setLoaded({ key: threadKey, attempts: result.value });
     });
-  }, [enabled, listAttempts, threadKey, threadRef.environmentId, threadRef.threadId]);
+  };
 
   useEffect(() => {
     load();
@@ -93,10 +93,9 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
     } catch (failure) {
       const description = issueErrorMessage(failure);
       if (description) toastManager.add({ type: "error", title, description });
-    } finally {
-      setActing(false);
-      load();
     }
+    setActing(false);
+    load();
   };
 
   return (

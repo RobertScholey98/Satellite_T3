@@ -22,18 +22,10 @@ import {
   SearchIcon,
   TicketIcon,
 } from "lucide-react";
-import {
-  memo,
-  type ReactNode,
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from "react";
 
 import { isElectron } from "~/env";
+import { useStableCallback } from "~/hooks/useStableCallback";
 import { cn, randomUUID } from "~/lib/utils";
 import { useProjects } from "~/state/entities";
 import { usePrimaryEnvironmentId } from "~/state/environments";
@@ -133,20 +125,23 @@ const BoardCard = memo(function BoardCard({
   readonly disabled: boolean;
   readonly onOpen: (item: IssueBoardItem) => void;
 }) {
-  const drag = useDraggable({ id: item.itemId, disabled });
+  const { setNodeRef, transform, isDragging, listeners, attributes } = useDraggable({
+    id: item.itemId,
+    disabled,
+  });
   return (
     <div
-      ref={drag.setNodeRef}
+      ref={setNodeRef}
       style={{
-        transform: CSS.Translate.toString(drag.transform),
-        opacity: drag.isDragging ? 0.5 : 1,
+        transform: CSS.Translate.toString(transform),
+        opacity: isDragging ? 0.5 : 1,
       }}
       className="flex gap-1 rounded-lg border border-border/60 bg-card/40 p-3 hover:bg-accent/40"
     >
       <button
         type="button"
-        {...drag.listeners}
-        {...drag.attributes}
+        {...listeners}
+        {...attributes}
         aria-label={`Drag ticket ${item.issue.ref.number}`}
         className="cursor-grab touch-none self-start rounded-sm text-muted-foreground/50 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
@@ -195,13 +190,13 @@ const BoardColumn = memo(function BoardColumn({
   readonly disabled: boolean;
   readonly onOpen: (item: IssueBoardItem) => void;
 }) {
-  const drop = useDroppable({ id });
+  const { setNodeRef, isOver } = useDroppable({ id });
   return (
     <section
-      ref={drop.setNodeRef}
+      ref={setNodeRef}
       className={cn(
         "min-h-64 w-72 shrink-0 rounded-xl bg-muted/30 p-2",
-        drop.isOver && "ring-1 ring-inset ring-primary",
+        isOver && "ring-1 ring-inset ring-primary",
       )}
     >
       <h2 className="flex items-center gap-2 px-1 py-2 text-sm font-medium">
@@ -317,12 +312,8 @@ export function IssuesBoard({
   const mode: IssuesMode = search.mode ?? "board";
 
   const allProjects = useProjects();
-  const projects = useMemo(
-    () =>
-      allProjects.filter(
-        (project) => project.environmentId === environmentId && project.isScratch !== true,
-      ),
-    [allProjects, environmentId],
+  const projects = allProjects.filter(
+    (project) => project.environmentId === environmentId && project.isScratch !== true,
   );
 
   const listBoards = useAtomCommand(issuesEnvironment.listBoards, { reportFailure: false });
@@ -339,10 +330,17 @@ export function IssuesBoard({
   } | null>(null);
   const [boardsRevision, setBoardsRevision] = useState(0);
   const [boardsError, setBoardsError] = useState<string | null>(null);
+  // A new request clears the last one's error before it answers.
+  const boardsRequest =
+    environmentId && connected ? keyOf(environmentId, String(boardsRevision)) : null;
+  const [lastBoardsRequest, setLastBoardsRequest] = useState(boardsRequest);
+  if (lastBoardsRequest !== boardsRequest) {
+    setLastBoardsRequest(boardsRequest);
+    if (boardsRequest !== null) setBoardsError(null);
+  }
   useEffect(() => {
-    if (!environmentId || !connected) return;
+    if (!environmentId || !boardsRequest) return;
     let current = true;
-    setBoardsError(null);
     void listBoards({ environmentId, input: { connectedOnly: true } })
       .then(unwrapIssueResult)
       .then((boards) => {
@@ -354,7 +352,7 @@ export function IssuesBoard({
     return () => {
       current = false;
     };
-  }, [boardsRevision, connected, environmentId, listBoards]);
+  }, [boardsRequest, environmentId, listBoards]);
   const boards =
     connectedBoards?.environmentId === environmentId
       ? connectedBoards.boards.filter((board) => board.mapping !== null)
@@ -388,10 +386,10 @@ export function IssuesBoard({
   const scopeKey = environmentId && projectId ? keyOf(environmentId, projectId) : null;
   const viewKey = scopeKey && boardId ? keyOf(scopeKey, boardId) : null;
 
-  const navigate = useCallback(
+  const navigate = useStableCallback(
     (
       patch: { readonly [K in keyof IssuesSearch]?: IssuesSearch[K] | undefined },
-      replace = false,
+      replace: boolean = false,
     ) => {
       const next = {
         environmentId: environmentId ?? undefined,
@@ -408,12 +406,12 @@ export function IssuesBoard({
         { replace },
       );
     },
-    [boardId, environmentId, onSearchChange, projectId, search.mode, search.ticket],
   );
 
   // Written once the selection is settled, so a cold start never overwrites the remembered one.
+  const boardsKnown = boards !== null;
   useEffect(() => {
-    if (!environmentId || boards === null) return;
+    if (!environmentId || !boardsKnown) return;
     if (search.environmentId && search.environmentId !== environmentId) return;
     writeIssuesNavigation({
       environmentId,
@@ -422,7 +420,7 @@ export function IssuesBoard({
       ...(search.ticket ? { ticket: search.ticket } : {}),
       mode,
     });
-  }, [boardId, boards === null, environmentId, mode, projectId, search.ticket]);
+  }, [boardId, boardsKnown, environmentId, mode, projectId, search.environmentId, search.ticket]);
 
   // A cached copy paints while the server's stored copy loads.
   const [loaded, setLoaded] = useState<{ key: string; view: IssueBoardView } | null>(null);
@@ -431,56 +429,60 @@ export function IssuesBoard({
     loaded?.key === viewKey ? loaded.view : viewKey ? (readCachedBoardView(viewKey) ?? null) : null;
   const viewFresh = loaded !== null && loaded.key === viewKey;
   const generation = useRef(0);
-  const showView = useCallback((key: string, next: IssueBoardView | null) => {
+  const showView = (key: string, next: IssueBoardView | null) => {
     writeCachedBoardView(key, next);
     setLoaded(next ? { key, view: next } : null);
-  }, []);
-  const openView = useCallback(
-    async (refresh: boolean) => {
-      if (!viewKey || !environmentId || !projectId || !boardId || !connected) return;
-      const key = viewKey;
-      const current = ++generation.current;
-      try {
-        const result = unwrapIssueResult(
-          await openBoard({
-            environmentId,
-            input: { projectId, boardId, ...(refresh ? { refresh: true } : {}) },
-          }),
-        );
-        if (current !== generation.current) return;
-        showView(key, result);
-        setViewError(null);
-      } catch (failure) {
-        const message = issueErrorMessage(failure);
-        if (current === generation.current && message) setViewError({ key, message });
-      }
-    },
-    [boardId, connected, environmentId, openBoard, projectId, showView, viewKey],
-  );
+  };
+  const openView = useStableCallback(async (refresh: boolean) => {
+    if (!viewKey || !environmentId || !projectId || !boardId || !connected) return;
+    const key = viewKey;
+    const current = ++generation.current;
+    try {
+      const result = unwrapIssueResult(
+        await openBoard({
+          environmentId,
+          input: { projectId, boardId, ...(refresh ? { refresh: true } : {}) },
+        }),
+      );
+      if (current !== generation.current) return;
+      showView(key, result);
+      setViewError(null);
+    } catch (failure) {
+      const message = issueErrorMessage(failure);
+      if (current === generation.current && message) setViewError({ key, message });
+    }
+  });
   useEffect(() => {
-    void openView(false);
-  }, [openView]);
+    if (viewKey && environmentId && projectId && boardId && connected) void openView(false);
+  }, [boardId, connected, environmentId, openView, projectId, viewKey]);
 
   const serverSync = useIssueBoardSync(
     view && connected && environmentId && projectId && boardId
       ? { environmentId, projectId, boardId }
       : null,
   );
+  const serverSyncRevision = serverSync === null ? null : serverSync?.revision;
+  const followServerSync = useStableCallback(
+    (revision: number | null | undefined, key: string | null) => {
+      if (!view?.sync || !key || revision === undefined) return;
+      if (revision === null) {
+        showView(key, null);
+        setBoardsRevision((current) => current + 1);
+        return;
+      }
+      if (revision > view.sync.revision) void openView(false);
+    },
+  );
   useEffect(() => {
-    if (!view?.sync || !viewKey || serverSync === undefined) return;
-    if (serverSync === null) {
-      showView(viewKey, null);
-      setBoardsRevision((revision) => revision + 1);
-      return;
-    }
-    if (serverSync.revision > view.sync.revision) void openView(false);
-  }, [serverSync?.revision, serverSync === null, viewKey]);
+    followServerSync(serverSyncRevision, viewKey);
+  }, [followServerSync, serverSyncRevision, viewKey]);
   const displaySync = serverSync ?? view?.sync;
 
   const hasView = view !== null;
   const lastFocusRefresh = useRef(0);
   useEffect(() => {
-    if (!hasView || !connected) return;
+    // Switching boards cancels a pending focus refresh; the new board loads on its own.
+    if (!hasView || !connected || !viewKey) return;
     let timeout: number | null = null;
     const schedule = () => {
       if (timeout !== null) window.clearTimeout(timeout);
@@ -501,19 +503,16 @@ export function IssuesBoard({
       window.removeEventListener("focus", schedule);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [connected, hasView, openView]);
+  }, [connected, hasView, openView, viewKey]);
 
-  const refreshBoard = useCallback(() => void openView(true), [openView]);
+  const refreshBoard = () => void openView(true);
   useEffect(
     () => (hasView && connected ? registerOpenIssueBoard(refreshBoard) : undefined),
     [connected, hasView, refreshBoard],
   );
 
   // Search and filters belong to the project; the URL carries the rest.
-  const storedPreferences = useMemo(
-    () => (scopeKey ? readIssuesPreferences(scopeKey) : null),
-    [scopeKey],
-  );
+  const storedPreferences = scopeKey ? readIssuesPreferences(scopeKey) : null;
   const [editedPreferences, setEditedPreferences] = useState<{
     key: string;
     value: IssuesPreferences;
@@ -533,12 +532,14 @@ export function IssuesBoard({
   // The notice stays until the person picks another board or project.
   const [fellBackTo, setFellBackTo] = useState<string | null>(null);
   const fellBack = fellBackTo !== null && fellBackTo === viewKey;
-  useEffect(() => {
-    if (!requestedBoardMissing) return;
+  const fallBack = useStableCallback(() => {
     setFellBackTo(viewKey);
     updatePreferences({ query: "", issueState: "all", issueHost: "all" });
     navigate({ boardId: boardId ?? undefined, ticket: undefined }, true);
-  }, [requestedBoardMissing]);
+  });
+  useEffect(() => {
+    if (requestedBoardMissing) fallBack();
+  }, [fallBack, requestedBoardMissing]);
 
   // The repository's issues, loaded when list mode first shows them.
   const [issueList, setIssueList] = useState<{
@@ -549,103 +550,84 @@ export function IssuesBoard({
   const [listError, setListError] = useState<string | null>(null);
   const [listPending, setListPending] = useState(false);
   const listedIssues = issueList?.key === scopeKey ? issueList : null;
-  const loadIssues = useCallback(
-    async (cursor: string | null) => {
-      if (!scopeKey || !environmentId || !projectId || !connected) return;
-      const key = scopeKey;
-      setListPending(true);
-      setListError(null);
-      try {
-        const result = unwrapIssueResult(
-          await listIssues({
-            environmentId,
-            input: { projectId, ...(cursor ? { cursor } : {}) },
-          }),
-        );
-        setIssueList((current) => ({
-          key,
-          issues:
-            cursor && current?.key === key ? [...current.issues, ...result.issues] : result.issues,
-          nextCursor: result.nextCursor,
-        }));
-      } catch (failure) {
-        setListError(issueErrorMessage(failure));
-      } finally {
-        setListPending(false);
-      }
-    },
-    [connected, environmentId, listIssues, projectId, scopeKey],
-  );
+  const loadIssues = useStableCallback(async (cursor: string | null) => {
+    if (!scopeKey || !environmentId || !projectId || !connected) return;
+    const key = scopeKey;
+    setListPending(true);
+    setListError(null);
+    try {
+      const result = unwrapIssueResult(
+        await listIssues({
+          environmentId,
+          input: { projectId, ...(cursor ? { cursor } : {}) },
+        }),
+      );
+      setIssueList((current) => ({
+        key,
+        issues:
+          cursor && current?.key === key ? [...current.issues, ...result.issues] : result.issues,
+        nextCursor: result.nextCursor,
+      }));
+    } catch (failure) {
+      setListError(issueErrorMessage(failure));
+    }
+    setListPending(false);
+  });
   const listLoaded = listedIssues !== null;
   useEffect(() => {
-    if (mode === "list" && !listLoaded) void loadIssues(null);
-  }, [listLoaded, loadIssues, mode]);
+    if (mode === "list" && !listLoaded && scopeKey && connected) void loadIssues(null);
+  }, [connected, listLoaded, loadIssues, mode, scopeKey]);
 
-  const grouped = useMemo(() => (view ? groupBoardColumns(view, query) : null), [query, view]);
-  const activeAttempts = useMemo(
-    () =>
-      new Map(
-        (view?.attempts ?? [])
-          .filter((attempt) => attempt.active)
-          .map((attempt) => [ticketKey(attempt.issue), attempt] as const),
-      ),
-    [view],
+  const grouped = view ? groupBoardColumns(view, query) : null;
+  const activeAttempts = new Map(
+    (view?.attempts ?? [])
+      .filter((attempt) => attempt.active)
+      .map((attempt) => [ticketKey(attempt.issue), attempt] as const),
   );
   const { issueState, issueHost } = preferences;
-  const filteredIssues = useMemo(
-    () =>
-      (listedIssues?.issues ?? []).filter((issue) =>
-        issueMatchesFilters(issue, { issueState, issueHost, query }),
-      ),
-    [issueHost, issueState, listedIssues, query],
+  const filteredIssues = (listedIssues?.issues ?? []).filter((issue) =>
+    issueMatchesFilters(issue, { issueState, issueHost, query }),
   );
 
-  const columnTitle = useCallback(
-    (columnId: string) => view?.columns.find((column) => column.id === columnId)?.title ?? columnId,
-    [view],
-  );
-  const banners = useMemo(
-    () => (view ? selectMoveBanners(view.moves, columnTitle) : []),
-    [columnTitle, view],
-  );
+  const columnTitle = (columnId: string) =>
+    view?.columns.find((column) => column.id === columnId)?.title ?? columnId;
+  const banners = view ? selectMoveBanners(view.moves, columnTitle) : [];
 
-  const selectedItem = useMemo((): IssueBoardItem | null => {
+  const selectedItem = ((): IssueBoardItem | null => {
     const ticket = search.ticket;
     if (!ticket) return null;
     const onBoard = view?.items.find((item) => matchesTicketParam(ticket, item.issue.ref));
     if (onBoard) return onBoard;
     const listed = listedIssues?.issues.find((issue) => matchesTicketParam(ticket, issue.ref));
     return listed ? { issue: listed, itemId: listed.ref.id, columnId: null, version: null } : null;
-  }, [listedIssues, search.ticket, view]);
+  })();
   // A remembered ticket that left the board is dropped once the fresh copy shows it gone.
   useEffect(() => {
     if (search.ticket && mode === "board" && viewFresh && !selectedItem) {
       navigate({ ticket: undefined }, true);
     }
-  }, [mode, search.ticket, selectedItem, viewFresh]);
+  }, [mode, navigate, search.ticket, selectedItem, viewFresh]);
 
-  const openTicket = useCallback(
-    (item: IssueBoardItem) => {
-      const refs = [
-        ...(view?.items.map((candidate) => candidate.issue.ref) ?? []),
-        ...(listedIssues?.issues.map((issue) => issue.ref) ?? []),
-      ];
-      navigate({ ticket: formatTicketParam(item.issue.ref, refs) });
-    },
-    [listedIssues, navigate, view],
-  );
+  const openTicket = (item: IssueBoardItem) => {
+    const refs = [
+      ...(view?.items.map((candidate) => candidate.issue.ref) ?? []),
+      ...(listedIssues?.issues.map((issue) => issue.ref) ?? []),
+    ];
+    navigate({ ticket: formatTicketParam(item.issue.ref, refs) });
+  };
 
   const [starting, setStarting] = useState<IssueBoardItem | null>(null);
   const [configuring, setConfiguring] = useState<IssueBoardView | "new" | null>(null);
   const [moving, setMoving] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const connectFromLink = useStableCallback(() => {
+    setConfiguring("new");
+    navigate({ connect: undefined }, true);
+  });
   useEffect(() => {
-    if (search.connect && environmentId && projectId && connected) {
-      setConfiguring("new");
-      navigate({ connect: undefined }, true);
-    }
-  }, [connected, environmentId, projectId, search.connect]);
+    if (search.connect && environmentId && projectId && connected) connectFromLink();
+  }, [connectFromLink, connected, environmentId, projectId, search.connect]);
 
   const moveItem = async (item: IssueBoardItem, columnId: string) => {
     if (!view || !viewKey || !environmentId || !connected || item.columnId === columnId) return;
@@ -677,10 +659,9 @@ export function IssuesBoard({
           ? MOVED_ELSEWHERE
           : issueErrorMessage(failure),
       );
-    } finally {
-      setMoving(false);
-      void openView(false);
     }
+    setMoving(false);
+    void openView(false);
   };
 
   const retry = async (move: IssueMove) => {
@@ -692,9 +673,8 @@ export function IssuesBoard({
       );
     } catch (failure) {
       setActionError(issueErrorMessage(failure));
-    } finally {
-      void openView(false);
     }
+    void openView(false);
   };
 
   const disconnect = async () => {

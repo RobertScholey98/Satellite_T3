@@ -28,10 +28,8 @@ function IssuesRouteView() {
   });
   useEffect(() => {
     if (arrival) void navigate({ search: arrival, replace: true });
-  }, []);
-  useEffect(() => {
-    if (arrival && canonical(search) === canonical(arrival)) setArrival(null);
-  }, [search]);
+  }, [arrival, navigate]);
+  if (arrival && canonical(search) === canonical(arrival)) setArrival(null);
   return (
     <IssuesBoard
       search={arrival ?? search}

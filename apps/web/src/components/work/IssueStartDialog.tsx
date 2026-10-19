@@ -11,7 +11,7 @@ import {
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { randomUUID } from "~/lib/utils";
@@ -68,12 +68,8 @@ export function IssueStartDialog({
 }) {
   const navigate = useNavigate();
   const allProjects = useProjects();
-  const projects = useMemo(
-    () =>
-      allProjects.filter(
-        (project) => project.environmentId === environmentId && project.isScratch !== true,
-      ),
-    [allProjects, environmentId],
+  const projects = allProjects.filter(
+    (project) => project.environmentId === environmentId && project.isScratch !== true,
   );
   // Kept across presses so a double press or a retry after reconnecting replays the same start; a
   // definite refusal from the server frees the next press to start afresh.
@@ -101,16 +97,12 @@ export function IssueStartDialog({
   const settings = useEnvironmentSettings(environmentId);
   const providers =
     useAtomValue(serverEnvironment.providersValueAtom(environmentId)) ?? EMPTY_SERVER_PROVIDERS;
-  const instanceEntries = useMemo(
-    () =>
-      sortProviderInstanceEntries(
-        applyProviderInstanceSettings(
-          deriveProviderInstanceEntries(providers),
-          settings,
-          project?.id ?? null,
-        ),
-      ),
-    [providers, settings, project?.id],
+  const instanceEntries = sortProviderInstanceEntries(
+    applyProviderInstanceSettings(
+      deriveProviderInstanceEntries(providers),
+      settings,
+      project?.id ?? null,
+    ),
   );
   const selection =
     modelChoice &&
@@ -120,9 +112,11 @@ export function IssueStartDialog({
   const activeInstanceId =
     selection?.instanceId ?? instanceEntries[0]?.instanceId ?? ("" as ProviderInstanceId);
   const activeModel = selection?.model ?? "";
-  const modelOptionsByInstance = useMemo(
-    () => getCustomModelOptionsByInstance(settings, providers, activeInstanceId, activeModel),
-    [settings, providers, activeInstanceId, activeModel],
+  const modelOptionsByInstance = getCustomModelOptionsByInstance(
+    settings,
+    providers,
+    activeInstanceId,
+    activeModel,
   );
 
   const startAttempt = useAtomCommand(issuesEnvironment.startAttempt, { reportFailure: false });

@@ -437,7 +437,17 @@ describe("Open work list", () => {
       const f = yield* makeRepository;
       const bare = f.at("bare.git");
       yield* git(f.root, ["clone", "-q", "--bare", f.repo, bare]);
-      yield* git(bare, ["worktree", "add", "-q", "-b", "linked", f.at("linked")]);
+      // Git started by the server opens a bare repository only when it is named explicitly.
+      yield* git(f.root, [
+        "--git-dir",
+        bare,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "linked",
+        f.at("linked"),
+      ]);
       const service = yield* openWorkFor([{ id: "linked", workspaceRoot: f.at("linked") }]);
 
       assert.deepStrictEqual(

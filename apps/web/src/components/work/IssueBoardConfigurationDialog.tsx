@@ -159,11 +159,19 @@ export function IssueBoardConfigurationDialog({
   const open = useAtomCommand(issuesEnvironment.openBoard, { reportFailure: false });
   const configure = useAtomCommand(issuesEnvironment.configureBoard, { reportFailure: false });
 
+  // A new discovery request hides the previous request's boards and error.
+  const discoveryRequest = initial ? null : `${environmentId}\n${projectId}\n${discoveryAttempt}`;
+  const [lastDiscoveryRequest, setLastDiscoveryRequest] = useState(discoveryRequest);
+  if (lastDiscoveryRequest !== discoveryRequest) {
+    setLastDiscoveryRequest(discoveryRequest);
+    if (discoveryRequest !== null) {
+      setDiscovered(null);
+      setDiscoveryError(null);
+    }
+  }
   useEffect(() => {
     if (initial) return;
     let current = true;
-    setDiscovered(null);
-    setDiscoveryError(null);
     void listBoards({ environmentId, input: { projectId } })
       .then(unwrapIssueResult)
       .then((boards) => {
@@ -175,7 +183,14 @@ export function IssueBoardConfigurationDialog({
     return () => {
       current = false;
     };
-  }, [discoveryAttempt, environmentId, initial, listBoards, projectId]);
+  }, [
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Retry bumps the attempt to run discovery again.
+    discoveryAttempt,
+    environmentId,
+    initial,
+    listBoards,
+    projectId,
+  ]);
 
   const locator: IssueBoardLocator =
     kind === "github-project"
@@ -198,9 +213,8 @@ export function IssueBoardConfigurationDialog({
       setMapping(result.board.mapping ?? EMPTY_MAPPING);
     } catch (failure) {
       setError(issueErrorMessage(failure));
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
 
   const save = async () => {
@@ -217,9 +231,8 @@ export function IssueBoardConfigurationDialog({
       onConfigured(result);
     } catch (failure) {
       setError(issueErrorMessage(failure));
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
 
   const mappingComplete =
