@@ -27,7 +27,7 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
   );
   if (status.legacyDatabaseBytes !== null) {
     yield* Console.log(
-      `Database from before 0.1.0: ${formatBytes(status.legacyDatabaseBytes)}, kept for rolling back.`,
+      `Database Satellite 1.x reads: ${formatBytes(status.legacyDatabaseBytes)}, kept for rolling back.`,
     );
   }
   const repairs = [
@@ -52,8 +52,8 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
       : [
           {
             id: "legacy" as const,
-            title: "Delete the database from before 0.1.0",
-            description: `Frees ${formatBytes(status.legacyDatabaseBytes)}. Your threads and settings are already in the current database.\n  Warning: after this, a Satellite version before 0.1.0 starts with no threads or settings, so you can no longer roll back.`,
+            title: "Delete the database Satellite 1.x reads",
+            description: `Frees ${formatBytes(status.legacyDatabaseBytes)}. Your threads and settings are already in the current database.\n  Warning: Satellite 1.x reads this file, so after deleting it you can no longer roll back to 1.x.`,
             // Never chosen for you: deleting it gives up rolling back.
             recommended: false,
           },
@@ -120,7 +120,7 @@ export const runDoctor = Effect.fn("runDoctor")(function* (
     // Only versions before 0.1.0 open this file, so the service keeps running;
     // the removal itself refuses while one of those still has it open.
     yield* maintenance.removeLegacyDatabase(databasePath);
-    yield* Console.log("\nDeleted the database from before 0.1.0.");
+    yield* Console.log("\nDeleted the database Satellite 1.x reads.");
   }
 });
 

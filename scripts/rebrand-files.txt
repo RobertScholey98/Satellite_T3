@@ -55,7 +55,7 @@ apps/server/src/cli/app.ts
 apps/server/src/cli/config.test.ts
 apps/server/src/cli/config.ts
 apps/server/src/cli/connect.ts
-apps/server/src/cli/doctor.ts
+apps/server/src/cli/doctor.ts  # hand-edited
 apps/server/src/cli/pair.test.ts
 apps/server/src/cli/pair.ts
 apps/server/src/cli/server.ts
@@ -93,7 +93,7 @@ apps/server/src/orchestration-v2/RestartContinuation.ts
 apps/server/src/orchestration-v2/UserFacingErrors.ts
 apps/server/src/orchestration-v2/pullRequestWatch.ts
 apps/server/src/orchestration-v2/runtimeLayer.test.ts
-apps/server/src/persistence/DatabaseMaintenance.ts
+apps/server/src/persistence/DatabaseMaintenance.ts  # hand-edited
 apps/server/src/preview/PreviewBrowserHost.ts
 apps/server/src/project/ManagedProjectFolders.ts  # hand-edited
 apps/server/src/provider/AntigravityProvider.ts

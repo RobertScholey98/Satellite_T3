@@ -26,7 +26,7 @@ export class DatabaseInUseError extends Schema.TaggedError<DatabaseInUseError>()
   { path: Schema.String, cause: Schema.Defect() },
 ) {
   override get message() {
-    return "Stop the Satellite server and desktop app, including any version before 0.1.0, before repairing the database.";
+    return "Stop the Satellite server and desktop app, including any Satellite 1.x install, before repairing the database.";
   }
 }
 
@@ -62,7 +62,7 @@ export class LegacyDatabaseRemoveError extends Schema.TaggedError<LegacyDatabase
   { path: Schema.String, cause: Schema.Defect() },
 ) {
   override get message() {
-    return "Could not delete the database from before 0.1.0. Check that this user can write to the data directory.";
+    return "Could not delete the database Satellite 1.x reads. Check that this user can write to the data directory.";
   }
 }
 
