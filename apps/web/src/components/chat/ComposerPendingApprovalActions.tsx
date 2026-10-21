@@ -13,7 +13,6 @@ import { composerFloatingLayerProps } from "./composerEventScope";
 interface ComposerPendingApprovalActionsProps {
   requestId: RuntimeRequestId;
   isResponding: boolean;
-  collisionBoundary?: Element | undefined;
   canRespond: boolean;
   disabled?: boolean;
   options?: ReadonlyArray<ProviderApprovalOption> | undefined;
@@ -37,7 +36,6 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   disabled = false,
   options = DEFAULT_APPROVAL_OPTIONS,
   onRespondToApproval,
-  collisionBoundary,
 }: ComposerPendingApprovalActionsProps) {
   const primaryOptions = options.filter(
     (option) => option.decision === "decline" || option.decision === "accept",
@@ -69,9 +67,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
         return option.warning ? (
           <Tooltip key={option.decision}>
             <TooltipTrigger render={button} />
-            <TooltipPopup side="top" collisionBoundary={collisionBoundary}>
-              {option.warning}
-            </TooltipPopup>
+            <TooltipPopup side="top">{option.warning}</TooltipPopup>
           </Tooltip>
         ) : (
           button
@@ -85,12 +81,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
           >
             <EllipsisIcon />
           </MenuTrigger>
-          <MenuPopup
-            {...composerFloatingLayerProps}
-            side="top"
-            align="end"
-            collisionBoundary={collisionBoundary}
-          >
+          <MenuPopup {...composerFloatingLayerProps} side="top" align="end" width="content">
             {moreOptions.map((option) => {
               const item = (
                 <MenuItem
@@ -101,8 +92,6 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
                     if (!disabled && !isResponding)
                       void onRespondToApproval(requestId, option.decision);
                   }}
-                  variant="ghost"
-                  className="mb-1 last:mb-0"
                 >
                   {option.warning ? <TriangleAlertIcon className="size-3 text-warning" /> : null}
                   <span className="min-w-0 whitespace-normal wrap-break-word">{option.label}</span>
@@ -111,9 +100,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
               return option.warning ? (
                 <Tooltip key={option.decision}>
                   <TooltipTrigger render={item} />
-                  <TooltipPopup side="top" collisionBoundary={collisionBoundary}>
-                    {option.warning}
-                  </TooltipPopup>
+                  <TooltipPopup side="top">{option.warning}</TooltipPopup>
                 </Tooltip>
               ) : (
                 item

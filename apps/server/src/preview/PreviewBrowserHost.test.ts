@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
@@ -17,10 +17,12 @@ const LDD_IN_BARE_DEBIAN = `\tlinux-vdso.so.1 (0x00007ffd2d1f8000)
 `;
 
 // Chrome's own abort on Ubuntu 26.04 with unprivileged user namespaces restricted.
-const SANDBOX_ABORT =
-  "[1005/163106.285700:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:129] No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/";
 
-const lddReporting = (stdout: string) => {
+// What the real loader prints when the browser's `--version` cannot start it.
+const LOADER_ERROR =
+  "chrome-headless-shell: error while loading shared libraries: libglib-2.0.so.0: cannot open shared object file: No such file or directory";
+
+const hostReporting = (output: { readonly version: string; readonly ldd: string }) => {
   const commands: Array<string> = [];
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.sync(() => {
@@ -36,9 +38,9 @@ const lddReporting = (stdout: string) => {
         kill: () => Effect.void,
         unref: Effect.succeed(Effect.void),
         stdin: Sink.drain,
-        stdout: Stream.make(new TextEncoder().encode(stdout)),
+        stdout: Stream.empty,
         stderr: Stream.empty,
-        all: Stream.empty,
+        all: Stream.make(new TextEncoder().encode(name === "ldd" ? output.ldd : output.version)),
         getInputFd: () => Sink.drain,
         getOutputFd: () => Stream.empty,
       });
@@ -47,33 +49,30 @@ const lddReporting = (stdout: string) => {
   return { spawner, commands };
 };
 
-const diagnose = (input: { platform: NodeJS.Platform; output: string; ldd: string }) => {
-  const { spawner, commands } = lddReporting(input.ldd);
+const diagnose = (input: {
+  platform: NodeJS.Platform;
+  output: string;
+  ldd: string;
+  version?: string;
+  uid?: number;
+}) => {
+  const { spawner, commands } = hostReporting({
+    ldd: input.ldd,
+    version: input.version ?? LOADER_ERROR,
+  });
   return PreviewBrowserHost.diagnoseLaunchFailure({
     executable: "/home/me/.t3/tools/chrome-headless-shell/linux64/154/chrome-headless-shell",
     output: input.output,
     setupCommand: "sudo t3 browser setup",
   }).pipe(
     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-    Effect.provideService(HostProcessPlatform, input.platform),
+    Effect.provideService(HostProcess.Platform, input.platform),
+    Effect.provideService(HostProcess.UserId, input.uid ?? 1000),
     Effect.map((error) => ({ error, commands })),
   );
 };
 
 describe("diagnoseLaunchFailure", () => {
-  it.effect("turns Chrome's sandbox abort into the AppArmor steps", () =>
-    Effect.gen(function* () {
-      const { error, commands } = yield* diagnose({
-        platform: "linux",
-        output: SANDBOX_ABORT,
-        ldd: "",
-      });
-      expect(error?._tag).toBe("PreviewBrowserSandboxError");
-      expect(error?.message).toContain("Run `sudo t3 browser setup` on the host");
-      expect(commands).toEqual([]);
-    }),
-  );
-
   it.effect("names every library the loader cannot find", () =>
     Effect.gen(function* () {
       const { error } = yield* diagnose({
@@ -89,17 +88,16 @@ describe("diagnoseLaunchFailure", () => {
     }),
   );
 
-  it.effect("leaves other failures alone", () =>
+  it.effect("trusts the browser's own start over ldd", () =>
     Effect.gen(function* () {
-      const linux = yield* diagnose({
+      // NixOS: ldd lists libraries that nix-ld still provides to the real loader.
+      const { error } = yield* diagnose({
         platform: "linux",
         output: "crashed",
-        ldd: "\tlibc.so.6 => /lib/libc.so.6\n",
+        ldd: LDD_IN_BARE_DEBIAN,
+        version: "Google Chrome for Testing 154.0.8037.92\n",
       });
-      expect(linux.error).toBeUndefined();
-      const mac = yield* diagnose({ platform: "darwin", output: "crashed", ldd: "" });
-      expect(mac.error).toBeUndefined();
-      expect(mac.commands).toEqual([]);
+      expect(error).toBeUndefined();
     }),
   );
 });

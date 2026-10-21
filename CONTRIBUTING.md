@@ -1,8 +1,8 @@
 # Contributing to Satellite
 
 This is a personal fork of T3 Code for experimenting with ideas that fit the
-maintainer's own workflow. Current experiments connect ideas, issues, agent work,
-and review in an always-available desktop workspace. See the
+maintainer's own workflow. Current experiments connect issue boards and agent work
+in a desktop workspace. See the
 [README](./README.md#why-this-fork-exists) for the direction of the fork.
 
 ## Setup
@@ -14,7 +14,7 @@ for repository conventions and precautions when working inside a running instanc
 ## Bugs and proposals
 
 Use [this fork's issues](https://github.com/RobertScholey98/Satellite_T3/issues) for bug
-reports and feature proposals. Include the version or commit, Windows version,
+reports and feature proposals. Include the version or commit, Windows or macOS version,
 provider when relevant, reproduction steps, and expected and actual behavior.
 Redact credentials from logs and recordings.
 
@@ -30,10 +30,11 @@ UI changes and a short video when motion or timing matters. Upload this evidence
 to GitHub rather than committing it.
 
 Use a conventional commit title, for example `fix(desktop): restore the selected
-thread when opening the pill`. If an agent helped, name the model and harness at
-the end of the description.
+thread after relaunch`. If an agent helped, name the model and harness at the end
+of the description.
 
-Run checks for the files and packages changed. The fork's CI builds the Windows
-desktop pipeline and runs focused Satellite tests; inherited app changes may
-need additional targeted checks. Follow the [documentation rules](./AGENTS.md#documentation).
-Keep implementation plans and scratch files outside the repository.
+Run checks for the files and packages changed. The fork's CI runs the full lint,
+typecheck, build, and test suites on Linux and builds the desktop pipeline on
+Windows and macOS. Follow the [documentation rules](./AGENTS.md#documentation)
+and the [fork constraints](./AGENTS.md#fork-constraints). Keep implementation
+plans and scratch files outside the repository.

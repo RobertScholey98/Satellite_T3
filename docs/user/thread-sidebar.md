@@ -10,49 +10,8 @@ and mode selections, unless the destination project has its own model default.
 Its branch and workspace mode come from your configured defaults. To continue in
 an existing worktree, use **New thread in this worktree** from the branch toolbar.
 
-To choose where a new worktree lives, use **New worktree** beside the new-thread
-heading on web or desktop. Enter a folder name and new branch, then choose a local
-or remote source branch. The folder is created directly inside the selected
-project's root on its environment, and the new worktree is selected for your
-draft. You can change the selection before sending your prompt.
-
 When you change a new thread's project, T3 Code stays in the current environment
 if that project exists there. Otherwise it selects an environment that has it.
-
-### Explore an idea
-
-Select **Idea** when starting a new thread to discuss a feature before committing
-to implementation. Each idea belongs to its project and environment and keeps one
-conversation. Return to it through **Ideas** in the sidebar footer. Idea activity
-stays out of the ordinary thread list and work notifications.
-
-Ideas use your selected provider and model, with the same tools, skills and access
-settings as ordinary threads. Ask the agent to save previews and documents in the
-notebook so they stay with the idea. Background notebook updates run separately
-and cannot use the conversation's general-purpose tools.
-
-OpenCode ideas use the environment's local OpenCode installation so the agent can
-access notebook tools and documents. If ordinary threads use an external OpenCode
-server, configure the model and sign-in locally too.
-
-The notebook starts with an empty pitch. Background updates organise the discussion
-into notes and keep the pitch current. Choose their model in **Settings → General
-→ Text generation → Idea updates**. This setting is separate from thread titles.
-Automatic uses a default model from the idea's provider. If that provider is disabled
-or removed, it uses another enabled provider.
-You can edit the pitch and notes, add attachments, and follow linked phrases to
-their supporting notes. If an update conflicts with your edits, review its proposal
-in the notebook. Failed updates can be retried while you continue the conversation.
-
-Use **Promote to issues** to prepare `/promote` in the existing conversation. Review
-the proposed issues and their GitHub repository before publishing. Issue descriptions
-contain the implementation context, so they remain useful after the idea is gone.
-Publishing embeds text and does not upload notebook attachments.
-Full promotion settles the idea; partial promotion leaves its remaining scope active.
-New discussion or manual content changes reopen a settled idea.
-
-Deleting an idea permanently removes its conversation, notebook and owned files
-after confirmation. Published issues remain on GitHub.
 
 ### Start without a project
 
@@ -64,7 +23,7 @@ list. It starts on your current machine; before sending, pick another machine
 from the machine menu to move it there. To move a draft into a project, pick the
 project in the heading.
 
-Each work thread without a project works in its own folder under `~/.t3/scratch` (the
+Each thread without a project works in its own folder under `~/.t3/scratch` (the
 `scratch` folder of your T3 data directory), named after its date, the first words
 of its first message, and a short id, like
 `2026-09-25-convert-these-pngs-to-webp-a1b2c3d4`. Deleting a thread keeps its
@@ -92,7 +51,7 @@ On web and desktop, unpinning, settling, snoozing, and archiving a thread each s
 a notification with **Undo** for five seconds. Undo restores the thread's previous
 state, including its pinned position, and reopens an archived thread you were
 viewing. Discarding an unsent draft from the sidebar works the same way: Undo brings
-back its text and attachments. `mod+z` triggers the most recent Undo when no text field is focused; see
+back its text and attachments. `mod+z` triggers the most recent Undo, even from the composer; see
 [Keybindings](./keybindings.md#commands-with-special-behavior).
 
 On web and desktop, you can also drag files from your computer onto any thread row:
@@ -126,7 +85,7 @@ spot where the thread will land. Drops into either section keep the position you
 mobile, open a thread's menu and choose **Arrange threads**. Drag a handle within or between
 **Pinned** and **Active** to reorder, pin, or unpin. Drop onto the **Settled** divider to
 settle a thread. The dragged card shows the action before you release it. Expand **Snoozed**
-or **Settled** to drag a parked thread back into either live section. Each drop saves; **Done** returns to the thread list.
+or **Settled** to drag a parked thread back into either live section. Each drop saves; close the sheet to return to the thread list.
 **Move up** and **Move down** are also available in the thread menu. The server
 saves the order, so it survives a refresh and appears on your other connected devices.
 
@@ -189,9 +148,11 @@ Press `Escape` while dragging to cancel.
 
 By default, environments settle inactive threads after three days and settle
 threads whose pull request merged. A closed pull request can also settle an idle
-thread. Work in progress, pending questions or approvals, and live background work
+thread. An empty thread's inactivity counts from when it was created.
+Work in progress, pending questions or approvals, and live background work
 prevent automatic settlement. An open pull request does not prevent inactivity
-settlement, but an old closed or merged pull request does not settle work you
+settlement unless you turn on **Keep threads with a PR** in **Settings → General**,
+but an old closed or merged pull request does not settle work you
 resumed after it closed. Only your own messages count as resuming. A turn that
 finished background work or a pull request watch starts on its own does not.
 
@@ -245,8 +206,8 @@ continuation. You can cancel it from the thread. Enable **Auto-resume limited
 threads** in **Settings → General** on web and desktop, or **Settings → Thread
 behavior** on mobile, to schedule limit stops by default.
 The environment must be running when the reset arrives; it resumes overdue
-continuations after a restart. Sending a new message, archiving, or settling the
-thread prevents a pending continuation from starting.
+continuations after a restart. Stopping the thread, sending a new message,
+archiving, or settling it prevents a pending continuation from starting.
 
 Choose **Snooze until reset** to hide the thread until its allowance returns.
 Snooze and auto-resume are independent: snooze alone wakes the thread without
@@ -272,3 +233,6 @@ Choose **Snooze → Custom…** from a thread's menu to pick a date and time in 
 local time zone, or a duration in minutes, hours, or days. Durations start when
 you confirm; one day means 24 hours. On web and desktop, you can also snooze
 several selected threads together. Choose **Wake thread** to bring a thread back early.
+A snoozed thread keeps working and stays hidden until its wake time, even while
+its agent wakes itself for background work. It comes back early only when it needs
+an approval or answer from you, when a run fails, or when you send it a message.

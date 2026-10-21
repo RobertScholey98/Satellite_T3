@@ -127,7 +127,7 @@ export function createManagedRelaySession(input: ManagedRelaySessionInput): Mana
         try: () => readCachedClerkToken(nowMillis),
         catch: (cause) =>
           new ManagedRelaySessionError({
-            message: "Could not obtain the Satellite Connect session token.",
+            message: "Could not obtain the T3 Connect session token.",
             cause,
           }),
       });
@@ -184,13 +184,12 @@ function readSessionClerkToken(
       (token): token is string => Boolean(token),
       () =>
         new ManagedRelaySessionError({
-          message: "The Satellite Connect session token is unavailable.",
+          message: "The T3 Connect session token is unavailable.",
         }),
     ),
   );
 }
 
-/** Removes an environment from the signed-in account without contacting that environment. */
 export const deregisterManagedRelayEnvironment = Effect.fn(
   "clientRuntime.managedRelaySession.deregisterEnvironment",
 )(function* (
@@ -200,7 +199,7 @@ export const deregisterManagedRelayEnvironment = Effect.fn(
   const session = registry.get(managedRelaySessionAtom);
   if (!session || session.accountId !== input.accountId) {
     return yield* new ManagedRelaySessionError({
-      message: "Sign in to Satellite Connect before deregistering an environment.",
+      message: "Sign in to T3 Connect before deregistering an environment.",
     });
   }
   const clerkToken = yield* readSessionClerkToken(session);
@@ -216,7 +215,7 @@ function requireClerkToken(
   if (!session || session.accountId !== accountId) {
     return Effect.fail(
       new ManagedRelaySessionError({
-        message: "Sign in to Satellite Connect before loading relay data.",
+        message: "Sign in to T3 Connect before loading relay data.",
       }),
     );
   }
@@ -291,7 +290,7 @@ export function readManagedRelaySnapshotState<A>(
         ? relayProtectedErrorMessage(cause.relayError)
         : cause instanceof Error
           ? cause.message
-          : "Could not load Satellite Connect data.";
+          : "Could not load T3 Connect data.";
     errorTraceId = findErrorTraceId(cause);
   }
   return {
@@ -312,30 +311,29 @@ export function createManagedRelayQueryManager(
 ) {
   const staleTime = options?.staleTimeMs ?? DEFAULT_STALE_TIME_MS;
   const idleTtl = options?.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
-  const observe = <A, E, R>(
+  const observe = Effect.fn("managedRelayState.observe")(function* <A, E, R>(
     input: Omit<ManagedRelayQueryEvent, "phase" | "message" | "traceId">,
     effect: Effect.Effect<A, E, R>,
-  ): Effect.Effect<A, E, R> =>
-    Effect.gen(function* () {
-      options?.onQueryEvent?.({ ...input, phase: "start" });
-      return yield* effect.pipe(
-        Effect.onExit((exit) =>
-          Effect.sync(() => {
-            if (exit._tag === "Success") {
-              options?.onQueryEvent?.({ ...input, phase: "success" });
-              return;
-            }
-            const error = Cause.squash(exit.cause);
-            options?.onQueryEvent?.({
-              ...input,
-              phase: "failure",
-              message: error instanceof Error ? error.message : String(error),
-              traceId: findErrorTraceId(error),
-            });
-          }),
-        ),
-      );
-    });
+  ): Effect.fn.Return<A, E, R> {
+    options?.onQueryEvent?.({ ...input, phase: "start" });
+    return yield* effect.pipe(
+      Effect.onExit((exit) =>
+        Effect.sync(() => {
+          if (exit._tag === "Success") {
+            options?.onQueryEvent?.({ ...input, phase: "success" });
+            return;
+          }
+          const error = Cause.squash(exit.cause);
+          options?.onQueryEvent?.({
+            ...input,
+            phase: "failure",
+            message: error instanceof Error ? error.message : String(error),
+            traceId: findErrorTraceId(error),
+          });
+        }),
+      ),
+    );
+  });
 
   const environmentsAtom = Atom.family((accountId: string) =>
     runtime

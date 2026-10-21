@@ -69,8 +69,8 @@ export function RelayClientInstallDialog() {
           </DialogTitle>
           <DialogDescription>
             {isInstalling
-              ? "Satellite is preparing this environment for secure access through Satellite Connect."
-              : "Satellite needs the relay client to make this environment available through Satellite Connect."}
+              ? "Satellite is preparing this environment for secure access through T3 Connect."
+              : "Satellite needs the relay client to make this environment available through T3 Connect."}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel scrollFade={false}>

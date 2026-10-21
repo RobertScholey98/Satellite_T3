@@ -1,14 +1,30 @@
+import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
-import {
-  EnvironmentId,
-  ProjectId,
-  ThreadId,
-  TrimmedNonEmptyString,
-  NonNegativeInt,
-} from "./baseSchemas.ts";
+
+import { EnvironmentAuthorizationError } from "./auth.ts";
+import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ModelSelection } from "./modelSelection.ts";
+import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
 import { SourceControlProviderKind } from "./sourceControl.ts";
 
+export const ISSUES_WS_METHODS = {
+  issuesList: "issues.list",
+  issuesGet: "issues.get",
+  issuesBoardsList: "issues.boards.list",
+  issuesBoardsOpen: "issues.boards.open",
+  issuesBoardsSubscribe: "issues.boards.subscribe",
+  issuesBoardsConfigure: "issues.boards.configure",
+  issuesBoardsDisconnect: "issues.boards.disconnect",
+  issuesBoardsMove: "issues.boards.move",
+  issuesMovesRetry: "issues.moves.retry",
+  issuesAttemptsList: "issues.attempts.list",
+  issuesAttemptsStart: "issues.attempts.start",
+  issuesAttemptsEnd: "issues.attempts.end",
+  issuesAttemptsResume: "issues.attempts.resume",
+} as const;
+
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
+
 export const IssueRef = Schema.Struct({
   hostKind: SourceControlProviderKind,
   host: Id,
@@ -18,6 +34,7 @@ export const IssueRef = Schema.Struct({
   url: Id,
 });
 export type IssueRef = typeof IssueRef.Type;
+
 export const IssueSummary = Schema.Struct({
   ref: IssueRef,
   title: Schema.String,
@@ -26,16 +43,21 @@ export const IssueSummary = Schema.Struct({
   labels: Schema.Array(Schema.String),
 });
 export type IssueSummary = typeof IssueSummary.Type;
+
 export const IssueActor = Schema.Struct({
   name: Schema.String,
   avatarUrl: Schema.optional(Schema.String),
 });
+export type IssueActor = typeof IssueActor.Type;
+
 export const IssueComment = Schema.Struct({
   id: Schema.String,
   body: Schema.String,
   createdAt: Schema.String,
   author: Schema.NullOr(IssueActor),
 });
+export type IssueComment = typeof IssueComment.Type;
+
 export const IssueDetail = Schema.Struct({
   ...IssueSummary.fields,
   body: Schema.String,
@@ -46,6 +68,8 @@ export const IssueDetail = Schema.Struct({
   hostFields: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type IssueDetail = typeof IssueDetail.Type;
+
+/** Stored in `issue_boards.locator_json`; reshaping a member orphans connected boards. */
 export const IssueBoardLocator = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("github-project"),
@@ -66,8 +90,10 @@ export const IssueBoardLocator = Schema.Union([
   }),
 ]);
 export type IssueBoardLocator = typeof IssueBoardLocator.Type;
+
 export const IssueBoardColumn = Schema.Struct({ id: Id, title: Schema.String });
 export type IssueBoardColumn = typeof IssueBoardColumn.Type;
+
 export const IssueBoardMapping = Schema.Struct({
   ready: Schema.Union([Id, Schema.Array(Id).check(Schema.isMinLength(1))]),
   inProgress: Id,
@@ -76,16 +102,10 @@ export const IssueBoardMapping = Schema.Struct({
   moveOnMerge: Schema.Boolean,
 });
 export type IssueBoardMapping = typeof IssueBoardMapping.Type;
+
 export const issueReadyColumnIds = (mapping: IssueBoardMapping): ReadonlyArray<string> =>
   typeof mapping.ready === "string" ? [mapping.ready] : mapping.ready;
-export const IssueBoardSummary = Schema.Struct({
-  id: Id,
-  projectId: ProjectId,
-  title: Schema.String,
-  locator: IssueBoardLocator,
-  mapping: Schema.NullOr(IssueBoardMapping),
-});
-export type IssueBoardSummary = typeof IssueBoardSummary.Type;
+
 export const IssueBoardItem = Schema.Struct({
   issue: IssueSummary,
   itemId: Id,
@@ -93,64 +113,13 @@ export const IssueBoardItem = Schema.Struct({
   version: Schema.NullOr(Schema.String),
 });
 export type IssueBoardItem = typeof IssueBoardItem.Type;
-export const IssueAttemptLink = Schema.Struct({
-  attemptId: Id,
-  reservationId: Id,
-  sourceEnvironmentId: EnvironmentId,
-  sourceProjectId: ProjectId,
-  boardId: Id,
-  issue: IssueRef,
-  destinationEnvironmentId: EnvironmentId,
-  sourceGeneration: NonNegativeInt,
-});
-export type IssueAttemptLink = typeof IssueAttemptLink.Type;
-export const IssueAttempt = Schema.Struct({
-  link: IssueAttemptLink,
-  projectId: Schema.NullOr(ProjectId),
-  threadId: Schema.NullOr(ThreadId),
-  worktreePath: Schema.NullOr(Schema.String),
-  status: Schema.Literals(["reserved", "attached", "started", "failed"]),
-  active: Schema.Boolean,
-  createdAt: Schema.String,
-  startedAt: Schema.NullOr(Schema.String),
-  sourceGeneration: NonNegativeInt,
-});
-export type IssueAttempt = typeof IssueAttempt.Type;
-export const IssueMoveReceipt = Schema.Struct({
-  id: Id,
-  boardId: Id,
-  issue: IssueRef,
-  columnId: Id,
-  status: Schema.Literals(["pending", "applied", "failed", "superseded"]),
-  error: Schema.NullOr(Schema.String),
-  createdAt: Schema.String,
-});
-export type IssueMoveReceipt = typeof IssueMoveReceipt.Type;
+
 export const IssueBoardSyncFailure = Schema.Struct({ at: Schema.String, message: Schema.String });
 export type IssueBoardSyncFailure = typeof IssueBoardSyncFailure.Type;
-/**
- * Whether the board's environment is collecting updates from a worktree environment that runs
- * attempts on this board. `unregistered` means no credential was handed over, so updates from
- * that computer wait for a start from a client connected to both.
- */
-export const IssueDeliveryPeer = Schema.Struct({
-  destinationEnvironmentId: EnvironmentId,
-  state: Schema.Literals([
-    "pending",
-    "delivered",
-    "unreachable",
-    "unauthorized",
-    "failed",
-    "unregistered",
-    "expired",
-  ]),
-  lastDeliveredAt: Schema.NullOr(Schema.String),
-  error: Schema.NullOr(Schema.String),
-});
-export type IssueDeliveryPeer = typeof IssueDeliveryPeer.Type;
+
 /** Freshness of the server's stored board copy. `syncing` and `failure` are independent facts. */
 export const IssueBoardSync = Schema.Struct({
-  /** Changes only when the board's columns, items, title or mapping changed. */
+  /** Changes only when the board's columns, items, title, mapping, attempts or moves changed. */
   revision: NonNegativeInt,
   /** Last successful read from the repository host. */
   syncedAt: Schema.String,
@@ -158,38 +127,107 @@ export const IssueBoardSync = Schema.Struct({
   syncing: Schema.Boolean,
   /** Outcome of the last finished refresh. */
   failure: Schema.NullOr(IssueBoardSyncFailure),
-  /** Absent from servers that leave cross-environment delivery to clients. */
-  deliveries: Schema.optionalKey(Schema.Array(IssueDeliveryPeer)),
 });
 export type IssueBoardSync = typeof IssueBoardSync.Type;
+
+export const IssueBoardSummary = Schema.Struct({
+  id: Id,
+  projectId: ProjectId,
+  title: Schema.String,
+  locator: IssueBoardLocator,
+  mapping: Schema.NullOr(IssueBoardMapping),
+  /** Present on connected boards that hold a stored copy. */
+  sync: Schema.optional(IssueBoardSync),
+});
+export type IssueBoardSummary = typeof IssueBoardSummary.Type;
+
+export const IssuePullRequestRef = Schema.Struct({
+  host: Id,
+  repository: Id,
+  number: Schema.Number,
+  url: Schema.optional(Schema.String),
+});
+export type IssuePullRequestRef = typeof IssuePullRequestRef.Type;
+
+/**
+ * `launching` until the worktree exists and the thread's first run reached running. Failed and
+ * ended attempts are never active.
+ */
+export const IssueAttemptStatus = Schema.Literals([
+  "launching",
+  "working",
+  "in-pr",
+  "merged",
+  "failed",
+  "ended",
+]);
+export type IssueAttemptStatus = typeof IssueAttemptStatus.Type;
+
+/** For a failed attempt, `launch-failed` means no thread was created and New attempt is the way on. */
+export const IssueAttemptEndedReason = Schema.Literals([
+  "user",
+  "superseded",
+  "thread-deleted",
+  "migrated-without-board",
+  "completed",
+  "launch-failed",
+]);
+export type IssueAttemptEndedReason = typeof IssueAttemptEndedReason.Type;
+
+/** An attempt is owned by the environment that started it; only that environment moves its ticket. */
+export const IssueAttempt = Schema.Struct({
+  id: Id,
+  boardId: Id,
+  issue: IssueRef,
+  projectId: ProjectId,
+  threadId: ThreadId,
+  worktreePath: Schema.NullOr(Schema.String),
+  status: IssueAttemptStatus,
+  active: Schema.Boolean,
+  endedReason: Schema.NullOr(IssueAttemptEndedReason),
+  /** `paused` when the stored copy shows the ticket away from where the attempt last left it. */
+  automaticMoves: Schema.Literals(["on", "paused"]),
+  createdAt: Schema.String,
+  startedAt: Schema.NullOr(Schema.String),
+  controllingPullRequest: Schema.NullOr(IssuePullRequestRef),
+});
+export type IssueAttempt = typeof IssueAttempt.Type;
+
+export const IssueMoveStatus = Schema.Literals([
+  "pending",
+  "applied",
+  "failed",
+  "skipped",
+  "superseded",
+]);
+export type IssueMoveStatus = typeof IssueMoveStatus.Type;
+
+export const IssueMove = Schema.Struct({
+  id: Id,
+  boardId: Id,
+  issue: IssueRef,
+  columnId: Id,
+  origin: Schema.Literals(["manual", "automatic"]),
+  attemptId: Schema.NullOr(Id),
+  status: IssueMoveStatus,
+  /** Why a move failed or was skipped. */
+  error: Schema.NullOr(Schema.String),
+  createdAt: Schema.String,
+});
+export type IssueMove = typeof IssueMove.Type;
+
 export const IssueBoardView = Schema.Struct({
   board: IssueBoardSummary,
   columns: Schema.Array(IssueBoardColumn),
   items: Schema.Array(IssueBoardItem),
   attempts: Schema.Array(IssueAttempt),
-  moves: Schema.Array(IssueMoveReceipt),
-  /** Absent from servers that predate stored boards; those always read the host live. */
+  /** The latest move per ticket. */
+  moves: Schema.Array(IssueMove),
+  /** Absent for a board that is not connected yet. */
   sync: Schema.optional(IssueBoardSync),
 });
 export type IssueBoardView = typeof IssueBoardView.Type;
-export const IssuePullRequestKey = Schema.Struct({
-  host: Id,
-  repository: Id,
-  number: Schema.Number,
-});
-export const IssueLifecycleReceipt = Schema.Struct({
-  eventKey: Id,
-  link: IssueAttemptLink,
-  projectId: ProjectId,
-  threadId: ThreadId,
-  worktreePath: Schema.String,
-  kind: Schema.Literals(["started", "pr-created", "pr-state-changed"]),
-  pullRequest: Schema.optional(IssuePullRequestKey),
-  state: Schema.optional(Schema.Literals(["open", "closed", "merged"])),
-  createdAt: Schema.String,
-  sourceGeneration: NonNegativeInt,
-});
-export type IssueLifecycleReceipt = typeof IssueLifecycleReceipt.Type;
+
 export class IssueOperationError extends Schema.TaggedError<IssueOperationError>()(
   "IssueOperationError",
   {
@@ -205,23 +243,29 @@ export class IssueOperationError extends Schema.TaggedError<IssueOperationError>
     message: Schema.String,
   },
 ) {}
+
 export const IssuesListInput = Schema.Struct({
   projectId: ProjectId,
   cursor: Schema.optional(Schema.String),
 });
 export type IssuesListInput = typeof IssuesListInput.Type;
+
 export const IssuesListResult = Schema.Struct({
   issues: Schema.Array(IssueSummary),
   nextCursor: Schema.NullOr(Schema.String),
 });
 export type IssuesListResult = typeof IssuesListResult.Type;
+
 export const IssuesGetInput = Schema.Struct({ projectId: ProjectId, issue: IssueRef });
 export type IssuesGetInput = typeof IssuesGetInput.Type;
+
+/** Without a project, lists every connected board on the environment. */
 export const IssueBoardsListInput = Schema.Struct({
-  projectId: ProjectId,
+  projectId: Schema.optional(ProjectId),
   connectedOnly: Schema.optional(Schema.Boolean),
 });
 export type IssueBoardsListInput = typeof IssueBoardsListInput.Type;
+
 export const IssueBoardsOpenInput = Schema.Struct({
   projectId: ProjectId,
   boardId: Schema.optional(Id),
@@ -230,8 +274,10 @@ export const IssueBoardsOpenInput = Schema.Struct({
   refresh: Schema.optional(Schema.Boolean),
 });
 export type IssueBoardsOpenInput = typeof IssueBoardsOpenInput.Type;
+
 export const IssueBoardsSubscribeInput = Schema.Struct({ projectId: ProjectId, boardId: Id });
 export type IssueBoardsSubscribeInput = typeof IssueBoardsSubscribeInput.Type;
+
 /**
  * `sync` is null when the server holds no stored copy, which after a successful open means the
  * board was disconnected.
@@ -241,6 +287,7 @@ export const IssueBoardSyncEvent = Schema.Struct({
   sync: Schema.NullOr(IssueBoardSync),
 });
 export type IssueBoardSyncEvent = typeof IssueBoardSyncEvent.Type;
+
 export const IssueBoardsConfigureInput = Schema.Struct({
   requestId: Id,
   projectId: ProjectId,
@@ -248,94 +295,128 @@ export const IssueBoardsConfigureInput = Schema.Struct({
   mapping: IssueBoardMapping,
 });
 export type IssueBoardsConfigureInput = typeof IssueBoardsConfigureInput.Type;
+
 export const IssueBoardsDisconnectInput = Schema.Struct({ requestId: Id, boardId: Id });
 export type IssueBoardsDisconnectInput = typeof IssueBoardsDisconnectInput.Type;
+
 export const IssueBoardsMoveInput = Schema.Struct({
   requestId: Id,
   boardId: Id,
   issue: IssueRef,
   columnId: Id,
+  /** The column the stored copy showed; the move is refused if the remote board differs. */
   expectedPlacement: Schema.optional(Schema.NullOr(Id)),
-  expectedVersion: Schema.optional(Schema.String),
 });
 export type IssueBoardsMoveInput = typeof IssueBoardsMoveInput.Type;
+
+/** Retrying a skipped automatic move applies it deliberately, as a manual move. */
 export const IssueMovesRetryInput = Schema.Struct({ requestId: Id, moveId: Id });
 export type IssueMovesRetryInput = typeof IssueMovesRetryInput.Type;
-export const IssueAttemptsReserveInput = Schema.Struct({
-  requestId: Id,
-  boardId: Id,
-  issue: IssueRef,
-  sourceEnvironmentId: EnvironmentId,
-  destinationEnvironmentId: EnvironmentId,
-});
-export type IssueAttemptsReserveInput = typeof IssueAttemptsReserveInput.Type;
+
 export const IssueAttemptsListInput = Schema.Struct({
   boardId: Schema.optional(Id),
   issue: Schema.optional(IssueRef),
   threadId: Schema.optional(ThreadId),
 });
 export type IssueAttemptsListInput = typeof IssueAttemptsListInput.Type;
-export const IssueAttemptsReceiptsInput = Schema.Struct({ after: Schema.optional(Schema.Number) });
-export type IssueAttemptsReceiptsInput = typeof IssueAttemptsReceiptsInput.Type;
-export const IssueAttemptsReceiptsResult = Schema.Struct({
-  receipts: Schema.Array(IssueLifecycleReceipt),
-  nextCursor: Schema.Number,
+
+/** `requestId` keys the thread launch, so a repeated start returns the same thread. */
+export const IssueAttemptsStartInput = Schema.Struct({
+  requestId: Id,
+  boardId: Id,
+  issue: IssueRef,
+  projectId: ProjectId,
+  prompt: Schema.String.check(Schema.isMaxLength(100_000)),
+  branch: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  baseRef: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  modelSelection: ModelSelection,
+  runtimeMode: RuntimeMode,
+  interactionMode: ProviderInteractionMode,
 });
-export type IssueAttemptsReceiptsResult = typeof IssueAttemptsReceiptsResult.Type;
-export const IssueAttemptsAcknowledgeInput = Schema.Struct({
-  acknowledgedKeys: Schema.Array(Schema.String),
+export type IssueAttemptsStartInput = typeof IssueAttemptsStartInput.Type;
+
+export const IssueAttemptsStartResult = Schema.Struct({
+  attempt: IssueAttempt,
+  threadId: ThreadId,
 });
-export type IssueAttemptsAcknowledgeInput = typeof IssueAttemptsAcknowledgeInput.Type;
-export const IssueAttemptGeneration = Schema.Struct({
+export type IssueAttemptsStartResult = typeof IssueAttemptsStartResult.Type;
+
+export const IssueAttemptsEndInput = Schema.Struct({
+  requestId: Id,
   attemptId: Id,
-  reservationId: Id,
-  sourceGeneration: NonNegativeInt,
-  /** The board environment's signature; a worktree environment requires it from a peer. */
-  signature: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
+  /** Moves the ticket back to this Ready column as a manual move. */
+  returnToColumnId: Schema.optional(Id),
 });
-export type IssueAttemptGeneration = typeof IssueAttemptGeneration.Type;
-export const IssueAttemptsSyncGenerationsInput = Schema.Struct({
-  generations: Schema.Array(IssueAttemptGeneration).check(Schema.isMaxLength(100)),
+export type IssueAttemptsEndInput = typeof IssueAttemptsEndInput.Type;
+
+export const IssueAttemptsResumeInput = Schema.Struct({ requestId: Id, attemptId: Id });
+export type IssueAttemptsResumeInput = typeof IssueAttemptsResumeInput.Type;
+
+const IssueRpcError = Schema.Union([IssueOperationError, EnvironmentAuthorizationError]);
+
+export const WsIssuesListRpc = Rpc.make(ISSUES_WS_METHODS.issuesList, {
+  payload: IssuesListInput,
+  success: IssuesListResult,
+  error: IssueRpcError,
 });
-export type IssueAttemptsSyncGenerationsInput = typeof IssueAttemptsSyncGenerationsInput.Type;
-/**
- * Registers the worktree environment the board's environment collects lifecycle receipts from.
- * `credential` is the peer credential the destination granted; it never appears in a read model.
- */
-export const IssuePeersRegisterInput = Schema.Struct({
-  destinationEnvironmentId: EnvironmentId,
-  credential: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
-  endpoints: Schema.Array(Id).check(Schema.isMaxLength(16)),
-  /** The destination's identity key; an endpoint must prove it holds the private half. */
-  publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
-  /** When the credential stops working; delivery stops contacting the destination then. */
-  expiresAt: Schema.String,
+export const WsIssuesGetRpc = Rpc.make(ISSUES_WS_METHODS.issuesGet, {
+  payload: IssuesGetInput,
+  success: IssueDetail,
+  error: IssueRpcError,
 });
-export type IssuePeersRegisterInput = typeof IssuePeersRegisterInput.Type;
-export const IssuePeersForgetInput = Schema.Struct({ destinationEnvironmentId: EnvironmentId });
-export type IssuePeersForgetInput = typeof IssuePeersForgetInput.Type;
-/** `revokedRemotely` is false when the worktree environment could not be told to drop access. */
-export const IssuePeersForgetResult = Schema.Struct({ revokedRemotely: Schema.Boolean });
-export type IssuePeersForgetResult = typeof IssuePeersForgetResult.Type;
-export const IssueDeliveriesDeliverInput = Schema.Struct({ boardId: Id });
-export type IssueDeliveriesDeliverInput = typeof IssueDeliveriesDeliverInput.Type;
-/** Asks a worktree environment for a credential the board's environment collects receipts with. */
-export const IssuePeersGrantInput = Schema.Struct({
-  sourceEnvironmentId: EnvironmentId,
-  sourceLabel: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
-  /** Generations the board environment pushes must verify against this key. */
-  sourcePublicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+export const WsIssuesBoardsListRpc = Rpc.make(ISSUES_WS_METHODS.issuesBoardsList, {
+  payload: IssueBoardsListInput,
+  success: Schema.Array(IssueBoardSummary),
+  error: IssueRpcError,
 });
-export type IssuePeersGrantInput = typeof IssuePeersGrantInput.Type;
-/** Returned once. `endpoints` are the direct addresses the granting environment listens on. */
-export const IssuePeerGrant = Schema.Struct({
-  credential: TrimmedNonEmptyString,
-  endpoints: Schema.Array(Id),
-  publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
-  expiresAt: Schema.String,
+export const WsIssuesBoardsOpenRpc = Rpc.make(ISSUES_WS_METHODS.issuesBoardsOpen, {
+  payload: IssueBoardsOpenInput,
+  success: IssueBoardView,
+  error: IssueRpcError,
 });
-export type IssuePeerGrant = typeof IssuePeerGrant.Type;
-export const IssuePeerIdentity = Schema.Struct({
-  publicKey: TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+export const WsIssuesBoardsSubscribeRpc = Rpc.make(ISSUES_WS_METHODS.issuesBoardsSubscribe, {
+  payload: IssueBoardsSubscribeInput,
+  success: IssueBoardSyncEvent,
+  error: IssueRpcError,
+  stream: true,
 });
-export type IssuePeerIdentity = typeof IssuePeerIdentity.Type;
+export const WsIssuesBoardsConfigureRpc = Rpc.make(ISSUES_WS_METHODS.issuesBoardsConfigure, {
+  payload: IssueBoardsConfigureInput,
+  success: IssueBoardView,
+  error: IssueRpcError,
+});
+export const WsIssuesBoardsDisconnectRpc = Rpc.make(ISSUES_WS_METHODS.issuesBoardsDisconnect, {
+  payload: IssueBoardsDisconnectInput,
+  success: Schema.Void,
+  error: IssueRpcError,
+});
+export const WsIssuesBoardsMoveRpc = Rpc.make(ISSUES_WS_METHODS.issuesBoardsMove, {
+  payload: IssueBoardsMoveInput,
+  success: IssueMove,
+  error: IssueRpcError,
+});
+export const WsIssuesMovesRetryRpc = Rpc.make(ISSUES_WS_METHODS.issuesMovesRetry, {
+  payload: IssueMovesRetryInput,
+  success: IssueMove,
+  error: IssueRpcError,
+});
+export const WsIssuesAttemptsListRpc = Rpc.make(ISSUES_WS_METHODS.issuesAttemptsList, {
+  payload: IssueAttemptsListInput,
+  success: Schema.Array(IssueAttempt),
+  error: IssueRpcError,
+});
+export const WsIssuesAttemptsStartRpc = Rpc.make(ISSUES_WS_METHODS.issuesAttemptsStart, {
+  payload: IssueAttemptsStartInput,
+  success: IssueAttemptsStartResult,
+  error: IssueRpcError,
+});
+export const WsIssuesAttemptsEndRpc = Rpc.make(ISSUES_WS_METHODS.issuesAttemptsEnd, {
+  payload: IssueAttemptsEndInput,
+  success: IssueAttempt,
+  error: IssueRpcError,
+});
+export const WsIssuesAttemptsResumeRpc = Rpc.make(ISSUES_WS_METHODS.issuesAttemptsResume, {
+  payload: IssueAttemptsResumeInput,
+  success: IssueAttempt,
+  error: IssueRpcError,
+});

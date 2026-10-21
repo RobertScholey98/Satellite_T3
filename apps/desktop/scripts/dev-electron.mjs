@@ -21,19 +21,17 @@ if (!Number.isInteger(port) || port <= 0) {
   throw new Error(`VITE_DEV_SERVER_URL must include an explicit port: ${devServerUrl}`);
 }
 
+const requiredFiles = [
+  "dist-electron/main.cjs",
+  "dist-electron/electron/WindowsForegroundFocusWorker.cjs",
+  "dist-electron/preload.cjs",
+  "dist-electron/snapShot/GlobalShiftShortcutWorker.cjs",
+  "dist-electron/snapShot/RegionSnapShotWorker.cjs",
+  "dist-electron/snapShot/SnapShotAccessibilityWorker.cjs",
+  "../server/dist/bin.mjs",
+];
 const watchedDirectories = [
-  {
-    directory: "dist-electron",
-    files: new Set([
-      "boot.cjs",
-      "compileCache.cjs",
-      "main.cjs",
-      "preload.cjs",
-      "preview-pick-preload.cjs",
-      "preview-pip-preload.cjs",
-      "mac-permission-preload.cjs",
-    ]),
-  },
+  { directory: "dist-electron", files: new Set(["main.cjs", "preload.cjs"]) },
   {
     directory: "dist-electron/electron",
     files: new Set(["WindowsForegroundFocusWorker.cjs"]),
@@ -48,14 +46,6 @@ const watchedDirectories = [
   },
   { directory: "../server/dist", files: new Set(["bin.mjs"]) },
 ];
-const devResources = {
-  baseDir: desktopDir,
-  files: watchedDirectories.flatMap(({ directory, files }) =>
-    Array.from(files, (filename) => `${directory}/${filename}`),
-  ),
-  tcpHost: devServer.hostname,
-  tcpPort: port,
-};
 const forcedShutdownTimeoutMs = 1_500;
 const restartDebounceMs = 120;
 const childTreeGracePeriodMs = 1_200;
@@ -69,7 +59,12 @@ NodeChildProcess.execFileSync(
   { stdio: "inherit" },
 );
 
-await waitForResources(devResources);
+await waitForResources({
+  baseDir: desktopDir,
+  files: requiredFiles,
+  tcpHost: devServer.hostname,
+  tcpPort: port,
+});
 
 const childEnv = { ...process.env };
 delete childEnv.ELECTRON_RUN_AS_NODE;
@@ -99,9 +94,14 @@ function cleanupStaleDevApps() {
     return;
   }
 
-  NodeChildProcess.spawnSync("pkill", ["-f", "--", `--t3code-dev-root=${desktopDir}`], {
-    stdio: "ignore",
-  });
+  const escapedDesktopDir = desktopDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  NodeChildProcess.spawnSync(
+    "pkill",
+    ["-f", "--", `(^| )--t3code-dev-root=${escapedDesktopDir}( |$)`],
+    {
+      stdio: "ignore",
+    },
+  );
 }
 
 function startApp() {
@@ -199,19 +199,9 @@ function scheduleRestart() {
     restartQueue = restartQueue
       .catch(() => undefined)
       .then(async () => {
-        // A clean rebuild emits file-removal events before replacement bundles exist.
-        await waitForResources(devResources);
-        if (shuttingDown) {
-          return;
-        }
         await stopApp();
         if (!shuttingDown) {
           startApp();
-        }
-      })
-      .catch((error) => {
-        if (!shuttingDown) {
-          console.error("Desktop restart could not load its build outputs:", error);
         }
       });
   }, restartDebounceMs);
@@ -240,7 +230,6 @@ function killChildTree(signal) {
     return;
   }
 
-  // Kill direct children as a final fallback in case normal shutdown leaves stragglers.
   NodeChildProcess.spawnSync("pkill", [`-${signal}`, "-P", String(process.pid)], {
     stdio: "ignore",
   });

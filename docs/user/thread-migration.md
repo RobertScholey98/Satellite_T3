@@ -4,13 +4,15 @@ On your first V2 launch, Satellite copies the V1 database, `state.sqlite`, into 
 in the same data directory and migrates the copy. Your threads appear automatically, with full
 transcripts imported as needed. You do not need to run an import command.
 
-The original database remains available to older versions while V2 uses the copy. Opening V2 again
-resumes your V2 history. The copy happens only once: later conversations and changes in either
-version do not sync to the other. Settings, attachments, and workspace files remain shared.
+V1 continues using its original database while V2 uses the copy. The database import can run while
+V1 is open. Opening V2 again resumes your V2 history. The copy happens only once: later conversations
+and changes in either version do not sync to the other. Settings, attachments, and workspace files
+remain shared.
 
-The desktop app keeps your existing Satellite browser profile. Browser cookies, caches, stashed
-prompts, unsent drafts, layout, and theme preferences remain in that profile. Close the older
-desktop app before launching V2.
+The V2 desktop app uses a separate browser profile, so browser cookies and caches do not carry
+over from V1. You may need to sign in again to websites opened inside the app. On its first launch,
+the V2 desktop app copies stashed prompts, unsent drafts, layout, and theme from V1. Anything you
+change in V2 afterwards stays in V2.
 
 The migrated thread keeps its title, project, provider and model selection, permission and
 interaction modes, branch or worktree, archive state, settlement state, snooze and pin state, and
@@ -36,9 +38,9 @@ handoff is also a good choice when the old conversation contains conflicting ins
 
 ## Keeping a recovery copy
 
-Satellite does not currently have a whole-thread export command. Before a major server update,
-stop the server and copy its `userdata` directory to a safe location. Installed Satellite uses
-`~/.satellite-t3/userdata`; a server started with `--home-dir <path>` uses `<path>/userdata`.
+Satellite does not currently have a whole-thread export command. Before a major server update, stop
+the server and copy its `userdata` directory to a safe location. The default is
+`~/.t3/userdata`; a server started with `--home-dir <path>` uses `<path>/userdata`.
 
 If a migrated transcript is missing from the app, keep that copy unchanged. You can inspect the
 old transcript without starting a server against it:

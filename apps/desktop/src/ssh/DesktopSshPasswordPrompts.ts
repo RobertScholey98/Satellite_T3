@@ -24,6 +24,7 @@ const DesktopSshPromptWindowAvailabilityStage = Schema.Literals([
   "before-request",
   "before-presentation",
   "after-send",
+  "after-restore",
 ]);
 
 const DesktopSshPromptPresentationOperation = Schema.Literals([
@@ -32,7 +33,10 @@ const DesktopSshPromptPresentationOperation = Schema.Literals([
   "register-window-close-listener",
   "send-prompt-request",
   "check-window-after-send",
-  "reveal-window",
+  "check-window-minimized",
+  "restore-window",
+  "check-window-after-restore",
+  "focus-window",
   "remove-window-close-listener",
 ]);
 type DesktopSshPromptPresentationOperation = typeof DesktopSshPromptPresentationOperation.Type;
@@ -303,7 +307,7 @@ export const make = Effect.fn("desktop.sshPasswordPrompts.make")(function* (
       });
     }
 
-    const requestId = yield* crypto.randomUUIDv4.pipe(
+    const requestId = yield* crypto.randomUUIDv4().pipe(
       Effect.mapError(
         (cause) =>
           new DesktopSshPromptRequestIdGenerationError({
@@ -433,18 +437,24 @@ export const make = Effect.fn("desktop.sshPasswordPrompts.make")(function* (
             stage: "after-send",
           });
         }
-        // Reveal also expands a compact Satellite workspace before its prompt can be used.
-        yield* electronWindow.reveal(window.value).pipe(
-          Effect.catchDefect(
-            (cause) =>
-              new DesktopSshPromptPresentationError({
-                requestId,
-                destination: input.destination,
-                operation: "reveal-window",
-                cause,
-              }),
-          ),
+        const minimized = yield* runPresentationOperation("check-window-minimized", () =>
+          window.value.isMinimized(),
         );
+        if (minimized) {
+          yield* runPresentationOperation("restore-window", () => window.value.restore());
+        }
+        const unavailableAfterRestore = yield* runPresentationOperation(
+          "check-window-after-restore",
+          () => window.value.isDestroyed(),
+        );
+        if (unavailableAfterRestore) {
+          return yield* new DesktopSshPromptWindowUnavailableError({
+            destination: input.destination,
+            requestId,
+            stage: "after-restore",
+          });
+        }
+        yield* runPresentationOperation("focus-window", () => window.value.focus());
         return yield* waitForPassword;
       }).pipe(Effect.catch(preferSubmittedPassword));
     }).pipe(Effect.ensuring(cleanup));

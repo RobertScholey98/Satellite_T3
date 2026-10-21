@@ -1,4 +1,6 @@
-# On-demand Windows tests beyond the focused SatelliteT3 CI lane.
+# On-demand Windows test lane. Manual only: nothing in the suite passes on
+# Windows yet, so this exists to give contributors (and agents) a cloud Windows
+# box to iterate against. Once the suite is green here, fold it into ci.yml.
 #
 #   gh workflow run windows-tests.yml --ref <branch> -f package=packages/shared
 #   gh workflow run windows-tests.yml --ref <branch> -f package=apps/server \
@@ -12,7 +14,7 @@ on:
       package:
         description: "Workspace directory to test, e.g. apps/server or packages/shared. Empty runs every package except apps/server."
         type: string
-        default: "apps/desktop"
+        default: ""
       files:
         description: "Space-separated test files relative to the package directory. Empty runs the package's whole suite. Requires package."
         type: string
@@ -24,7 +26,7 @@ permissions:
 jobs:
   test:
     name: Test (${{ inputs.package || 'all non-server' }})
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 45
     steps:
       - name: Checkout

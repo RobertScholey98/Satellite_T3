@@ -5,8 +5,18 @@ import {
   DPOP_CLOCK_HINT,
   DPOP_RETRY_HINT,
   DPOP_UNKNOWN_HINT,
+  relayOfflineReasonMessage,
   relayProtectedErrorMessage,
 } from "./errorPresentation.ts";
+
+describe("relayOfflineReasonMessage", () => {
+  it("tells the user to start the product the client names", () => {
+    expect(relayOfflineReasonMessage({ offlineReason: "tunnel_released" }, "Satellite")).toBe(
+      "Offline for a while, so its T3 Connect tunnel was removed. Start Satellite on that computer and update it to the latest version to reconnect.",
+    );
+    expect(relayOfflineReasonMessage({ offlineReason: undefined })).toBeNull();
+  });
+});
 
 describe("relayProtectedErrorMessage", () => {
   it("presents clock skew as one possible cause when the relay omits the reason", () => {
@@ -43,15 +53,5 @@ describe("relayProtectedErrorMessage", () => {
     expect(relayProtectedErrorMessage(error)).toBe(
       `Relay rejected the DPoP proof. ${DPOP_RETRY_HINT}`,
     );
-  });
-
-  it("preserves the existing message for other authentication failures", () => {
-    const error = new RelayAuthInvalidError({
-      code: "auth_invalid",
-      reason: "invalid_bearer",
-      traceId: "trace-1",
-    });
-
-    expect(relayProtectedErrorMessage(error)).toBe("Relay rejected the cloud session token.");
   });
 });

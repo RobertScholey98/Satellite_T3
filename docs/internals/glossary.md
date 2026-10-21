@@ -62,3 +62,12 @@ Terms whose meaning matters across T3 Code. Architecture and lifecycle constrain
 | Attachment inventory | The ordered image records shown as thumbnails above the prose, including images with no inline references.                          |
 
 See [composer context references](./composer-context-references.md) for the contract and lifecycle.
+
+## Issue boards
+
+| Term               | Meaning                                                                                                                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Board connection   | One environment's link to a remote issue board, a GitHub Project or an Azure DevOps board. Several environments may connect to the same board. The remote board is the source of truth. |
+| Attempt            | A thread and worktree started from a ticket. Owned by the environment that started it. Ownership never moves.                                                                           |
+| Owning environment | The only environment that moves a ticket on behalf of its attempt. It writes directly to the remote board. Other environments only refresh their stored copy.                           |
+| Manual move        | A ticket move made by a person on any machine. Wins over an automatic move that arrives later from an attempt.                                                                          |

@@ -2,40 +2,33 @@
 
 ## First checkout
 
-Follow the [root README](../../README.md#build-and-run-from-source) to clone the fork
-and install Node 24 and pnpm 11. From the repository root:
+Install `vp` using the [root README](../../README.md#install-vp). The checkout requires Node 24;
+Bun is optional. From the repository root:
 
-```powershell
-pnpm install --frozen-lockfile
-pnpm run dev:satellite
+```sh
+vp i
+vp run dev
 ```
 
-This launches Satellite's Windows desktop workspace with isolated server data.
-Install [Vite+](../../README.md#install-vp) to use the `vp` commands below directly;
-`pnpm exec vp` also runs the checkout's installed version. Bun is optional.
+Open the pairing URL printed by the dev runner. The bare origin does not authenticate
+a new browser.
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
 
 ## Choosing a dev process
 
-Use `pnpm run dev:satellite` for the Satellite desktop configuration.
 Use `vp run dev` for server and web, or `vp run dev:desktop` for the Electron client.
 `dev:server` and `dev:web` start those processes separately.
 See the [mobile README](../../apps/mobile/README.md) for native builds and Metro.
 
 Flags go directly after the task name, for example `vp run dev --home-dir /tmp/t3code-dev`.
-Add `--browser` to open a browser automatically. For web runs, open the pairing
-URL printed by the dev runner; the bare origin does not authenticate a new browser.
+Add `--browser` to open a browser automatically.
 
 ### State and ports
 
-The Satellite launcher explicitly selects `<checkout>/.t3/satellite/userdata`,
-uses the `satellite-t3-dev` Chromium profile, and disables automatic updates and
-URL-handler registration. It does not migrate installed-app data.
-
-With the general dev runner, linked worktrees default to their own `.t3/userdata`, even when `T3CODE_HOME` is set.
+Linked worktrees default to their own `.t3/userdata`, even when `T3CODE_HOME` is set.
 The main checkout defaults to `~/.t3/dev/userdata`. An explicit `--home-dir` wins in both cases.
-Never run a development server against live `~/.satellite-t3/userdata` or `~/.t3/userdata`.
+Never run a development server against the live `~/.t3/userdata`.
 See [test data](../../AGENTS.md#test-data) for copying a consistent database snapshot.
 
 Read ports from the `[dev-runner]` output. Worktrees derive stable preferences from their paths,
@@ -59,9 +52,21 @@ when changing this setup:
   chunks. Static imports can work on first load and fail after a route split.
 - Bundled dev rebuilds Tailwind through watched files. Its ordinary Vite hot-update hook expects
   a server/module graph that Rolldown does not provide.
+- The app and its routes are lazy chunks, built on first request. A plugin pre-bundles the
+  startup chain when the server starts. Renaming or moving a startup route or the app entry
+  silently drops it from that list.
 
-The workarounds live in the [web entry](../../apps/web/src/bootstrap.ts) and
-[Tailwind plugin](../../apps/web/vite/tailwind.ts).
+The workarounds live in the [web entry](../../apps/web/src/bootstrap.ts),
+[Tailwind plugin](../../apps/web/vite/tailwind.ts), and
+[startup warmup](../../apps/web/vite/warmBundledDev.ts).
+
+`vp run dev --share --built` skips the Vite dev server. It runs `vp build --watch` for the web
+app, and the backend serves `apps/web/dist` on the same tailnet URL and pairing flow. Use it when
+someone tests over a slow link or only needs to use the app: loads are production size, and the
+first load does not wait for dev bundling. There is no HMR. After an edit, wait for the
+`built in` line (about 6 s), then reload. Until the first build exists, the URL shows a page that
+reloads by itself. The license manifest is not generated in this mode. `--built` requires
+`--share` and the `dev` mode.
 
 #### Reusable dev credential
 
@@ -105,7 +110,14 @@ for the security model.
 
 ## Checks
 
-Run checks for the files and packages you changed:
+`vp run check:changed` runs CI's fast checks for your branch's changes: format and lint of the
+changed files, `knip:check` when code or a manifest changes, the generated GraphQL checks, typecheck
+of the affected packages and their dependents, and the test files beside the changed files. It maps
+files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), as CI does. It
+compares against the merge base with `origin/main`, or with a ref you pass. CI still runs the full
+test suites and the jobs the summary lists, so a local pass does not promise a green CI run.
+
+While you iterate, run single checks:
 
 ```sh
 vp test run <files>
@@ -113,16 +125,27 @@ vp lint <files>
 vp run --filter <package> typecheck
 ```
 
-Use `vp run lint:mobile` for native mobile changes. SatelliteT3's
-[CI](../../.github/workflows/ci.yml) covers Windows desktop builds and focused Satellite tests.
+In `apps/web`, a test that renders React or touches the DOM is named `*.browser.test.{ts,tsx}`
+and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other
+`*.test.ts` files run in Node.
+
+TypeScript workspaces typecheck with tsc-rs, which has Effect diagnostics built in.
+Keep `typescript`, `@effect/tsgo`, and the `effect-tsgo patch` prepare step: editors
+still use them for Effect quick fixes and refactors. Keep `@effect/tsgo` on the
+effect-tsgo version that tsc-rs ports (see the tsc-rs README), or the two disagree
+on rule names.
+Marketing keeps `astro check` for Astro files.
+
+Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
+[ci.yml](../../.github/workflows/ci.yml) for its current jobs.
 The [manual Windows lane](../../.github/workflows/windows-tests.yml) is available for focused
-Windows investigation beyond those default checks.
+Windows investigation while that suite is not a required gate.
 
 ### Unused code
 
 `vp run knip:check` checks unused files and dependencies across the repo, then
 unused runtime exports in `apps/server`, `apps/desktop`, `apps/web`, and every internal package under
-`packages/`. These broader checks remain available locally; the fork CI does not run them.
+`packages/`. CI enforces both checks.
 Exported types and Effect schemas are allowed without consumers. The schema preprocessor
 recognizes schema types, including aliases and schema classes; functions that create or decode
 schemas remain checked. Canonical Effect service construction APIs stay exported with an explicit
@@ -135,15 +158,6 @@ The full export audit still has findings and is not a repo-wide CI gate. Extend 
 export check's workspace selectors as more workspaces become clean. Review callers before
 deleting code; production mode can also report development scripts and test fixtures.
 Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](../../knip.jsonc).
-
-### Native Satellite fixture
-
-After building the desktop pipeline, `node scripts/satellite-smoke.mjs` runs the
-Windows fixture using separate `.t3/verification` data and no provider turns. It
-checks native window clipping, expansion/collapse motion, zoom, pinning, quit,
-and position restoration. Evidence is written to
-`.t3/verification/native-smoke/artifacts`. This is a native UI check; agents must
-get the maintainer's permission before running it.
 
 ## Desktop artifacts
 
@@ -206,14 +220,14 @@ rustup target add x86_64-pc-windows-msvc
 rustup target add aarch64-pc-windows-msvc
 ```
 
-NSIS is downloaded by electron-builder. Satellite's release workflow does not
-bundle a WSL runtime. Custom builds with WSL support need a matching Linux CLI
-archive passed as `--wsl-runtime`; see the
-[upstream packaging reference](https://github.com/pingdotgg/t3code/blob/main/docs/operations/release.md#windows-payload-topology-and-update-validation).
+NSIS is downloaded by electron-builder. WSL support additionally needs the Linux CLI archive
+passed as `--wsl-runtime`. Satellite's release workflow builds without it; upstream's
+[release runbook](https://github.com/pingdotgg/t3code/blob/e58a4857130a93cc58b45dd6ebee14cf08df04ec/docs/operations/release.md#windows-payload-topology-and-update-validation)
+describes the WSL payload.
 
 ### Signing and passkeys
 
-Satellite's Windows release workflow builds unsigned installers. For custom signed
-builds, add `--signed` after configuring the platform credentials described in the
-[upstream signing reference](https://github.com/pingdotgg/t3code/blob/main/docs/operations/release.md). macOS passkeys need a signed, provisioned app; follow the
+Add `--signed` after configuring the platform credentials in upstream's
+[release runbook](https://github.com/pingdotgg/t3code/blob/e58a4857130a93cc58b45dd6ebee14cf08df04ec/docs/operations/release.md#2-apple-signing--notarization-setup-macos).
+Satellite's release workflow does not sign. macOS passkeys need a signed, provisioned app; follow the
 [Connect setup](./connect-setup.md#desktop-passkeys) for local signing and renderer HMR.

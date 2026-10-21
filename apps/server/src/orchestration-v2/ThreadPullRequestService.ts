@@ -11,6 +11,7 @@ import {
   type ThreadLinkedPullRequest,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -62,7 +63,7 @@ function pullRequestMatchesProject(
   );
 }
 
-export const resolveProjectForPullRequestDiscovery = Effect.fn(
+const resolveProjectForPullRequestDiscovery = Effect.fn(
   "ThreadPullRequestServiceV2.resolveProject",
 )(function* (
   project: OrchestrationProjectShell,
@@ -119,18 +120,14 @@ export const make = Effect.gen(function* () {
     }
   };
 
-  /**
-   * A sweep for one thread reads only that thread's shell, not every thread's.
-   * Finished runs and checkpoints queue one of these each. A sweep over all
-   * threads reads only active, unsettled ones, since discovery skips the rest;
-   * backfill looks up settled threads, so its passes read every active thread.
-   */
   const readThreadSnapshot = ({ threadId, backfill }: RefreshRequest) =>
     threadId === null
-      ? orchestrator.getShellSnapshot({
-          location: "active",
-          unsettledOnly: !(backfill || pendingBackfill.size > 0),
-        })
+      ? orchestrator
+          .getShellSnapshot({
+            location: "active",
+            unsettledOnly: !(backfill || pendingBackfill.size > 0),
+          })
+          .pipe(NodeSqliteClient.readOnly)
       : Effect.gen(function* () {
           // Read the sequence first. The thread is then at least this new, so a
           // sync guarded by the sequence is rejected rather than missing a change.
@@ -157,9 +154,6 @@ export const make = Effect.gen(function* () {
         }
       }
     }
-    // A single-thread read only shows whether its own thread is gone. A thread
-    // with no branch has nothing to look up, and its entry would keep every
-    // periodic pass on the full read.
     const visibleThreadIds = new Set(
       threadSnapshot.threads.filter((thread) => thread.branch !== null).map((thread) => thread.id),
     );
@@ -184,13 +178,12 @@ export const make = Effect.gen(function* () {
       (group) =>
         Effect.gen(function* () {
           const first = group[0]!;
-          const snapshotProject = projects.get(first.projectId);
-          if (snapshotProject === undefined) return finishBackfill(group);
-          const { project, repository: initialRepository } =
-            yield* resolveProjectForPullRequestDiscovery(snapshotProject, repositoryIdentities, {
+          const project = projects.get(first.projectId);
+          if (project === undefined) return finishBackfill(group);
+          const { project: resolvedProject, repository } =
+            yield* resolveProjectForPullRequestDiscovery(project, repositoryIdentities, {
               refresh: request.refresh,
             });
-          let repository = initialRepository;
           if (first.branch !== null && repository === null) return finishBackfill(group);
           const worktreeExists =
             first.worktreePath !== null && (yield* fileSystem.exists(first.worktreePath));
@@ -205,24 +198,8 @@ export const make = Effect.gen(function* () {
                   { cwd, branch: first.branch },
                   { refresh: request.refresh },
                 );
-          // A worktree can have different remotes, and the project identity
-          // can lag a remote edit. Do not attach its PR to the wrong repository.
-          let matchedRemoteName: string | undefined;
-          if (detected !== null && !pullRequestMatchesProject(detected, project)) {
-            const upstreamIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
-              remoteName: "upstream",
-              refresh: request.refresh,
-            });
-            if (
-              !pullRequestMatchesProject(detected, {
-                ...project,
-                repositoryIdentity: upstreamIdentity,
-              })
-            ) {
-              return finishBackfill(group);
-            }
-            matchedRemoteName = "upstream";
-            repository = sourceControlRepositorySelector(upstreamIdentity);
+          if (detected !== null && !pullRequestMatchesProject(detected, resolvedProject)) {
+            return finishBackfill(group);
           }
           const detectedReference =
             detected !== null && repository !== null
@@ -246,7 +223,10 @@ export const make = Effect.gen(function* () {
                 const previous = yield* pullRequests.summary(thread.branchPullRequest, {
                   recoverTransientFailure: false,
                 });
-                if (previous.state === "merged" || previous.state === "closed") {
+                if (
+                  previous.headBranch === thread.branch &&
+                  (previous.state === "merged" || previous.state === "closed")
+                ) {
                   branchPullRequest = thread.branchPullRequest;
                 }
               }
@@ -292,10 +272,12 @@ export const make = Effect.gen(function* () {
           if (updates.length === 0) return;
 
           if (detected !== null && first.branch !== null) {
-            const current = yield* git.branchPullRequest({ cwd, branch: first.branch });
+            const current = yield* git.branchPullRequest(
+              { cwd, branch: first.branch },
+              { freshGitState: true },
+            );
             const currentIdentity = yield* repositoryIdentities.resolve(project.workspaceRoot, {
               refresh: true,
-              ...(matchedRemoteName === undefined ? {} : { remoteName: matchedRemoteName }),
             });
             if (
               current === null ||
@@ -323,7 +305,7 @@ export const make = Effect.gen(function* () {
                 if (!projectWorkspaceMatchesSnapshot(currentProject, project.workspaceRoot)) {
                   return failBackfill([thread]);
                 }
-                const uuid = yield* crypto.randomUUIDv4;
+                const uuid = yield* crypto.randomUUIDv4();
                 yield* orchestrator.dispatch({
                   type: "thread.pull-request.sync",
                   commandId: CommandId.make(`server:thread-pull-request:${thread.id}:${uuid}`),
@@ -363,7 +345,7 @@ export const make = Effect.gen(function* () {
               }).pipe(Effect.tap(() => Effect.sync(() => failBackfill(group)))),
           ),
         ),
-      // Wide enough that a sweep's GitHub branch lookups reach GitHubCli together and share one
+      // Wide enough that a sweep's GitHub branch lookups reach the GitHub provider together and share one
       // GraphQL document, instead of one `gh pr list` per branch.
       { concurrency: 32, discard: true },
     );

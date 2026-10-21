@@ -17,9 +17,10 @@ import * as Socket from "effect/socket/Socket";
 import type { ConnectionCatalogEntry } from "./catalog.ts";
 import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import { PrimaryConnectionTarget } from "./model.ts";
-import { updateOutdatedHost } from "./outdatedHostUpdate.ts";
+import { describeOutdatedHost, updateOutdatedHost } from "./outdatedHostUpdate.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import * as ConnectionResolver from "./resolver.ts";
+import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 
 const TARGET = new PrimaryConnectionTarget({
@@ -49,9 +50,49 @@ const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown
 const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const encodeDescriptor = Schema.encodeSync(Schema.fromJsonString(ExecutionEnvironmentDescriptor));
 
+describe("describeOutdatedHost", () => {
+  it.effect("discovers a disabled outdated host without opening a normal session", () =>
+    Effect.gen(function* () {
+      const expected = descriptor(undefined, "0.0.45");
+      const result = yield* describeOutdatedHost(TARGET.environmentId).pipe(
+        Effect.provideService(
+          EnvironmentRegistry.EnvironmentRegistry,
+          EnvironmentRegistry.EnvironmentRegistry.of({
+            entries: yield* SubscriptionRef.make<
+              ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+            >(
+              new Map([
+                [TARGET.environmentId, { target: TARGET, profile: Option.none(), enabled: false }],
+              ]),
+            ),
+          } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]),
+        ),
+        Effect.provideService(
+          ConnectionResolver.ConnectionResolver,
+          ConnectionResolver.ConnectionResolver.of({
+            prepare: () => Effect.die(new Error("normal sessions reject this protocol")),
+            prepareForUpdate: (entry) =>
+              Effect.succeed({
+                descriptor: expected,
+                prepared: {
+                  environmentId: entry.target.environmentId,
+                  label: entry.target.label,
+                  httpBaseUrl: TARGET.httpBaseUrl,
+                  socketUrl: "wss://build.example.test/ws",
+                  httpAuthorization: null,
+                  target: TARGET,
+                },
+              }),
+          }),
+        ),
+      );
+      expect(result).toEqual(expected);
+    }),
+  );
+});
+
 type Listener = (event: { readonly type: string; readonly data?: unknown }) => void;
 
-/** Answers update RPCs the way a protocol-1 server does. */
 class OutdatedHostSocket {
   static readonly OPEN = 1;
   readyState = 0;
@@ -186,7 +227,6 @@ describe("updateOutdatedHost", () => {
             ),
             Layer.succeed(HttpClient.HttpClient, httpClient),
             Layer.succeed(Socket.WebSocketConstructor, (url) => {
-              // The host relaunches on a compatible protocol once the update lands.
               const socket = new OutdatedHostSocket(url, () => {
                 served = descriptor(ORCHESTRATION_PROTOCOL_VERSION, "0.0.46");
               });
@@ -268,10 +308,25 @@ describe("updateOutdatedHost", () => {
               opened = true;
               throw new Error("unused");
             }),
+            Layer.succeed(
+              ClientCapabilities.ClientPresentation,
+              ClientCapabilities.ClientPresentation.of({
+                metadata: {
+                  label: "Satellite Web",
+                  deviceType: "desktop",
+                  os: "macos",
+                  surface: "web",
+                },
+                productName: "Satellite",
+              }),
+            ),
           ),
         ),
       );
-      expect(error).toMatchObject({ _tag: "OutdatedHostUpdateError" });
+      expect(error).toMatchObject({
+        _tag: "OutdatedHostUpdateError",
+        message: "Update Satellite on Build Mac manually; it cannot update itself.",
+      });
       expect(opened).toBe(false);
     }),
   );

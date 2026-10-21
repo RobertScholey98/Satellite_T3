@@ -47,7 +47,7 @@ body:
     attributes:
       label: Environment
       description: OS, Node version, agent CLI versions if relevant.
-      placeholder: Windows 11, Node 24, provider version
+      placeholder: Windows 11 or macOS 15, Node 24, provider version
     validations:
       required: true
 

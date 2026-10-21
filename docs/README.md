@@ -1,33 +1,34 @@
 # Satellite docs
 
-Start with the [README](../README.md) for Satellite's purpose, Windows installation,
-and source setup. Guides for inherited features remain available; references to
+Start with the [README](../README.md) for Satellite's purpose, Windows and macOS
+installation, and source setup. Guides for inherited features remain available; references to
 T3's hosted services and app-store clients describe upstream infrastructure.
 
 ## Using Satellite
 
 - [Install Satellite](./user/install.md)
 - [Messages and context](./user/composer.md)
-- [Ideas and threads](./user/thread-sidebar.md)
-- [Issues and worktree history](./user/issues-and-open-work.md)
-- [Documents and manual reviews](./user/documents.md)
+- [Working with threads](./user/thread-sidebar.md)
 - [Permission modes](./user/permission-modes.md)
 - [Terminal history](./user/terminal.md)
 - [Source control](./user/source-control.md)
+- [Issues](./user/issues.md)
 - [Project settings](./user/project-settings.md)
 - [Appearance and themes](./user/appearance.md)
 - [Keyboard shortcuts](./user/keybindings.md)
 - [SnapShots](./user/snap-shot.md)
 - [Visual replies](./user/html-renders.md)
 - [Import browser sessions](./user/browser-import.md)
+- [Use Satellite as your default browser](./user/default-browser.md)
 - [Devices](./user/devices.md)
 - [Usage and limits](./user/usage.md)
 - [Product usage data](./user/telemetry.md)
 - [Remote access](./user/remote-access.md)
+- [T3 Connect troubleshooting](./user/t3-connect-troubleshooting.md)
 - [Outside agents (MCP)](./user/outside-agents.md)
 - [Running in the background](./user/background-service.md)
 - [Updating Satellite](./user/updating.md)
-- Provider guides: [Codex](./user/providers-codex.md) · [Claude](./user/providers-claude.md) · [OpenCode](./user/providers-opencode.md) · [Antigravity](./user/providers-antigravity.md) · [Pi](./user/providers-pi.md)
+- Provider guides: [Codex](./user/providers-codex.md) · [Claude](./user/providers-claude.md) · [OpenCode](./user/providers-opencode.md) · [Antigravity](./user/providers-antigravity.md) · [Pi](./user/providers-pi.md) · [Muse Code](./user/providers-muse.md)
 
 ---
 
@@ -42,8 +43,10 @@ source alone does not explain. Most code changes do not need an internal documen
 
 - [Architecture overview](./internals/overview.md)
 - [Glossary](./internals/glossary.md)
+- [Satellite fork constraints](./internals/satellite-fork-constraints.md)
 - [Connection runtime](./internals/connection-runtime.md)
 - [Providers](./internals/providers.md)
+- [Adding a provider](./internals/adding-a-provider.md)
 - [Pull request file revisions](./internals/pull-request-file-revisions.md)
 - [Model classification](./internals/model-manifest.md)
 - [Remote environments](./internals/remote.md)
@@ -62,9 +65,9 @@ source alone does not explain. Most code changes do not need an internal documen
 ### Runbooks
 
 - [Development and local builds](./operations/development.md)
+- [Upstream sync](./operations/upstream-sync.md)
 - [T3 Connect setup](./operations/connect-setup.md)
-- [Satellite Windows releases](./operations/release.md)
-- [Document authoring](./operations/document-authoring.md)
+- [Satellite release runbook](./operations/release.md)
 - [Observability](./operations/observability.md)
 - [Relay observability](./operations/relay-observability.md)
 - [Mobile app store screenshots](./operations/mobile-app-store-screenshots.md)

@@ -22,17 +22,17 @@ export type PullRequestListSort = typeof PullRequestListSort.Type;
 export interface PullRequestListPreferences {
   readonly involvement: PullRequestInvolvement;
   readonly state: PullRequestListState;
-  readonly includeUpstream?: boolean;
   readonly environmentId?: EnvironmentId;
   readonly projectId?: ProjectId;
   readonly host?: string;
-  readonly q?: string;
+  readonly q?: string | undefined;
   readonly draft?: "only" | "hide";
   readonly review?: NonNullable<PullRequestListFilters["review"]>;
   readonly checks?: NonNullable<PullRequestListFilters["checks"]>;
   readonly author?: string;
   readonly labels?: ReadonlyArray<string>;
   readonly sort?: PullRequestListSort;
+  readonly includeUpstream?: boolean;
 }
 
 export type PullRequestListPreferencePatch = {
@@ -45,10 +45,9 @@ const DEFAULT_PULL_REQUEST_LIST_PREFERENCES = {
 } as const satisfies PullRequestListPreferences;
 
 const BoundedPreference = Schema.String.check(Schema.isMaxLength(200));
-export const PullRequestListPreferencesSchema = Schema.Struct({
+const PullRequestListPreferencesSchema = Schema.Struct({
   involvement: PullRequestInvolvement,
   state: PullRequestListState,
-  includeUpstream: Schema.optional(Schema.Boolean),
   environmentId: Schema.optional(EnvironmentId),
   projectId: Schema.optional(ProjectId),
   host: Schema.optional(BoundedPreference),
@@ -59,6 +58,7 @@ export const PullRequestListPreferencesSchema = Schema.Struct({
   author: Schema.optional(BoundedPreference),
   labels: Schema.optional(Schema.Array(BoundedPreference).check(Schema.isMaxLength(10))),
   sort: Schema.optional(PullRequestListSort),
+  includeUpstream: Schema.optional(Schema.Boolean),
 });
 
 const decodePullRequestListPreferences = Schema.decodeUnknownOption(
@@ -73,14 +73,12 @@ function resolvePreferenceStorage(
   return storage ?? (typeof window === "undefined" ? undefined : window.localStorage);
 }
 
-/** Only list controls are remembered. The selected row remains a URL and right-panel concern. */
 export function pullRequestListPreferences(
   search: PullRequestListPreferences | Schema.Schema.Type<typeof PullRequestListPreferencesSchema>,
 ): PullRequestListPreferences {
   return {
     involvement: search.involvement,
     state: search.state,
-    ...(search.includeUpstream ? { includeUpstream: true } : {}),
     ...(search.environmentId ? { environmentId: search.environmentId } : {}),
     ...(search.projectId ? { projectId: search.projectId } : {}),
     ...(search.host ? { host: search.host } : {}),
@@ -91,6 +89,7 @@ export function pullRequestListPreferences(
     ...(search.author ? { author: search.author } : {}),
     ...(search.labels && search.labels.length > 0 ? { labels: search.labels } : {}),
     ...(search.sort && search.sort !== "ready" ? { sort: search.sort } : {}),
+    ...(search.includeUpstream ? { includeUpstream: true } : {}),
   };
 }
 
@@ -120,7 +119,5 @@ export function writePullRequestListPreferences(
       PULL_REQUEST_LIST_PREFERENCES_STORAGE_KEY,
       JSON.stringify(preferences),
     );
-  } catch {
-    // Storage can be full or denied; the URL remains the source of truth for this visit.
-  }
+  } catch {}
 }

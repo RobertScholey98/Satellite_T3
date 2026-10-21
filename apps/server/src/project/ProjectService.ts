@@ -18,7 +18,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
-import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import {
@@ -29,7 +29,8 @@ import {
 } from "../orchestration-v2/ProjectCommands.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
-import { planThreadDeletion, type ThreadDeletionPlan } from "../orchestration-v2/ThreadDeletion.ts";
+import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
@@ -130,14 +131,9 @@ export class ProjectService extends Context.Service<
       options?: { readonly includeDeleted?: boolean },
     ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
     readonly snapshot: Effect.Effect<ProjectSnapshot, ProjectOperationError>;
-    /**
-     * An active project's shell with its immediately available repository
-     * identity; missing identity resolves in the background.
-     */
     readonly getShell: (
       projectId: ProjectId,
     ) => Effect.Effect<Option.Option<OrchestrationProjectShell>, ProjectOperationError>;
-    /** Active project shells, enriched like `getShell`, in creation order. */
     readonly listShells: (options?: {
       readonly projectIds?: ReadonlyArray<ProjectId>;
     }) => Effect.Effect<ReadonlyArray<OrchestrationProjectShell>, ProjectOperationError>;
@@ -153,8 +149,7 @@ export const make = Effect.gen(function* () {
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
-  // Commands for one project run in order. Commands that claim a workspace root
-  // also hold that root, so two projects cannot both claim it.
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
   const projectLocks = yield* KeyedLock.make<ProjectId>();
   const workspaceLocks = yield* KeyedLock.make<string>();
 
@@ -215,10 +210,6 @@ export const make = Effect.gen(function* () {
         ),
       );
 
-  /**
-   * Plan one command against rows read under its locks, then commit its event or
-   * its rejection. A reused command id resolves to the receipt it already has.
-   */
   const commit = Effect.fn("ProjectService.commit")(function* (command: ProjectCommand) {
     const { projectId } = command;
     const dispatchError = (cause: unknown) =>
@@ -400,7 +391,6 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  /** Delete one child thread durably; a stable command id makes a retry resume the cascade. */
   const deleteChildThread = Effect.fn("ProjectService.deleteChildThread")(function* (
     input: ProjectDeleteInput,
     threadId: ThreadId,
@@ -418,36 +408,18 @@ export const make = Effect.gen(function* () {
       return;
     }
     const command = {
-      type:
-        projection.thread.purpose === "idea"
-          ? ("idea.delete" as const)
-          : ("thread.delete" as const),
+      type: "thread.delete" as const,
       commandId: CommandId.make(`${input.commandId}:delete-thread:${threadId}`),
       threadId,
     };
     const now = yield* DateTime.now;
-    // Ideas must keep their notebook and owned workspace until the deletion worker purges them.
-    const plan: ThreadDeletionPlan =
-      command.type === "idea.delete"
-        ? {
-            events: [
-              {
-                id: yield* idAllocator.allocate.event({ threadId, commandId: command.commandId }),
-                type: "idea.changed",
-                threadId,
-                occurredAt: now,
-                payload: { threadId, mutation: { kind: "delete.request" } },
-              },
-            ],
-            effects: [],
-          }
-        : yield* planThreadDeletion({
-            command: { ...command, type: "thread.delete" },
-            projection,
-            attachmentIds: yield* threadProjections.getThreadAttachmentIds(threadId),
-            now,
-            idAllocator,
-          });
+    const plan = yield* planThreadDeletion({
+      command,
+      projection,
+      attachmentIds: yield* threadProjections.getThreadAttachmentIds(threadId),
+      now,
+      idAllocator,
+    });
     const committed = yield* eventSink.commitCommand({
       commandId: command.commandId,
       commandType: command.type,
@@ -469,18 +441,20 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  /** Refuse a non-empty project without force, else delete its live threads first. */
   const deleteChildThreads = Effect.fn("ProjectService.deleteChildThreads")(function* (
     input: ProjectDeleteInput,
   ) {
     const { projectId } = input;
-    const projectThreads = yield* threadProjections
-      .getProjectThreads(projectId)
+    const snapshot = yield* threadProjections
+      .getShellSnapshot()
       .pipe(
         Effect.mapError(
           (cause) => new ProjectOperationError({ operation: "list-threads", projectId, cause }),
         ),
       );
+    const projectThreads = [...snapshot.threads, ...snapshot.archivedThreads].filter(
+      (thread) => thread.projectId === projectId,
+    );
     if (projectThreads.length > 0 && input.force !== true) {
       return yield* new ProjectNotEmptyError({ projectId });
     }
@@ -500,6 +474,22 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  // A machine-disabled provider instance that a deleted project's override
+  // once turned on must not stay probed and alive forever. Nothing else
+  // removes the entry, so deletion is where it goes; best-effort because a
+  // settings write failure should not block the deletion it is cleaning up
+  // after, and a server crash before a replay never revisits this project.
+  const clearProjectSettingsOverrides = (projectId: ProjectId) =>
+    serverSettings.updateSettings({ projectSettingsOverrides: { [projectId]: null } }).pipe(
+      Effect.asVoid,
+      Effect.catchCause((cause) =>
+        Effect.logWarning(
+          `Failed to clear settings overrides for deleted project ${projectId}.`,
+          cause,
+        ),
+      ),
+    );
+
   const deleteProject: ProjectService["Service"]["delete"] = Effect.fn("ProjectService.delete")(
     function* (input) {
       const { projectId } = input;
@@ -510,10 +500,14 @@ export const make = Effect.gen(function* () {
         return yield* new ProjectNotFoundError({ projectId });
       }
 
-      if (existing.value.deletedAt === null) {
+      const isFirstDelete = existing.value.deletedAt === null;
+      if (isFirstDelete) {
         yield* deleteChildThreads(input);
       }
       yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
+      if (isFirstDelete) {
+        yield* clearProjectSettingsOverrides(projectId);
+      }
       yield* projectEnrichment.invalidate([existing.value.workspaceRoot]);
       return yield* readCommitted(projectId);
     },

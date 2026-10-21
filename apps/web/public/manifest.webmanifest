@@ -1,5 +1,7 @@
 {
   "id": "/",
+  "name": "Satellite",
+  "short_name": "Satellite",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -16,7 +18,5 @@
       "sizes": "180x180",
       "type": "image/png"
     }
-  ],
-  "name": "Satellite",
-  "short_name": "Satellite"
+  ]
 }

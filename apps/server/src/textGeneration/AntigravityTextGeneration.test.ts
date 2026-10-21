@@ -15,21 +15,18 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import * as TestClock from "effect/testing/TestClock";
-import { type AcpError, AcpRequestError } from "effect-acp/errors";
+import { type AcpError } from "effect-acp/errors";
 import type * as AcpSchema from "effect-acp/compat";
 import { expect } from "vite-plus/test";
 
-import type { AcpSessionRuntimeEvent } from "../provider/acp/AcpSessionRuntime.ts";
+import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import { removeAntigravitySessionFiles } from "../provider/acp/AntigravitySessionFiles.ts";
-import type { RevdocGenerationActivity } from "../revdoc/RevdocGeneration.ts";
 
 import {
   type AntigravityTextGenerationOptions,
   isAntigravityTextGenerationAvailable,
   makeAntigravityTextGeneration,
 } from "./AntigravityTextGeneration.ts";
-import { expectRunnerContract, textGenerationOf } from "./testing/runners.ts";
 
 type TextRuntime = Effect.Success<ReturnType<AntigravityTextGenerationOptions["makeRuntime"]>>;
 
@@ -81,7 +78,6 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
   const enteredPrompt = yield* Deferred.make<void>();
   const state = {
     workspaces: [] as Array<string>,
-    ideaWorkspaces: [] as Array<string | undefined>,
     closed: [] as Array<string>,
     prompts: [] as Array<Parameters<TextRuntime["prompt"]>[0]>,
     selectedModels: [] as Array<string>,
@@ -122,11 +118,10 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
       );
     });
 
-  const makeRuntime: AntigravityTextGenerationOptions["makeRuntime"] = (cwd, ideaWorkspace) =>
+  const makeRuntime: AntigravityTextGenerationOptions["makeRuntime"] = (cwd) =>
     Effect.gen(function* () {
-      const events = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
+      const events = yield* Queue.unbounded<AcpSessionRuntime.AcpSessionRuntimeEvent>();
       state.workspaces.push(cwd);
-      state.ideaWorkspaces.push(ideaWorkspace);
       expect(yield* fs.readDirectory(cwd).pipe(Effect.orDie)).toEqual([]);
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
@@ -246,9 +241,11 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
       } satisfies TextRuntime;
     });
 
-  const textGeneration = textGenerationOf(
-    yield* makeAntigravityTextGeneration({ profileDirectory, makeRuntime, withProcess }),
-  );
+  const textGeneration = yield* makeAntigravityTextGeneration({
+    profileDirectory,
+    makeRuntime,
+    withProcess,
+  });
   const titleInput = { cwd: projectDirectory, message: "Repair Google login", modelSelection };
   const assertCleaned = Effect.gen(function* () {
     expect(state.closed).toEqual(state.workspaces);
@@ -281,80 +278,6 @@ const makeFixture = Effect.fn("makeAntigravityTextGenerationFixture")(function* 
 });
 
 it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
-  it.effect("keeps the text generation runner contract", () =>
-    expectRunnerContract(modelSelection, ["isolated", "isolatedWorkspace"], (reply, generate) =>
-      makeFixture({ outputs: [reply] }).pipe(
-        Effect.flatMap((fixture) => generate(fixture.textGeneration)),
-        Effect.scoped,
-      ),
-    ),
-  );
-
-  it.effect("rejects invalid notebook edits and cleans helper state", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeFixture({
-        outputs: ['{"edits":"invalid","summary":"Bad update"}'],
-      });
-      const error = yield* fixture.textGeneration
-        .generateIdeaUpdate({
-          cwd: fixture.projectDirectory,
-          prompt: "Organize the notebook.",
-          modelSelection,
-        })
-        .pipe(Effect.flip);
-      expect(error.message).toContain("invalid structured output");
-      yield* fixture.assertCleaned;
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("generates notebook edits with the selected model and cleans helper state", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeFixture({
-        outputs: ['{"edits":[],"summary":"No new decisions."}'],
-      });
-      const result = yield* fixture.textGeneration.generateIdeaUpdate({
-        cwd: fixture.projectDirectory,
-        prompt: "Organize the notebook.",
-        modelSelection,
-      });
-      expect(result).toEqual({ edits: [], summary: "No new decisions." });
-      expect(fixture.state.selectedModels).toEqual([modelSelection.model]);
-      expect(fixture.state.workspaces).not.toContain(fixture.projectDirectory);
-      expect(fixture.state.ideaWorkspaces).toEqual(
-        fixture.state.workspaces.map(fixture.path.dirname),
-      );
-      expect(
-        fixture.state.workspaces.map((cwd) => fixture.path.dirname(fixture.path.dirname(cwd))),
-      ).toEqual([fixture.projectDirectory]);
-      yield* fixture.assertCleaned;
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("uses the owned idea profile despite hooks in the ordinary profile", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeFixture({
-        outputs: ['{"edits":[],"summary":"No new decisions."}'],
-      });
-      const configDirectory = fixture.path.join(fixture.profileDirectory, "config");
-      yield* fixture.fs.makeDirectory(configDirectory, { recursive: true });
-      yield* fixture.fs.writeFileString(
-        fixture.path.join(configDirectory, "hooks.json"),
-        '{"hooks":{"before":["native-hook"]}}',
-      );
-      expect(yield* isAntigravityTextGenerationAvailable(fixture.profileDirectory)).toBe(false);
-      const result = yield* fixture.textGeneration.generateIdeaUpdate({
-        cwd: fixture.projectDirectory,
-        prompt: "Organize the notebook.",
-        modelSelection,
-      });
-      expect(result.summary).toBe("No new decisions.");
-      expect(fixture.state.ideaWorkspaces).toEqual(
-        fixture.state.workspaces.map(fixture.path.dirname),
-      );
-      yield* fixture.assertCleaned;
-    }).pipe(Effect.scoped),
-  );
-
   it.effect(
     "generates all helper types in empty workspaces and removes only owned session files",
     () =>
@@ -456,29 +379,6 @@ it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("declines elicitation and stops the helper", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeFixture({ prompt: () => Effect.never });
-      const child = yield* fixture.textGeneration
-        .generateThreadTitle(fixture.titleInput)
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(fixture.enteredPrompt);
-      const reply = yield* fixture.incoming.question(
-        {
-          sessionId: SESSION_ID,
-          mode: "form",
-          message: "Name this branch",
-          requestedSchema: { type: "object", properties: {} },
-        },
-        requestContext,
-      );
-      const error = yield* Fiber.join(child).pipe(Effect.flip);
-      expect(reply).toEqual({ action: "decline" });
-      expect(error.detail).toContain("user input");
-      yield* fixture.assertCleaned;
-    }).pipe(Effect.scoped),
-  );
-
   it.effect.each(["file", "terminal", "extension"] as const)(
     "denies unexpected %s requests",
     (kind) =>
@@ -566,21 +466,6 @@ it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("fails an unavailable model before prompting", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeFixture();
-      const error = yield* fixture.textGeneration
-        .generateThreadTitle({
-          ...fixture.titleInput,
-          modelSelection: { ...modelSelection, model: "not-in-the-account" },
-        })
-        .pipe(Effect.flip);
-      expect(error.detail).toContain("select the Antigravity model");
-      expect(fixture.state.prompts).toEqual([]);
-      yield* fixture.assertCleaned;
-    }).pipe(Effect.scoped),
-  );
-
   it.effect("uses the native default without sending T3's default selection as a model ID", () =>
     Effect.gen(function* () {
       const fixture = yield* makeFixture();
@@ -626,21 +511,6 @@ it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("does not start another runtime or prompt after authentication fails", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeFixture({
-        startError: new AcpRequestError({ code: -32000, errorMessage: "Authentication required" }),
-      });
-      const error = yield* fixture.textGeneration
-        .generateThreadTitle(fixture.titleInput)
-        .pipe(Effect.flip);
-      expect(error._tag).toBe("TextGenerationError");
-      expect(fixture.state.workspaces).toHaveLength(1);
-      expect(fixture.state.prompts).toEqual([]);
-      yield* fixture.assertCleaned;
-    }).pipe(Effect.scoped),
-  );
-
   it.effect("does not launch during sign-out or before sign-in", () =>
     Effect.gen(function* () {
       const fixture = yield* makeFixture({ rejectAdmission: true });
@@ -649,67 +519,6 @@ it.layer(NodeServices.layer)("AntigravityTextGeneration", (it) => {
         .pipe(Effect.flip);
       expect(error._tag).toBe("TextGenerationError");
       expect(fixture.state.workspaces).toEqual([]);
-      yield* fixture.assertCleaned;
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("times out a stalled helper and waits for cleanup", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeFixture({ prompt: () => Effect.never });
-      const child = yield* fixture.textGeneration
-        .generateThreadTitle(fixture.titleInput)
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(fixture.enteredPrompt);
-      yield* TestClock.adjust(180_000);
-      const error = yield* Fiber.join(child).pipe(Effect.flip);
-      expect(error.detail).toContain("timed out");
-      expect(fixture.state.cancellations).toBe(1);
-      yield* fixture.assertCleaned;
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("gives a Revdoc pass far longer than a metadata prompt before timing out", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeFixture({ prompt: () => Effect.never });
-      const child = yield* fixture.textGeneration
-        .generateRevdoc({
-          cwd: fixture.projectDirectory,
-          prompt: "Review the worktree.",
-          modelSelection,
-        })
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(fixture.enteredPrompt);
-      yield* TestClock.adjust(180_000);
-      expect(fixture.state.cancellations).toBe(0);
-      yield* TestClock.adjust(30 * 60_000 - 180_000);
-      const error = yield* Fiber.join(child).pipe(Effect.flip);
-      expect(error.message).toContain("timed out");
-      expect(fixture.state.cancellations).toBe(1);
-      yield* fixture.assertCleaned;
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("reports Revdoc thinking and output as the helper streams them", () =>
-    Effect.gen(function* () {
-      const output =
-        '{"title":"Review","summary":"Changes","context":"Verify manually","sections":[]}';
-      const fixture = yield* makeFixture({ outputs: [output] });
-      const activity: RevdocGenerationActivity[] = [];
-      const result = yield* fixture.textGeneration.generateRevdoc({
-        cwd: fixture.projectDirectory,
-        prompt: "Review the worktree.",
-        modelSelection,
-        onActivity: (event) =>
-          Effect.sync(() => {
-            activity.push(event);
-          }),
-      });
-      expect(result.title).toBe("Review");
-      expect(activity).toEqual([
-        { kind: "thinking", text: "Choose concise text." },
-        { kind: "output", text: output.slice(0, 9) },
-        { kind: "output", text: output.slice(9) },
-      ]);
       yield* fixture.assertCleaned;
     }).pipe(Effect.scoped),
   );

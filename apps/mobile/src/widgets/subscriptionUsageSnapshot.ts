@@ -5,7 +5,10 @@ import {
   type LimitPresentations,
 } from "@t3tools/shared/usageLimits";
 
+import type { WidgetTheme } from "./widgetTheme";
+
 export interface SubscriptionUsageSnapshot {
+  theme?: WidgetTheme;
   url?: string;
   checkedAt: number;
   providers: Array<{
@@ -22,7 +25,6 @@ export interface SubscriptionUsageSnapshot {
 const SNAPSHOT_MAX_AGE = 15 * 60_000;
 export const WIDGET_REFRESH_INTERVAL = 5 * 60_000;
 
-/** Bound probes across config updates, reconnects, and foreground transitions. */
 export function createWidgetRefresher<Id>(refresh: (id: Id) => Promise<unknown>) {
   const attempted = new Map<Id, number>();
   const pending = new Set<Id>();
@@ -80,7 +82,6 @@ function subscriptionUsageProps(
         const sortedWindows = [...pool.windows].sort(
           (a, b) => a.remainingPercent - b.remainingPercent,
         );
-        // Keep a session and weekly limit when scoped limits fill the storage budget.
         const selectedWindows = [
           ...new Set([
             sortedWindows.find((window) => window.kind === "session"),
@@ -94,7 +95,7 @@ function subscriptionUsageProps(
         return {
           name,
           detail: !fresh
-            ? "Open Satellite to refresh"
+            ? "Open T3 to refresh"
             : pool.accounts.length > 1
               ? `${pool.accounts.length} accounts · pooled`
               : "Subscription remaining",
@@ -120,13 +121,11 @@ function subscriptionUsageProps(
   };
 }
 
-/** Deduplicate accounts before pooling, and only publish display data to the OS. */
 export function buildSubscriptionUsageSnapshot(
   presentations: LimitPresentations,
   url: string,
   maxWindowsPerProvider = 6,
 ): SubscriptionUsageSnapshot {
-  // Freshness is evaluated at publication/render time, not on unrelated config emissions.
   const configuredDrivers = new Set(
     [...presentations.values()].flatMap((presentation) =>
       (presentation.serverConfig?.providers ?? [])
@@ -161,7 +160,7 @@ export function subscriptionUsageTimeline(snapshot: SubscriptionUsageSnapshot, n
       ...snapshot,
       providers: snapshot.providers.map((provider) =>
         provider.windows.length > 0 && provider.expiresAt <= date
-          ? { ...provider, detail: "Open Satellite to refresh", windows: [], totalWindows: 0 }
+          ? { ...provider, detail: "Open T3 to refresh", windows: [], totalWindows: 0 }
           : provider,
       ),
     },

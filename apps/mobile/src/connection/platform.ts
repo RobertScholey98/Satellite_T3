@@ -168,7 +168,7 @@ const layerCapabilities = Layer.effectContext(
           if (session === null) {
             return yield* new ConnectionBlockedError({
               reason: "authentication",
-              detail: "Sign in to Satellite Connect to connect this environment.",
+              detail: "Sign in to T3 Connect to connect this environment.",
             });
           }
           const token = yield* session.readClerkToken().pipe(
@@ -183,7 +183,7 @@ const layerCapabilities = Layer.effectContext(
           if (token === null) {
             return yield* new ConnectionBlockedError({
               reason: "authentication",
-              detail: "The Satellite Connect session is unavailable.",
+              detail: "The T3 Connect session is unavailable.",
             });
           }
           return token;
@@ -196,6 +196,10 @@ const layerCapabilities = Layer.effectContext(
           bearerToken: Effect.succeed(Option.none()),
         }),
       ),
+      // The relay device id already persists in secure storage; analytics only sends its hash.
+      Context.add(ClientCapabilities.AnalyticsDevice, {
+        id: storage.loadOrCreateAgentAwarenessDeviceId.pipe(Effect.option),
+      }),
       Context.add(
         ClientCapabilities.RelayDeviceIdentity,
         ClientCapabilities.RelayDeviceIdentity.of({

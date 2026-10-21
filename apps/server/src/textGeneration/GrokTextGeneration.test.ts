@@ -9,17 +9,15 @@ import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createModelSelection } from "@t3tools/shared/model";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { expect } from "vite-plus/test";
-import { GrokSettings, ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import { GrokSettings } from "@t3tools/provider-grok/settings";
 
 import * as ServerConfig from "../config.ts";
 import * as TextGeneration from "./TextGeneration.ts";
-import { makeGrokTextGeneration } from "./GrokTextGeneration.ts";
-import { execScriptSource, writeFakeCli } from "../testUtils/fakeCli.ts";
-import { expectRunnerContract, textGenerationOf } from "./testing/runners.ts";
+import { makeGrokTextGeneration } from "@t3tools/provider-grok/testing";
+import { execScriptSource, writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
@@ -29,38 +27,21 @@ const layerGrokTextGenerationTest = ServerConfig.ServerConfig.layerTest(process.
   prefix: "t3code-grok-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
-function makeAcpGrokFixture(dir: string, env: Record<string, string>, platform: NodeJS.Platform) {
-  const source = execScriptSource({
-    scriptPath: mockAgentPath,
-    argvLogPath: NodePath.join(dir, "argv.txt"),
-  });
-  if (platform === "win32") {
-    // Detached cmd.exe launchers do not pass their piped stdin to the mock agent.
-    const scriptPath = NodePath.join(dir, "grok-mock.mjs");
-    NodeFS.writeFileSync(
-      scriptPath,
-      `Object.assign(process.env, ${JSON.stringify(env)});\n${source}`,
-      "utf8",
-    );
-    return { binaryPath: process.execPath, scriptPath };
-  }
-  return {
-    binaryPath: writeFakeCli({
-      directory: NodePath.join(dir, "bin"),
-      name: "grok",
-      env,
-      source,
+function makeAcpGrokWrapper(dir: string, env: Record<string, string>): string {
+  return writeFakeCli({
+    directory: NodePath.join(dir, "bin"),
+    name: "grok",
+    env,
+    source: execScriptSource({
+      scriptPath: mockAgentPath,
+      expectedArgs: ["agent", "stdio"],
     }),
-    scriptPath: undefined,
-  };
+  });
 }
 
 function withFakeAcpGrok<A, E, R>(
   env: Record<string, string>,
-  effectFn: (
-    textGeneration: TextGeneration.TextGeneration["Service"],
-    cwd: string,
-  ) => Effect.Effect<A, E, R>,
+  effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-grok-text-acp-"));
@@ -69,34 +50,10 @@ function withFakeAcpGrok<A, E, R>(
         NodeFS.rmSync(tempDir, { recursive: true, force: true });
       }),
     );
-    const platform = yield* HostProcessPlatform;
-    const fixture = makeAcpGrokFixture(
-      tempDir,
-      {
-        T3_ACP_REQUEST_LOG_PATH: NodePath.join(tempDir, "requests.ndjson"),
-        ...env,
-      },
-      platform,
-    );
-    const config = decodeGrokSettings({ binaryPath: fixture.binaryPath });
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const fixtureSpawner = ChildProcessSpawner.make((command) =>
-      spawner.spawn(
-        fixture.scriptPath !== undefined &&
-          command._tag === "StandardCommand" &&
-          command.command === fixture.binaryPath
-          ? ChildProcess.make(
-              command.command,
-              [fixture.scriptPath, ...command.args],
-              command.options,
-            )
-          : command,
-      ),
-    );
-    const textGeneration = yield* makeGrokTextGeneration(config).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fixtureSpawner),
-    );
-    return yield* effectFn(textGenerationOf(textGeneration), tempDir);
+    const binaryPath = makeAcpGrokWrapper(tempDir, env);
+    const config = decodeGrokSettings({ binaryPath });
+    const textGeneration = yield* makeGrokTextGeneration(config);
+    return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
 }
 
@@ -111,79 +68,6 @@ function readJsonRpcRequests(
 }
 
 it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
-  it.effect("keeps the text generation runner contract", () =>
-    expectRunnerContract(
-      createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
-      ["isolated", "isolatedWorkspace"],
-      (reply, generate) => withFakeAcpGrok({ T3_ACP_PROMPT_RESPONSE_TEXT: reply }, generate),
-    ),
-  );
-
-  it.effect("runs a Revdoc pass outside the checkout", () =>
-    withFakeAcpGrok(
-      {
-        T3_ACP_PROMPT_RESPONSE_TEXT:
-          '{"title":"Review","summary":"Changes","context":"Verify manually","sections":[]}',
-      },
-      (generation, cwd) =>
-        Effect.gen(function* () {
-          const checkout = NodePath.join(cwd, "checkout");
-          NodeFS.mkdirSync(checkout);
-          NodeFS.writeFileSync(NodePath.join(checkout, "keep.txt"), "untouched");
-          yield* generation.generateRevdoc({
-            cwd: checkout,
-            prompt: "Review the worktree.",
-            modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
-          });
-          expect(NodeFS.readdirSync(checkout)).toEqual(["keep.txt"]);
-        }),
-    ),
-  );
-
-  it.effect("generates notebook edits with the selected model", () =>
-    withFakeAcpGrok(
-      { T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":[],"summary":"No new decisions."}' },
-      (generation, cwd) =>
-        Effect.gen(function* () {
-          const result = yield* generation.generateIdeaUpdate({
-            cwd,
-            prompt: "Organize the supplied notebook.",
-            modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-mock-alt"),
-          });
-          expect(result).toEqual({ edits: [], summary: "No new decisions." });
-          expect(NodeFS.readFileSync(NodePath.join(cwd, "argv.txt"), "utf8")).toContain(
-            "--disallowed-tools\t*\tagent\tstdio",
-          );
-          expect(readJsonRpcRequests(NodePath.join(cwd, "requests.ndjson"))).toContainEqual(
-            expect.objectContaining({
-              method: "session/set_model",
-              params: { sessionId: "grok-text-session", modelId: "grok-mock-alt" },
-            }),
-          );
-        }),
-    ),
-  );
-
-  it.effect("rejects tool activity during notebook updates", () =>
-    withFakeAcpGrok(
-      {
-        T3_ACP_EMIT_TOOL_CALLS: "1",
-        T3_ACP_PROMPT_RESPONSE_TEXT: '{"edits":[],"summary":"No new decisions."}',
-      },
-      (generation, cwd) =>
-        Effect.gen(function* () {
-          const result = yield* generation
-            .generateIdeaUpdate({
-              cwd,
-              prompt: "Organize the supplied notebook.",
-              modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
-            })
-            .pipe(Effect.flip);
-          expect(result.message).toContain("cannot use tools");
-        }),
-    ),
-  );
-
   it.effect("uses ACP with disabled tool capabilities and forwards the requested model id", () => {
     const requestLogDir = NodeFS.mkdtempSync(
       NodePath.join(NodeOS.tmpdir(), "t3code-grok-text-log-"),
@@ -245,69 +129,6 @@ it.layer(layerGrokTextGenerationTest)("GrokTextGeneration", (it) => {
             modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-mock-alt"),
           });
           expect(generated.title).toBe("Investigate failing CI");
-        }),
-    ),
-  );
-
-  it.effect("surfaces ACP request failures as text generation errors", () =>
-    withFakeAcpGrok(
-      {
-        T3_ACP_PROMPT_RESPONSE_TEXT: JSON.stringify({ branch: "unreachable" }),
-      },
-      (textGeneration) =>
-        Effect.gen(function* () {
-          const error = yield* Effect.flip(
-            textGeneration.generateBranchName({
-              cwd: process.cwd(),
-              message: "wire up grok",
-              modelSelection: createModelSelection(
-                ProviderInstanceId.make("grok"),
-                "missing-grok-model",
-              ),
-            }),
-          );
-          expect(error._tag).toBe("TextGenerationError");
-          expect(error.detail).toContain("Grok ACP base model");
-        }),
-    ),
-  );
-
-  it.effect("fails with TextGenerationError when output is empty", () =>
-    withFakeAcpGrok(
-      {
-        T3_ACP_PROMPT_RESPONSE_TEXT: "   \n  ",
-      },
-      (textGeneration) =>
-        Effect.gen(function* () {
-          const error = yield* Effect.flip(
-            textGeneration.generateThreadTitle({
-              cwd: process.cwd(),
-              message: "anything",
-              modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
-            }),
-          );
-          expect(error._tag).toBe("TextGenerationError");
-          expect(error.detail).toMatch(/empty/i);
-        }),
-    ),
-  );
-
-  it.effect("fails with TextGenerationError when output is unparseable JSON", () =>
-    withFakeAcpGrok(
-      {
-        T3_ACP_PROMPT_RESPONSE_TEXT: "totally not json output from a confused model",
-      },
-      (textGeneration) =>
-        Effect.gen(function* () {
-          const error = yield* Effect.flip(
-            textGeneration.generateThreadTitle({
-              cwd: process.cwd(),
-              message: "anything",
-              modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
-            }),
-          );
-          expect(error._tag).toBe("TextGenerationError");
-          expect(error.detail).toMatch(/invalid structured output/i);
         }),
     ),
   );

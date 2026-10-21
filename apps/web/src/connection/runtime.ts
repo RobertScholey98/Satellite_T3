@@ -1,4 +1,3 @@
-import { ideaArtifactHttpLayer } from "@t3tools/client-runtime/state/ideas";
 import { Connection } from "@t3tools/client-runtime/connection";
 import { ShellSnapshotLoader } from "@t3tools/client-runtime/state/shell";
 import {
@@ -20,7 +19,6 @@ const layerSnapshotLoader = Layer.mergeAll(
   ShellSnapshotLoader.layer,
   ThreadHistoryController.layer,
   PullRequestDiffLoader.layer,
-  ideaArtifactHttpLayer,
 );
 
 type ConnectionLayerSource =

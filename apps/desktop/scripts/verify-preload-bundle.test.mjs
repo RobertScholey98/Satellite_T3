@@ -14,29 +14,26 @@ const validPreload = `
   });
 `;
 
-describe("desktop preload bundle verifier", () => {
-  it("executes DOM-ready preload setup with Electron's zoom API", () => {
-    assert.doesNotThrow(() =>
-      verifyPreloadBundle(`
-        window.addEventListener("DOMContentLoaded", () => {
-          document.documentElement.style.setProperty(
-            "--desktop-window-controls-inset",
-            String(90 / require("electron").webFrame.getZoomFactor()),
-          );
-          ${validPreload}
-        }, { once: true });
-      `),
-    );
-  });
+const darwinWindowControls = (onReady) => `
+  ${validPreload}
+  window.addEventListener("DOMContentLoaded", () => {
+    ${onReady}
+  }, { once: true });
+  window.addEventListener("resize", () => {});
+`;
 
-  it("supplies Electron arguments for preload mode selection", () => {
+describe("desktop preload bundle verifier", () => {
+  it("runs the macOS window control setup against window, document, and webFrame", () => {
     assert.doesNotThrow(() =>
-      verifyPreloadBundle(`
-        if (process.argv.includes("--satellite-pill")) {
-          throw new Error("Expected the main window preload");
-        }
-        ${validPreload}
-      `),
+      verifyPreloadBundle(
+        darwinWindowControls(
+          'document.documentElement.style.setProperty("--desktop-window-controls-inset", `${90 / electron.webFrame.getZoomFactor()}px`);',
+        ),
+      ),
+    );
+    assert.throws(
+      () => verifyPreloadBundle(darwinWindowControls('throw new Error("dom ready ran");')),
+      /dom ready ran/,
     );
   });
 
@@ -85,22 +82,9 @@ describe("desktop preload bundle verifier", () => {
     );
   });
 
-  it("ignores import-like text in strings", () => {
-    assert.doesNotThrow(() =>
-      verifyPreloadBundle(`${validPreload}\nconst message = 'import /* comment */("module")';`),
-    );
-  });
-
   it("rejects unsupported require calls with comments before the opening parenthesis", () => {
     assert.throws(
       () => verifyPreloadBundle(`${validPreload}\nrequire /* @__PURE__ */ ("node:fs");`),
-      /unsupported sandbox imports: node:fs/,
-    );
-  });
-
-  it("rejects unsupported optional require calls", () => {
-    assert.throws(
-      () => verifyPreloadBundle(`${validPreload}\nrequire?.("node:fs");`),
       /unsupported sandbox imports: node:fs/,
     );
   });

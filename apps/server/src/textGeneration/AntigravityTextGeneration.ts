@@ -3,6 +3,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -12,9 +13,10 @@ import { type AcpError, AcpRequestError } from "effect-acp/errors";
 
 import { applyAntigravityAcpModelSelection } from "../provider/acp/AntigravityAcpSupport.ts";
 import { removeAntigravitySessionFiles } from "../provider/acp/AntigravitySessionFiles.ts";
-import type { AcpSessionRuntime } from "../provider/acp/AcpSessionRuntime.ts";
-import * as TextGenerationOperations from "./TextGenerationOperations.ts";
+import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 
+const ANTIGRAVITY_TIMEOUT_MS = 180_000;
 const MAX_OUTPUT_CHARS = 128_000;
 const isTextGenerationError = Schema.is(TextGenerationError);
 const isNativeSessionId = Schema.is(Schema.String.check(Schema.isUUID(4)));
@@ -23,7 +25,7 @@ const decodeConfiguration = Schema.decodeEffect(Schema.fromJsonString(Configurat
 const decodeConfigurationObject = Schema.decodeUnknownEffect(Configuration);
 
 type AntigravityTextRuntime = Pick<
-  AcpSessionRuntime["Service"],
+  AcpSessionRuntime.AcpSessionRuntime["Service"],
   | "start"
   | "setMode"
   | "getConfigOptions"
@@ -46,14 +48,10 @@ type AntigravityTextRuntime = Pick<
 
 export interface AntigravityTextGenerationOptions {
   readonly profileDirectory: string;
-  /** Model the provider default alias selects, when the account offers it. */
   readonly defaultModel?: Effect.Effect<string | undefined>;
-  /** Uses the instance's personal Google login, with no injected MCP servers or client tools. */
   readonly makeRuntime: (
     cwd: string,
-    ideaWorkspace?: string,
   ) => Effect.Effect<AntigravityTextRuntime, AcpError | ProviderSetupError, Scope.Scope>;
-  /** Registers the whole helper so sign-out can stop it before clearing credentials. */
   readonly withProcess: <A, E, R>(
     stop: Effect.Effect<void>,
     task: Effect.Effect<A, E, R>,
@@ -90,7 +88,6 @@ export const isAntigravityTextGenerationAvailable = Effect.fn(
   return true;
 });
 
-/** Runs short-lived subscription helpers without giving them the user's workspace. */
 export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGeneration")(function* (
   options: AntigravityTextGenerationOptions,
 ) {
@@ -101,15 +98,13 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
     Effect.provideService(Path.Path, path),
   );
 
-  // Ignores `cwd`: the helper runs in an empty temp directory, away from the project.
   const runAntigravityJson = Effect.fn("AntigravityTextGeneration.runJson")(
     function* <S extends Schema.Top>(input: TextGenerationOperations.Request<S>) {
-      const { operation, onActivity } = input;
-      const ideaWorkspace = input.needs === "isolatedWorkspace" ? input.cwd : undefined;
+      const { operation } = input;
       const scope = yield* Scope.make();
       yield* Effect.addFinalizer((exit) => Scope.close(scope, exit));
       const helper = Effect.gen(function* () {
-        if (!ideaWorkspace && !(yield* available)) {
+        if (!(yield* available)) {
           return yield* new TextGenerationError({
             operation,
             detail:
@@ -117,12 +112,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
           });
         }
 
-        const helperDirectory = yield* fs.makeTempDirectoryScoped({
-          prefix: "t3-antigravity-text-",
-          ...(ideaWorkspace ? { directory: ideaWorkspace } : {}),
-        });
-        const cwd = ideaWorkspace ? path.join(helperDirectory, "workspace") : helperDirectory;
-        if (ideaWorkspace) yield* fs.makeDirectory(cwd);
+        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-antigravity-text-" });
         let sessionId: string | undefined;
         yield* Effect.addFinalizer(() =>
           removeAntigravitySessionFiles({
@@ -136,10 +126,7 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
         );
 
         const rawResult = yield* Effect.gen(function* () {
-          const runtime = yield* options.makeRuntime(
-            cwd,
-            ideaWorkspace ? helperDirectory : undefined,
-          );
+          const runtime = yield* options.makeRuntime(cwd);
           yield* runtime.getEvents().pipe(
             Stream.runForEach((event) =>
               event._tag === "EventStreamBarrier"
@@ -193,14 +180,8 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
               ) {
                 return yield* reject("Antigravity attempted tool work during text generation.");
               }
-              if (notification.sessionId !== sessionId) return;
-              if (update.sessionUpdate === "agent_thought_chunk") {
-                if (onActivity && update.content.type === "text") {
-                  yield* onActivity({ kind: "thinking", text: update.content.text });
-                }
-                return;
-              }
               if (
+                notification.sessionId !== sessionId ||
                 update.sessionUpdate !== "agent_message_chunk" ||
                 update.content.type !== "text"
               ) {
@@ -215,7 +196,6 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
               if (exceeded) {
                 return yield* reject("Antigravity text generation exceeded the output limit.");
               }
-              if (onActivity) yield* onActivity({ kind: "output", text });
             }),
           );
 
@@ -285,7 +265,22 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
           });
         }
         return yield* TextGenerationOperations.decodeJsonReply(input, "Antigravity", rawResult);
-      }).pipe(Effect.scoped);
+      }).pipe(
+        Effect.scoped,
+        Effect.timeoutOption(ANTIGRAVITY_TIMEOUT_MS),
+        Effect.flatMap(
+          Option.match({
+            onNone: () =>
+              Effect.fail(
+                new TextGenerationError({
+                  operation,
+                  detail: "Antigravity text generation timed out.",
+                }),
+              ),
+            onSome: Effect.succeed,
+          }),
+        ),
+      );
 
       return yield* options
         .withProcess(Scope.close(scope, Exit.void), helper)
@@ -306,9 +301,8 @@ export const makeAntigravityTextGeneration = Effect.fn("makeAntigravityTextGener
       ),
   );
 
-  return {
-    name: "AntigravityTextGeneration",
-    run: runAntigravityJson,
-    isolation: TextGenerationOperations.isolates("isolated", "isolatedWorkspace"),
-  } satisfies TextGenerationOperations.Provider;
+  return TextGenerationOperations.fromRunner(
+    "AntigravityTextGeneration",
+    TextGenerationOperations.withoutInvestigation("Antigravity", runAntigravityJson),
+  );
 });

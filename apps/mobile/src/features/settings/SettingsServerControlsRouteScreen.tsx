@@ -1,21 +1,10 @@
-import { buildModelOptions } from "../../lib/modelOptions";
-import { MaterialButton } from "../../components/MaterialButton";
-import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
-import {
-  applyProviderOptionSelection,
-  resolveProviderOptionDescriptors,
-} from "../../lib/providerOptions";
-import type { SettingsTarget } from "./settings-environment-filter";
 import { useNavigation } from "@react-navigation/native";
 import { SettingsRow } from "./components/SettingsRow";
-import { SettingsControlRow } from "./components/SettingsControlRow";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { readEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
-import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
-import { AppText as Text } from "../../components/AppText";
+import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
+import { AppText as Text } from "../../components/ui/AppText";
 import {
-  DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
-  type ProviderOptionSelection,
   type ResponseStreamingMode,
   type ServerSettings,
   type ServerSettingsPatch,
@@ -24,30 +13,24 @@ import {
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   type ProjectScopedServerSettingKey,
 } from "@t3tools/contracts";
-import {
-  createModelSelection,
-  getProviderOptionCurrentLabel,
-  getProviderOptionCurrentValue,
-  getProviderOptionStringSelectionValue,
-} from "@t3tools/shared/model";
-import { Fragment, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { RUNTIME_MODE_CHOICES } from "../threads/thread-settings-options";
-import { serverEnvironment } from "../../state/server";
-import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsScreen } from "./components/SettingsScreen";
 import {
   AndroidSettingsEnvironmentFilter,
   SettingsEnvironmentFilterHeader,
 } from "./components/SettingsEnvironmentFilterHeader";
 import { BranchNamingSettings } from "./components/BranchNamingSettings";
+import { DatabaseStorageNotice } from "./components/DatabaseStorageNotice";
 import { SettingsChoiceRow } from "./components/SettingsChoiceRow";
 import { SettingsSection } from "./components/SettingsSection";
 import { SettingsSwitchRow } from "./components/SettingsSwitchRow";
 import { SettingsProjectOverridesSection } from "./components/SettingsProjectOverridesSection";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
+import { useSettingsWriter } from "./useSettingsWriter";
 import {
   planMobileScopedSettingsClear,
   planMobileScopedSettingsPatch,
@@ -55,6 +38,7 @@ import {
   uniformMobileSetting,
   type ScopedMobileSettingsTarget,
 } from "./settings-scoped-server";
+import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 
 type SettingsPage = "new-threads" | "source-control" | "agent-behavior" | "maintenance";
 
@@ -84,7 +68,6 @@ const SUBMODULE_CHOICES: ReadonlyArray<{
   readonly label: string;
   readonly description: string;
 }> = [
-  // Only offered at environment scope; a project falls back through "Use defaults".
   {
     mode: null,
     label: "Inherit",
@@ -104,7 +87,6 @@ const WORKSPACE_CHOICES: ReadonlyArray<{
   readonly label: string;
   readonly description: string;
 }> = [
-  // Only offered at environment scope; a project falls back through "Use defaults".
   {
     mode: null,
     label: "Inherit",
@@ -168,6 +150,12 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
   );
   const [pendingWrites, setPendingWrites] = useState(0);
   const writeInFlight = useRef(false);
+  // A closing view can still save its drafts while a write is pending, after
+  // the controls disabled. Those patches run once the current write settles.
+  const queuedPatch = useRef<{ key: string; patch: ServerSettingsPatch } | null>(null);
+  const targetsKey = targets
+    .map((target) => `${target.environment.environmentId}:${target.projectId}`)
+    .join(",");
   const [pendingTargets, setPendingTargets] = useState<
     readonly ScopedMobileSettingsTarget[] | null
   >(null);
@@ -183,13 +171,17 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
   const isMixed = (key: keyof ServerSettings) =>
     reference === null ||
     displayTargets.some((entry) => entry.settings[key] !== reference.settings[key]);
-  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
-    label: "environment settings update",
-    reportFailure: true,
-  });
+  const writeSettings = useSettingsWriter();
   const write = (patch: ServerSettingsPatch) => {
+    if (writeInFlight.current) {
+      const queued = queuedPatch.current;
+      queuedPatch.current = {
+        key: targetsKey,
+        patch: queued?.key === targetsKey ? { ...queued.patch, ...patch } : patch,
+      };
+      return;
+    }
     if (
-      writeInFlight.current ||
       !hasConnectedSelection ||
       !targets.every((target) =>
         readEnvironmentScope(target.environment.environmentId, AuthSettingsWriteScope),
@@ -201,14 +193,15 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     writeInFlight.current = true;
     setPendingTargets(targets);
     setPendingWrites((count) => count + 1);
-    void Promise.allSettled(
-      writes.map((entry) =>
-        updateSettings({ environmentId: entry.environmentId, input: { patch: entry.patch } }),
-      ),
-    ).finally(() => {
+    void writeSettings(targets, writes).finally(() => {
       writeInFlight.current = false;
       setPendingTargets(null);
       setPendingWrites((count) => count - 1);
+      const queued = queuedPatch.current;
+      queuedPatch.current = null;
+      // These targets may not show this write yet, so send it again with the
+      // queued patch; project overrides are replaced whole.
+      if (queued?.key === targetsKey) write({ ...patch, ...queued.patch });
     });
   };
   const clearProjectOverrides = () => {
@@ -224,12 +217,10 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
     writeInFlight.current = true;
     setPendingTargets(targets);
     setPendingWrites((count) => count + 1);
-    void Promise.allSettled(
-      writes.map((entry) =>
-        updateSettings({ environmentId: entry.environmentId, input: { patch: entry.patch } }),
-      ),
-    ).finally(() => {
+    void writeSettings(targets, writes).finally(() => {
       writeInFlight.current = false;
+      // Resending a draft over these pre-clear targets would undo the clear.
+      queuedPatch.current = null;
       setPendingTargets(null);
       setPendingWrites((count) => count - 1);
     });
@@ -366,9 +357,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
               {props.page === "source-control" ? (
                 <>
                   <BranchNamingSettings
-                    key={targets
-                      .map((target) => `${target.environment.environmentId}:${target.projectId}`)
-                      .join(",")}
+                    key={targetsKey}
                     mode={uniform("branchNamingMode")}
                     prefix={uniform("branchNamePrefix")}
                     instructions={uniform("branchNameInstructions")}
@@ -377,7 +366,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   />
                   <SettingsSection title="Pull requests">
                     <SettingsSwitchRow
-                      icon="arrow.triangle.merge"
+                      icon={PullRequestGlyph.merged}
                       label="Remove agent credits when merging"
                       subtitle="Remove recognized agent credits from GitHub merge and squash messages, keeping human co-authors. Includes auto-merge. Excludes merge queues, stack merges, and existing commits."
                       value={uniform("removeAgentCreditsOnMerge")}
@@ -398,8 +387,8 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   <SettingsSection title="Worktrees">
                     <SettingsSwitchRow
                       icon="arrow.triangle.branch"
-                      label="Start from origin"
-                      subtitle="Base new worktrees on the remote branch."
+                      label="Start from remote"
+                      subtitle="Uses the latest commit of the base branch’s tracked remote branch, even if its name differs. Otherwise uses the same-named branch on origin. Uses your local branch if that remote branch is missing."
                       value={uniform("newWorktreesStartFromOrigin")}
                       disabled={disabledFor("newWorktreesStartFromOrigin")}
                       onValueChange={(value) => write({ newWorktreesStartFromOrigin: value })}
@@ -430,16 +419,6 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       />
                     ))}
                   </SettingsSection>
-                  {!projectSelected
-                    ? selectedTargets.map((target) => (
-                        <Fragment key={target.environmentId}>
-                          <BackgroundModelSetting target={target} kind="ideas" />
-                          <BackgroundModelSetting target={target} kind="revdoc" />
-                          <BackgroundModelSetting target={target} kind="revdoc-large" />
-                          <BackgroundModelSetting target={target} kind="revdoc-testing" />
-                        </Fragment>
-                      ))
-                    : null}
                   <SettingsSection title="Preview browser">
                     <SettingsSwitchRow
                       icon="globe"
@@ -455,6 +434,14 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
 
               {props.page === "maintenance" ? (
                 <>
+                  {!projectSelected ? (
+                    <DatabaseStorageNotice
+                      targets={selectedTargets.filter(
+                        (target) =>
+                          target.serverConfig.environment.capabilities.databaseStorage === true,
+                      )}
+                    />
+                  ) : null}
                   {!projectSelected ? (
                     <SettingsSection title="Manage environments">
                       {selectedTargets.map((target) => (
@@ -483,7 +470,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       subtitle={
                         projectSelected
                           ? "Environment-wide setting. Select All projects to change it."
-                          : "Check installed provider CLIs for newer versions."
+                          : "Check installed provider CLIs for newer versions and fetch model catalog updates. When off, new models may not appear."
                       }
                       value={uniform("enableProviderUpdateChecks")}
                       disabled={disabledFor("enableProviderUpdateChecks")}
@@ -530,183 +517,5 @@ function MixedValuesLabel(props: { readonly projectSelected: boolean }) {
     >
       Mixed
     </Text>
-  );
-}
-
-function BackgroundModelSetting({
-  target,
-  kind,
-}: {
-  target: SettingsTarget;
-  kind: "ideas" | "revdoc" | "revdoc-large" | "revdoc-testing";
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const update = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: true });
-  const settingKey =
-    kind === "ideas"
-      ? "ideaUpdatesModelSelection"
-      : kind === "revdoc"
-        ? "revdocModelSelection"
-        : kind === "revdoc-large"
-          ? "revdocLargeModelSelection"
-          : "revdocTestingModelSelection";
-  const selection = target.serverConfig.settings[settingKey];
-  const models = buildModelOptions(target.serverConfig, selection);
-  const selectedModel = models.find(
-    (model) =>
-      model.selection.instanceId === selection?.instanceId &&
-      model.selection.model === selection.model,
-  );
-  const options =
-    selectedModel?.providerDriver === "codex" &&
-    getProviderOptionStringSelectionValue(selection?.options, "reasoningEffort") === undefined
-      ? [
-          ...(selection?.options ?? []),
-          { id: "reasoningEffort", value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT },
-        ]
-      : selection?.options;
-  const descriptors = resolveProviderOptionDescriptors({
-    capabilities: selectedModel?.capabilities,
-    selections: options,
-  });
-  const choose = async (model: typeof selection) => {
-    setSaving(true);
-    const result = await update({
-      environmentId: target.environmentId,
-      input: { patch: { [settingKey]: model } },
-    });
-    setSaving(false);
-    if (result._tag !== "Failure") setExpanded(false);
-  };
-  const changeOption = (change: ProviderOptionSelection) => {
-    if (!selection || saving) return;
-    const nextOptions = applyProviderOptionSelection(descriptors, change);
-    if (nextOptions)
-      void choose(createModelSelection(selection.instanceId, selection.model, nextOptions));
-  };
-  return (
-    <SettingsSection
-      title={`${kind === "ideas" ? "Idea updates" : kind === "revdoc" ? "Revdoc" : kind === "revdoc-large" ? "Large Revdoc" : "Revdoc testing"} · ${target.label}`}
-    >
-      <SettingsRow
-        icon="brain"
-        label={
-          kind === "ideas"
-            ? "Notebook model"
-            : kind === "revdoc-testing"
-              ? "Testing model"
-              : "Review model"
-        }
-        value={selection?.model ?? "Automatic"}
-        onPress={() => setExpanded((value) => !value)}
-      />
-      <View className="px-4 pb-3">
-        <Text className="text-sm text-foreground-muted">
-          {kind === "ideas"
-            ? "Organizes notes and updates pitches independently of thread titles."
-            : kind === "revdoc"
-              ? "Generates worktree reviews in the background. Automatic uses the thread’s provider and model."
-              : kind === "revdoc-large"
-                ? "Reviews large changes in parallel batches and combines the results. Automatic uses the Revdoc model, then the thread’s model."
-                : "Tests the worktree in the review sidebar. Automatic uses the Revdoc model, then the thread’s model."}
-        </Text>
-      </View>
-      {kind === "revdoc-testing" ? (
-        <SettingsSwitchRow
-          icon="brain"
-          label="Test after generating Revdoc"
-          disabled={saving}
-          value={target.serverConfig.settings.revdocDefaultAction === "generate-and-test"}
-          onValueChange={(checked) => {
-            void update({
-              environmentId: target.environmentId,
-              input: { patch: { revdocDefaultAction: checked ? "generate-and-test" : "generate" } },
-            });
-          }}
-        />
-      ) : null}
-      {expanded ? (
-        <View className="gap-1 p-3">
-          <MaterialButton label="Automatic" disabled={saving} onPress={() => void choose(null)} />
-          {models.map((model) => (
-            <MaterialButton
-              key={model.key}
-              tone="text"
-              label={`${model.providerLabel} · ${model.label}`}
-              disabled={saving || model.isUnavailable}
-              onPress={() =>
-                void choose(
-                  createModelSelection(
-                    model.selection.instanceId,
-                    model.selection.model,
-                    model === selectedModel
-                      ? options
-                      : model.providerDriver === "codex"
-                        ? [
-                            {
-                              id: "reasoningEffort",
-                              value: DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
-                            },
-                          ]
-                        : undefined,
-                  ),
-                )
-              }
-            />
-          ))}
-          {!models.length ? (
-            <Text className="text-sm text-foreground-muted">
-              Connect a provider to choose a background model.
-            </Text>
-          ) : null}
-        </View>
-      ) : null}
-      {descriptors.map((descriptor) =>
-        descriptor.type === "boolean" ? (
-          <SettingsSwitchRow
-            key={descriptor.id}
-            icon="brain"
-            label={descriptor.label}
-            disabled={saving}
-            value={descriptor.currentValue ?? false}
-            onValueChange={(value) => changeOption({ id: descriptor.id, value })}
-          />
-        ) : (
-          <SettingsControlRow
-            key={descriptor.id}
-            icon="brain"
-            label={descriptor.label}
-            disabled={saving}
-          >
-            <ControlPillMenu
-              accessibilityLabel={descriptor.label}
-              title={descriptor.label}
-              actions={descriptor.options
-                .filter((choice) => !descriptor.promptInjectedValues?.includes(choice.id))
-                .map((choice) => ({
-                  id: choice.id,
-                  title: choice.label,
-                  state:
-                    choice.id === getProviderOptionCurrentValue(descriptor)
-                      ? ("on" as const)
-                      : ("off" as const),
-                  attributes: { disabled: saving },
-                }))}
-              onPressAction={({ nativeEvent }) =>
-                changeOption({ id: descriptor.id, value: nativeEvent.event })
-              }
-            >
-              <ControlPill
-                variant="pill"
-                label={getProviderOptionCurrentLabel(descriptor) ?? "Default"}
-                accessibilityLabel={descriptor.label}
-                disabled={saving}
-              />
-            </ControlPillMenu>
-          </SettingsControlRow>
-        ),
-      )}
-    </SettingsSection>
   );
 }

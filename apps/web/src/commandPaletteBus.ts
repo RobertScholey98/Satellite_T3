@@ -5,8 +5,6 @@ export interface CommandPaletteLinkedThreads {
   readonly threads: PullRequestLinkedThreadsResult["threads"];
 }
 
-// Tiny event bus allowing components to programmatically open the command palette
-// without owning its React state.
 const COMMAND_PALETTE_OPEN_EVENT = "t3code:open-command-palette";
 
 export interface CommandPaletteOpenDetail {
@@ -31,20 +29,6 @@ export function onOpenCommandPalette(
   return () => window.removeEventListener(COMMAND_PALETTE_OPEN_EVENT, handler);
 }
 
-let afterClose: (() => void) | null = null;
-
-/** Runs `callback` once the palette has closed, in place of refocusing the composer. */
-export function runAfterCommandPaletteCloses(callback: () => void): void {
-  afterClose = callback;
-}
-
-export function takeCommandPaletteAfterClose(): (() => void) | null {
-  const callback = afterClose;
-  afterClose = null;
-  return callback;
-}
-
-/** Read at event time so consumers do not subscribe to transient dialog state. */
 export function isCommandPaletteOpen(): boolean {
   return (
     typeof document !== "undefined" && document.querySelector("[data-command-palette]") !== null

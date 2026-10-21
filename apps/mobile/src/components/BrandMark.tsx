@@ -1,13 +1,13 @@
-import { PRODUCT_NAME } from "@t3tools/contracts";
 import Constants from "expo-constants";
-import { SatelliteMark } from "./SatelliteMark";
+import { Image } from "expo-image";
 import { View } from "react-native";
 
-import { AppText as Text } from "./AppText";
+import { AppText as Text } from "./ui/AppText";
+import { T3_CODE_BRAND_MARK_SOURCE } from "./brandAssets";
 
 const appVariant = Constants.expoConfig?.extra?.appVariant;
 const DEFAULT_STAGE_LABEL =
-  appVariant === "development" ? "Dev" : appVariant === "preview" ? "Preview" : "Alpha";
+  appVariant === "development" ? "Dev" : appVariant === "preview" ? "Preview" : "Beta";
 
 export function BrandMark(props: { readonly compact?: boolean; readonly stageLabel?: string }) {
   const compact = props.compact ?? false;
@@ -16,12 +16,18 @@ export function BrandMark(props: { readonly compact?: boolean; readonly stageLab
 
   return (
     <View className="flex-row items-center gap-3">
-      <SatelliteMark height={iconSize} colorClassName="accent-icon" />
+      <Image
+        source={T3_CODE_BRAND_MARK_SOURCE}
+        accessibilityIgnoresInvertColors
+        style={{
+          width: iconSize,
+          height: iconSize,
+          borderRadius: compact ? 10 : 14,
+        }}
+      />
       <View className="gap-1">
         <View className="flex-row items-center gap-2">
-          <Text className="text-lg font-t3-bold tracking-[-0.4px] text-foreground">
-            {PRODUCT_NAME}
-          </Text>
+          <Text className="text-lg font-t3-bold tracking-[-0.4px] text-foreground">T3 Code</Text>
           <View className="rounded-full bg-subtle px-2 py-1">
             <Text className="text-3xs font-t3-bold tracking-[1.1px] uppercase text-foreground-muted">
               {stageLabel}

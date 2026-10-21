@@ -1,4 +1,3 @@
-// Native Grok's v1 model-selection wire contract, kept independent of the v2 mock.
 import * as NodeFS from "node:fs";
 import * as NodeReadline from "node:readline";
 
@@ -31,9 +30,6 @@ for await (const line of NodeReadline.createInterface({ input: process.stdin }))
         },
       };
       break;
-    case "authenticate":
-      result = {};
-      break;
     case "session/set_model":
       if (!models.includes(request.params.modelId)) {
         write({
@@ -47,22 +43,6 @@ for await (const line of NodeReadline.createInterface({ input: process.stdin }))
       result = {};
       break;
     case "session/prompt":
-      if (process.env.T3_ACP_EMIT_TOOL_CALLS === "1") {
-        write({
-          jsonrpc: "2.0",
-          method: "session/update",
-          params: {
-            sessionId,
-            update: {
-              sessionUpdate: "tool_call",
-              toolCallId: "grok-text-tool",
-              title: "Read file",
-              kind: "read",
-              status: "in_progress",
-            },
-          },
-        });
-      }
       write({
         jsonrpc: "2.0",
         method: "session/update",

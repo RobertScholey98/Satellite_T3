@@ -92,9 +92,7 @@ const createSandboxModules = (exposedGlobals) => {
 
 const executeBundle = (source, sandboxModules) => {
   const windowEvents = new NodeEvents.EventEmitter();
-  const styleProperties = new Map();
   const sandboxProcess = {
-    argv: [],
     contextIsolated: true,
     // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone CI verifier supplies the preload's host platform without loading Effect.
     platform: process.platform,
@@ -121,9 +119,7 @@ const executeBundle = (source, sandboxModules) => {
         },
       },
       document: {
-        documentElement: {
-          style: { setProperty: (name, value) => styleProperties.set(name, value) },
-        },
+        documentElement: { style: { setProperty: () => {} } },
       },
     },
     {
@@ -131,7 +127,7 @@ const executeBundle = (source, sandboxModules) => {
       timeout: preloadExecutionTimeoutMs,
     },
   );
-  // macOS reserves space for native window controls once its DOM is ready.
+  // On macOS the preload sizes the native window controls once the DOM is ready.
   windowEvents.emit("DOMContentLoaded");
 };
 

@@ -1,46 +1,40 @@
 import type { IssueBoardSync } from "@t3tools/contracts";
 
 import { useClientSettings } from "~/hooks/useSettings";
-import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "~/timestampFormat";
+import { formatDayAwareTimestamp } from "~/timestampFormat";
 import { Button } from "../ui/button";
 
+/** Text-only freshness of a board's stored copy, with Retry after a failed refresh. */
 export function BoardSyncStatus({
   sync,
   retryDisabled,
   onRetry,
 }: {
-  sync: IssueBoardSync | undefined;
-  retryDisabled: boolean;
-  onRetry: () => void;
+  readonly sync: IssueBoardSync | null | undefined;
+  readonly retryDisabled: boolean;
+  readonly onRetry: () => void;
 }) {
   const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   if (!sync) return null;
-  const failure = sync.syncing ? null : sync.failure;
-  const at =
-    failure?.at ??
-    [sync.syncedAt, ...(sync.deliveries ?? []).map((delivery) => delivery.lastDeliveredAt)]
-      .filter((value) => value !== null)
-      .reduce((latest, value) => (Date.parse(value) > Date.parse(latest) ? value : latest));
-  const shown = formatDayAwareTimestamp(at, timestampFormat);
-  const label = sync.syncing
-    ? "Syncing…"
-    : failure
-      ? `Sync failed ${shown}. ${failure.message}`
-      : `Synced ${shown}`;
+  if (sync.syncing) {
+    return (
+      <span role="status" className="shrink-0 text-xs text-muted-foreground">
+        Syncing
+      </span>
+    );
+  }
+  const failure = sync.failure;
   return (
-    <span
-      role="status"
-      title={sync.syncing ? undefined : formatChatTimestampTooltip(at, timestampFormat)}
-      className="text-xs text-muted-foreground"
-    >
-      {label}
+    <span role="status" className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+      <span className="truncate">
+        {failure
+          ? `Sync failed at ${formatDayAwareTimestamp(failure.at, timestampFormat)}, ${failure.message}`
+          : `Synced at ${formatDayAwareTimestamp(sync.syncedAt, timestampFormat)}`}
+      </span>
       {failure ? (
-        <>
-          {" "}
-          <Button size="micro" variant="link" disabled={retryDisabled} onClick={onRetry}>
-            Retry
-          </Button>
-        </>
+        <Button size="micro" variant="link" disabled={retryDisabled} onClick={onRetry}>
+          Retry
+        </Button>
       ) : null}
     </span>
   );

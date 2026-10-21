@@ -1,3 +1,4 @@
+import { isTransportConnectionErrorMessage } from "@t3tools/client-runtime/errors";
 import {
   clampFileAttachmentUploadBytes,
   fileAttachmentTooLargeMessage,
@@ -7,8 +8,6 @@ import {
   CommandId,
   EnvironmentId,
   IsoDateTime,
-  IssueAttemptLink,
-  IssueRef,
   MessageId,
   ModelSelection,
   OrchestrationMessageContext,
@@ -35,33 +34,17 @@ const THREAD_OUTBOX_SCHEMA_VERSION = 3;
 const THREAD_OUTBOX_MAX_RETRY_DELAY_MS = 16_000;
 
 const QueuedThreadCreationSchema = Schema.Struct({
-  purpose: Schema.optional(Schema.Literals(["work", "idea"])),
   projectId: ProjectId,
-  // Snapshot of the project's display metadata so a pending task stays
-  // presentable in the thread list even when the project shell is not loaded.
   projectTitle: Schema.optional(Schema.String),
   projectCwd: Schema.optional(Schema.String),
   workspaceMode: Schema.Literals(["local", "worktree"]),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   startFromOrigin: Schema.optional(Schema.Boolean),
+  pullRequestReference: Schema.optional(Schema.String),
 });
-
-export const QueuedIssueStartSchema = Schema.Struct({
-  sourceEnvironmentId: EnvironmentId,
-  sourceProjectId: ProjectId,
-  boardId: Schema.String,
-  issue: IssueRef,
-  title: Schema.String,
-  worktreeName: Schema.String,
-  requestId: Schema.String,
-  reservation: Schema.optional(IssueAttemptLink),
-});
-
-export type QueuedIssueStart = typeof QueuedIssueStartSchema.Type;
 
 export const QueuedThreadMessageSchema = Schema.Struct({
-  purpose: Schema.optional(Schema.Literals(["work", "idea"])),
   schemaVersion: Schema.Literals([1, 2, THREAD_OUTBOX_SCHEMA_VERSION, 4]),
   environmentId: EnvironmentId,
   threadId: ThreadId,
@@ -74,10 +57,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   dispatchMode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
-  // Present when the queued item creates a brand-new thread (pending task)
-  // instead of appending a turn to an existing one.
   creation: Schema.optional(QueuedThreadCreationSchema),
-  issue: Schema.optional(QueuedIssueStartSchema),
   createdAt: IsoDateTime,
 });
 
@@ -85,7 +65,6 @@ const decodeStoredQueuedThreadMessage = Schema.decodeUnknownSync(QueuedThreadMes
 const encodeStoredQueuedThreadMessage = Schema.encodeUnknownSync(QueuedThreadMessageSchema);
 
 export interface QueuedThreadCreation {
-  readonly purpose?: "work" | "idea";
   readonly projectId: ProjectIdType;
   readonly projectTitle?: string;
   readonly projectCwd?: string;
@@ -93,10 +72,10 @@ export interface QueuedThreadCreation {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin?: boolean;
+  readonly pullRequestReference?: string;
 }
 
 export interface QueuedThreadMessage {
-  readonly purpose?: "work" | "idea";
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
@@ -108,15 +87,10 @@ export interface QueuedThreadMessage {
   readonly runtimeMode?: RuntimeModeType;
   readonly interactionMode?: ProviderInteractionModeType;
   /**
-   * How this message should be delivered if a turn is still running when the
-   * outbox drains. Captured at enqueue time because the drain can fire long
-   * after the tap. Absent on rows written before follow-up behavior existed,
-   * which keep the previous always-queue delivery.
+   * Captured at enqueue time because the drain can fire long after the tap.
    */
   readonly dispatchMode?: ComposerDispatchMode;
   readonly creation?: QueuedThreadCreation;
-  /** Starts work on a board issue; the reservation is written back once delivery makes it. */
-  readonly issue?: QueuedIssueStart;
   readonly createdAt: string;
 }
 
@@ -204,8 +178,6 @@ export function resolveThreadOutboxDeliveryAction(input: {
   readonly threadBusy: boolean;
 }): ThreadOutboxDeliveryAction {
   if (input.isCreation) {
-    // A pending task creates its thread on delivery. If the thread already
-    // exists the creation command went through and only cleanup remains.
     if (input.threadExists) {
       return "remove";
     }
@@ -227,15 +199,9 @@ export type ThreadOutboxDispatchStep =
   | { readonly step: "restore"; readonly reason: string }
   | { readonly step: "send" };
 
-/**
- * Wait for provider and file capabilities before sending. Cleanup does not
- * need config: a creation whose thread exists, or a message whose thread is
- * gone, can still be removed while config loads.
- */
 export function resolveThreadOutboxDispatchStep(input: {
   readonly deliveryAction: ThreadOutboxDeliveryAction;
   readonly fileAttachments: ReadonlyArray<{ readonly name: string; readonly sizeBytes: number }>;
-  /** Null while the environment's server config has not synced yet. */
   readonly serverConfig: { readonly maxFileUploadBytes: number | undefined } | null;
 }): ThreadOutboxDispatchStep {
   if (input.deliveryAction !== "send") {
@@ -260,31 +226,66 @@ export function resolveThreadOutboxDispatchStep(input: {
     : { step: "send" };
 }
 
-/**
- * A queued creation can only be dispatched once its payload would pass server
- * validation; incomplete payloads stay pending until the user edits them.
- */
 export function isQueuedThreadCreationSendable(message: QueuedThreadMessage): boolean {
   if (!message.creation) {
     return false;
   }
-  if (message.text.trim().length === 0 || message.modelSelection === undefined) {
+  const hasContent = message.text.trim().length > 0 || message.attachments.length > 0;
+  if (!hasContent || message.modelSelection === undefined) {
     return false;
   }
   return message.creation.workspaceMode !== "worktree" || Boolean(message.creation.branch);
 }
 
+function errorMessage(error: unknown): string | null {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "object" && error !== null && "message" in error) {
+    return typeof error.message === "string" ? error.message : null;
+  }
+  return typeof error === "string" ? error : null;
+}
+
+/**
+ * Only a failure the server actually decided (`OrchestrationDispatchCommandError`,
+ * or an authorization rejection) means the payload itself is bad. The other typed
+ * failures a queued send can hit are transport-shaped: a socket that dropped
+ * mid-request (`RpcClientError` wrapping a Socket read/write/close reason), or an
+ * environment that is not connected or not registered.
+ */
+export function shouldRetryThreadOutboxDelivery(error: unknown): boolean {
+  if (typeof error === "object" && error !== null && "_tag" in error) {
+    switch (error._tag) {
+      case "OrchestrationDispatchCommandError":
+      case "EnvironmentAuthorizationError":
+        return false;
+      case "ConnectionTransientError":
+      case "RpcClientError":
+      case "EnvironmentRpcUnavailableError":
+      case "EnvironmentNotRegisteredError":
+        return true;
+      default:
+        break;
+    }
+  }
+  return isTransportConnectionErrorMessage(errorMessage(error));
+}
+
 export type ThreadOutboxCommandStage = "settings-sync" | "start-turn";
 export type ThreadOutboxFailureAction = "retry" | "restore";
 
-/**
- * A settings-sync failure retries even when the server rejected it: the turn never started, so
- * restoring would discard a message the server never judged. Otherwise only a transient failure
- * retries; a rejected start goes back to the composer.
- */
 export function resolveThreadOutboxFailureAction(input: {
   readonly stage: ThreadOutboxCommandStage;
-  readonly transient: boolean;
+  readonly error: unknown;
+  readonly interrupted: boolean;
 }): ThreadOutboxFailureAction {
-  return input.stage === "settings-sync" || input.transient ? "retry" : "restore";
+  if (
+    input.stage === "settings-sync" ||
+    input.interrupted ||
+    shouldRetryThreadOutboxDelivery(input.error)
+  ) {
+    return "retry";
+  }
+  return "restore";
 }

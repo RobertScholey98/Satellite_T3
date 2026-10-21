@@ -12,6 +12,7 @@ import * as EnvironmentRegistry from "./registry.ts";
 import * as ConnectionOnboarding from "./onboarding.ts";
 import { connectionRoutes, hasRelayRoute } from "./routes.ts";
 import * as PlatformConnectionSource from "../platform/source.ts";
+import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as RpcSession from "../rpc/session.ts";
@@ -20,6 +21,9 @@ export const watchDiscoveredCompatibility = Effect.fn("connection.watchDiscovere
   function* () {
     const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+    const productName = Option.getOrUndefined(
+      yield* Effect.serviceOption(ClientCapabilities.ClientPresentation),
+    )?.productName;
     const seenChecks = new Map<string, RelayEnvironmentStatusResponse>();
     yield* Stream.merge(
       SubscriptionRef.changes(discovery.state),
@@ -42,8 +46,7 @@ export const watchDiscoveredCompatibility = Effect.fn("connection.watchDiscovere
             // Discovery describes the server behind the relay route. A direct
             // connection (the desktop's own server, a saved URL, SSH) can reach
             // a different server with the same environment id, such as a
-            // preview app that shares the home directory. Its socket handshake
-            // already checks the protocol.
+            // preview app that shares the home directory.
             const saved = registered.get(environmentId);
             if (
               saved === undefined ||
@@ -57,7 +60,7 @@ export const watchDiscoveredCompatibility = Effect.fn("connection.watchDiscovere
               (previous.descriptor?.orchestrationProtocolVersion ?? 1) !==
                 (descriptor.orchestrationProtocolVersion ?? 1) ||
               previous.descriptor?.serverVersion !== descriptor.serverVersion;
-            const error = orchestrationProtocolCompatibilityError(descriptor);
+            const error = orchestrationProtocolCompatibilityError(descriptor, productName);
             // A replayed health result must not clear a newer socket rejection.
             if (error !== null || fresh) yield* registry.setCompatibility(environmentId, error);
             seenChecks.set(environmentId, status);
@@ -82,7 +85,6 @@ export function layerWithOptions(options: RpcSession.RpcSessionOptions) {
     layerRegistry,
     RelayEnvironmentDiscovery.layer,
     layerOnboarding,
-    // Exposed for updating hosts too old to connect through the driver.
     ConnectionResolver.layer,
   );
   const layerConnectionStartup = Layer.effectDiscard(

@@ -4,8 +4,6 @@ import {
 } from "@t3tools/shared/threadPullRequests";
 import {
   ChatAttachment,
-  CommandId,
-  CommitRecommendation,
   OrchestrationMessageContext,
   DEFAULT_MODEL,
   EventId,
@@ -19,13 +17,12 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  ThreadPurpose,
-  ThreadTitleState,
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
   TurnItemId,
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -35,7 +32,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as EventSink from "../EventSink.ts";
-import { randomUuidV4 } from "../RandomUuid.ts";
+import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
 const TRANSCRIPT_EVENT_BATCH_SIZE = 100;
@@ -44,9 +41,6 @@ interface LegacyThreadRow {
   readonly thread_id: string;
   readonly project_id: string;
   readonly title: string;
-  readonly title_state_json: string | null;
-  readonly purpose: string;
-  readonly commit_recommendation_json: string | null;
   readonly model_selection_json: string | null;
   readonly runtime_mode: string;
   readonly interaction_mode: string;
@@ -127,16 +121,13 @@ export class LegacyV1ThreadImporter extends Context.Service<
 >()("t3/orchestration-v2/legacy/LegacyV1ThreadImporter") {}
 
 const decodeModelSelection = Schema.decodeUnknownOption(ModelSelection);
-const decodeMessageContext = Schema.decodeUnknownSync(OrchestrationMessageContext);
-const decodePurpose = Schema.decodeUnknownOption(ThreadPurpose);
-const decodeTitleState = Schema.decodeUnknownOption(Schema.fromJsonString(ThreadTitleState));
-const decodeCommitRecommendation = Schema.decodeUnknownOption(CommitRecommendation);
 const decodeAttachments = Schema.decodeUnknownOption(Schema.Array(ChatAttachment));
 const decodePullRequests = Schema.decodeUnknownOption(Schema.Array(ThreadPullRequestLink));
 const decodeLinkedPullRequest = Schema.decodeUnknownOption(ThreadLinkedPullRequest);
 const decodeStoredThread = Schema.decodeUnknownOption(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
 );
+const decodeMessageContext = Schema.decodeUnknownOption(OrchestrationMessageContext);
 
 function parseJson(json: string): unknown {
   try {
@@ -160,6 +151,11 @@ function modelSelectionFor(row: LegacyThreadRow) {
 function attachmentsFor(row: LegacyMessageRow) {
   if (row.attachments_json === null) return [];
   return Option.getOrElse(decodeAttachments(parseJson(row.attachments_json)), () => []);
+}
+
+function contextFor(row: LegacyMessageRow) {
+  if (!row.context_json) return undefined;
+  return Option.getOrUndefined(decodeMessageContext(parseJson(row.context_json)));
 }
 
 function linkedPullRequestFor(row: LegacyThreadRow) {
@@ -219,15 +215,6 @@ function importedThread(row: LegacyThreadRow): OrchestrationV2AppThread {
     id: threadId,
     projectId: ProjectId.make(row.project_id),
     title: row.title.trim() === "" ? "Untitled thread" : row.title,
-    titleState:
-      row.title_state_json === null
-        ? null
-        : Option.getOrNull(decodeTitleState(row.title_state_json)),
-    purpose: Option.getOrElse(decodePurpose(row.purpose), () => "work"),
-    commitRecommendation:
-      row.commit_recommendation_json === null
-        ? null
-        : Option.getOrNull(decodeCommitRecommendation(parseJson(row.commit_recommendation_json))),
     providerInstanceId: modelSelection.instanceId,
     modelSelection,
     runtimeMode: runtimeModeFor(row.runtime_mode),
@@ -268,6 +255,7 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
   const createdAt = dateTime(row.created_at);
   const updatedAt = dateTime(row.updated_at);
   const attachments = attachmentsFor(row);
+  const context = contextFor(row);
   const message: OrchestrationV2ConversationMessage = {
     createdBy: row.role === "user" ? "user" : "agent",
     creationSource: "server",
@@ -277,11 +265,7 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
     nodeId: null,
     role: row.role,
     text: row.text,
-    ...(row.context_json
-      ? {
-          context: decodeMessageContext(parseJson(row.context_json)),
-        }
-      : {}),
+    ...(context !== undefined ? { context } : {}),
     attachments,
     streaming: false,
     createdAt,
@@ -313,11 +297,7 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
           messageId,
           inputIntent: "turn_start",
           text: row.text,
-          ...(row.context_json
-            ? {
-                context: decodeMessageContext(parseJson(row.context_json)),
-              }
-            : {}),
+          ...(context !== undefined ? { context } : {}),
           attachments,
         }
       : {
@@ -325,11 +305,7 @@ function messageEvents(row: LegacyMessageRow): ReadonlyArray<OrchestrationV2Doma
           type: "assistant_message",
           messageId,
           text: row.text,
-          ...(row.context_json
-            ? {
-                context: decodeMessageContext(parseJson(row.context_json)),
-              }
-            : {}),
+          ...(context !== undefined ? { context } : {}),
           streaming: false,
         };
   return [
@@ -385,9 +361,10 @@ const make = Effect.gen(function* () {
       ORDER BY created_at ASC, message_id ASC
     `;
 
-  const listShellMessages = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const latest = yield* sql<LegacyMessageRow>`
+  const listShellMessages = Effect.fn("LegacyV1ThreadImporter.listShellMessages")(function* (
+    threadId: ThreadId,
+  ) {
+    const latest = yield* sql<LegacyMessageRow>`
         SELECT
           message.message_id,
           message.thread_id,
@@ -417,7 +394,7 @@ const make = Effect.gen(function* () {
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
       `;
-      const latestUser = yield* sql<LegacyMessageRow>`
+    const latestUser = yield* sql<LegacyMessageRow>`
         SELECT
           message.message_id,
           message.thread_id,
@@ -447,12 +424,12 @@ const make = Effect.gen(function* () {
         ORDER BY message.created_at DESC, message.message_id DESC
         LIMIT 1
       `;
-      return [latestUser[0], latest[0]].filter(
-        (message, index, selected): message is LegacyMessageRow =>
-          message !== undefined &&
-          selected.findIndex((candidate) => candidate?.message_id === message.message_id) === index,
-      );
-    });
+    return [latestUser[0], latest[0]].filter(
+      (message, index, selected): message is LegacyMessageRow =>
+        message !== undefined &&
+        selected.findIndex((candidate) => candidate?.message_id === message.message_id) === index,
+    );
+  });
 
   const reconcileShellsBase = Effect.gen(function* () {
     const now = DateTime.formatIso(yield* DateTime.now);
@@ -461,9 +438,6 @@ const make = Effect.gen(function* () {
         thread.thread_id,
         thread.project_id,
         thread.title,
-        thread.title_state_json,
-        thread.purpose,
-        thread.commit_recommendation_json,
         thread.model_selection_json,
         thread.runtime_mode,
         thread.interaction_mode,
@@ -491,14 +465,7 @@ const make = Effect.gen(function* () {
         ON thread.thread_id = legacy_import.thread_id
       INNER JOIN orchestration_v2_projection_threads AS projection
         ON projection.thread_id = legacy_import.thread_id
-      WHERE NOT EXISTS (
-        SELECT 1 FROM idea_deletion_markers AS marker
-        WHERE marker.thread_id = thread.thread_id
-      ) AND (
-         json_type(projection.payload_json, '$.purpose') IS NULL
-         OR json_type(projection.payload_json, '$.titleState') IS NULL
-         OR json_type(projection.payload_json, '$.commitRecommendation') IS NULL
-         OR json_type(projection.payload_json, '$.pinnedAt') IS NULL
+      WHERE json_type(projection.payload_json, '$.pinnedAt') IS NULL
          OR json_type(projection.payload_json, '$.pinOrderKey') IS NULL
          OR json_type(projection.payload_json, '$.snoozedUntil') IS NULL
          OR json_type(projection.payload_json, '$.snoozedAt') IS NULL
@@ -507,7 +474,6 @@ const make = Effect.gen(function* () {
          OR json_type(projection.payload_json, '$.pullRequests') IS NULL
          OR json_type(projection.payload_json, '$.branchPullRequest') IS NULL
          OR json_type(projection.payload_json, '$.activeOrderKey') IS NULL
-      )
       ORDER BY thread.created_at ASC, thread.thread_id ASC
     `;
     let repairedThreadCount = 0;
@@ -516,37 +482,9 @@ const make = Effect.gen(function* () {
       if (Option.isNone(decoded)) continue;
       const current = decoded.value;
       const legacy = importedThread(row);
-      let titleState = current.titleState;
-      if (titleState === undefined) {
-        const titleChanges = yield* sql<{ command_id: string | null; event_id: string }>`
-          SELECT command_id, event_id FROM (
-            SELECT command_id, event_id, sequence, json_extract(payload_json, '$.title') AS title,
-              LAG(json_extract(payload_json, '$.title')) OVER (ORDER BY sequence) AS previous_title
-            FROM orchestration_events
-            WHERE application_event_version = 2 AND aggregate_kind = 'thread'
-              AND stream_id = ${current.id} AND event_type IN ('thread.created', 'thread.metadata-updated')
-          ) WHERE event_id NOT LIKE 'migration:v1:%' AND title <> previous_title
-          ORDER BY sequence DESC LIMIT 1
-        `;
-        // Older V2 events cannot distinguish a rename from an automatic title.
-        // Conservatively preserve any title that changed after the import.
-        titleState = titleChanges[0]
-          ? {
-              source: "manual",
-              version: CommandId.make(titleChanges[0].command_id ?? titleChanges[0].event_id),
-              needsRefinement: false,
-            }
-          : legacy.titleState;
-      }
       const legacyPullRequests = legacy.pullRequests ?? [];
       const repaired: OrchestrationV2AppThread = {
         ...current,
-        purpose: current.purpose === undefined ? legacy.purpose : current.purpose,
-        titleState: titleState ?? null,
-        commitRecommendation:
-          current.commitRecommendation === undefined
-            ? legacy.commitRecommendation
-            : current.commitRecommendation,
         pinnedAt: current.pinnedAt === undefined ? legacy.pinnedAt : current.pinnedAt,
         autoSettleDisabledAt:
           current.autoSettleDisabledAt === undefined
@@ -604,9 +542,6 @@ const make = Effect.gen(function* () {
         thread.thread_id,
         thread.project_id,
         thread.title,
-        thread.title_state_json,
-        thread.purpose,
-        thread.commit_recommendation_json,
         thread.model_selection_json,
         thread.runtime_mode,
         thread.interaction_mode,
@@ -630,9 +565,6 @@ const make = Effect.gen(function* () {
         thread.deleted_at
       FROM projection_threads AS thread
       WHERE NOT EXISTS (
-        SELECT 1 FROM idea_deletion_markers AS marker
-        WHERE marker.thread_id = thread.thread_id
-      ) AND NOT EXISTS (
         SELECT 1
         FROM orchestration_events AS event INDEXED BY orchestration_events_v2_created_threads_idx
         WHERE event.application_event_version = 2
@@ -724,9 +656,6 @@ const make = Effect.gen(function* () {
       SELECT thread.thread_id
       FROM projection_threads AS thread
       WHERE NOT EXISTS (
-        SELECT 1 FROM idea_deletion_markers AS marker
-        WHERE marker.thread_id = thread.thread_id
-      ) AND NOT EXISTS (
         SELECT 1
         FROM orchestration_events AS event INDEXED BY orchestration_events_v2_created_threads_idx
         WHERE event.application_event_version = 2
@@ -738,10 +667,6 @@ const make = Effect.gen(function* () {
       SELECT legacy_import.thread_id
       FROM orchestration_v2_legacy_imports AS legacy_import
       WHERE legacy_import.transcript_imported_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM idea_deletion_markers AS marker
-          WHERE marker.thread_id = legacy_import.thread_id
-        )
     )
   `.pipe(
     Effect.map((rows) => rows[0]?.count ?? 0),
@@ -750,7 +675,6 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  // Threads whose transcript import this process has already confirmed.
   // `transcript_imported_at` is never reset to NULL, so a positive answer
   // stays valid for the process lifetime; ensureTranscript runs on most
   // thread reads and command dispatches, so skipping the lock + lookup here
@@ -765,10 +689,6 @@ const make = Effect.gen(function* () {
           SELECT thread_id, transcript_imported_at
           FROM orchestration_v2_legacy_imports
           WHERE thread_id = ${threadId}
-            AND NOT EXISTS (
-              SELECT 1 FROM idea_deletion_markers AS marker
-              WHERE marker.thread_id = ${threadId}
-            )
           LIMIT 1
         `;
         const imported = imports[0];
@@ -779,9 +699,11 @@ const make = Effect.gen(function* () {
           return { importedThreadCount: 0, importedMessageCount: 0 };
         }
         const messages = yield* listMessages(threadId);
+        // The thread's V1 events are still in the table here. Without the hint
+        // SQLite walks them through the stream index and reads past each payload.
         const existingRows = yield* sql<{ readonly event_id: string }>`
           SELECT event_id
-          FROM orchestration_events
+          FROM orchestration_events INDEXED BY idx_orchestration_events_agent_stream_sequence
           WHERE application_event_version = 2
             AND aggregate_kind = 'thread'
             AND stream_id = ${threadId}
@@ -849,34 +771,33 @@ const make = Effect.gen(function* () {
       SELECT thread_id, transcript_imported_at
       FROM orchestration_v2_legacy_imports
       WHERE transcript_imported_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM idea_deletion_markers AS marker
-          WHERE marker.thread_id = orchestration_v2_legacy_imports.thread_id
-        )
       ORDER BY shell_imported_at ASC, thread_id ASC
     `;
     let importedThreadCount = 0;
     let importedMessageCount = 0;
     for (const row of rows) {
       const result = yield* ensureTranscript(ThreadId.make(row.thread_id)).pipe(
-        Effect.tapError((error) =>
-          Effect.logWarning("Failed to hydrate migrated v1 thread transcript", {
-            threadId: row.thread_id,
-            cause: error,
-          }),
-        ),
-        Effect.catch(() =>
-          sql`
-            UPDATE orchestration_v2_legacy_imports
-            SET last_error = 'Transcript hydration failed; retry on next open.'
-            WHERE thread_id = ${row.thread_id}
-          `.pipe(
-            Effect.as({ importedThreadCount: 0, importedMessageCount: 0 }),
-            Effect.orElseSucceed(() => ({
-              importedThreadCount: 0,
-              importedMessageCount: 0,
-            })),
-          ),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterrupts(cause),
+          (cause) =>
+            Effect.logWarning("Failed to hydrate migrated v1 thread transcript", {
+              threadId: row.thread_id,
+              cause,
+            }).pipe(
+              Effect.andThen(() =>
+                sql`
+                    UPDATE orchestration_v2_legacy_imports
+                    SET last_error = 'Transcript hydration failed; retry on next open.'
+                    WHERE thread_id = ${row.thread_id}
+                  `.pipe(
+                  Effect.catchCauseIf(
+                    (cause) => !Cause.hasInterrupts(cause),
+                    () => Effect.void,
+                  ),
+                ),
+              ),
+              Effect.as({ importedThreadCount: 0, importedMessageCount: 0 }),
+            ),
         ),
       );
       importedThreadCount += result.importedThreadCount;
@@ -886,9 +807,11 @@ const make = Effect.gen(function* () {
     return { importedThreadCount, importedMessageCount };
   }).pipe(
     Effect.catchCause((cause) =>
-      Effect.logWarning("Legacy v1 transcript background import stopped", { cause }).pipe(
-        Effect.as({ importedThreadCount: 0, importedMessageCount: 0 }),
-      ),
+      Cause.hasInterrupts(cause)
+        ? Effect.failCause(Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)))
+        : Effect.logWarning("Legacy v1 transcript background import stopped", { cause }).pipe(
+            Effect.as({ importedThreadCount: 0, importedMessageCount: 0 }),
+          ),
     ),
   );
 

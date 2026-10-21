@@ -1,0 +1,148 @@
+# The GitHub Projects reads and the Status move behind `GitHubIssueHost`. A board holds only the
+# items whose content is an `Issue`: draft issues and pull requests on a Project are not tickets.
+
+fragment ProjectSummary on ProjectV2 {
+  id
+  title
+  number
+}
+
+query OrganizationProjects($owner: String!, $after: String) {
+  organization(login: $owner) {
+    projectsV2(first: 100, after: $after) {
+      nodes {
+        ...ProjectSummary
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+query UserProjects($owner: String!, $after: String) {
+  user(login: $owner) {
+    projectsV2(first: 100, after: $after) {
+      nodes {
+        ...ProjectSummary
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+
+# A board's columns are the options of one single-select field.
+fragment ProjectWithFields on ProjectV2 {
+  id
+  title
+  fields(first: 100) {
+    nodes {
+      ... on ProjectV2SingleSelectField {
+        id
+        name
+        options {
+          id
+          name
+        }
+      }
+    }
+  }
+}
+
+query OrganizationProject($owner: String!, $number: Int!) {
+  organization(login: $owner) {
+    projectV2(number: $number) {
+      ...ProjectWithFields
+    }
+  }
+}
+
+query UserProject($owner: String!, $number: Int!) {
+  user(login: $owner) {
+    projectV2(number: $number) {
+      ...ProjectWithFields
+    }
+  }
+}
+
+fragment ProjectIssueItem on ProjectV2Item {
+  id
+  updatedAt
+  content {
+    ... on Issue {
+      number
+      title
+      state
+      updatedAt
+      url
+      repository {
+        nameWithOwner
+      }
+      labels(first: 100) {
+        nodes {
+          name
+        }
+      }
+    }
+  }
+  # The item's column is the option it holds in the board's Status field.
+  fieldValues(first: 100) {
+    nodes {
+      ... on ProjectV2ItemFieldSingleSelectValue {
+        optionId
+        field {
+          ... on ProjectV2SingleSelectField {
+            id
+            name
+          }
+        }
+      }
+    }
+  }
+}
+
+query ProjectItems($projectId: ID!, $after: String) {
+  node(id: $projectId) {
+    ... on ProjectV2 {
+      items(first: 100, after: $after) {
+        nodes {
+          ...ProjectIssueItem
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+
+query ProjectItem($itemId: ID!) {
+  node(id: $itemId) {
+    ... on ProjectV2Item {
+      project {
+        id
+      }
+      ...ProjectIssueItem
+    }
+  }
+}
+
+mutation MoveProjectItem($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+  updateProjectV2ItemFieldValue(
+    input: {
+      projectId: $projectId
+      itemId: $itemId
+      fieldId: $fieldId
+      value: { singleSelectOptionId: $optionId }
+    }
+  ) {
+    projectV2Item {
+      id
+    }
+  }
+}

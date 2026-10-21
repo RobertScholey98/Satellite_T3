@@ -5,7 +5,7 @@ import * as Path from "effect/Path";
 import * as ProcessRunner from "../processRunner.ts";
 import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "./DeviceToolchain.ts";
 
-/** Shared with the SSH bootstrap. Cleanup runs only after successful startup. */
+/** Shared with the SSH bootstrap. */
 export const deviceToolMaintenanceScript = String.raw`
 const maintenanceFs = require('node:fs');
 const maintenancePath = require('node:path');
@@ -64,7 +64,7 @@ async function withToolMaintenance(root, operation) {
 }
 function pruneTools(root, specs, flat) {
   return withToolMaintenance(root, () => {
-    // Keep installs used by any running helper, including older Satellite releases.
+    // Keep installs used by any running helper, including older T3 releases.
     const scan = process.platform === 'win32'
       ? require('node:child_process').spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | Select-Object -ExpandProperty CommandLine'], { encoding: 'utf8', timeout: 10000 })
       : require('node:child_process').spawnSync('ps', ['-ax', '-o', 'command='], { encoding: 'utf8', timeout: 10000 });

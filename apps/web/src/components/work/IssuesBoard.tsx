@@ -1,146 +1,166 @@
-import type {
-  EnvironmentId,
-  ProjectId,
-  IssueBoardView,
-  IssueBoardLocator,
-  IssueBoardMapping,
-  IssueBoardItem,
-  IssueDetail,
-  IssueBoardSummary,
-  IssueSummary,
-} from "@t3tools/contracts";
-import { issueReadyColumnIds } from "@t3tools/contracts";
-
-import { DndContext, useDraggable, useDroppable, type DragEndEvent } from "@dnd-kit/core";
-
+import { DndContext, type DragEndEvent, useDraggable, useDroppable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-
-import { useNavigate } from "@tanstack/react-router";
-
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type {
+  IssueAttempt,
+  EnvironmentId,
+  IssueBoardItem,
+  IssueBoardMapping,
+  IssueBoardSummary,
+  IssueBoardView,
+  IssueMove,
+  IssueSummary,
+  ProjectId,
+} from "@t3tools/contracts";
 import {
-  GripVerticalIcon,
-  ListIcon,
+  ChevronDownIcon,
   Columns3Icon,
+  GripVerticalIcon,
+  ListFilterIcon,
+  ListIcon,
   MoreHorizontalIcon,
+  PlusIcon,
   SearchIcon,
   TicketIcon,
-  ListFilterIcon,
-  ChevronDownIcon,
-  PlusIcon,
 } from "lucide-react";
+import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from "react";
 
+import { isElectron } from "~/env";
+import { useStableCallback } from "~/hooks/useStableCallback";
+import { cn, randomUUID } from "~/lib/utils";
 import { useProjects } from "~/state/entities";
-
-import { useEnvironments } from "~/state/environments";
-
-import { issuesEnvironment, useIssueBoardSync } from "~/state/issues";
-
+import { usePrimaryEnvironmentId } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
-
-import { randomUUID } from "~/lib/utils";
-
-import { useLiveRefresh } from "~/hooks/useLiveRefresh";
-
-import { SatelliteLoader } from "../SatelliteLoader";
+import {
+  PULL_REQUEST_ROW_CLASS,
+  PULL_REQUEST_ROW_NUMBER_CLASS,
+  PullRequestRowLines,
+} from "../pullRequest/PullRequestListRow";
+import { Alert, AlertAction, AlertDescription } from "../ui/alert";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
-  WorkspaceBreadcrumb,
-  WorkspaceBreadcrumbItem,
-  WorkspaceBreadcrumbSeparator,
-} from "../WorkspaceBreadcrumb";
-
-import { Input } from "../ui/input";
-import {
   Empty,
+  EmptyContent,
+  EmptyDescription,
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
-  EmptyDescription,
-  EmptyContent,
 } from "../ui/empty";
-
-import { Switch } from "../ui/switch";
-import {
-  Menu,
-  MenuTrigger,
-  MenuPopup,
-  MenuItem,
-  MenuSeparator,
-  MenuGroup,
-  MenuGroupLabel,
-  MenuRadioGroup,
-  MenuRadioItem,
-} from "../ui/menu";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
 import {
-  PullRequestRowLines,
-  PULL_REQUEST_ROW_CLASS,
-  PULL_REQUEST_ROW_NUMBER_CLASS,
-} from "../pullRequest/PullRequestListRow";
-import { PullRequestMarkdown } from "../pullRequest/PullRequestMarkdown";
-
-import {
-  Dialog,
-  DialogPopup,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogPanel,
-  DialogFooter,
-} from "../ui/dialog";
-
-import { BoardDeliveryNotices } from "./BoardDeliveryNotices";
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
+import { RefreshIcon } from "../ui/refresh-icon";
+import { SidebarInset } from "../ui/sidebar";
+import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { BoardSyncStatus } from "./BoardSyncStatus";
+import { IssueBoardConfigurationDialog } from "./IssueBoardConfigurationDialog";
+import { IssueDetailDialog } from "./IssueDetailDialog";
 import { IssueStartDialog } from "./IssueStartDialog";
-import { IssueReadyColumnsPicker } from "./IssueReadyColumnsPicker";
-
-import { defaultIssueAttempt, issueCanStart } from "./work.logic";
-
-import { unwrapWorkResult, workError } from "./commands";
 import {
+  type IssuesMode,
+  type IssuesSearch,
+  formatTicketParam,
+  matchesTicketParam,
+  writeIssuesNavigation,
+} from "./issuesNavigation";
+import {
+  IssueRequestError,
+  issueErrorMessage,
+  issuesEnvironment,
+  registerOpenIssueBoard,
+  unwrapIssueResult,
+  useDisconnectIssueBoard,
+  useIssueBoardEnvironments,
+  useIssueBoardSync,
+} from "./issuesState";
+import {
+  DEFAULT_ISSUES_PREFERENCES,
+  type IssuesPreferences,
+  groupBoardColumns,
+  issueMatchesFilters,
+  readCachedBoardView,
   readIssuesPreferences,
+  selectMoveBanners,
+  writeCachedBoardView,
   writeIssuesPreferences,
-  readIssuesSnapshot,
-  writeIssuesSnapshot,
-} from "./issues-view-state";
+} from "./issuesViewState";
+import { WorkTabs } from "./WorkTabs";
 
-function BoardCard({
+const FOCUS_REFRESH_DEBOUNCE_MS = 250;
+/** Alt-tabbing through windows should not become a host refresh per stop. */
+const FOCUS_REFRESH_MIN_INTERVAL_MS = 10_000;
+const MOVED_ELSEWHERE = "This ticket moved on another device. Refresh before moving it again.";
+
+type ColumnTone = "muted" | "progress" | "review" | "completed";
+
+const columnTone = (columnId: string, mapping: IssueBoardMapping | null): ColumnTone =>
+  columnId === mapping?.inProgress
+    ? "progress"
+    : columnId === mapping?.inPullRequest
+      ? "review"
+      : columnId === mapping?.completed
+        ? "completed"
+        : "muted";
+
+const ticketKey = (ref: IssueBoardItem["issue"]["ref"]) =>
+  [ref.host.toLowerCase(), ref.repository.toLowerCase(), ref.id].join("\n");
+
+const BoardCard = memo(function BoardCard({
   item,
-  onOpen,
+  attempt,
   disabled,
+  onOpen,
 }: {
-  item: IssueBoardItem;
-  onOpen: () => void;
-  disabled: boolean;
+  readonly item: IssueBoardItem;
+  readonly attempt: IssueAttempt | undefined;
+  readonly disabled: boolean;
+  readonly onOpen: (item: IssueBoardItem) => void;
 }) {
-  const drag = useDraggable({ id: item.itemId, disabled });
-
+  const { setNodeRef, transform, isDragging, listeners, attributes } = useDraggable({
+    id: item.itemId,
+    disabled,
+  });
   return (
     <div
-      ref={drag.setNodeRef}
+      ref={setNodeRef}
       style={{
-        transform: CSS.Translate.toString(drag.transform),
-        opacity: drag.isDragging ? 0.5 : 1,
+        transform: CSS.Translate.toString(transform),
+        opacity: isDragging ? 0.5 : 1,
       }}
-      className="group flex gap-1 rounded-lg border border-border/60 bg-card/40 p-3 hover:bg-accent/40"
+      className="flex gap-1 rounded-lg border border-border/60 bg-card/40 p-3 hover:bg-accent/40"
     >
       <button
         type="button"
-        {...drag.listeners}
-        {...drag.attributes}
-        aria-label={`Drag issue ${item.issue.ref.number}`}
-        className="cursor-grab touch-none self-start rounded-sm text-muted-foreground/50 focus-visible:ring-2 focus-visible:ring-ring"
+        {...listeners}
+        {...attributes}
+        aria-label={`Drag ticket ${item.issue.ref.number}`}
+        className="cursor-grab touch-none self-start rounded-sm text-muted-foreground/50 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <GripVerticalIcon className="size-3.5" />
       </button>
       <button
         type="button"
-        onClick={onOpen}
-        className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => onOpen(item)}
+        className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        <span className="font-mono text-xs tabular-nums text-muted-foreground">
-          #{item.issue.ref.number}
+        <span className="flex items-center gap-2">
+          <span className="font-mono text-xs tabular-nums text-muted-foreground">
+            #{item.issue.ref.number}
+          </span>
+          {attempt ? (
+            <Badge size="sm" variant={attempt.automaticMoves === "paused" ? "warning" : "success"}>
+              {attempt.automaticMoves === "paused" ? "Paused" : "Active"}
+            </Badge>
+          ) : null}
         </span>
         <p className="mt-2 text-sm leading-snug">{item.issue.title}</p>
         {item.issue.labels.length ? (
@@ -151,975 +171,813 @@ function BoardCard({
       </button>
     </div>
   );
-}
+});
 
-function BoardColumn({
+const BoardColumn = memo(function BoardColumn({
   id,
   title,
-  count,
-  tone = "muted",
-  children,
+  tone,
+  items,
+  activeAttempts,
+  disabled,
+  onOpen,
 }: {
-  id: string;
-  title: string;
-  count: number;
-  tone?: "muted" | "progress" | "review" | "completed";
-  children: React.ReactNode;
+  readonly id: string;
+  readonly title: string;
+  readonly tone: ColumnTone;
+  readonly items: ReadonlyArray<IssueBoardItem>;
+  readonly activeAttempts: ReadonlyMap<string, IssueAttempt>;
+  readonly disabled: boolean;
+  readonly onOpen: (item: IssueBoardItem) => void;
 }) {
-  const drop = useDroppable({ id });
-
+  const { setNodeRef, isOver } = useDroppable({ id });
   return (
     <section
-      ref={drop.setNodeRef}
-      className={`min-h-64 w-72 shrink-0 rounded-xl bg-muted/30 p-2 ${drop.isOver ? "ring-1 ring-primary" : ""}`}
+      ref={setNodeRef}
+      className={cn(
+        "min-h-64 w-72 shrink-0 rounded-xl bg-muted/30 p-2",
+        isOver && "ring-1 ring-inset ring-primary",
+      )}
     >
       <h2 className="flex items-center gap-2 px-1 py-2 text-sm font-medium">
         <span
-          className={`size-2 rounded-full border ${tone === "progress" ? "border-warning bg-warning" : tone === "review" ? "border-primary bg-primary" : tone === "completed" ? "border-success bg-success" : "border-muted-foreground/70"}`}
+          className={cn(
+            "size-2 rounded-full",
+            tone === "progress" && "bg-warning",
+            tone === "review" && "bg-primary",
+            tone === "completed" && "bg-success",
+            tone === "muted" && "bg-muted-foreground/50",
+          )}
         />
         {title}
-        <span className="text-xs font-normal tabular-nums text-muted-foreground">{count}</span>
+        <span className="text-xs font-normal tabular-nums text-muted-foreground">
+          {items.length}
+        </span>
       </h2>
-      <div className="mt-2 space-y-2">{children}</div>
-      {!count ? (
-        <p className="px-2 py-5 text-xs text-muted-foreground">No issues in this column</p>
+      <div className="mt-2 space-y-2">
+        {items.map((item) => (
+          <BoardCard
+            key={item.itemId}
+            item={item}
+            attempt={activeAttempts.get(ticketKey(item.issue.ref))}
+            disabled={disabled}
+            onOpen={onOpen}
+          />
+        ))}
+      </div>
+      {items.length === 0 ? (
+        <p className="px-2 py-5 text-xs text-muted-foreground">No tickets in this column</p>
       ) : null}
     </section>
   );
+});
+
+function PickerMenu({
+  label,
+  current,
+  value,
+  options,
+  footer,
+  onChange,
+}: {
+  readonly label: string;
+  readonly current: string;
+  readonly value: string;
+  readonly options: ReadonlyArray<{ value: string; label: string; note?: string }>;
+  readonly footer?: ReactNode;
+  readonly onChange: (value: string) => void;
+}) {
+  return (
+    <Menu>
+      <MenuTrigger aria-label={label} render={<Button variant="outline" size="sm" />}>
+        <span className="max-w-48 truncate">{current}</span>
+        <ChevronDownIcon className="size-3.5" />
+      </MenuTrigger>
+      <MenuPopup align="start">
+        {options.length ? (
+          <MenuRadioGroup value={value} onValueChange={(next) => onChange(String(next))}>
+            {options.map((option) => (
+              <MenuRadioItem key={option.value} value={option.value} closeOnClick>
+                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                {option.note ? (
+                  <span className="text-xs text-muted-foreground">{option.note}</span>
+                ) : null}
+              </MenuRadioItem>
+            ))}
+          </MenuRadioGroup>
+        ) : null}
+        {footer ? (
+          <>
+            {options.length ? <MenuSeparator /> : null}
+            {footer}
+          </>
+        ) : null}
+      </MenuPopup>
+    </Menu>
+  );
 }
 
+function Notice({ tone, children }: { readonly tone?: "error"; readonly children: ReactNode }) {
+  return (
+    <p
+      role={tone === "error" ? "alert" : "status"}
+      className={cn("text-sm", tone === "error" ? "text-destructive" : "text-muted-foreground")}
+    >
+      {children}
+    </p>
+  );
+}
+
+const keyOf = (...parts: ReadonlyArray<string>) => parts.join("\n");
+
+/**
+ * The Issues workspace: one connected board of one project on one environment, as columns or as
+ * the repository's issue list, with the ticket detail, Start, and board configuration dialogs.
+ */
 export function IssuesBoard({
-  target,
-  onViewWork,
-  onSelectBoard,
-  onDismissIssue,
-  onSelectIssue,
-  onSyncChange,
+  search,
+  onSearchChange,
 }: {
-  target?: {
-    environmentId?: EnvironmentId;
-    projectId?: ProjectId;
-    boardId?: string;
-    issueId?: string;
-  };
-  onViewWork?: (target: { environmentId: EnvironmentId; worktreePath: string }) => void;
-  onSelectBoard?: (target: {
-    environmentId: EnvironmentId;
-    projectId: ProjectId;
-    boardId?: string;
-  }) => void;
-  onDismissIssue?: () => void;
-  onSelectIssue?: (issueId: string) => void;
-  onSyncChange?: (syncing: boolean) => void;
+  readonly search: IssuesSearch;
+  readonly onSearchChange: (search: IssuesSearch, options?: { readonly replace?: boolean }) => void;
 }) {
-  const projects = useProjects();
+  const issueEnvironments = useIssueBoardEnvironments();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const environment =
+    issueEnvironments.find((candidate) => candidate.environmentId === search.environmentId) ??
+    issueEnvironments.find((candidate) => candidate.environmentId === primaryEnvironmentId) ??
+    issueEnvironments[0];
+  const environmentId = environment?.environmentId ?? null;
+  const connected = environment?.connection.phase === "connected";
+  const mode: IssuesMode = search.mode ?? "board";
 
-  const { environments } = useEnvironments();
-  const targetKey = JSON.stringify(target ?? null);
-  const [dismissedTargetKey, setDismissedTargetKey] = useState<string | null>(null);
-  const activeTarget = dismissedTargetKey === targetKey ? undefined : target;
-
-  const supported = projects.filter(
-    (project) =>
-      environments.find((environment) => environment.environmentId === project.environmentId)
-        ?.serverConfig?.environment.capabilities.issueBoards === true,
+  const allProjects = useProjects();
+  const projects = allProjects.filter(
+    (project) => project.environmentId === environmentId && project.isScratch !== true,
   );
 
-  const [scopeKey, setScopeKey] = useState(
-    target?.environmentId && target.projectId ? `${target.environmentId}:${target.projectId}` : "",
-  );
-  const targetOpened = useRef<string | null>(null);
-  useEffect(() => {
-    if (target?.environmentId && target.projectId) {
-      setScopeKey(`${target.environmentId}:${target.projectId}`);
-    }
-    targetOpened.current = null;
-  }, [target?.environmentId, target?.projectId, target?.boardId, target?.issueId]);
-
-  const scope = scopeKey
-    ? supported.find((project) => `${project.environmentId}:${project.id}` === scopeKey)
-    : activeTarget?.environmentId
-      ? supported.find((project) => project.environmentId === activeTarget.environmentId)
-      : supported[0];
-  const scopedEnvironment = environments.find(
-    (environment) => environment.environmentId === scope?.environmentId,
-  );
-  const connected = scopedEnvironment?.connection.phase === "connected";
-
-  const dataKey = scope ? `${scope.environmentId}:${scope.id}` : "";
-  const [initialSnapshot] = useState(() => {
-    const snapshot = readIssuesSnapshot(dataKey);
-    if (!snapshot) return undefined;
-    const matchesBoard = !target?.boardId || snapshot.view?.board.id === target.boardId;
-    const matchesIssue =
-      matchesBoard && (!target?.issueId || snapshot.selected?.issue.ref.id === target.issueId);
-    return {
-      ...snapshot,
-      view: matchesBoard ? snapshot.view : null,
-      selected: matchesIssue ? snapshot.selected : null,
-      detail: matchesIssue ? snapshot.detail : null,
-    };
-  });
-  const [initialPreferences] = useState(() => readIssuesPreferences(dataKey));
-  const [hydratedKey, setHydratedKey] = useState(dataKey);
-  const [mode, setMode] = useState<"issues" | "board">(initialPreferences.mode);
-  const [syncCount, setSyncCount] = useState(0);
-  const syncCallback = useRef(onSyncChange);
-  syncCallback.current = onSyncChange;
-  const mounted = useRef(true);
-  const trackSync = useCallback(async <T,>(request: () => Promise<T>) => {
-    if (mounted.current) setSyncCount((count) => count + 1);
-    try {
-      return await request();
-    } finally {
-      if (mounted.current) setSyncCount((count) => count - 1);
-    }
-  }, []);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      syncCallback.current?.(false);
-    };
-  }, []);
-
-  const [issueList, setIssueList] = useState<readonly IssueSummary[]>(
-    initialSnapshot?.issueList ?? [],
-  );
-
-  const [query, setQuery] = useState(initialPreferences.query);
-  const [issueState, setIssueState] = useState(initialPreferences.issueState);
-  const [issueHost, setIssueHost] = useState(initialPreferences.issueHost);
-
-  const [nextCursor, setNextCursor] = useState<string | null>(initialSnapshot?.nextCursor ?? null);
-
-  const detailGeneration = useRef(0);
-
+  const listBoards = useAtomCommand(issuesEnvironment.listBoards, { reportFailure: false });
+  const openBoard = useAtomCommand(issuesEnvironment.openBoard, { reportFailure: false });
   const listIssues = useAtomCommand(issuesEnvironment.list, { reportFailure: false });
+  const moveCommand = useAtomCommand(issuesEnvironment.move, { reportFailure: false });
+  const retryMove = useAtomCommand(issuesEnvironment.retryMove, { reportFailure: false });
+  const disconnectBoard = useDisconnectIssueBoard();
 
-  const [boards, setBoards] = useState<readonly IssueBoardSummary[]>(initialSnapshot?.boards ?? []);
-  const [projectBoards, setProjectBoards] = useState<Record<string, boolean | undefined>>({});
-  const projectMenuGeneration = useRef(0);
-
-  const [view, setView] = useState<IssueBoardView | null>(initialSnapshot?.view ?? null);
-
-  const [selected, setSelected] = useState<IssueBoardItem | null>(
-    initialSnapshot?.selected ?? null,
-  );
-
-  const [detail, setDetail] = useState<IssueDetail | null>(initialSnapshot?.detail ?? null);
-
-  const [configuration, setConfiguration] = useState<{
-    initial: IssueBoardView | null;
-    scopeGeneration: number;
+  // Every connected board on the environment, so the default board and "No board" are known.
+  const [connectedBoards, setConnectedBoards] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly boards: ReadonlyArray<IssueBoardSummary>;
   } | null>(null);
-
-  const [starting, setStarting] = useState(false);
-
-  const [error, setError] = useState<string | null>(null);
-
-  const [pending, setPending] = useState(false);
-  const [boardDiscoveryPending, setBoardDiscoveryPending] = useState(false);
-  const [boardDiscoveryError, setBoardDiscoveryError] = useState<string | null>(null);
-
-  const generation = useRef(0);
-  const scopeGeneration = useRef(0);
-
-  const list = useAtomCommand(issuesEnvironment.listBoards, { reportFailure: false });
-
-  const open = useAtomCommand(issuesEnvironment.openBoard, { reportFailure: false });
-
-  const get = useAtomCommand(issuesEnvironment.get, { reportFailure: false });
-
-  const move = useAtomCommand(issuesEnvironment.move, { reportFailure: false });
-
-  const retry = useAtomCommand(issuesEnvironment.retryMove, { reportFailure: false });
-
-  const disconnect = useAtomCommand(issuesEnvironment.disconnectBoard, { reportFailure: false });
-
-  const deliver = useAtomCommand(issuesEnvironment.deliver, { reportFailure: false });
-
-  const forgetPeer = useAtomCommand(issuesEnvironment.forgetPeer, { reportFailure: false });
-
-  const labelOf = (environmentId: EnvironmentId) =>
-    environments.find((environment) => environment.environmentId === environmentId)?.label ??
-    "another computer";
-  const deliveryCapable =
-    scopedEnvironment?.serverConfig?.environment.capabilities.issueDelivery === true;
-  const deliverNow = useCallback(
-    (boardId: string) => {
-      if (scope && connected && deliveryCapable)
-        void deliver({ environmentId: scope.environmentId, input: { boardId } });
-    },
-    [deliver, scope, connected, deliveryCapable],
-  );
-
-  const navigate = useNavigate();
-
-  const requestView = useCallback(
-    async (boardId: string, force: boolean, track: boolean) => {
-      if (!scope || !connected) return;
-
-      const current = ++generation.current;
-
-      if (track) setError(null);
-      const request = () =>
-        open({
-          environmentId: scope.environmentId,
-          input: { projectId: scope.id, boardId, ...(force ? { refresh: true } : {}) },
-        });
-
-      try {
-        const result = unwrapWorkResult(await (track ? trackSync(request) : request()));
-        if (track) deliverNow(boardId);
-
-        if (current === generation.current) {
-          setView(result);
-          return result;
-        }
-      } catch (failure) {
-        if (current === generation.current && track) setError(workError(failure));
-      }
-    },
-    [open, scope, connected, trackSync, deliverNow],
-  );
-  const refreshBoard = useCallback(
-    (boardId: string, { force = false }: { force?: boolean } = {}) =>
-      requestView(boardId, force, true),
-    [requestView],
-  );
-  const reopenBoard = useCallback(
-    (boardId: string) => requestView(boardId, false, false),
-    [requestView],
-  );
-
-  useLayoutEffect(() => {
-    generation.current++;
-    scopeGeneration.current++;
-    detailGeneration.current++;
-    const snapshot = readIssuesSnapshot(dataKey);
-    const preferences = readIssuesPreferences(dataKey);
-    const restoredView =
-      snapshot?.view && (!target?.boardId || snapshot.view.board.id === target.boardId)
-        ? snapshot.view
-        : null;
-    const restoredSelected =
-      snapshot?.selected &&
-      (!target?.boardId || restoredView) &&
-      (!target?.issueId || snapshot.selected.issue.ref.id === target.issueId)
-        ? snapshot.selected
-        : null;
-    setView(restoredView);
-    setBoards(snapshot?.boards ?? []);
-    setIssueList(snapshot?.issueList ?? []);
-    setNextCursor(snapshot?.nextCursor ?? null);
-    setSelected(restoredSelected);
-    setDetail(restoredSelected ? (snapshot?.detail ?? null) : null);
-    setMode(preferences.mode);
-    setQuery(preferences.query);
-    setIssueState(preferences.issueState);
-    setIssueHost(preferences.issueHost);
-    setHydratedKey(dataKey);
-    setError(null);
-    setPending(false);
-    setStarting(false);
-  }, [dataKey]);
-
+  const [boardsRevision, setBoardsRevision] = useState(0);
+  const [boardsError, setBoardsError] = useState<string | null>(null);
+  // A new request clears the last one's error before it answers.
+  const boardsRequest =
+    environmentId && connected ? keyOf(environmentId, String(boardsRevision)) : null;
+  const [lastBoardsRequest, setLastBoardsRequest] = useState(boardsRequest);
+  if (lastBoardsRequest !== boardsRequest) {
+    setLastBoardsRequest(boardsRequest);
+    if (boardsRequest !== null) setBoardsError(null);
+  }
   useEffect(() => {
-    if (!dataKey || hydratedKey !== dataKey) return;
-    writeIssuesSnapshot(dataKey, { boards, issueList, nextCursor, view, selected, detail });
-    writeIssuesPreferences(dataKey, { mode, query, issueState, issueHost });
-  }, [
-    dataKey,
-    hydratedKey,
-    boards,
-    issueList,
-    nextCursor,
-    view,
-    selected,
-    detail,
-    mode,
-    query,
-    issueState,
-    issueHost,
-  ]);
-
-  useEffect(() => {
-    setConfiguration(null);
-    if (!scope || !connected) return;
-    const current = ++scopeGeneration.current;
-
-    setError(null);
-
-    if (!scope) return;
-
-    setPending(true);
-
-    void trackSync(() =>
-      listIssues({ environmentId: scope.environmentId, input: { projectId: scope.id } }),
-    )
-      .then(unwrapWorkResult)
-      .then((result) => {
-        if (current === scopeGeneration.current) {
-          setIssueList(result.issues);
-          setNextCursor(result.nextCursor);
-        }
+    if (!environmentId || !boardsRequest) return;
+    let current = true;
+    void listBoards({ environmentId, input: { connectedOnly: true } })
+      .then(unwrapIssueResult)
+      .then((boards) => {
+        if (current) setConnectedBoards({ environmentId, boards });
       })
-      .catch((failure) => {
-        if (current === scopeGeneration.current) setError(workError(failure));
+      .catch((failure: unknown) => {
+        if (current) setBoardsError(issueErrorMessage(failure));
       });
-
-    setBoardDiscoveryPending(false);
-    const targetBoardId = activeTarget?.boardId;
-    const opening = targetBoardId ? refreshBoard(targetBoardId) : undefined;
-    void trackSync(() =>
-      list({
-        environmentId: scope.environmentId,
-        input: { projectId: scope.id, connectedOnly: true },
-      }),
-    )
-      .then(unwrapWorkResult)
-      .then(async (result) => {
-        if (current !== scopeGeneration.current) return;
-
-        setBoards(result);
-
-        const requested = result.find(
-          (board) => board.mapping !== null && (!targetBoardId || board.id === targetBoardId),
-        );
-        if (requested) {
-          if (activeTarget?.boardId !== requested.id || activeTarget?.projectId !== scope.id)
-            onSelectBoard?.({
-              environmentId: scope.environmentId,
-              projectId: scope.id,
-              boardId: requested.id,
-            });
-          await (opening ?? refreshBoard(requested.id));
-        } else {
-          generation.current++;
-          setView(null);
-          if (targetBoardId)
-            setError(
-              "The requested board is unavailable. Choose another board or connect it again.",
-            );
-        }
-      })
-      .catch((failure) => {
-        if (current === scopeGeneration.current) setError(workError(failure));
-      })
-      .finally(() => {
-        if (current === scopeGeneration.current) setPending(false);
-      });
-
     return () => {
-      generation.current++;
-      scopeGeneration.current++;
+      current = false;
     };
-  }, [list, scope?.environmentId, scope?.id, connected, target?.boardId]);
+  }, [boardsRequest, environmentId, listBoards]);
+  const boards =
+    connectedBoards?.environmentId === environmentId
+      ? connectedBoards.boards.filter((board) => board.mapping !== null)
+      : null;
 
-  useLayoutEffect(() => {
-    if (!target?.boardId || view?.board.id === target.boardId) return;
-    detailGeneration.current++;
-    setView(null);
-    setSelected(null);
-    setDetail(null);
-  }, [target?.boardId]);
+  const projectIds = new Set(projects.map((project) => project.id));
+  const projectId: ProjectId | null =
+    search.projectId && projectIds.has(search.projectId)
+      ? search.projectId
+      : boards === null
+        ? connected
+          ? null
+          : (projects[0]?.id ?? null)
+        : (boards.find((board) => board.id === search.boardId && projectIds.has(board.projectId))
+            ?.projectId ??
+          boards.find((board) => projectIds.has(board.projectId))?.projectId ??
+          projects[0]?.id ??
+          null);
+  const project = projects.find((candidate) => candidate.id === projectId);
+  const projectBoards = boards?.filter((board) => board.projectId === projectId) ?? [];
+  const boardId =
+    search.boardId &&
+    (boards === null || projectBoards.some((board) => board.id === search.boardId))
+      ? search.boardId
+      : (projectBoards[0]?.id ?? null);
+  const requestedBoardMissing =
+    boards !== null &&
+    boardId !== null &&
+    search.boardId !== undefined &&
+    search.boardId !== boardId;
+  const scopeKey = environmentId && projectId ? keyOf(environmentId, projectId) : null;
+  const viewKey = scopeKey && boardId ? keyOf(scopeKey, boardId) : null;
 
-  useLayoutEffect(() => {
-    if (!target?.issueId || selected?.issue.ref.id === target.issueId) return;
-    detailGeneration.current++;
-    setSelected(null);
-    setDetail(null);
-  }, [target?.issueId]);
-
-  const select = useCallback(
-    async (item: IssueBoardItem) => {
-      if (!scope) return;
-
-      const current = ++detailGeneration.current;
-
-      const cached = readIssuesSnapshot(dataKey);
-      setSelected(item);
-      if (activeTarget?.issueId !== item.issue.ref.id) onSelectIssue?.(item.issue.ref.id);
-      setDetail(
-        cached?.selected?.issue.ref.id === item.issue.ref.id &&
-          cached.selected.issue.ref.host === item.issue.ref.host &&
-          cached.selected.issue.ref.repository === item.issue.ref.repository
-          ? cached.detail
-          : null,
+  const navigate = useStableCallback(
+    (
+      patch: { readonly [K in keyof IssuesSearch]?: IssuesSearch[K] | undefined },
+      replace: boolean = false,
+    ) => {
+      const next = {
+        environmentId: environmentId ?? undefined,
+        projectId: projectId ?? undefined,
+        boardId: boardId ?? undefined,
+        ticket: search.ticket,
+        mode: search.mode,
+        ...patch,
+      };
+      onSearchChange(
+        Object.fromEntries(
+          Object.entries(next).filter(([, value]) => value !== undefined),
+        ) as IssuesSearch,
+        { replace },
       );
-      setError(null);
-      if (!connected) return;
-
-      try {
-        const result = unwrapWorkResult(
-          await trackSync(() =>
-            get({
-              environmentId: scope.environmentId,
-              input: { projectId: scope.id, issue: item.issue.ref },
-            }),
-          ),
-        );
-        if (current === detailGeneration.current) setDetail(result);
-      } catch (failure) {
-        if (current === detailGeneration.current) setError(workError(failure));
-      }
     },
-    [scope, connected, get, dataKey, onSelectIssue, activeTarget?.issueId, trackSync],
   );
 
+  // Written once the selection is settled, so a cold start never overwrites the remembered one.
+  const boardsKnown = boards !== null;
   useEffect(() => {
-    if (!activeTarget?.issueId || !connected || !scope || pending) return;
-    if (activeTarget.environmentId && activeTarget.environmentId !== scope.environmentId) return;
-    if (activeTarget.projectId && activeTarget.projectId !== scope.id) return;
-    if (activeTarget.boardId && activeTarget.boardId !== view?.board.id) return;
-    const key = `${scope.environmentId}:${scope.id}:${activeTarget.boardId ?? ""}:${activeTarget.issueId}`;
-    if (targetOpened.current === key) return;
-    const item = view?.items.find((candidate) => candidate.issue.ref.id === activeTarget.issueId);
-    const issue = issueList.find((candidate) => candidate.ref.id === activeTarget.issueId);
-    const selectedItem =
-      item ?? (issue ? { issue, itemId: issue.ref.id, columnId: null, version: null } : null);
-    if (!selectedItem) return;
-    targetOpened.current = key;
-    void select(selectedItem);
-  }, [
-    target?.environmentId,
-    target?.projectId,
-    target?.boardId,
-    target?.issueId,
-    scope,
-    view,
-    issueList,
-    connected,
-    pending,
-    select,
-    activeTarget,
-  ]);
+    if (!environmentId || !boardsKnown) return;
+    if (search.environmentId && search.environmentId !== environmentId) return;
+    writeIssuesNavigation({
+      environmentId,
+      ...(projectId ? { projectId } : {}),
+      ...(boardId ? { boardId } : {}),
+      ...(search.ticket ? { ticket: search.ticket } : {}),
+      mode,
+    });
+  }, [boardId, boardsKnown, environmentId, mode, projectId, search.environmentId, search.ticket]);
 
-  const forgetBoard = (boardId: string) => {
-    if (!scope) return;
-    setView(null);
-    setBoards((current) =>
-      current.map((board) => (board.id === boardId ? { ...board, mapping: null } : board)),
-    );
-    setDismissedTargetKey(targetKey);
-    onSelectBoard?.({ environmentId: scope.environmentId, projectId: scope.id });
+  // A cached copy paints while the server's stored copy loads.
+  const [loaded, setLoaded] = useState<{ key: string; view: IssueBoardView } | null>(null);
+  const [viewError, setViewError] = useState<{ key: string; message: string } | null>(null);
+  const view =
+    loaded?.key === viewKey ? loaded.view : viewKey ? (readCachedBoardView(viewKey) ?? null) : null;
+  const viewFresh = loaded !== null && loaded.key === viewKey;
+  const generation = useRef(0);
+  const showView = (key: string, next: IssueBoardView | null) => {
+    writeCachedBoardView(key, next);
+    setLoaded(next ? { key, view: next } : null);
   };
+  const openView = useStableCallback(async (refresh: boolean) => {
+    if (!viewKey || !environmentId || !projectId || !boardId || !connected) return;
+    const key = viewKey;
+    const current = ++generation.current;
+    try {
+      const result = unwrapIssueResult(
+        await openBoard({
+          environmentId,
+          input: { projectId, boardId, ...(refresh ? { refresh: true } : {}) },
+        }),
+      );
+      if (current !== generation.current) return;
+      showView(key, result);
+      setViewError(null);
+    } catch (failure) {
+      const message = issueErrorMessage(failure);
+      if (current === generation.current && message) setViewError({ key, message });
+    }
+  });
+  useEffect(() => {
+    if (viewKey && environmentId && projectId && boardId && connected) void openView(false);
+  }, [boardId, connected, environmentId, openView, projectId, viewKey]);
 
   const serverSync = useIssueBoardSync(
-    view && scope && connected
-      ? { environmentId: scope.environmentId, projectId: scope.id, boardId: view.board.id }
+    view && connected && environmentId && projectId && boardId
+      ? { environmentId, projectId, boardId }
       : null,
   );
+  const serverSyncRevision = serverSync === null ? null : serverSync?.revision;
+  const followServerSync = useStableCallback(
+    (revision: number | null | undefined, key: string | null) => {
+      if (!view?.sync || !key || revision === undefined) return;
+      if (revision === null) {
+        showView(key, null);
+        setBoardsRevision((current) => current + 1);
+        return;
+      }
+      if (revision > view.sync.revision) void openView(false);
+    },
+  );
   useEffect(() => {
-    if (!view?.sync || serverSync === undefined) return;
-    if (serverSync === null) {
-      forgetBoard(view.board.id);
-      return;
-    }
-    if (serverSync.revision > view.sync.revision) void reopenBoard(view.board.id);
-  }, [serverSync?.revision, serverSync === null, view?.board.id]);
-
+    followServerSync(serverSyncRevision, viewKey);
+  }, [followServerSync, serverSyncRevision, viewKey]);
   const displaySync = serverSync ?? view?.sync;
-  const syncing = syncCount > 0 || displaySync?.syncing === true;
-  useEffect(() => {
-    onSyncChange?.(syncing);
-  }, [onSyncChange, syncing]);
 
-  useLiveRefresh(view && connected ? () => void reopenBoard(view.board.id) : null, {
-    key: `issues:${dataKey}:${view?.board.id ?? "none"}`,
+  const hasView = view !== null;
+  const lastFocusRefresh = useRef(0);
+  useEffect(() => {
+    // Switching boards cancels a pending focus refresh; the new board loads on its own.
+    if (!hasView || !connected || !viewKey) return;
+    let timeout: number | null = null;
+    const schedule = () => {
+      if (timeout !== null) window.clearTimeout(timeout);
+      timeout = window.setTimeout(() => {
+        timeout = null;
+        if (Date.now() - lastFocusRefresh.current < FOCUS_REFRESH_MIN_INTERVAL_MS) return;
+        lastFocusRefresh.current = Date.now();
+        void openView(true);
+      }, FOCUS_REFRESH_DEBOUNCE_MS);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") schedule();
+    };
+    window.addEventListener("focus", schedule);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      if (timeout !== null) window.clearTimeout(timeout);
+      window.removeEventListener("focus", schedule);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [connected, hasView, openView, viewKey]);
+
+  const refreshBoard = () => void openView(true);
+  useEffect(
+    () => (hasView && connected ? registerOpenIssueBoard(refreshBoard) : undefined),
+    [connected, hasView, refreshBoard],
+  );
+
+  // Search and filters belong to the project; the URL carries the rest.
+  const storedPreferences = scopeKey ? readIssuesPreferences(scopeKey) : null;
+  const [editedPreferences, setEditedPreferences] = useState<{
+    key: string;
+    value: IssuesPreferences;
+  } | null>(null);
+  const preferences =
+    (editedPreferences?.key === scopeKey ? editedPreferences.value : storedPreferences) ??
+    DEFAULT_ISSUES_PREFERENCES;
+  const updatePreferences = (patch: Partial<IssuesPreferences>) => {
+    if (!scopeKey) return;
+    const value = { ...preferences, ...patch };
+    setEditedPreferences({ key: scopeKey, value });
+    writeIssuesPreferences(scopeKey, value);
+  };
+  const query = useDeferredValue(preferences.query);
+
+  // A remembered board that is gone falls back to another; its ticket and filter do not carry over.
+  // The notice stays until the person picks another board or project.
+  const [fellBackTo, setFellBackTo] = useState<string | null>(null);
+  const fellBack = fellBackTo !== null && fellBackTo === viewKey;
+  const fallBack = useStableCallback(() => {
+    setFellBackTo(viewKey);
+    updatePreferences({ query: "", issueState: "all", issueHost: "all" });
+    navigate({ boardId: boardId ?? undefined, ticket: undefined }, true);
   });
+  useEffect(() => {
+    if (requestedBoardMissing) fallBack();
+  }, [fallBack, requestedBoardMissing]);
+
+  // The repository's issues, loaded when list mode first shows them.
+  const [issueList, setIssueList] = useState<{
+    key: string;
+    issues: ReadonlyArray<IssueSummary>;
+    nextCursor: string | null;
+  } | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+  const [listPending, setListPending] = useState(false);
+  const listedIssues = issueList?.key === scopeKey ? issueList : null;
+  const loadIssues = useStableCallback(async (cursor: string | null) => {
+    if (!scopeKey || !environmentId || !projectId || !connected) return;
+    const key = scopeKey;
+    setListPending(true);
+    setListError(null);
+    try {
+      const result = unwrapIssueResult(
+        await listIssues({
+          environmentId,
+          input: { projectId, ...(cursor ? { cursor } : {}) },
+        }),
+      );
+      setIssueList((current) => ({
+        key,
+        issues:
+          cursor && current?.key === key ? [...current.issues, ...result.issues] : result.issues,
+        nextCursor: result.nextCursor,
+      }));
+    } catch (failure) {
+      setListError(issueErrorMessage(failure));
+    }
+    setListPending(false);
+  });
+  const listLoaded = listedIssues !== null;
+  useEffect(() => {
+    if (mode === "list" && !listLoaded && scopeKey && connected) void loadIssues(null);
+  }, [connected, listLoaded, loadIssues, mode, scopeKey]);
+
+  const grouped = view ? groupBoardColumns(view, query) : null;
+  const activeAttempts = new Map(
+    (view?.attempts ?? [])
+      .filter((attempt) => attempt.active)
+      .map((attempt) => [ticketKey(attempt.issue), attempt] as const),
+  );
+  const { issueState, issueHost } = preferences;
+  const filteredIssues = (listedIssues?.issues ?? []).filter((issue) =>
+    issueMatchesFilters(issue, { issueState, issueHost, query }),
+  );
+
+  const columnTitle = (columnId: string) =>
+    view?.columns.find((column) => column.id === columnId)?.title ?? columnId;
+  const banners = view ? selectMoveBanners(view.moves, columnTitle) : [];
+
+  const selectedItem = ((): IssueBoardItem | null => {
+    const ticket = search.ticket;
+    if (!ticket) return null;
+    const onBoard = view?.items.find((item) => matchesTicketParam(ticket, item.issue.ref));
+    if (onBoard) return onBoard;
+    const listed = listedIssues?.issues.find((issue) => matchesTicketParam(ticket, issue.ref));
+    return listed ? { issue: listed, itemId: listed.ref.id, columnId: null, version: null } : null;
+  })();
+  // A remembered ticket that left the board is dropped once the fresh copy shows it gone.
+  useEffect(() => {
+    if (search.ticket && mode === "board" && viewFresh && !selectedItem) {
+      navigate({ ticket: undefined }, true);
+    }
+  }, [mode, navigate, search.ticket, selectedItem, viewFresh]);
+
+  const openTicket = (item: IssueBoardItem) => {
+    const refs = [
+      ...(view?.items.map((candidate) => candidate.issue.ref) ?? []),
+      ...(listedIssues?.issues.map((issue) => issue.ref) ?? []),
+    ];
+    navigate({ ticket: formatTicketParam(item.issue.ref, refs) });
+  };
+
+  const [starting, setStarting] = useState<IssueBoardItem | null>(null);
+  const [configuring, setConfiguring] = useState<IssueBoardView | "new" | null>(null);
+  const [moving, setMoving] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const connectFromLink = useStableCallback(() => {
+    setConfiguring("new");
+    navigate({ connect: undefined }, true);
+  });
+  useEffect(() => {
+    if (search.connect && environmentId && projectId && connected) connectFromLink();
+  }, [connectFromLink, connected, environmentId, projectId, search.connect]);
 
   const moveItem = async (item: IssueBoardItem, columnId: string) => {
-    if (!scope || !connected || !view || item.columnId === columnId) return;
-    const currentScope = scopeGeneration.current;
-
-    setPending(true);
-    setError(null);
-
+    if (!view || !viewKey || !environmentId || !connected || item.columnId === columnId) return;
+    const key = viewKey;
+    setMoving(true);
+    setActionError(null);
+    showView(key, {
+      ...view,
+      items: view.items.map((candidate) =>
+        candidate.itemId === item.itemId ? { ...candidate, columnId } : candidate,
+      ),
+    });
     try {
-      const receipt = unwrapWorkResult(
-        await move({
-          environmentId: scope.environmentId,
+      unwrapIssueResult(
+        await moveCommand({
+          environmentId,
           input: {
             requestId: randomUUID(),
             boardId: view.board.id,
             issue: item.issue.ref,
             columnId,
             expectedPlacement: item.columnId,
-            ...(item.version ? { expectedVersion: item.version } : {}),
           },
         }),
       );
-      if (currentScope !== scopeGeneration.current) return;
-
-      if (receipt.status === "failed")
-        throw new Error(receipt.error ?? "The remote board rejected this move.");
-
-      await refreshBoard(view.board.id);
-
-      if (currentScope === scopeGeneration.current) setSelected(null);
     } catch (failure) {
-      if (currentScope === scopeGeneration.current) setError(workError(failure));
-    } finally {
-      if (currentScope === scopeGeneration.current) setPending(false);
+      setActionError(
+        failure instanceof IssueRequestError && failure.reason === "conflict"
+          ? MOVED_ELSEWHERE
+          : issueErrorMessage(failure),
+      );
+    }
+    setMoving(false);
+    void openView(false);
+  };
+
+  const retry = async (move: IssueMove) => {
+    if (!environmentId || !connected) return;
+    setActionError(null);
+    try {
+      unwrapIssueResult(
+        await retryMove({ environmentId, input: { requestId: randomUUID(), moveId: move.id } }),
+      );
+    } catch (failure) {
+      setActionError(issueErrorMessage(failure));
+    }
+    void openView(false);
+  };
+
+  const disconnect = async () => {
+    if (!view || !viewKey || !environmentId || !connected) return;
+    setActionError(null);
+    try {
+      if (!(await disconnectBoard(environmentId, view.board))) return;
+      const removed = view.board.id;
+      setConnectedBoards((current) =>
+        current
+          ? { ...current, boards: current.boards.filter((board) => board.id !== removed) }
+          : current,
+      );
+      showView(viewKey, null);
+      setBoardsRevision((revision) => revision + 1);
+      navigate({ boardId: undefined, ticket: undefined });
+    } catch (failure) {
+      setActionError(issueErrorMessage(failure));
     }
   };
 
   const dragEnd = (event: DragEndEvent) => {
     const item = view?.items.find((candidate) => candidate.itemId === event.active.id);
-
-    if (item && event.over && view?.columns.some((column) => column.id === event.over!.id))
-      void moveItem(item, String(event.over.id));
-  };
-
-  const attempts =
-    view?.attempts.filter(
-      (attempt) =>
-        attempt.link.issue.id === selected?.issue.ref.id &&
-        attempt.link.issue.host === selected?.issue.ref.host &&
-        attempt.link.issue.repository === selected?.issue.ref.repository,
-    ) ?? [];
-
-  const existing = defaultIssueAttempt(attempts);
-  const startIssue = () => {
-    onDismissIssue?.();
-    setStarting(true);
-  };
-  const matchesQuery = (issue: IssueSummary) =>
-    `${issue.title} ${issue.ref.number} ${issue.labels.join(" ")}`
-      .toLowerCase()
-      .includes(query.replace(/^#/, "").toLowerCase());
-  const connectedBoards = boards.filter((board) => board.mapping !== null);
-  const availableBoards = boards.filter((board) => board.mapping === null);
-  const projectOptions = supported
-    .map((project) => {
-      const key = `${project.environmentId}:${project.id}`;
-      const hasBoard =
-        project.environmentId === scope?.environmentId &&
-        project.id === scope.id &&
-        connectedBoards.length > 0
-          ? true
-          : projectBoards[key];
-      return { project, key, hasBoard };
-    })
-    .sort((left, right) => Number(right.hasBoard === true) - Number(left.hasBoard === true));
-  const loadProjectBoards = () => {
-    const current = ++projectMenuGeneration.current;
-    for (const project of supported) {
-      if (
-        environments.find((environment) => environment.environmentId === project.environmentId)
-          ?.connection.phase !== "connected"
-      )
-        continue;
-      const key = `${project.environmentId}:${project.id}`;
-      void trackSync(() =>
-        list({
-          environmentId: project.environmentId,
-          input: { projectId: project.id, connectedOnly: true },
-        }),
-      )
-        .then(unwrapWorkResult)
-        .then((result) => {
-          if (current === projectMenuGeneration.current)
-            setProjectBoards((previous) => ({
-              ...previous,
-              [key]: result.some((board) => board.mapping !== null),
-            }));
-        })
-        .catch(() => {
-          // An unavailable environment is not evidence that a project has no boards.
-          if (current === projectMenuGeneration.current)
-            setProjectBoards((previous) => ({ ...previous, [key]: undefined }));
-        });
+    const target = event.over?.id;
+    if (item && target !== undefined && view?.columns.some((column) => column.id === target)) {
+      void moveItem(item, String(target));
     }
   };
-  const loadDiscovery = () => {
-    if (!scope || !connected) return;
-    const current = scopeGeneration.current;
-    setBoardDiscoveryPending(true);
-    setBoardDiscoveryError(null);
-    void trackSync(() =>
-      list({ environmentId: scope.environmentId, input: { projectId: scope.id } }),
-    )
-      .then(unwrapWorkResult)
-      .then((result) => {
-        if (current === scopeGeneration.current) setBoards(result);
-      })
-      .catch((failure) => {
-        if (current === scopeGeneration.current) setBoardDiscoveryError(workError(failure));
-      })
-      .finally(() => {
-        if (current === scopeGeneration.current) setBoardDiscoveryPending(false);
-      });
-  };
-  const connectBoard = () => {
-    setMode("board");
-    setConfiguration({ initial: null, scopeGeneration: scopeGeneration.current });
-    loadDiscovery();
-  };
+
+  const projectsWithBoards = new Set(boards?.map((board) => board.projectId));
+  const dragDisabled = moving || !connected || !view?.board.mapping;
+  const visibleError =
+    actionError ??
+    (viewError?.key === viewKey ? viewError.message : null) ??
+    boardsError ??
+    (mode === "list" ? listError : null);
 
   return (
-    <div
-      className={`flex min-h-0 min-w-0 flex-1 flex-col gap-4 bg-background px-4 py-4 sm:px-6 ${mode === "board" && view ? "overflow-hidden" : "overflow-auto"}`}
-    >
-      {scope && !connected ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          {scopedEnvironment?.label ?? "Environment"} is not connected. Last loaded data stays
-          visible; reconnect to update it.
-        </p>
-      ) : null}
-      <div className="flex shrink-0 flex-wrap items-center gap-2">
-        <WorkspaceBreadcrumb ariaLabel="Issue board" className="max-w-full">
-          <WorkspaceBreadcrumbItem current={mode === "issues"} className="shrink min-w-0">
-            <Menu
-              onOpenChange={(opened) => {
-                if (opened) loadProjectBoards();
-              }}
-            >
-              <MenuTrigger
-                aria-label="Choose project"
-                render={<Button size="sm" variant="ghost" className="min-w-0 max-w-full" />}
-              >
-                <span className="max-w-64 truncate">{scope?.title ?? "Choose project"}</span>
-                <ChevronDownIcon />
+    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none">
+      <WorkspacePageHeader electron={isElectron}>
+        <WorkTabs current="issues" />
+        {view ? (
+          <BoardSyncStatus sync={displaySync} retryDisabled={!connected} onRetry={refreshBoard} />
+        ) : null}
+        <div className="min-w-0 flex-1" />
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label="Refresh board"
+          disabled={!view || !connected}
+          onClick={refreshBoard}
+        >
+          <RefreshIcon size="md" />
+        </Button>
+      </WorkspacePageHeader>
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1 flex-col gap-4 px-4 py-4 sm:px-6",
+          mode === "board" && view ? "overflow-hidden" : "overflow-y-auto",
+        )}
+      >
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {issueEnvironments.length > 1 ? (
+            <PickerMenu
+              label="Environment"
+              current={environment?.label ?? "Choose an environment"}
+              value={environmentId ?? ""}
+              options={issueEnvironments.map((candidate) => ({
+                value: candidate.environmentId,
+                label: candidate.label,
+              }))}
+              onChange={(value) => onSearchChange({ environmentId: value as EnvironmentId, mode })}
+            />
+          ) : null}
+          {projects.length ? (
+            <PickerMenu
+              label="Project"
+              current={project?.title ?? "Choose a project"}
+              value={projectId ?? ""}
+              options={projects.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.title,
+                ...(boards && !projectsWithBoards.has(candidate.id) ? { note: "No board" } : {}),
+              }))}
+              onChange={(value) =>
+                environmentId &&
+                onSearchChange({ environmentId, projectId: value as ProjectId, mode })
+              }
+            />
+          ) : null}
+          {mode === "board" && project ? (
+            <PickerMenu
+              label="Board"
+              current={view?.board.title ?? (projectBoards.length ? "Choose a board" : "No board")}
+              value={boardId ?? ""}
+              options={projectBoards.map((board) => ({ value: board.id, label: board.title }))}
+              onChange={(value) => navigate({ boardId: value, ticket: undefined })}
+              footer={
+                <MenuItem disabled={!connected} onClick={() => setConfiguring("new")}>
+                  <PlusIcon />
+                  Connect board
+                </MenuItem>
+              }
+            />
+          ) : null}
+          {mode === "list" ? (
+            <Menu>
+              <MenuTrigger render={<Button size="sm" variant="ghost" />}>
+                <ListFilterIcon />
+                Filters
+                {preferences.issueState !== "all" || preferences.issueHost !== "all"
+                  ? ` · ${Number(preferences.issueState !== "all") + Number(preferences.issueHost !== "all")}`
+                  : ""}
               </MenuTrigger>
-              <MenuPopup align="start">
-                <MenuGroup>
-                  <MenuGroupLabel>Projects</MenuGroupLabel>
-                  {projectOptions.map(({ project, key, hasBoard }) => {
-                    const withoutBoard = mode === "board" && hasBoard === false;
-                    return (
-                      <MenuItem
-                        key={key}
-                        aria-label={project.title}
-                        aria-description={withoutBoard ? "No board connected" : undefined}
-                        onClick={() => {
-                          setDismissedTargetKey(targetKey);
-                          setScopeKey(key);
-                          onSelectBoard?.({
-                            environmentId: project.environmentId,
-                            projectId: project.id,
-                          });
-                        }}
-                      >
-                        <span className={withoutBoard ? "text-muted-foreground" : undefined}>
-                          {project.title}
-                        </span>
-                        {withoutBoard ? (
-                          <span className="ml-auto text-xs text-muted-foreground">No board</span>
-                        ) : null}
-                      </MenuItem>
-                    );
-                  })}
-                </MenuGroup>
+              <MenuPopup>
+                <MenuRadioGroup
+                  value={preferences.issueState}
+                  onValueChange={(value) => updatePreferences({ issueState: String(value) })}
+                >
+                  <MenuGroupLabel>State</MenuGroupLabel>
+                  <MenuRadioItem value="all">All states</MenuRadioItem>
+                  {[...new Set(listedIssues?.issues.map((issue) => issue.state))].map((state) => (
+                    <MenuRadioItem key={state} value={state}>
+                      {state}
+                    </MenuRadioItem>
+                  ))}
+                </MenuRadioGroup>
+                <MenuSeparator />
+                <MenuRadioGroup
+                  value={preferences.issueHost}
+                  onValueChange={(value) => updatePreferences({ issueHost: String(value) })}
+                >
+                  <MenuGroupLabel>Repository host</MenuGroupLabel>
+                  <MenuRadioItem value="all">All hosts</MenuRadioItem>
+                  {[...new Set(listedIssues?.issues.map((issue) => issue.ref.host))].map((host) => (
+                    <MenuRadioItem key={host} value={host}>
+                      {host}
+                    </MenuRadioItem>
+                  ))}
+                </MenuRadioGroup>
+                <MenuSeparator />
+                <MenuItem
+                  onClick={() => updatePreferences({ issueState: "all", issueHost: "all" })}
+                >
+                  Clear filters
+                </MenuItem>
               </MenuPopup>
             </Menu>
-          </WorkspaceBreadcrumbItem>
-          {mode === "board" ? (
-            <>
-              <WorkspaceBreadcrumbSeparator />
-              <WorkspaceBreadcrumbItem current>
-                <Menu>
-                  <MenuTrigger
-                    aria-label="Choose board"
-                    render={<Button size="sm" variant="ghost" className="min-w-0 max-w-full" />}
-                  >
-                    <span className="max-w-64 truncate">{view?.board.title ?? "Choose board"}</span>
-                    <ChevronDownIcon />
-                  </MenuTrigger>
-                  <MenuPopup align="start">
-                    {connectedBoards.length ? (
-                      <MenuGroup>
-                        <MenuGroupLabel>Connected boards</MenuGroupLabel>
-                        {connectedBoards.map((board) => (
-                          <MenuItem
-                            key={board.id}
-                            disabled={!connected || pending}
-                            onClick={() => {
-                              setDismissedTargetKey(targetKey);
-                              void refreshBoard(board.id).then((result) => {
-                                if (result && scope)
-                                  onSelectBoard?.({
-                                    environmentId: scope.environmentId,
-                                    projectId: scope.id,
-                                    boardId: result.board.id,
-                                  });
-                              });
-                            }}
-                          >
-                            {board.title}
-                          </MenuItem>
-                        ))}
-                      </MenuGroup>
-                    ) : null}
-                    {connectedBoards.length ? <MenuSeparator /> : null}
-                    <MenuItem disabled={!scope || !connected} onClick={connectBoard}>
-                      <PlusIcon />
-                      Connect board
-                    </MenuItem>
-                  </MenuPopup>
-                </Menu>
-              </WorkspaceBreadcrumbItem>
-            </>
           ) : null}
-        </WorkspaceBreadcrumb>
-        {mode === "board" && view ? (
-          <BoardSyncStatus
-            sync={displaySync}
-            retryDisabled={!connected}
-            onRetry={() => void refreshBoard(view.board.id, { force: true })}
-          />
-        ) : null}
-        <div className="ml-auto flex items-center gap-1" role="group" aria-label="Issues view">
-          <Button
-            size="icon-sm"
-            aria-label="Issue list"
-            aria-pressed={mode === "issues"}
-            variant={mode === "issues" ? "secondary" : "ghost"}
-            onClick={() => setMode("issues")}
-          >
-            <ListIcon />
-          </Button>
-          <Button
-            size="icon-sm"
-            aria-label="Board"
-            aria-pressed={mode === "board"}
-            variant={mode === "board" ? "secondary" : "ghost"}
-            onClick={() => setMode("board")}
-          >
-            <Columns3Icon />
-          </Button>
-          <Menu>
-            <MenuTrigger
-              render={<Button size="icon-sm" variant="ghost" aria-label="Board settings" />}
+          <div className="ml-auto flex items-center gap-1" role="group" aria-label="Issues view">
+            <Button
+              size="icon-sm"
+              aria-label="Issue list"
+              aria-pressed={mode === "list"}
+              variant={mode === "list" ? "secondary" : "ghost"}
+              onClick={() => navigate({ mode: "list" })}
             >
-              <MoreHorizontalIcon />
-            </MenuTrigger>
-            <MenuPopup align="end">
-              {view ? (
-                <MenuItem
-                  onClick={() =>
-                    setConfiguration({ initial: view, scopeGeneration: scopeGeneration.current })
-                  }
-                  disabled={!connected || pending}
-                >
-                  Column mapping
-                </MenuItem>
-              ) : null}
-              <MenuItem disabled={!scope || !connected} onClick={connectBoard}>
-                Connect board
-              </MenuItem>
-              {view ? (
-                <>
-                  <MenuItem
-                    disabled={!connected || pending}
-                    onClick={() => void refreshBoard(view.board.id, { force: true })}
-                  >
-                    Refresh board
-                  </MenuItem>
-                  <MenuSeparator />
-                  <MenuItem
-                    disabled={!connected || pending}
-                    onClick={() => {
-                      if (!scope || !connected) return;
-                      const currentScope = scopeGeneration.current;
-                      setPending(true);
-                      setError(null);
-                      void disconnect({
-                        environmentId: scope.environmentId,
-                        input: { requestId: randomUUID(), boardId: view.board.id },
-                      })
-                        .then(unwrapWorkResult)
-                        .then(() => {
-                          if (currentScope === scopeGeneration.current) forgetBoard(view.board.id);
-                        })
-                        .catch((failure) => {
-                          if (currentScope === scopeGeneration.current)
-                            setError(workError(failure));
-                        })
-                        .finally(() => {
-                          if (currentScope === scopeGeneration.current) setPending(false);
-                        });
-                    }}
-                  >
-                    Disconnect board
-                  </MenuItem>
-                </>
-              ) : null}
-            </MenuPopup>
-          </Menu>
-        </div>
-      </div>
-      {mode === "issues" || view ? (
-        <InputGroup>
-          <InputGroupAddon>
-            <SearchIcon />
-          </InputGroupAddon>
-          <InputGroupInput
-            aria-label="Search issues"
-            placeholder="Search issues or #number"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </InputGroup>
-      ) : null}
-      {!scope && supported.length ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          The requested project is unavailable. Choose a connected project to view its issues.
-        </p>
-      ) : !supported.length ? (
-        <p className="text-sm text-muted-foreground">
-          Issues are unavailable. Connect an environment that supports issue boards.
-        </p>
-      ) : mode === "board" && !view && !pending && connected && !error ? (
-        <Empty size="compact">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
+              <ListIcon />
+            </Button>
+            <Button
+              size="icon-sm"
+              aria-label="Board"
+              aria-pressed={mode === "board"}
+              variant={mode === "board" ? "secondary" : "ghost"}
+              onClick={() => navigate({ mode: "board" })}
+            >
               <Columns3Icon />
-            </EmptyMedia>
-            <EmptyTitle>No board connected to {scope?.title}</EmptyTitle>
-            <EmptyDescription>
-              Connect an existing GitHub Project or Azure DevOps board to work on its tickets here.
-            </EmptyDescription>
-          </EmptyHeader>
-          <EmptyContent>
-            <Button size="sm" onClick={connectBoard}>
-              <PlusIcon />
-              Connect board
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setMode("issues")}>
-              View repository issues
-            </Button>
-          </EmptyContent>
-        </Empty>
-      ) : null}
-      {pending && !view && !issueList.length ? (
-        <p role="status" className="text-xs text-muted-foreground">
-          Updating board…
-        </p>
-      ) : null}
-      {error ? (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
-      {view?.moves
-        .filter((receipt) => receipt.status === "failed" || receipt.status === "pending")
-        .map((receipt) => (
-          <div key={receipt.id} className="flex items-center gap-2 text-xs">
-            <span>
-              {receipt.status === "pending" ? "Board synchronization pending" : receipt.error} · #
-              {receipt.issue.number}
-            </span>
-            {receipt.status === "failed" ? (
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => {
-                  const currentScope = scopeGeneration.current;
-                  if (scope && connected)
-                    void retry({
-                      environmentId: scope.environmentId,
-                      input: { requestId: randomUUID(), moveId: receipt.id },
-                    })
-                      .then(unwrapWorkResult)
-                      .then(() => {
-                        if (currentScope === scopeGeneration.current)
-                          return refreshBoard(view.board.id);
-                      })
-                      .catch((failure) => {
-                        if (currentScope === scopeGeneration.current) setError(workError(failure));
-                      });
-                }}
+            <Menu>
+              <MenuTrigger
+                render={<Button size="icon-sm" variant="ghost" aria-label="Board settings" />}
               >
-                Retry
-              </Button>
-            ) : null}
+                <MoreHorizontalIcon />
+              </MenuTrigger>
+              <MenuPopup align="end">
+                <MenuGroup>
+                  {view ? (
+                    <MenuItem disabled={!connected} onClick={() => setConfiguring(view)}>
+                      Configure columns
+                    </MenuItem>
+                  ) : null}
+                  <MenuItem disabled={!project || !connected} onClick={() => setConfiguring("new")}>
+                    Connect board
+                  </MenuItem>
+                  {view ? (
+                    <MenuItem disabled={!connected} onClick={refreshBoard}>
+                      Refresh board
+                    </MenuItem>
+                  ) : null}
+                </MenuGroup>
+                {view ? (
+                  <>
+                    <MenuSeparator />
+                    <MenuItem
+                      variant="destructive"
+                      disabled={!connected}
+                      onClick={() => void disconnect()}
+                    >
+                      Disconnect board
+                    </MenuItem>
+                  </>
+                ) : null}
+              </MenuPopup>
+            </Menu>
           </div>
-        ))}
-      {view ? (
-        <BoardDeliveryNotices
-          deliveries={displaySync?.deliveries}
-          labelOf={labelOf}
-          disabled={!connected}
-          onRetry={() => deliverNow(view.board.id)}
-          onForget={(destinationEnvironmentId) => {
-            if (!scope || !connected) return;
-            const currentScope = scopeGeneration.current;
-            void forgetPeer({
-              environmentId: scope.environmentId,
-              input: { destinationEnvironmentId },
-            })
-              .then(unwrapWorkResult)
-              .then(({ revokedRemotely }) => {
-                if (!revokedRemotely && currentScope === scopeGeneration.current)
-                  setError(
-                    `Satellite could not reach ${labelOf(destinationEnvironmentId)}, so its Connections settings may still list this board's access. Revoke it there to remove it.`,
-                  );
-              })
-              .catch((failure) => {
-                if (currentScope === scopeGeneration.current) setError(workError(failure));
-              });
-          }}
-        />
-      ) : null}
-      {mode === "issues" ? (
-        <section>
-          <Menu>
-            <MenuTrigger render={<Button size="sm" variant="ghost" />}>
-              <ListFilterIcon />
-              Filters
-              {issueState !== "all" || issueHost !== "all"
-                ? ` · ${Number(issueState !== "all") + Number(issueHost !== "all")}`
-                : ""}
-            </MenuTrigger>
-            <MenuPopup>
-              <MenuRadioGroup value={issueState} onValueChange={setIssueState}>
-                <MenuGroupLabel>State</MenuGroupLabel>
-                <MenuRadioItem value="all">All states</MenuRadioItem>
-                {[...new Set(issueList.map((issue) => issue.state))].map((state) => (
-                  <MenuRadioItem key={state} value={state}>
-                    {state}
-                  </MenuRadioItem>
-                ))}
-              </MenuRadioGroup>
-              <MenuSeparator />
-              <MenuRadioGroup value={issueHost} onValueChange={setIssueHost}>
-                <MenuGroupLabel>Repository host</MenuGroupLabel>
-                <MenuRadioItem value="all">All hosts</MenuRadioItem>
-                {[...new Set(issueList.map((issue) => issue.ref.host))].map((host) => (
-                  <MenuRadioItem key={host} value={host}>
-                    {host}
-                  </MenuRadioItem>
-                ))}
-              </MenuRadioGroup>
-              <MenuSeparator />
-              <MenuItem
-                onClick={() => {
-                  setIssueState("all");
-                  setIssueHost("all");
-                }}
+        </div>
+        {mode === "list" || view ? (
+          <InputGroup>
+            <InputGroupAddon>
+              <SearchIcon />
+            </InputGroupAddon>
+            <InputGroupInput
+              aria-label="Search tickets"
+              placeholder="Search by title or #number"
+              value={preferences.query}
+              onChange={(event) => updatePreferences({ query: event.target.value })}
+            />
+          </InputGroup>
+        ) : null}
+        {environment && !connected ? (
+          <Notice>
+            {environment.label} is not connected. The last loaded board stays visible; reconnect to
+            update it.
+          </Notice>
+        ) : null}
+        {issueEnvironments.length === 0 ? (
+          <Notice>
+            Issues are unavailable. Connect an environment that supports issue boards.
+          </Notice>
+        ) : environment && projects.length === 0 ? (
+          <Notice>Add a project to {environment.label} to connect its board.</Notice>
+        ) : null}
+        {requestedBoardMissing || fellBack ? (
+          <Notice>The requested board is no longer connected. Showing this project's board.</Notice>
+        ) : null}
+        {visibleError ? <Notice tone="error">{visibleError}</Notice> : null}
+        {mode === "board"
+          ? banners.map(({ move, message }) => (
+              <Alert
+                key={move.id}
+                variant={
+                  move.status === "failed"
+                    ? "error"
+                    : move.status === "pending"
+                      ? "info"
+                      : "warning"
+                }
               >
-                Clear filters
-              </MenuItem>
-            </MenuPopup>
-          </Menu>
-          <div className="mt-3 space-y-1">
-            {issueList
-              .filter(
-                (issue) =>
-                  (issueState === "all" || issue.state === issueState) &&
-                  (issueHost === "all" || issue.ref.host === issueHost) &&
-                  matchesQuery(issue),
-              )
-              .map((issue) => (
+                <AlertDescription>
+                  #{move.issue.number} · {message}
+                </AlertDescription>
+                <AlertAction>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    disabled={!connected}
+                    onClick={() => void retry(move)}
+                  >
+                    {move.status === "pending" ? "Retry now" : "Retry"}
+                  </Button>
+                </AlertAction>
+              </Alert>
+            ))
+          : null}
+        {mode === "board" && project && boards !== null && !boardId && connected ? (
+          <Empty size="compact">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Columns3Icon />
+              </EmptyMedia>
+              <EmptyTitle>No board connected to {project.title}</EmptyTitle>
+              <EmptyDescription>
+                Connect an existing GitHub Project or Azure DevOps board to work on its tickets
+                here.
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button size="sm" onClick={() => setConfiguring("new")}>
+                <PlusIcon />
+                Connect board
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => navigate({ mode: "list" })}>
+                View repository issues
+              </Button>
+            </EmptyContent>
+          </Empty>
+        ) : null}
+        {mode === "board" && boardId && !view && connected && !visibleError ? (
+          <Notice>Loading board…</Notice>
+        ) : null}
+        {mode === "list" ? (
+          <section>
+            <div className="space-y-1">
+              {filteredIssues.map((issue) => (
                 <button
                   type="button"
-                  key={`${issue.ref.host}:${issue.ref.repository}:${issue.ref.id}`}
-                  className={`${PULL_REQUEST_ROW_CLASS} px-2 py-2 hover:bg-accent/40 outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+                  key={keyOf(issue.ref.host, issue.ref.repository, issue.ref.id)}
+                  className={cn(
+                    PULL_REQUEST_ROW_CLASS,
+                    "px-2 py-2 outline-none hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  )}
                   onClick={() =>
-                    void select(
+                    openTicket(
                       view?.items.find(
                         (item) =>
                           item.issue.ref.id === issue.ref.id &&
@@ -1144,770 +1002,117 @@ export function IssuesBoard({
                   />
                 </button>
               ))}
-          </div>
-          {nextCursor && scope ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!connected}
-              onClick={() => {
-                if (!connected) return;
-                const currentScope = scopeGeneration.current;
-                void trackSync(() =>
-                  listIssues({
-                    environmentId: scope.environmentId,
-                    input: { projectId: scope.id, cursor: nextCursor },
-                  }),
-                )
-                  .then(unwrapWorkResult)
-                  .then((result) => {
-                    if (currentScope !== scopeGeneration.current) return;
-                    setIssueList((current) => [...current, ...result.issues]);
-                    setNextCursor(result.nextCursor);
-                  })
-                  .catch((failure) => {
-                    if (currentScope === scopeGeneration.current) setError(workError(failure));
-                  });
-              }}
-            >
-              Load more
-            </Button>
-          ) : null}
-          {!issueList.length && !pending && connected ? (
-            <p className="mt-4 text-sm text-muted-foreground">
-              No issues loaded for this repository.
-            </p>
-          ) : null}
-        </section>
-      ) : null}
-      {mode === "board" && view ? (
-        <DndContext onDragEnd={dragEnd}>
-          <div className="min-h-0 flex-1 overflow-auto">
-            <div className="flex min-h-full w-max min-w-full items-stretch gap-3 pb-4">
-              {view.columns.map((column) => (
-                <BoardColumn
-                  key={column.id}
-                  id={column.id}
-                  title={column.title}
-                  tone={
-                    column.id === view.board.mapping?.inProgress
-                      ? "progress"
-                      : column.id === view.board.mapping?.inPullRequest
-                        ? "review"
-                        : column.id === view.board.mapping?.completed
-                          ? "completed"
-                          : "muted"
-                  }
-                  count={
-                    view.items.filter(
-                      (item) => item.columnId === column.id && matchesQuery(item.issue),
-                    ).length
-                  }
-                >
-                  {view.items
-                    .filter((item) => item.columnId === column.id && matchesQuery(item.issue))
-                    .map((item) => (
-                      <BoardCard
-                        key={item.itemId}
-                        item={item}
-                        onOpen={() => void select(item)}
-                        disabled={pending || !connected || !view.board.mapping}
-                      />
-                    ))}
-                </BoardColumn>
-              ))}
-              {view.items.some(
-                (item) => !view.columns.some((column) => column.id === item.columnId),
-              ) ? (
-                <BoardColumn
-                  id="unassigned"
-                  title="Unassigned"
-                  count={
-                    view.items.filter(
-                      (item) =>
-                        !view.columns.some((column) => column.id === item.columnId) &&
-                        matchesQuery(item.issue),
-                    ).length
-                  }
-                >
-                  {view.items
-                    .filter(
-                      (item) =>
-                        !view.columns.some((column) => column.id === item.columnId) &&
-                        matchesQuery(item.issue),
-                    )
-                    .map((item) => (
-                      <BoardCard
-                        key={item.itemId}
-                        item={item}
-                        onOpen={() => void select(item)}
-                        disabled={pending || !connected}
-                      />
-                    ))}
-                </BoardColumn>
-              ) : null}
             </div>
-          </div>
-        </DndContext>
-      ) : null}
-      {scope && connected && configuration ? (
-        <BoardConfiguration
-          trackSync={trackSync}
-          key={`${scope.environmentId}:${scope.id}`}
-          environmentId={scope.environmentId}
-          projectId={scope.id}
-          projectTitle={scope.title}
-          initial={configuration.initial}
-          availableBoards={availableBoards}
-          discoveryPending={boardDiscoveryPending}
-          discoveryFailure={boardDiscoveryError}
-          onDiscovered={(result) => {
-            if (configuration.scopeGeneration !== scopeGeneration.current) return;
-            setBoards(result);
-            setBoardDiscoveryError(null);
-            setError((current) => (current === boardDiscoveryError ? null : current));
-          }}
-          onClose={() => setConfiguration(null)}
-          onConfigured={(result) => {
-            if (configuration.scopeGeneration !== scopeGeneration.current) return;
-            setDismissedTargetKey(targetKey);
-            onSelectBoard?.({
-              environmentId: scope.environmentId,
-              projectId: scope.id,
-              boardId: result.board.id,
-            });
-            setView(result);
-            setBoards((current) => [
-              ...current.filter((board) => board.id !== result.board.id),
-              result.board,
-            ]);
-            setConfiguration(null);
-          }}
-        />
-      ) : null}
-      {selected && !starting ? (
-        <Dialog
-          open
-          onOpenChange={(opened) => {
-            if (!opened) {
-              detailGeneration.current++;
-              setSelected(null);
-              onDismissIssue?.();
-            }
-          }}
-        >
-          <DialogPopup className="max-w-3xl">
-            <DialogHeader>
-              <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                <TicketIcon className="size-3.5" />#{selected.issue.ref.number} ·{" "}
-                {selected.issue.state}
-              </p>
-              <DialogTitle>{selected.issue.title}</DialogTitle>
-            </DialogHeader>
-            <DialogPanel>
-              <a
-                href={selected.issue.ref.url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs underline"
+            {listedIssues?.nextCursor ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!connected || listPending}
+                onClick={() => void loadIssues(listedIssues.nextCursor)}
               >
-                Open in repository host
-              </a>
-              {detail ? (
-                <div className="mt-4 space-y-5">
-                  <p className="text-xs text-muted-foreground">
-                    {detail.author?.name ?? "Unknown author"} · {detail.ref.repository}
-                    {detail.labels.length ? ` · ${detail.labels.join(" · ")}` : ""}
-                  </p>
-                  {scope ? (
-                    <PullRequestMarkdown
-                      text={detail.body || "No description."}
-                      cwd={scope.workspaceRoot}
-                      environmentId={scope.environmentId}
-                    />
-                  ) : null}
-                  <details className="border-t border-border/60 pt-3">
-                    <summary className="cursor-pointer text-xs text-muted-foreground">
-                      All issue details
-                    </summary>
-                    <div className="mt-3">
-                      {" "}
-                      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs">
-                        <dt className="text-muted-foreground">State</dt>
-                        <dd>{detail.state}</dd>
-                        <dt className="text-muted-foreground">Repository host</dt>
-                        <dd>
-                          {detail.ref.host} · {detail.ref.repository}
-                        </dd>
-                        <dt className="text-muted-foreground">Author</dt>
-                        <dd>{detail.author?.name ?? "Unavailable"}</dd>
-                        <dt className="text-muted-foreground">Assignees</dt>
-                        <dd>
-                          {detail.assignees?.map((actor) => actor.name).join(", ") || "Unassigned"}
-                        </dd>
-                        {detail.createdAt ? (
-                          <>
-                            <dt className="text-muted-foreground">Created</dt>
-                            <dd>
-                              <time dateTime={detail.createdAt}>
-                                {new Date(detail.createdAt).toLocaleString()}
-                              </time>
-                            </dd>
-                          </>
-                        ) : null}
-                        <dt className="text-muted-foreground">Updated</dt>
-                        <dd>
-                          <time dateTime={detail.updatedAt}>
-                            {new Date(detail.updatedAt).toLocaleString()}
-                          </time>
-                        </dd>
-                        <dt className="text-muted-foreground">Labels</dt>
-                        <dd>{detail.labels.join(" · ") || "None"}</dd>
-                      </dl>
-                    </div>
-                  </details>
-                  {detail.hostFields && Object.keys(detail.hostFields).length ? (
-                    <details className="border-t pt-3">
-                      <summary className="cursor-pointer text-sm font-medium">
-                        Repository host fields ({Object.keys(detail.hostFields).length})
-                      </summary>
-                      <dl className="mt-3 grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-x-4 gap-y-2 text-xs">
-                        {Object.entries(detail.hostFields).map(([name, value]) => (
-                          <div key={name} className="contents">
-                            <dt className="break-words text-muted-foreground">{name}</dt>
-                            <dd className="whitespace-pre-wrap break-words">{value}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    </details>
-                  ) : null}
-                  {detail.comments?.length ? (
-                    <section className="space-y-4 border-t pt-3">
-                      <h3 className="text-sm font-medium">Comments ({detail.comments.length})</h3>
-                      {detail.comments.map((comment) => (
-                        <article key={comment.id} className="space-y-2 border-b pb-3">
-                          <p className="text-xs text-muted-foreground">
-                            {comment.author?.name ?? "Unknown author"} ·{" "}
-                            <time dateTime={comment.createdAt}>
-                              {new Date(comment.createdAt).toLocaleString()}
-                            </time>
-                          </p>
-                          {scope ? (
-                            <PullRequestMarkdown
-                              text={comment.body}
-                              cwd={scope.workspaceRoot}
-                              environmentId={scope.environmentId}
-                            />
-                          ) : null}
-                        </article>
-                      ))}
-                    </section>
-                  ) : null}
-                </div>
-              ) : (
-                <p role="status" className="mt-4 text-sm text-muted-foreground">
-                  Loading full issue details…
-                </p>
-              )}
-              {error ? <p className="text-sm text-destructive">{error}</p> : null}
-              {attempts.length ? (
-                <div className="mt-5 grid gap-2 rounded-xl border border-border/60 bg-card/40 p-4">
-                  <h3 className="text-sm font-medium">Linked work attempts</h3>
-                  {attempts.map((attempt) => (
-                    <div key={attempt.link.attemptId} className="space-y-2 py-1">
-                      <p className="text-xs text-muted-foreground">
-                        {attempt.active ? "Active" : "Earlier"} · {attempt.status}
-                      </p>
-                      <p className="break-all font-mono text-xs">
-                        {attempt.worktreePath ?? "Worktree not ready"}
-                      </p>
-                      {attempt.threadId ? (
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          onClick={() => {
-                            if (attempt.threadId)
-                              void navigate({
-                                to: "/$environmentId/$threadId",
-                                params: {
-                                  environmentId: attempt.link.destinationEnvironmentId,
-                                  threadId: attempt.threadId,
-                                },
-                              });
-                          }}
-                        >
-                          Open thread
-                        </Button>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {view?.items.some((item) => item.itemId === selected.itemId) ? (
-                <label className="mt-4 grid gap-1 text-xs">
-                  Move to column
-                  <select
-                    aria-label="Move issue to column"
-                    disabled={pending || !connected}
-                    value={selected.columnId ?? ""}
-                    onChange={(event) => void moveItem(selected, event.target.value)}
-                    className="rounded-md border bg-background px-2 py-2"
-                  >
-                    {view?.columns.map((column) => (
-                      <option key={column.id} value={column.id}>
-                        {column.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-            </DialogPanel>
-            <DialogFooter>
-              {existing?.worktreePath && onViewWork ? (
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    if (!existing.worktreePath) return;
-                    onViewWork({
-                      environmentId: existing.link.destinationEnvironmentId,
-                      worktreePath: existing.worktreePath,
-                    });
-                  }}
-                >
-                  View work
-                </Button>
-              ) : null}
-              {view && issueCanStart(selected, view.board.mapping) ? (
-                existing?.threadId ? (
-                  <>
-                    <Button
-                      onClick={() => {
-                        if (existing.threadId)
-                          void navigate({
-                            to: "/$environmentId/$threadId",
-                            params: {
-                              environmentId: existing.link.destinationEnvironmentId,
-                              threadId: existing.threadId,
-                            },
-                          });
-                      }}
-                    >
-                      Continue thread
-                    </Button>
-                    <Button variant="outline" disabled={!connected || pending} onClick={startIssue}>
-                      New attempt
-                    </Button>
-                  </>
-                ) : (
-                  <Button disabled={!connected || pending} onClick={startIssue}>
-                    Start
-                  </Button>
-                )
-              ) : null}
-            </DialogFooter>
-          </DialogPopup>
-        </Dialog>
+                Load more
+              </Button>
+            ) : null}
+            {listPending && !listedIssues ? <Notice>Loading issues…</Notice> : null}
+            {listedIssues && filteredIssues.length === 0 ? (
+              <Notice>
+                {listedIssues.issues.length ? "No issues match." : "No issues in this repository."}
+              </Notice>
+            ) : null}
+          </section>
+        ) : null}
+        {mode === "board" && view && grouped ? (
+          <DndContext onDragEnd={dragEnd}>
+            <div className="min-h-0 flex-1 overflow-auto">
+              <div className="flex min-h-full w-max min-w-full items-stretch gap-3 pb-4">
+                {grouped.columns.map(({ column, items }) => (
+                  <BoardColumn
+                    key={column.id}
+                    id={column.id}
+                    title={column.title}
+                    tone={columnTone(column.id, view.board.mapping)}
+                    items={items}
+                    activeAttempts={activeAttempts}
+                    disabled={dragDisabled}
+                    onOpen={openTicket}
+                  />
+                ))}
+                {grouped.unassigned.length ? (
+                  <BoardColumn
+                    id="unassigned"
+                    title="Unassigned"
+                    tone="muted"
+                    items={grouped.unassigned}
+                    activeAttempts={activeAttempts}
+                    disabled={dragDisabled}
+                    onOpen={openTicket}
+                  />
+                ) : null}
+              </div>
+            </div>
+          </DndContext>
+        ) : null}
+      </div>
+      {selectedItem && environmentId && !starting ? (
+        <IssueDetailDialog
+          key={keyOf(
+            selectedItem.issue.ref.host,
+            selectedItem.issue.ref.repository,
+            selectedItem.issue.ref.id,
+          )}
+          environmentId={environmentId}
+          project={project}
+          view={view}
+          item={selectedItem}
+          connected={connected}
+          moving={moving}
+          onClose={() => navigate({ ticket: undefined })}
+          onStart={() => {
+            setStarting(selectedItem);
+            navigate({ ticket: undefined });
+          }}
+          onMove={(columnId) => void moveItem(selectedItem, columnId)}
+          onAttemptsChanged={() => void openView(false)}
+        />
       ) : null}
-      {starting && selected && view && scope ? (
+      {starting && view && environmentId ? (
         <IssueStartDialog
-          environmentId={scope.environmentId}
-          board={view}
-          item={selected}
-          onClose={() => {
-            setStarting(false);
-            setSelected(null);
+          environmentId={environmentId}
+          board={view.board}
+          item={starting}
+          onClose={() => setStarting(null)}
+        />
+      ) : null}
+      {configuring && environmentId && projectId && connected ? (
+        <IssueBoardConfigurationDialog
+          environmentId={environmentId}
+          projects={projects.filter((candidate) => candidate.id === projectId)}
+          initialProjectId={projectId}
+          initial={configuring === "new" ? null : configuring}
+          onClose={() => setConfiguring(null)}
+          onConfigured={(result) => {
+            setConfiguring(null);
+            showView(keyOf(environmentId, result.board.projectId, result.board.id), result);
+            setConnectedBoards((current) =>
+              current?.environmentId === environmentId
+                ? {
+                    ...current,
+                    boards: [
+                      ...current.boards.filter((board) => board.id !== result.board.id),
+                      result.board,
+                    ],
+                  }
+                : current,
+            );
+            setBoardsRevision((revision) => revision + 1);
+            navigate({
+              projectId: result.board.projectId,
+              boardId: result.board.id,
+              mode: "board",
+            });
           }}
         />
       ) : null}
-    </div>
-  );
-}
-
-function BoardConfiguration({
-  trackSync,
-  environmentId,
-  projectId,
-  projectTitle,
-  initial,
-  availableBoards,
-  discoveryPending,
-  discoveryFailure,
-  onDiscovered,
-  onClose,
-  onConfigured,
-}: {
-  trackSync: <T>(request: () => Promise<T>) => Promise<T>;
-  environmentId: EnvironmentId;
-  projectId: IssueBoardSummary["projectId"];
-  projectTitle: string;
-  initial: IssueBoardView | null;
-  availableBoards: readonly IssueBoardSummary[];
-  discoveryPending: boolean;
-  discoveryFailure: string | null;
-  onDiscovered: (boards: readonly IssueBoardSummary[]) => void;
-  onClose: () => void;
-  onConfigured: (view: IssueBoardView) => void;
-}) {
-  const [kind, setKind] = useState<IssueBoardLocator["kind"]>(
-    initial?.board.locator.kind ?? "github-project",
-  );
-
-  const [host, setHost] = useState(initial?.board.locator.host ?? "github.com");
-
-  const [owner, setOwner] = useState("");
-  const [ownerKind, setOwnerKind] = useState<"user" | "organization">("organization");
-
-  const [number, setNumber] = useState("");
-  const [organization, setOrganization] = useState("");
-
-  const [project, setProject] = useState("");
-  const [team, setTeam] = useState("");
-  const [boardId, setBoardId] = useState("");
-
-  const [view, setView] = useState(initial);
-  const [mapping, setMapping] = useState<IssueBoardMapping | null>(initial?.board.mapping ?? null);
-  const [manual, setManual] = useState(false);
-  const [retryError, setRetryError] = useState<string | null | undefined>(undefined);
-  const discoveryError = retryError === undefined ? discoveryFailure : retryError;
-  const [retryingDiscovery, setRetryingDiscovery] = useState(false);
-
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const open = useAtomCommand(issuesEnvironment.openBoard, { reportFailure: false });
-  const listBoards = useAtomCommand(issuesEnvironment.listBoards, { reportFailure: false });
-
-  const retryDiscovery = async () => {
-    setRetryingDiscovery(true);
-    setRetryError(null);
-    try {
-      const result = unwrapWorkResult(
-        await trackSync(() =>
-          listBoards({
-            environmentId,
-            input: { projectId },
-          }),
-        ),
-      );
-      onDiscovered(result);
-    } catch (failure) {
-      setRetryError(workError(failure));
-    } finally {
-      setRetryingDiscovery(false);
-    }
-  };
-
-  const configure = useAtomCommand(issuesEnvironment.configureBoard, { reportFailure: false });
-
-  const locator: IssueBoardLocator =
-    kind === "github-project"
-      ? { kind, host, owner, ownerKind, projectNumber: Number(number) }
-      : { kind, host, organization, project, team, boardId };
-
-  const load = async (selectedLocator: IssueBoardLocator) => {
-    setBusy(true);
-    setError(null);
-
-    try {
-      const result = unwrapWorkResult(
-        await trackSync(() =>
-          open({
-            environmentId,
-            input: { projectId, locator: selectedLocator },
-          }),
-        ),
-      );
-
-      setView(result);
-      setMapping(
-        result.board.mapping ?? {
-          ready: [],
-          inProgress: "",
-          inPullRequest: "",
-          completed: "",
-          moveOnMerge: false,
-        },
-      );
-    } catch (failure) {
-      setError(workError(failure));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog
-      open
-      onOpenChange={(opened) => {
-        if (!opened && !busy) onClose();
-      }}
-    >
-      <DialogPopup className="max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{initial ? "Configure board columns" : "Connect board"}</DialogTitle>
-          <DialogDescription>
-            {view
-              ? `${view.board.title} · ${projectTitle}. Choose the columns for this project's workflow.`
-              : manual
-                ? `Enter the details of an existing board to connect it to ${projectTitle}.`
-                : `Choose a board to connect to ${projectTitle}. These boards are available through your account.`}
-          </DialogDescription>
-        </DialogHeader>
-        <DialogPanel>
-          {busy ? (
-            <div
-              role="status"
-              className="mb-3 flex items-center gap-2 text-sm text-muted-foreground"
-            >
-              <SatelliteLoader loading size={22} role="presentation" />
-              {view ? "Saving board mapping…" : "Loading board columns…"}
-            </div>
-          ) : null}
-          {!view && !manual ? (
-            <div className="grid gap-2">
-              {discoveryPending || retryingDiscovery ? (
-                <div
-                  role="status"
-                  className="flex items-center gap-2 text-sm text-muted-foreground"
-                >
-                  <SatelliteLoader
-                    loading
-                    size={22}
-                    role="presentation"
-                    aria-label="Finding available boards"
-                  />
-                  Finding available boards…
-                </div>
-              ) : discoveryError ? (
-                <div className="grid gap-2">
-                  <p role="alert" className="text-sm text-destructive">
-                    Could not discover boards: {discoveryError}
-                  </p>
-                  <Button variant="outline" disabled={busy} onClick={() => void retryDiscovery()}>
-                    Retry discovery
-                  </Button>
-                </div>
-              ) : availableBoards.length === 0 ? (
-                <p role="status">
-                  No unconnected boards were found in your account's repository owner or
-                  organisation.
-                </p>
-              ) : null}
-              {availableBoards.map((board) => (
-                <div key={board.id} className="grid gap-1">
-                  <Button
-                    variant="outline"
-                    disabled={busy || discoveryPending || retryingDiscovery}
-                    onClick={() => void load(board.locator)}
-                  >
-                    <Columns3Icon />
-                    {board.title}
-                  </Button>
-                  <p className="px-1 text-xs text-muted-foreground">
-                    {board.locator.host} ·{" "}
-                    {board.locator.kind === "github-project"
-                      ? `${board.locator.owner} / Project #${board.locator.projectNumber}`
-                      : `${board.locator.organization} / ${board.locator.project} / ${board.locator.team}`}
-                  </p>
-                </div>
-              ))}
-            </div>
-          ) : !view ? (
-            <div className="grid gap-3">
-              <label className="grid gap-1 text-xs">
-                Repository host
-                <select
-                  value={kind}
-                  onChange={(event) => {
-                    const next =
-                      event.target.value === "azure-board" ? "azure-board" : "github-project";
-                    setKind(next);
-                    setHost(next === "azure-board" ? "dev.azure.com" : "github.com");
-                  }}
-                  className="rounded-md border bg-background p-2"
-                >
-                  <option value="github-project">GitHub Project</option>
-                  <option value="azure-board">Azure DevOps board</option>
-                </select>
-              </label>
-              <label className="grid gap-1 text-xs">
-                Host
-                <Input value={host} onChange={(event) => setHost(event.target.value)} />
-              </label>
-              {kind === "github-project" ? (
-                <>
-                  <label className="grid gap-1 text-xs">
-                    Owner
-                    <Input value={owner} onChange={(event) => setOwner(event.target.value)} />
-                  </label>
-                  <label className="grid gap-1 text-xs">
-                    Owner type
-                    <select
-                      value={ownerKind}
-                      onChange={(event) =>
-                        setOwnerKind(event.target.value === "user" ? "user" : "organization")
-                      }
-                      className="rounded-md border bg-background p-2"
-                    >
-                      <option value="organization">Organization</option>
-                      <option value="user">User</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-1 text-xs">
-                    Project number
-                    <Input value={number} onChange={(event) => setNumber(event.target.value)} />
-                  </label>
-                </>
-              ) : (
-                <>
-                  {[
-                    ["Organization", organization, setOrganization],
-                    ["Project", project, setProject],
-                    ["Team", team, setTeam],
-                    ["Board ID", boardId, setBoardId],
-                  ].map(([label, value, setter]) =>
-                    typeof setter === "function" ? (
-                      <label key={String(label)} className="grid gap-1 text-xs">
-                        {String(label)}
-                        <Input
-                          value={String(value)}
-                          onChange={(event) => setter(event.target.value)}
-                        />
-                      </label>
-                    ) : null,
-                  )}
-                </>
-              )}
-              <Button variant="outline" disabled={busy} onClick={() => void load(locator)}>
-                Load remote columns
-              </Button>
-            </div>
-          ) : (
-            <div className="grid gap-3">
-              <div className="grid gap-1 text-xs">
-                <span>Ready for development</span>
-                <IssueReadyColumnsPicker
-                  columns={view.columns}
-                  value={mapping ? issueReadyColumnIds(mapping) : []}
-                  disabled={busy}
-                  onChange={(ready) =>
-                    setMapping((current) => (current ? { ...current, ready } : current))
-                  }
-                />
-                <p className="text-muted-foreground">
-                  Tickets in any selected column can be started.
-                </p>
-              </div>
-              {(
-                [
-                  ["inProgress", "In progress"],
-                  ["inPullRequest", "In PR"],
-                  ["completed", "Completed"],
-                ] as const
-              ).map(([key, label]) => (
-                <label key={key} className="grid gap-1 text-xs">
-                  {label}
-                  <select
-                    value={mapping?.[key] ?? ""}
-                    onChange={(event) =>
-                      setMapping((current) => ({
-                        ...(current ?? {
-                          ready: [],
-                          inProgress: "",
-                          inPullRequest: "",
-                          completed: "",
-                          moveOnMerge: false,
-                        }),
-                        [key]: event.target.value,
-                      }))
-                    }
-                    className="rounded-md border bg-background p-2"
-                  >
-                    <option value="">Choose a remote column</option>
-                    {view.columns.map((column) => (
-                      <option key={column.id} value={column.id}>
-                        {column.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ))}
-              <label className="flex items-center gap-2 text-sm">
-                <Switch
-                  checked={mapping?.moveOnMerge ?? false}
-                  onCheckedChange={(checked) =>
-                    setMapping((current) =>
-                      current ? { ...current, moveOnMerge: checked } : current,
-                    )
-                  }
-                />
-                Move to Completed when a pull request is merged
-              </label>
-            </div>
-          )}
-          {error ? <p className="mt-3 text-sm text-destructive">{error}</p> : null}
-        </DialogPanel>
-        <DialogFooter>
-          {!view && !manual ? (
-            <Button
-              variant="link"
-              className="sm:mr-auto"
-              disabled={busy}
-              onClick={() => setManual(true)}
-            >
-              Manual setup
-            </Button>
-          ) : null}
-          {!initial && (view || manual) ? (
-            <Button
-              variant="ghost"
-              disabled={busy}
-              onClick={() => {
-                setView(null);
-                setMapping(null);
-                setManual(false);
-                setError(null);
-              }}
-            >
-              Back
-            </Button>
-          ) : null}
-          <Button variant="ghost" disabled={busy} onClick={onClose}>
-            Cancel
-          </Button>
-          {view && mapping ? (
-            <Button
-              disabled={
-                busy ||
-                issueReadyColumnIds(mapping).length === 0 ||
-                !mapping.inProgress ||
-                !mapping.inPullRequest ||
-                !mapping.completed
-              }
-              onClick={() => {
-                setBusy(true);
-                setError(null);
-
-                void configure({
-                  environmentId,
-                  input: {
-                    requestId: randomUUID(),
-                    projectId,
-                    locator: view.board.locator,
-                    mapping,
-                  },
-                })
-                  .then(unwrapWorkResult)
-                  .then(onConfigured)
-                  .catch((failure) => setError(workError(failure)))
-                  .finally(() => setBusy(false));
-              }}
-            >
-              Save mapping
-            </Button>
-          ) : null}
-        </DialogFooter>
-      </DialogPopup>
-    </Dialog>
+    </SidebarInset>
   );
 }

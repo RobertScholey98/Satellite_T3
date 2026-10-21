@@ -1,43 +1,39 @@
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { Link } from "@tanstack/react-router";
-import { MessageSquareTextIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import {
+  formatThreadLink,
+  percentDecodedThreadLinkId,
+  resolveThreadLinkRef,
+} from "@t3tools/shared/threadLinks";
 
-import { useProject, useThreadShell } from "../../state/entities";
-import { ProjectFavicon } from "../ProjectFavicon";
+import { useThreadRefs, useThreadShell } from "../../state/entities";
+import { ThreadContextChip } from "../ThreadContextChip";
 
-/**
- * A `t3-thread://` link in chat. It leads with the thread's project icon, like
- * a web link leads with its favicon, so it reads as a thread link before you
- * hover it. Opens the thread in the app.
- */
 export function MarkdownThreadLink(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
-  readonly children: ReactNode;
+  readonly label: string;
 }) {
-  const thread = useThreadShell(scopeThreadRef(props.environmentId, props.threadId));
-  const project = useProject(
-    thread === null ? null : scopeProjectRef(props.environmentId, thread.projectId),
+  const decodedId = percentDecodedThreadLinkId(props.threadId);
+  const written = useThreadShell(scopeThreadRef(props.environmentId, props.threadId));
+  const decoded = useThreadShell(
+    written === null && decodedId !== null ? scopeThreadRef(props.environmentId, decodedId) : null,
   );
+  const local = written ?? decoded;
+  const refs = useThreadRefs(local === null);
+  const remote = useThreadShell(
+    local === null
+      ? resolveThreadLinkRef(scopeThreadRef(props.environmentId, props.threadId), refs)
+      : null,
+  );
+  const thread = local ?? remote;
+  const environmentId = thread?.environmentId ?? props.environmentId;
+  const threadId = thread?.id ?? props.threadId;
+  const title = thread?.title.trim() || props.label;
   return (
-    <Link
-      to="/$environmentId/$threadId"
-      params={{ environmentId: props.environmentId, threadId: props.threadId }}
-      title={project?.title}
-    >
-      <span
-        className="ms-[0.25em] me-[0.2em] inline-flex size-[14px] [vertical-align:-0.125em]"
-        aria-hidden
-      >
-        {project === null ? (
-          <MessageSquareTextIcon className="block size-full shrink-0" />
-        ) : (
-          <ProjectFavicon project={project} className="size-full" />
-        )}
-      </span>
-      {props.children}
-    </Link>
+    <ThreadContextChip
+      record={{ environmentId, threadId, title: props.label }}
+      copyMarkdown={formatThreadLink(threadId, title)}
+    />
   );
 }

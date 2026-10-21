@@ -1,54 +1,101 @@
-# Install Satellite
+# Install T3 Code
 
-Satellite's release workflow publishes Windows x64 installers, macOS disk images,
-and Linux x64 AppImage and Debian packages.
-Download the `.exe` for Windows, the `.dmg` for macOS (`arm64` for Apple Silicon,
-`x64` for Intel), or the x64 `.AppImage` or `.deb` for Linux from
-[this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
-These builds use `~/.satellite-t3/userdata`; they do not migrate
-existing T3 Code or development data.
-
-On macOS, open the DMG and drag Satellite into Applications. The macOS builds have
-an ad-hoc signature but are not signed with an Apple Developer ID or notarized.
-If macOS blocks the app, try opening it once, then go to **System Settings → Privacy
-& Security → Open Anyway** and confirm. Only do this for a download you trust from
-this fork. To update, quit Satellite and replace it with the newer app from the
-DMG; your data stays in place.
-
-On Linux, download the x64 `.deb` for Debian or Ubuntu and install it with
-`sudo apt install ./SatelliteT3-<version>-x64.deb`. For other distributions,
-download the `.AppImage`, make it executable with
-`chmod +x SatelliteT3-<version>-x64.AppImage`, and run it. Both formats receive
-updates from this fork.
-
-For a source checkout, use the [README setup](../../README.md#build-and-run-from-source).
-The development launcher uses separate data and disables automatic updates.
+T3 Code runs coding agents on your computer and lets you control them from its
+desktop, web, or mobile app. Set up the machine where the agents will work first.
 
 ## Requirements
 
-Install and authenticate a provider before starting a thread. You can launch
-Satellite and configure providers afterwards. Local desktop use needs no T3
-Connect account or `.env` file.
+You need an installed, authenticated provider before starting a thread. You can
+launch T3 Code and configure providers afterwards.
 
-## Desktop workspace
+## Command line
 
-The workspace opens on launch. macOS uses a normal window with a Dock entry and
-does not show Pill mode in Settings. On Windows, closing or minimizing in Pill mode
-collapses the workspace while agents continue working. Click the pill or double-tap Ctrl to
-return. See [desktop usage](../../README.md#use-the-desktop-workspace) for pinning,
-position, status, and switching to a normal window.
+Satellite ships desktop installers only. It publishes no `t3` command-line
+archives, so `t3 update` and the upstream install scripts do not apply to it.
+To run a Satellite server without the desktop app, build it from source in
+[this fork's repository](https://github.com/RobertScholey98/Satellite_T3) with
+Node.js 24 ([Install vp](../../README.md#install-vp)):
 
-## Other clients and upstream installations
+```bash
+git clone https://github.com/RobertScholey98/Satellite_T3
+cd Satellite_T3 && vp i && vp run build:desktop
+node apps/server/dist/bin.mjs
+```
 
-Web, mobile, and other desktop platforms remain in the source tree. See the
-[development runbook](../operations/development.md) and
-[mobile README](../../apps/mobile/README.md) for source builds.
+Run `node apps/server/dist/bin.mjs --help` for the full reference. Update it with
+`git pull` and a rebuild.
 
-The [original T3 installation commands](../../README.md#original-t3-installation-reference)
-are retained for the upstream CLI, desktop packages, and mobile apps. They install
-upstream T3 Code and do not provide Satellite's fork features. The hosted app at
-`app.t3.codes` is also upstream. Satellite currently publishes no standalone CLI,
-mobile store release or bundled WSL runtime.
+## Desktop app
+
+Download Satellite from
+[Satellite's releases](https://github.com/RobertScholey98/Satellite_T3/releases):
+
+| Platform            | Download                          |
+| ------------------- | --------------------------------- |
+| Windows             | `SatelliteT3-<version>-x64.exe`   |
+| macOS Apple Silicon | `SatelliteT3-<version>-arm64.dmg` |
+| macOS Intel         | `SatelliteT3-<version>-x64.dmg`   |
+
+There is no Linux build. Each release lists checksums in `SHA256SUMS`; to check
+a download, run `shasum -a 256 -c SHA256SUMS --ignore-missing` in its folder.
+
+The builds are not code signed, so the first launch needs one extra step:
+
+- **Windows:** if SmartScreen says Windows protected your PC, choose **More info**,
+  then **Run anyway**. Installing 2.x over Satellite 1.x upgrades it in place.
+- **macOS:** drag Satellite to Applications and open it. When macOS says it cannot
+  verify the app, open **System Settings → Privacy & Security** and choose
+  **Open Anyway** next to the message about Satellite.
+
+### The `t3` command
+
+The desktop app includes the `t3` command-line tool. To run it from any
+terminal, open **Settings → General → About** and choose **Install** next to
+**t3 command**. On macOS and Linux it adds a `t3` link to a folder on your
+`PATH`; on Windows it adds the app's command folder to your `PATH`. Open a new
+terminal afterwards. **Remove** takes it off again. If you already have `t3`
+from npm, it stays as it is.
+
+### Windows Subsystem for Linux
+
+Choose a WSL distro in **Settings → Connections** to run agents and projects
+there. Install the provider CLIs inside that distro. T3 Code installs its own
+server runtime there automatically; the first launch after an app update can
+take longer.
+
+### Open a project from a terminal
+
+With the desktop app already running on the same machine:
+
+```bash
+t3 app
+```
+
+This opens a new thread for the current directory, adding the project if needed.
+Pass a path, such as `t3 app ../my-project`, to open another directory. It requires
+the desktop app, so a standalone server or an SSH session is not enough. If the
+command cannot reach the app, start or update the desktop app and try again.
+
+## Mobile app
+
+Install T3 Code from the
+[App Store](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824) or
+[Google Play](https://play.google.com/store/apps/details?id=com.t3tools.t3code).
+The phone connects to a server on another machine. Follow
+[remote access](./remote-access.md) to link it through T3 Connect or a pairing URL.
+
+Store links and QR codes are also available in **Settings → General → Mobile app**
+on web and desktop. The store apps work with both stable and Nightly servers. Test builds are optional:
+
+- **iPhone and iPad:** TestFlight is invite-only.
+- **Android:** download an APK from the
+  [Android beta releases](https://github.com/pingdotgg/t3code/releases?q=android-beta-).
+
+If the app crashes during launch, open Settings → Diagnostics on the next launch
+that succeeds. It lists startup crashes from the last 7 days with the error and
+component stack that store crash reports leave out. Copy the report and paste it
+into a GitHub issue. Error messages can quote values from the app, so read it over
+before sharing.
 
 ## Providers
 
@@ -64,35 +111,39 @@ computer.
 | Cursor      | Install [Cursor CLI](https://cursor.com/cli), then run `agent login`.                                                                                     |
 | Grok Build  | Install [Grok Build CLI](https://x.ai/cli), then run `grok login`.                                                                                        |
 | OpenCode    | Install [OpenCode](https://opencode.ai), then run `opencode auth login`.                                                                                  |
-| Antigravity | Install and sign in with Google from Satellite's provider settings.                                                                                       |
+| Antigravity | Install and sign in with Google from T3 Code's provider settings.                                                                                         |
+| Pi          | Install [Pi](./providers-pi.md#set-up-pi) with Node.js 22.19 or newer, then run `pi` and `/login`.                                                        |
+| Muse Code   | Install [Muse Code](https://dev.meta.ai/docs/muse-code) on the server, run `muse login`, then enable it in Settings → Providers.                          |
 
-Provider CLIs must be on the server's `PATH`. If Satellite cannot find one, set its
+Provider CLIs must be on the server's `PATH`. If T3 Code cannot find one, set its
 **Binary path** in provider settings, especially when using a version manager.
 Cursor's executable is `cursor-agent`, although its login command is
 `agent login`. Codex connected through ChatGPT and Antigravity can use their
 managed runtimes without a `PATH` entry.
 
-Satellite warns when a provider version has known compatibility problems with your
+T3 Code warns when a provider version has known compatibility problems with your
 release. Check **Settings → Providers** on that environment for the recommended
 version or range. When its package manager supports installing a specific version,
 you can install the recommendation there. Otherwise use the provider's installer
 on the environment's machine. An unlisted version is unverified.
 
 When a provider CLI is behind its latest release, its provider card shows the
-available version. **Update now** appears only when Satellite can tell which
-installer owns the CLI (its own update command, Homebrew, or a global npm, pnpm,
-bun, or Vite+ install) and runs that installer. Otherwise update the CLI the same
-way you installed it. Homebrew installs compare against the version Homebrew
-offers, which can trail the npm release by a few hours.
+available version. **Update now** runs the installer that owns the CLI
+(Homebrew, or a global npm, pnpm, Yarn, Bun, Volta, or Vite+ install), or the
+CLI's own update command when T3 Code cannot tell. Update a CLI installed with
+mise through mise. Cursor and Antigravity update with T3 Code. Homebrew installs
+compare against the version Homebrew offers, which can trail the npm release by
+a few hours.
 
 Add another provider instance for a separate account or configuration. Each
 instance can have its own environment variables, such as API keys or a custom
-base URL. Mark secret values as sensitive; after saving, Satellite does not display
+base URL. Mark secret values as sensitive; after saving, T3 Code does not display
 their original values.
 
 For provider-specific setup and accounts, see [Codex](./providers-codex.md),
-[Claude](./providers-claude.md), [OpenCode](./providers-opencode.md), and
-[Antigravity](./providers-antigravity.md).
+[Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),
+[Antigravity](./providers-antigravity.md), [Pi](./providers-pi.md), and
+[Muse Code](./providers-muse.md).
 
 ## Next steps
 
@@ -100,4 +151,4 @@ For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 - [Permission modes](./permission-modes.md): choose when agents ask before acting.
 - [Remote access](./remote-access.md): connect from another device.
 - [Running in the background](./background-service.md): keep a Linux or macOS host available.
-- [Updating Satellite](./updating.md): update this fork and understand connected-server updates.
+- [Updating T3 Code](./updating.md): update the app and connected servers.

@@ -1,6 +1,5 @@
 import type { PinnedRuntimeProgress } from "../cloud/pinnedRuntime.ts";
 
-/** A single status line below the download bar; redirected output remains plain. */
 export function createUpdateProgress(
   output: Pick<NodeJS.WriteStream, "write" | "isTTY" | "columns"> = process.stderr,
 ) {
@@ -40,7 +39,7 @@ export function createUpdateProgress(
         const labels = {
           download: "Downloading...",
           verify: "Verifying the download...",
-          extract: "Extracting T3 Code...",
+          extract: "Extracting Satellite...",
           validate: "Checking the new executable...",
           cached: "Using the downloaded release...",
         };

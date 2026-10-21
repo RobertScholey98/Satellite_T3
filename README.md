@@ -10,23 +10,8 @@ I forked T3 Code to have a place to try ideas in the tools I use every day and
 see how they fit together in practice. The direction comes from my own workflow,
 and will evolve as I use it.
 
-The experiments so far focus on the work around an agent conversation: exploring
-an idea, deciding what to build, turning it into issues, running the work, and
-reviewing what changed. They come together in a desktop workspace that can
-collapse into a small floating pill while agents continue working.
-
-- **Ideas before implementation.** Discuss a feature in a project notebook, keep
-  its pitch, notes, and supporting documents together, then review proposed GitHub
-  issues when it is ready to become work.
-- **Issues connected to execution.** Start work from GitHub Projects or Azure
-  DevOps boards, create an isolated worktree, and follow the ticket through its
-  thread and pull requests.
-- **History with context.** Review commits, current changes, and retained documents
-  together in the worktree timeline.
-- **Documents you can return to.** Keep plans, reports, and manual review checklists
-  with a thread, including revisions, saved answers, and submitted feedback.
-- **A workspace within reach.** Expand the floating pill when you need the full
-  workspace; collapse it when you want to get on with something else.
+The experiments focus on the work around an agent conversation: deciding what to
+build, running the work in an isolated worktree, and reviewing what changed.
 
 T3 Code supplies the foundation: provider sessions, conversations, terminals,
 checkpoints, source control, and remote environments. Satellite keeps those
@@ -35,18 +20,20 @@ services, app-store listings, and release channels are operated by upstream.
 
 ## Install Satellite
 
-Download the Windows x64 `.exe`, macOS `.dmg` (`arm64` for Apple Silicon,
-`x64` for Intel), or Linux x64 `.AppImage` or `.deb` from
+Download the Windows x64 `.exe` or the macOS `.dmg` (`arm64` for Apple Silicon,
+`x64` for Intel) from
 [this fork's releases](https://github.com/RobertScholey98/Satellite_T3/releases).
-Windows installers are currently unsigned. Installed builds use
-`~/.satellite-t3/userdata`. Windows and Linux receive desktop updates from this fork;
-macOS builds are ad-hoc signed, not notarized, and updated manually. Drag the app
-from the DMG into Applications. See [installation guidance](docs/user/install.md)
-if macOS blocks its first launch.
+Installers are unsigned. Installed builds use `~/.satellite-t3/userdata`. Windows
+receives desktop updates from this fork.
+
+On macOS, drag the app from the DMG into Applications. The builds are ad-hoc
+signed, not notarized, and updated manually. If macOS blocks the first launch, try
+opening the app once, then go to **System Settings → Privacy & Security → Open
+Anyway** and confirm. Only do this for a download you trust from this fork.
 
 For source builds, follow the setup below. The Satellite release workflow ships
-Windows x64, macOS arm64/x64, and Linux x64. Web and mobile source remain in the
-repository. It does not bundle a WSL runtime or publish a standalone CLI.
+Windows x64 and macOS arm64/x64. Web and mobile source remain in the repository.
+It does not bundle a WSL runtime or publish a standalone CLI.
 
 ### Set up a provider
 
@@ -110,44 +97,18 @@ Windows installer locally after installing those prerequisites:
 pnpm run dist:desktop:win:x64
 ```
 
-Release tagging and GitHub Actions are covered in the
-[Satellite release runbook](./docs/operations/release.md).
-
-## Use the desktop workspace
-
-Satellite opens the workspace on launch. macOS uses a normal desktop window with
-a Dock entry; Pill mode is available only on Windows. In pill mode, closing, minimizing,
-pressing Escape, or clicking outside collapses it while agents keep running.
-Click the pill or double-tap Ctrl on Windows to bring the workspace back. Use
-**Keep workspace open** to prevent collapse when clicking outside.
-
-Drag the pill, or focus it and press Alt+arrow keys. Its position survives
-relaunch. The attached action wing collects requests across connected environments.
-Open it to answer questions or review approval requests without opening the full
-workspace. You can mute a request in the pill and restore it from the muted list.
-**Open in thread** carries your answer draft to that conversation. Clicking the main
-pill restores your previous workspace. Disconnected or older environments show an
-incomplete request count. Opening the workspace does not approve pending requests.
-
-Turn off **Settings → General → Pill mode** and restart to use a normal window
-with a taskbar entry. The system tray can open the workspace or quit.
-
 ### Data locations
 
-| Run                      | Server data                         | Windows Chromium profile     |
-| ------------------------ | ----------------------------------- | ---------------------------- |
-| `pnpm run dev:satellite` | `<checkout>/.t3/satellite/userdata` | `%APPDATA%/satellite-t3-dev` |
-| Installed SatelliteT3    | `~/.satellite-t3/userdata`          | `%APPDATA%/satellite-t3`     |
+| Run                      | Server data                         |
+| ------------------------ | ----------------------------------- |
+| `pnpm run dev:satellite` | `<checkout>/.t3/satellite/userdata` |
+| Installed SatelliteT3    | `~/.satellite-t3/userdata`          |
 
-The development launcher disables automatic updates and URL-handler registration.
-It does not migrate existing T3 or Satellite data. Development and installed
+The development launcher disables automatic updates. It does not migrate existing T3 or Satellite data. Development and installed
 builds keep separate server data.
 
 ## Guides
 
-- [Ideas and threads](./docs/user/thread-sidebar.md#explore-an-idea)
-- [Issues, open work, and worktree history](./docs/user/issues-and-open-work.md)
-- [Documents and manual reviews](./docs/user/documents.md)
 - [Permission modes](./docs/user/permission-modes.md)
 - [Keyboard shortcuts](./docs/user/keybindings.md)
 - [Project settings](./docs/user/project-settings.md)

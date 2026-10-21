@@ -1,5 +1,8 @@
 name: SatelliteT3 Release
 
+# Satellite's release: Windows x64 with the fork's update feed, and unsigned
+# macOS arm64 and x64 builds for manual install. See docs/operations/release.md.
+
 on:
   push:
     tags:
@@ -7,11 +10,23 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release without v, e.g. 0.1.3 or 0.1.3-beta.1. Builds the selected branch and creates its tag."
+        description: "Version without the v, for example 2.0.0 or 2.0.0-beta.1. Builds the selected branch and creates its tag."
         required: true
+        type: string
+      dry_run:
+        description: "Build and check every asset without creating a tag or release"
+        required: false
+        default: false
+        type: boolean
+      release_notes:
+        description: "Notes shown above the generated pull request list"
+        required: false
+        default: ""
         type: string
 
 permissions:
+  # release-desktop.yml asks for actions: read.
+  actions: read
   contents: read
 
 concurrency:
@@ -19,13 +34,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  prepare:
+  resolve:
     name: Resolve release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      checks: read
+      contents: read
     outputs:
-      tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
-      commit: ${{ steps.version.outputs.commit }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      commit: ${{ steps.tag.outputs.commit }}
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v6
@@ -36,44 +56,67 @@ jobs:
             !/.repos/
           sparse-checkout-cone-mode: false
 
-      - name: Validate version and resolve commit
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Validate version
         id: version
         env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
-        shell: bash
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]]; then
-            echo "Expected vX.Y.Z or vX.Y.Z-alpha.N/beta.N/rc.N" >&2
-            exit 1
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            version="$INPUT_VERSION"
+          else
+            version="${REF_NAME#v}"
           fi
+          node scripts/satellite-release-version.ts "$version" >> "$GITHUB_OUTPUT"
+
+      # Rerunning a version from the commit its tag names is safe; reusing the
+      # version for a different commit is not.
+      - name: Check release tag
+        id: tag
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
           commit=$(git rev-parse HEAD)
           refs=$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}")
           existing=$(printf '%s\n' "$refs" | awk '/\^\{\}$/ { print $1; found=1 } END { if (!found) print first } NR==1 { first=$1 }')
           if [[ -n "$existing" && "$existing" != "$commit" ]]; then
-            echo "$RELEASE_TAG already points to a different commit. Choose a new version or run from that tag." >&2
+            echo "$RELEASE_TAG already points to $existing, not $commit. Choose a new version or run from that tag." >&2
             exit 1
           fi
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
-  windows:
-    name: Build Windows x64
-    needs: prepare
-    # Keep Visual Studio 2022 aligned with the packager's node-gyp configuration.
-    runs-on: windows-2025
-    timeout-minutes: 45
-    defaults:
-      run:
-        shell: pwsh
-    env:
-      T3CODE_DESKTOP_DEV: "0"
-      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+      # The release jobs run no tests, so CI's required Check must already
+      # have passed on this exact commit.
+      - name: Require passing CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.tag.outputs.commit }}
+        run: |
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT/check-runs?check_name=Check&per_page=100" \
+            --jq '[.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success")] | length')
+          if [[ "$passed" -eq 0 ]]; then
+            echo "CI's Check has not passed on $COMMIT. Wait for SatelliteT3 CI to pass on that commit, then rerun." >&2
+            exit 1
+          fi
+
+  build_bundle:
+    name: Build JS bundle
+    needs: resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.prepare.outputs.commit }}
+          ref: ${{ needs.resolve.outputs.commit }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -83,355 +126,214 @@ jobs:
         uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
-          cache: false
+          cache: true
           run-install: false
 
-      - name: Resolve package cache path
-        id: package_cache_path
-        run: '"path=$(vp pm cache dir)" >> $env:GITHUB_OUTPUT'
+      - name: Install bundle dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
 
-      - name: Cache packages
-        uses: actions/cache@v6
-        with:
-          path: ${{ steps.package_cache_path.outputs.path }}
-          key: satellite-windows-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
-
-      - name: Install dependencies
-        run: vp install --frozen-lockfile
-
-      - name: Setup Python for native dependencies
-        id: python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Ensure Rust target is installed
-        run: rustup target add x86_64-pc-windows-msvc
-
-      - name: Ensure Electron runtime is installed
-        run: vp run --filter @t3tools/desktop ensure:electron
-
-      - name: Lint Satellite sources and packaging
-        run: vp lint apps/desktop/src/satellite apps/desktop/src/boot.ts apps/desktop/src/app/DesktopStatePaths.ts apps/web/src/components/desktop/SatelliteDesktopShell.tsx apps/web/src/satellitePill.ts packages/contracts/src/satellite.ts scripts/satellite-dev.mjs scripts/build-desktop-artifact.ts
-
-      - name: Typecheck desktop and web
-        run: |
-          vp run --filter @t3tools/desktop typecheck
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          vp run --filter @t3tools/web typecheck
-
-      - name: Test desktop shell, identity, and startup
-        working-directory: apps/desktop
-        run: vp test run src/satellite/SatellitePill.test.ts src/satellite/pillModel.test.ts src/window/DesktopWindow.test.ts src/ssh/DesktopSshPasswordPrompts.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopEarlyElectronStartup.test.ts scripts/main-process-bundle.test.mjs scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
-
-      - name: Test web shell and pill projection
-        working-directory: apps/web
-        run: vp test run --project unit src/components/desktop/SatelliteDesktopShell.test.tsx src/satellitePill.test.ts
-
-      - name: Test packaging
-        run: vp test run scripts/build-desktop-artifact.test.ts
-
-      - name: Build unsigned installer and updater files
+      - name: Align package versions to release version
         env:
-          T3CODE_DESKTOP_VERSION: ${{ needs.prepare.outputs.version }}
-          npm_config_python: ${{ steps.python.outputs.python-path }}
-        run: vp run dist:desktop:win:x64
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: node scripts/update-release-package-versions.ts "$RELEASE_VERSION"
 
-      - name: Verify preload bundle output
-        run: node apps/desktop/scripts/verify-preload-bundle.mjs
+      # @t3tools/desktop#build compiles the Linux browser secret helper.
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
-      - name: Collect release assets
-        env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          $installer = "release/SatelliteT3-$env:RELEASE_VERSION-x64.exe"
-          foreach ($path in @($installer, "$installer.blockmap", 'release/latest.yml')) {
-            if (-not (Test-Path -LiteralPath $path)) { throw "Missing release asset: $path" }
-          }
+      - name: Build JS bundle
+        run: vp run build:desktop
 
-      - name: Upload release assets
-        uses: actions/upload-artifact@v4
+      - name: Upload JS bundle
+        uses: actions/upload-artifact@v7
         with:
-          name: windows-release
-          if-no-files-found: error
+          name: js-bundle
           path: |
-            release/SatelliteT3-*-x64.exe
-            release/SatelliteT3-*-x64.exe.blockmap
-            release/latest.yml
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
 
-  macos:
-    name: Build macOS ${{ matrix.arch }}
-    needs: prepare
+  desktop_win_x64:
+    name: Desktop Windows x64
+    needs: [resolve, build_bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      ref: ${{ needs.resolve.outputs.commit }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ""
+      clerk_jwt_template: ""
+      clerk_cli_oauth_client_id: ""
+      relay_url: ""
+      label: Windows x64
+      runner: windows-2025
+      platform: win
+      target: nsis
+      arch: x64
+      rust_target: x86_64-pc-windows-msvc
+      resource_key: win32-x64
+      cli_archive: false
+      # Satellite ships no CLI archive, so Windows builds have no WSL runtime.
+      wsl_runtime: false
+
+  desktop_mac_arm64:
+    name: Desktop macOS arm64
+    needs: [resolve, build_bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      ref: ${{ needs.resolve.outputs.commit }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ""
+      clerk_jwt_template: ""
+      clerk_cli_oauth_client_id: ""
+      relay_url: ""
+      label: macOS arm64
+      runner: macos-15
+      platform: mac
+      target: dmg
+      arch: arm64
+      rust_target: aarch64-apple-darwin
+      resource_key: darwin-arm64
+      cli_archive: false
+
+  desktop_mac_x64:
+    name: Desktop macOS x64
+    needs: [resolve, build_bundle]
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      ref: ${{ needs.resolve.outputs.commit }}
+      release_channel: stable
+      relay_client_tracing: false
+      clerk_publishable_key: ""
+      clerk_jwt_template: ""
+      clerk_cli_oauth_client_id: ""
+      relay_url: ""
+      label: macOS x64
+      runner: macos-15-intel
+      platform: mac
+      target: dmg
+      arch: x64
+      rust_target: x86_64-apple-darwin
+      resource_key: darwin-x64
+      cli_archive: false
+
+  verify_macos:
+    name: Verify macOS ${{ matrix.arch }}
+    needs: [resolve, desktop_mac_arm64, desktop_mac_x64]
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: arm64
             os: macos-15
-            rust-target: aarch64-apple-darwin
           - arch: x64
             os: macos-15-intel
-            rust-target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
-    env:
-      T3CODE_DESKTOP_DEV: "0"
-      T3CODE_DESKTOP_VERSION: ${{ needs.prepare.outputs.version }}
-      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+    timeout-minutes: 15
     steps:
-      - name: Checkout release commit
-        uses: actions/checkout@v6
+      - name: Download desktop artifact
+        uses: actions/download-artifact@v8
         with:
-          ref: ${{ needs.prepare.outputs.commit }}
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+          name: desktop-mac-${{ matrix.arch }}
+          path: release
 
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
-        with:
-          node-version-file: package.json
-          cache: false
-          run-install: false
-
-      - name: Resolve package cache path
-        id: package_cache_path
-        run: echo "path=$(vp pm cache dir)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache packages
-        uses: actions/cache@v6
-        with:
-          path: ${{ steps.package_cache_path.outputs.path }}
-          key: satellite-macos-${{ matrix.arch }}-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
-
-      - name: Install dependencies
-        run: vp install --frozen-lockfile
-
-      - name: Setup Python for native dependencies
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Ensure native build tools
+      # Unsigned builds are ad-hoc signed and installed by hand: Squirrel.Mac
+      # cannot install an update without a Developer ID signature.
+      - name: Verify packaged app
         env:
-          RUST_TARGET: ${{ matrix.rust-target }}
+          ARCH: ${{ matrix.arch }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          xcrun --find clang
-          rustup target add "$RUST_TARGET"
-          vp run --filter @t3tools/desktop ensure:electron
-
-      - name: Typecheck desktop and web
-        run: |
-          vp run --filter @t3tools/desktop typecheck
-          vp run --filter @t3tools/web typecheck
-
-      - name: Test macOS desktop behavior and startup
-        working-directory: apps/desktop
-        run: vp test run src/window/DesktopWindow.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopEarlyElectronStartup.test.ts src/app/DesktopLifecycle.test.ts src/shell/DesktopShellEnvironment.test.ts src/ipc/methods/notificationBadge.test.ts src/snapShot/ActiveWindow.test.ts src/snapShot/DesktopSnapShot.test.ts scripts/main-process-bundle.test.mjs scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
-
-      - name: Test packaging
-        run: vp test run scripts/build-desktop-artifact.test.ts
-
-      - name: Build unsigned DMG and ZIP
-        env:
-          BUILD_ARCH: ${{ matrix.arch }}
-        run: vp run "dist:desktop:dmg:$BUILD_ARCH"
-
-      - name: Verify preload bundle output
-        run: node apps/desktop/scripts/verify-preload-bundle.mjs
-
-      - name: Collect release assets
-        env:
-          BUILD_ARCH: ${{ matrix.arch }}
-        run: |
-          for extension in dmg zip; do
-            asset="release/SatelliteT3-$T3CODE_DESKTOP_VERSION-$BUILD_ARCH.$extension"
-            test -s "$asset" || { echo "Missing release asset: $asset" >&2; exit 1; }
-          done
-          # Ad-hoc signed builds cannot use Squirrel.Mac automatic updates.
-          test ! -e release/latest-mac.yml
-
-      - name: Verify packaged macOS app
-        env:
-          BUILD_ARCH: ${{ matrix.arch }}
-        run: |
-          archive="release/SatelliteT3-$T3CODE_DESKTOP_VERSION-$BUILD_ARCH.zip"
-          smoke_dir="$RUNNER_TEMP/satellite-release"
-          ditto -x -k "$archive" "$smoke_dir"
-          apps=("$smoke_dir"/*.app)
+          stem="release/SatelliteT3-$RELEASE_VERSION-$ARCH"
+          extract_dir="$RUNNER_TEMP/satellite-app"
+          ditto -x -k "$stem.zip" "$extract_dir"
+          apps=("$extract_dir"/*.app)
           test "${#apps[@]}" -eq 1
           app="${apps[0]}"
           codesign --verify --deep --strict "$app"
           test ! -e "$app/Contents/Resources/app-update.yml"
           executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")
-          ELECTRON_RUN_AS_NODE=1 "$app/Contents/MacOS/$executable" "$app/Contents/Resources/app.asar/apps/server/dist/bin.mjs" --help
-          hdiutil verify "release/SatelliteT3-$T3CODE_DESKTOP_VERSION-$BUILD_ARCH.dmg"
-
-      - name: Upload release assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-${{ matrix.arch }}-release
-          if-no-files-found: error
-          path: |
-            release/SatelliteT3-*.dmg
-            release/SatelliteT3-*.zip
-
-  linux:
-    name: Build Linux x64
-    needs: prepare
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
-    defaults:
-      run:
-        shell: bash
-    env:
-      T3CODE_DESKTOP_DEV: "0"
-      T3CODE_DESKTOP_VERSION: ${{ needs.prepare.outputs.version }}
-      T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
-    steps:
-      - name: Checkout release commit
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.prepare.outputs.commit }}
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
-
-      - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
-        with:
-          node-version-file: package.json
-          cache: false
-          run-install: false
-
-      - name: Resolve package cache path
-        id: package_cache_path
-        run: echo "path=$(vp pm cache dir)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache packages
-        uses: actions/cache@v6
-        with:
-          path: ${{ steps.package_cache_path.outputs.path }}
-          key: satellite-linux-x64-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
-
-      - name: Install native build and runtime dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libsecret-1-dev pkg-config imagemagick libgtk-3-0 libnss3 libasound2 libgbm1 libxss1 libxtst6 libnotify4 libatspi2.0-0
-          rustup target add x86_64-unknown-linux-gnu
-
-      - name: Setup Python for native dependencies
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: vp install --frozen-lockfile
-
-      - name: Ensure Electron runtime is installed
-        run: vp run --filter @t3tools/desktop ensure:electron
-
-      - name: Typecheck desktop and web
-        run: |
-          vp run --filter @t3tools/desktop typecheck
-          vp run --filter @t3tools/web typecheck
-
-      - name: Test Linux desktop behavior and startup
-        working-directory: apps/desktop
-        run: vp test run src/window/DesktopWindow.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopEarlyElectronStartup.test.ts src/app/DesktopLifecycle.test.ts src/updates/DesktopUpdates.test.ts scripts/main-process-bundle.test.mjs scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
-
-      - name: Test packaging
-        run: vp test run scripts/build-desktop-artifact.test.ts
-
-      - name: Build AppImage, Debian package, and updater files
-        run: vp run dist:desktop:linux
-
-      - name: Verify preload bundle output
-        run: node apps/desktop/scripts/verify-preload-bundle.mjs
-
-      - name: Collect release assets
-        run: |
-          for extension in AppImage deb; do
-            asset="release/SatelliteT3-$T3CODE_DESKTOP_VERSION-x64.$extension"
-            test -s "$asset" || { echo "Missing release asset: $asset" >&2; exit 1; }
-          done
-          test -s release/latest-linux.yml
-
-      - name: Verify packaged Linux app
-        run: |
-          smoke_dir="$RUNNER_TEMP/satellite-release"
-          mkdir -p "$smoke_dir"
-          cd "$smoke_dir"
-          appimage="$GITHUB_WORKSPACE/release/SatelliteT3-$T3CODE_DESKTOP_VERSION-x64.AppImage"
-          chmod +x "$appimage"
-          "$appimage" --appimage-extract > /dev/null
-          test -s squashfs-root/resources/app-update.yml
-          T3CODE_HOME="$smoke_dir/home" ELECTRON_RUN_AS_NODE=1 ./squashfs-root/t3code ./squashfs-root/resources/app.asar/apps/server/dist/bin.mjs --help
-          deb="$GITHUB_WORKSPACE/release/SatelliteT3-$T3CODE_DESKTOP_VERSION-x64.deb"
-          test "$(dpkg-deb --field "$deb" Architecture)" = amd64
-          dpkg-deb --info "$deb"
-
-      - name: Upload release assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-x64-release
-          if-no-files-found: error
-          path: |
-            release/SatelliteT3-*-x64.AppImage
-            release/SatelliteT3-*-x64.deb
-            release/latest-linux.yml
+          T3CODE_HOME="$RUNNER_TEMP/satellite-home" ELECTRON_RUN_AS_NODE=1 \
+            "$app/Contents/MacOS/$executable" "$app/Contents/Resources/app.asar/apps/server/dist/bin.mjs" --help
+          hdiutil verify "$stem.dmg"
 
   publish:
     name: Publish GitHub Release
-    needs: [prepare, windows, macos, linux]
-    runs-on: ubuntu-latest
+    needs: [resolve, desktop_win_x64, verify_macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:
-      - name: Download release assets
-        uses: actions/download-artifact@v4
+      - name: Download desktop artifacts
+        uses: actions/download-artifact@v8
         with:
-          pattern: "*-release"
+          pattern: desktop-*
           merge-multiple: true
-          path: release
+          path: artifacts
 
-      - name: Check assets and generate checksums
+      # Copies exactly the assets 1.x releases carried, so a missing file fails
+      # here and stray build output never ships. The Windows feed manifest goes
+      # back to latest.yml, the name installed Windows builds poll.
+      - name: Assemble release assets
         env:
-          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
-        shell: bash
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          cd release
-          for asset in "SatelliteT3-$RELEASE_VERSION-x64.exe" "SatelliteT3-$RELEASE_VERSION-x64.exe.blockmap" latest.yml; do
-            test -s "$asset"
+          shopt -s nullglob
+          mac_feeds=(artifacts/*mac*.yml)
+          if [[ ${#mac_feeds[@]} -ne 0 ]]; then
+            echo "Unsigned macOS builds must not publish an update feed, found: ${mac_feeds[*]}" >&2
+            exit 1
+          fi
+          mkdir release
+          installer="SatelliteT3-$RELEASE_VERSION-x64.exe"
+          for asset in "$installer" "$installer.blockmap"; do
+            cp "artifacts/$asset" release/
           done
+          cp artifacts/latest-win-x64.yml release/latest.yml
           for arch in arm64 x64; do
-            test -s "SatelliteT3-$RELEASE_VERSION-$arch.dmg"
-            test -s "SatelliteT3-$RELEASE_VERSION-$arch.zip"
+            for extension in dmg zip; do
+              cp "artifacts/SatelliteT3-$RELEASE_VERSION-$arch.$extension" release/
+            done
           done
-          for asset in "SatelliteT3-$RELEASE_VERSION-x64.AppImage" "SatelliteT3-$RELEASE_VERSION-x64.deb" latest-linux.yml; do
+          for asset in release/*; do
             test -s "$asset"
           done
-          sha256sum * > SHA256SUMS
+          (cd release && sha256sum -- * > SHA256SUMS)
+          ls -l release
+
+      - name: Upload dry-run assets
+        if: inputs.dry_run
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets
+          path: release/*
+          if-no-files-found: error
 
       - name: Publish release
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-          RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
           RELEASE_EVENT: ${{ github.event_name }}
-        shell: bash
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           args=(--target "$RELEASE_COMMIT" --generate-notes --title "SatelliteT3 $RELEASE_TAG")
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            args+=(--notes "$RELEASE_NOTES")
+          fi
           if [[ "$RELEASE_EVENT" != "workflow_dispatch" ]]; then
             args+=(--verify-tag)
           fi
-          if [[ "$RELEASE_TAG" == *-* ]]; then
+          if [[ "$PRERELEASE" == "true" ]]; then
             args+=(--prerelease --latest=false)
           else
             args+=(--latest)

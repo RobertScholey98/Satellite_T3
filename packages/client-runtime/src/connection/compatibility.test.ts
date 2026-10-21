@@ -53,6 +53,17 @@ describe("orchestration protocol compatibility", () => {
     expect(error).not.toHaveProperty("serverUpdateRequired");
   });
 
+  it("names the product the client supplies in the update instruction", () => {
+    const older = descriptor(ORCHESTRATION_PROTOCOL_VERSION - 1);
+
+    expect(orchestrationProtocolCompatibilityError(older)?.message).toBe(
+      "This client requires a newer server. Update T3 Code on Build Mac to connect.",
+    );
+    expect(orchestrationProtocolCompatibilityError(older, "Satellite")?.message).toBe(
+      "This client requires a newer server. Update Satellite on Build Mac to connect.",
+    );
+  });
+
   it("offers a remote update only for an older host that can update itself", () => {
     const older = descriptor(ORCHESTRATION_PROTOCOL_VERSION - 1);
     const withCapabilities = (capabilities: ExecutionEnvironmentDescriptor["capabilities"]) =>

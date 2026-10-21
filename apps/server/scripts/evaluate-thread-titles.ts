@@ -1,9 +1,5 @@
 #!/usr/bin/env node
-// This CLI uses Node argument parsing and random ordering at the application boundary.
 // @effect-diagnostics nodeBuiltinImport:off
-// Run with --model <configured-model> --out /tmp/title-eval.
-// Pass --baseline /tmp/previous-eval/results.json to compare two generation runs.
-// Add --initial to evaluate only the opening request.
 import * as NodeUtil from "node:util";
 import * as NodeCrypto from "node:crypto";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -16,19 +12,14 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as CodexTextGeneration from "../src/textGeneration/CodexTextGeneration.ts";
-import * as TextGenerationOperations from "../src/textGeneration/TextGenerationOperations.ts";
 import { threadTitleEvaluationCases } from "./threadTitleEvaluationCases.ts";
 import {
   formatThreadTitleContext,
   type ThreadTitleMessage,
-} from "../src/textGeneration/ThreadTitleContext.ts";
+} from "@t3tools/provider-core/server/threadTitleContext";
 import * as ThreadTitleLinks from "../src/textGeneration/ThreadTitleLinks.ts";
 import * as SourceControlProviderRegistry from "../src/sourceControl/SourceControlProviderRegistry.ts";
-import * as GitHubCli from "../src/sourceControl/GitHubCli.ts";
-import * as GitLabCli from "../src/sourceControl/GitLabCli.ts";
-import * as ForgejoCli from "../src/sourceControl/ForgejoCli.ts";
-import * as AzureDevOpsCli from "../src/sourceControl/AzureDevOpsCli.ts";
-import * as BitbucketApi from "../src/sourceControl/BitbucketApi.ts";
+import * as SourceControlBuiltInDrivers from "../src/sourceControl/builtInDrivers.ts";
 import * as ServerSettings from "../src/serverSettings.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
 import * as VcsDriverRegistry from "../src/vcs/VcsDriverRegistry.ts";
@@ -68,8 +59,9 @@ await Effect.runPromise(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-title-evaluation-" });
-    const codex = yield* CodexTextGeneration.makeCodexTextGeneration(yield* decodeSettings({}));
-    const generation = TextGenerationOperations.fromProvider(() => Effect.succeed(codex));
+    const generation = yield* CodexTextGeneration.makeCodexTextGeneration(
+      yield* decodeSettings({}),
+    );
     const baseline = values.baseline
       ? yield* fs.readFileString(values.baseline).pipe(Effect.flatMap(decodeResults))
       : [];
@@ -150,17 +142,7 @@ await Effect.runPromise(
       Layer.mergeAll(
         ProcessRunner.layer,
         SourceControlProviderRegistry.layer.pipe(
-          Layer.provide(
-            Layer.mergeAll(
-              GitHubCli.layer,
-              GitLabCli.layer,
-              ForgejoCli.layer,
-              AzureDevOpsCli.layer,
-              // No saved credentials here; Bitbucket falls back to T3CODE_BITBUCKET_* variables.
-              BitbucketApi.layer,
-            ),
-          ),
-          // Default settings: no saved Bitbucket token, gh's own GitHub account choice.
+          Layer.provide(SourceControlBuiltInDrivers.layer),
           Layer.provide(ServerSettings.layerTest()),
           Layer.provide(VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer))),
           Layer.provide(GitVcsDriver.layer),

@@ -1,7 +1,3 @@
-import * as Context from "effect/Context";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 import {
   IssueOperationError,
   IssueRef,
@@ -9,23 +5,33 @@ import {
   type RepositoryIdentity,
   type SourceControlProviderKind,
 } from "@t3tools/contracts";
+import * as AzureBoardsCli from "@t3tools/source-control-azure-devops/server/AzureBoardsCli";
+import * as AzureBoardsIssueHost from "@t3tools/source-control-azure-devops/server/AzureBoardsIssueHost";
+import type {
+  IssueHostAdapter,
+  IssueHostBoards,
+  IssueHostScope,
+} from "@t3tools/source-control-core/server/IssueHostAdapter";
+import * as GitHubIssueHost from "@t3tools/source-control-github/server/GitHubIssueHost";
 import {
   detectSourceControlProviderFromRemoteUrl,
   sourceControlRepositorySelector,
 } from "@t3tools/shared/sourceControl";
-import * as AzureBoardsIssueHost from "./AzureBoardsIssueHost.ts";
-import * as BitbucketIssueHost from "./BitbucketIssueHost.ts";
-import * as ForgejoIssueHost from "./ForgejoIssueHost.ts";
-import * as GitHubIssueHost from "./GitHubIssueHost.ts";
-import * as GitLabIssueHost from "./GitLabIssueHost.ts";
-import type { IssueHostAdapter, IssueHostBoards, IssueHostScope } from "./IssueHostAdapter.ts";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
-/** Persisted as `issue_generations.issue_key`; changing the format orphans stored rows. */
+/** Persisted as `issue_key` in every issue table; changing the format orphans stored rows. */
 export const canonicalIssueKey = (ref: IssueRef) =>
   ref.hostKind === "azure-devops"
     ? `${ref.hostKind}:${ref.host.toLowerCase()}:${ref.repository.split("/")[0]!.toLowerCase()}:${ref.id}`
     : `${ref.hostKind}:${ref.host.toLowerCase()}:${ref.repository.toLowerCase()}:${ref.id}`;
 
+/**
+ * Issue hosts by kind, and board hosts by locator kind. Hosts without an adapter, such as GitLab
+ * or Forgejo, report issues as unavailable.
+ */
 export class IssueHost extends Context.Service<
   IssueHost,
   {
@@ -84,14 +90,7 @@ export function fromAdapters(adapters: ReadonlyArray<IssueHostAdapter>): IssueHo
   };
 }
 
-const make = Effect.map(
-  Effect.all([
-    GitHubIssueHost.make,
-    AzureBoardsIssueHost.make,
-    GitLabIssueHost.make,
-    ForgejoIssueHost.make,
-    BitbucketIssueHost.make,
-  ]),
-  fromAdapters,
-);
-export const layer = Layer.effect(IssueHost, make);
+export const layer = Layer.effect(
+  IssueHost,
+  Effect.map(Effect.all([GitHubIssueHost.make, AzureBoardsIssueHost.make]), fromAdapters),
+).pipe(Layer.provide(AzureBoardsCli.layer));

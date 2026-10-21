@@ -3,6 +3,9 @@ name: SatelliteT3 CI
 on:
   pull_request:
   push:
+    branches:
+      - main
+      - satellite-v2
   workflow_dispatch:
 
 permissions:
@@ -13,6 +16,253 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Reject repository-owned PR assets
+        run: |
+          files="$(git ls-files .github/pr-assets)"
+          if test -n "$files"; then
+            printf 'PR evidence must be uploaded to GitHub, not committed:\n%s\n' "$files" >&2
+            exit 1
+          fi
+
+      # Also checks the inputs release.yml passes to release-desktop.yml, so an
+      # upstream change to them fails here instead of in a release.
+      - name: Lint workflows
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
+          "$RUNNER_TEMP/actionlint" -color
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Check unused code
+        run: vp run knip:check
+
+      - name: Check generated GitHub GraphQL operations
+        run: vp run --filter @t3tools/source-control-github generate --check
+
+      - name: Check rebrand
+        run: |
+          node scripts/rebrand.ts --check
+          git fetch --no-tags --depth=1 origin "$(sed -n 's/^# upstream-base: //p' scripts/rebrand-files.txt)"
+          node scripts/rebrand.ts --verify
+
+      - name: Check
+        run: vp check
+
+  build:
+    name: Build and Typecheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Install browser secret helper build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsecret-1-dev pkg-config
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Typecheck
+        run: vp run typecheck
+
+      - name: Build desktop pipeline
+        run: vp run build:desktop
+
+      - name: Verify preload bundle output
+        run: node apps/desktop/scripts/verify-preload-bundle.mjs
+
+  # Every package except `t3` (apps/server) and the web app, which run below. Mobile runs
+  # although Satellite does not ship it, to catch contract changes that break it.
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      # Desktop tests compile the browser secret helper.
+      - name: Install C toolchain and browser secret helper build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
+          command -v cc
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Test
+        run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/web' --filter '!@t3tools/monorepo' test
+
+  # Web browser tests are timing-sensitive, so they get a runner of their own.
+  test_web:
+    name: Test Web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      # The browser project runs React tests in headless Chromium. Same cache key as
+      # test_server, so both jobs share one downloaded browser.
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        id: chromium_cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
+      - name: Install Chromium for web browser tests
+        if: steps.chromium_cache.outputs.cache-hit != 'true'
+        run: node apps/web/node_modules/playwright/cli.js install --only-shell chromium
+
+      - name: Install missing Chromium system dependencies
+        run: |
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          test -n "$browser"
+          if ldd "$browser" | grep '=> not found'; then
+            node apps/web/node_modules/playwright/cli.js install-deps chromium
+          fi
+
+      - name: Test
+        run: vp run --filter @t3tools/web test
+
+  # apps/server runs its test files one at a time (`fileParallelism: false`), so
+  # shards spread them over runners. apps/server/src/testUtils/weightedShardSequencer.ts
+  # splits files by recorded duration.
+  test_server:
+    name: Test Server ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      # ACP process-tree tests compile a pthread fixture and soft-skip without `cc`.
+      - name: Require a C compiler for process-tree fixtures
+        run: command -v cc
+
+      - name: Setup Vite+
+        uses: ./.github/actions/setup-ci-deps
+
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node -p "require('./apps/server/node_modules/playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        id: chromium_cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
+      - name: Install Chromium for server browser integration tests
+        if: steps.chromium_cache.outputs.cache-hit != 'true'
+        run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
+
+      - name: Install missing Chromium system dependencies
+        run: |
+          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
+          test -n "$browser"
+          if ldd "$browser" | grep '=> not found'; then
+            node apps/server/node_modules/playwright-core/cli.js install-deps chromium
+          fi
+
+      - name: Test
+        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+            !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: |
+          for crate in resource-monitor kde-snap-shot hyprland-snap-shot; do
+            cargo fmt --manifest-path "native/$crate/Cargo.toml" -- --check
+          done
+
+      - name: Test Rust crates
+        run: |
+          for crate in resource-monitor kde-snap-shot hyprland-snap-shot; do
+            cargo test --locked --manifest-path "native/$crate/Cargo.toml"
+          done
+
   desktop:
     name: Desktop (${{ matrix.platform }})
     strategy:
@@ -64,12 +314,6 @@ jobs:
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
 
-      - name: Check rebrand
-        run: node scripts/rebrand.ts --check
-
-      - name: Lint Satellite sources
-        run: vp lint apps/desktop/src/satellite apps/server/src/satellite apps/web/src/components/desktop/SatelliteDesktopShell.tsx apps/web/src/satellitePill.ts packages/contracts/src/satellite.ts packages/contracts/src/satelliteRpc.ts scripts/rebrand.ts scripts/satellite-dev.mjs
-
       - name: Typecheck desktop and web
         run: |
           vp run --filter @t3tools/desktop typecheck
@@ -77,25 +321,31 @@ jobs:
 
       - name: Test desktop shell and native integration
         working-directory: apps/desktop
-        run: vp test run src/satellite/SatellitePill.test.ts src/satellite/pillModel.test.ts src/window/DesktopWindow.test.ts src/ssh/DesktopSshPasswordPrompts.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopLifecycle.test.ts src/shell/DesktopShellEnvironment.test.ts src/ipc/methods/notificationBadge.test.ts src/snapShot/ActiveWindow.test.ts src/snapShot/DesktopSnapShot.test.ts
+        run: vp test run src/window/DesktopWindow.test.ts src/ssh/DesktopSshPasswordPrompts.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopLifecycle.test.ts src/shell/DesktopShellEnvironment.test.ts src/ipc/methods/notificationBadge.test.ts src/snapShot/DesktopSnapShot.test.ts
 
-      - name: Test web shell and pill projection
-        working-directory: apps/web
-        run: vp test run --project unit src/components/desktop/SatelliteDesktopShell.test.tsx src/satellitePill.test.ts
-
-      - name: Test desktop startup and preload verifier
+      - name: Test main-process bundle and preload verifier
         working-directory: apps/desktop
-        run: vp test run scripts/dev-electron.test.mjs scripts/verify-preload-bundle.test.mjs
-
-      - name: Test packaging and rebrand
-        run: vp test run scripts/build-desktop-artifact.test.ts scripts/rebrand.test.ts scripts/fork-footprint.test.ts
-
-      - name: Test Satellite RPC registration
-        working-directory: apps/server
-        run: vp test run src/satellite
+        run: vp test run scripts/main-process-bundle.test.mjs scripts/verify-preload-bundle.test.mjs
 
       - name: Build desktop pipeline
         run: vp run build:desktop
 
       - name: Verify preload bundle output
         run: node apps/desktop/scripts/verify-preload-bundle.mjs
+
+  # Branch protection requires this job by its name, `Check`. `always()` so a
+  # cancelled or skipped dependency still produces a failing check instead of a
+  # skipped one, which branch protection would count as passing.
+  check:
+    name: Check
+    if: ${{ always() }}
+    needs: [lint, build, test, test_web, test_server, rust, desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null

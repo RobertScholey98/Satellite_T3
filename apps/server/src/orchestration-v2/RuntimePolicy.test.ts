@@ -14,11 +14,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
-import type { ProviderInstance } from "../provider/ProviderDriver.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import * as IdeaWorkspace from "../ideas/IdeaWorkspace.ts";
 
 const projectId = ProjectId.make("project:runtime-policy");
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -62,8 +61,6 @@ function makeThread(input: {
   };
 }
 
-// Grok's instance offers no Auto-accept edits; the Codex instance advertises no
-// restriction.
 const grokInstanceId = ProviderInstanceId.make("grok");
 const supportedRuntimeModesByInstance = new Map<ProviderInstanceId, ReadonlyArray<RuntimeMode>>([
   [grokInstanceId, ["approval-required", "auto", "full-access"]],
@@ -111,46 +108,6 @@ const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
 );
 
 it.layer(layerTest)("RuntimePolicyV2", (it) => {
-  it.effect("uses the project root for local-checkout threads", () =>
-    Effect.gen(function* () {
-      const policy = yield* RuntimePolicy.RuntimePolicyV2;
-      const now = yield* DateTime.now;
-      const resolved = yield* policy.resolve({
-        thread: makeThread({ now, worktreePath: null }),
-        modelSelection,
-      });
-      assert.equal(resolved.cwd, "/project-root");
-    }),
-  );
-
-  it.effect("prefers a provisioned worktree over the project root", () =>
-    Effect.gen(function* () {
-      const policy = yield* RuntimePolicy.RuntimePolicyV2;
-      const now = yield* DateTime.now;
-      const resolved = yield* policy.resolve({
-        thread: makeThread({ now, worktreePath: "/project-worktree" }),
-        modelSelection,
-      });
-      assert.equal(resolved.cwd, "/project-worktree");
-    }),
-  );
-
-  it.effect(
-    "requires an isolated workspace for an idea instead of using its project worktree",
-    () =>
-      Effect.gen(function* () {
-        const policy = yield* RuntimePolicy.RuntimePolicyV2;
-        const now = yield* DateTime.now;
-        const failure = yield* policy
-          .resolve({
-            thread: { ...makeThread({ now, worktreePath: "/project-worktree" }), purpose: "idea" },
-            modelSelection,
-          })
-          .pipe(Effect.flip);
-        assert.equal(failure._tag, "RuntimePolicyResolveError");
-      }),
-  );
-
   it.effect("runs a mode the provider does not offer in Supervised", () =>
     Effect.gen(function* () {
       const policy = yield* RuntimePolicy.RuntimePolicyV2;
@@ -166,50 +123,7 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "auto-accept-edits"), "approval-required");
       assert.equal(yield* modeFor(grokInstanceId, "auto"), "auto");
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
-      // A provider that advertises no restriction runs every mode as stored.
       assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
     }),
   );
-});
-
-it.effect("uses the owned idea workspace and preserves its selected permissions", () => {
-  const calls: ThreadId[] = [];
-  const isolatedLayer = RuntimePolicy.layerFromProjectStore.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(IdeaWorkspace.IdeaWorkspace)({
-          prepare: (threadId) =>
-            Effect.sync(() => {
-              calls.push(threadId);
-              return {
-                cwd: "/state/ideas/owned-idea",
-                projectDirectory: "/project-root",
-                mainRevision: "main-head",
-                deletionEpoch: 0,
-                context: "{}",
-              };
-            }),
-        }),
-        Layer.mock(ProjectStore.ProjectStoreV2)({
-          get: () => Effect.die("idea execution must not fall back to the project checkout"),
-        }),
-        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-          getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
-        }),
-      ),
-    ),
-  );
-  return Effect.gen(function* () {
-    const policy = yield* RuntimePolicy.RuntimePolicyV2;
-    const now = yield* DateTime.now;
-    const thread = {
-      ...makeThread({ now, worktreePath: "/project-worktree", runtimeMode: "full-access" }),
-      purpose: "idea" as const,
-    };
-    const resolved = yield* policy.resolve({ thread, modelSelection });
-    assert.equal(resolved.cwd, "/state/ideas/owned-idea");
-    assert.equal(resolved.runtimeMode, "full-access");
-    assert.equal(resolved.purpose, "idea");
-    assert.deepStrictEqual(calls, [thread.id]);
-  }).pipe(Effect.provide(isolatedLayer));
 });

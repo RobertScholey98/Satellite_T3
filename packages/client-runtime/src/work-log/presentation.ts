@@ -1,8 +1,11 @@
 import {
+  isOrchestrationV2WorkActive,
   isToolLifecycleItemType,
   type AssetResource,
   type RuntimeItemStatus,
   type ToolActivitySource,
+  type ToolActivitySurface,
+  type ToolActivityIcon,
   type OrchestrationV2TurnItem,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -19,7 +22,6 @@ import { formatTokens } from "@t3tools/shared/usageFormat";
 import { classifyToolActivity } from "@t3tools/shared/toolActivity";
 import { toolOutputIndicatesFailure } from "@t3tools/shared/toolOutput";
 
-import type { WorkLogEntry } from "@t3tools/client-runtime/work-log/work-log-entry";
 import {
   summarizeT3ToolCalls,
   t3ToolResultIndicatesFailure,
@@ -28,7 +30,6 @@ import {
 
 export type WorkLogToolLifecycleStatus = RuntimeItemStatus | "stopped" | "idle";
 
-/** Inspection and copying omit raw outputs, including values from older caches. */
 export function toolItemForDisplay(item: OrchestrationV2TurnItem): OrchestrationV2TurnItem {
   switch (item.type) {
     case "command_execution":
@@ -48,17 +49,55 @@ export function toolItemForDisplay(item: OrchestrationV2TurnItem): Orchestration
   }
 }
 
-export function contextCompactionLabel(
-  item: Pick<
-    Extract<OrchestrationV2TurnItem, { type: "compaction" }>,
-    "status" | "beforeTokenCount" | "afterTokenCount"
-  >,
-): string {
-  if (item.status === "running") return "Compacting context";
-  if (item.beforeTokenCount !== undefined && item.afterTokenCount !== undefined) {
-    return `Context compacted ${formatTokens(item.beforeTokenCount)} → ${formatTokens(item.afterTokenCount)} tokens`;
+type CompactionLabelItem = Pick<
+  Extract<OrchestrationV2TurnItem, { type: "compaction" }>,
+  "status" | "beforeTokenCount" | "afterTokenCount"
+>;
+
+export function contextCompactionTokenCounts(
+  item: CompactionLabelItem,
+): { readonly before: string; readonly after: string } | null {
+  if (
+    item.status === "running" ||
+    item.beforeTokenCount === undefined ||
+    item.afterTokenCount === undefined
+  ) {
+    return null;
   }
-  return "Context compacted";
+  return { before: formatTokens(item.beforeTokenCount), after: formatTokens(item.afterTokenCount) };
+}
+
+export function contextCompactionLabel(item: CompactionLabelItem): string {
+  if (item.status === "failed") return "Context compaction failed";
+  if (item.status === "cancelled" || item.status === "interrupted")
+    return "Context compaction stopped";
+  if (isOrchestrationV2WorkActive(item.status)) return "Compacting context";
+  const tokens = contextCompactionTokenCounts(item);
+  return tokens
+    ? `Context compacted ${tokens.before} → ${tokens.after} tokens`
+    : "Context compacted";
+}
+
+export interface WorkLogPresentationEntry {
+  readonly questionAnswer?: import("@t3tools/contracts").UserInputAttachmentAnswerPayload;
+  readonly id: string;
+  readonly createdAt: string;
+  readonly label: string;
+  readonly tone: "thinking" | "tool" | "info" | "error";
+  readonly command?: string;
+  readonly rawCommand?: string;
+  readonly detail?: string;
+  readonly viewedImagePath?: string;
+  readonly changedFiles?: ReadonlyArray<string>;
+  readonly toolTitle?: string;
+  readonly toolData?: unknown;
+  readonly requestKind?: string;
+  readonly itemType?: OrchestrationV2TurnItem["type"];
+  readonly toolLifecycleStatus?: WorkLogToolLifecycleStatus;
+  readonly structuredPayload?: OrchestrationV2TurnItem;
+  readonly toolSource?: ToolActivitySource;
+  readonly toolSurface?: ToolActivitySurface;
+  readonly toolIcon?: ToolActivityIcon;
 }
 
 export type ToolGroupAction =
@@ -91,9 +130,8 @@ export function normalizeCompactToolLabel(value: string): string {
   return value.replace(/\s+(?:complete|completed)\s*$/i, "").trim();
 }
 
-/** Structured identity is authoritative, including when it identifies a foreign server. */
 function workEntryToolName(
-  entry: Pick<WorkLogEntry, "label" | "toolTitle" | "toolData" | "structuredPayload">,
+  entry: Pick<WorkLogPresentationEntry, "label" | "toolTitle" | "toolData" | "structuredPayload">,
 ): string | undefined {
   const item = entry.structuredPayload;
   if (item?.type === "dynamic_tool" && item.toolName) return item.toolName;
@@ -105,7 +143,9 @@ function workEntryToolName(
   return resolveT3McpToolDefinition(entry.toolTitle) ? entry.toolTitle : entry.label;
 }
 
-function workEntryToolOutput(entry: Pick<WorkLogEntry, "toolData" | "structuredPayload">): unknown {
+function workEntryToolOutput(
+  entry: Pick<WorkLogPresentationEntry, "toolData" | "structuredPayload">,
+): unknown {
   const item = entry.structuredPayload;
   const data = asRecord(entry.toolData);
   return item?.type === "dynamic_tool"
@@ -161,7 +201,6 @@ function resolveT3McpToolPresentation(
   };
 }
 
-/** Only active or completed calls can inherit the live group’s present tense. */
 export function liveActivityToolStatus(status: string | undefined, presentTense: boolean) {
   if (status === "failed" || status === "declined" || status === "stopped" || status === "idle") {
     return status;
@@ -170,10 +209,9 @@ export function liveActivityToolStatus(status: string | undefined, presentTense:
   return "completed";
 }
 
-/** Resolves tool identity before choosing labels or icons in either client. */
 export function resolveWorkEntryToolPresentation(
   entry: Pick<
-    WorkLogEntry,
+    WorkLogPresentationEntry,
     "label" | "toolTitle" | "toolData" | "toolLifecycleStatus" | "structuredPayload"
   >,
   fallbackStatus?: "inProgress" | "completed",
@@ -216,7 +254,6 @@ function commandResultContent(value: unknown): string | null {
   return chunks.length > 0 ? chunks.join("\n") : null;
 }
 
-/** Returns provider command output before it is formatted for a work-log row. */
 export function extractCommandOutputText(dataValue: unknown): string | null {
   const data = asRecord(dataValue);
   const item = asRecord(data?.item);
@@ -279,12 +316,11 @@ function textRepeatsCommand(text: string, commands: ReadonlyArray<string | null>
 }
 
 /**
- * Decides whether a command row's `detail` is a synthetic echo of the command
- * rather than real output. OpenCode stores completed output in `detail` with no
- * other output channel, so plain equality is only treated as synthetic when the
- * payload shape shows the detail came from the command: Codex item metadata,
- * an ACP tool call (`data.toolCallId`, `kind: "execute"`), a Claude tool-name
- * prefix, or no structured command at all.
+ * OpenCode stores completed output in `detail` with no other output channel, so
+ * plain equality is only treated as synthetic when the payload shape shows the
+ * detail came from the command: Codex item metadata, an ACP tool call
+ * (`data.toolCallId`, `kind: "execute"`), a Claude tool-name prefix, or no
+ * structured command at all.
  */
 export function commandDetailRepeatsCommand(input: {
   readonly detail: string;
@@ -328,7 +364,7 @@ export function commandDetailRepeatsCommand(input: {
   );
 }
 
-function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
+function workLogEntryIsToolLike(entry: WorkLogPresentationEntry): boolean {
   if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") return true;
   if (entry.command !== undefined && entry.command.trim().length > 0) return true;
   if (entry.requestKind !== undefined) return true;
@@ -336,7 +372,7 @@ function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
 }
 
 function workEntryIndicatesToolFailureFromOutput(
-  entry: WorkLogEntry,
+  entry: WorkLogPresentationEntry,
   includeCommand: boolean,
 ): boolean {
   if (
@@ -346,11 +382,10 @@ function workEntryIndicatesToolFailureFromOutput(
   ) {
     return true;
   }
-  // A request's text is what the agent asked, not output that could report a failure.
-  if (entry.itemType === "approval_request" || entry.itemType === "user_input_request") {
-    return false;
-  }
-  if (!workLogEntryIsToolLike(entry)) return false;
+  // Reasoning detail is the model's own prose (often tens of KB), not tool
+  // output: scanning it is slow on long threads and misreads phrases like
+  // "that exit code 2 is expected" as a failed tool.
+  if (!workLogEntryIsToolLike(entry) || entry.itemType === "reasoning") return false;
   if (
     resolveT3McpToolDefinition(workEntryToolName(entry)) &&
     t3ToolResultIndicatesFailure(workEntryToolOutput(entry))
@@ -362,8 +397,6 @@ function workEntryIndicatesToolFailureFromOutput(
     if (item.outputIndicatesFailure || (item.exitCode !== undefined && item.exitCode !== 0)) {
       return true;
     }
-    // Older servers/caches can still carry output. Read only the previous
-    // preview-sized prefix for status, without exposing it in the row detail.
     if (item.output && toolOutputIndicatesFailure(item.output.slice(0, 32_768))) {
       return true;
     }
@@ -374,18 +407,15 @@ function workEntryIndicatesToolFailureFromOutput(
   return output.length > 0 && toolOutputIndicatesFailure(output);
 }
 
-/** Includes legacy activities that stored error output in the command field. */
-export function workEntryIndicatesToolFailure(entry: WorkLogEntry): boolean {
+export function workEntryIndicatesToolFailure(entry: WorkLogPresentationEntry): boolean {
   return workEntryIndicatesToolFailureFromOutput(entry, true);
 }
 
-/** Checks rendered output without treating the user's command as an error. */
-export function workEntryDisplayIndicatesToolFailure(entry: WorkLogEntry): boolean {
+export function workEntryDisplayIndicatesToolFailure(entry: WorkLogPresentationEntry): boolean {
   return workEntryIndicatesToolFailureFromOutput(entry, false);
 }
 
-/** Decides whether the row can show a success marker. */
-export function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
+export function workEntryIndicatesToolSuccess(entry: WorkLogPresentationEntry): boolean {
   return (
     workLogEntryIsToolLike(entry) &&
     !workEntryIndicatesToolFailure(entry) &&
@@ -396,7 +426,7 @@ export function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
   );
 }
 
-function workLogEntryIsLocalCodeSearch(entry: WorkLogEntry): boolean {
+function workLogEntryIsLocalCodeSearch(entry: WorkLogPresentationEntry): boolean {
   return (
     entry.itemType === "file_search" ||
     (entry.itemType === "web_search" &&
@@ -404,17 +434,16 @@ function workLogEntryIsLocalCodeSearch(entry: WorkLogEntry): boolean {
   );
 }
 
-export function toolGroupAction(entry: WorkLogEntry): ToolGroupAction {
+export function toolGroupAction(entry: WorkLogPresentationEntry): ToolGroupAction {
   if (entry.itemType === "thread_created") return "thread-create";
   const presentation = resolveWorkEntryToolPresentation(entry);
   if (presentation?.action !== undefined) return presentation.action;
   if (presentation?.icon === "browser") return "browser";
   if (presentation?.icon === "device") return "device";
-  // Approvals and questions describe requested work, not work that ran.
+  if (entry.requestKind === "file-read" || entry.viewedImagePath !== undefined) return "read";
   if (entry.itemType === "approval_request" || entry.itemType === "user_input_request") {
     return workLogEntryIsToolLike(entry) ? "other" : "update";
   }
-  if (entry.requestKind === "file-read" || entry.viewedImagePath !== undefined) return "read";
   const data = asRecord(entry.toolData) ?? {};
   const toolName =
     entry.structuredPayload?.type === "dynamic_tool"
@@ -453,7 +482,7 @@ export function toolGroupAction(entry: WorkLogEntry): ToolGroupAction {
   return workLogEntryIsToolLike(entry) ? "other" : "update";
 }
 
-export function workEntryViewedImagePath(entry: WorkLogEntry): string | null {
+export function workEntryViewedImagePath(entry: WorkLogPresentationEntry): string | null {
   const viewedImagePath = entry.viewedImagePath?.trim();
   if (
     viewedImagePath !== undefined &&
@@ -484,8 +513,6 @@ export function resolveViewedImageAsset(
     readonly workspaceRoot?: string | null | undefined;
   },
 ): ViewedImageAsset | null {
-  // A relative path with no known workspace still names a media-file relative
-  // to the thread's workspace, so classify against "." and drop the prefix.
   const imageSource = classifyMarkdownImageSource(source, input.workspaceRoot ?? ".");
   if (imageSource._tag !== "WorkspaceFile") return null;
   const resolvedFilePath =
@@ -504,7 +531,7 @@ export function resolveViewedImageAsset(
 
 function toolGroupActionCount(
   action: ToolGroupAction,
-  entries: ReadonlyArray<WorkLogEntry>,
+  entries: ReadonlyArray<WorkLogPresentationEntry>,
 ): number {
   if (action !== "edit") return entries.length;
   const changedFiles = new Set<string>();
@@ -556,7 +583,7 @@ function toolGroupActionLabel(action: ToolGroupAction, count: number): string {
   }
 }
 
-function t3ToolSummaryCall(entry: WorkLogEntry): T3ToolSummaryCall {
+function t3ToolSummaryCall(entry: WorkLogPresentationEntry): T3ToolSummaryCall {
   const item = entry.structuredPayload;
   const data =
     entry.toolData !== null && typeof entry.toolData === "object"
@@ -588,6 +615,7 @@ function summaryActionPriority(action: ToolGroupAction | T3McpToolSummaryAction)
     case "thread-create":
     case "thread-send":
     case "thread-interrupt":
+    case "workflow-stop":
     case "schedule-create":
     case "schedule-update":
     case "schedule-delete":
@@ -620,8 +648,7 @@ function summaryActionPriority(action: ToolGroupAction | T3McpToolSummaryAction)
   }
 }
 
-/** Summarizes at most two action categories; every omitted call still counts in the remainder. */
-export function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): {
+export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEntry>): {
   summary: string;
   hasFailure: boolean;
 } {
@@ -638,7 +665,7 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): {
     {
       action: ToolGroupAction;
       t3Action: T3McpToolSummaryAction | null;
-      entries: WorkLogEntry[];
+      entries: WorkLogPresentationEntry[];
     }
   >();
   const sources = new Map<string, ToolActivitySource>();
@@ -675,7 +702,7 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): {
   const labels = selected.map(({ label }) => label);
   if (sources.size > 0) {
     const sourceValues = [...sources.values()];
-    const sourceNames = sourceValues.map((source) => source.name);
+    const sourceNames = [...new Set(sourceValues.map((source) => source.name))];
     const formattedNames =
       sourceNames.length < 2
         ? sourceNames[0]!
@@ -684,7 +711,7 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): {
           : `${sourceNames.slice(0, -1).join(", ")}, and ${sourceNames.at(-1)}`;
     const allIntegrations = sourceValues.every((source) => source.kind === "integration");
     labels.unshift(
-      `Used ${formattedNames}${allIntegrations ? ` ${sources.size === 1 ? "integration" : "integrations"}` : ""}`,
+      `Used ${formattedNames}${allIntegrations ? ` ${sourceNames.length === 1 ? "integration" : "integrations"}` : ""}`,
     );
   }
   const sourcedCount = entries.filter(
@@ -707,7 +734,9 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogEntry>): {
   return { summary, hasFailure: summaries.some((group) => group.failedCount > 0) };
 }
 
-export function toolGroupSummaryKind(entries: ReadonlyArray<WorkLogEntry>): ToolGroupSummaryKind {
+export function toolGroupSummaryKind(
+  entries: ReadonlyArray<WorkLogPresentationEntry>,
+): ToolGroupSummaryKind {
   const toolEntries = entries.filter((entry) => entry.itemType !== "reasoning");
   if (entries.length > 0 && toolEntries.length === 0) return "reasoning";
   entries = toolEntries;
@@ -730,4 +759,18 @@ export function toolGroupSummaryKind(entries: ReadonlyArray<WorkLogEntry>): Tool
     }),
   );
   return fallbackKinds.size === 1 ? fallbackKinds.values().next().value! : "mixed";
+}
+
+export function liveThoughtLine(markdown: string): string {
+  const heading = /^\s*\*\*([^*\r\n]+)\*\*[ \t]*\r?(?:\n|$)/.exec(markdown)?.[1];
+  const text = (heading ?? markdown)
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^[ \t]*(?:#{1,6}|[-*+]|\d+\.)[ \t]+/gm, "")
+    .replace(/`+|\*\*|~~/g, "")
+    .replace(/(^|[^\w*])[*_]([^*_\n]+)[*_](?![\w*])/g, "$1$2")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (heading !== undefined) return text;
+  const end = /[.?!]["'”’)]?(?=\s)/.exec(text);
+  return end ? text.slice(0, end.index + end[0].length) : text;
 }
