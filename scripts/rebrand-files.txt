@@ -5,7 +5,7 @@
 # reads, rebrand:keep markers, other Satellite changes). After taking upstream's side of one,
 # rerun the script and re-apply Satellite's other hunks for that file.
 # The merge-forward that changes upstream's side updates this line; --verify reads it.
-# upstream-base: d27c6067a9162150f654e38f455a7a936ef79178
+# upstream-base: 5c3721e20aa3c19d7ab414c40734752f9c053c90
 .github/triage/PLAYBOOK.md  # hand-edited
 apps/desktop/gnome-extension/captureFeedback.js
 apps/desktop/gnome-extension/captureService.js
