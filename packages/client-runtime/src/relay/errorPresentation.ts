@@ -59,7 +59,9 @@ export function relayProtectedErrorMessage(error: RelayProtectedError): string {
     case "RelayEnvironmentLinkFailedError":
       return `Relay could not link the environment (${error.reason}).`;
     case "RelayEnvironmentLinkUnavailableError":
-      return `Relay cannot provision the managed endpoint (${error.reason}).`;
+      return `Relay cannot provision the managed endpoint (${error.reason}).${
+        error.provisioningStage ? ` Failed stage: ${error.provisioningStage}.` : ""
+      }`;
     case "RelayEnvironmentLinkLimitExceededError":
       return `Relay refused the link: this account already has its maximum of ${error.maxTunnels} managed tunnels. Unlink an environment to free one up.`;
     case "RelayAgentActivityPublishProofExpiredError":
@@ -88,8 +90,6 @@ export function relayRequestFailureDetail(error: {
 
 const relayTunnelReleasedMessage = (productName: string) =>
   `Offline for a while, so its T3 Connect tunnel was removed. Start ${productName} on that computer and update it to the latest version to reconnect.`;
-
-export const RELAY_TUNNEL_RELEASED_MESSAGE = relayTunnelReleasedMessage("T3 Code");
 
 export function relayOfflineReasonMessage(
   status: Pick<RelayEnvironmentStatusResponse, "offlineReason">,

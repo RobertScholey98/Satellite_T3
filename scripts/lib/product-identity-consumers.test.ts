@@ -38,6 +38,12 @@ const UPSTREAM_REPOSITORY_ALLOWLIST = [
   "apps/server/scripts/threadTitleEvaluationCases.ts",
   // Sample data for upstream's mobile store screenshots.
   "scripts/mobile-showcase-environment.ts",
+  // Upstream's relay deployment, which Satellite does not run.
+  "infra/relay/",
+  // Only upstream's own builds report a telemetry channel; these say so and test the repository.
+  ".github/workflows/release-desktop.yml",
+  "apps/server/src/telemetry/AnalyticsService.ts",
+  "apps/server/vite.config.ts",
 ];
 
 describe("static identity consumers", () => {

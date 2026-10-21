@@ -211,19 +211,22 @@ export const make = Effect.gen(function* () {
       resource: "boards",
       route: { project: locator.project, team: locator.team, id: locator.boardId },
     }).pipe(Effect.flatMap((response) => validate(Board, response)));
-  const toBoardItem = (locator: BoardLocator, board: Board, raw: Record<string, unknown>) =>
-    Effect.gen(function* () {
-      const column = board.columns.find(
-        (entry) => entry.name === obj(raw.fields)[board.fields.columnField.referenceName],
-      );
-      const item: IssueBoardItem = {
-        issue: yield* toIssueSummary(toIssue(boardRef(locator), raw)),
-        itemId: String(num(raw.id)),
-        columnId: column?.id ?? null,
-        version: String(num(raw.rev)),
-      };
-      return item;
-    });
+  const toBoardItem = Effect.fn("AzureBoardsIssueHost.toBoardItem")(function* (
+    locator: BoardLocator,
+    board: Board,
+    raw: Record<string, unknown>,
+  ) {
+    const column = board.columns.find(
+      (entry) => entry.name === obj(raw.fields)[board.fields.columnField.referenceName],
+    );
+    const item: IssueBoardItem = {
+      issue: yield* toIssueSummary(toIssue(boardRef(locator), raw)),
+      itemId: String(num(raw.id)),
+      columnId: column?.id ?? null,
+      version: String(num(raw.rev)),
+    };
+    return item;
+  });
 
   const list: IssueHostAdapter["list"] = Effect.fn("AzureBoardsIssueHost.list")(
     function* (scope, cursor) {
@@ -285,15 +288,16 @@ export const make = Effect.gen(function* () {
     });
   });
 
-  const pages = <A>(read: (skip: number) => Effect.Effect<ReadonlyArray<A>, IssueOperationError>) =>
-    Effect.gen(function* () {
-      const all: A[] = [];
-      for (let skip = 0; ; skip += PAGE_SIZE) {
-        const page = yield* read(skip);
-        all.push(...page);
-        if (page.length < PAGE_SIZE) return all;
-      }
-    });
+  const pages = Effect.fn("AzureBoardsIssueHost.pages")(function* <A>(
+    read: (skip: number) => Effect.Effect<ReadonlyArray<A>, IssueOperationError>,
+  ) {
+    const all: A[] = [];
+    for (let skip = 0; ; skip += PAGE_SIZE) {
+      const page = yield* read(skip);
+      all.push(...page);
+      if (page.length < PAGE_SIZE) return all;
+    }
+  });
   const discover = Effect.fn("AzureBoardsIssueHost.discover")(function* (
     cwd: string,
     host: string,
@@ -358,19 +362,20 @@ export const make = Effect.gen(function* () {
       timeToLive: (exit) => (Exit.isSuccess(exit) ? Duration.seconds(60) : Duration.zero),
     },
   );
-  const listBoards: IssueHostBoards<"azure-board">["list"] = (scope) =>
-    Effect.gen(function* () {
-      const credentialScope = yield* CredentialScope;
-      return yield* Cache.get(
-        discovered,
-        new DiscoveryKey({
-          cwd: scope.cwd,
-          host: scope.ref.host,
-          organization: projectOf(scope.ref).organization,
-          credentialScope,
-        }),
-      );
-    });
+  const listBoards: IssueHostBoards<"azure-board">["list"] = Effect.fn(
+    "AzureBoardsIssueHost.listBoards",
+  )(function* (scope) {
+    const credentialScope = yield* CredentialScope;
+    return yield* Cache.get(
+      discovered,
+      new DiscoveryKey({
+        cwd: scope.cwd,
+        host: scope.ref.host,
+        organization: projectOf(scope.ref).organization,
+        credentialScope,
+      }),
+    );
+  });
 
   const read: IssueHostBoards<"azure-board">["read"] = Effect.fn("AzureBoardsIssueHost.read")(
     function* (cwd, locator) {

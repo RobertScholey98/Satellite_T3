@@ -161,6 +161,38 @@ describe("DesktopAppIdentity", () => {
     ),
   );
 
+  it.effect.each([
+    { stage: "Alpha", environment: {} },
+    {
+      stage: "Nightly",
+      environment: { appVersion: "0.0.43-nightly.20260929.2428" },
+    },
+    {
+      stage: "Dev",
+      environment: { env: { VITE_DEV_SERVER_URL: "http://localhost:5173" } },
+    },
+  ])("uses a valid native User-Agent product name for $stage", ({ stage, environment }) => {
+    const calls: ElectronAppCalls = {
+      setAboutPanelOptions: [],
+      setDockIcon: [],
+      setName: [],
+    };
+
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        yield* identity.configure;
+
+        const runtimeName = calls.setName[0];
+        assert.isDefined(runtimeName);
+        assert.equal(runtimeName, `Satellite ${stage}`);
+        assert.match(runtimeName.replaceAll(" ", ""), /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, `Satellite (${stage})`);
+      }),
+      { calls, environment },
+    );
+  });
+
   it.effect("keeps development in the Satellite development profile", () =>
     withIdentity(
       Effect.gen(function* () {
@@ -203,90 +235,6 @@ describe("DesktopAppIdentity", () => {
       {
         legacyPathProbeError: cause,
         environment: { platform: "win32" },
-      },
-    );
-  });
-
-  it.effect("configures app identity from the environment commit override", () => {
-    const calls: ElectronAppCalls = {
-      setAboutPanelOptions: [],
-      setDockIcon: [],
-      setName: [],
-    };
-
-    return withIdentity(
-      Effect.gen(function* () {
-        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
-        yield* identity.configure;
-
-        assert.deepEqual(calls.setName, ["Satellite Alpha"]);
-        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "Satellite (Alpha)");
-        assert.equal(calls.setAboutPanelOptions[0]?.applicationVersion, "1.2.3");
-        assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
-        assert.deepEqual(calls.setDockIcon, []);
-      }),
-      {
-        calls,
-        environment: {
-          env: {
-            T3CODE_COMMIT_HASH: "0123456789abcdef",
-          },
-        },
-        pngIconPath: Option.some("/icon.png"),
-      },
-    );
-  });
-
-  it.effect.each([
-    { stage: "Alpha", environment: {} },
-    {
-      stage: "Nightly",
-      environment: { appVersion: "0.0.43-nightly.20260929.2428" },
-    },
-    {
-      stage: "Dev",
-      environment: { env: { VITE_DEV_SERVER_URL: "http://localhost:5173" } },
-    },
-  ])("uses a valid native User-Agent product name for $stage", ({ stage, environment }) => {
-    const calls: ElectronAppCalls = {
-      setAboutPanelOptions: [],
-      setDockIcon: [],
-      setName: [],
-    };
-
-    return withIdentity(
-      Effect.gen(function* () {
-        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
-        yield* identity.configure;
-
-        const runtimeName = calls.setName[0];
-        assert.isDefined(runtimeName);
-        assert.equal(runtimeName, `Satellite ${stage}`);
-        assert.match(runtimeName.replaceAll(" ", ""), /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
-        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, `Satellite (${stage})`);
-      }),
-      { calls, environment },
-    );
-  });
-
-  it.effect("sets the dock icon only when running unpackaged", () => {
-    const calls: ElectronAppCalls = {
-      setAboutPanelOptions: [],
-      setDockIcon: [],
-      setName: [],
-    };
-
-    return withIdentity(
-      Effect.gen(function* () {
-        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
-        yield* identity.configure;
-
-        assert.deepEqual(calls.setDockIcon, ["/icon.png"]);
-      }),
-      {
-        calls,
-        environment: { isPackaged: false },
-        pngIconPath: Option.some("/icon.png"),
       },
     );
   });

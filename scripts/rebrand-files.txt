@@ -5,7 +5,7 @@
 # reads, rebrand:keep markers, other Satellite changes). After taking upstream's side of one,
 # rerun the script and re-apply Satellite's other hunks for that file.
 # The merge-forward that changes upstream's side updates this line; --verify reads it.
-# upstream-base: d8e9fd267e26b7680f035edc0b40db09d2685dbb
+# upstream-base: d27c6067a9162150f654e38f455a7a936ef79178
 .github/triage/PLAYBOOK.md  # hand-edited
 apps/desktop/gnome-extension/captureFeedback.js
 apps/desktop/gnome-extension/captureService.js
@@ -39,7 +39,6 @@ apps/desktop/src/snapShot/PortalCaptureShortcut.test.ts
 apps/desktop/src/snapShot/PortalCaptureShortcut.ts
 apps/desktop/src/snapShot/SnapShotTransition.ts
 apps/desktop/src/snapShot/snapShot.ts
-apps/desktop/src/ssh/DesktopSshEnvironment.test.ts
 apps/desktop/src/ssh/DesktopSshEnvironment.ts
 apps/desktop/src/ssh/DesktopSshPasswordPrompts.ts
 apps/desktop/src/window/DesktopApplicationMenu.test.ts
@@ -62,12 +61,13 @@ apps/server/src/cli/server.ts
 apps/server/src/cli/service.test.ts
 apps/server/src/cli/service.ts
 apps/server/src/cli/theme.ts
+apps/server/src/cli/thread.ts
 apps/server/src/cli/triage.ts
 apps/server/src/cli/triagePrompt.ts  # hand-edited
 apps/server/src/cli/uninstall.ts
 apps/server/src/cli/update.ts  # hand-edited
-apps/server/src/cli/updateProgress.test.ts
 apps/server/src/cli/updateProgress.ts
+apps/server/src/cloud/ConnectReachability.ts
 apps/server/src/cloud/bootService.ts
 apps/server/src/cloud/cliAuthHtml.ts
 apps/server/src/cloud/relayResponse.ts
@@ -118,12 +118,12 @@ apps/server/src/serverRuntimeStartup.ts
 apps/server/src/serviceLauncher.ts
 apps/server/src/startupAccess.ts
 apps/server/src/vcs/GitVcsDriver.ts
-apps/web/src/bootstrap.test.ts
 apps/web/src/cloud/linkEnvironment.ts
 apps/web/src/components/RightPanelTabs.tsx
 apps/web/src/components/ServerUpdateAction.tsx
-apps/web/src/components/chat/MessagesTimeline.tsx  # hand-edited
 apps/web/src/components/chat/RightPanelSurfaceContent.tsx
+apps/web/src/components/chat/TimelineAssistantRows.tsx
+apps/web/src/components/chat/TimelineUserMessageRow.tsx
 apps/web/src/components/cloud/RelayClientInstallDialog.tsx
 apps/web/src/components/desktop/DesktopAppActivationCoordinator.tsx
 apps/web/src/components/desktop/SshPasswordPromptDialog.tsx
@@ -135,6 +135,7 @@ apps/web/src/components/preview/PreviewPanel.tsx
 apps/web/src/components/preview/PreviewView.tsx
 apps/web/src/components/promptLinks/NewThreadLinkView.tsx
 apps/web/src/components/promptLinks/linkedPrompt.ts
+apps/web/src/components/pullRequest/PullRequestsPage.tsx  # hand-edited
 apps/web/src/components/settings/BrowserImportWizard.tsx
 apps/web/src/components/settings/CaptureShortcutConfig.tsx
 apps/web/src/components/settings/ChatGptWelcomeCoordinator.tsx
@@ -157,7 +158,6 @@ apps/web/src/components/settings/scopedSettings.test.ts
 apps/web/src/components/settings/scopedSettings.ts
 apps/web/src/components/settings/settingsSearch.ts  # hand-edited
 apps/web/src/components/sidebar/updateEverythingRun.tsx
-apps/web/src/connection/clientMetadata.test.ts
 apps/web/src/desktopAppActivation.ts
 apps/web/src/lib/bootError.ts
 apps/web/src/routes/_chat.index.tsx
@@ -169,7 +169,9 @@ docs/README.md  # hand-edited
 docs/operations/release.md  # hand-edited
 docs/user/source-control.md  # hand-edited
 docs/user/thread-migration.md
-packages/client-runtime/src/state/pullRequestDiffHttp.test.ts
+packages/client-runtime/src/connection/diagnosis.test.ts
+packages/client-runtime/src/connection/diagnosis.ts
+packages/client-runtime/src/connection/hostFreeze.ts
 packages/client-runtime/src/state/pullRequestDiffHttp.ts
 packages/contracts/src/browserImport.ts
 packages/contracts/src/pullRequest.ts  # hand-edited
@@ -180,7 +182,6 @@ packages/provider-acp/src/server/mcpOverAcpBridge.ts
 packages/provider-core/src/server/maintenance.ts
 packages/provider-core/src/server/maintenanceResolver.test.ts
 packages/provider-core/src/server/maintenanceResolver.ts
-packages/provider-core/src/server/orchestrationInstructions.test.ts
 packages/provider-core/src/server/orchestrationInstructions.ts
 packages/provider-core/src/server/textGenerationPrompts.test.ts
 packages/provider-core/src/server/textGenerationPrompts.ts
@@ -188,6 +189,7 @@ packages/provider-cursor/src/server/accountUsage.test.ts
 packages/provider-cursor/src/server/accountUsage.ts
 packages/provider-cursor/src/server/adapter.ts
 packages/provider-cursor/src/server/auth.ts
+packages/provider-cursor/src/server/status.test.ts
 packages/provider-cursor/src/server/status.ts
 packages/provider-cursor/src/server/textGeneration.ts
 packages/provider-cursor/src/server/usageLimits.ts
@@ -219,5 +221,5 @@ packages/source-control-github/src/server/githubStackRebase.ts
 packages/ssh/src/auth.ts
 scripts/build-desktop-artifact.ts  # hand-edited
 scripts/build-npm-launcher.ts
-scripts/dev-runner.ts
+scripts/dev-runner.ts  # hand-edited
 scripts/npm-launcher/t3.mjs  # hand-edited

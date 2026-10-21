@@ -57,6 +57,8 @@ export const DESKTOP_PACKAGING = {
   macUsageDescriptions: {
     localNetwork: `${PRODUCT_NAME} connects to devices on your local network for remote environments and commands run by terminals and coding agents.`,
     screenCapture: `${PRODUCT_NAME} captures the active window when you use the window capture shortcut.`,
+    camera: `${PRODUCT_NAME} lets commands run by terminals and coding agents use the camera.`,
+    microphone: `${PRODUCT_NAME} lets commands run by terminals and coding agents use the microphone.`,
   },
 } as const;
 

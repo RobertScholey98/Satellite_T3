@@ -79,11 +79,12 @@ const awaitServerReady = Effect.gen(function* () {
  * because startup output and the first client syncs still run just after ready. The archive
  * commands then neither interleave with legacy import and recovery nor delay readiness.
  */
-export const drainLegacyThreadArchivesAfterStartup = (settle: Duration.Input = "1 second") =>
-  Effect.gen(function* () {
-    const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-    yield* startup.awaitCommandReady;
-    yield* awaitServerReady;
-    yield* Effect.sleep(settle);
-    return yield* drainLegacyThreadArchives();
-  });
+export const drainLegacyThreadArchivesAfterStartup = Effect.fn(
+  "satellite.drainLegacyThreadArchivesAfterStartup",
+)(function* (settle: Duration.Input = "1 second") {
+  const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
+  yield* startup.awaitCommandReady;
+  yield* awaitServerReady;
+  yield* Effect.sleep(settle);
+  return yield* drainLegacyThreadArchives();
+});

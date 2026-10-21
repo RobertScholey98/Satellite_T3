@@ -22,7 +22,11 @@ import * as LegacyV1ThreadImporter from "../../../orchestration-v2/legacy/Legacy
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as RuntimeLayer from "../../../orchestration-v2/runtimeLayer.ts";
 import * as ThreadLifecycleService from "../../../orchestration-v2/ThreadLifecycleService.ts";
-import { migrationEntries, runMigrations } from "../../../persistence/Migrations.ts";
+import { runMigrations } from "../../../persistence/Migrations.ts";
+import Migration0055 from "../../../persistence/Migrations/055_OrchestrationV2.ts";
+import Migration0056 from "../../../persistence/Migrations/056_RemoveRedundantProjectionIndexes.ts";
+import Migration0057 from "../../../persistence/Migrations/057_ScheduledTaskWebhooks.ts";
+import Migration0058 from "../../../persistence/Migrations/058_WebhookRelayDeliveries.ts";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as ProjectEnrichmentService from "../../../project/ProjectEnrichmentService.ts";
 import * as ProviderInstanceRegistry from "../../../provider/ProviderInstanceRegistry.ts";
@@ -454,13 +458,12 @@ export const seedSatelliteDevBuild = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* seedSatelliteV1("55-62");
   yield* Migrator.make({})({
-    loader: Migrator.fromRecord(
-      Object.fromEntries(
-        migrationEntries
-          .filter(([id]) => id >= 55 && id <= 58)
-          .map(([id, name, migration]) => [`${id + 8}_${name}`, migration]),
-      ),
-    ),
+    loader: Migrator.fromRecord({
+      "63_OrchestrationV2": Migration0055,
+      "64_RemoveRedundantProjectionIndexes": Migration0056,
+      "65_ScheduledTaskWebhooks": Migration0057,
+      "66_WebhookRelayDeliveries": Migration0058,
+    }),
   });
   yield* applySteps(DEV_BUILD_STEPS);
   yield* importV1Threads;

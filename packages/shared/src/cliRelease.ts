@@ -1,5 +1,6 @@
 import { RELEASE_REPOSITORY } from "@t3tools/contracts";
 
+export const CLI_RELEASES_PAGE_URL = `https://github.com/${RELEASE_REPOSITORY}/releases`;
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
 export const CLI_RELEASE_BASE_URL_ENV = "T3CODE_RELEASE_BASE_URL";
 

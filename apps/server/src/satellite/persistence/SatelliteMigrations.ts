@@ -11,7 +11,8 @@ import { repairSatelliteLegacyLedger } from "../../persistence/Migrations/satell
  * Ids 55 to 69 of `satellite_migrations` hold rows the ledger repair moved out of upstream's
  * ledger. They are records and never run. The migrator skips every id at or below the highest
  * recorded one, so a Satellite migration in this range would run on fresh installs and be
- * skipped on upgraded ones. Satellite migrations start at 100.
+ * skipped on upgraded ones. Satellite migrations start at 100. Never reuse 100: development
+ * databases recorded it for Revdoc, which was removed, so the next free id is 102.
  */
 export const SATELLITE_LEGACY_MIGRATION_IDS = { first: 55, last: 69 } as const;
 export const FIRST_SATELLITE_MIGRATION_ID = 100;
