@@ -588,15 +588,6 @@ export function applyServerSettingsPatch(
     ...(patch.reviewGuideModelSelection !== undefined
       ? { reviewGuideModelSelection: patch.reviewGuideModelSelection }
       : {}),
-    ...(patch.revdocModelSelection !== undefined
-      ? { revdocModelSelection: patch.revdocModelSelection }
-      : {}),
-    ...(patch.revdocLargeModelSelection !== undefined
-      ? { revdocLargeModelSelection: patch.revdocLargeModelSelection }
-      : {}),
-    ...(patch.revdocTestingModelSelection !== undefined
-      ? { revdocTestingModelSelection: patch.revdocTestingModelSelection }
-      : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
     ...(providerHealthRefreshInterval !== undefined ? { providerHealthRefreshInterval } : {}),
   };

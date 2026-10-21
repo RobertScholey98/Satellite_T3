@@ -1,5 +1,5 @@
 import { Link, linkOptions } from "@tanstack/react-router";
-import { GitBranchIcon, TicketIcon } from "lucide-react";
+import { TicketIcon } from "lucide-react";
 import { useEffect } from "react";
 
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
@@ -20,13 +20,6 @@ const WORK_TABS = [
     label: "Issues",
     icon: TicketIcon,
     link: () => linkOptions({ to: "/issues", search: readIssuesNavigation() }),
-  },
-  // Open work restores its own last selection when opened without a target.
-  {
-    id: "open-work",
-    label: "Open work",
-    icon: GitBranchIcon,
-    link: () => linkOptions({ to: "/open-work" }),
   },
 ] as const;
 

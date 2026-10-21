@@ -312,6 +312,14 @@ const start = Effect.gen(function* () {
   };
 });
 
+const freshInstallTables = Effect.scoped(
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "satellite-fresh-" });
+    return (yield* start.pipe(Effect.provide(layerSatelliteRuntime(baseDir)))).tables;
+  }),
+);
+
 describe("Satellite ledger upgrade", () => {
   it.live.each(CASES)("upgrades $name and changes nothing on the next start", (upgrade) =>
     Effect.scoped(
@@ -348,6 +356,11 @@ describe("Satellite ledger upgrade", () => {
           if (!ISSUE_TABLES_AFTER_101.includes(table)) assert.notInclude(first.tables, table);
         }
         for (const table of SATELLITE_1X_TABLES) assert.notInclude(first.tables, table);
+        assert.deepStrictEqual(first.tables, yield* freshInstallTables);
+        assert.deepStrictEqual(
+          first.tables.filter((table) => /^(revdoc_|open_work)/.test(table)),
+          [],
+        );
         assert.notInclude(first.tables, "satellite_legacy_thread_archives");
         assert.deepStrictEqual(
           first.v2Threads.map((row) => row.thread_id).toSorted(),

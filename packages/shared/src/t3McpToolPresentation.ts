@@ -64,8 +64,7 @@ export type T3McpToolSummaryAction =
   | "browser"
   | "device"
   | "html-preview"
-  | "html-render"
-  | "revdoc";
+  | "html-render";
 
 export interface T3McpToolDefinition {
   readonly displayName: string;
@@ -332,16 +331,6 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_thread_send_attachments: tool(["Send", "Sending", "Sent", "attachments"], "attachment-send"),
   html_preview: tool(["Preview", "Previewing", "Previewed", "an HTML page"], "html-preview"),
   html_render: tool(["Render", "Rendering", "Rendered", "an HTML page"], "html-render"),
-  revdoc_read: tool(["Read", "Reading", "Read", "the Revdoc review"], "revdoc"),
-  revdoc_generate: tool(["Generate", "Generating", "Generated", "the Revdoc review"], "revdoc"),
-  revdoc_test: tool(["Test", "Testing", "Tested", "the Revdoc review"], "revdoc"),
-  revdoc_cancel: tool(["Cancel", "Cancelling", "Cancelled", "the Revdoc pass"], "revdoc"),
-  revdoc_record_result: tool(["Record", "Recording", "Recorded", "a Revdoc result"], "revdoc"),
-  revdoc_capture_evidence: tool(
-    ["Capture", "Capturing", "Captured", "Revdoc evidence"],
-    "revdoc",
-    "browser",
-  ),
 };
 
 export const T3_MCP_TOOL_NAMES: ReadonlySet<string> = new Set(Object.keys(T3_MCP_TOOLS));

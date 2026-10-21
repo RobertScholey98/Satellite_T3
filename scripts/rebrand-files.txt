@@ -120,10 +120,10 @@ apps/server/src/startupAccess.ts
 apps/server/src/vcs/GitVcsDriver.ts
 apps/web/src/bootstrap.test.ts
 apps/web/src/cloud/linkEnvironment.ts
-apps/web/src/components/RightPanelTabs.tsx  # hand-edited
+apps/web/src/components/RightPanelTabs.tsx
 apps/web/src/components/ServerUpdateAction.tsx
 apps/web/src/components/chat/MessagesTimeline.tsx  # hand-edited
-apps/web/src/components/chat/RightPanelSurfaceContent.tsx  # hand-edited
+apps/web/src/components/chat/RightPanelSurfaceContent.tsx
 apps/web/src/components/cloud/RelayClientInstallDialog.tsx
 apps/web/src/components/desktop/DesktopAppActivationCoordinator.tsx
 apps/web/src/components/desktop/SshPasswordPromptDialog.tsx
@@ -147,7 +147,7 @@ apps/web/src/components/settings/LocalEnvironmentSetting.tsx
 apps/web/src/components/settings/NotificationSettings.tsx
 apps/web/src/components/settings/SettingsPanels.logic.test.ts
 apps/web/src/components/settings/SettingsPanels.logic.ts
-apps/web/src/components/settings/SettingsPanels.tsx  # hand-edited
+apps/web/src/components/settings/SettingsPanels.tsx
 apps/web/src/components/settings/SnapShotSettings.tsx
 apps/web/src/components/settings/SnapShotSetupDialog.tsx
 apps/web/src/components/settings/ThemeImportDialog.tsx

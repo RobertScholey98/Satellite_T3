@@ -6,7 +6,6 @@ import type * as SqlError from "effect/sql/SqlError";
 import { IssueBoardsV2 } from "../../issues/migrations/IssueBoardsV2.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { repairSatelliteLegacyLedger } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
-import RevdocReviews from "../../revdoc/migrations/RevdocReviews.ts";
 
 /**
  * Ids 55 to 69 of `satellite_migrations` hold rows the ledger repair moved out of upstream's
@@ -24,7 +23,6 @@ export type SatelliteMigration = readonly [
 ];
 
 export const satelliteMigrationEntries: ReadonlyArray<SatelliteMigration> = [
-  [100, "RevdocReviews", RevdocReviews],
   [101, "IssueBoardsV2", IssueBoardsV2],
 ];
 

@@ -19,9 +19,9 @@ thread stays unarchived. Threads you had already archived or deleted keep that s
 
 ## What is removed
 
-Satellite 2 does not carry Idea notebooks, Documents and manual reviews with their history, Open
-work folder links and favourites, commit recommendations, or delivery of issue updates between
-environments. Their data is not copied into Satellite 2.
+Satellite 2 does not carry Idea notebooks, Documents and manual reviews with their history, Revdoc,
+Open work, commit recommendations, or delivery of issue updates between environments. Their data
+is not copied into Satellite 2.
 
 ## Getting old data back
 

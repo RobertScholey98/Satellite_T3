@@ -187,10 +187,6 @@
       "types": "./src/state/presentation.ts",
       "default": "./src/state/presentation.ts"
     },
-    "./revdoc": {
-      "types": "./src/revdoc.ts",
-      "default": "./src/revdoc.ts"
-    },
     "./state/device": {
       "types": "./src/state/device.ts",
       "default": "./src/state/device.ts"
@@ -230,10 +226,6 @@
     "./state/issues": {
       "types": "./src/state/issues.ts",
       "default": "./src/state/issues.ts"
-    },
-    "./state/open-work": {
-      "types": "./src/state/openWork.ts",
-      "default": "./src/state/openWork.ts"
     },
     "./state/runtime": {
       "types": "./src/state/runtime.ts",
