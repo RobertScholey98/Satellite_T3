@@ -8,10 +8,17 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as LegacyV1ThreadImporter from "../../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
-import { migrationManifest } from "../../persistence/Migrations.ts";
+import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import { drainLegacyThreadArchives } from "./drainLegacyThreadArchives.ts";
-import { SATELLITE_LEGACY_LEDGER_ROWS } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
-import { runMigrationsWithSatellite, satelliteMigrationEntries } from "./SatelliteMigrations.ts";
+import {
+  repairSatelliteLegacyLedger,
+  SATELLITE_LEGACY_LEDGER_ROWS,
+} from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
+import {
+  runMigrationsWithSatellite,
+  runSatelliteMigrations,
+  satelliteMigrationEntries,
+} from "./SatelliteMigrations.ts";
 import {
   ARCHIVED_IDEA_AT,
   BOARD_TABLES,
@@ -255,6 +262,26 @@ const CASES: ReadonlyArray<UpgradeCase> = [
     fixtureThreads: true,
     issueRows: carriedIssueRows("working", "col-prog"),
   },
+  {
+    name: "a database repaired when upstream's ledger ended at 63",
+    seed: atPath(
+      "statev2.sqlite",
+      Effect.andThen(
+        withAttemptLink(seedSatelliteV1("55-60")),
+        Effect.all([
+          repairSatelliteLegacyLedger(),
+          runMigrations({ toMigrationInclusive: 63 }),
+          runSatelliteMigrations(),
+          Effect.map(readLedger("effect_sql_migrations"), (rows) =>
+            assert.deepStrictEqual(rows?.at(-1), [63, "DropUnusedV1Projections"]),
+          ),
+        ]),
+      ),
+    ),
+    legacyRows: LEGACY_55_60,
+    fixtureThreads: true,
+    issueRows: carriedIssueRows("working", "col-prog"),
+  },
   ...(snapshot === undefined
     ? []
     : [
@@ -343,7 +370,7 @@ describe("Satellite ledger upgrade", () => {
 
         assert.strictEqual(yield* sha256(v1Path), v1Hash);
         assert.deepStrictEqual(first.upstreamLedger, migrationManifest);
-        assert.deepStrictEqual(first.upstreamLedger?.at(-1), [63, "DropUnusedV1Projections"]);
+        assert.deepStrictEqual(first.upstreamLedger?.at(-1), [67, "WebhookDedupe"]);
         for (const table of DROPPED_V1_PROJECTIONS) assert.notInclude(first.tables, table);
         assert.deepStrictEqual(first.satelliteLedger, [
           ...(upgrade.legacyRows === "source" ? source.satellite : upgrade.legacyRows),

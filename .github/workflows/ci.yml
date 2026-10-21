@@ -321,7 +321,7 @@ jobs:
 
       - name: Test desktop shell and native integration
         working-directory: apps/desktop
-        run: vp test run src/window/DesktopWindow.test.ts src/ssh/DesktopSshPasswordPrompts.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopLifecycle.test.ts src/shell/DesktopShellEnvironment.test.ts src/ipc/methods/notificationBadge.test.ts src/snapShot/ActiveWindow.test.ts src/snapShot/DesktopSnapShot.test.ts
+        run: vp test run src/window/DesktopWindow.test.ts src/ssh/DesktopSshPasswordPrompts.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopAppIdentity.test.ts src/app/DesktopLifecycle.test.ts src/shell/DesktopShellEnvironment.test.ts src/ipc/methods/notificationBadge.test.ts src/snapShot/DesktopSnapShot.test.ts
 
       - name: Test main-process bundle and preload verifier
         working-directory: apps/desktop

@@ -159,45 +159,42 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
   const boards: IssueHostBoards<"github-project"> = {
     locatorKind: "github-project",
     list: () => Effect.succeed([{ title: "Acme roadmap", locator: LOCATOR }]),
-    read: (_cwd, locator) =>
-      Effect.gen(function* () {
-        calls.reads++;
-        if (failures.read) return yield* failures.read;
-        // The copy is taken before a held read waits, as a real response would be.
-        const remote: RemoteIssueBoard = {
-          title: "Acme roadmap",
-          locator,
-          columns: COLUMNS,
-          items: [...tickets.keys()].map(itemOf),
-        };
-        const held = heldRead;
-        heldRead = null;
-        if (held) {
-          yield* Deferred.succeed(held.started, undefined);
-          yield* Deferred.await(held.release);
-        }
-        return remote;
-      }),
-    readItem: (_cwd, _locator, item) =>
-      Effect.gen(function* () {
-        calls.itemReads++;
-        if (failures.readItem) return yield* failures.readItem;
-        const number = numberOfItem(item);
-        if (!tickets.has(number))
-          return yield* new IssueOperationError({
-            reason: "not-found",
-            message: "The item is no longer on the board.",
-          });
-        return itemOf(number);
-      }),
-    move: (_cwd, _locator, item, columnId) =>
-      Effect.gen(function* () {
-        calls.moves++;
-        if (failures.move) return yield* failures.move;
-        const number = numberOfItem(item);
-        setColumn(number, columnId);
-        writes.push({ ticket: number, columnId });
-      }),
+    read: Effect.fn("IssueServiceTest.read")(function* (_cwd, locator) {
+      calls.reads++;
+      if (failures.read) return yield* failures.read;
+      // The copy is taken before a held read waits, as a real response would be.
+      const remote: RemoteIssueBoard = {
+        title: "Acme roadmap",
+        locator,
+        columns: COLUMNS,
+        items: [...tickets.keys()].map(itemOf),
+      };
+      const held = heldRead;
+      heldRead = null;
+      if (held) {
+        yield* Deferred.succeed(held.started, undefined);
+        yield* Deferred.await(held.release);
+      }
+      return remote;
+    }),
+    readItem: Effect.fn("IssueServiceTest.readItem")(function* (_cwd, _locator, item) {
+      calls.itemReads++;
+      if (failures.readItem) return yield* failures.readItem;
+      const number = numberOfItem(item);
+      if (!tickets.has(number))
+        return yield* new IssueOperationError({
+          reason: "not-found",
+          message: "The item is no longer on the board.",
+        });
+      return itemOf(number);
+    }),
+    move: Effect.fn("IssueServiceTest.move")(function* (_cwd, _locator, item, columnId) {
+      calls.moves++;
+      if (failures.move) return yield* failures.move;
+      const number = numberOfItem(item);
+      setColumn(number, columnId);
+      writes.push({ ticket: number, columnId });
+    }),
   };
   const adapter: IssueHostAdapter = {
     kind: GITHUB,
@@ -225,18 +222,17 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
     getProject: (id) => Effect.succeed(id === PROJECT_ID ? PROJECT : null),
     readThread: (threadId) => Effect.sync(() => threads.get(threadId) ?? null),
     allocateThreadId: () => Effect.sync(() => ThreadId.make(`thread-${++threadCount}`)),
-    launchThread: (input) =>
-      Effect.gen(function* () {
-        launches.push(input);
-        if (failures.launch) return yield* failures.launch;
-        if (!threads.has(input.threadId))
-          threads.set(input.threadId, {
-            deleted: false,
-            worktreePath: null,
-            firstRun: "pending",
-            pullRequests: [],
-          });
-      }),
+    launchThread: Effect.fn("IssueServiceTest.launchThread")(function* (input) {
+      launches.push(input);
+      if (failures.launch) return yield* failures.launch;
+      if (!threads.has(input.threadId))
+        threads.set(input.threadId, {
+          deleted: false,
+          worktreePath: null,
+          firstRun: "pending",
+          pullRequests: [],
+        });
+    }),
   };
   const service = yield* makeIssueService(dependencies);
 
@@ -370,13 +366,12 @@ export const makeIssueHarness = Effect.fn("makeIssueHarness")(function* (
         pullRequests: facts.pullRequests.filter((link) => link.number !== number),
       })),
     /** As if the server stopped after recording an attempt and before its thread existed. */
-    loseLaunch: (threadId: ThreadId) =>
-      Effect.gen(function* () {
-        threads.delete(threadId);
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`UPDATE issue_board_attempts SET status='launching',ended_reason=NULL,failure=NULL
+    loseLaunch: Effect.fn("IssueServiceTest.loseLaunch")(function* (threadId: ThreadId) {
+      threads.delete(threadId);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE issue_board_attempts SET status='launching',ended_reason=NULL,failure=NULL
           WHERE thread_id=${threadId}`;
-      }),
+    }),
     deleteThread: (threadId: ThreadId) =>
       updateThread(threadId, (facts) => ({ ...facts, deleted: true })),
   };

@@ -16,8 +16,7 @@ export const PRODUCT_HOME_DIRECTORY_NAME = ".satellite-t3";
 
 /**
  * Chromium profile folders under the OS app data directory. 2.x starts a new production profile
- * so a rollback to 1.x still finds its own; on Windows it copies only Local State, which holds
- * the safeStorage key, from the 1.x profile. Never a T3 Code profile.
+ * so a rollback to 1.x still finds its own. Never a T3 Code profile.
  */
 export const DESKTOP_PROFILE_NAMES = {
   production: "satellite-t3-v2",
@@ -57,6 +56,8 @@ export const DESKTOP_PACKAGING = {
   macUsageDescriptions: {
     localNetwork: `${PRODUCT_NAME} connects to devices on your local network for remote environments and commands run by terminals and coding agents.`,
     screenCapture: `${PRODUCT_NAME} captures the active window when you use the window capture shortcut.`,
+    camera: `${PRODUCT_NAME} lets commands run by terminals and coding agents use the camera.`,
+    microphone: `${PRODUCT_NAME} lets commands run by terminals and coding agents use the microphone.`,
   },
 } as const;
 

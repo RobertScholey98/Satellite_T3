@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 import {
   CLI_RELEASE_BASE_URL_ENV,
   cliReleaseDownloadBaseUrl,
-  cliReleaseIndexPageUrl,
+  releaseIndexPageUrl,
 } from "@t3tools/shared/cliRelease";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -38,6 +38,15 @@ const UPSTREAM_REPOSITORY_ALLOWLIST = [
   "apps/server/scripts/threadTitleEvaluationCases.ts",
   // Sample data for upstream's mobile store screenshots.
   "scripts/mobile-showcase-environment.ts",
+  // The upstream release URLs here are read only by apps/mobile; the ones Satellite fetches from
+  // are checked by "builds CLI release URLs from Satellite's repository" below.
+  "packages/shared/src/cliRelease.ts",
+  // Upstream's relay deployment, which Satellite does not run.
+  "infra/relay/",
+  // Only upstream's own builds report a telemetry channel; these say so and test the repository.
+  ".github/workflows/release-desktop.yml",
+  "apps/server/src/telemetry/AnalyticsService.ts",
+  "apps/server/vite.config.ts",
 ];
 
 describe("static identity consumers", () => {
@@ -162,7 +171,7 @@ describe("release sources", () => {
     expect(cliReleaseDownloadBaseUrl("2.0.0")).toBe(
       `https://github.com/${RELEASE_REPOSITORY}/releases/download/v2.0.0`,
     );
-    expect(cliReleaseIndexPageUrl(1)).toBe(
+    expect(releaseIndexPageUrl(RELEASE_REPOSITORY, 1)).toBe(
       `https://api.github.com/repos/${RELEASE_REPOSITORY}/releases?per_page=100&page=1`,
     );
     expect(cliReleaseDownloadBaseUrl("2.0.0", "https://mirror.example/releases")).toBe(
