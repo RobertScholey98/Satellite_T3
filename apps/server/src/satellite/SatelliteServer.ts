@@ -27,10 +27,7 @@ export const layer = Layer.mergeAll(
  * Satellite's services with test stand-ins for their dependencies, for tests that build Satellite
  * handlers.
  */
-export const testLayer = Layer.mergeAll(
-  Issues.testLayer,
-  // One feature per line, as in `layer`, so features append without touching each other's lines.
-);
+export const testLayer = Issues.testLayer;
 
 /** Where Satellite's MCP toolkits join `/mcp`, via `McpHttpServer.toolkitRegistration`. */
 export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) =>
