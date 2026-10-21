@@ -1,8 +1,8 @@
 # Contributing to Satellite
 
 This is a personal fork of T3 Code for experimenting with ideas that fit the
-maintainer's own workflow. Current experiments connect issue boards, agent work,
-open worktrees, and review in a desktop workspace. See the
+maintainer's own workflow. Current experiments connect issue boards and agent work
+in a desktop workspace. See the
 [README](./README.md#why-this-fork-exists) for the direction of the fork.
 
 ## Setup

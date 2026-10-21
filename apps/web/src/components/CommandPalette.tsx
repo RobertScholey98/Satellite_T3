@@ -66,10 +66,8 @@ import {
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
-  GitBranchIcon,
   MessageSquareDashedIcon,
   LinkIcon,
-  ListChecksIcon,
   MessageSquareIcon,
   MonitorIcon,
   MoonIcon,
@@ -160,9 +158,6 @@ import {
   useRightPanelStore,
 } from "../rightPanelStore";
 import { getLatestThreadForProject, sortThreads } from "../lib/threadSort";
-import { readRevdocWorktree, resolveRevdocWorktree } from "../revdocWorktreeStore";
-import { readRevdocWorktrees, revdocEnvironment } from "../state/revdoc";
-import { toastRevdocFailure } from "./revdoc/useRevdocActions";
 import {
   cn,
   getLocalFileManagerName,
@@ -744,7 +739,6 @@ function OpenCommandPaletteDialog(props: {
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
     reportFailure: false,
   });
-  const generateRevdoc = useAtomCommand(revdocEnvironment.generate, { reportFailure: false });
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -1748,47 +1742,6 @@ function OpenCommandPaletteDialog(props: {
 
   if (activeThread !== null) {
     const thread = activeThread;
-    actionItems.push(
-      {
-        kind: "action",
-        value: "action:open-revdoc",
-        searchTerms: ["revdoc", "review", "checklist", "open"],
-        title: "Open Revdoc review",
-        icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          useRightPanelStore
-            .getState()
-            .open(scopeThreadRef(thread.environmentId, thread.id), "revdoc");
-        },
-      },
-      {
-        kind: "action",
-        value: "action:run-revdoc",
-        searchTerms: ["revdoc", "review", "checklist", "generate", "run"],
-        title: "Run Revdoc pass",
-        icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          const revdocThreadRef = scopeThreadRef(thread.environmentId, thread.id);
-          useRightPanelStore.getState().open(revdocThreadRef, "revdoc");
-          const worktreePath = resolveRevdocWorktree(
-            readRevdocWorktree(revdocThreadRef),
-            readRevdocWorktrees(revdocThreadRef.environmentId, revdocThreadRef.threadId),
-          );
-          const result = await generateRevdoc({
-            environmentId: revdocThreadRef.environmentId,
-            input: {
-              threadId: revdocThreadRef.threadId,
-              ...(worktreePath ? { worktreePath } : {}),
-            },
-          });
-          if (result._tag === "Failure") toastRevdocFailure("Could not start Revdoc", result);
-        },
-      },
-    );
-  }
-
-  if (activeThread !== null) {
-    const thread = activeThread;
     actionItems.push({
       kind: "action",
       value: "action:restart-agent-session",
@@ -2076,25 +2029,6 @@ function OpenCommandPaletteDialog(props: {
       },
     });
   }
-
-  actionItems.push({
-    kind: "action",
-    value: "action:open-work",
-    searchTerms: [
-      "open work",
-      "worktrees",
-      "worktree",
-      "wip",
-      "uncommitted",
-      "commits",
-      "branches",
-    ],
-    title: "Open work",
-    icon: <GitBranchIcon className={ITEM_ICON_CLASS} />,
-    run: async () => {
-      await navigate({ to: "/open-work" });
-    },
-  });
 
   actionItems.push({
     kind: "action",

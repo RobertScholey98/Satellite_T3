@@ -1,8 +1,8 @@
 # Satellite
 
 Satellite is a personal fork of T3 Code for experimenting with ideas that relate
-directly to the maintainer's own workflow. Current experiments connect issue boards,
-agent work, open worktrees, and review in a desktop workspace. Read
+directly to the maintainer's own workflow. Current experiments connect issue boards
+and agent work in a desktop workspace. Read
 [README.md](./README.md) for the fork's purpose and setup.
 
 ## Project priorities

@@ -2,25 +2,6 @@ import type * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import {
-  OPEN_WORK_WS_METHODS,
-  WsOpenWorkCommitFilesRpc,
-  WsOpenWorkDiffRpc,
-  WsOpenWorkListRpc,
-  WsOpenWorkTimelineRpc,
-} from "./openWork.ts";
-import {
-  REVDOC_WS_METHODS,
-  WsRevdocCancelRpc,
-  WsRevdocDeleteRpc,
-  WsRevdocEditItemRpc,
-  WsRevdocGenerateRpc,
-  WsRevdocGetItemsRpc,
-  WsRevdocRefreshRpc,
-  WsRevdocSubscribeRpc,
-  WsRevdocTestRpc,
-  WsRevdocWorktreesRpc,
-} from "./revdoc.ts";
-import {
   ISSUES_WS_METHODS,
   WsIssuesAttemptsEndRpc,
   WsIssuesAttemptsListRpc,
@@ -43,8 +24,6 @@ import {
  * methods only, and never reuse or reshape an upstream name.
  */
 export const SATELLITE_WS_METHODS = {
-  ...OPEN_WORK_WS_METHODS,
-  ...REVDOC_WS_METHODS,
   ...ISSUES_WS_METHODS,
 } as const;
 
@@ -54,19 +33,6 @@ export const SATELLITE_WS_METHODS = {
  * `SatelliteRpcRegistry.ts` and a handler in `SatelliteWsRpc.ts`.
  */
 export const WsSatelliteRpcGroup = RpcGroup.make(
-  WsOpenWorkListRpc,
-  WsOpenWorkTimelineRpc,
-  WsOpenWorkDiffRpc,
-  WsOpenWorkCommitFilesRpc,
-  WsRevdocWorktreesRpc,
-  WsRevdocSubscribeRpc,
-  WsRevdocGetItemsRpc,
-  WsRevdocGenerateRpc,
-  WsRevdocTestRpc,
-  WsRevdocCancelRpc,
-  WsRevdocRefreshRpc,
-  WsRevdocEditItemRpc,
-  WsRevdocDeleteRpc,
   WsIssuesListRpc,
   WsIssuesGetRpc,
   WsIssuesBoardsListRpc,

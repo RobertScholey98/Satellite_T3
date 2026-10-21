@@ -31,9 +31,6 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
-const RevdocPanel = lazy(() =>
-  import("../revdoc/RevdocPanel").then((module) => ({ default: module.RevdocPanel })),
-);
 
 export type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -165,12 +162,6 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
-    case "revdoc":
-      return (
-        <Suspense fallback={null}>
-          <RevdocPanel threadRef={threadRef} composerDraftTarget={props.composerDraftTarget} />
-        </Suspense>
-      );
     case "device":
       return (
         <Suspense fallback={null}>
