@@ -11,11 +11,12 @@ import { repairSatelliteLegacyLedger } from "../../persistence/Migrations/satell
  * Ids 55 to 69 of `satellite_migrations` hold rows the ledger repair moved out of upstream's
  * ledger. They are records and never run. The migrator skips every id at or below the highest
  * recorded one, so a Satellite migration in this range would run on fresh installs and be
- * skipped on upgraded ones. Satellite migrations start at 100. Never reuse 100: development
- * databases recorded it for Revdoc, which was removed, so the next free id is 102.
+ * skipped on upgraded ones. Satellite migrations start at 100.
  */
 export const SATELLITE_LEGACY_MIGRATION_IDS = { first: 55, last: 69 } as const;
 export const FIRST_SATELLITE_MIGRATION_ID = 100;
+/** Ids of removed migrations that development databases still record, so no migration takes one. */
+const RETIRED_SATELLITE_MIGRATION_IDS: ReadonlySet<number> = new Set([100]);
 
 export type SatelliteMigration = readonly [
   id: number,
@@ -37,6 +38,13 @@ export const runSatelliteMigrations = Effect.fn("runSatelliteMigrations")(functi
     return yield* new Migrator.MigrationError({
       kind: "BadState",
       message: `Satellite migration ids start at ${FIRST_SATELLITE_MIGRATION_ID}: ${reserved.map(([id, name]) => `${id}_${name}`).join(", ")}. Upgraded databases would skip them.`,
+    });
+  }
+  const retired = entries.filter(([id]) => RETIRED_SATELLITE_MIGRATION_IDS.has(id));
+  if (retired.length > 0) {
+    return yield* new Migrator.MigrationError({
+      kind: "BadState",
+      message: `Satellite migration ids ${[...RETIRED_SATELLITE_MIGRATION_IDS].join(", ")} are retired: ${retired.map(([id, name]) => `${id}_${name}`).join(", ")}. Databases that recorded them would skip these migrations.`,
     });
   }
   const executed = yield* run({

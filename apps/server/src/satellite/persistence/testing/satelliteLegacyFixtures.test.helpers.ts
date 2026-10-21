@@ -1,6 +1,6 @@
 /**
  * Builds databases in the shapes Satellite builds left behind, for tests of the ledger repair and
- * of later Satellite migrations. Satellite DDL is copied verbatim from origin/main's (2a9c7b9b26) migrations
+ * of later Satellite migrations. Satellite DDL is copied verbatim from 2a9c7b9b26's migrations
  * 055 to 069. Rows are synthetic.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";

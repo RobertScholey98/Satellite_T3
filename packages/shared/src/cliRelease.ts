@@ -1,7 +1,6 @@
 import { RELEASE_REPOSITORY } from "@t3tools/contracts";
 
-// apps/mobile stays upstream's client and checks upstream's releases, so the two release reads it
-// shares default to upstream. Satellite's own callers pass RELEASE_REPOSITORY.
+// apps/mobile stays upstream's client and checks upstream's releases.
 const MOBILE_RELEASE_REPOSITORY = "pingdotgg/t3code";
 export const CLI_RELEASES_PAGE_URL = `https://github.com/${MOBILE_RELEASE_REPOSITORY}/releases`;
 export const CLI_RELEASE_CHECKSUMS_FILE = "SHA256SUMS";
@@ -86,11 +85,13 @@ export function cliReleaseChannelOf(version: string): CliReleaseChannel {
  * Callers walk pages until a channel match turns up; a busy nightly train can push the newest
  * preview or stable release past any single page.
  */
-export function cliReleaseIndexPageUrl(
-  page: number,
-  repository: string = MOBILE_RELEASE_REPOSITORY,
-): string {
+export function releaseIndexPageUrl(repository: string, page: number): string {
   return `https://api.github.com/repos/${repository}/releases?per_page=100&page=${page}`;
+}
+
+/** Upstream's release index, for apps/mobile. Satellite's callers use `releaseIndexPageUrl`. */
+export function cliReleaseIndexPageUrl(page: number): string {
+  return releaseIndexPageUrl(MOBILE_RELEASE_REPOSITORY, page);
 }
 
 /**

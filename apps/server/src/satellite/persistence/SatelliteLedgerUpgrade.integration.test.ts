@@ -263,7 +263,6 @@ const CASES: ReadonlyArray<UpgradeCase> = [
     issueRows: carriedIssueRows("working", "col-prog"),
   },
   {
-    // The ledger satellite-v2 left behind before upstream added 64 to 67.
     name: "a database repaired when upstream's ledger ended at 63",
     seed: atPath(
       "statev2.sqlite",

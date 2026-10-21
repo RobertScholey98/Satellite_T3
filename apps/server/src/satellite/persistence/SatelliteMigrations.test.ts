@@ -22,9 +22,9 @@ const withDatabase = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 
 // Shipped Satellite migrations, then a probe after them: the migrator skips ids below the highest
-// recorded one, so the probe is 100 only while the manifest is empty.
+// recorded one, and 100 is retired.
 const shippedLedger = satelliteMigrationEntries.map(([id, name]) => [id, name] as const);
-const probeId = Math.max(FIRST_SATELLITE_MIGRATION_ID - 1, ...shippedLedger.map(([id]) => id)) + 1;
+const probeId = Math.max(FIRST_SATELLITE_MIGRATION_ID, ...shippedLedger.map(([id]) => id)) + 1;
 
 const probe: SatelliteMigration = [
   probeId,
@@ -116,6 +116,20 @@ describe("Satellite migrations", () => {
         assert.strictEqual(error._tag, "MigrationError");
         assert.strictEqual(error._tag === "MigrationError" && error.kind, "BadState");
         assert.include(error.message, "58_ReservedRange");
+        assert.isUndefined(yield* readLedger("satellite_migrations"));
+      }),
+    ),
+  );
+
+  it.effect("rejects Revdoc's retired id 100 before running anything", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const retired: SatelliteMigration = [100, "ReusesRevdocId", probe[2]];
+
+        const error = yield* Effect.flip(runSatelliteMigrations([retired, probe]));
+
+        assert.strictEqual(error._tag === "MigrationError" && error.kind, "BadState");
+        assert.include(error.message, "100_ReusesRevdocId");
         assert.isUndefined(yield* readLedger("satellite_migrations"));
       }),
     ),

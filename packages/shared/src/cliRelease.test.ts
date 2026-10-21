@@ -4,9 +4,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   cliArchiveTarCommand,
   cliReleaseDownloadBaseUrl,
-  cliReleaseIndexPageUrl,
   newestCliReleaseVersion,
   parseChecksums,
+  releaseIndexPageUrl,
 } from "./cliRelease.ts";
 
 describe("cliRelease", () => {
@@ -23,10 +23,10 @@ describe("cliRelease", () => {
   });
 
   it("pages through Satellite's release index at the largest page GitHub allows", () => {
-    expect(cliReleaseIndexPageUrl(1, RELEASE_REPOSITORY)).toBe(
+    expect(releaseIndexPageUrl(RELEASE_REPOSITORY, 1)).toBe(
       "https://api.github.com/repos/RobertScholey98/Satellite_T3/releases?per_page=100&page=1",
     );
-    expect(cliReleaseIndexPageUrl(3, RELEASE_REPOSITORY)).toContain("page=3");
+    expect(releaseIndexPageUrl(RELEASE_REPOSITORY, 3)).toContain("page=3");
   });
 
   it("parses sha256sum output including binary-mode markers", () => {
