@@ -4,11 +4,12 @@ import {
   ProjectId,
   ThreadId,
   type FactoryMember,
+  type FactoryWorkspaceAssignment,
   type FactoryWorkspaceFeed,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { factoryMemberThreadKeys } from "./factoryWorkspaceLogic";
+import { factoryMemberThreadKeys, resolveFactoryWorkspaceView } from "./factoryWorkspaceLogic";
 
 const environmentId = EnvironmentId.make("local");
 const key = (threadId: string) =>
@@ -29,10 +30,34 @@ function member(threadId: string, overrides: Partial<FactoryMember> = {}): Facto
   };
 }
 
+function workspace(input: Partial<FactoryWorkspaceFeed>): FactoryWorkspaceFeed {
+  return { managers: [], members: [], assignments: [], ...input };
+}
+
 function feed(
   input: Partial<FactoryWorkspaceFeed>,
 ): ReadonlyMap<EnvironmentId, FactoryWorkspaceFeed> {
-  return new Map([[environmentId, { managers: [], members: [], assignments: [], ...input }]]);
+  return new Map([[environmentId, workspace(input)]]);
+}
+
+function assignment(
+  id: string,
+  overrides: Partial<FactoryWorkspaceAssignment> = {},
+): FactoryWorkspaceAssignment {
+  return {
+    id,
+    managerId: "manager-1",
+    title: `Work ${id}`,
+    state: "active",
+    source: "ticket",
+    complexity: "small",
+    team: "custom",
+    leadThreadId: ThreadId.make(`${id}-lead`),
+    checklist: [],
+    digest: null,
+    waitingReason: null,
+    ...overrides,
+  };
 }
 
 const manager = (id: string, state: FactoryWorkspaceFeed["managers"][number]["state"]) => ({
@@ -71,5 +96,34 @@ describe("factoryMemberThreadKeys", () => {
       }),
     );
     expect([...keys]).toEqual([key("paused-team")]);
+  });
+});
+
+describe("resolveFactoryWorkspaceView", () => {
+  it("opens the workspace on the assignment of the team thread being read", () => {
+    const view = resolveFactoryWorkspaceView(
+      workspace({
+        managers: [manager("manager-1", "active")],
+        members: [
+          member("manager-1-thread", { role: "manager", assignmentId: null }),
+          member("assignment-2-lead", { role: "lead", assignmentId: "assignment-2" }),
+        ],
+        assignments: [assignment("assignment-1"), assignment("assignment-2")],
+      }),
+      ThreadId.make("assignment-2-lead"),
+    );
+    expect(view?.activeAssignmentId).toBe("assignment-2");
+  });
+
+  it("opens on no assignment from the manager's own thread", () => {
+    const view = resolveFactoryWorkspaceView(
+      workspace({
+        managers: [manager("manager-1", "active")],
+        members: [member("manager-1-thread", { role: "manager", assignmentId: null })],
+        assignments: [assignment("assignment-1")],
+      }),
+      ThreadId.make("manager-1-thread"),
+    );
+    expect(view?.activeAssignmentId).toBeNull();
   });
 });

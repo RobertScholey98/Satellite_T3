@@ -31,9 +31,15 @@ import {
   resolveThreadDetailsCardLayout,
   THREAD_DETAILS_CARD_GAP,
 } from "../chat/threadDetailsCardLayout";
+import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
+import {
+  THREAD_DETAILS_PANEL_ICON_CLASS,
+  THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
+} from "../chat/threadDetailsPanelStyles";
 import { RelativeTime } from "../RelativeTime";
-import { ThreadRowLeadingStatus } from "../ThreadStatusIndicators";
-import { Button } from "../ui/button";
+import { resolveThreadStatusPill } from "../Sidebar.logic";
+import { ThreadStatusLabel } from "../ThreadStatusIndicators";
+import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { toastManager } from "../ui/toast";
 import { factoryEnvironment, factoryErrorMessage } from "./factoryState";
@@ -49,6 +55,11 @@ import {
 
 /** Below this the two cards would be unreadable; the column waits for the details card to close. */
 const MIN_COLUMN_HEIGHT = 220;
+/**
+ * Matches the details card's pressed surface, so the open thread rests at the same fill. It sits
+ * on the list item because the control owns its own colours.
+ */
+const CURRENT_ROW_CLASS = "rounded-lg bg-black/[0.05] dark:bg-white/[0.08]";
 const UP_TO_DATE_MS = 4_000;
 
 /**
@@ -137,7 +148,13 @@ export function FactoryWorkspacePanel(props: {
           style={{ right: placement.right, top, width: placement.width, height }}
           data-factory-workspace-panel
         >
-          <FactoryTeamActivityCard environmentId={props.environmentId} teams={view.teams} />
+          {/* Keyed by thread so a manual team pick does not follow the user onto another thread. */}
+          <FactoryTeamActivityCard
+            key={props.threadId}
+            environmentId={props.environmentId}
+            teams={view.teams}
+            activeAssignmentId={view.activeAssignmentId}
+          />
           <FactoryTeamThreadsCard
             environmentId={props.environmentId}
             threadId={props.threadId}
@@ -178,16 +195,18 @@ function CardHeading(props: { readonly children: ReactNode }) {
 
 type RefreshStatus = { readonly assignmentId: string; readonly kind: "refreshing" | "up-to-date" };
 
-/** One tab per live work item, each with its team's running digest. Nothing streams. */
+/** One live work item at a time, with its team's running digest. Nothing streams. */
 export function FactoryTeamActivityCard(props: {
   readonly environmentId: EnvironmentId;
   readonly teams: ReadonlyArray<FactoryWorkspaceTeam>;
+  readonly activeAssignmentId: string | null;
 }) {
   const refreshDigest = useAtomCommand(factoryEnvironment.refreshDigest, { reportFailure: false });
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
   const [status, setStatus] = useState<RefreshStatus | null>(null);
+  const requested = picked ?? props.activeAssignmentId;
   const selected =
-    props.teams.find((team) => team.assignment.id === selectedId) ?? props.teams[0] ?? null;
+    props.teams.find((team) => team.assignment.id === requested) ?? props.teams[0] ?? null;
   const selectedKey = selected?.assignment.id ?? null;
 
   const refresh = async (assignment: FactoryWorkspaceAssignment) => {
@@ -212,7 +231,7 @@ export function FactoryTeamActivityCard(props: {
     }
   };
 
-  // Opening a tab rewrites a missing or stale digest once; later reads keep what it got.
+  // Opening a team rewrites a missing or stale digest once; later reads keep what it got.
   const refreshOnOpen = useEffectEvent(() => {
     const assignment = selected?.assignment;
     if (!assignment) return;
@@ -242,27 +261,30 @@ export function FactoryTeamActivityCard(props: {
         <p className="px-3.5 pb-3 text-xs text-muted-foreground">No work on the go.</p>
       ) : (
         <>
-          <div role="tablist" aria-label="Work items" className="flex gap-1 overflow-x-auto px-2.5">
-            {props.teams.map((team) => {
-              const active = team.assignment.id === selected.assignment.id;
-              return (
-                <button
-                  key={team.assignment.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => setSelectedId(team.assignment.id)}
-                  className={cn(
-                    "max-w-40 shrink-0 cursor-pointer truncate rounded-md px-2 py-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                    active
-                      ? "bg-black/[0.05] text-foreground dark:bg-white/[0.08]"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {team.assignment.title}
-                </button>
-              );
-            })}
+          <div className="px-2">
+            {props.teams.length === 1 ? (
+              <p className={cn(THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS, "flex items-center")}>
+                <span className="truncate">{selected.assignment.title}</span>
+              </p>
+            ) : (
+              <Menu>
+                <MenuTrigger render={<ThreadDetailsControl part="select" />}>
+                  <span className="truncate">{selected.assignment.title}</span>
+                </MenuTrigger>
+                <MenuPopup align="end">
+                  <MenuRadioGroup
+                    value={selected.assignment.id}
+                    onValueChange={(value) => setPicked(String(value))}
+                  >
+                    {props.teams.map((team) => (
+                      <MenuRadioItem key={team.assignment.id} value={team.assignment.id}>
+                        {`${team.assignment.title} · ${FACTORY_ASSIGNMENT_STATE_LABEL[team.assignment.state]}`}
+                      </MenuRadioItem>
+                    ))}
+                  </MenuRadioGroup>
+                </MenuPopup>
+              </Menu>
+            )}
           </div>
           <TeamDigest
             assignment={selected.assignment}
@@ -283,9 +305,9 @@ function TeamDigest(props: {
   const { assignment } = props;
   const progress = checklistProgress(assignment.checklist);
   return (
-    <div role="tabpanel" aria-label={assignment.title} className="flex min-h-0 flex-col">
+    <div className="flex min-h-0 flex-col">
       <ScrollArea scrollFade className="min-h-0">
-        <p className="whitespace-pre-wrap px-3.5 pt-2 text-xs text-foreground/85">
+        <p className="whitespace-pre-wrap px-3.5 pt-2 text-sm leading-5 text-foreground/80">
           {assignment.digest?.text.trim() || "No digest yet"}
         </p>
       </ScrollArea>
@@ -303,15 +325,14 @@ function TeamDigest(props: {
         {props.status === "up-to-date" ? (
           <span role="status">Up to date</span>
         ) : (
-          <Button
-            size="xs"
-            variant="ghost"
+          <ThreadDetailsControl
+            part="meta"
             disabled={props.status === "refreshing"}
             onClick={props.onRefresh}
           >
-            <RefreshCwIcon />
+            <RefreshCwIcon className="size-3.5" />
             {props.status === "refreshing" ? "Refreshing" : "Refresh"}
-          </Button>
+          </ThreadDetailsControl>
         )}
       </div>
     </div>
@@ -334,11 +355,11 @@ function FactoryTeamThreadsCard(props: {
     <WorkspaceCard label="Team threads" fill>
       <CardHeading>Team threads</CardHeading>
       {props.threadId === props.managerThreadId ? null : (
-        <div className="px-2.5 pb-1">
-          <Button size="sm" variant="outline" onClick={() => open(props.managerThreadId)}>
-            <ArrowLeftIcon />
+        <div className="px-2 pb-1">
+          <ThreadDetailsControl part="row" onClick={() => open(props.managerThreadId)}>
+            <ArrowLeftIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
             Manager
-          </Button>
+          </ThreadDetailsControl>
         </div>
       )}
       <ScrollArea scrollFade className="min-h-0 flex-1">
@@ -348,7 +369,7 @@ function FactoryTeamThreadsCard(props: {
           <div className="flex flex-col gap-2 px-2 pb-2.5">
             {props.teams.map((team) => (
               <div key={team.assignment.id} role="group" aria-label={team.assignment.title}>
-                <p className="truncate px-1.5 py-1 text-2xs font-medium text-muted-foreground">
+                <p className="line-clamp-2 px-2.5 py-1 text-2xs font-medium text-muted-foreground">
                   {team.assignment.title}
                 </p>
                 <ul className="m-0 flex list-none flex-col p-0">
@@ -380,27 +401,24 @@ function TeamThreadRow(props: {
   readonly onOpen: () => void;
 }) {
   const shell = useThreadShell(scopeThreadRef(props.environmentId, props.threadId));
+  const status = shell ? resolveThreadStatusPill({ thread: shell }) : null;
+  const title = shell?.title ?? "Thread";
   return (
-    <li>
-      <button
-        type="button"
+    <li className={props.current ? CURRENT_ROW_CLASS : undefined}>
+      <ThreadDetailsControl
+        part="row"
         aria-current={props.current ? "page" : undefined}
         onClick={props.onOpen}
-        className={cn(
-          "flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg px-1.5 text-left text-sm outline-none hover:bg-black/[0.035] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring dark:hover:bg-white/[0.08]",
-          props.current && "bg-black/[0.05] dark:bg-white/[0.08]",
-        )}
       >
-        <span className="flex w-4 shrink-0 justify-center">
-          {shell ? <ThreadRowLeadingStatus thread={shell} /> : null}
+        {/* Held open so an idle thread's title keeps the same left edge as a working one's. */}
+        <span className="flex size-3.5 shrink-0 items-center justify-center">
+          {status ? <ThreadStatusLabel status={status} compact /> : null}
         </span>
-        <span className="min-w-0 flex-1 truncate text-foreground/85">
-          {shell?.title ?? "Thread"}
-        </span>
+        <span className="min-w-0 flex-1 truncate">{title}</span>
         <span className="shrink-0 text-2xs text-muted-foreground">
           {FACTORY_ROLE_LABEL[props.role]}
         </span>
-      </button>
+      </ThreadDetailsControl>
     </li>
   );
 }

@@ -44,7 +44,11 @@ it("says the digest is up to date when a refresh finds no newer activity", async
     .mockReset()
     .mockResolvedValue({ _tag: "Success", value: { digest } as FactoryAssignment });
   await using screen = await render(
-    <FactoryTeamActivityCard environmentId={environmentId} teams={[team]} />,
+    <FactoryTeamActivityCard
+      environmentId={environmentId}
+      teams={[team]}
+      activeAssignmentId={null}
+    />,
   );
   await expect.element(screen.getByText(digest.text)).toBeInTheDocument();
 
@@ -55,4 +59,29 @@ it("says the digest is up to date when a refresh finds no newer activity", async
     environmentId,
     input: { assignmentId: "assignment" },
   });
+});
+
+it("opens on the team of the thread being read", async () => {
+  state.refreshDigest.mockReset().mockResolvedValue({ _tag: "Success", value: {} });
+  const second: FactoryWorkspaceTeam = {
+    assignment: {
+      ...team.assignment,
+      id: "assignment-2",
+      title: "Add retries",
+      leadThreadId: ThreadId.make("lead-2"),
+      digest: { ...digest, text: "The reviewer is reading the retry policy." },
+    },
+    threads: [{ threadId: ThreadId.make("lead-2"), role: "lead" }],
+  };
+  await using screen = await render(
+    <FactoryTeamActivityCard
+      environmentId={environmentId}
+      teams={[team, second]}
+      activeAssignmentId="assignment-2"
+    />,
+  );
+
+  await expect
+    .element(screen.getByText("The reviewer is reading the retry policy."))
+    .toBeInTheDocument();
 });

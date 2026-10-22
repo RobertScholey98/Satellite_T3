@@ -118,6 +118,8 @@ export interface FactoryWorkspaceTeam {
 export interface FactoryWorkspaceView {
   readonly manager: FactoryWorkspaceManager & { readonly threadId: ThreadId };
   readonly teams: ReadonlyArray<FactoryWorkspaceTeam>;
+  /** The team whose thread is open, so the workspace opens on it; `null` on the manager's thread. */
+  readonly activeAssignmentId: string | null;
 }
 
 /** The manager workspace a thread belongs to, with each live work item's team. */
@@ -147,7 +149,11 @@ export function resolveFactoryWorkspaceView(
         ],
       };
     });
-  return { manager, teams };
+  // A completed or cancelled assignment is not in `teams`, so its thread opens on no team.
+  const open = place.kind === "manager" ? null : (place.assignment?.id ?? null);
+  const activeAssignmentId =
+    open !== null && teams.some((team) => team.assignment.id === open) ? open : null;
+  return { manager, teams, activeAssignmentId };
 }
 
 /** The newest pickup or skip in a manager's log, which `log.list` returns newest first. */
