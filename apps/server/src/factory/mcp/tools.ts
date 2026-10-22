@@ -106,7 +106,7 @@ export type StatusResult = typeof StatusResult.Type;
 const StatusTool = Tool.make("factory_status", {
   description:
     "For an engineering manager. Return your capacity under the concurrency cap, your live assignments, the Ready tickets on connected boards with no live assignment (each marked judged once you picked it up or skipped it as it is now), and the project's pickup guidance. Call it before judging tickets.",
-  parameters: Schema.Struct({}),
+  parameters: Tool.EmptyParams,
   success: StatusResult,
   failure: FactoryToolFailure,
   dependencies: [McpInvocationContext.McpInvocationContext, FactoryService],
@@ -374,7 +374,7 @@ const FindingsTool = Tool.make("factory_findings", {
 const RetroDoneTool = Tool.make("factory_retro_done", {
   description:
     "For a factory lead whose assignment is in its retro. End the team retro once you have retroed with your workers and recorded the findings with factory_record_finding. The manager is then woken for the manager retro; you have nothing more to do.",
-  parameters: Schema.Struct({}),
+  parameters: Tool.EmptyParams,
   success: AssignmentResult,
   failure: FactoryToolFailure,
   dependencies: [

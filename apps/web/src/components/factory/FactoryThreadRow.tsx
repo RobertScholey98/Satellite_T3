@@ -23,7 +23,12 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/men
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useFactoryWorkspaceFeed } from "./factoryWorkspaceState";
-import { factoryEnvironment, factoryErrorMessage, unwrapFactoryResult } from "./factoryState";
+import {
+  useFactoryManagers,
+  factoryEnvironment,
+  factoryErrorMessage,
+  unwrapFactoryResult,
+} from "./factoryState";
 import { useFactoryLeadActions } from "./FactoryThreadActions";
 import {
   describePickupDecision,
@@ -194,6 +199,16 @@ function FactoryManagerRow(props: {
   const retireCommand = useAtomCommand(factoryEnvironment.retireManager, {
     reportFailure: false,
   });
+  const approveCommand = useAtomCommand(factoryEnvironment.approveOnboarding, {
+    reportFailure: false,
+  });
+  const canApprove = useAtomValue(
+    factoryEnvironment.approveOnboarding.permissionAtom(environmentId),
+  );
+  // The workspace feed carries no report; the managers feed does.
+  const report =
+    useFactoryManagers(environmentId)?.find((entry) => entry.id === manager.id)?.onboardingReport ??
+    null;
   const canPause = useAtomValue(factoryEnvironment.pauseManager.permissionAtom(environmentId));
   const canResume = useAtomValue(factoryEnvironment.resumeManager.permissionAtom(environmentId));
   const canRetire = useAtomValue(factoryEnvironment.retireManager.permissionAtom(environmentId));
@@ -263,6 +278,26 @@ function FactoryManagerRow(props: {
         }),
       ),
     );
+  const approve = async () => {
+    if (report === null) return;
+    const paths =
+      report.controlPaths.length > 0 ? `\nProtected paths: ${report.controlPaths.join(", ")}` : "";
+    const message = `Approve ${manager.name}'s onboarding report?\nIt then judges Ready tickets against your pickup guidance.${paths}`;
+    const confirmed = (await requestConfirmDialog(message)) ?? window.confirm(message);
+    if (!confirmed) return;
+    await run("Could not approve onboarding", async () =>
+      unwrapFactoryResult(
+        await approveCommand({
+          environmentId,
+          input: {
+            requestId: randomUUID(),
+            managerId: manager.id,
+            controlPaths: report.controlPaths,
+          },
+        }),
+      ),
+    );
+  };
   const retire = async () => {
     const message = `Retire ${manager.name}?\nThe project can then get a new engineering manager.`;
     const confirmed =
@@ -298,6 +333,17 @@ function FactoryManagerRow(props: {
       detail={pickup?.key === logKey ? pickup.text : null}
       menu={
         <RowMenu label="Engineering manager actions">
+          {manager.state === "onboarding" ? (
+            <>
+              <MenuItem
+                disabled={busy || !canApprove || report === null}
+                onClick={() => void approve()}
+              >
+                {report === null ? "Approve onboarding (no report yet)" : "Approve onboarding"}
+              </MenuItem>
+              <MenuSeparator />
+            </>
+          ) : null}
           <MenuItem
             disabled={
               busy || !canPause || (manager.state !== "onboarding" && manager.state !== "active")
