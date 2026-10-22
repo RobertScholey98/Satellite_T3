@@ -4,16 +4,29 @@ import * as NodeCrypto from "node:crypto";
 import {
   CommandId,
   DEFAULT_FACTORY_CONFIG,
+  FactoryAssignment,
   FactoryConfig,
   FactoryConfigOverride,
+  FactoryLogEntry,
   FactoryManager,
   FactoryOnboardingReport,
   FactoryOperationError,
+  IssueRef,
+  issueReadyColumnIds,
+  MessageId,
   ModelSelection,
   resolveFactoryConfig,
+  type FactoryAssignmentState,
+  type FactoryAssignmentsEvent,
+  type FactoryAssignmentsListInput,
+  type FactoryAssignmentsSubscribeInput,
+  type FactoryCommissionInput,
+  type FactoryComplexity,
   type FactoryConfigGetInput,
   type FactoryConfigUpdateInput,
   type FactoryConfigView,
+  type FactoryLogKind,
+  type FactoryLogListInput,
   type FactoryManagersApproveOnboardingInput,
   type FactoryManagersCreateInput,
   type FactoryManagersEvent,
@@ -22,15 +35,27 @@ import {
   type FactoryManagersResumeInput,
   type FactoryManagersRetireInput,
   type FactoryManagersSubscribeInput,
+  type FactoryPickupInput,
+  type FactoryReadyTicket,
   type FactoryRole,
   type FactoryRoleBrief,
+  type FactoryStatus,
+  type FactoryTeamSpec,
+  type IssueAttemptsStartInput,
+  type IssueAttemptsStartResult,
+  type IssueBoardSummary,
+  type IssueBoardView,
+  type IssueOperationError,
+  type IssueSummary,
   type OrchestrationProjectShell,
+  type OrchestrationV2RunStatus,
   type ProjectId,
   type ProviderInteractionMode,
   type RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -45,8 +70,13 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
+import { canonicalIssueKey } from "../issues/IssueHost.ts";
+import { IssueService } from "../issues/IssueService.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { factoryConfigProblem, modelKey, overrideWidensPool } from "./factoryConfig.ts";
 import {
   renderRoleSkill,
@@ -68,6 +98,22 @@ export interface FactoryThreadLaunch {
   readonly interactionMode: ProviderInteractionMode;
 }
 
+/** What reconciling a lead reads from its thread. */
+export interface FactoryThreadRuns {
+  readonly deleted: boolean;
+  /** The status of the run with the highest ordinal. */
+  readonly latestRunStatus: OrchestrationV2RunStatus | null;
+  readonly runInProgress: boolean;
+}
+
+/** A machine-authored message the factory queues behind the thread's current run. */
+export interface FactoryThreadMessage {
+  readonly projectId: ProjectId;
+  readonly threadId: ThreadId;
+  readonly commandId: CommandId;
+  readonly text: string;
+}
+
 export interface FactoryServiceDependencies {
   readonly getProject: (
     projectId: ProjectId,
@@ -80,6 +126,25 @@ export interface FactoryServiceDependencies {
     role: FactoryRole,
     projectRoot: string,
   ) => Effect.Effect<RoleSkillSource>;
+  /** The project's connected boards. */
+  readonly readBoards: (
+    projectId: ProjectId,
+  ) => Effect.Effect<ReadonlyArray<IssueBoardSummary>, FactoryOperationError>;
+  /** The board's stored copy. */
+  readonly readBoard: (
+    projectId: ProjectId,
+    boardId: string,
+  ) => Effect.Effect<IssueBoardView, FactoryOperationError>;
+  readonly startAttempt: (
+    input: IssueAttemptsStartInput,
+  ) => Effect.Effect<IssueAttemptsStartResult, FactoryOperationError>;
+  /** Null when the thread is unknown. */
+  readonly readThreadRuns: (threadId: ThreadId) => Effect.Effect<FactoryThreadRuns | null>;
+  readonly sendToThread: (
+    input: FactoryThreadMessage,
+  ) => Effect.Effect<void, FactoryOperationError>;
+  /** The repository's default branch, else "main". */
+  readonly resolveBaseRef: (cwd: string) => Effect.Effect<string>;
 }
 
 export interface FactoryServiceShape {
@@ -125,6 +190,41 @@ export interface FactoryServiceShape {
     role: FactoryRole,
     managerId: string,
   ) => Effect.Effect<FactoryRoleBrief, FactoryOperationError>;
+  /** The manager's capacity, live assignments and the Ready tickets waiting for it. */
+  readonly status: (managerId: string) => Effect.Effect<FactoryStatus, FactoryOperationError>;
+  /**
+   * The manager in this thread judges a Ready ticket. `start` launches a lead and returns the
+   * assignment; `skip` records the judgement and returns null. Every refusal is also logged.
+   */
+  readonly pickup: (
+    managerThreadId: ThreadId,
+    input: FactoryPickupInput,
+  ) => Effect.Effect<FactoryAssignment | null, FactoryOperationError>;
+  /** Work the user asked the manager in this thread for: no pickup guidance or size rule. */
+  readonly commission: (
+    managerThreadId: ThreadId,
+    input: FactoryCommissionInput,
+  ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
+  readonly listAssignments: (
+    input: FactoryAssignmentsListInput,
+  ) => Effect.Effect<ReadonlyArray<FactoryAssignment>, FactoryOperationError>;
+  readonly subscribeAssignments: (
+    input: FactoryAssignmentsSubscribeInput,
+  ) => Stream.Stream<FactoryAssignmentsEvent, FactoryOperationError>;
+  readonly listLog: (
+    input: FactoryLogListInput,
+  ) => Effect.Effect<ReadonlyArray<FactoryLogEntry>, FactoryOperationError>;
+  /** The assignment this thread is a member of, ended ones included, or null. */
+  readonly assignmentForThread: (
+    threadId: ThreadId,
+  ) => Effect.Effect<FactoryAssignment | null, FactoryOperationError>;
+  /** Moves an active assignment whose lead thread was deleted or whose last run failed to stalled. */
+  readonly reconcileThread: (threadId: ThreadId) => Effect.Effect<void>;
+  /**
+   * Reconciles every live lead, records a pickup wake for unjudged Ready tickets while there is
+   * capacity, and delivers each active manager's undelivered wakes in one message.
+   */
+  readonly sweep: Effect.Effect<void>;
 }
 
 export class FactoryService extends Context.Service<FactoryService, FactoryServiceShape>()(
@@ -142,6 +242,8 @@ const encodeOverride = Schema.encodeSync(Schema.fromJsonString(FactoryConfigOver
 const encodeModel = Schema.encodeSync(Schema.fromJsonString(ModelSelection));
 const encodeReport = Schema.encodeSync(Schema.fromJsonString(FactoryOnboardingReport));
 const decodeManagerValue = Schema.decodeUnknownEffect(FactoryManager);
+const decodeAssignmentValue = Schema.decodeUnknownEffect(FactoryAssignment);
+const decodeLogValue = Schema.decodeUnknownEffect(FactoryLogEntry);
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
   Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(storageError));
 
@@ -149,7 +251,75 @@ const ENVIRONMENT_SCOPE = "environment";
 const projectScope = (projectId: ProjectId) => `project:${projectId}`;
 
 /** Assignments in these states hold the manager and block retiring it. */
-const ACTIVE_ASSIGNMENT_STATES = ["active", "blocked", "waiting-rob", "stalled", "retro"] as const;
+const ACTIVE_ASSIGNMENT_STATES = [
+  "active",
+  "blocked",
+  "waiting-user",
+  "stalled",
+  "retro",
+] as const satisfies ReadonlyArray<FactoryAssignmentState>;
+/** A retro still holds the manager but no longer takes a slot under the cap. */
+const CAPACITY_STATES: ReadonlySet<string> = new Set<FactoryAssignmentState>([
+  "active",
+  "blocked",
+  "waiting-user",
+  "stalled",
+]);
+
+const DEFAULT_TEAM: FactoryTeamSpec = { preset: "custom", members: [] };
+
+const STALLED_RUNS: Partial<Record<OrchestrationV2RunStatus, string>> = {
+  failed: "failed",
+  cancelled: "was cancelled",
+  interrupted: "was interrupted",
+  rolled_back: "was rolled back",
+};
+
+const stallReason = (runs: FactoryThreadRuns): string | null => {
+  if (runs.deleted) return "The lead's thread was deleted.";
+  if (runs.runInProgress || runs.latestRunStatus === null) return null;
+  const phrase = STALLED_RUNS[runs.latestRunStatus];
+  return phrase === undefined ? null : `The lead's latest run ${phrase}.`;
+};
+
+const managerStateProblem = (manager: FactoryManager): string | null => {
+  switch (manager.state) {
+    case "active":
+      return null;
+    case "onboarding":
+      return `${manager.name} is still onboarding. Nothing starts until the user approves the onboarding report.`;
+    case "manager-paused":
+    case "project-paused":
+      return `${manager.name} is paused. Nothing starts until the user resumes it.`;
+    case "retired":
+      return `${manager.name} is retired.`;
+  }
+};
+
+const isPaused = (state: string) => state === "manager-paused" || state === "project-paused";
+
+const ticketKey = (issue: IssueRef, updatedAt: string) =>
+  `${canonicalIssueKey(issue)}\n${updatedAt}`;
+
+const JudgedPayload = Schema.Struct({ issue: IssueRef, updatedAt: Schema.String });
+const PickupWakePayload = Schema.Struct({
+  tickets: Schema.Array(
+    Schema.Struct({ issue: IssueRef, updatedAt: Schema.String, title: Schema.String }),
+  ),
+});
+const StalledWakePayload = Schema.Struct({ title: Schema.String, reason: Schema.String });
+const jsonDecoder =
+  <A>(decode: (text: string) => Option.Option<A>) =>
+  (text: string | null) =>
+    text === null ? Option.none<A>() : decode(text);
+const decodeJudged = jsonDecoder(Schema.decodeUnknownOption(Schema.fromJsonString(JudgedPayload)));
+const decodePickupWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(PickupWakePayload)),
+);
+const decodeStalledWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(StalledWakePayload)),
+);
+const decodeIssueRef = jsonDecoder(Schema.decodeUnknownOption(Schema.fromJsonString(IssueRef)));
 
 // Always protected, so a team cannot rewrite the rules and role skills it works under.
 const FACTORY_CONTROL_PATH = ".satellite/factory/";
@@ -192,6 +362,69 @@ const skillFill = (
   completionCondition: null,
   pickupGuidance: config.pickupGuidance,
 });
+
+/** The approved control paths, or the proposed ones while onboarding. */
+const protectedPathsOf = (manager: FactoryManager) =>
+  manager.controlPaths.length > 0
+    ? manager.controlPaths
+    : (manager.onboardingReport?.controlPaths ?? []);
+
+interface AssignmentRow {
+  readonly id: string;
+  readonly manager_id: string;
+  readonly project_id: string;
+  readonly title: string;
+  readonly brief: string;
+  readonly completion_condition: string;
+  readonly source: string;
+  readonly issue_json: string | null;
+  readonly attempt_id: string | null;
+  readonly lead_thread_id: string | null;
+  readonly board_id: string | null;
+  readonly branch: string | null;
+  readonly complexity: string;
+  readonly state: string;
+  readonly team_json: string;
+  readonly recovery_used: number;
+  readonly waiting_reason: string | null;
+  readonly cancel_reason: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly ended_at: string | null;
+}
+
+interface LogRow {
+  readonly sequence: number;
+  readonly manager_id: string;
+  readonly assignment_id: string | null;
+  readonly kind: string;
+  readonly reason: string;
+  readonly payload_json: string | null;
+  readonly at: string;
+  readonly delivered_at: string | null;
+}
+
+/** A ticket in a Ready column of a connected board, as the stored copy shows it. */
+interface ReadyItem {
+  readonly issue: IssueSummary;
+  readonly boardId: string;
+  readonly columnId: string;
+  readonly version: string | null;
+}
+
+/** What starting an assignment needs once the manager's checks passed. */
+interface AssignmentPlan {
+  readonly kind: Extract<FactoryLogKind, "pickup" | "commission">;
+  readonly reason: string;
+  readonly logPayload: unknown;
+  readonly refusalPayload: unknown;
+  readonly title: string;
+  readonly brief: string;
+  readonly completionCondition: string;
+  readonly complexity: FactoryComplexity;
+  readonly team: FactoryTeamSpec;
+  readonly ticket: ReadyItem;
+}
 
 interface ManagerRow {
   readonly id: string;
@@ -359,7 +592,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         (SELECT COUNT(*) FROM factory_assignments a
           WHERE a.manager_id=m.id AND ${sql.in("a.state", ACTIVE_ASSIGNMENT_STATES)}) AS active_assignments,
         (SELECT COUNT(*) FROM factory_assignments a
-          WHERE a.manager_id=m.id AND a.state='waiting-rob') AS waiting_on_you
+          WHERE a.manager_id=m.id AND a.state='waiting-user') AS waiting_on_you
       FROM factory_managers m WHERE ${where} AND (${id} IS NULL OR m.id=${id})
       ORDER BY m.created_at, m.id`;
   const readManager = Effect.fnUntraced(function* (id: string) {
@@ -607,14 +840,621 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           return yield* error("invalid", "This manager belongs to a different project.");
         const config = (yield* configView(projectId)).effective;
         const skill = yield* deps.readRoleSkill(role, shell.workspaceRoot);
-        const protectedPaths =
-          manager.controlPaths.length > 0
-            ? manager.controlPaths
-            : (manager.onboardingReport?.controlPaths ?? []);
-        const text = renderRoleSkill(skill.text, skillFill(config, role, protectedPaths));
+        const text = renderRoleSkill(
+          skill.text,
+          skillFill(config, role, protectedPathsOf(manager)),
+        );
         return { role, text, source: skill.source } satisfies FactoryRoleBrief;
       }),
     );
+
+  const decodeAssignment = Effect.fnUntraced(function* (row: AssignmentRow) {
+    return yield* decodeAssignmentValue({
+      id: row.id,
+      managerId: row.manager_id,
+      projectId: row.project_id,
+      title: row.title,
+      brief: row.brief,
+      completionCondition: row.completion_condition,
+      source: row.source,
+      issue: row.issue_json === null ? null : yield* parse(Schema.Unknown, row.issue_json),
+      attemptId: row.attempt_id,
+      leadThreadId: row.lead_thread_id,
+      complexity: row.complexity,
+      state: row.state,
+      team: yield* parse(Schema.Unknown, row.team_json),
+      recoveryUsed: row.recovery_used,
+      waitingReason: row.waiting_reason,
+      cancelReason: row.cancel_reason,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      endedAt: row.ended_at,
+    }).pipe(Effect.mapError(storageError));
+  });
+  const readAssignment = Effect.fnUntraced(function* (id: string) {
+    const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments WHERE id=${id}`;
+    if (!rows[0]) return yield* error("not-found", "This assignment no longer exists.");
+    return yield* decodeAssignment(rows[0]);
+  });
+  const liveAssignmentRows = (managerId: string) =>
+    sql<AssignmentRow>`SELECT * FROM factory_assignments
+        WHERE manager_id=${managerId} AND ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)}
+        ORDER BY created_at, id`;
+
+  const writeLog = Effect.fnUntraced(function* (
+    managerId: string,
+    assignmentId: string | null,
+    kind: FactoryLogKind,
+    reason: string,
+    payload: unknown,
+  ) {
+    yield* sql`INSERT INTO factory_log(manager_id,assignment_id,kind,reason,payload_json,at)
+        VALUES(${managerId},${assignmentId},${kind},${reason.slice(0, 2000)},
+        ${payload === null ? null : json(payload)},${yield* now})`;
+  });
+  const logPayloads = Effect.fnUntraced(function* (
+    managerId: string,
+    kinds: ReadonlyArray<FactoryLogKind>,
+    reason: string | null = null,
+  ) {
+    const rows = yield* sql<{ payload_json: string | null }>`SELECT payload_json FROM factory_log
+        WHERE manager_id=${managerId} AND ${sql.in("kind", kinds)}
+        AND (${reason} IS NULL OR reason=${reason})`;
+    return rows.map((row) => row.payload_json);
+  });
+  /** Tickets the manager picked up or skipped, keyed at the version it judged. */
+  const judgedKeys = Effect.fnUntraced(function* (managerId: string) {
+    const payloads = yield* logPayloads(managerId, ["pickup", "skip"]);
+    return new Set(
+      payloads.flatMap((text) =>
+        Option.match(decodeJudged(text), {
+          onNone: () => [],
+          onSome: (payload) => [ticketKey(payload.issue, payload.updatedAt)],
+        }),
+      ),
+    );
+  });
+  const wokenKeys = Effect.fnUntraced(function* (managerId: string) {
+    const payloads = yield* logPayloads(managerId, ["wake"], "pickup");
+    return new Set(
+      payloads.flatMap((text) =>
+        Option.match(decodePickupWake(text), {
+          onNone: () => [],
+          onSome: (payload) =>
+            payload.tickets.map((ticket) => ticketKey(ticket.issue, ticket.updatedAt)),
+        }),
+      ),
+    );
+  });
+  const liveIssueKeys = Effect.fnUntraced(function* (projectId: ProjectId) {
+    const rows = yield* sql<{
+      issue_json: string | null;
+    }>`SELECT issue_json FROM factory_assignments
+        WHERE project_id=${projectId} AND ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)}`;
+    return new Set(
+      rows.flatMap((row) =>
+        Option.match(decodeIssueRef(row.issue_json), {
+          onNone: () => [],
+          onSome: (issue) => [canonicalIssueKey(issue)],
+        }),
+      ),
+    );
+  });
+
+  const readyItems = Effect.fnUntraced(function* (projectId: ProjectId) {
+    const items: ReadyItem[] = [];
+    for (const summary of yield* deps.readBoards(projectId)) {
+      if (summary.mapping === null) continue;
+      const view = yield* deps.readBoard(projectId, summary.id);
+      const ready = new Set(issueReadyColumnIds(view.board.mapping ?? summary.mapping));
+      for (const item of view.items) {
+        if (item.columnId === null || !ready.has(item.columnId)) continue;
+        items.push({
+          issue: item.issue,
+          boardId: summary.id,
+          columnId: item.columnId,
+          version: item.version,
+        });
+      }
+    }
+    return items;
+  });
+  /** Ready tickets with no live assignment, flagged when the manager already judged them. */
+  const readyTickets = Effect.fnUntraced(function* (manager: FactoryManager) {
+    const items = yield* readyItems(manager.projectId);
+    const live = yield* liveIssueKeys(manager.projectId);
+    const judged = yield* judgedKeys(manager.id);
+    return items
+      .filter((item) => !live.has(canonicalIssueKey(item.issue.ref)))
+      .map((item): FactoryReadyTicket => ({
+        ...item,
+        judged: judged.has(ticketKey(item.issue.ref, item.issue.updatedAt)),
+      }));
+  });
+
+  const status: FactoryServiceShape["status"] = (managerId) =>
+    protect(
+      Effect.gen(function* () {
+        const manager = yield* readManager(managerId);
+        const config = (yield* configView(manager.projectId)).effective;
+        const assignments = yield* Effect.forEach(
+          yield* liveAssignmentRows(manager.id),
+          decodeAssignment,
+        );
+        const activeCount = assignments.filter((assignment) =>
+          CAPACITY_STATES.has(assignment.state),
+        ).length;
+        return {
+          manager,
+          concurrencyCap: config.concurrencyCap,
+          activeCount,
+          capacityFree: activeCount < config.concurrencyCap,
+          assignments,
+          readyTickets: yield* readyTickets(manager),
+          pickupGuidance: config.pickupGuidance,
+        } satisfies FactoryStatus;
+      }),
+    );
+
+  const requireManager = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const row = yield* managerRowForThread(threadId);
+    if (row === null)
+      return yield* error("not-found", "This thread is not an engineering manager.");
+    return yield* decodeManager(row);
+  });
+
+  /** Fails with the refusal after logging it, so the manager's judgement trail shows it too. */
+  const refuse = (
+    managerId: string,
+    reason: "conflict" | "invalid",
+    message: string,
+    payload: unknown,
+  ) =>
+    lock(writeLog(managerId, null, "refused", message, payload)).pipe(
+      Effect.andThen(Effect.fail(error(reason, message))),
+    );
+
+  const findReadyTicket = Effect.fnUntraced(function* (projectId: ProjectId, issueNumber: number) {
+    const matches = (yield* readyItems(projectId)).filter(
+      (item) => item.issue.ref.number === issueNumber,
+    );
+    const distinct = new Set(matches.map((item) => canonicalIssueKey(item.issue.ref)));
+    if (distinct.size > 1)
+      return {
+        found: false,
+        reason: "invalid",
+        message: `#${issueNumber} matches Ready tickets in more than one repository.`,
+      } as const;
+    const ticket = matches[0];
+    if (ticket === undefined)
+      return {
+        found: false,
+        reason: "conflict",
+        message: `#${issueNumber} is not in a Ready column on a connected board.`,
+      } as const;
+    return { found: true, ticket } as const;
+  });
+
+  const leadPrompt = Effect.fnUntraced(function* (
+    manager: FactoryManager,
+    config: FactoryConfig,
+    workspaceRoot: string,
+    plan: AssignmentPlan,
+  ) {
+    const skill = yield* deps.readRoleSkill("lead", workspaceRoot);
+    const role = renderRoleSkill(skill.text, {
+      ...skillFill(config, "lead", protectedPathsOf(manager)),
+      completionCondition: plan.completionCondition,
+    });
+    return `${role}\n\n# Assignment\n\n## ${plan.title}\n\n${plan.brief}\n\n## Completion condition\n\n${plan.completionCondition}`;
+  });
+
+  /**
+   * Reserves the slot and the ticket, launches the lead through an issue attempt outside the lock,
+   * then records the lead. A failed launch removes the reservation and logs the refusal.
+   */
+  const startAssignment = Effect.fnUntraced(function* (
+    manager: FactoryManager,
+    config: FactoryConfig,
+    plan: AssignmentPlan,
+  ) {
+    const refusal = (reason: "conflict" | "invalid", message: string) =>
+      refuse(manager.id, reason, message, plan.refusalPayload);
+    const pool = new Set(config.modelPool.map(modelKey));
+    const outside = plan.team.members
+      .flatMap((member) => member.models ?? [])
+      .find((selection) => !pool.has(modelKey(selection)));
+    if (outside)
+      return yield* refusal(
+        "invalid",
+        `${outside.model} (${outside.instanceId}) is not in the model pool.`,
+      );
+    const modelSelection = config.roleModels.lead[plan.complexity] ?? config.modelPool[0];
+    if (modelSelection === undefined)
+      return yield* refusal("invalid", "Add at least one model to the factory pool first.");
+    const issue = plan.ticket.issue.ref;
+    const issueKey = canonicalIssueKey(issue);
+    const branch = sanitizeFeatureBranchName(`factory/issue-${issue.number}`);
+    const id = NodeCrypto.randomUUID();
+    const reserved = yield* lock(
+      Effect.gen(function* () {
+        const current = yield* readManager(manager.id);
+        const problem = managerStateProblem(current);
+        if (problem !== null) return ["conflict", problem] as const;
+        const live = yield* liveAssignmentRows(manager.id);
+        const taken = live.filter((row) => CAPACITY_STATES.has(row.state)).length;
+        if (taken >= config.concurrencyCap)
+          return [
+            "conflict",
+            `All ${config.concurrencyCap} assignment slots are in use. Wait for one to finish.`,
+          ] as const;
+        if ((yield* liveIssueKeys(manager.projectId)).has(issueKey))
+          return ["conflict", `#${issue.number} already has a live assignment.`] as const;
+        const at = yield* now;
+        yield* writeLog(manager.id, id, plan.kind, plan.reason, plan.logPayload);
+        yield* sql`INSERT INTO factory_assignments(id,manager_id,project_id,title,brief,
+            completion_condition,source,issue_json,board_id,branch,complexity,state,team_json,
+            created_at,updated_at)
+            VALUES(${id},${manager.id},${manager.projectId},${plan.title},${plan.brief},
+            ${plan.completionCondition},'ticket',${json(issue)},${plan.ticket.boardId},${branch},
+            ${plan.complexity},'active',${json(plan.team)},${at},${at})`;
+        return null;
+      }),
+    );
+    if (reserved !== null) return yield* refusal(...reserved);
+
+    const launched = yield* Effect.gen(function* () {
+      const shell = yield* project(manager.projectId);
+      return yield* deps.startAttempt({
+        requestId: `factory-assignment:${id}`,
+        boardId: plan.ticket.boardId,
+        issue,
+        projectId: manager.projectId,
+        prompt: yield* leadPrompt(manager, config, shell.workspaceRoot, plan),
+        branch,
+        baseRef: yield* deps.resolveBaseRef(shell.workspaceRoot),
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      });
+    }).pipe(Effect.result);
+    if (launched._tag === "Failure") {
+      yield* lock(
+        Effect.gen(function* () {
+          yield* sql`DELETE FROM factory_log WHERE assignment_id=${id}`;
+          yield* sql`DELETE FROM factory_assignments WHERE id=${id}`;
+          yield* writeLog(
+            manager.id,
+            null,
+            "refused",
+            `The lead could not start: ${launched.failure.message}`,
+            plan.refusalPayload,
+          );
+        }),
+      );
+      return yield* launched.failure;
+    }
+    const { attempt, threadId } = launched.success;
+    yield* lock(
+      Effect.gen(function* () {
+        const at = yield* now;
+        yield* sql`UPDATE factory_assignments SET attempt_id=${attempt.id},lead_thread_id=${threadId},
+            updated_at=${at} WHERE id=${id}`;
+        yield* sql`INSERT INTO factory_members(thread_id,manager_id,assignment_id,role,
+            parent_thread_id,joined,created_at)
+            VALUES(${threadId},${manager.id},${id},'lead',${manager.threadId},'created',${at})
+            ON CONFLICT(thread_id) DO NOTHING`;
+      }),
+    );
+    yield* publish;
+    return yield* readAssignment(id);
+  });
+
+  const ticketTitle = (issue: IssueSummary) =>
+    (issue.title.trim() || `Issue #${issue.ref.number}`).slice(0, 200);
+
+  const pickup: FactoryServiceShape["pickup"] = (managerThreadId, input) =>
+    protect(
+      Effect.gen(function* () {
+        const manager = yield* requireManager(managerThreadId);
+        const refusalPayload = { issueNumber: input.issueNumber, decision: input.decision };
+        const refusal = (reason: "conflict" | "invalid", message: string) =>
+          refuse(manager.id, reason, message, refusalPayload);
+        const problem = managerStateProblem(manager);
+        if (problem !== null) return yield* refusal("conflict", problem);
+        const found = yield* findReadyTicket(manager.projectId, input.issueNumber);
+        if (!found.found) return yield* refusal(found.reason, found.message);
+        const { ticket } = found;
+        const judged = {
+          issue: ticket.issue.ref,
+          updatedAt: ticket.issue.updatedAt,
+          complexity: input.complexity,
+        };
+        if (input.decision === "skip") {
+          yield* lock(writeLog(manager.id, null, "skip", input.reason, judged));
+          return null;
+        }
+        if (input.complexity === "large")
+          return yield* refusal(
+            "conflict",
+            "Large tickets never start on their own. Recommend it to the user instead.",
+          );
+        const brief = input.brief ?? "";
+        const completionCondition = input.completionCondition ?? "";
+        if (brief === "" || completionCondition === "")
+          return yield* refusal(
+            "invalid",
+            "Starting a ticket needs a brief and a completion condition.",
+          );
+        const config = (yield* configView(manager.projectId)).effective;
+        return yield* startAssignment(manager, config, {
+          kind: "pickup",
+          reason: input.reason,
+          logPayload: judged,
+          refusalPayload,
+          title: ticketTitle(ticket.issue),
+          brief,
+          completionCondition,
+          complexity: input.complexity,
+          team: input.team ?? DEFAULT_TEAM,
+          ticket,
+        });
+      }),
+    );
+
+  const commission: FactoryServiceShape["commission"] = (managerThreadId, input) =>
+    protect(
+      Effect.gen(function* () {
+        const manager = yield* requireManager(managerThreadId);
+        const refusalPayload = { title: input.title, issueNumber: input.issueNumber ?? null };
+        const refusal = (reason: "conflict" | "invalid", message: string) =>
+          refuse(manager.id, reason, message, refusalPayload);
+        const problem = managerStateProblem(manager);
+        if (problem !== null) return yield* refusal("conflict", problem);
+        // A lead without a ticket needs a worktree launch outside issue attempts, which the
+        // factory does not have yet.
+        if (input.issueNumber === undefined)
+          return yield* refusal(
+            "invalid",
+            "Commissioning without a ticket arrives in a later slice.",
+          );
+        const found = yield* findReadyTicket(manager.projectId, input.issueNumber);
+        if (!found.found) return yield* refusal(found.reason, found.message);
+        const { ticket } = found;
+        const config = (yield* configView(manager.projectId)).effective;
+        return yield* startAssignment(manager, config, {
+          kind: "commission",
+          reason: input.title,
+          logPayload: { issue: ticket.issue.ref, updatedAt: ticket.issue.updatedAt },
+          refusalPayload,
+          title: input.title,
+          brief: input.brief,
+          completionCondition: input.completionCondition,
+          complexity: input.complexity,
+          team: input.team ?? DEFAULT_TEAM,
+          ticket,
+        });
+      }),
+    );
+
+  const listAssignments: FactoryServiceShape["listAssignments"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+            WHERE (${input.projectId ?? null} IS NULL OR project_id=${input.projectId ?? null})
+            AND (${input.managerId ?? null} IS NULL OR manager_id=${input.managerId ?? null})
+            AND (${input.includeEnded ? 1 : 0}=1 OR ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)})
+            ORDER BY created_at, id`;
+        return yield* Effect.forEach(rows, decodeAssignment);
+      }),
+    );
+
+  const assignmentsEvent = Effect.fnUntraced(function* () {
+    const since = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { hours: 24 }));
+    const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+        WHERE ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)} OR ended_at >= ${since}
+        ORDER BY created_at, id`;
+    return {
+      assignments: yield* Effect.forEach(rows, decodeAssignment),
+    } satisfies FactoryAssignmentsEvent;
+  });
+
+  const subscribeAssignments: FactoryServiceShape["subscribeAssignments"] = () =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const subscription = yield* PubSub.subscribe(changes);
+        return Stream.concat(
+          Stream.make(yield* assignmentsEvent()),
+          Stream.fromSubscription(subscription).pipe(Stream.mapEffect(() => assignmentsEvent())),
+        );
+      }).pipe(Effect.mapError(preserveError)),
+    ).pipe(
+      Stream.mapError(preserveError),
+      Stream.changesWith((left, right) => json(left) === json(right)),
+      Stream.scoped,
+    );
+
+  const decodeLog = Effect.fnUntraced(function* (row: LogRow) {
+    return yield* decodeLogValue({
+      sequence: row.sequence,
+      managerId: row.manager_id,
+      assignmentId: row.assignment_id,
+      kind: row.kind,
+      reason: row.reason,
+      payload: row.payload_json === null ? null : yield* parse(Schema.Unknown, row.payload_json),
+      at: row.at,
+      deliveredAt: row.delivered_at,
+    }).pipe(Effect.mapError(storageError));
+  });
+
+  const listLog: FactoryServiceShape["listLog"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const rows = yield* sql<LogRow>`SELECT * FROM factory_log
+            WHERE manager_id=${input.managerId}
+            AND (${input.before ?? null} IS NULL OR sequence < ${input.before ?? null})
+            ORDER BY sequence DESC LIMIT ${input.limit ?? 100}`;
+        return yield* Effect.forEach(rows, decodeLog);
+      }),
+    );
+
+  const assignmentForThread: FactoryServiceShape["assignmentForThread"] = (threadId) =>
+    protect(
+      Effect.gen(function* () {
+        const rows = yield* sql<AssignmentRow>`SELECT a.* FROM factory_assignments a
+            WHERE a.lead_thread_id=${threadId} OR a.id IN
+              (SELECT assignment_id FROM factory_members WHERE thread_id=${threadId})
+            ORDER BY a.created_at DESC, a.id LIMIT 1`;
+        return rows[0] ? yield* decodeAssignment(rows[0]) : null;
+      }),
+    );
+
+  /** Writes the stall and, unless the manager is paused, the wake that tells it. */
+  const markStalled = Effect.fnUntraced(function* (id: string, reason: string) {
+    const rows = yield* sql<AssignmentRow & { manager_state: string }>`
+        SELECT a.*, m.state AS manager_state FROM factory_assignments a
+        JOIN factory_managers m ON m.id=a.manager_id WHERE a.id=${id}`;
+    const row = rows[0];
+    if (!row || row.state !== "active") return false;
+    yield* sql`UPDATE factory_assignments SET state='stalled',waiting_reason=${reason},
+        updated_at=${yield* now} WHERE id=${id}`;
+    yield* writeLog(row.manager_id, id, "stalled", reason, { leadThreadId: row.lead_thread_id });
+    if (!isPaused(row.manager_state))
+      yield* writeLog(row.manager_id, id, "wake", "stalled", { title: row.title, reason });
+    return true;
+  });
+
+  const reconcileLead = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const rows = yield* sql<{ id: string }>`SELECT id FROM factory_assignments
+        WHERE lead_thread_id=${threadId} AND state='active'`;
+    if (!rows[0]) return;
+    const runs = yield* deps.readThreadRuns(threadId);
+    if (runs === null) return;
+    // A completed run is left alone: completion claims arrive in slice 4.
+    const reason = stallReason(runs);
+    if (reason === null) return;
+    if (yield* lock(markStalled(rows[0].id, reason))) yield* publish;
+  });
+
+  const reconcileThread: FactoryServiceShape["reconcileThread"] = (threadId) =>
+    protect(reconcileLead(threadId)).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not reconcile a factory lead thread", { threadId, cause }),
+      ),
+    );
+
+  const queuePickupWake = Effect.fnUntraced(function* (manager: FactoryManager) {
+    const config = (yield* configView(manager.projectId)).effective;
+    const live = yield* liveAssignmentRows(manager.id);
+    const taken = live.filter((row) => CAPACITY_STATES.has(row.state)).length;
+    if (taken >= config.concurrencyCap) return;
+    const unjudged = (yield* readyTickets(manager)).filter((ticket) => !ticket.judged);
+    if (unjudged.length === 0) return;
+    yield* lock(
+      Effect.gen(function* () {
+        const woken = yield* wokenKeys(manager.id);
+        const due = unjudged.filter(
+          (ticket) => !woken.has(ticketKey(ticket.issue.ref, ticket.issue.updatedAt)),
+        );
+        if (due.length === 0) return;
+        yield* writeLog(manager.id, null, "wake", "pickup", {
+          tickets: due.map((ticket) => ({
+            issue: ticket.issue.ref,
+            updatedAt: ticket.issue.updatedAt,
+            title: ticket.issue.title,
+          })),
+        });
+      }),
+    );
+  });
+
+  const wakeText = (rows: ReadonlyArray<LogRow>) => {
+    const tickets = rows.flatMap((row) =>
+      row.reason === "pickup"
+        ? Option.match(decodePickupWake(row.payload_json), {
+            onNone: () => [],
+            onSome: (payload) => payload.tickets,
+          })
+        : [],
+    );
+    const lines: string[] = [];
+    if (tickets.length > 0)
+      lines.push(
+        `These Ready tickets are waiting for your judgement: ${tickets
+          .map((ticket) => `#${ticket.issue.number} ${ticket.title} (${ticket.issue.url})`)
+          .join(", ")}; call factory_status, then factory_pickup for each.`,
+      );
+    for (const row of rows) {
+      if (row.reason !== "stalled") continue;
+      Option.map(decodeStalledWake(row.payload_json), (payload) =>
+        lines.push(
+          `Assignment ${payload.title} stalled: ${payload.reason} Investigate its lead thread and decide.`,
+        ),
+      );
+    }
+    return lines.join("\n\n");
+  };
+
+  const deliverWakes = Effect.fnUntraced(function* (manager: FactoryManager) {
+    if (manager.threadId === null) return;
+    const rows = yield* sql<LogRow>`SELECT * FROM factory_log
+        WHERE manager_id=${manager.id} AND kind='wake' AND delivered_at IS NULL
+        ORDER BY sequence`;
+    if (rows.length === 0) return;
+    const text = wakeText(rows);
+    if (text !== "") {
+      const sent = yield* deps
+        .sendToThread({
+          projectId: manager.projectId,
+          threadId: manager.threadId,
+          // A rejected command id stays rejected, so each delivery attempt needs its own.
+          commandId: CommandId.make(`factory-wake:${manager.id}:${NodeCrypto.randomUUID()}`),
+          text,
+        })
+        .pipe(Effect.result);
+      if (sent._tag === "Failure")
+        return yield* Effect.logWarning("Could not wake the engineering manager", {
+          managerId: manager.id,
+          cause: sent.failure.message,
+        });
+    }
+    const at = yield* now;
+    yield* lock(
+      sql`UPDATE factory_log SET delivered_at=${at} WHERE ${sql.in(
+        "sequence",
+        rows.map((row) => row.sequence),
+      )}`,
+    );
+  });
+
+  const sweepManager = Effect.fnUntraced(function* (managerId: string) {
+    const leads = yield* sql<{ lead_thread_id: string }>`SELECT lead_thread_id
+        FROM factory_assignments WHERE manager_id=${managerId} AND lead_thread_id IS NOT NULL
+        AND ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)}`;
+    for (const lead of leads) yield* reconcileLead(ThreadId.make(lead.lead_thread_id));
+    const manager = yield* readManager(managerId);
+    if (manager.state !== "active") return;
+    yield* queuePickupWake(manager);
+    yield* deliverWakes(manager);
+  });
+
+  const sweep: FactoryServiceShape["sweep"] = protect(
+    Effect.gen(function* () {
+      for (const manager of yield* currentManagers())
+        yield* protect(sweepManager(manager.id)).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not sweep an engineering manager", {
+              managerId: manager.id,
+              cause: cause.message,
+            }),
+          ),
+        );
+    }),
+  ).pipe(
+    Effect.catch((cause) =>
+      Effect.logWarning("Could not sweep the engineering factory", { cause: cause.message }),
+    ),
+  );
 
   return {
     getConfig,
@@ -629,12 +1469,41 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     approveOnboarding,
     managerForThread,
     roleBrief,
+    status,
+    pickup,
+    commission,
+    listAssignments,
+    subscribeAssignments,
+    listLog,
+    assignmentForThread,
+    reconcileThread,
+    sweep,
   } satisfies FactoryServiceShape;
 });
+
+const fromIssueError = (cause: IssueOperationError) =>
+  error(
+    cause.reason === "invalid" || cause.reason === "conflict" || cause.reason === "not-found"
+      ? cause.reason
+      : "unavailable",
+    cause.message,
+  );
+
+const RUNS_IN_PROGRESS = new Set<OrchestrationV2RunStatus>([
+  "preparing",
+  "queued",
+  "starting",
+  "running",
+  "waiting",
+]);
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
+  const issues = yield* IssueService;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const git = yield* GitVcsDriver.GitVcsDriver;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const { baseDir } = yield* ServerConfig.ServerConfig;
@@ -671,6 +1540,57 @@ export const make = Effect.gen(function* () {
       roleSkillSource(role, { projectRoot, baseDir }).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path),
+      ),
+    readBoards: (projectId) =>
+      issues.listBoards({ projectId, connectedOnly: true }).pipe(Effect.mapError(fromIssueError)),
+    // Serves the stored copy; one older than 30 seconds also queues a background refresh, which
+    // is how a board nobody has open still shows the factory new Ready tickets.
+    readBoard: (projectId, boardId) =>
+      issues.openBoard({ projectId, boardId }).pipe(Effect.mapError(fromIssueError)),
+    startAttempt: (input) => issues.startAttempt(input).pipe(Effect.mapError(fromIssueError)),
+    readThreadRuns: (threadId) =>
+      orchestrator.getThreadRecords(threadId, ["runs"]).pipe(
+        Effect.map(({ thread, runs }) => ({
+          deleted: thread.deletedAt !== null,
+          latestRunStatus:
+            runs.reduce<(typeof runs)[number] | undefined>(
+              (latest, run) =>
+                latest === undefined || run.ordinal > latest.ordinal ? run : latest,
+              undefined,
+            )?.status ?? null,
+          runInProgress: runs.some((run) => RUNS_IN_PROGRESS.has(run.status)),
+        })),
+        Effect.catchCause((cause) =>
+          Effect.logDebug("factory lead thread unavailable", { threadId, cause }).pipe(
+            Effect.as(null),
+          ),
+        ),
+      ),
+    sendToThread: (input) =>
+      threads
+        .sendToThread({
+          projectId: input.projectId,
+          commandId: input.commandId,
+          threadId: input.threadId,
+          messageId: MessageId.make(`message:${input.commandId}`),
+          text: input.text,
+          attachments: [],
+          mode: "queue",
+          createdBy: "system",
+          creationSource: "server",
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            error("unavailable", `The message could not be sent: ${cause.message}`),
+          ),
+          Effect.asVoid,
+        ),
+    // Same source GitManager falls back to: the primary remote's HEAD symbolic ref.
+    resolveBaseRef: (cwd) =>
+      git.resolvePrimaryRemoteName(cwd).pipe(
+        Effect.flatMap((remote) => git.resolveDefaultBranchName(cwd, remote)),
+        Effect.map((branch) => branch ?? "main"),
+        Effect.orElseSucceed(() => "main"),
       ),
   });
 });

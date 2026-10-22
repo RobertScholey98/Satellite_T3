@@ -1,11 +1,18 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  type FactoryAssignment,
+  type FactoryCommissionInput,
   type FactoryManager,
+  FactoryOperationError,
   type FactoryOnboardingReport,
+  type FactoryPickupInput,
+  type FactoryReadyTicket,
   type FactoryRole,
+  type FactoryStatus,
   ProjectId,
   ProviderInstanceId,
+  SourceControlProviderKind,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -47,6 +54,76 @@ const manager: FactoryManager = {
   updatedAt: "2026-10-20T00:00:00.000Z",
 };
 
+const assignment: FactoryAssignment = {
+  id: "assignment-1",
+  managerId: "manager-1",
+  projectId: manager.projectId,
+  title: "Fix the flaky login test",
+  brief: "Find why login.test.ts flakes and fix it.",
+  completionCondition: "login.test.ts passes 20 runs in a row.",
+  source: "ticket",
+  issue: null,
+  attemptId: "attempt-1",
+  leadThreadId: ThreadId.make("thread-lead"),
+  complexity: "small",
+  state: "active",
+  team: { preset: "Default", members: [] },
+  recoveryUsed: 0,
+  waitingReason: null,
+  cancelReason: null,
+  createdAt: "2026-10-21T00:00:00.000Z",
+  updatedAt: "2026-10-21T00:00:00.000Z",
+  endedAt: null,
+};
+
+const readyTicket = (number: number, judged: boolean): FactoryReadyTicket => ({
+  issue: {
+    ref: {
+      hostKind: SourceControlProviderKind.make("github"),
+      host: "github.com",
+      repository: "acme/app",
+      id: `issue-${number}`,
+      number,
+      url: `https://github.com/acme/app/issues/${number}`,
+    },
+    title: `Ticket ${number}`,
+    state: "open",
+    updatedAt: "2026-10-21T00:00:00.000Z",
+    labels: [],
+  },
+  boardId: "board-1",
+  columnId: "ready",
+  version: null,
+  judged,
+});
+
+const status: FactoryStatus = {
+  manager: { ...manager, state: "active" },
+  concurrencyCap: 3,
+  activeCount: 1,
+  capacityFree: true,
+  assignments: [assignment],
+  readyTickets: [readyTicket(4, true), readyTicket(5, false), readyTicket(6, false)],
+  pickupGuidance: "Pick up small bug fixes.",
+};
+
+const pickupInput: FactoryPickupInput = {
+  issueNumber: 5,
+  decision: "start",
+  complexity: "small",
+  reason: "A contained bug fix.",
+  brief: assignment.brief,
+  completionCondition: assignment.completionCondition,
+};
+
+const commissionInput: FactoryCommissionInput = {
+  title: assignment.title,
+  brief: assignment.brief,
+  completionCondition: assignment.completionCondition,
+  complexity: "large",
+  issueNumber: 5,
+};
+
 const invocation = (
   threadId: ThreadId,
   capabilities: ReadonlyArray<McpInvocationContext.McpCapability>,
@@ -68,6 +145,14 @@ const makeHarness = Effect.gen(function* () {
   const briefRequests = yield* Ref.make<
     ReadonlyArray<{ projectId: ProjectId; role: FactoryRole; managerId: string }>
   >([]);
+  const statusRequests = yield* Ref.make<ReadonlyArray<string>>([]);
+  const pickups = yield* Ref.make<ReadonlyArray<{ threadId: ThreadId; input: FactoryPickupInput }>>(
+    [],
+  );
+  const commissions = yield* Ref.make<
+    ReadonlyArray<{ threadId: ThreadId; input: FactoryCommissionInput }>
+  >([]);
+  const pickupConflict = yield* Ref.make(false);
   const dependencies = Layer.mergeAll(
     Layer.mock(FactoryService)({
       managerForThread: (threadId) => Effect.succeed(threadId === MANAGER_THREAD ? manager : null),
@@ -78,6 +163,22 @@ const makeHarness = Effect.gen(function* () {
       roleBrief: (projectId, role, managerId) =>
         Ref.update(briefRequests, (recorded) => [...recorded, { projectId, role, managerId }]).pipe(
           Effect.as({ role, text: `# ${role} brief`, source: "project" as const }),
+        ),
+      status: (managerId) =>
+        Ref.update(statusRequests, (recorded) => [...recorded, managerId]).pipe(Effect.as(status)),
+      pickup: (threadId, input) =>
+        Effect.gen(function* () {
+          if (yield* Ref.get(pickupConflict))
+            return yield* new FactoryOperationError({
+              reason: "conflict",
+              message: "Every slot under the concurrency cap is taken.",
+            });
+          yield* Ref.update(pickups, (recorded) => [...recorded, { threadId, input }]);
+          return input.decision === "skip" ? null : assignment;
+        }),
+      commission: (threadId, input) =>
+        Ref.update(commissions, (recorded) => [...recorded, { threadId, input }]).pipe(
+          Effect.as({ ...assignment, source: "user" as const, complexity: input.complexity }),
         ),
     }),
     McpToolAccessTestkit.liveThreadsLayer,
@@ -105,7 +206,15 @@ const makeHarness = Effect.gen(function* () {
       ),
       Effect.provide(dependencies),
     );
-  return { proposals, briefRequests, call };
+  return {
+    proposals,
+    briefRequests,
+    statusRequests,
+    pickups,
+    commissions,
+    pickupConflict,
+    call,
+  };
 });
 
 describe("factory_propose_onboarding", () => {
@@ -191,6 +300,99 @@ describe("factory_role_brief", () => {
         .call("factory_role_brief", { role: "lead" }, MANAGER_THREAD, ["preview"])
         .pipe(Effect.flip);
       assert.strictEqual(failure._tag, "McpCapabilityUnavailableError");
+    }),
+  );
+});
+
+describe("factory_status", () => {
+  it.effect("refuses a thread that is not a manager", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness.call("factory_status", {}, OTHER_THREAD).pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        _tag: "FactoryToolFailedError",
+        reason: "not-found",
+        message: "This thread is not an engineering manager.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.statusRequests), []);
+    }),
+  );
+
+  it.effect("returns the calling manager's status with a one-line summary", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_status", {});
+      assert.deepStrictEqual(yield* Ref.get(harness.statusRequests), ["manager-1"]);
+      assert.deepStrictEqual(result, {
+        ...status,
+        message: "1 of 3 slots in use, so capacity is free; 2 Ready tickets await judgement.",
+      });
+    }),
+  );
+});
+
+describe("factory_pickup", () => {
+  it.effect("forwards the manager thread and judgement and returns the started assignment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_pickup", pickupInput);
+      assert.deepStrictEqual(yield* Ref.get(harness.pickups), [
+        { threadId: MANAGER_THREAD, input: pickupInput },
+      ]);
+      assert.deepStrictEqual(result, {
+        decision: "start",
+        assignment,
+        message:
+          'Started assignment assignment-1, "Fix the flaky login test". Its lead is launching.',
+      });
+    }),
+  );
+
+  it.effect("a skip returns no assignment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const skip: FactoryPickupInput = {
+        issueNumber: 6,
+        decision: "skip",
+        complexity: "large",
+        reason: "Too large to start without the user.",
+      };
+      const result = yield* harness.call("factory_pickup", skip);
+      assert.deepStrictEqual(result, {
+        decision: "skip",
+        assignment: null,
+        message: "Skipped ticket #6. It counts as judged until the ticket changes.",
+      });
+    }),
+  );
+
+  it.effect("surfaces the service's refusal with its reason", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.pickupConflict, true);
+      const failure = yield* harness.call("factory_pickup", pickupInput).pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        _tag: "FactoryToolFailedError",
+        reason: "conflict",
+        message: "Every slot under the concurrency cap is taken.",
+      });
+    }),
+  );
+});
+
+describe("factory_commission", () => {
+  it.effect("forwards the manager thread and request and returns the assignment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_commission", commissionInput);
+      assert.deepStrictEqual(yield* Ref.get(harness.commissions), [
+        { threadId: MANAGER_THREAD, input: commissionInput },
+      ]);
+      assert.deepStrictEqual(result, {
+        assignment: { ...assignment, source: "user", complexity: "large" },
+        message:
+          'Started assignment assignment-1, "Fix the flaky login test". Its lead is launching.',
+      });
     }),
   );
 });

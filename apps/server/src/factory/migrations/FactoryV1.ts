@@ -43,6 +43,9 @@ export const FactoryV1 = Effect.gen(function* () {
     source TEXT NOT NULL,
     issue_json TEXT,
     attempt_id TEXT,
+    lead_thread_id TEXT,
+    board_id TEXT,
+    branch TEXT,
     complexity TEXT NOT NULL,
     state TEXT NOT NULL,
     team_json TEXT NOT NULL,
@@ -55,6 +58,8 @@ export const FactoryV1 = Effect.gen(function* () {
   )`;
   yield* sql`CREATE INDEX IF NOT EXISTS factory_assignments_manager
     ON factory_assignments(manager_id, state)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS factory_assignments_lead
+    ON factory_assignments(lead_thread_id)`;
 
   yield* sql`CREATE TABLE IF NOT EXISTS factory_members (
     thread_id TEXT PRIMARY KEY,
@@ -82,6 +87,8 @@ export const FactoryV1 = Effect.gen(function* () {
     delivered_at TEXT
   )`;
   yield* sql`CREATE INDEX IF NOT EXISTS factory_log_manager ON factory_log(manager_id, sequence)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS factory_log_kind
+    ON factory_log(manager_id, kind, delivered_at)`;
 
   yield* sql`CREATE TABLE IF NOT EXISTS factory_requests (
     request_id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, result_json TEXT NOT NULL

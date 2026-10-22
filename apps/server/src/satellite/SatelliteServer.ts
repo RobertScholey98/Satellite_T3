@@ -21,9 +21,8 @@ export const layer = Layer.mergeAll(
       Effect.forkScoped,
     ),
   ),
-  Issues.layer,
   Factory.layer,
-);
+).pipe(Layer.provideMerge(Issues.layer));
 
 /**
  * Satellite's services with test stand-ins for their dependencies, for tests that build Satellite

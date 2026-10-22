@@ -1,4 +1,9 @@
-import type { FactoryOperationError, FactoryRoleBrief } from "@t3tools/contracts";
+import type {
+  FactoryAssignment,
+  FactoryOperationError,
+  FactoryRoleBrief,
+  FactoryStatus,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
@@ -14,6 +19,22 @@ const briefSource: Record<FactoryRoleBrief["source"], string> = {
   environment: "the environment's role file",
   default: "the built-in default",
 };
+
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+const statusMessage = ({
+  activeCount,
+  concurrencyCap,
+  capacityFree,
+  readyTickets,
+}: FactoryStatus) => {
+  const unjudged = readyTickets.filter((ticket) => !ticket.judged).length;
+  const capacity = capacityFree ? "capacity is free" : "no capacity is free";
+  return `${activeCount} of ${plural(concurrencyCap, "slot")} in use, so ${capacity}; ${plural(unjudged, "Ready ticket")} await judgement.`;
+};
+
+const started = (assignment: FactoryAssignment) =>
+  `Started assignment ${assignment.id}, "${assignment.title}". Its lead is launching.`;
 
 const make = Effect.gen(function* () {
   const factory = yield* FactoryService;
@@ -54,6 +75,41 @@ const make = Effect.gen(function* () {
         return {
           ...brief,
           message: `The ${role} brief, from ${briefSource[brief.source]}.`,
+        };
+      }),
+    ),
+    factory_status: McpToolAccess.reads(() =>
+      Effect.gen(function* () {
+        const { manager } = yield* callingManager("This thread is not an engineering manager.");
+        const status = yield* factory.status(manager.id).pipe(Effect.mapError(toolFailure));
+        return { ...status, message: statusMessage(status) };
+      }),
+    ),
+    factory_pickup: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingManager("This thread is not an engineering manager.");
+        const assignment = yield* factory
+          .pickup(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return {
+          decision: input.decision,
+          assignment,
+          message:
+            assignment === null
+              ? `Skipped ticket #${input.issueNumber}. It counts as judged until the ticket changes.`
+              : started(assignment),
+        };
+      }),
+    ),
+    factory_commission: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingManager("This thread is not an engineering manager.");
+        const assignment = yield* factory
+          .commission(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return {
+          assignment,
+          message: started(assignment),
         };
       }),
     ),

@@ -11,6 +11,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
+import { IssueRef, IssueSummary } from "./issues.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 
@@ -28,6 +29,9 @@ export const FACTORY_WS_METHODS = {
   factoryManagersResume: "factory.managers.resume",
   factoryManagersRetire: "factory.managers.retire",
   factoryManagersApproveOnboarding: "factory.managers.approveOnboarding",
+  factoryAssignmentsList: "factory.assignments.list",
+  factoryAssignmentsSubscribe: "factory.assignments.subscribe",
+  factoryLogList: "factory.log.list",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -313,6 +317,164 @@ export const FactoryManagersApproveOnboardingInput = Schema.Struct({
 export type FactoryManagersApproveOnboardingInput =
   typeof FactoryManagersApproveOnboardingInput.Type;
 
+export const FactoryAssignmentSource = Schema.Literals([
+  "ticket",
+  "user",
+  "dependency",
+  "handover",
+]);
+export type FactoryAssignmentSource = typeof FactoryAssignmentSource.Type;
+
+/**
+ * `completed` and `cancelled` are terminal. `retro` still holds the manager but frees its slot
+ * under the concurrency cap.
+ */
+export const FactoryAssignmentState = Schema.Literals([
+  "active",
+  "blocked",
+  "waiting-user",
+  "stalled",
+  "retro",
+  "completed",
+  "cancelled",
+]);
+export type FactoryAssignmentState = typeof FactoryAssignmentState.Type;
+
+/** The team an assignment asks its lead to staff: a preset's name or `custom`. */
+export const FactoryTeamSpec = Schema.Struct({
+  preset: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+  members: Schema.Array(FactoryTeamMember).check(Schema.isMaxLength(12)),
+});
+export type FactoryTeamSpec = typeof FactoryTeamSpec.Type;
+
+const AssignmentTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+const AssignmentBrief = TrimmedString.check(Schema.isMaxLength(20_000));
+const CompletionCondition = TrimmedString.check(Schema.isMaxLength(4000));
+const DecisionReason = TrimmedNonEmptyString.check(Schema.isMaxLength(2000));
+
+export const FactoryAssignment = Schema.Struct({
+  id: Id,
+  managerId: Id,
+  projectId: ProjectId,
+  title: AssignmentTitle,
+  brief: AssignmentBrief,
+  completionCondition: CompletionCondition,
+  source: FactoryAssignmentSource,
+  issue: Schema.NullOr(IssueRef),
+  /** The issue attempt that owns the lead's worktree and moves the ticket. */
+  attemptId: Schema.NullOr(Id),
+  leadThreadId: Schema.NullOr(ThreadId),
+  complexity: FactoryComplexity,
+  state: FactoryAssignmentState,
+  team: FactoryTeamSpec,
+  /** Diagnosis-and-replan cycles spent, against the config's recovery allowance. */
+  recoveryUsed: NonNegativeInt,
+  /** Why the assignment is blocked, stalled or waiting on the user. */
+  waitingReason: Schema.NullOr(Schema.String),
+  cancelReason: Schema.NullOr(Schema.String),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+  endedAt: Schema.NullOr(Schema.String),
+});
+export type FactoryAssignment = typeof FactoryAssignment.Type;
+
+/** `wake` rows are messages owed to the manager; they are written before the message is sent. */
+export const FactoryLogKind = Schema.Literals([
+  "pickup",
+  "skip",
+  "commission",
+  "wake",
+  "stalled",
+  "refused",
+]);
+export type FactoryLogKind = typeof FactoryLogKind.Type;
+
+export const FactoryLogEntry = Schema.Struct({
+  sequence: PositiveInt,
+  managerId: Id,
+  assignmentId: Schema.NullOr(Id),
+  kind: FactoryLogKind,
+  reason: Schema.String.check(Schema.isMaxLength(2000)),
+  /** The row's details as stored, or null. */
+  payload: Schema.Unknown,
+  at: Schema.String,
+  /** Set on a `wake` row once the manager's thread accepted the message. */
+  deliveredAt: Schema.NullOr(Schema.String),
+});
+export type FactoryLogEntry = typeof FactoryLogEntry.Type;
+
+export const FactoryReadyTicket = Schema.Struct({
+  issue: IssueSummary,
+  boardId: Id,
+  columnId: Id,
+  version: Schema.NullOr(Schema.String),
+  /** The manager already picked up or skipped this ticket as it is now. */
+  judged: Schema.Boolean,
+});
+export type FactoryReadyTicket = typeof FactoryReadyTicket.Type;
+
+export const FactoryStatus = Schema.Struct({
+  manager: FactoryManager,
+  concurrencyCap: PositiveInt,
+  /** Assignments that take a slot under the cap: every live state except `retro`. */
+  activeCount: NonNegativeInt,
+  capacityFree: Schema.Boolean,
+  /** Assignments that are not completed or cancelled. */
+  assignments: Schema.Array(FactoryAssignment),
+  /** Tickets in a Ready column of a connected board with no live assignment. */
+  readyTickets: Schema.Array(FactoryReadyTicket),
+  pickupGuidance: Schema.String,
+});
+export type FactoryStatus = typeof FactoryStatus.Type;
+
+/** Without `includeEnded`, only assignments that are not completed or cancelled. */
+export const FactoryAssignmentsListInput = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  managerId: Schema.optional(Id),
+  includeEnded: Schema.optional(Schema.Boolean),
+});
+export type FactoryAssignmentsListInput = typeof FactoryAssignmentsListInput.Type;
+
+export const FactoryAssignmentsSubscribeInput = Schema.Struct({});
+export type FactoryAssignmentsSubscribeInput = typeof FactoryAssignmentsSubscribeInput.Type;
+
+/** Every live assignment on the environment plus those that ended in the last 24 hours. */
+export const FactoryAssignmentsEvent = Schema.Struct({
+  assignments: Schema.Array(FactoryAssignment),
+});
+export type FactoryAssignmentsEvent = typeof FactoryAssignmentsEvent.Type;
+
+/** Newest first. `before` pages back from a sequence. */
+export const FactoryLogListInput = Schema.Struct({
+  managerId: Id,
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(500))),
+  before: Schema.optional(PositiveInt),
+});
+export type FactoryLogListInput = typeof FactoryLogListInput.Type;
+
+/** The manager's judgement of one Ready ticket. `start` needs a brief and completion condition. */
+export const FactoryPickupInput = Schema.Struct({
+  issueNumber: PositiveInt,
+  decision: Schema.Literals(["start", "skip"]),
+  complexity: FactoryComplexity,
+  reason: DecisionReason,
+  brief: Schema.optionalKey(AssignmentBrief),
+  completionCondition: Schema.optionalKey(CompletionCondition),
+  team: Schema.optionalKey(FactoryTeamSpec),
+});
+export type FactoryPickupInput = typeof FactoryPickupInput.Type;
+
+/** Work the user asked the manager for directly, outside the pickup guidance. */
+export const FactoryCommissionInput = Schema.Struct({
+  title: AssignmentTitle,
+  brief: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
+  completionCondition: TrimmedNonEmptyString.check(Schema.isMaxLength(4000)),
+  complexity: FactoryComplexity,
+  issueNumber: Schema.optionalKey(PositiveInt),
+  team: Schema.optionalKey(FactoryTeamSpec),
+});
+export type FactoryCommissionInput = typeof FactoryCommissionInput.Type;
+
 const FactoryRpcError = Schema.Union([FactoryOperationError, EnvironmentAuthorizationError]);
 
 export const WsFactoryConfigGetRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigGet, {
@@ -364,3 +526,22 @@ export const WsFactoryManagersApproveOnboardingRpc = Rpc.make(
     error: FactoryRpcError,
   },
 );
+export const WsFactoryAssignmentsListRpc = Rpc.make(FACTORY_WS_METHODS.factoryAssignmentsList, {
+  payload: FactoryAssignmentsListInput,
+  success: Schema.Array(FactoryAssignment),
+  error: FactoryRpcError,
+});
+export const WsFactoryAssignmentsSubscribeRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryAssignmentsSubscribe,
+  {
+    payload: FactoryAssignmentsSubscribeInput,
+    success: FactoryAssignmentsEvent,
+    error: FactoryRpcError,
+    stream: true,
+  },
+);
+export const WsFactoryLogListRpc = Rpc.make(FACTORY_WS_METHODS.factoryLogList, {
+  payload: FactoryLogListInput,
+  success: Schema.Array(FactoryLogEntry),
+  error: FactoryRpcError,
+});
