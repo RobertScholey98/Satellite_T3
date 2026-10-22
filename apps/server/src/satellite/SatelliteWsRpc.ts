@@ -45,6 +45,14 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.factoryLogList]: (input) => factory.listLog(input),
         [SATELLITE_WS_METHODS.factoryWorkspaceSubscribe]: (input) =>
           factory.subscribeWorkspace(input),
+        [SATELLITE_WS_METHODS.factoryFindingsList]: (input) => factory.listFindings(input),
+        [SATELLITE_WS_METHODS.factoryDraftsList]: (input) => factory.listDrafts(input),
+        [SATELLITE_WS_METHODS.factoryDraftsSubscribe]: (input) => factory.subscribeDrafts(input),
+        [SATELLITE_WS_METHODS.factoryDraftsEdit]: (input) => factory.editDraft(input),
+        [SATELLITE_WS_METHODS.factoryDraftsApprove]: (input) => factory.approveDraft(input),
+        [SATELLITE_WS_METHODS.factoryDraftsDismiss]: (input) => factory.dismissDraft(input),
+        [SATELLITE_WS_METHODS.factoryDraftsRestore]: (input) => factory.restoreDraft(input),
+        [SATELLITE_WS_METHODS.factoryStatsGet]: (input) => factory.getStats(input),
       });
     }),
   );

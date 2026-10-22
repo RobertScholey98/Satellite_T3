@@ -38,6 +38,14 @@ export const SATELLITE_RPC_REQUIRED_SCOPES = {
   [SATELLITE_WS_METHODS.factoryThreadsHandBack]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.factoryLogList]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.factoryWorkspaceSubscribe]: AuthOrchestrationReadScope,
+  [SATELLITE_WS_METHODS.factoryFindingsList]: AuthOrchestrationReadScope,
+  [SATELLITE_WS_METHODS.factoryDraftsList]: AuthOrchestrationReadScope,
+  [SATELLITE_WS_METHODS.factoryDraftsSubscribe]: AuthOrchestrationReadScope,
+  [SATELLITE_WS_METHODS.factoryDraftsEdit]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.factoryDraftsApprove]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.factoryDraftsDismiss]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.factoryDraftsRestore]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.factoryStatsGet]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<SatelliteWsRpcMethod, AuthEnvironmentScope>>;
 
 /** The `rpc.aggregate` span label of each Satellite RPC. `RPC_AGGREGATES` spreads it. */
@@ -71,4 +79,12 @@ export const SATELLITE_RPC_AGGREGATES = {
   [SATELLITE_WS_METHODS.factoryThreadsHandBack]: "factory",
   [SATELLITE_WS_METHODS.factoryLogList]: "factory",
   [SATELLITE_WS_METHODS.factoryWorkspaceSubscribe]: "factory",
+  [SATELLITE_WS_METHODS.factoryFindingsList]: "factory",
+  [SATELLITE_WS_METHODS.factoryDraftsList]: "factory",
+  [SATELLITE_WS_METHODS.factoryDraftsSubscribe]: "factory",
+  [SATELLITE_WS_METHODS.factoryDraftsEdit]: "factory",
+  [SATELLITE_WS_METHODS.factoryDraftsApprove]: "factory",
+  [SATELLITE_WS_METHODS.factoryDraftsDismiss]: "factory",
+  [SATELLITE_WS_METHODS.factoryDraftsRestore]: "factory",
+  [SATELLITE_WS_METHODS.factoryStatsGet]: "factory",
 } as const satisfies Readonly<Record<SatelliteWsRpcMethod, string>>;

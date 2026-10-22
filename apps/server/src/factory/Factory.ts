@@ -8,6 +8,7 @@ import * as FactoryReactor from "./FactoryReactor.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryMcp from "./mcp/handlers.ts";
 import { FactoryToolkit } from "./mcp/tools.ts";
+import * as FactoryTicketHost from "./tickets/FactoryTicketHost.ts";
 
 /** The engineering factory for the server's lifetime: the service and its reactor. */
 export const layer = Layer.effectDiscard(
@@ -17,7 +18,12 @@ export const layer = Layer.effectDiscard(
   }),
 ).pipe(
   Layer.provideMerge(FactoryReactor.layer),
-  Layer.provideMerge(FactoryService.layer.pipe(Layer.provide(IdAllocator.layer))),
+  Layer.provideMerge(
+    FactoryService.layer.pipe(
+      Layer.provide(IdAllocator.layer),
+      Layer.provide(FactoryTicketHost.layer),
+    ),
+  ),
 );
 
 /** Handler builds only need the service to exist. */

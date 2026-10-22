@@ -75,5 +75,6 @@ const subscriptionsFollowTheGroup: Equals<
   | "factory.managers.subscribe"
   | "factory.assignments.subscribe"
   | "factory.workspace.subscribe"
+  | "factory.drafts.subscribe"
 > = true;
 void subscriptionsFollowTheGroup;

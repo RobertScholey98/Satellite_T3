@@ -63,6 +63,11 @@ export const FactoryV1 = Effect.gen(function* () {
     control_violations_json TEXT NOT NULL DEFAULT '[]',
     -- Pull request key to the snapshot updatedAt its files were last checked at.
     control_checked_json TEXT NOT NULL DEFAULT '{}',
+    team_retro_at TEXT,
+    manager_retro_at TEXT,
+    -- Time spent in waiting-user so far, plus when the current wait began.
+    waiting_user_ms INTEGER NOT NULL DEFAULT 0,
+    waiting_since TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     ended_at TEXT
@@ -116,6 +121,70 @@ export const FactoryV1 = Effect.gen(function* () {
   yield* sql`CREATE INDEX IF NOT EXISTS factory_log_manager ON factory_log(manager_id, sequence)`;
   yield* sql`CREATE INDEX IF NOT EXISTS factory_log_kind
     ON factory_log(manager_id, kind, delivered_at)`;
+
+  yield* sql`CREATE TABLE IF NOT EXISTS factory_findings (
+    id TEXT PRIMARY KEY,
+    assignment_id TEXT NOT NULL,
+    manager_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    class TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    uncertainty TEXT,
+    workaround TEXT,
+    escalated INTEGER NOT NULL DEFAULT 0,
+    draft_id TEXT,
+    created_at TEXT NOT NULL
+  )`;
+  yield* sql`CREATE INDEX IF NOT EXISTS factory_findings_assignment
+    ON factory_findings(assignment_id)`;
+
+  // marker is hidden in the filed ticket's body, so a retried approval finds it instead of filing again.
+  yield* sql`CREATE TABLE IF NOT EXISTS factory_ticket_drafts (
+    id TEXT PRIMARY KEY,
+    manager_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    assignment_id TEXT,
+    scope TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    acceptance_json TEXT NOT NULL,
+    finding_ids_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    issue_json TEXT,
+    proposed_change_json TEXT,
+    marker TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`;
+  yield* sql`CREATE INDEX IF NOT EXISTS factory_ticket_drafts_project
+    ON factory_ticket_drafts(project_id, state)`;
+
+  // One row per ended assignment, written when it ends, so team stats never rescan threads.
+  yield* sql`CREATE TABLE IF NOT EXISTS factory_assignment_stats (
+    assignment_id TEXT PRIMARY KEY,
+    manager_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    team TEXT NOT NULL,
+    complexity TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    team_verdict TEXT,
+    input_tokens INTEGER NOT NULL,
+    cached_input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cost_usd REAL,
+    agent_ms INTEGER NOT NULL,
+    wall_ms INTEGER NOT NULL,
+    waiting_user_ms INTEGER NOT NULL,
+    recoveries INTEGER NOT NULL,
+    pull_requests INTEGER NOT NULL,
+    review_rounds INTEGER NOT NULL,
+    by_role_json TEXT NOT NULL,
+    by_model_json TEXT NOT NULL,
+    ended_at TEXT NOT NULL
+  )`;
+  yield* sql`CREATE INDEX IF NOT EXISTS factory_assignment_stats_project
+    ON factory_assignment_stats(project_id, ended_at)`;
 
   yield* sql`CREATE TABLE IF NOT EXISTS factory_requests (
     request_id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, result_json TEXT NOT NULL

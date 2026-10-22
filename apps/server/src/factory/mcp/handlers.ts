@@ -1,6 +1,7 @@
 import type {
   FactoryAssignment,
   FactoryAssignmentState,
+  FactoryDraftTicketResult,
   FactoryOperationError,
   FactoryRoleBrief,
   FactoryStatus,
@@ -26,6 +27,7 @@ const briefSource: Record<FactoryRoleBrief["source"], string> = {
 
 const NOT_A_MANAGER = "This thread is not an engineering manager.";
 const NOT_A_LEAD = "This thread is not a factory lead.";
+const NOT_A_MEMBER = "This thread is not a member of a live factory team.";
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
@@ -58,6 +60,11 @@ const taskRole: Record<FactoryWorkerRole, NonNullable<OrchestratorMcpDelegateTas
   reviewer: "review",
   verifier: "test",
 };
+
+const draftMessage = ({ draft, similar }: FactoryDraftTicketResult) =>
+  similar.length === 0
+    ? `Drafted "${draft.title}" into Retro triage. Nothing similar is open.`
+    : `Drafted "${draft.title}" into Retro triage. ${similar.length === 1 ? "1 similar draft or ticket is" : `${similar.length} similar drafts or tickets are`} open: if one covers the same work, tell the user which to merge.`;
 
 const endedAs: Partial<Record<FactoryAssignmentState, string>> = {
   completed: "completed",
@@ -92,6 +99,49 @@ const make = Effect.gen(function* () {
     )
       return yield* new FactoryToolFailedError({ reason: "not-found", message: notMember });
     return { threadId, assignment };
+  });
+
+  /** A lead or worker. The service still refuses a member whose own thread has ended. */
+  const callingMember = Effect.fn("FactoryMcp.callingMember")(function* () {
+    const scope = yield* McpInvocationContext.requireMcpCapability("orchestration");
+    const { threadId } = (yield* McpInvocationContext.requireThreadScope(scope, "This tool"))
+      .thread;
+    const assignment = yield* factory
+      .assignmentForThread(threadId)
+      .pipe(Effect.mapError(toolFailure));
+    if (assignment === null || assignment.state === "completed" || assignment.state === "cancelled")
+      return yield* new FactoryToolFailedError({ reason: "not-found", message: NOT_A_MEMBER });
+    return { threadId, assignment };
+  });
+
+  /** A manager reads any of its assignments, a lead only the one it leads. */
+  const readableAssignment = Effect.fn("FactoryMcp.readableAssignment")(function* (
+    assignmentId: string,
+  ) {
+    const scope = yield* McpInvocationContext.requireMcpCapability("orchestration");
+    const { threadId } = (yield* McpInvocationContext.requireThreadScope(scope, "This tool"))
+      .thread;
+    const notFound = new FactoryToolFailedError({
+      reason: "not-found",
+      message: `No assignment ${assignmentId} is yours to read.`,
+    });
+    const manager = yield* factory.managerForThread(threadId).pipe(Effect.mapError(toolFailure));
+    if (manager !== null) {
+      const assignments = yield* factory
+        .listAssignments({ managerId: manager.id, includeEnded: true })
+        .pipe(Effect.mapError(toolFailure));
+      const assignment = assignments.find((candidate) => candidate.id === assignmentId);
+      if (assignment === undefined) return yield* notFound;
+      return assignment;
+    }
+    const led = yield* factory.assignmentForThread(threadId).pipe(Effect.mapError(toolFailure));
+    if (led === null || led.leadThreadId !== threadId)
+      return yield* new FactoryToolFailedError({
+        reason: "not-found",
+        message: "This thread is not an engineering manager or a factory lead.",
+      });
+    if (led.id !== assignmentId) return yield* notFound;
+    return led;
   });
 
   return {
@@ -273,6 +323,51 @@ const make = Effect.gen(function* () {
           preset,
           message: `Added the team preset "${preset.name}". Name it as the team when you pick up or commission work.`,
         };
+      }),
+    ),
+    factory_record_finding: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingMember();
+        const finding = yield* factory
+          .recordFinding(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return {
+          finding,
+          message: finding.escalated
+            ? "Recorded the finding and woke the manager to decide on it."
+            : "Recorded the finding. The manager reads it at the retro.",
+        };
+      }),
+    ),
+    factory_findings: McpToolAccess.reads(({ assignmentId }) =>
+      Effect.gen(function* () {
+        const assignment = yield* readableAssignment(assignmentId);
+        const findings = yield* factory
+          .listFindings({ assignmentId: assignment.id })
+          .pipe(Effect.mapError(toolFailure));
+        return {
+          findings,
+          message: `${plural(findings.length, "finding")} on "${assignment.title}".`,
+        };
+      }),
+    ),
+    factory_retro_done: McpToolAccess.actsAsCaller(() =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingLead(NOT_A_LEAD);
+        const assignment = yield* factory.retroDone(threadId).pipe(Effect.mapError(toolFailure));
+        return {
+          assignment,
+          message: "The team retro is done. The manager is woken for its retro; stop here.",
+        };
+      }),
+    ),
+    factory_draft_ticket: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingManager(NOT_A_MANAGER);
+        const result = yield* factory
+          .draftTicket(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return { ...result, message: draftMessage(result) };
       }),
     ),
   } satisfies McpToolAccess.Handlers<typeof FactoryToolkit.tools>;

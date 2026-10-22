@@ -9,11 +9,15 @@ import {
   type FactoryDelegateInput,
   type FactoryDelegationPlan,
   type FactoryDependency,
+  type FactoryDraftTicketInput,
+  type FactoryDraftTicketResult,
+  type FactoryFinding,
   type FactoryManager,
   FactoryOperationError,
   type FactoryOnboardingReport,
   type FactoryPickupInput,
   type FactoryReadyTicket,
+  type FactoryRecordFindingInput,
   type FactoryRecoverInput,
   type FactoryReportDependencyInput,
   type FactoryRole,
@@ -45,6 +49,7 @@ const MANAGER_THREAD = ThreadId.make("thread-manager");
 const OTHER_THREAD = ThreadId.make("thread-other");
 const LEAD_THREAD = ThreadId.make("thread-lead");
 const CHILD_THREAD = ThreadId.make("thread-child");
+const WORKER_THREAD = ThreadId.make("thread-worker");
 
 const report: FactoryOnboardingReport = {
   summary: "Turbo monorepo; CI gates on lint and tests.",
@@ -93,6 +98,7 @@ const assignment: FactoryAssignment = {
   checklist: [],
   digest: null,
   controlViolations: [],
+  retro: { teamDoneAt: null, managerDoneAt: null },
   createdAt: "2026-10-21T00:00:00.000Z",
   updatedAt: "2026-10-21T00:00:00.000Z",
   endedAt: null,
@@ -229,6 +235,52 @@ const teamInput: FactoryCreateTeamInput = {
   workflow: "Implement, then review.",
 };
 
+const findingInput: FactoryRecordFindingInput = {
+  class: "reusable",
+  summary: "The login fixture is copied in three suites",
+  evidence: "a.test.ts, b.test.ts and c.test.ts each build it.",
+};
+
+const finding: FactoryFinding = {
+  ...findingInput,
+  id: "finding-1",
+  assignmentId: assignment.id,
+  threadId: WORKER_THREAD,
+  uncertainty: null,
+  workaround: null,
+  escalated: false,
+  draftId: null,
+  createdAt: "2026-10-21T00:00:00.000Z",
+};
+
+const draftInput: FactoryDraftTicketInput = {
+  scope: "project",
+  title: "Share the login fixture",
+  body: "Three suites build the same login fixture.",
+  acceptanceCriteria: ["One shared fixture"],
+  findingIds: [finding.id],
+};
+
+const drafted: FactoryDraftTicketResult = {
+  draft: {
+    id: "draft-1",
+    managerId: manager.id,
+    projectId: manager.projectId,
+    assignmentId: assignment.id,
+    scope: "project",
+    title: draftInput.title,
+    body: draftInput.body,
+    acceptanceCriteria: draftInput.acceptanceCriteria,
+    findingIds: [finding.id],
+    state: "pending",
+    issue: null,
+    proposedChange: null,
+    createdAt: "2026-10-21T00:00:00.000Z",
+    updatedAt: "2026-10-21T00:00:00.000Z",
+  },
+  similar: [{ kind: "ticket", id: "issue-9", title: "Share test fixtures", url: null }],
+};
+
 type LifecycleCall =
   | { readonly method: "claimComplete"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "reportDependency"; readonly threadId: ThreadId; readonly input: unknown }
@@ -238,7 +290,11 @@ type LifecycleCall =
   | { readonly method: "delegateTask"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "recordMember"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "updateChecklist"; readonly threadId: ThreadId; readonly input: unknown }
-  | { readonly method: "createTeam"; readonly threadId: ThreadId; readonly input: unknown };
+  | { readonly method: "createTeam"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "recordFinding"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "listFindings"; readonly input: unknown }
+  | { readonly method: "retroDone"; readonly threadId: ThreadId }
+  | { readonly method: "draftTicket"; readonly threadId: ThreadId; readonly input: unknown };
 
 const invocation = (
   threadId: ThreadId,
@@ -301,7 +357,9 @@ const makeHarness = Effect.gen(function* () {
           Effect.as({ ...assignment, source: "user" as const, complexity: input.complexity }),
         ),
       assignmentForThread: (threadId) =>
-        Effect.succeed(threadId === LEAD_THREAD ? assignment : null),
+        Effect.succeed(threadId === LEAD_THREAD || threadId === WORKER_THREAD ? assignment : null),
+      listAssignments: (input) =>
+        Effect.succeed(input.managerId === manager.id ? [assignment] : []),
       claimComplete: (threadId, input) =>
         recordLifecycle({ method: "claimComplete", threadId, input }).pipe(
           Effect.as({
@@ -354,6 +412,22 @@ const makeHarness = Effect.gen(function* () {
         recordLifecycle({ method: "createTeam", threadId, input }).pipe(
           Effect.as({ ...input, id: "preset-1", createdBy: "manager" as const }),
         ),
+      recordFinding: (threadId, input) =>
+        recordLifecycle({ method: "recordFinding", threadId, input }).pipe(
+          Effect.as({ ...finding, threadId }),
+        ),
+      listFindings: (input) =>
+        recordLifecycle({ method: "listFindings", input }).pipe(Effect.as([finding])),
+      retroDone: (threadId) =>
+        recordLifecycle({ method: "retroDone", threadId }).pipe(
+          Effect.as({
+            ...assignment,
+            state: "retro" as const,
+            retro: { teamDoneAt: "2026-10-21T00:00:00.000Z", managerDoneAt: null },
+          }),
+        ),
+      draftTicket: (threadId, input) =>
+        recordLifecycle({ method: "draftTicket", threadId, input }).pipe(Effect.as(drafted)),
     }),
     Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({
       delegateTask: (scope, input: OrchestratorMcpDelegateTaskInput) =>
@@ -792,6 +866,127 @@ describe("factory_create_team", () => {
         { method: "createTeam", threadId: MANAGER_THREAD, input: teamInput },
       ]);
       assert.deepStrictEqual(result.preset, { ...teamInput, id: "preset-1", createdBy: "manager" });
+    }),
+  );
+});
+
+describe("factory_record_finding", () => {
+  it.effect("forwards a worker's or the lead's own thread and the finding", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const fromWorker = yield* harness.call("factory_record_finding", findingInput, WORKER_THREAD);
+      yield* harness.call(
+        "factory_record_finding",
+        { ...findingInput, escalate: true },
+        LEAD_THREAD,
+      );
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "recordFinding", threadId: WORKER_THREAD, input: findingInput },
+        {
+          method: "recordFinding",
+          threadId: LEAD_THREAD,
+          input: { ...findingInput, escalate: true },
+        },
+      ]);
+      assert.deepStrictEqual(fromWorker.finding, finding);
+    }),
+  );
+
+  it.effect("refuses a thread on no team", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_record_finding", findingInput, OTHER_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        reason: "not-found",
+        message: "This thread is not a member of a live factory team.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
+describe("factory_findings", () => {
+  it.effect("lets the manager and the assignment's lead read its findings", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const read = yield* harness.call("factory_findings", { assignmentId: assignment.id });
+      yield* harness.call("factory_findings", { assignmentId: assignment.id }, LEAD_THREAD);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "listFindings", input: { assignmentId: assignment.id } },
+        { method: "listFindings", input: { assignmentId: assignment.id } },
+      ]);
+      assert.deepStrictEqual(read.findings, [finding]);
+    }),
+  );
+
+  it.effect("refuses another assignment, and a worker", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      for (const threadId of [MANAGER_THREAD, LEAD_THREAD]) {
+        const failure = yield* harness
+          .call("factory_findings", { assignmentId: "assignment-2" }, threadId)
+          .pipe(Effect.flip);
+        assert.deepInclude(failure, {
+          reason: "not-found",
+          message: "No assignment assignment-2 is yours to read.",
+        });
+      }
+      const worker = yield* harness
+        .call("factory_findings", { assignmentId: assignment.id }, WORKER_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(worker, {
+        reason: "not-found",
+        message: "This thread is not an engineering manager or a factory lead.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
+describe("factory_retro_done", () => {
+  it.effect("forwards the lead thread and refuses anyone else", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_retro_done", {}, LEAD_THREAD);
+      assert.isNotNull(result.assignment.retro.teamDoneAt);
+      const worker = yield* harness.call("factory_retro_done", {}, WORKER_THREAD).pipe(Effect.flip);
+      assert.deepInclude(worker, {
+        reason: "not-found",
+        message: "This thread is not a factory lead.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "retroDone", threadId: LEAD_THREAD },
+      ]);
+    }),
+  );
+});
+
+describe("factory_draft_ticket", () => {
+  it.effect("forwards the manager thread and draft and returns the similar tickets", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_draft_ticket", draftInput);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "draftTicket", threadId: MANAGER_THREAD, input: draftInput },
+      ]);
+      assert.deepStrictEqual(result.draft, drafted.draft);
+      assert.deepStrictEqual(result.similar, drafted.similar);
+    }),
+  );
+
+  it.effect("refuses a lead", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_draft_ticket", draftInput, LEAD_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        reason: "not-found",
+        message: "This thread is not an engineering manager.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
     }),
   );
 });

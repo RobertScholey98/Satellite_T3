@@ -37,6 +37,14 @@ export const FACTORY_WS_METHODS = {
   factoryThreadsHandBack: "factory.threads.handBack",
   factoryLogList: "factory.log.list",
   factoryWorkspaceSubscribe: "factory.workspace.subscribe",
+  factoryFindingsList: "factory.findings.list",
+  factoryDraftsList: "factory.drafts.list",
+  factoryDraftsSubscribe: "factory.drafts.subscribe",
+  factoryDraftsEdit: "factory.drafts.edit",
+  factoryDraftsApprove: "factory.drafts.approve",
+  factoryDraftsDismiss: "factory.drafts.dismiss",
+  factoryDraftsRestore: "factory.drafts.restore",
+  factoryStatsGet: "factory.stats.get",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -455,6 +463,11 @@ export const FactoryAssignment = Schema.Struct({
   digest: Schema.NullOr(FactoryAssignmentDigest),
   /** While any remain, the assignment waits on the user and cannot be offered as ready. */
   controlViolations: Schema.Array(FactoryControlViolation),
+  /** When the lead finished the team retro, and when the manager finished its own. */
+  retro: Schema.Struct({
+    teamDoneAt: Schema.NullOr(Schema.String),
+    managerDoneAt: Schema.NullOr(Schema.String),
+  }),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   endedAt: Schema.NullOr(Schema.String),
@@ -477,6 +490,10 @@ export const FactoryLogKind = Schema.Literals([
   "cancel",
   "complete",
   "team",
+  "finding",
+  "retro",
+  "draft",
+  "ticket",
 ]);
 export type FactoryLogKind = typeof FactoryLogKind.Type;
 
@@ -595,6 +612,8 @@ export type FactoryRecoverInput = typeof FactoryRecoverInput.Type;
 export const FactoryCompleteInput = Schema.Struct({
   assignmentId: Id,
   teamVerdict: FactoryTeamVerdict,
+  /** Ends without the team retro; only accepted once the lead's thread is gone or taken over. */
+  teamRetro: Schema.optionalKey(Schema.Literals(["skipped"])),
 });
 export type FactoryCompleteInput = typeof FactoryCompleteInput.Type;
 
@@ -697,6 +716,254 @@ export const FactoryWorkspaceFeed = Schema.Struct({
 });
 export type FactoryWorkspaceFeed = typeof FactoryWorkspaceFeed.Type;
 
+/**
+ * What a team member noticed while working. `implementation` stays with the assignment; the
+ * others are what the manager's retro turns into project or factory tickets.
+ */
+export const FactoryFindingClass = Schema.Literals([
+  "implementation",
+  "project",
+  "reusable",
+  "shared",
+  "uncertain",
+]);
+export type FactoryFindingClass = typeof FactoryFindingClass.Type;
+
+const FindingSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(2000));
+const FindingEvidence = TrimmedNonEmptyString.check(Schema.isMaxLength(8000));
+const FindingNote = TrimmedNonEmptyString.check(Schema.isMaxLength(2000));
+
+export const FactoryFinding = Schema.Struct({
+  id: Id,
+  assignmentId: Id,
+  /** The member thread that recorded it. */
+  threadId: ThreadId,
+  class: FactoryFindingClass,
+  summary: Schema.String.check(Schema.isMaxLength(2000)),
+  evidence: Schema.String.check(Schema.isMaxLength(8000)),
+  uncertainty: Schema.NullOr(Schema.String.check(Schema.isMaxLength(2000))),
+  workaround: Schema.NullOr(Schema.String.check(Schema.isMaxLength(2000))),
+  /** The member asked the manager to decide now rather than at the retro. */
+  escalated: Schema.Boolean,
+  /** The ticket draft that took it up, if any. */
+  draftId: Schema.NullOr(Id),
+  createdAt: Schema.String,
+});
+export type FactoryFinding = typeof FactoryFinding.Type;
+
+export const FactoryRecordFindingInput = Schema.Struct({
+  class: FactoryFindingClass,
+  summary: FindingSummary,
+  evidence: FindingEvidence,
+  uncertainty: Schema.optionalKey(FindingNote),
+  workaround: Schema.optionalKey(FindingNote),
+  escalate: Schema.optionalKey(Schema.Boolean),
+});
+export type FactoryRecordFindingInput = typeof FactoryRecordFindingInput.Type;
+
+export const FactoryFindingsListInput = Schema.Struct({ assignmentId: Id });
+export type FactoryFindingsListInput = typeof FactoryFindingsListInput.Type;
+
+/** `project` files a ticket on the project's board; `factory` changes how the factory works. */
+export const FactoryDraftScope = Schema.Literals(["project", "factory"]);
+export type FactoryDraftScope = typeof FactoryDraftScope.Type;
+
+export const FactoryDraftState = Schema.Literals(["pending", "approved", "dismissed"]);
+export type FactoryDraftState = typeof FactoryDraftState.Type;
+
+/** A factory change a draft proposes, with the value it replaces. Stored, not yet applied. */
+export const FactoryProposedChange = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("preset"),
+    before: Schema.NullOr(FactoryTeamPreset),
+    after: FactoryTeamPreset,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("setting"),
+    key: Schema.Literals([
+      "pickupGuidance",
+      "concurrencyCap",
+      "recoveryAllowance",
+      "digestIntervalMinutes",
+    ]),
+    before: Schema.Unknown,
+    after: Schema.Unknown,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("role-skill"),
+    role: FactoryRole,
+    before: Schema.NullOr(Schema.String),
+    after: Schema.String,
+  }),
+]);
+export type FactoryProposedChange = typeof FactoryProposedChange.Type;
+
+const DraftTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(240));
+const DraftBody = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
+const AcceptanceCriteria = Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(500))).check(
+  Schema.isMaxLength(30),
+);
+
+/** A ticket the manager drafted in its retro, waiting for the user's triage. */
+export const FactoryTicketDraft = Schema.Struct({
+  id: Id,
+  managerId: Id,
+  projectId: ProjectId,
+  /** The assignment whose retro produced it. */
+  assignmentId: Schema.NullOr(Id),
+  scope: FactoryDraftScope,
+  title: DraftTitle,
+  body: Schema.String.check(Schema.isMaxLength(20_000)),
+  acceptanceCriteria: AcceptanceCriteria,
+  findingIds: Schema.Array(Schema.String),
+  state: FactoryDraftState,
+  /** The ticket an approved project draft filed. */
+  issue: Schema.NullOr(IssueRef),
+  proposedChange: Schema.NullOr(FactoryProposedChange),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+});
+export type FactoryTicketDraft = typeof FactoryTicketDraft.Type;
+
+export const FactoryDraftTicketInput = Schema.Struct({
+  scope: FactoryDraftScope,
+  title: DraftTitle,
+  body: DraftBody,
+  acceptanceCriteria: AcceptanceCriteria,
+  /** Findings of this manager's teams that the draft takes up. */
+  findingIds: Schema.optionalKey(Schema.Array(Id).check(Schema.isMaxLength(100))),
+  proposedChange: Schema.optionalKey(FactoryProposedChange),
+});
+export type FactoryDraftTicketInput = typeof FactoryDraftTicketInput.Type;
+
+/** A draft or open ticket whose title overlaps the new draft's, so the manager can check it. */
+export const FactorySimilarTicket = Schema.Struct({
+  kind: Schema.Literals(["draft", "ticket"]),
+  id: Schema.String,
+  title: Schema.String,
+  url: Schema.NullOr(Schema.String),
+});
+export type FactorySimilarTicket = typeof FactorySimilarTicket.Type;
+
+export const FactoryDraftTicketResult = Schema.Struct({
+  draft: FactoryTicketDraft,
+  similar: Schema.Array(FactorySimilarTicket),
+});
+export type FactoryDraftTicketResult = typeof FactoryDraftTicketResult.Type;
+
+export const FactoryDraftsListInput = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  managerId: Schema.optional(Id),
+  state: Schema.optional(FactoryDraftState),
+});
+export type FactoryDraftsListInput = typeof FactoryDraftsListInput.Type;
+
+export const FactoryDraftsSubscribeInput = Schema.Struct({});
+export type FactoryDraftsSubscribeInput = typeof FactoryDraftsSubscribeInput.Type;
+
+/** Every pending draft on the environment plus those approved or dismissed in the last 7 days. */
+export const FactoryDraftsEvent = Schema.Struct({ drafts: Schema.Array(FactoryTicketDraft) });
+export type FactoryDraftsEvent = typeof FactoryDraftsEvent.Type;
+
+/** Only a pending draft can be edited. Absent fields keep their value. */
+export const FactoryDraftsEditInput = Schema.Struct({
+  requestId: Id,
+  draftId: Id,
+  title: Schema.optionalKey(DraftTitle),
+  body: Schema.optionalKey(DraftBody),
+  acceptanceCriteria: Schema.optionalKey(AcceptanceCriteria),
+});
+export type FactoryDraftsEditInput = typeof FactoryDraftsEditInput.Type;
+
+/** A project draft files its ticket on the project's first board with a Ready column. */
+export const FactoryDraftsApproveInput = Schema.Struct({ requestId: Id, draftId: Id });
+export type FactoryDraftsApproveInput = typeof FactoryDraftsApproveInput.Type;
+
+export const FactoryDraftsDismissInput = Schema.Struct({ requestId: Id, draftId: Id });
+export type FactoryDraftsDismissInput = typeof FactoryDraftsDismissInput.Type;
+
+/** Returns a dismissed draft to pending. */
+export const FactoryDraftsRestoreInput = Schema.Struct({ requestId: Id, draftId: Id });
+export type FactoryDraftsRestoreInput = typeof FactoryDraftsRestoreInput.Type;
+
+const StatsTokens = Schema.Struct({
+  input: NonNegativeInt,
+  cachedInput: NonNegativeInt,
+  output: NonNegativeInt,
+});
+
+/**
+ * What one ended assignment cost, rolled up from its member threads' turns when it ended. Input
+ * tokens include cached ones. `costUsd` is null without a rate table and sums only priced models.
+ */
+export const FactoryAssignmentStats = Schema.Struct({
+  assignmentId: Id,
+  managerId: Id,
+  projectId: ProjectId,
+  /** The team preset's name, or `custom`. */
+  team: Schema.String,
+  complexity: FactoryComplexity,
+  outcome: Schema.Literals(["completed", "cancelled"]),
+  teamVerdict: Schema.NullOr(FactoryTeamVerdict.fields.fit),
+  tokens: StatsTokens,
+  costUsd: Schema.NullOr(Schema.Number),
+  agentMs: NonNegativeInt,
+  wallMs: NonNegativeInt,
+  waitingUserMs: NonNegativeInt,
+  recoveries: NonNegativeInt,
+  pullRequests: NonNegativeInt,
+  reviewRounds: NonNegativeInt,
+  byRole: Schema.Array(
+    Schema.Struct({ role: FactoryRole, tokens: StatsTokens, agentMs: NonNegativeInt }),
+  ),
+  byModel: Schema.Array(
+    Schema.Struct({
+      model: Schema.String,
+      tokens: StatsTokens,
+      agentMs: NonNegativeInt,
+      costUsd: Schema.NullOr(Schema.Number),
+    }),
+  ),
+  endedAt: Schema.String,
+});
+export type FactoryAssignmentStats = typeof FactoryAssignmentStats.Type;
+
+export const FactoryStatsGetInput = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  complexity: Schema.optional(FactoryComplexity),
+  /** `YYYY-MM-DD`; assignments that ended on or after that day (UTC). */
+  sinceDay: Schema.optional(Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/))),
+});
+export type FactoryStatsGetInput = typeof FactoryStatsGetInput.Type;
+
+/**
+ * One team's ended assignments. Tokens are input plus output; the median of an even count is the
+ * mean of the middle two.
+ */
+export const FactoryTeamStats = Schema.Struct({
+  team: Schema.String,
+  tasks: NonNegativeInt,
+  completed: NonNegativeInt,
+  cancelled: NonNegativeInt,
+  medianTokens: Schema.Number,
+  /** Over the tasks that have a cost; null when none has. */
+  medianCostUsd: Schema.NullOr(Schema.Number),
+  medianAgentMs: Schema.Number,
+  medianWallMs: Schema.Number,
+  meanRecoveries: Schema.Number,
+  meanReviewRounds: Schema.Number,
+  goodFit: NonNegativeInt,
+  poorFit: NonNegativeInt,
+});
+export type FactoryTeamStats = typeof FactoryTeamStats.Type;
+
+/** Assignments newest first. */
+export const FactoryStatsResult = Schema.Struct({
+  teams: Schema.Array(FactoryTeamStats),
+  assignments: Schema.Array(FactoryAssignmentStats),
+});
+export type FactoryStatsResult = typeof FactoryStatsResult.Type;
+
 const FactoryRpcError = Schema.Union([FactoryOperationError, EnvironmentAuthorizationError]);
 
 export const WsFactoryConfigGetRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigGet, {
@@ -791,3 +1058,44 @@ export const WsFactoryWorkspaceSubscribeRpc = Rpc.make(
     stream: true,
   },
 );
+export const WsFactoryFindingsListRpc = Rpc.make(FACTORY_WS_METHODS.factoryFindingsList, {
+  payload: FactoryFindingsListInput,
+  success: Schema.Array(FactoryFinding),
+  error: FactoryRpcError,
+});
+export const WsFactoryDraftsListRpc = Rpc.make(FACTORY_WS_METHODS.factoryDraftsList, {
+  payload: FactoryDraftsListInput,
+  success: Schema.Array(FactoryTicketDraft),
+  error: FactoryRpcError,
+});
+export const WsFactoryDraftsSubscribeRpc = Rpc.make(FACTORY_WS_METHODS.factoryDraftsSubscribe, {
+  payload: FactoryDraftsSubscribeInput,
+  success: FactoryDraftsEvent,
+  error: FactoryRpcError,
+  stream: true,
+});
+export const WsFactoryDraftsEditRpc = Rpc.make(FACTORY_WS_METHODS.factoryDraftsEdit, {
+  payload: FactoryDraftsEditInput,
+  success: FactoryTicketDraft,
+  error: FactoryRpcError,
+});
+export const WsFactoryDraftsApproveRpc = Rpc.make(FACTORY_WS_METHODS.factoryDraftsApprove, {
+  payload: FactoryDraftsApproveInput,
+  success: FactoryTicketDraft,
+  error: FactoryRpcError,
+});
+export const WsFactoryDraftsDismissRpc = Rpc.make(FACTORY_WS_METHODS.factoryDraftsDismiss, {
+  payload: FactoryDraftsDismissInput,
+  success: FactoryTicketDraft,
+  error: FactoryRpcError,
+});
+export const WsFactoryDraftsRestoreRpc = Rpc.make(FACTORY_WS_METHODS.factoryDraftsRestore, {
+  payload: FactoryDraftsRestoreInput,
+  success: FactoryTicketDraft,
+  error: FactoryRpcError,
+});
+export const WsFactoryStatsGetRpc = Rpc.make(FACTORY_WS_METHODS.factoryStatsGet, {
+  payload: FactoryStatsGetInput,
+  success: FactoryStatsResult,
+  error: FactoryRpcError,
+});

@@ -28,6 +28,8 @@ Hand back to the lead:
 - Anything that surprised you: code that did not work as described, a risk you noticed, or a
   follow-up the lead should decide on.
 
+Record a reusable or uncertain learning with \`factory_record_finding\` as well.
+
 ## Sub-agents and models
 
 If you start a sub-agent, it uses one of these models:

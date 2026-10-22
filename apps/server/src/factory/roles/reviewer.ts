@@ -31,6 +31,8 @@ Hand back findings ordered by severity:
 For each finding, give the file and line, what goes wrong, and a scenario that shows it. If you
 found nothing, say so plainly.
 
+Record a reusable or uncertain learning with \`factory_record_finding\` as well.
+
 ## Sub-agents and models
 
 If you start a sub-agent, it uses one of these models:

@@ -6,16 +6,20 @@ import {
   DEFAULT_FACTORY_CONFIG,
   FactoryAssignment,
   FactoryAssignmentClaim,
+  FactoryAssignmentStats,
   FactoryConfig,
   FactoryConfigOverride,
   FactoryControlViolation,
   FactoryDependency,
+  FactoryFinding,
   FactoryLogEntry,
   FactoryManager,
   FactoryMember,
   FactoryOnboardingReport,
   FactoryOperationError,
   FactoryTeamSpec,
+  FactoryTeamVerdict,
+  FactoryTicketDraft,
   FactoryWorkspaceFeed,
   IssueRef,
   issueReadyColumnIds,
@@ -38,6 +42,16 @@ import {
   type FactoryCreateTeamInput,
   type FactoryDelegateInput,
   type FactoryDelegationPlan,
+  type FactoryDraftsApproveInput,
+  type FactoryDraftsDismissInput,
+  type FactoryDraftsEditInput,
+  type FactoryDraftsEvent,
+  type FactoryDraftsListInput,
+  type FactoryDraftsRestoreInput,
+  type FactoryDraftsSubscribeInput,
+  type FactoryDraftTicketInput,
+  type FactoryDraftTicketResult,
+  type FactoryFindingsListInput,
   type FactoryLogKind,
   type FactoryLogListInput,
   type FactoryManagersApproveOnboardingInput,
@@ -50,15 +64,20 @@ import {
   type FactoryManagersSubscribeInput,
   type FactoryPickupInput,
   type FactoryReadyTicket,
+  type FactoryRecordFindingInput,
   type FactoryRecoverInput,
   type FactoryReportDependencyInput,
   type FactoryRole,
   type FactoryRoleBrief,
+  type FactorySimilarTicket,
   type FactoryStatus,
   type FactoryTeamMember,
   type FactoryTeamPreset,
   type FactoryThreadsHandBackInput,
   type FactoryThreadsTakeOverInput,
+  type FactoryStatsGetInput,
+  type FactoryStatsResult,
+  type FactoryTeamStats,
   type FactoryUpdateChecklistInput,
   type FactoryWorkerRole,
   type FactoryWorkspaceSubscribeInput,
@@ -105,6 +124,7 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import { parseRateTable, priceUsage, type RateTable } from "../usage/usagePricing.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { controlPathMatcher } from "./controlPaths.ts";
 import { factoryConfigProblem, modelKey, overrideWidensPool } from "./factoryConfig.ts";
@@ -115,6 +135,7 @@ import {
   type RoleSkillSource,
 } from "./roleSkills.ts";
 import { ONBOARDING_BRIEF } from "./roles/index.ts";
+import * as FactoryTicketHost from "./tickets/FactoryTicketHost.ts";
 
 /** Upstream's thread launch, as the factory calls it. */
 export interface FactoryThreadLaunch {
@@ -168,6 +189,20 @@ export interface FactoryPullRequestRef {
   readonly number: number;
 }
 
+/** One provider turn of a member thread, as team stats count it. */
+export interface FactoryThreadTurn {
+  readonly model: string;
+  readonly instanceId: string;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  /** Input includes cached input. Null when the provider reported no usage for the turn. */
+  readonly tokens: {
+    readonly input: number;
+    readonly cachedInput: number;
+    readonly output: number;
+  } | null;
+}
+
 /** A worker the lead launched from a delegation plan. */
 export interface FactoryMemberRecord {
   readonly threadId: ThreadId;
@@ -217,6 +252,10 @@ export interface FactoryServiceDependencies {
   ) => Effect.Effect<IssueAttemptsStartResult, FactoryOperationError>;
   /** Null when the thread is unknown. */
   readonly readThreadRuns: (threadId: ThreadId) => Effect.Effect<FactoryThreadRuns | null>;
+  /** Empty when the thread is unknown. */
+  readonly readThreadTurns: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<FactoryThreadTurn>>;
+  /** The model rates usage tracking last cached, or null when there are none. */
+  readonly readRateTable: Effect.Effect<RateTable | null>;
   readonly sendToThread: (
     input: FactoryThreadMessage,
   ) => Effect.Effect<void, FactoryOperationError>;
@@ -230,6 +269,18 @@ export interface FactoryServiceDependencies {
   readonly readPullRequestFiles: (
     input: FactoryPullRequestRef,
   ) => Effect.Effect<ReadonlyArray<string>, FactoryOperationError>;
+  /**
+   * Files a ticket in the board's first Ready column. The marker is unique per draft; the host
+   * hides it in the body and looks for it first, so a retry never files twice.
+   */
+  readonly createTicket: (input: {
+    readonly projectId: ProjectId;
+    readonly cwd: string;
+    readonly board: IssueBoardSummary;
+    readonly marker: string;
+    readonly title: string;
+    readonly body: string;
+  }) => Effect.Effect<IssueRef, FactoryOperationError>;
 }
 
 export interface FactoryServiceShape {
@@ -380,6 +431,52 @@ export interface FactoryServiceShape {
   readonly subscribeWorkspace: (
     input: FactoryWorkspaceSubscribeInput,
   ) => Stream.Stream<FactoryWorkspaceFeed, FactoryOperationError>;
+  /**
+   * A live member of an assignment's team, lead or worker, records what it noticed. An escalated
+   * finding wakes the manager now rather than waiting for the retro.
+   */
+  readonly recordFinding: (
+    memberThreadId: ThreadId,
+    input: FactoryRecordFindingInput,
+  ) => Effect.Effect<FactoryFinding, FactoryOperationError>;
+  readonly listFindings: (
+    input: FactoryFindingsListInput,
+  ) => Effect.Effect<ReadonlyArray<FactoryFinding>, FactoryOperationError>;
+  /** The lead in this thread finished the team retro, which wakes the manager for its own. */
+  readonly retroDone: (
+    leadThreadId: ThreadId,
+  ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
+  /**
+   * The manager in this thread drafts a ticket for the user's triage, with the drafts and open
+   * tickets whose titles overlap it.
+   */
+  readonly draftTicket: (
+    managerThreadId: ThreadId,
+    input: FactoryDraftTicketInput,
+  ) => Effect.Effect<FactoryDraftTicketResult, FactoryOperationError>;
+  readonly listDrafts: (
+    input: FactoryDraftsListInput,
+  ) => Effect.Effect<ReadonlyArray<FactoryTicketDraft>, FactoryOperationError>;
+  readonly subscribeDrafts: (
+    input: FactoryDraftsSubscribeInput,
+  ) => Stream.Stream<FactoryDraftsEvent, FactoryOperationError>;
+  readonly editDraft: (
+    input: FactoryDraftsEditInput,
+  ) => Effect.Effect<FactoryTicketDraft, FactoryOperationError>;
+  /** A project draft files its ticket; a factory draft is accepted with no ticket. */
+  readonly approveDraft: (
+    input: FactoryDraftsApproveInput,
+  ) => Effect.Effect<FactoryTicketDraft, FactoryOperationError>;
+  readonly dismissDraft: (
+    input: FactoryDraftsDismissInput,
+  ) => Effect.Effect<FactoryTicketDraft, FactoryOperationError>;
+  readonly restoreDraft: (
+    input: FactoryDraftsRestoreInput,
+  ) => Effect.Effect<FactoryTicketDraft, FactoryOperationError>;
+  /** Ended assignments' stats, newest first, with each team's medians over them. */
+  readonly getStats: (
+    input: FactoryStatsGetInput,
+  ) => Effect.Effect<FactoryStatsResult, FactoryOperationError>;
 }
 
 export class FactoryService extends Context.Service<FactoryService, FactoryServiceShape>()(
@@ -402,6 +499,9 @@ const decodeDependencyValue = Schema.decodeUnknownEffect(FactoryDependency);
 const decodeLogValue = Schema.decodeUnknownEffect(FactoryLogEntry);
 const decodeMemberValue = Schema.decodeUnknownEffect(FactoryMember);
 const decodeWorkspaceFeed = Schema.decodeUnknownEffect(FactoryWorkspaceFeed);
+const decodeFindingValue = Schema.decodeUnknownEffect(FactoryFinding);
+const decodeDraftValue = Schema.decodeUnknownEffect(FactoryTicketDraft);
+const decodeStatsValue = Schema.decodeUnknownEffect(FactoryAssignmentStats);
 const ControlChecked = Schema.Record(Schema.String, Schema.String);
 const ControlViolations = Schema.Array(FactoryControlViolation);
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
@@ -526,6 +626,25 @@ const OffPoolWakePayload = Schema.Struct({
 const decodeOffPoolWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(OffPoolWakePayload)),
 );
+const FindingWakePayload = Schema.Struct({
+  assignmentId: Schema.String,
+  title: Schema.String,
+  findingId: Schema.String,
+  summary: Schema.String,
+});
+const decodeFindingWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(FindingWakePayload)),
+);
+const ManagerRetroWakePayload = Schema.Struct({
+  assignmentId: Schema.String,
+  title: Schema.String,
+  cancelled: Schema.Boolean,
+  /** The lead's thread was deleted before it finished the team retro. */
+  teamRetroSkipped: Schema.optionalKey(Schema.Boolean),
+});
+const decodeManagerRetroWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(ManagerRetroWakePayload)),
+);
 const decodeIssueRef = jsonDecoder(Schema.decodeUnknownOption(Schema.fromJsonString(IssueRef)));
 
 /** Ends agent- or user-written text with a full stop when it has none, so wake text reads. */
@@ -538,6 +657,49 @@ const violationText = (violation: FactoryControlViolation) =>
 
 const RETRO_ASK =
   "Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.";
+
+/** Title words a duplicate check compares: lowercased, four letters or more. */
+const titleWords = (title: string) =>
+  new Set(
+    title
+      .toLowerCase()
+      .split(/[^\p{L}]+/u)
+      .filter((word) => word.length >= 4),
+  );
+/** Shared words over the longer title's, so both titles must mostly overlap. */
+const titleOverlap = (left: ReadonlySet<string>, right: ReadonlySet<string>) => {
+  if (left.size === 0 || right.size === 0) return 0;
+  let shared = 0;
+  for (const word of left) if (right.has(word)) shared += 1;
+  return shared / Math.max(left.size, right.size);
+};
+const SIMILAR_OVERLAP = 0.6;
+const SIMILAR_LIMIT = 10;
+// Hosts report their own state names; these are the closed ones GitHub and Azure Boards use.
+const CLOSED_ISSUE_STATES: ReadonlySet<string> = new Set([
+  "closed",
+  "done",
+  "resolved",
+  "removed",
+  "completed",
+]);
+
+const ticketBody = (
+  body: string,
+  acceptanceCriteria: ReadonlyArray<string>,
+  assignmentTitle: string | null,
+) =>
+  [
+    body,
+    ...(acceptanceCriteria.length === 0
+      ? []
+      : [
+          `## Acceptance criteria\n${acceptanceCriteria.map((criterion) => `- ${criterion}`).join("\n")}`,
+        ]),
+    assignmentTitle === null
+      ? "Filed by the Satellite factory"
+      : `Filed by the Satellite factory from assignment ${assignmentTitle}`,
+  ].join("\n\n");
 
 // Always protected, so a team cannot rewrite the rules and role skills it works under.
 const FACTORY_CONTROL_PATH = ".satellite/factory/";
@@ -610,6 +772,78 @@ const protectedPathsOf = (manager: FactoryManager) =>
     ? manager.controlPaths
     : (manager.onboardingReport?.controlPaths ?? []);
 
+interface StatsRow {
+  readonly assignment_id: string;
+  readonly manager_id: string;
+  readonly project_id: string;
+  readonly team: string;
+  readonly complexity: string;
+  readonly outcome: string;
+  readonly team_verdict: string | null;
+  readonly input_tokens: number;
+  readonly cached_input_tokens: number;
+  readonly output_tokens: number;
+  readonly cost_usd: number | null;
+  readonly agent_ms: number;
+  readonly wall_ms: number;
+  readonly waiting_user_ms: number;
+  readonly recoveries: number;
+  readonly pull_requests: number;
+  readonly review_rounds: number;
+  readonly by_role_json: string;
+  readonly by_model_json: string;
+  readonly ended_at: string;
+}
+
+interface StatsTally {
+  input: number;
+  cachedInput: number;
+  output: number;
+  agentMs: number;
+}
+
+const tallyOf = (tallies: Map<string, StatsTally>, key: string) => {
+  const existing = tallies.get(key);
+  if (existing !== undefined) return existing;
+  const tally = { input: 0, cachedInput: 0, output: 0, agentMs: 0 };
+  tallies.set(key, tally);
+  return tally;
+};
+const tokensOf = ({ input, cachedInput, output }: StatsTally) => ({ input, cachedInput, output });
+
+const elapsedMs = (from: string, to: string) => {
+  const elapsed = Date.parse(to) - Date.parse(from);
+  return Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
+};
+
+/** The middle value, or the mean of the middle two; null for no values. */
+const median = (values: ReadonlyArray<number>) => {
+  if (values.length === 0) return null;
+  const sorted = values.toSorted((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+};
+const mean = (values: ReadonlyArray<number>) =>
+  values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length;
+
+const teamStats = (
+  team: string,
+  tasks: ReadonlyArray<FactoryAssignmentStats>,
+): FactoryTeamStats => ({
+  team,
+  tasks: tasks.length,
+  completed: tasks.filter((task) => task.outcome === "completed").length,
+  cancelled: tasks.filter((task) => task.outcome === "cancelled").length,
+  medianTokens: median(tasks.map((task) => task.tokens.input + task.tokens.output)) ?? 0,
+  medianCostUsd: median(tasks.flatMap((task) => (task.costUsd === null ? [] : [task.costUsd]))),
+  medianAgentMs: median(tasks.map((task) => task.agentMs)) ?? 0,
+  medianWallMs: median(tasks.map((task) => task.wallMs)) ?? 0,
+  meanRecoveries: mean(tasks.map((task) => task.recoveries)),
+  meanReviewRounds: mean(tasks.map((task) => task.reviewRounds)),
+  goodFit: tasks.filter((task) => task.teamVerdict === "good").length,
+  poorFit: tasks.filter((task) => task.teamVerdict === "poor").length,
+});
+
 interface AssignmentRow {
   readonly id: string;
   readonly manager_id: string;
@@ -639,9 +873,46 @@ interface AssignmentRow {
   readonly digest_activity_at: string | null;
   readonly control_violations_json: string;
   readonly control_checked_json: string;
+  readonly team_retro_at: string | null;
+  readonly manager_retro_at: string | null;
+  readonly waiting_user_ms: number;
+  readonly waiting_since: string | null;
   readonly created_at: string;
   readonly updated_at: string;
   readonly ended_at: string | null;
+}
+
+interface FindingRow {
+  readonly id: string;
+  readonly assignment_id: string;
+  readonly manager_id: string;
+  readonly thread_id: string;
+  readonly class: string;
+  readonly summary: string;
+  readonly evidence: string;
+  readonly uncertainty: string | null;
+  readonly workaround: string | null;
+  readonly escalated: number;
+  readonly draft_id: string | null;
+  readonly created_at: string;
+}
+
+interface DraftRow {
+  readonly id: string;
+  readonly manager_id: string;
+  readonly project_id: string;
+  readonly assignment_id: string | null;
+  readonly scope: string;
+  readonly title: string;
+  readonly body: string;
+  readonly acceptance_json: string;
+  readonly finding_ids_json: string;
+  readonly state: string;
+  readonly issue_json: string | null;
+  readonly proposed_change_json: string | null;
+  readonly marker: string;
+  readonly created_at: string;
+  readonly updated_at: string;
 }
 
 interface MemberRow {
@@ -760,6 +1031,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const changes = yield* PubSub.unbounded<void>();
   const publish = PubSub.publish(changes, undefined);
+  // Drafts change rarely and apart from assignments, so their stream has its own signal.
+  const draftChanges = yield* PubSub.unbounded<void>();
+  const publishDrafts = PubSub.publish(draftChanges, undefined);
 
   const project = Effect.fnUntraced(function* (id: ProjectId) {
     const value = yield* deps.getProject(id);
@@ -1241,6 +1515,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       checklist: yield* parse(Schema.Unknown, row.checklist_json),
       digest: digestValue(row),
       controlViolations: yield* parse(Schema.Unknown, row.control_violations_json),
+      retro: { teamDoneAt: row.team_retro_at, managerDoneAt: row.manager_retro_at },
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       endedAt: row.ended_at,
@@ -1269,6 +1544,17 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   });
   const writeWake = (row: AssignmentRow, reason: string, payload: unknown) =>
     writeLog(row.manager_id, row.id, "wake", reason, payload);
+  /**
+   * The `state=` of every assignment update, so time waiting on the user accrues: entering
+   * waiting-user stamps waiting_since and leaving it adds the elapsed time. SQLite evaluates each
+   * SET expression against the row as it was, so the CASEs see the previous wait.
+   */
+  const enterState = (state: FactoryAssignmentState, at: string) =>
+    sql`state=${state},
+      waiting_since=CASE WHEN ${state}='waiting-user' THEN COALESCE(waiting_since,${at}) ELSE NULL END,
+      waiting_user_ms=waiting_user_ms + CASE WHEN ${state}!='waiting-user' AND waiting_since IS NOT NULL
+        THEN MAX(0, CAST(ROUND((julianday(${at}) - julianday(waiting_since)) * 86400000) AS INTEGER))
+        ELSE 0 END`;
 
   const LEAD_TAKEN_OVER = sql.literal(`COALESCE((SELECT taken_over FROM factory_members
       WHERE thread_id=a.lead_thread_id),0) AS lead_taken_over`);
@@ -1822,8 +2108,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         JOIN factory_managers m ON m.id=a.manager_id WHERE a.id=${id}`;
     const row = rows[0];
     if (!row || row.state !== "active") return false;
-    yield* sql`UPDATE factory_assignments SET state='stalled',waiting_reason=${reason},
-        waiting_kind=NULL,stall_reason=${reason},updated_at=${yield* now} WHERE id=${id}`;
+    const at = yield* now;
+    yield* sql`UPDATE factory_assignments SET ${enterState("stalled", at)},waiting_reason=${reason},
+        waiting_kind=NULL,stall_reason=${reason},updated_at=${at} WHERE id=${id}`;
     yield* writeLog(row.manager_id, id, "stalled", reason, { leadThreadId: row.lead_thread_id });
     if (!isPaused(row.manager_state) && row.lead_taken_over !== 1)
       yield* writeWake(row, "stalled", { title: row.title, reason });
@@ -1840,8 +2127,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments WHERE id=${id}`;
     const row = rows[0];
     if (!row || row.state !== from.state || row.waiting_kind !== from.kind) return false;
-    yield* sql`UPDATE factory_assignments SET state=${to.state},waiting_kind=${to.kind},
-        waiting_reason=${reason},updated_at=${yield* now} WHERE id=${id}`;
+    const at = yield* now;
+    yield* sql`UPDATE factory_assignments SET ${enterState(to.state, at)},waiting_kind=${to.kind},
+        waiting_reason=${reason},updated_at=${at} WHERE id=${id}`;
     return true;
   });
 
@@ -1890,12 +2178,14 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             row.waiting_reason === reason
           )
             return null;
-          yield* sql`UPDATE factory_assignments SET state='waiting-user',waiting_kind='review',
-              waiting_reason=${reason},updated_at=${yield* now} WHERE id=${id}`;
+          const at = yield* now;
+          yield* sql`UPDATE factory_assignments SET ${enterState("waiting-user", at)},
+              waiting_kind='review',waiting_reason=${reason},updated_at=${at} WHERE id=${id}`;
           return { retro: false, row } as const;
         }
-        yield* sql`UPDATE factory_assignments SET state='retro',waiting_kind=NULL,
-            waiting_reason=NULL,ended_at=NULL,updated_at=${yield* now} WHERE id=${id}`;
+        const at = yield* now;
+        yield* sql`UPDATE factory_assignments SET ${enterState("retro", at)},waiting_kind=NULL,
+            waiting_reason=NULL,ended_at=NULL,updated_at=${at} WHERE id=${id}`;
         yield* writeWake(row, "retro", { title: row.title, assignmentId: row.id });
         return { retro: true, row } as const;
       }),
@@ -2008,9 +2298,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           .join(" ");
         const inControl = current.state === "waiting-user" && current.waiting_kind === "control";
         if (fresh.length > 0) {
-          if (current.state === "active" || current.state === "waiting-user")
-            yield* sql`UPDATE factory_assignments SET state='waiting-user',waiting_kind='control',
-                waiting_reason=${reason},updated_at=${yield* now} WHERE id=${row.id}`;
+          if (current.state === "active" || current.state === "waiting-user") {
+            const at = yield* now;
+            yield* sql`UPDATE factory_assignments SET ${enterState("waiting-user", at)},
+                waiting_kind='control',waiting_reason=${reason},updated_at=${at} WHERE id=${row.id}`;
+          }
           for (const violation of fresh)
             yield* writeWake(current, "control", {
               title: current.title,
@@ -2020,8 +2312,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           return { kind: "violation", fresh } as const;
         }
         if (inControl && violations.length === 0) {
-          yield* sql`UPDATE factory_assignments SET state='active',waiting_kind=NULL,
-              waiting_reason=NULL,updated_at=${yield* now} WHERE id=${row.id}`;
+          const at = yield* now;
+          yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},waiting_kind=NULL,
+              waiting_reason=NULL,updated_at=${at} WHERE id=${row.id}`;
           return { kind: "cleared", claimed: current.claim_json !== null } as const;
         }
         if (inControl && reason !== current.waiting_reason)
@@ -2158,8 +2451,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           Option.map(decodeRetroWake(row.payload_json), (payload) =>
             lines.push(
               payload.cancelReason === undefined
-                ? `All pull requests for ${payload.title} are merged and its lead is writing the team retro. Read the retro in the lead's thread, then call factory_complete for assignment ${payload.assignmentId} with your verdict on the team.`
-                : `The user cancelled ${payload.title}: ${sentence(payload.cancelReason)} Its lead is writing the team retro. Read it in the lead's thread, then call factory_complete for assignment ${payload.assignmentId} with your verdict on the team.`,
+                ? `All pull requests for ${payload.title} are merged and its lead is writing the team retro. You will be woken for your manager retro once it is done.`
+                : `The user cancelled ${payload.title}: ${sentence(payload.cancelReason)} Its lead is writing the team retro. You will be woken for your manager retro once it is done.`,
             ),
           );
           break;
@@ -2186,6 +2479,20 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           Option.map(decodeHandbackWake(row.payload_json), (payload) =>
             lines.push(
               `The user handed back ${payload.title}; it is now ${payload.state}. Check its thread for what changed.`,
+            ),
+          );
+          break;
+        case "finding":
+          Option.map(decodeFindingWake(row.payload_json), (payload) =>
+            lines.push(
+              `Finding escalated on ${payload.title}: ${sentence(payload.summary)} Read it with factory_status or factory_findings and decide.`,
+            ),
+          );
+          break;
+        case "manager-retro":
+          Option.map(decodeManagerRetroWake(row.payload_json), (payload) =>
+            lines.push(
+              `${payload.teamRetroSkipped === true ? `The lead's thread for ${payload.title} was deleted before its team retro.` : `The team retro for ${payload.title} is done.`} Do the manager retro: read its findings, draft tickets with factory_draft_ticket (scope project or factory), judge the team fit, then call factory_complete for assignment ${payload.assignmentId}.`,
             ),
           );
           break;
@@ -2226,7 +2533,51 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     );
   });
 
+  /**
+   * A lead whose thread is deleted mid-retro never calls factory_retro_done, so its retro counts
+   * as done and the manager is woken for its own.
+   */
+  const skipOrphanedRetros = Effect.fnUntraced(function* (managerId: string) {
+    const candidates = yield* sql<{ id: string; lead_thread_id: string }>`
+        SELECT id,lead_thread_id FROM factory_assignments
+        WHERE manager_id=${managerId} AND state='retro' AND team_retro_at IS NULL
+        AND lead_thread_id IS NOT NULL`;
+    let skipped = false;
+    for (const candidate of candidates) {
+      const runs = yield* deps.readThreadRuns(ThreadId.make(candidate.lead_thread_id));
+      if (runs?.deleted !== true) continue;
+      const changed = yield* lock(
+        Effect.gen(function* () {
+          const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+              WHERE id=${candidate.id}`;
+          const row = rows[0];
+          if (!row || row.state !== "retro" || row.team_retro_at !== null) return false;
+          const at = yield* now;
+          yield* sql`UPDATE factory_assignments SET team_retro_at=${at},updated_at=${at}
+              WHERE id=${row.id}`;
+          yield* writeLog(
+            row.manager_id,
+            row.id,
+            "retro",
+            "team retro skipped: lead thread deleted",
+            null,
+          );
+          yield* writeWake(row, "manager-retro", {
+            assignmentId: row.id,
+            title: row.title,
+            cancelled: row.cancel_reason !== null,
+            teamRetroSkipped: true,
+          });
+          return true;
+        }),
+      );
+      skipped = skipped || changed;
+    }
+    if (skipped) yield* publish;
+  });
+
   const sweepManager = Effect.fnUntraced(function* (managerId: string) {
+    yield* skipOrphanedRetros(managerId);
     const leads = yield* sql<{ lead_thread_id: string }>`SELECT lead_thread_id
         FROM factory_assignments WHERE manager_id=${managerId} AND lead_thread_id IS NOT NULL
         AND ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)}`;
@@ -2308,7 +2659,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 unblock_condition,brief,state,created_at,updated_at)
                 VALUES(${id},${row.id},${input.title},${input.unblockCondition},${input.brief},
                 'open',${at},${at})`;
-            yield* sql`UPDATE factory_assignments SET state='blocked',waiting_kind=NULL,
+            yield* sql`UPDATE factory_assignments SET ${enterState("blocked", at)},waiting_kind=NULL,
                 waiting_reason=${`Blocked on ${input.title}: ${sentence(input.unblockCondition)}`},
                 updated_at=${at} WHERE id=${row.id}`;
             yield* writeLog(row.manager_id, row.id, "dependency", input.title, {
@@ -2349,9 +2700,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             if (row.lead_taken_over === 1)
               return yield* error("conflict", "The user has taken over this thread.");
             if (row.recovery_used < config.recoveryAllowance) return { row, exhausted: false };
-            yield* sql`UPDATE factory_assignments SET state='waiting-user',waiting_kind='recovery',
+            const at = yield* now;
+            yield* sql`UPDATE factory_assignments SET ${enterState("waiting-user", at)},
+                waiting_kind='recovery',
                 waiting_reason=${`Recovery allowance used; the manager recommends: ${input.brief}`},
-                updated_at=${yield* now} WHERE id=${row.id}`;
+                updated_at=${at} WHERE id=${row.id}`;
             yield* writeLog(manager.id, row.id, "recovery", "Recovery allowance used.", {
               action: input.action,
               exhausted: true,
@@ -2379,8 +2732,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           });
           yield* lock(
             Effect.gen(function* () {
-              yield* sql`UPDATE factory_assignments SET state='active',recovery_used=${attempt},
-                  waiting_kind=NULL,waiting_reason=NULL,updated_at=${yield* now}
+              const at = yield* now;
+              yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},
+                  recovery_used=${attempt},waiting_kind=NULL,waiting_reason=NULL,updated_at=${at}
                   WHERE id=${row.id}`;
               yield* writeLog(manager.id, row.id, "recovery", input.brief, {
                 action: input.action,
@@ -2434,8 +2788,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           yield* lock(
             Effect.gen(function* () {
               const at = yield* now;
-              yield* sql`UPDATE factory_assignments SET state='active',recovery_used=${attempt},
-                  lead_thread_id=${threadId},
+              yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},
+                  recovery_used=${attempt},lead_thread_id=${threadId},
                   waiting_kind=NULL,waiting_reason=NULL,updated_at=${at} WHERE id=${row.id}`;
               if (row.lead_thread_id !== null)
                 yield* sql`UPDATE factory_members SET ended_at=${at}
@@ -2487,7 +2841,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       const open = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM factory_dependencies
           WHERE blocked_assignment_id=${blocked.id} AND state='open'`;
       if ((open[0]?.count ?? 0) > 0) continue;
-      yield* sql`UPDATE factory_assignments SET state='active',waiting_kind=NULL,
+      yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},waiting_kind=NULL,
           waiting_reason=NULL,updated_at=${at} WHERE id=${blocked.id}`;
       if (blocked.lead_thread_id !== null)
         unblocked.push({
@@ -2499,10 +2853,156 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     return unblocked;
   });
 
+  /**
+   * Rolls an ended assignment's member threads, lead and workers, into its stats row. Each turn's
+   * model prices its tokens; a model the rate table does not know adds tokens but no cost.
+   */
+  const rollupStats = Effect.fnUntraced(function* (assignmentId: string) {
+    const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+        WHERE id=${assignmentId}`;
+    const row = rows[0];
+    if (!row || !isTerminal(row.state) || row.ended_at === null) return;
+    const members = yield* sql<{ thread_id: string; role: string }>`SELECT thread_id,role
+        FROM factory_members WHERE assignment_id=${assignmentId} ORDER BY created_at, thread_id`;
+    const byRole = new Map<string, StatsTally>();
+    const byModel = new Map<string, StatsTally>();
+    const pullRequests = new Set<string>();
+    for (const member of members) {
+      const threadId = ThreadId.make(member.thread_id);
+      for (const turn of yield* deps.readThreadTurns(threadId)) {
+        const agentMs =
+          turn.startedAt === null || turn.completedAt === null
+            ? 0
+            : elapsedMs(turn.startedAt, turn.completedAt);
+        for (const tally of [tallyOf(byRole, member.role), tallyOf(byModel, turn.model)]) {
+          tally.agentMs += agentMs;
+          tally.input += turn.tokens?.input ?? 0;
+          tally.cachedInput += turn.tokens?.cachedInput ?? 0;
+          tally.output += turn.tokens?.output ?? 0;
+        }
+      }
+      const runs = yield* deps.readThreadRuns(threadId);
+      for (const pullRequest of runs?.pullRequests ?? [])
+        pullRequests.add(pullRequestKey(pullRequest));
+    }
+    const table = yield* deps.readRateTable;
+    const models = [...byModel].map(([model, tally]) => {
+      const priced =
+        table === null
+          ? null
+          : priceUsage(table, {
+              model,
+              rateModel: model,
+              totals: {
+                uncachedInputTokens: Math.max(0, tally.input - tally.cachedInput),
+                cachedInputTokens: tally.cachedInput,
+                cacheCreationTokens: 0,
+                outputTokens: tally.output,
+                reasoningTokens: 0,
+              },
+              speed: "standard",
+              reportedCostUsd: null,
+            });
+      return {
+        model,
+        tokens: tokensOf(tally),
+        agentMs: tally.agentMs,
+        costUsd: priced === null || priced.costSource === "unpriced" ? null : priced.costUsd,
+      };
+    });
+    const roles = [...byRole].map(([role, tally]) => ({
+      role,
+      tokens: tokensOf(tally),
+      agentMs: tally.agentMs,
+    }));
+    const total = (pick: (tokens: ReturnType<typeof tokensOf>) => number) =>
+      roles.reduce((sum, role) => sum + pick(role.tokens), 0);
+    const team = yield* parse(FactoryTeamSpec, row.team_json);
+    const verdict =
+      row.team_verdict_json === null
+        ? null
+        : yield* parse(FactoryTeamVerdict, row.team_verdict_json);
+    yield* lock(
+      sql`INSERT OR REPLACE INTO factory_assignment_stats(assignment_id,manager_id,project_id,team,
+          complexity,outcome,team_verdict,input_tokens,cached_input_tokens,output_tokens,cost_usd,
+          agent_ms,wall_ms,waiting_user_ms,recoveries,pull_requests,review_rounds,by_role_json,
+          by_model_json,ended_at)
+          VALUES(${row.id},${row.manager_id},${row.project_id},${team.preset},${row.complexity},
+          ${row.state},${verdict?.fit ?? null},${total((tokens) => tokens.input)},
+          ${total((tokens) => tokens.cachedInput)},${total((tokens) => tokens.output)},
+          ${table === null ? null : models.reduce((sum, entry) => sum + (entry.costUsd ?? 0), 0)},
+          ${roles.reduce((sum, role) => sum + role.agentMs, 0)},
+          ${elapsedMs(row.created_at, row.ended_at)},${row.waiting_user_ms},${row.recovery_used},
+          ${pullRequests.size},${members.filter((member) => member.role === "reviewer").length},
+          ${json(roles)},${json(models)},${row.ended_at})`,
+    );
+  });
+
+  const decodeStats = Effect.fnUntraced(function* (row: StatsRow) {
+    return yield* decodeStatsValue({
+      assignmentId: row.assignment_id,
+      managerId: row.manager_id,
+      projectId: row.project_id,
+      team: row.team,
+      complexity: row.complexity,
+      outcome: row.outcome,
+      teamVerdict: row.team_verdict,
+      tokens: {
+        input: row.input_tokens,
+        cachedInput: row.cached_input_tokens,
+        output: row.output_tokens,
+      },
+      costUsd: row.cost_usd,
+      agentMs: row.agent_ms,
+      wallMs: row.wall_ms,
+      waitingUserMs: row.waiting_user_ms,
+      recoveries: row.recoveries,
+      pullRequests: row.pull_requests,
+      reviewRounds: row.review_rounds,
+      byRole: yield* parse(Schema.Unknown, row.by_role_json),
+      byModel: yield* parse(Schema.Unknown, row.by_model_json),
+      endedAt: row.ended_at,
+    }).pipe(Effect.mapError(storageError));
+  });
+
+  const getStats: FactoryServiceShape["getStats"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const rows = yield* sql<StatsRow>`SELECT * FROM factory_assignment_stats
+            WHERE (${input.projectId ?? null} IS NULL OR project_id=${input.projectId ?? null})
+            AND (${input.complexity ?? null} IS NULL OR complexity=${input.complexity ?? null})
+            AND (${input.sinceDay ?? null} IS NULL OR ended_at >= ${input.sinceDay ?? null})
+            ORDER BY ended_at DESC, assignment_id`;
+        const assignments = yield* Effect.forEach(rows, decodeStats);
+        const byTeam = new Map<string, FactoryAssignmentStats[]>();
+        for (const assignment of assignments) {
+          const tasks = byTeam.get(assignment.team);
+          if (tasks === undefined) byTeam.set(assignment.team, [assignment]);
+          else tasks.push(assignment);
+        }
+        return {
+          teams: [...byTeam]
+            .toSorted(([left], [right]) => left.localeCompare(right))
+            .map(([team, tasks]) => teamStats(team, tasks)),
+          assignments,
+        } satisfies FactoryStatsResult;
+      }),
+    );
+
   const complete: FactoryServiceShape["complete"] = (managerThreadId, input) =>
     protect(
       Effect.gen(function* () {
         const manager = yield* requireManager(managerThreadId);
+        // Read outside the lock; a deleted thread stays deleted, so it cannot go stale.
+        const leadGone =
+          input.teamRetro === "skipped"
+            ? yield* Effect.gen(function* () {
+                const { lead_thread_id } = yield* ownAssignment(manager, input.assignmentId);
+                if (lead_thread_id === null) return true;
+                const runs = yield* deps.readThreadRuns(ThreadId.make(lead_thread_id));
+                return runs === null || runs.deleted;
+              })
+            : false;
         const unblocked = yield* lock(
           Effect.gen(function* () {
             const row = yield* ownAssignment(manager, input.assignmentId);
@@ -2511,16 +3011,26 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 "conflict",
                 `${row.title} is ${row.state}; only an assignment in its retro can be completed.`,
               );
+            if (row.team_retro_at === null) {
+              if (input.teamRetro !== "skipped")
+                return yield* error("conflict", "The team retro has not finished.");
+              if (!leadGone && row.lead_taken_over !== 1)
+                return yield* error(
+                  "conflict",
+                  "The lead is still active; wait for its team retro or cancel the assignment.",
+                );
+            }
             const outcome = row.cancel_reason === null ? "completed" : "cancelled";
             const at = yield* now;
-            yield* sql`UPDATE factory_assignments SET state=${outcome},
+            yield* sql`UPDATE factory_assignments SET ${enterState(outcome, at)},
                 team_verdict_json=${json(input.teamVerdict)},waiting_kind=NULL,waiting_reason=NULL,
-                ended_at=${at},updated_at=${at} WHERE id=${row.id}`;
+                manager_retro_at=${at},ended_at=${at},updated_at=${at} WHERE id=${row.id}`;
             yield* sql`UPDATE factory_members SET ended_at=${at}
                 WHERE assignment_id=${row.id} AND ended_at IS NULL`;
             yield* writeLog(manager.id, row.id, "complete", input.teamVerdict.reason, {
               outcome,
               teamVerdict: input.teamVerdict,
+              ...(row.team_retro_at === null ? { teamRetro: "skipped" } : {}),
             });
             if (outcome === "completed") return yield* deliverDependencies(row, at);
             // A cancelled delivery frees its dependency for another commission.
@@ -2528,6 +3038,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 WHERE delivering_assignment_id=${row.id} AND state='open'`;
             return [];
           }),
+        );
+        // The assignment has ended either way; stats are a record of it, not part of ending it.
+        yield* rollupStats(input.assignmentId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Could not roll up a factory assignment's stats", {
+              assignmentId: input.assignmentId,
+              cause,
+            }),
+          ),
         );
         for (const lead of unblocked) yield* notifyLead(lead.projectId, lead.threadId, lead.text);
         yield* publish;
@@ -2549,9 +3068,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             const row = yield* leadAssignmentRow(input.assignmentId);
             if (isTerminal(row.state))
               return yield* error("conflict", `${row.title} has already ended.`);
-            yield* sql`UPDATE factory_assignments SET state='retro',cancel_reason=${input.reason},
-                waiting_kind=NULL,waiting_reason=NULL,ended_at=NULL,updated_at=${yield* now}
-                WHERE id=${row.id}`;
+            const at = yield* now;
+            yield* sql`UPDATE factory_assignments SET ${enterState("retro", at)},
+                cancel_reason=${input.reason},waiting_kind=NULL,waiting_reason=NULL,ended_at=NULL,
+                updated_at=${at} WHERE id=${row.id}`;
             yield* writeLog(row.manager_id, row.id, "cancel", input.reason, {
               previousState: row.state,
             });
@@ -2902,6 +3422,428 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       Stream.scoped,
     );
 
+  /** The live assignment this member thread works on, as lead or worker. */
+  const requireMember = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const rows = yield* sql<LeadAssignmentRow>`SELECT a.*, ${LEAD_TAKEN_OVER}
+        FROM factory_members m JOIN factory_assignments a ON a.id=m.assignment_id
+        WHERE m.thread_id=${threadId} AND m.ended_at IS NULL
+        AND ${sql.in("a.state", ACTIVE_ASSIGNMENT_STATES)}`;
+    const row = rows[0];
+    if (!row)
+      return yield* error("not-found", "This thread is not a member of a live factory team.");
+    if (row.lead_taken_over === 1)
+      return yield* error("conflict", "The user has taken over this team's lead.");
+    return row;
+  });
+
+  const decodeFinding = (row: FindingRow) =>
+    decodeFindingValue({
+      id: row.id,
+      assignmentId: row.assignment_id,
+      threadId: row.thread_id,
+      class: row.class,
+      summary: row.summary,
+      evidence: row.evidence,
+      uncertainty: row.uncertainty,
+      workaround: row.workaround,
+      escalated: row.escalated === 1,
+      draftId: row.draft_id,
+      createdAt: row.created_at,
+    }).pipe(Effect.mapError(storageError));
+
+  const recordFinding: FactoryServiceShape["recordFinding"] = (memberThreadId, input) =>
+    lock(
+      Effect.gen(function* () {
+        const row = yield* requireMember(memberThreadId);
+        const id = NodeCrypto.randomUUID();
+        const escalated = input.escalate === true;
+        yield* sql`INSERT INTO factory_findings(id,assignment_id,manager_id,thread_id,class,
+            summary,evidence,uncertainty,workaround,escalated,created_at)
+            VALUES(${id},${row.id},${row.manager_id},${memberThreadId},${input.class},
+            ${input.summary},${input.evidence},${input.uncertainty ?? null},
+            ${input.workaround ?? null},${escalated ? 1 : 0},${yield* now})`;
+        yield* writeLog(row.manager_id, row.id, "finding", input.summary, {
+          findingId: id,
+          class: input.class,
+          escalated,
+        });
+        if (escalated)
+          yield* writeWake(row, "finding", {
+            assignmentId: row.id,
+            title: row.title,
+            findingId: id,
+            summary: input.summary,
+          });
+        const rows = yield* sql<FindingRow>`SELECT * FROM factory_findings WHERE id=${id}`;
+        return yield* decodeFinding(rows[0]!);
+      }),
+    );
+
+  const listFindings: FactoryServiceShape["listFindings"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const rows = yield* sql<FindingRow>`SELECT * FROM factory_findings
+            WHERE assignment_id=${input.assignmentId} ORDER BY created_at, rowid`;
+        return yield* Effect.forEach(rows, decodeFinding);
+      }),
+    );
+
+  const retroDone: FactoryServiceShape["retroDone"] = (leadThreadId) =>
+    protect(
+      Effect.gen(function* () {
+        const id = yield* lock(
+          Effect.gen(function* () {
+            const row = yield* requireLead(leadThreadId);
+            if (row.state !== "retro")
+              return yield* error(
+                "conflict",
+                `${row.title} is ${row.state}; the team retro starts once its pull requests are merged or the user cancels it.`,
+              );
+            if (row.team_retro_at !== null)
+              return yield* error("conflict", "The team retro is already done.");
+            const at = yield* now;
+            yield* sql`UPDATE factory_assignments SET team_retro_at=${at},updated_at=${at}
+                WHERE id=${row.id}`;
+            yield* writeLog(row.manager_id, row.id, "retro", "team", null);
+            yield* writeWake(row, "manager-retro", {
+              assignmentId: row.id,
+              title: row.title,
+              cancelled: row.cancel_reason !== null,
+            });
+            return row.id;
+          }),
+        );
+        yield* publish;
+        return yield* readAssignment(id);
+      }),
+    );
+
+  const decodeDraft = Effect.fnUntraced(function* (row: DraftRow) {
+    return yield* decodeDraftValue({
+      id: row.id,
+      managerId: row.manager_id,
+      projectId: row.project_id,
+      assignmentId: row.assignment_id,
+      scope: row.scope,
+      title: row.title,
+      body: row.body,
+      acceptanceCriteria: yield* parse(Schema.Unknown, row.acceptance_json),
+      findingIds: yield* parse(Schema.Unknown, row.finding_ids_json),
+      state: row.state,
+      issue: row.issue_json === null ? null : yield* parse(Schema.Unknown, row.issue_json),
+      proposedChange:
+        row.proposed_change_json === null
+          ? null
+          : yield* parse(Schema.Unknown, row.proposed_change_json),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }).pipe(Effect.mapError(storageError));
+  });
+  const draftRow = Effect.fnUntraced(function* (id: string) {
+    const rows = yield* sql<DraftRow>`SELECT * FROM factory_ticket_drafts WHERE id=${id}`;
+    if (!rows[0]) return yield* error("not-found", "This draft no longer exists.");
+    return rows[0];
+  });
+  const readDraft = (id: string) => draftRow(id).pipe(Effect.flatMap(decodeDraft));
+
+  /**
+   * Pending and approved drafts of the project, and open tickets on its boards' stored copies,
+   * whose titles overlap the draft's. The draft is already saved, so an unreadable board is skipped.
+   */
+  const similarTo = Effect.fnUntraced(function* (draft: FactoryTicketDraft) {
+    const words = titleWords(draft.title);
+    const found: Array<{ readonly overlap: number; readonly ticket: FactorySimilarTicket }> = [];
+    const consider = (title: string, ticket: FactorySimilarTicket) => {
+      const overlap = titleOverlap(words, titleWords(title));
+      if (overlap >= SIMILAR_OVERLAP) found.push({ overlap, ticket });
+    };
+    const drafts = yield* sql<DraftRow>`SELECT * FROM factory_ticket_drafts
+        WHERE project_id=${draft.projectId} AND id != ${draft.id}
+        AND state IN ('pending','approved') ORDER BY created_at, rowid`;
+    for (const row of drafts)
+      consider(row.title, {
+        kind: "draft",
+        id: row.id,
+        title: row.title,
+        url: Option.getOrNull(Option.map(decodeIssueRef(row.issue_json), (issue) => issue.url)),
+      });
+    const boards = yield* deps.readBoards(draft.projectId).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not list boards for similar tickets", {
+          cause: cause.message,
+        }).pipe(Effect.as([])),
+      ),
+    );
+    const seen = new Set<string>();
+    for (const summary of boards) {
+      const view = yield* deps.readBoard(draft.projectId, summary.id).pipe(Effect.result);
+      if (view._tag === "Failure") {
+        yield* Effect.logWarning("Could not read a board for similar tickets", {
+          boardId: summary.id,
+          cause: view.failure.message,
+        });
+        continue;
+      }
+      const completed = (view.success.board.mapping ?? summary.mapping)?.completed ?? null;
+      for (const item of view.success.items) {
+        const key = canonicalIssueKey(item.issue.ref);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (
+          (completed !== null && item.columnId === completed) ||
+          CLOSED_ISSUE_STATES.has(item.issue.state.toLowerCase())
+        )
+          continue;
+        consider(item.issue.title, {
+          kind: "ticket",
+          id: item.issue.ref.id,
+          title: item.issue.title,
+          url: item.issue.ref.url,
+        });
+      }
+    }
+    return found
+      .toSorted((left, right) => right.overlap - left.overlap)
+      .slice(0, SIMILAR_LIMIT)
+      .map((entry) => entry.ticket);
+  });
+
+  const draftTicket: FactoryServiceShape["draftTicket"] = (managerThreadId, input) =>
+    protect(
+      Effect.gen(function* () {
+        const manager = yield* requireManager(managerThreadId);
+        // Drafting only records a proposal for the user, so a paused manager may finish its retro.
+        const problem = isPaused(manager.state) ? null : managerStateProblem(manager);
+        if (problem !== null) return yield* error("conflict", problem);
+        const findingIds = [...new Set(input.findingIds ?? [])];
+        const id = yield* lock(
+          Effect.gen(function* () {
+            if (findingIds.length > 0) {
+              const owned = yield* sql<{ id: string }>`SELECT id FROM factory_findings
+                  WHERE manager_id=${manager.id} AND ${sql.in("id", findingIds)}`;
+              const ownedIds = new Set(owned.map((row) => row.id));
+              const stranger = findingIds.find((findingId) => !ownedIds.has(findingId));
+              if (stranger !== undefined)
+                return yield* error("invalid", `No finding ${stranger} belongs to your teams.`);
+            }
+            const retro = yield* sql<{ id: string }>`SELECT id FROM factory_assignments
+                WHERE manager_id=${manager.id} AND state='retro'
+                ORDER BY updated_at DESC, created_at DESC, id LIMIT 1`;
+            const assignmentId = retro[0]?.id ?? null;
+            const draftId = NodeCrypto.randomUUID();
+            const at = yield* now;
+            yield* sql`INSERT INTO factory_ticket_drafts(id,manager_id,project_id,assignment_id,
+                scope,title,body,acceptance_json,finding_ids_json,state,proposed_change_json,marker,
+                created_at,updated_at)
+                VALUES(${draftId},${manager.id},${manager.projectId},${assignmentId},${input.scope},
+                ${input.title},${input.body},${json(input.acceptanceCriteria)},${json(findingIds)},
+                'pending',${input.proposedChange === undefined ? null : json(input.proposedChange)},
+                ${`satellite-factory-draft:${draftId}`},${at},${at})`;
+            if (findingIds.length > 0)
+              yield* sql`UPDATE factory_findings SET draft_id=${draftId}
+                  WHERE ${sql.in("id", findingIds)}`;
+            yield* writeLog(manager.id, assignmentId, "draft", input.title, {
+              draftId,
+              scope: input.scope,
+              findingIds,
+            });
+            return draftId;
+          }),
+        );
+        yield* publishDrafts;
+        const draft = yield* readDraft(id);
+        return { draft, similar: yield* similarTo(draft) } satisfies FactoryDraftTicketResult;
+      }),
+    );
+
+  const listDrafts: FactoryServiceShape["listDrafts"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const rows = yield* sql<DraftRow>`SELECT * FROM factory_ticket_drafts
+            WHERE (${input.projectId ?? null} IS NULL OR project_id=${input.projectId ?? null})
+            AND (${input.managerId ?? null} IS NULL OR manager_id=${input.managerId ?? null})
+            AND (${input.state ?? null} IS NULL OR state=${input.state ?? null})
+            ORDER BY created_at, rowid`;
+        return yield* Effect.forEach(rows, decodeDraft);
+      }),
+    );
+
+  const draftsEvent = Effect.fnUntraced(function* () {
+    const since = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { days: 7 }));
+    const rows = yield* sql<DraftRow>`SELECT * FROM factory_ticket_drafts
+        WHERE state='pending' OR updated_at >= ${since} ORDER BY created_at, rowid`;
+    return { drafts: yield* Effect.forEach(rows, decodeDraft) } satisfies FactoryDraftsEvent;
+  });
+
+  const subscribeDrafts: FactoryServiceShape["subscribeDrafts"] = () =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const subscription = yield* PubSub.subscribe(draftChanges);
+        return Stream.concat(
+          Stream.make(yield* draftsEvent()),
+          Stream.fromSubscription(subscription).pipe(Stream.mapEffect(() => draftsEvent())),
+        );
+      }).pipe(Effect.mapError(preserveError)),
+    ).pipe(
+      Stream.mapError(preserveError),
+      Stream.changesWith((left, right) => json(left) === json(right)),
+      Stream.scoped,
+    );
+
+  /**
+   * Replays the request, else applies the change to the draft and remembers the result. The
+   * operation is part of the hashed payload, since every draft request has the same shape.
+   */
+  const changeDraft = <E, R>(
+    operation: string,
+    input: { readonly requestId: string; readonly draftId: string },
+    change: (row: DraftRow, at: string) => Effect.Effect<void, E, R>,
+  ) =>
+    protect(
+      Effect.gen(function* () {
+        const payload = { ...input, operation };
+        const result = yield* lock(
+          Effect.gen(function* () {
+            const replay = yield* requestReplay(input.requestId, payload);
+            if (replay !== null)
+              return { draft: yield* parse(FactoryTicketDraft, replay), changed: false };
+            const row = yield* draftRow(input.draftId);
+            yield* change(row, yield* now);
+            const draft = yield* readDraft(row.id);
+            yield* remember(input.requestId, payload, draft);
+            return { draft, changed: true };
+          }),
+        );
+        if (result.changed) yield* publishDrafts;
+        return result.draft;
+      }),
+    );
+
+  const moveDraft = (
+    operation: "dismiss" | "restore",
+    input: { readonly requestId: string; readonly draftId: string },
+    from: FactoryTicketDraft["state"],
+    to: FactoryTicketDraft["state"],
+  ) =>
+    changeDraft(operation, input, (row, at) =>
+      Effect.gen(function* () {
+        if (row.state !== from)
+          return yield* error(
+            "conflict",
+            `This draft is ${row.state}; only a ${from} draft can be ${operation === "dismiss" ? "dismissed" : "restored"}.`,
+          );
+        yield* sql`UPDATE factory_ticket_drafts SET state=${to},updated_at=${at}
+            WHERE id=${row.id}`;
+      }),
+    );
+
+  const editDraft: FactoryServiceShape["editDraft"] = (input) =>
+    changeDraft("edit", input, (row, at) =>
+      Effect.gen(function* () {
+        if (row.state !== "pending")
+          return yield* error(
+            "conflict",
+            `This draft is ${row.state}; only a pending draft can be edited.`,
+          );
+        yield* sql`UPDATE factory_ticket_drafts SET title=${input.title ?? row.title},
+            body=${input.body ?? row.body},
+            acceptance_json=${
+              input.acceptanceCriteria === undefined
+                ? row.acceptance_json
+                : json(input.acceptanceCriteria)
+            },updated_at=${at} WHERE id=${row.id}`;
+      }),
+    );
+
+  const dismissDraft: FactoryServiceShape["dismissDraft"] = (input) =>
+    moveDraft("dismiss", input, "pending", "dismissed");
+  const restoreDraft: FactoryServiceShape["restoreDraft"] = (input) =>
+    moveDraft("restore", input, "dismissed", "pending");
+
+  /**
+   * A factory draft is accepted in one step. A project draft files its ticket outside the lock;
+   * a failed filing leaves it pending with no request remembered, so the user can approve again.
+   */
+  const approveDraft: FactoryServiceShape["approveDraft"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const payload = { ...input, operation: "approve" };
+        const prepared = yield* lock(
+          Effect.gen(function* () {
+            const replay = yield* requestReplay(input.requestId, payload);
+            if (replay !== null)
+              return { done: yield* parse(FactoryTicketDraft, replay), changed: false } as const;
+            const row = yield* draftRow(input.draftId);
+            if (row.state !== "pending")
+              return yield* error(
+                "conflict",
+                `This draft is ${row.state}; only a pending draft can be approved.`,
+              );
+            if (row.scope === "project") return { row } as const;
+            const at = yield* now;
+            yield* sql`UPDATE factory_ticket_drafts SET state='approved',updated_at=${at}
+                WHERE id=${row.id}`;
+            yield* writeLog(row.manager_id, row.assignment_id, "ticket", "factory draft accepted", {
+              draftId: row.id,
+            });
+            const draft = yield* readDraft(row.id);
+            yield* remember(input.requestId, payload, draft);
+            return { done: draft, changed: true } as const;
+          }),
+        );
+        if ("done" in prepared) {
+          if (prepared.changed) yield* publishDrafts;
+          return prepared.done;
+        }
+        const { row } = prepared;
+        const projectId = ProjectId.make(row.project_id);
+        const board = (yield* deps.readBoards(projectId)).find(
+          (summary) => summary.mapping !== null,
+        );
+        if (board === undefined)
+          return yield* error("unavailable", "Connect an issue board with a Ready column first.");
+        const shell = yield* project(projectId);
+        const assignment =
+          row.assignment_id === null
+            ? []
+            : yield* sql<{ title: string }>`SELECT title FROM factory_assignments
+                WHERE id=${row.assignment_id}`;
+        const issue = yield* deps.createTicket({
+          projectId,
+          cwd: shell.workspaceRoot,
+          board,
+          marker: row.marker,
+          title: row.title,
+          body: ticketBody(
+            row.body,
+            yield* parse(Schema.Array(Schema.String), row.acceptance_json),
+            assignment[0]?.title ?? null,
+          ),
+        });
+        const draft = yield* lock(
+          Effect.gen(function* () {
+            const replay = yield* requestReplay(input.requestId, payload);
+            if (replay !== null) return yield* parse(FactoryTicketDraft, replay);
+            // The ticket exists now whatever happened to the draft meanwhile, so it reads approved.
+            const current = yield* draftRow(row.id);
+            const at = yield* now;
+            yield* sql`UPDATE factory_ticket_drafts SET state='approved',issue_json=${json(issue)},
+                updated_at=${at} WHERE id=${row.id}`;
+            if (current.state !== "approved")
+              yield* writeLog(row.manager_id, row.assignment_id, "ticket", row.title, {
+                draftId: row.id,
+                issue,
+              });
+            const approved = yield* readDraft(row.id);
+            yield* remember(input.requestId, payload, approved);
+            return approved;
+          }),
+        );
+        yield* publishDrafts;
+        return draft;
+      }),
+    );
+
   return {
     getConfig,
     updateConfig,
@@ -2937,6 +3879,17 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     updateChecklist,
     createTeam,
     subscribeWorkspace,
+    recordFinding,
+    listFindings,
+    retroDone,
+    draftTicket,
+    listDrafts,
+    subscribeDrafts,
+    editDraft,
+    approveDraft,
+    dismissDraft,
+    restoreDraft,
+    getStats,
   } satisfies FactoryServiceShape;
 });
 
@@ -2947,6 +3900,10 @@ const fromIssueError = (cause: IssueOperationError) =>
       : "unavailable",
     cause.message,
   );
+
+const decodeRatesCache = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ document: Schema.Unknown })),
+);
 
 const RUNS_IN_PROGRESS = new Set<OrchestrationV2RunStatus>([
   "preparing",
@@ -2966,7 +3923,8 @@ export const make = Effect.gen(function* () {
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const pullRequests = yield* PullRequestService.PullRequestService;
-  const { baseDir } = yield* ServerConfig.ServerConfig;
+  const ticketHost = yield* FactoryTicketHost.FactoryTicketHost;
+  const { baseDir, stateDir } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   return yield* makeFactoryService({
@@ -3039,6 +3997,51 @@ export const make = Effect.gen(function* () {
           ),
         ),
       ),
+    readThreadTurns: (threadId) =>
+      orchestrator.getThreadRecords(threadId, ["providerTurns", "attempts", "runs"]).pipe(
+        Effect.map(({ providerTurns, attempts, runs }) => {
+          const runsById = new Map(runs.map((run) => [run.id, run]));
+          const runOfAttempt = new Map(
+            attempts.map((attempt) => [attempt.id, runsById.get(attempt.runId)]),
+          );
+          return providerTurns.map((turn) => {
+            const run =
+              (turn.runAttemptId === null ? undefined : runOfAttempt.get(turn.runAttemptId)) ??
+              runs.findLast((candidate) => candidate.providerThreadId === turn.providerThreadId);
+            const usage = turn.turnTokenUsage;
+            return {
+              model: run?.modelSelection.model ?? "unknown",
+              instanceId: run?.modelSelection.instanceId ?? "unknown",
+              startedAt: turn.startedAt === null ? null : DateTime.formatIso(turn.startedAt),
+              completedAt: turn.completedAt === null ? null : DateTime.formatIso(turn.completedAt),
+              tokens:
+                usage === undefined || usage.usageStatus === "unavailable"
+                  ? null
+                  : {
+                      input: usage.inputTokens ?? 0,
+                      cachedInput: usage.cachedInputTokens ?? 0,
+                      output: usage.outputTokens ?? 0,
+                    },
+            };
+          });
+        }),
+        Effect.catchCause((cause) =>
+          Effect.logDebug("factory member turns unavailable", { threadId, cause }).pipe(
+            Effect.as([]),
+          ),
+        ),
+      ),
+    // UsageService owns fetching the rates; the factory only reads the copy it caches.
+    readRateTable: fs.readFileString(path.join(stateDir, "usage-model-rates.json")).pipe(
+      Effect.flatMap(decodeRatesCache),
+      Effect.map(({ document }) => {
+        const table = parseRateTable(document);
+        return table.size > 0 ? table : null;
+      }),
+      Effect.catchCause((cause) =>
+        Effect.logDebug("factory stats have no usage rate table", { cause }).pipe(Effect.as(null)),
+      ),
+    ),
     sendToThread: (input) =>
       threads
         .sendToThread({
@@ -3103,6 +4106,7 @@ export const make = Effect.gen(function* () {
         error("unavailable", `The pull request's files could not be read: ${cause.message}`),
       ),
     ),
+    createTicket: (input) => ticketHost.create(input),
   });
 });
 

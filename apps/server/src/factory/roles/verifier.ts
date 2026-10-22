@@ -26,6 +26,8 @@ Hand back to the lead a pass or a fail:
 - Pass: the commands you ran, a short excerpt of their output, and what they prove.
 - Fail: the command, the failing output, and where in the change the failure points.
 
+Record a reusable or uncertain learning with \`factory_record_finding\` as well.
+
 ## Sub-agents and models
 
 If you start a sub-agent, it uses one of these models:

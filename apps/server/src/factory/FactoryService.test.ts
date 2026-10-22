@@ -18,6 +18,7 @@ import {
   type OrchestrationProjectShell,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -28,13 +29,16 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { TestClock } from "effect/testing";
 
+import { parseRateTable, type RateTable } from "../usage/usagePricing.ts";
 import {
   makeFactoryService,
+  type FactoryServiceDependencies,
   type FactoryThreadInterrupt,
   type FactoryThreadLaunch,
   type FactoryPullRequestRef,
   type FactoryThreadMessage,
   type FactoryThreadRuns,
+  type FactoryThreadTurn,
 } from "./FactoryService.ts";
 import { FactoryV1 } from "./migrations/FactoryV1.ts";
 import type { RoleSkillSource } from "./roleSkills.ts";
@@ -170,7 +174,12 @@ interface HarnessControls {
   sendFailures: number;
   attemptFailures: number;
   fileReadFailures: number;
+  ticketFailures: number;
+  /** What the usage rate cache holds; null when usage tracking has cached none. */
+  rateTable: RateTable | null;
 }
+
+type TicketRequest = Parameters<FactoryServiceDependencies["createTicket"]>[0];
 
 const makeHarness = (options: HarnessOptions = {}) =>
   Effect.gen(function* () {
@@ -182,7 +191,15 @@ const makeHarness = (options: HarnessOptions = {}) =>
     const sentMessages: FactoryThreadMessage[] = [];
     const interrupts: FactoryThreadInterrupt[] = [];
     const threadRuns = new Map<ThreadId, FactoryThreadRuns>();
-    const controls: HarnessControls = { sendFailures: 0, attemptFailures: 0, fileReadFailures: 0 };
+    const threadTurns = new Map<ThreadId, ReadonlyArray<FactoryThreadTurn>>();
+    const controls: HarnessControls = {
+      sendFailures: 0,
+      attemptFailures: 0,
+      fileReadFailures: 0,
+      ticketFailures: 0,
+      rateTable: null,
+    };
+    const ticketRequests: TicketRequest[] = [];
     /** Changed files by pull request number. */
     const pullRequestFiles = new Map<number, ReadonlyArray<string>>();
     const fileReads: FactoryPullRequestRef[] = [];
@@ -251,6 +268,8 @@ const makeHarness = (options: HarnessOptions = {}) =>
           });
         }),
       readThreadRuns: (threadId) => Effect.sync(() => threadRuns.get(threadId) ?? null),
+      readThreadTurns: (threadId) => Effect.sync(() => threadTurns.get(threadId) ?? []),
+      readRateTable: Effect.sync(() => controls.rateTable),
       sendToThread: (input) =>
         Effect.suspend(() => {
           if (controls.sendFailures === 0) {
@@ -274,6 +293,16 @@ const makeHarness = (options: HarnessOptions = {}) =>
             new FactoryOperationError({ reason: "unavailable", message: "GitHub is down." }),
           );
         }),
+      createTicket: (input) =>
+        Effect.suspend(() => {
+          ticketRequests.push(input);
+          if (controls.ticketFailures === 0)
+            return Effect.succeed(issue(100 + ticketRequests.length).ref);
+          controls.ticketFailures -= 1;
+          return Effect.fail(
+            new FactoryOperationError({ reason: "unavailable", message: "GitHub is down." }),
+          );
+        }),
     });
     if (options.config)
       yield* service.updateConfig({ scope: "environment", config: options.config });
@@ -286,9 +315,11 @@ const makeHarness = (options: HarnessOptions = {}) =>
       sentMessages,
       interrupts,
       threadRuns,
+      threadTurns,
       controls,
       pullRequestFiles,
       fileReads,
+      ticketRequests,
     };
   });
 
@@ -1581,6 +1612,7 @@ describe("FactoryService dependencies", () => {
         assert.strictEqual(stillBlocked.dependencies[0]!.deliveringAssignmentId, delivering.id);
 
         yield* service.claimComplete(ThreadId.make("lead-2"), { evidence: "Endpoint shipped." });
+        yield* service.retroDone(ThreadId.make("lead-2"));
         const completed = yield* service.complete(manager.threadId!, {
           assignmentId: delivering.id,
           teamVerdict: { fit: "good", reason: "Small team, quick turnaround." },
@@ -1733,6 +1765,7 @@ describe("FactoryService completion", () => {
         assert.strictEqual(early.reason, "conflict");
 
         yield* service.claimComplete(lead, { evidence: "Fixed without a pull request." });
+        yield* service.retroDone(lead);
         const completed = yield* service.complete(manager.threadId!, {
           assignmentId: assignment.id,
           teamVerdict: verdict,
@@ -1779,6 +1812,14 @@ describe("FactoryService completion", () => {
 
         assert.deepStrictEqual(yield* service.cancel(input), cancelled);
         assert.strictEqual(interrupts.length, 1);
+
+        yield* service.retroDone(lead);
+        const [managerRetro] = yield* service.listLog({ managerId: manager.id });
+        assert.deepStrictEqual(managerRetro!.payload, {
+          assignmentId: assignment.id,
+          title: "Ticket 1",
+          cancelled: true,
+        });
 
         const ended = yield* service.complete(manager.threadId!, {
           assignmentId: assignment.id,
@@ -2311,6 +2352,755 @@ describe("FactoryService control paths", () => {
         yield* service.reconcileThread(lead);
         assert.strictEqual(fileReads.length, 2);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
+      }),
+    ),
+  );
+});
+
+describe("FactoryService findings", () => {
+  it.effect(
+    "records findings from a worker and the lead, and wakes the manager on escalation",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const factory = yield* makeTeamFactory;
+          const { service, sentMessages } = factory;
+          const { manager, assignment, lead } = yield* startedTeam(factory);
+          const worker = ThreadId.make("worker-1");
+          yield* service.recordMember(lead, {
+            threadId: worker,
+            role: "implementer",
+            modelSelection: SONNET,
+            joined: "created",
+          });
+
+          const fromWorker = yield* service.recordFinding(worker, {
+            class: "reusable",
+            summary: "The list fixture is copied in three suites",
+            evidence: "a.test.ts, b.test.ts and c.test.ts each build it.",
+          });
+          assert.strictEqual(fromWorker.assignmentId, assignment.id);
+          assert.strictEqual(fromWorker.threadId, worker);
+          assert.isFalse(fromWorker.escalated);
+          assert.isNull(fromWorker.uncertainty);
+          assert.isNull(fromWorker.draftId);
+          assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
+
+          const fromLead = yield* service.recordFinding(lead, {
+            class: "project",
+            summary: "CI skips the e2e suite on forks",
+            evidence: "The workflow's e2e job has `if: github.repository == 'acme/app'`.",
+            workaround: "Run it locally.",
+            escalate: true,
+          });
+          assert.isTrue(fromLead.escalated);
+          assert.strictEqual(fromLead.workaround, "Run it locally.");
+          assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["finding"]);
+          const [wake] = yield* service.listLog({ managerId: manager.id });
+          assert.deepStrictEqual(wake!.payload, {
+            assignmentId: assignment.id,
+            title: "Ticket 1",
+            findingId: fromLead.id,
+            summary: "CI skips the e2e suite on forks",
+          });
+          assert.deepStrictEqual(
+            (yield* logKinds(service, manager.id)).filter((kind) => kind === "finding"),
+            ["finding", "finding"],
+          );
+
+          yield* service.sweep;
+          const woken = sentMessages.at(-1)!;
+          assert.strictEqual(woken.threadId, manager.threadId);
+          assert.include(
+            woken.text,
+            "Finding escalated on Ticket 1: CI skips the e2e suite on forks. Read it with factory_status or factory_findings and decide.",
+          );
+
+          assert.deepStrictEqual(
+            (yield* service.listFindings({ assignmentId: assignment.id })).map(
+              (finding) => finding.id,
+            ),
+            [fromWorker.id, fromLead.id],
+          );
+          const stranger = yield* service
+            .recordFinding(manager.threadId!, {
+              class: "uncertain",
+              summary: "Not a member",
+              evidence: "The manager is not on the team.",
+            })
+            .pipe(Effect.flip);
+          assert.strictEqual(stranger.reason, "not-found");
+        }),
+      ),
+  );
+});
+
+describe("FactoryService retro", () => {
+  it.effect(
+    "wakes the manager for its retro once the team retro is done, and completes after",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const factory = yield* makeFactory;
+          const { service, sentMessages } = factory;
+          const { manager, assignment, lead } = yield* startedAssignment(factory);
+          const verdict = { fit: "good", reason: "One implementer was enough." } as const;
+
+          const tooEarly = yield* service.retroDone(lead).pipe(Effect.flip);
+          assert.strictEqual(tooEarly.reason, "conflict");
+
+          yield* service.claimComplete(lead, { evidence: "Fixed without a pull request." });
+          const beforeRetro = yield* service
+            .complete(manager.threadId!, { assignmentId: assignment.id, teamVerdict: verdict })
+            .pipe(Effect.flip);
+          assert.strictEqual(beforeRetro.reason, "conflict");
+          assert.strictEqual(beforeRetro.message, "The team retro has not finished.");
+
+          const done = yield* service.retroDone(lead);
+          assert.strictEqual(done.state, "retro");
+          assert.isNotNull(done.retro.teamDoneAt);
+          assert.isNull(done.retro.managerDoneAt);
+          assert.deepStrictEqual(yield* wakeReasons(service, manager.id), [
+            "retro",
+            "manager-retro",
+          ]);
+          const [wake] = yield* service.listLog({ managerId: manager.id });
+          assert.deepStrictEqual(wake!.payload, {
+            assignmentId: assignment.id,
+            title: "Ticket 1",
+            cancelled: false,
+          });
+          assert.strictEqual((yield* service.retroDone(lead).pipe(Effect.flip)).reason, "conflict");
+
+          yield* service.sweep;
+          assert.include(
+            sentMessages.at(-1)!.text,
+            `The team retro for Ticket 1 is done. Do the manager retro: read its findings, draft tickets with factory_draft_ticket (scope project or factory), judge the team fit, then call factory_complete for assignment ${assignment.id}.`,
+          );
+
+          const completed = yield* service.complete(manager.threadId!, {
+            assignmentId: assignment.id,
+            teamVerdict: verdict,
+          });
+          assert.strictEqual(completed.state, "completed");
+          assert.isNotNull(completed.retro.managerDoneAt);
+        }),
+      ),
+  );
+});
+
+/** A board whose tickets carry the given titles and sit in the given columns. */
+const titledBoard = (
+  items: ReadonlyArray<{
+    readonly number: number;
+    readonly columnId: string;
+    readonly title: string;
+  }>,
+): IssueBoardView => {
+  const view = board(items);
+  return {
+    ...view,
+    items: view.items.map((item, index) => ({
+      ...item,
+      issue: { ...item.issue, title: items[index]!.title },
+    })),
+  };
+};
+
+const DRAFT = {
+  scope: "project",
+  body: "The e2e suite never renders an empty list.",
+  acceptanceCriteria: ["An e2e test renders an empty list", "It runs in CI"],
+} as const;
+
+describe("FactoryService ticket drafts", () => {
+  it.effect(
+    "stores a draft with its findings and returns overlapping drafts and open tickets",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const factory = yield* makeFactory;
+          const { service } = factory;
+          factory.boards.push(
+            titledBoard([
+              { number: 1, columnId: READY, title: "Crash on an empty list" },
+              {
+                number: 2,
+                columnId: IN_PROGRESS,
+                title: "Share the list fixture across test suites",
+              },
+              { number: 3, columnId: "column-done", title: "Share the list fixture across suites" },
+              { number: 4, columnId: IN_PROGRESS, title: "Upgrade the date library" },
+            ]),
+          );
+          const manager = yield* activeManager(service);
+          const assignment = (yield* startTicket(factory, manager.threadId!))!;
+          const lead = ThreadId.make("lead-1");
+          yield* service.claimComplete(lead, { evidence: "Fixed without a pull request." });
+          const finding = yield* service.recordFinding(lead, {
+            class: "reusable",
+            summary: "The list fixture is copied in three suites",
+            evidence: "a.test.ts, b.test.ts and c.test.ts each build it.",
+          });
+
+          const earlier = yield* service.draftTicket(manager.threadId!, {
+            ...DRAFT,
+            title: "Share the list fixture between test suites",
+          });
+          const { draft, similar } = yield* service.draftTicket(manager.threadId!, {
+            ...DRAFT,
+            title: "Share the list fixture across all test suites",
+            findingIds: [finding.id, finding.id],
+          });
+          assert.strictEqual(draft.state, "pending");
+          assert.strictEqual(draft.scope, "project");
+          assert.strictEqual(draft.assignmentId, assignment.id);
+          assert.deepStrictEqual(draft.findingIds, [finding.id]);
+          assert.deepStrictEqual(draft.acceptanceCriteria, DRAFT.acceptanceCriteria);
+          assert.isNull(draft.issue);
+          assert.isNull(draft.proposedChange);
+          assert.strictEqual(
+            (yield* service.listFindings({ assignmentId: assignment.id }))[0]!.draftId,
+            draft.id,
+          );
+          assert.deepStrictEqual(similar, [
+            {
+              kind: "ticket",
+              id: "issue-node-2",
+              title: "Share the list fixture across test suites",
+              url: "https://github.com/acme/app/issues/2",
+            },
+            {
+              kind: "draft",
+              id: earlier.draft.id,
+              title: "Share the list fixture between test suites",
+              url: null,
+            },
+          ]);
+          assert.strictEqual((yield* logKinds(service, manager.id)).at(-1), "draft");
+
+          const unknown = yield* service
+            .draftTicket(manager.threadId!, { ...DRAFT, title: "Other", findingIds: ["missing"] })
+            .pipe(Effect.flip);
+          assert.strictEqual(unknown.reason, "invalid");
+
+          const event = yield* service.subscribeDrafts({}).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.map((events) => events[0]!),
+          );
+          assert.deepStrictEqual(
+            event.drafts.map((entry) => entry.id),
+            [earlier.draft.id, draft.id],
+          );
+        }),
+      ),
+  );
+
+  it.effect("files a project draft's ticket once, and keeps it pending when filing fails", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, ticketRequests } = factory;
+        const { manager, lead } = yield* startedAssignment(factory);
+        const mapped = factory.boards[0]!;
+        factory.boards.unshift({
+          ...mapped,
+          board: { ...mapped.board, id: "board-unmapped", mapping: null },
+        });
+        yield* service.claimComplete(lead, { evidence: "Fixed without a pull request." });
+        const { draft } = yield* service.draftTicket(manager.threadId!, {
+          ...DRAFT,
+          title: "Cover the empty list in e2e",
+        });
+
+        controls.ticketFailures = 1;
+        const failed = yield* service
+          .approveDraft({ requestId: "approve-1", draftId: draft.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(failed.reason, "unavailable");
+        assert.strictEqual((yield* service.listDrafts({}))[0]!.state, "pending");
+
+        const approved = yield* service.approveDraft({ requestId: "approve-2", draftId: draft.id });
+        assert.strictEqual(approved.state, "approved");
+        assert.deepStrictEqual(approved.issue, issue(102).ref);
+        const request = {
+          projectId: PROJECT_ID,
+          cwd: "/repo",
+          board: mapped.board,
+          marker: `satellite-factory-draft:${draft.id}`,
+          title: "Cover the empty list in e2e",
+          body: "The e2e suite never renders an empty list.\n\n## Acceptance criteria\n- An e2e test renders an empty list\n- It runs in CI\n\nFiled by the Satellite factory from assignment Ticket 1",
+        };
+        assert.deepStrictEqual(ticketRequests, [request, request]);
+        const [ticketLog] = yield* service.listLog({ managerId: manager.id });
+        assert.strictEqual(ticketLog!.kind, "ticket");
+        assert.deepStrictEqual(ticketLog!.payload, { draftId: draft.id, issue: issue(102).ref });
+
+        assert.deepStrictEqual(
+          yield* service.approveDraft({ requestId: "approve-2", draftId: draft.id }),
+          approved,
+        );
+        assert.strictEqual(ticketRequests.length, 2);
+        const edit = yield* service
+          .editDraft({ requestId: "edit-1", draftId: draft.id, title: "Too late" })
+          .pipe(Effect.flip);
+        assert.strictEqual(edit.reason, "conflict");
+      }),
+    ),
+  );
+
+  it.effect("refuses to file a project draft with no mapped board", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, ticketRequests } = factory;
+        const manager = yield* activeManager(service);
+        const { draft } = yield* service.draftTicket(manager.threadId!, {
+          ...DRAFT,
+          title: "Cover the empty list in e2e",
+        });
+        const refused = yield* service
+          .approveDraft({ requestId: "approve-1", draftId: draft.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "unavailable");
+        assert.strictEqual(refused.message, "Connect an issue board with a Ready column first.");
+        assert.deepStrictEqual(ticketRequests, []);
+      }),
+    ),
+  );
+
+  it.effect(
+    "accepts a factory draft with no ticket, and dismisses and restores a pending one",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const factory = yield* makeFactory;
+          const { service, ticketRequests } = factory;
+          const manager = yield* activeManager(service);
+          yield* service.pauseManager({
+            requestId: "pause-1",
+            managerId: manager.id,
+            scope: "manager",
+          });
+          const proposedChange = {
+            kind: "setting",
+            key: "concurrencyCap",
+            before: 1,
+            after: 2,
+          } as const;
+
+          const { draft: factoryDraft } = yield* service.draftTicket(manager.threadId!, {
+            scope: "factory",
+            title: "Raise the concurrency cap",
+            body: "Two small tickets waited a day for the only slot.",
+            acceptanceCriteria: [],
+            proposedChange,
+          });
+          assert.isNull(factoryDraft.assignmentId);
+          assert.deepStrictEqual(factoryDraft.proposedChange, proposedChange);
+          const accepted = yield* service.approveDraft({
+            requestId: "approve-factory",
+            draftId: factoryDraft.id,
+          });
+          assert.strictEqual(accepted.state, "approved");
+          assert.isNull(accepted.issue);
+          assert.deepStrictEqual(ticketRequests, []);
+          const [accept] = yield* service.listLog({ managerId: manager.id });
+          assert.strictEqual(accept!.kind, "ticket");
+          assert.strictEqual(accept!.reason, "factory draft accepted");
+
+          const { draft } = yield* service.draftTicket(manager.threadId!, {
+            ...DRAFT,
+            title: "Document the release steps",
+          });
+          const dismissed = yield* service.dismissDraft({
+            requestId: "dismiss-1",
+            draftId: draft.id,
+          });
+          assert.strictEqual(dismissed.state, "dismissed");
+          assert.deepStrictEqual(
+            yield* service.dismissDraft({ requestId: "dismiss-1", draftId: draft.id }),
+            dismissed,
+          );
+          for (const refused of [
+            service.dismissDraft({ requestId: "dismiss-2", draftId: draft.id }),
+            service.approveDraft({ requestId: "approve-1", draftId: draft.id }),
+            // A request id names one operation, even with the same payload shape.
+            service.restoreDraft({ requestId: "dismiss-1", draftId: draft.id }),
+          ])
+            assert.strictEqual((yield* refused.pipe(Effect.flip)).reason, "conflict");
+
+          const restored = yield* service.restoreDraft({
+            requestId: "restore-1",
+            draftId: draft.id,
+          });
+          assert.strictEqual(restored.state, "pending");
+          const edited = yield* service.editDraft({
+            requestId: "edit-1",
+            draftId: draft.id,
+            title: "Document the release checklist",
+          });
+          assert.strictEqual(edited.title, "Document the release checklist");
+          assert.strictEqual(edited.body, DRAFT.body);
+          assert.deepStrictEqual(
+            (yield* service.listDrafts({ state: "pending" })).map((entry) => entry.id),
+            [draft.id],
+          );
+        }),
+      ),
+  );
+});
+
+const VERDICT = { fit: "good", reason: "The team fit the work." } as const;
+
+/** Claims ticket 1 with nothing open, so the assignment goes straight to its retro. */
+const toRetro = (factory: Factory, lead: ThreadId) =>
+  factory.service.claimComplete(lead, { evidence: "Fixed without a pull request." });
+
+describe("FactoryService skipped team retro", () => {
+  it.effect("completes without the team retro only once the lead's thread is gone", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns } = factory;
+        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        yield* toRetro(factory, lead);
+        const skip = {
+          assignmentId: assignment.id,
+          teamVerdict: VERDICT,
+          teamRetro: "skipped",
+        } as const;
+
+        threadRuns.set(lead, idleRun());
+        const alive = yield* service.complete(manager.threadId!, skip).pipe(Effect.flip);
+        assert.deepInclude(alive, {
+          reason: "conflict",
+          message: "The lead is still active; wait for its team retro or cancel the assignment.",
+        });
+
+        threadRuns.set(lead, idleRun({ deleted: true }));
+        const unasked = yield* service
+          .complete(manager.threadId!, { assignmentId: assignment.id, teamVerdict: VERDICT })
+          .pipe(Effect.flip);
+        assert.strictEqual(unasked.message, "The team retro has not finished.");
+
+        const completed = yield* service.complete(manager.threadId!, skip);
+        assert.strictEqual(completed.state, "completed");
+        assert.isNull(completed.retro.teamDoneAt);
+        const [entry] = yield* service.listLog({ managerId: manager.id });
+        assert.deepStrictEqual(entry!.payload, {
+          outcome: "completed",
+          teamVerdict: VERDICT,
+          teamRetro: "skipped",
+        });
+      }),
+    ),
+  );
+
+  it.effect("skips the retro of a deleted lead on sweep and wakes the manager for its own", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns, sentMessages } = factory;
+        const { manager, assignment, lead } = yield* startedAssignment(factory);
+        yield* toRetro(factory, lead);
+        threadRuns.set(lead, idleRun({ deleted: true }));
+
+        yield* service.sweep;
+        const retro = (yield* service.listAssignments({})).find(
+          (entry) => entry.id === assignment.id,
+        );
+        assert.isNotNull(retro!.retro.teamDoneAt);
+        const entries = yield* service.listLog({ managerId: manager.id });
+        assert.deepInclude(
+          entries.map((entry) => [entry.kind, entry.reason]),
+          ["retro", "team retro skipped: lead thread deleted"],
+        );
+        assert.include(
+          sentMessages.at(-1)!.text,
+          `The lead's thread for Ticket 1 was deleted before its team retro. Do the manager retro:`,
+        );
+
+        yield* service.sweep;
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["retro", "manager-retro"]);
+        const completed = yield* service.complete(manager.threadId!, {
+          assignmentId: assignment.id,
+          teamVerdict: VERDICT,
+        });
+        assert.strictEqual(completed.state, "completed");
+      }),
+    ),
+  );
+});
+
+const waitingRow = (id: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ waiting_user_ms: number; waiting_since: string | null }>`
+        SELECT waiting_user_ms,waiting_since FROM factory_assignments WHERE id=${id}`;
+    return rows[0]!;
+  });
+
+/** A turn that ran from `startSecond` for `seconds`, with the given tokens. */
+const turn = (
+  model: string,
+  startSecond: number,
+  seconds: number,
+  tokens: FactoryThreadTurn["tokens"],
+): FactoryThreadTurn => ({
+  model,
+  instanceId: "claude",
+  startedAt: DateTime.formatIso(DateTime.makeUnsafe(startSecond * 1000)),
+  completedAt: DateTime.formatIso(DateTime.makeUnsafe((startSecond + seconds) * 1000)),
+  tokens,
+});
+
+describe("FactoryService stats", () => {
+  it.effect("accrues the time an assignment waits on the user", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadRuns } = factory;
+        const { assignment, lead } = yield* startedAssignment(factory);
+
+        threadRuns.set(lead, idleRun({ pendingRequests: 1 }));
+        yield* service.reconcileThread(lead);
+        assert.deepStrictEqual(yield* waitingRow(assignment.id), {
+          waiting_user_ms: 0,
+          waiting_since: EPOCH,
+        });
+
+        yield* TestClock.adjust("5 minutes");
+        threadRuns.set(lead, idleRun());
+        yield* service.reconcileThread(lead);
+        assert.deepStrictEqual(yield* waitingRow(assignment.id), {
+          waiting_user_ms: 300_000,
+          waiting_since: null,
+        });
+      }),
+    ),
+  );
+
+  it.effect("rolls the lead's and workers' turns into one row when the assignment ends", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, threadTurns, controls } = factory;
+        const { manager, assignment, lead } = yield* startedTeam(factory);
+        const worker = ThreadId.make("worker-1");
+        const reviewer = ThreadId.make("reviewer-1");
+        yield* service.recordMember(lead, {
+          threadId: worker,
+          role: "implementer",
+          modelSelection: SONNET,
+          joined: "created",
+        });
+        yield* service.recordMember(lead, {
+          threadId: reviewer,
+          role: "reviewer",
+          modelSelection: SONNET,
+          joined: "created",
+        });
+        // Only Sonnet is priced; GPT is unknown to the table, so its tokens count but cost nothing.
+        controls.rateTable = parseRateTable({
+          [SONNET.model]: {
+            input_cost_per_token: 0.000002,
+            output_cost_per_token: 0.00001,
+            cache_read_input_token_cost: 0.0000002,
+          },
+        });
+        threadTurns.set(lead, [
+          turn(SONNET.model, 0, 60, { input: 1000, cachedInput: 400, output: 200 }),
+          turn(SONNET.model, 60, 30, null),
+          { ...turn(SONNET.model, 90, 0, null), startedAt: null },
+        ]);
+        threadTurns.set(worker, [
+          turn(GPT.model, 10, 30, { input: 500, cachedInput: 0, output: 100 }),
+        ]);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, true)] }));
+        threadRuns.set(
+          worker,
+          idleRun({ pullRequests: [pullRequest(7, true), pullRequest(8, true)] }),
+        );
+
+        yield* service.claimComplete(lead, {
+          evidence: "pnpm test passes.",
+          pullRequests: [{ host: "github.com", repository: "acme/app", number: 7 }],
+        });
+        yield* service.retroDone(lead);
+        yield* TestClock.adjust("10 minutes");
+        yield* service.complete(manager.threadId!, {
+          assignmentId: assignment.id,
+          teamVerdict: VERDICT,
+        });
+
+        const { teams, assignments } = yield* service.getStats({});
+        assert.strictEqual(assignments.length, 1);
+        const { costUsd, byModel, ...stats } = assignments[0]!;
+        assert.deepStrictEqual(stats, {
+          assignmentId: assignment.id,
+          managerId: manager.id,
+          projectId: PROJECT_ID,
+          team: "Duo",
+          complexity: "small",
+          outcome: "completed",
+          teamVerdict: "good",
+          tokens: { input: 1500, cachedInput: 400, output: 300 },
+          agentMs: 120_000,
+          wallMs: 600_000,
+          waitingUserMs: 0,
+          recoveries: 0,
+          pullRequests: 2,
+          reviewRounds: 1,
+          byRole: [
+            {
+              role: "lead",
+              tokens: { input: 1000, cachedInput: 400, output: 200 },
+              agentMs: 90_000,
+            },
+            {
+              role: "implementer",
+              tokens: { input: 500, cachedInput: 0, output: 100 },
+              agentMs: 30_000,
+            },
+          ],
+          endedAt: "1970-01-01T00:10:00.000Z",
+        });
+        // 600 uncached input, 400 cached and 200 output tokens at Sonnet's rates.
+        const sonnetCost = 600 * 0.000002 + 400 * 0.0000002 + 200 * 0.00001;
+        assert.closeTo(costUsd!, sonnetCost, 1e-12);
+        assert.deepStrictEqual(
+          byModel.map(({ costUsd: _cost, ...entry }) => entry),
+          [
+            {
+              model: SONNET.model,
+              tokens: { input: 1000, cachedInput: 400, output: 200 },
+              agentMs: 90_000,
+            },
+            {
+              model: GPT.model,
+              tokens: { input: 500, cachedInput: 0, output: 100 },
+              agentMs: 30_000,
+            },
+          ],
+        );
+        assert.closeTo(byModel[0]!.costUsd!, sonnetCost, 1e-12);
+        assert.isNull(byModel[1]!.costUsd);
+        assert.deepStrictEqual(
+          teams.map((team) => [team.team, team.tasks, team.goodFit]),
+          [["Duo", 1, 1]],
+        );
+      }),
+    ),
+  );
+
+  it.effect("groups ended assignments by team with medians and means, filtered", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { service } = yield* makeFactory;
+        const sql = yield* SqlClient.SqlClient;
+        const insert = (
+          id: string,
+          values: {
+            readonly team?: string;
+            readonly projectId?: string;
+            readonly outcome?: string;
+            readonly verdict: string | null;
+            readonly tokens: number;
+            readonly cost: number | null;
+            readonly agentMs: number;
+            readonly recoveries: number;
+            readonly reviewRounds: number;
+            readonly endedAt: string;
+          },
+        ) =>
+          sql`INSERT INTO factory_assignment_stats(assignment_id,manager_id,project_id,team,
+              complexity,outcome,team_verdict,input_tokens,cached_input_tokens,output_tokens,
+              cost_usd,agent_ms,wall_ms,waiting_user_ms,recoveries,pull_requests,review_rounds,
+              by_role_json,by_model_json,ended_at)
+              VALUES(${id},'manager-1',${values.projectId ?? PROJECT_ID},${values.team ?? "Duo"},
+              'small',${values.outcome ?? "completed"},${values.verdict},${values.tokens - 10},0,10,
+              ${values.cost},${values.agentMs},${values.agentMs * 2},0,${values.recoveries},1,
+              ${values.reviewRounds},'[]','[]',${values.endedAt})`;
+        yield* insert("a", {
+          verdict: "good",
+          tokens: 100,
+          cost: 1,
+          agentMs: 10,
+          recoveries: 0,
+          reviewRounds: 1,
+          endedAt: "2026-10-01T09:00:00.000Z",
+        });
+        yield* insert("b", {
+          outcome: "cancelled",
+          verdict: "poor",
+          tokens: 300,
+          cost: null,
+          agentMs: 30,
+          recoveries: 1,
+          reviewRounds: 1,
+          endedAt: "2026-10-02T09:00:00.000Z",
+        });
+        yield* insert("c", {
+          verdict: null,
+          tokens: 200,
+          cost: 3,
+          agentMs: 20,
+          recoveries: 2,
+          reviewRounds: 4,
+          endedAt: "2026-10-03T09:00:00.000Z",
+        });
+        yield* insert("d", {
+          team: "Solo",
+          projectId: "project-2",
+          verdict: "good",
+          tokens: 50,
+          cost: 5,
+          agentMs: 5,
+          recoveries: 0,
+          reviewRounds: 0,
+          endedAt: "2026-10-04T09:00:00.000Z",
+        });
+
+        const all = yield* service.getStats({});
+        assert.deepStrictEqual(
+          all.assignments.map((entry) => entry.assignmentId),
+          ["d", "c", "b", "a"],
+        );
+        assert.deepStrictEqual(
+          all.teams.map((team) => team.team),
+          ["Duo", "Solo"],
+        );
+
+        const project = yield* service.getStats({ projectId: PROJECT_ID });
+        assert.deepStrictEqual(project.teams, [
+          {
+            team: "Duo",
+            tasks: 3,
+            completed: 2,
+            cancelled: 1,
+            medianTokens: 200,
+            // Only a and c have a cost, so the median is the mean of the two.
+            medianCostUsd: 2,
+            medianAgentMs: 20,
+            medianWallMs: 40,
+            meanRecoveries: 1,
+            meanReviewRounds: 2,
+            goodFit: 1,
+            poorFit: 1,
+          },
+        ]);
+
+        const recent = yield* service.getStats({ projectId: PROJECT_ID, sinceDay: "2026-10-02" });
+        assert.deepInclude(recent.teams[0]!, {
+          tasks: 2,
+          medianTokens: 250,
+          medianCostUsd: 3,
+          medianAgentMs: 25,
+          meanReviewRounds: 2.5,
+        });
+        assert.deepStrictEqual((yield* service.getStats({ complexity: "large" })).teams, []);
       }),
     ),
   );

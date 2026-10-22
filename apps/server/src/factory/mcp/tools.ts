@@ -6,10 +6,15 @@ import {
   FactoryCreateTeamInput,
   FactoryDelegateInput,
   FactoryDependency,
+  FactoryDraftTicketInput,
+  FactoryDraftTicketResult,
+  FactoryFinding,
+  FactoryFindingsListInput,
   FactoryManagerState,
   FactoryOnboardingReport,
   FactoryOperationError,
   FactoryPickupInput,
+  FactoryRecordFindingInput,
   FactoryRecoverInput,
   FactoryReportDependencyInput,
   FactoryRole,
@@ -230,7 +235,7 @@ const RecoverTool = Tool.make("factory_recover", {
 
 const CompleteTool = Tool.make("factory_complete", {
   description:
-    "For an engineering manager. End an assignment in its retro once you have read the lead's team retro. Record whether the team was a good or poor fit for the work and why.",
+    'For an engineering manager. End an assignment in its retro once the team retro is done and you have drafted its tickets. Record whether the team was a good or poor fit for the work and why. Pass `teamRetro: "skipped"` only when the lead\'s thread is gone or the user took it over, so no team retro will come.',
   parameters: FactoryCompleteInput,
   success: AssignmentResult,
   failure: FactoryToolFailure,
@@ -322,6 +327,92 @@ const CreateTeamTool = Tool.make("factory_create_team", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
+export const RecordFindingResult = Schema.Struct({
+  finding: FactoryFinding,
+  message: Schema.String,
+});
+export type RecordFindingResult = typeof RecordFindingResult.Type;
+
+const RecordFindingTool = Tool.make("factory_record_finding", {
+  description:
+    "For any member of a factory team, lead or worker. Record something you learned, with the evidence for it. Class `implementation` is about this assignment only; `project` is about the project's code, tests, docs or agent instructions; `reusable` is something the next team should reuse; `shared` affects other teams; `uncertain` is something you could not confirm, so say what is uncertain. Add a workaround if you used one. Set `escalate` only when the manager must decide now; otherwise the finding waits for the retro.",
+  parameters: FactoryRecordFindingInput,
+  success: RecordFindingResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Record a factory finding")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const FindingsResult = Schema.Struct({
+  findings: Schema.Array(FactoryFinding),
+  message: Schema.String,
+});
+export type FindingsResult = typeof FindingsResult.Type;
+
+const FindingsTool = Tool.make("factory_findings", {
+  description:
+    "For an engineering manager or a factory lead. Return the findings recorded on an assignment, oldest first, each with its class, evidence and the ticket draft that took it up, if any. A manager can read any of its assignments; a lead only its own.",
+  parameters: FactoryFindingsListInput,
+  success: FindingsResult,
+  failure: FactoryToolFailure,
+  dependencies: [McpInvocationContext.McpInvocationContext, FactoryService],
+})
+  .annotate(Tool.Title, "Read factory findings")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const RetroDoneTool = Tool.make("factory_retro_done", {
+  description:
+    "For a factory lead whose assignment is in its retro. End the team retro once you have retroed with your workers and recorded the findings with factory_record_finding. The manager is then woken for the manager retro; you have nothing more to do.",
+  parameters: Schema.Struct({}),
+  success: AssignmentResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Finish the team retro")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const DraftTicketResult = Schema.Struct({
+  ...FactoryDraftTicketResult.fields,
+  message: Schema.String,
+});
+export type DraftTicketResult = typeof DraftTicketResult.Type;
+
+const DraftTicketTool = Tool.make("factory_draft_ticket", {
+  description:
+    "For an engineering manager. Draft a ticket into Retro triage for the user. Scope `project` is for the app itself: its code, tests, docs and agent instructions. Scope `factory` is for how the factory works: the workflow, role skills, team presets and Satellite setup. Name the findings it takes up. A draft never reaches the board until the user approves it. Returns similar drafts and open tickets: when one covers the same work, do not draft it again, and tell the user in this thread which drafts to merge in triage.",
+  parameters: FactoryDraftTicketInput,
+  success: DraftTicketResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Draft a factory ticket")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 export const FactoryToolkit = Toolkit.make(
   ProposeOnboardingTool,
   RoleBriefTool,
@@ -335,4 +426,8 @@ export const FactoryToolkit = Toolkit.make(
   DelegateTool,
   UpdateChecklistTool,
   CreateTeamTool,
+  RecordFindingTool,
+  FindingsTool,
+  RetroDoneTool,
+  DraftTicketTool,
 );
