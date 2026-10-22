@@ -2,6 +2,12 @@ import type * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import {
+  AuthOrchestrationOperateScope,
+  AuthSettingsWriteScope,
+  type AuthEnvironmentScope,
+} from "./auth.ts";
+
+import {
   FACTORY_WS_METHODS,
   WsFactoryAssignmentsCancelRpc,
   WsFactoryAssignmentsListRpc,
@@ -112,3 +118,23 @@ type StreamMethod<R> = R extends Rpc.Any
   : never;
 /** Satellite's stream RPCs. Each is a subscription, so clients resubscribe on reconnect. */
 export type SatelliteWsSubscriptionMethod = StreamMethod<SatelliteWsRpc>;
+
+/**
+ * Satellite's client-guarded methods: the ones a client hides or disables without the grant. The
+ * server's registry authorizes every request regardless. `CLIENT_GUARDED_RPC_SCOPES` spreads it.
+ */
+export const SATELLITE_CLIENT_GUARDED_RPC_SCOPES = {
+  [FACTORY_WS_METHODS.factoryConfigUpdate]: AuthSettingsWriteScope,
+  [FACTORY_WS_METHODS.factoryManagersCreate]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryManagersPause]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryManagersResume]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryManagersRetire]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryManagersApproveOnboarding]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryAssignmentsCancel]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryThreadsTakeOver]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryThreadsHandBack]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryDraftsEdit]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryDraftsApprove]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryDraftsDismiss]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryDraftsRestore]: AuthOrchestrationOperateScope,
+} as const satisfies Partial<Readonly<Record<SatelliteWsRpcMethod, AuthEnvironmentScope>>>;
