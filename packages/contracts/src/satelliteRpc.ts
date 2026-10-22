@@ -5,6 +5,7 @@ import {
   FACTORY_WS_METHODS,
   WsFactoryConfigGetRpc,
   WsFactoryConfigUpdateRpc,
+  WsFactoryManagersApproveOnboardingRpc,
   WsFactoryManagersCreateRpc,
   WsFactoryManagersListRpc,
   WsFactoryManagersPauseRpc,
@@ -66,6 +67,7 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsFactoryManagersPauseRpc,
   WsFactoryManagersResumeRpc,
   WsFactoryManagersRetireRpc,
+  WsFactoryManagersApproveOnboardingRpc,
 );
 
 type SatelliteWsRpc = RpcGroup.Rpcs<typeof WsSatelliteRpcGroup>;

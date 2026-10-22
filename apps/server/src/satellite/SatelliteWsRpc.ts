@@ -34,6 +34,8 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.factoryManagersPause]: (input) => factory.pauseManager(input),
         [SATELLITE_WS_METHODS.factoryManagersResume]: (input) => factory.resumeManager(input),
         [SATELLITE_WS_METHODS.factoryManagersRetire]: (input) => factory.retireManager(input),
+        [SATELLITE_WS_METHODS.factoryManagersApproveOnboarding]: (input) =>
+          factory.approveOnboarding(input),
       });
     }),
   );

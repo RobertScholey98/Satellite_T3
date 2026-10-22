@@ -33,4 +33,4 @@ export const testLayer = Layer.mergeAll(Issues.testLayer, Factory.testLayer);
 
 /** Where Satellite's MCP toolkits join `/mcp`, via `McpHttpServer.toolkitRegistration`. */
 export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) =>
-  Layer.mergeAll(mcpServer, Issues.mcpToolkit);
+  Layer.mergeAll(mcpServer, Issues.mcpToolkit, Factory.mcpToolkit);

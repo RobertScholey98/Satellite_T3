@@ -1,6 +1,6 @@
 import type { FactoryConfig, FactoryConfigOverride, ModelSelection } from "@t3tools/contracts";
 
-const modelKey = (model: ModelSelection) => `${model.instanceId}\n${model.model}`;
+export const modelKey = (model: ModelSelection) => `${model.instanceId}\n${model.model}`;
 
 const notInPool = (pool: ReadonlySet<string>, models: ReadonlyArray<ModelSelection | null>) =>
   models.filter((model): model is ModelSelection => model !== null && !pool.has(modelKey(model)));

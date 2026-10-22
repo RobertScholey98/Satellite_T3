@@ -3,8 +3,13 @@ import {
   DEFAULT_FACTORY_CONFIG,
   FactoryConfig,
   FactoryConfigOverride,
+  FactoryOperationError,
+  ModelSelection,
   ProjectId,
+  ThreadId,
   type FactoryManagersEvent,
+  type FactoryOnboardingReport,
+  type FactoryRole,
   type OrchestrationProjectShell,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -17,8 +22,10 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { TestClock } from "effect/testing";
 
-import { makeFactoryService } from "./FactoryService.ts";
+import { makeFactoryService, type FactoryThreadLaunch } from "./FactoryService.ts";
 import { FactoryV1 } from "./migrations/FactoryV1.ts";
+import type { RoleSkillSource } from "./roleSkills.ts";
+import { DEFAULT_ROLE_SKILLS, ONBOARDING_BRIEF } from "./roles/index.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
 const UNKNOWN_PROJECT_ID = ProjectId.make("project-missing");
@@ -45,9 +52,10 @@ const PROJECT: OrchestrationProjectShell = {
   updatedAt: EPOCH,
 };
 
-const OPUS = { instanceId: "claude", model: "claude-opus-5-5" };
-const SONNET = { instanceId: "claude", model: "claude-sonnet-5" };
-const GPT = { instanceId: "codex", model: "gpt-6" };
+const model = Schema.decodeSync(ModelSelection);
+const OPUS = model({ instanceId: "claude", model: "claude-opus-5-5" });
+const SONNET = model({ instanceId: "claude", model: "claude-sonnet-5" });
+const GPT = model({ instanceId: "codex", model: "gpt-6" });
 
 const decodeConfig = Schema.decodeSync(FactoryConfig);
 const decodeOverride = Schema.decodeSync(FactoryConfigOverride);
@@ -72,14 +80,63 @@ const ENVIRONMENT = decodeConfig({
 const withDatabase = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient | Scope.Scope>) =>
   effect.pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" })));
 
-const makeService = Effect.gen(function* () {
-  yield* FactoryV1;
-  return yield* makeFactoryService({
-    getProject: (id) => Effect.succeed(id === PROJECT_ID ? PROJECT : null),
+interface HarnessOptions {
+  /** Saved as the environment config before the service is returned. */
+  readonly config?: FactoryConfig;
+  /** How many launches fail before one succeeds. */
+  readonly launchFailures?: number;
+  readonly readRoleSkill?: (role: FactoryRole, projectRoot: string) => RoleSkillSource;
+}
+
+const makeHarness = (options: HarnessOptions = {}) =>
+  Effect.gen(function* () {
+    yield* FactoryV1;
+    const launches: FactoryThreadLaunch[] = [];
+    const skillReads: Array<readonly [FactoryRole, string]> = [];
+    let failures = options.launchFailures ?? 0;
+    let threads = 0;
+    const service = yield* makeFactoryService({
+      getProject: (id) => Effect.succeed(id === PROJECT_ID ? PROJECT : null),
+      allocateThreadId: () => Effect.sync(() => ThreadId.make(`thread-${++threads}`)),
+      launchThread: (input) =>
+        Effect.suspend(() => {
+          launches.push(input);
+          if (failures === 0) return Effect.void;
+          failures -= 1;
+          return Effect.fail(
+            new FactoryOperationError({ reason: "unavailable", message: "Provider is offline." }),
+          );
+        }),
+      readRoleSkill: (role, projectRoot) =>
+        Effect.sync(() => {
+          skillReads.push([role, projectRoot]);
+          return (
+            options.readRoleSkill?.(role, projectRoot) ?? {
+              text: DEFAULT_ROLE_SKILLS[role],
+              source: "default",
+            }
+          );
+        }),
+    });
+    if (options.config)
+      yield* service.updateConfig({ scope: "environment", config: options.config });
+    return { service, launches, skillReads };
   });
-});
+
+const makeService = makeHarness().pipe(Effect.map(({ service }) => service));
+/** Managers need a model pool to launch from. */
+const makeManagerService = makeHarness({ config: ENVIRONMENT }).pipe(
+  Effect.map(({ service }) => service),
+);
 
 type Service = Effect.Success<typeof makeService>;
+
+const REPORT: FactoryOnboardingReport = {
+  summary: "pnpm workspace; CI runs lint and tests.",
+  controlPaths: [".github/workflows/**", "AGENTS.md"],
+  boardGaps: ["No Ready column is mapped."],
+  openChoices: ["Which tickets count as small?"],
+};
 
 const create = (service: Service, requestId = "create-1", name = "Ada") =>
   service.createManager({ requestId, projectId: PROJECT_ID, name });
@@ -255,13 +312,13 @@ describe("FactoryService managers", () => {
   it.effect("creates a manager in onboarding and replays a repeated request", () =>
     withDatabase(
       Effect.gen(function* () {
-        const service = yield* makeService;
+        const service = yield* makeManagerService;
 
         const created = yield* create(service);
         assert.strictEqual(created.state, "onboarding");
         assert.strictEqual(created.projectId, PROJECT_ID);
         assert.strictEqual(created.name, "Ada");
-        assert.isNull(created.threadId);
+        assert.strictEqual(created.threadId, "thread-1");
         assert.strictEqual(created.activeAssignments, 0);
         assert.strictEqual(created.waitingOnYou, 0);
 
@@ -282,7 +339,7 @@ describe("FactoryService managers", () => {
   it.effect("refuses a manager for an unknown project", () =>
     withDatabase(
       Effect.gen(function* () {
-        const service = yield* makeService;
+        const service = yield* makeManagerService;
 
         const refused = yield* service
           .createManager({ requestId: "create-1", projectId: UNKNOWN_PROJECT_ID, name: "Ada" })
@@ -296,7 +353,7 @@ describe("FactoryService managers", () => {
   it.effect("pauses by scope and resumes to onboarding when paused during onboarding", () =>
     withDatabase(
       Effect.gen(function* () {
-        const service = yield* makeService;
+        const service = yield* makeManagerService;
         const { id: managerId } = yield* create(service);
 
         const managerPaused = yield* service.pauseManager({
@@ -329,7 +386,7 @@ describe("FactoryService managers", () => {
   it.effect("resumes an active manager to active", () =>
     withDatabase(
       Effect.gen(function* () {
-        const service = yield* makeService;
+        const service = yield* makeManagerService;
         const sql = yield* SqlClient.SqlClient;
         const { id: managerId } = yield* create(service);
         yield* sql`UPDATE factory_managers SET state='active' WHERE id=${managerId}`;
@@ -352,7 +409,7 @@ describe("FactoryService managers", () => {
     () =>
       withDatabase(
         Effect.gen(function* () {
-          const service = yield* makeService;
+          const service = yield* makeManagerService;
           const sql = yield* SqlClient.SqlClient;
           const { id: managerId } = yield* create(service);
           yield* insertAssignment(managerId, "active");
@@ -400,7 +457,7 @@ describe("FactoryService managers", () => {
   it.effect("streams the current managers, then the list after a change", () =>
     withDatabase(
       Effect.gen(function* () {
-        const service = yield* makeService;
+        const service = yield* makeManagerService;
         const events: FactoryManagersEvent[] = [];
         const subscribed = yield* Deferred.make<void>();
         const fiber = yield* service.subscribeManagers({}).pipe(
@@ -418,6 +475,242 @@ describe("FactoryService managers", () => {
         yield* Fiber.join(fiber);
 
         assert.deepStrictEqual(events, [{ managers: [] }, { managers: [created] }]);
+      }),
+    ),
+  );
+});
+
+const managerRows = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ id: string }>`SELECT id FROM factory_managers`;
+});
+
+describe("FactoryService manager launch", () => {
+  it.effect("refuses a manager while the model pool is empty", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { service, launches } = yield* makeHarness();
+
+        const refused = yield* create(service).pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "invalid");
+        assert.include(refused.message, "pool");
+        assert.strictEqual(yield* managerRowCount, 0);
+        assert.deepStrictEqual(launches, []);
+      }),
+    ),
+  );
+
+  it.effect("launches the manager's thread with its skill, the pool and the onboarding brief", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { service, launches, skillReads } = yield* makeHarness({
+          config: decodeConfig({
+            pickupGuidance: "anything",
+            modelPool: [OPUS, SONNET],
+            roleModels: { manager: SONNET },
+          }),
+        });
+
+        const created = yield* create(service);
+        assert.deepStrictEqual(created.modelSelection, SONNET);
+        assert.deepStrictEqual(skillReads, [["manager", "/repo"]]);
+        assert.strictEqual(launches.length, 1);
+        const launch = launches[0]!;
+        assert.strictEqual(launch.threadId, created.threadId);
+        assert.strictEqual(launch.commandId, "factory-manager:create-1");
+        assert.strictEqual(launch.title, "Engineering manager: Ada");
+        assert.deepStrictEqual(launch.modelSelection, SONNET);
+        assert.strictEqual(launch.runtimeMode, "full-access");
+        assert.strictEqual(launch.interactionMode, "default");
+        for (const heading of ["## What you are", "## What you must never touch"])
+          assert.include(launch.text, heading);
+        assert.include(launch.text, "- claude/claude-opus-5-5\n- claude/claude-sonnet-5");
+        assert.include(launch.text, "Pickup guidance:\n\nanything");
+        assert.isTrue(launch.text.endsWith(`\n\n${ONBOARDING_BRIEF}`));
+        assert.notInclude(launch.text, "{{");
+
+        assert.deepStrictEqual(yield* create(service), created);
+        assert.strictEqual(launches.length, 1);
+      }),
+    ),
+  );
+
+  it.effect("defaults to the first pool model, and takes a chosen one only from the pool", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { service, launches } = yield* makeHarness({
+          config: decodeConfig({ modelPool: [SONNET, OPUS] }),
+        });
+
+        const outside = yield* service
+          .createManager({
+            requestId: "create-1",
+            projectId: PROJECT_ID,
+            name: "Ada",
+            modelSelection: GPT,
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(outside.reason, "invalid");
+        assert.include(outside.message, "gpt-6");
+        assert.strictEqual(yield* managerRowCount, 0);
+        assert.deepStrictEqual(launches, []);
+
+        const defaulted = yield* create(service, "create-2");
+        assert.deepStrictEqual(defaulted.modelSelection, SONNET);
+
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM factory_managers`;
+        const chosen = yield* service.createManager({
+          requestId: "create-3",
+          projectId: PROJECT_ID,
+          name: "Grace",
+          modelSelection: OPUS,
+          runtimeMode: "approval-required",
+        });
+        assert.deepStrictEqual(chosen.modelSelection, OPUS);
+        assert.deepStrictEqual(
+          launches.map((launch) => [launch.modelSelection.model, launch.runtimeMode]),
+          [
+            ["claude-sonnet-5", "full-access"],
+            ["claude-opus-5-5", "approval-required"],
+          ],
+        );
+      }),
+    ),
+  );
+
+  it.effect("removes the manager when its thread fails to launch, so a retry can succeed", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { service, launches } = yield* makeHarness({
+          config: ENVIRONMENT,
+          launchFailures: 1,
+        });
+
+        const failed = yield* create(service).pipe(Effect.flip);
+        assert.strictEqual(failed.reason, "unavailable");
+        assert.include(failed.message, "Provider is offline.");
+        assert.strictEqual(yield* managerRowCount, 0);
+
+        const retried = yield* create(service, "create-2");
+        assert.strictEqual(retried.state, "onboarding");
+        assert.deepStrictEqual(
+          (yield* managerRows).map((row) => row.id),
+          [retried.id],
+        );
+        assert.strictEqual(launches.length, 2);
+      }),
+    ),
+  );
+});
+
+describe("FactoryService onboarding", () => {
+  it.effect("stores the proposal from the manager's own thread only", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const service = yield* makeManagerService;
+        const created = yield* create(service);
+        const threadId = created.threadId!;
+
+        const stranger = yield* service
+          .proposeOnboarding(ThreadId.make("thread-other"), REPORT)
+          .pipe(Effect.flip);
+        assert.strictEqual(stranger.reason, "not-found");
+        assert.isNull(yield* service.managerForThread(ThreadId.make("thread-other")));
+
+        const proposed = yield* service.proposeOnboarding(threadId, REPORT);
+        assert.strictEqual(proposed.state, "onboarding");
+        assert.deepStrictEqual(proposed.onboardingReport, REPORT);
+        assert.strictEqual(proposed.onboardingNotes, REPORT.summary);
+        assert.deepStrictEqual(proposed.controlPaths, []);
+        assert.deepStrictEqual(yield* service.managerForThread(threadId), proposed);
+      }),
+    ),
+  );
+
+  it.effect("approves with the cleaned control paths plus the factory's own folder", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const service = yield* makeManagerService;
+        const { id: managerId, threadId } = yield* create(service);
+        const approve = (requestId: string) =>
+          service.approveOnboarding({
+            requestId,
+            managerId,
+            controlPaths: [" .github/workflows/** ", "", "AGENTS.md", ".github/workflows/**"],
+          });
+
+        const early = yield* approve("approve-0").pipe(Effect.flip);
+        assert.strictEqual(early.reason, "conflict");
+
+        yield* service.proposeOnboarding(threadId!, REPORT);
+        yield* service.pauseManager({ requestId: "pause-1", managerId, scope: "manager" });
+        const paused = yield* approve("approve-1").pipe(Effect.flip);
+        assert.strictEqual(paused.reason, "conflict");
+        assert.include(paused.message, "Resume");
+        yield* service.resumeManager({ requestId: "resume-1", managerId });
+
+        const approved = yield* approve("approve-2");
+        assert.strictEqual(approved.state, "active");
+        assert.deepStrictEqual(approved.controlPaths, [
+          ".github/workflows/**",
+          "AGENTS.md",
+          ".satellite/factory/",
+        ]);
+        assert.deepStrictEqual(approved.onboardingReport, REPORT);
+        assert.deepStrictEqual(yield* approve("approve-2"), approved);
+
+        const again = yield* approve("approve-3").pipe(Effect.flip);
+        assert.strictEqual(again.reason, "conflict");
+        const lateProposal = yield* service.proposeOnboarding(threadId!, REPORT).pipe(Effect.flip);
+        assert.strictEqual(lateProposal.reason, "conflict");
+      }),
+    ),
+  );
+});
+
+describe("FactoryService role briefs", () => {
+  const TEMPLATE = "allowed:\n{{allowedModels}}\nprotected:\n{{protectedPaths}}";
+
+  it.effect("fills the skill source the project resolves with the role's models and paths", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { service, skillReads } = yield* makeHarness({
+          config: decodeConfig({
+            pickupGuidance: "anything",
+            modelPool: [OPUS, SONNET],
+            roleModels: { manager: OPUS, workers: { implementer: [SONNET] } },
+          }),
+          readRoleSkill: (role) =>
+            role === "implementer"
+              ? { text: TEMPLATE, source: "project" }
+              : { text: TEMPLATE, source: "environment" },
+        });
+        const { id: managerId, threadId } = yield* create(service);
+        yield* service.proposeOnboarding(threadId!, REPORT);
+
+        const implementer = yield* service.roleBrief(PROJECT_ID, "implementer", managerId);
+        assert.deepStrictEqual(implementer, {
+          role: "implementer",
+          source: "project",
+          text: "allowed:\n- claude/claude-sonnet-5\nprotected:\n- .github/workflows/**\n- AGENTS.md",
+        });
+        assert.deepStrictEqual(skillReads.at(-1), ["implementer", "/repo"]);
+
+        const reviewer = yield* service.roleBrief(PROJECT_ID, "reviewer", managerId);
+        assert.strictEqual(reviewer.source, "environment");
+        assert.include(reviewer.text, "- claude/claude-opus-5-5\n- claude/claude-sonnet-5");
+
+        yield* service.approveOnboarding({
+          requestId: "approve-1",
+          managerId,
+          controlPaths: ["CI.md"],
+        });
+        const approved = yield* service.roleBrief(PROJECT_ID, "manager", managerId);
+        assert.strictEqual(
+          approved.text,
+          "allowed:\n- claude/claude-opus-5-5\nprotected:\n- CI.md\n- .satellite/factory/",
+        );
       }),
     ),
   );

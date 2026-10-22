@@ -12,6 +12,7 @@ import {
   TrimmedString,
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import { RuntimeMode } from "./providerPolicy.ts";
 
 /**
  * The engineering factory: a standing manager per project that commissions assignments to leads.
@@ -26,6 +27,7 @@ export const FACTORY_WS_METHODS = {
   factoryManagersPause: "factory.managers.pause",
   factoryManagersResume: "factory.managers.resume",
   factoryManagersRetire: "factory.managers.retire",
+  factoryManagersApproveOnboarding: "factory.managers.approveOnboarding",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -38,6 +40,14 @@ export const FactoryRole = Schema.Literals([
   "verifier",
 ]);
 export type FactoryRole = typeof FactoryRole.Type;
+
+/** A role's skill text and where it came from: the project, the environment, or the built-in. */
+export const FactoryRoleBrief = Schema.Struct({
+  role: FactoryRole,
+  text: Schema.String,
+  source: Schema.Literals(["project", "environment", "default"]),
+});
+export type FactoryRoleBrief = typeof FactoryRoleBrief.Type;
 
 /** The agent types a lead staffs a team from. */
 export const FactoryWorkerRole = Schema.Literals(["implementer", "reviewer", "verifier"]);
@@ -175,6 +185,23 @@ export const FactoryConfigView = Schema.Struct({
 });
 export type FactoryConfigView = typeof FactoryConfigView.Type;
 
+const ControlPath = Schema.String.check(Schema.isMaxLength(300));
+const ControlPaths = Schema.Array(ControlPath).check(Schema.isMaxLength(100));
+
+/** What the manager learned while onboarding, proposed to the user for approval. */
+export const FactoryOnboardingReport = Schema.Struct({
+  summary: Schema.String.check(Schema.isMaxLength(4000)),
+  /** Glob patterns relative to the repository root that no team may edit. */
+  controlPaths: ControlPaths,
+  boardGaps: Schema.Array(Schema.String.check(Schema.isMaxLength(500))).check(
+    Schema.isMaxLength(50),
+  ),
+  openChoices: Schema.Array(Schema.String.check(Schema.isMaxLength(500))).check(
+    Schema.isMaxLength(50),
+  ),
+});
+export type FactoryOnboardingReport = typeof FactoryOnboardingReport.Type;
+
 /** `retired` is terminal; the project can then get a new manager. */
 export const FactoryManagerState = Schema.Literals([
   "onboarding",
@@ -195,6 +222,10 @@ export const FactoryManager = Schema.Struct({
   /** Protected control paths, approved by the user at the end of onboarding. */
   controlPaths: Schema.Array(Schema.String),
   onboardingNotes: Schema.String,
+  /** The manager's onboarding proposal; kept after approval as the record of what was approved. */
+  onboardingReport: Schema.NullOr(FactoryOnboardingReport),
+  /** The model the manager's thread launched with. */
+  modelSelection: Schema.NullOr(ModelSelection),
   /** Assignments that are not completed or cancelled. */
   activeAssignments: NonNegativeInt,
   /** Assignments waiting on the user. */
@@ -245,6 +276,13 @@ export const FactoryManagersCreateInput = Schema.Struct({
   requestId: Id,
   projectId: ProjectId,
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+  /**
+   * Must be in the project's effective model pool. Absent means the pool's manager model, else
+   * the first model in the pool.
+   */
+  modelSelection: Schema.optionalKey(ModelSelection),
+  /** Absent means `full-access`, because the factory runs unattended. */
+  runtimeMode: Schema.optionalKey(RuntimeMode),
 });
 export type FactoryManagersCreateInput = typeof FactoryManagersCreateInput.Type;
 
@@ -262,6 +300,18 @@ export type FactoryManagersResumeInput = typeof FactoryManagersResumeInput.Type;
 /** Refused while the manager has active assignments. */
 export const FactoryManagersRetireInput = Schema.Struct({ requestId: Id, managerId: Id });
 export type FactoryManagersRetireInput = typeof FactoryManagersRetireInput.Type;
+
+/**
+ * Approves the manager's onboarding with the control paths the user settled on, and starts it.
+ * The factory's own folder is always protected.
+ */
+export const FactoryManagersApproveOnboardingInput = Schema.Struct({
+  requestId: Id,
+  managerId: Id,
+  controlPaths: ControlPaths,
+});
+export type FactoryManagersApproveOnboardingInput =
+  typeof FactoryManagersApproveOnboardingInput.Type;
 
 const FactoryRpcError = Schema.Union([FactoryOperationError, EnvironmentAuthorizationError]);
 
@@ -306,3 +356,11 @@ export const WsFactoryManagersRetireRpc = Rpc.make(FACTORY_WS_METHODS.factoryMan
   success: FactoryManager,
   error: FactoryRpcError,
 });
+export const WsFactoryManagersApproveOnboardingRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryManagersApproveOnboarding,
+  {
+    payload: FactoryManagersApproveOnboardingInput,
+    success: FactoryManager,
+    error: FactoryRpcError,
+  },
+);

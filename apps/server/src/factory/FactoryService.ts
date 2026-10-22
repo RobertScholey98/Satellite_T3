@@ -2,15 +2,19 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  CommandId,
   DEFAULT_FACTORY_CONFIG,
   FactoryConfig,
   FactoryConfigOverride,
   FactoryManager,
+  FactoryOnboardingReport,
   FactoryOperationError,
+  ModelSelection,
   resolveFactoryConfig,
   type FactoryConfigGetInput,
   type FactoryConfigUpdateInput,
   type FactoryConfigView,
+  type FactoryManagersApproveOnboardingInput,
   type FactoryManagersCreateInput,
   type FactoryManagersEvent,
   type FactoryManagersListInput,
@@ -18,27 +22,64 @@ import {
   type FactoryManagersResumeInput,
   type FactoryManagersRetireInput,
   type FactoryManagersSubscribeInput,
+  type FactoryRole,
+  type FactoryRoleBrief,
   type OrchestrationProjectShell,
   type ProjectId,
+  type ProviderInteractionMode,
+  type RuntimeMode,
+  ThreadId,
 } from "@t3tools/contracts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
-import { factoryConfigProblem, overrideWidensPool } from "./factoryConfig.ts";
+import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
+import { factoryConfigProblem, modelKey, overrideWidensPool } from "./factoryConfig.ts";
+import {
+  renderRoleSkill,
+  roleSkillSource,
+  type RoleSkillFill,
+  type RoleSkillSource,
+} from "./roleSkills.ts";
+import { ONBOARDING_BRIEF } from "./roles/index.ts";
+
+/** Upstream's thread launch, as the factory calls it. Factory threads run in the project root. */
+export interface FactoryThreadLaunch {
+  readonly commandId: CommandId;
+  readonly threadId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly title: string;
+  readonly text: string;
+  readonly modelSelection: ModelSelection;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+}
 
 export interface FactoryServiceDependencies {
   readonly getProject: (
     projectId: ProjectId,
   ) => Effect.Effect<OrchestrationProjectShell | null, FactoryOperationError>;
+  readonly allocateThreadId: (
+    projectId: ProjectId,
+  ) => Effect.Effect<ThreadId, FactoryOperationError>;
+  readonly launchThread: (input: FactoryThreadLaunch) => Effect.Effect<void, FactoryOperationError>;
+  readonly readRoleSkill: (
+    role: FactoryRole,
+    projectRoot: string,
+  ) => Effect.Effect<RoleSkillSource>;
 }
 
 export interface FactoryServiceShape {
@@ -66,6 +107,24 @@ export interface FactoryServiceShape {
   readonly retireManager: (
     input: FactoryManagersRetireInput,
   ) => Effect.Effect<FactoryManager, FactoryOperationError>;
+  /** Stores the onboarding report the manager in this thread proposes for the user to approve. */
+  readonly proposeOnboarding: (
+    threadId: ThreadId,
+    report: FactoryOnboardingReport,
+  ) => Effect.Effect<FactoryManager, FactoryOperationError>;
+  readonly approveOnboarding: (
+    input: FactoryManagersApproveOnboardingInput,
+  ) => Effect.Effect<FactoryManager, FactoryOperationError>;
+  /** The current manager whose own thread this is, or null. */
+  readonly managerForThread: (
+    threadId: ThreadId,
+  ) => Effect.Effect<FactoryManager | null, FactoryOperationError>;
+  /** A role's skill for this manager's project, with its placeholders filled. */
+  readonly roleBrief: (
+    projectId: ProjectId,
+    role: FactoryRole,
+    managerId: string,
+  ) => Effect.Effect<FactoryRoleBrief, FactoryOperationError>;
 }
 
 export class FactoryService extends Context.Service<FactoryService, FactoryServiceShape>()(
@@ -80,6 +139,8 @@ const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const hash = (value: unknown) => NodeCrypto.createHash("sha256").update(json(value)).digest("hex");
 const encodeConfig = Schema.encodeSync(Schema.fromJsonString(FactoryConfig));
 const encodeOverride = Schema.encodeSync(Schema.fromJsonString(FactoryConfigOverride));
+const encodeModel = Schema.encodeSync(Schema.fromJsonString(ModelSelection));
+const encodeReport = Schema.encodeSync(Schema.fromJsonString(FactoryOnboardingReport));
 const decodeManagerValue = Schema.decodeUnknownEffect(FactoryManager);
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
   Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(storageError));
@@ -90,6 +151,48 @@ const projectScope = (projectId: ProjectId) => `project:${projectId}`;
 /** Assignments in these states hold the manager and block retiring it. */
 const ACTIVE_ASSIGNMENT_STATES = ["active", "blocked", "waiting-rob", "stalled", "retro"] as const;
 
+// Always protected, so a team cannot rewrite the rules and role skills it works under.
+const FACTORY_CONTROL_PATH = ".satellite/factory/";
+
+const controlPathsOf = (paths: ReadonlyArray<string>) => [
+  ...new Set([
+    ...paths.map((path) => path.trim()).filter((path) => path !== ""),
+    FACTORY_CONTROL_PATH,
+  ]),
+];
+
+const dedupeModels = (models: ReadonlyArray<ModelSelection>) => [
+  ...new Map(models.map((model) => [modelKey(model), model])).values(),
+];
+
+/** The models a role may start, narrowed by the role models and otherwise the whole pool. */
+const allowedModelsFor = (config: FactoryConfig, role: FactoryRole) => {
+  const { manager, lead, workers } = config.roleModels;
+  switch (role) {
+    case "manager":
+      return manager === null ? config.modelPool : [manager];
+    case "lead":
+      // An unset size may use the whole pool, so only three set sizes narrow it.
+      return lead.small !== null && lead.medium !== null && lead.large !== null
+        ? dedupeModels([lead.small, lead.medium, lead.large])
+        : config.modelPool;
+    default:
+      return workers[role].length > 0 ? workers[role] : config.modelPool;
+  }
+};
+
+const skillFill = (
+  config: FactoryConfig,
+  role: FactoryRole,
+  protectedPaths: ReadonlyArray<string>,
+): RoleSkillFill => ({
+  modelPool: config.modelPool,
+  allowedModels: allowedModelsFor(config, role),
+  protectedPaths,
+  completionCondition: null,
+  pickupGuidance: config.pickupGuidance,
+});
+
 interface ManagerRow {
   readonly id: string;
   readonly project_id: string;
@@ -99,6 +202,8 @@ interface ManagerRow {
   readonly thread_id: string | null;
   readonly control_paths_json: string;
   readonly onboarding_notes: string;
+  readonly onboarding_report_json: string | null;
+  readonly model_selection_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
   readonly active_assignments: number;
@@ -235,6 +340,14 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       threadId: row.thread_id,
       controlPaths: yield* parse(Schema.Array(Schema.String), row.control_paths_json),
       onboardingNotes: row.onboarding_notes,
+      onboardingReport:
+        row.onboarding_report_json === null
+          ? null
+          : yield* parse(Schema.Unknown, row.onboarding_report_json),
+      modelSelection:
+        row.model_selection_json === null
+          ? null
+          : yield* parse(Schema.Unknown, row.model_selection_json),
       activeAssignments: row.active_assignments,
       waitingOnYou: row.waiting_on_you,
       createdAt: row.created_at,
@@ -306,24 +419,66 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     return manager;
   });
 
+  /**
+   * Records the manager in onboarding, then launches its thread outside the lock like issue
+   * attempts. A failed launch removes the row before the request is remembered, so the user can retry.
+   */
   const createManager: FactoryServiceShape["createManager"] = (input) =>
-    lock(
+    protect(
       Effect.gen(function* () {
-        const replay = yield* replayManager(input.requestId, input);
-        if (replay) return replay;
-        yield* project(input.projectId);
-        const current = yield* sql<{ name: string }>`SELECT name FROM factory_managers
-            WHERE project_id=${input.projectId} AND state != 'retired'`;
-        if (current[0])
-          return yield* error(
-            "conflict",
-            `This project already has an engineering manager, ${current[0].name}.`,
-          );
-        const id = NodeCrypto.randomUUID();
-        const at = yield* now;
-        yield* sql`INSERT INTO factory_managers(id,project_id,name,state,thread_id,created_at,updated_at)
-            VALUES(${id},${input.projectId},${input.name},'onboarding',NULL,${at},${at})`;
-        return yield* rememberManager(input.requestId, input, id);
+        const created = yield* lock(
+          Effect.gen(function* () {
+            const replay = yield* replayManager(input.requestId, input);
+            if (replay) return { replay } as const;
+            const shell = yield* project(input.projectId);
+            const current = yield* sql<{ name: string }>`SELECT name FROM factory_managers
+                WHERE project_id=${input.projectId} AND state != 'retired'`;
+            if (current[0])
+              return yield* error(
+                "conflict",
+                `This project already has an engineering manager, ${current[0].name}.`,
+              );
+            const config = (yield* configView(input.projectId)).effective;
+            if (config.modelPool.length === 0)
+              return yield* error("invalid", "Add at least one model to the factory pool first.");
+            const pool = new Set(config.modelPool.map(modelKey));
+            if (input.modelSelection && !pool.has(modelKey(input.modelSelection)))
+              return yield* error(
+                "invalid",
+                `${input.modelSelection.model} (${input.modelSelection.instanceId}) is not in the model pool.`,
+              );
+            const modelSelection =
+              input.modelSelection ?? config.roleModels.manager ?? config.modelPool[0]!;
+            const runtimeMode = input.runtimeMode ?? "full-access";
+            const threadId = yield* deps.allocateThreadId(input.projectId);
+            const id = NodeCrypto.randomUUID();
+            const at = yield* now;
+            yield* sql`INSERT INTO factory_managers(id,project_id,name,state,thread_id,
+                model_selection_json,runtime_mode,created_at,updated_at)
+                VALUES(${id},${input.projectId},${input.name},'onboarding',${threadId},
+                ${encodeModel(modelSelection)},${runtimeMode},${at},${at})`;
+            return { id, threadId, config, modelSelection, runtimeMode, shell } as const;
+          }),
+        );
+        if ("replay" in created) return created.replay;
+        const skill = yield* deps.readRoleSkill("manager", created.shell.workspaceRoot);
+        const launched = yield* deps
+          .launchThread({
+            commandId: CommandId.make(`factory-manager:${input.requestId}`),
+            threadId: created.threadId,
+            projectId: input.projectId,
+            title: `Engineering manager: ${input.name}`,
+            text: `${renderRoleSkill(skill.text, skillFill(created.config, "manager", []))}\n\n${ONBOARDING_BRIEF}`,
+            modelSelection: created.modelSelection,
+            runtimeMode: created.runtimeMode,
+            interactionMode: "default",
+          })
+          .pipe(Effect.result);
+        if (launched._tag === "Failure") {
+          yield* lock(sql`DELETE FROM factory_managers WHERE id=${created.id}`);
+          return yield* error("unavailable", launched.failure.message);
+        }
+        return yield* lock(rememberManager(input.requestId, input, created.id));
       }),
     );
 
@@ -389,6 +544,78 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       }),
     );
 
+  const managerRowForThread = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const rows = yield* managerRows(sql.literal("m.state != 'retired'"));
+    return rows.find((row) => row.thread_id === threadId) ?? null;
+  });
+
+  const managerForThread: FactoryServiceShape["managerForThread"] = (threadId) =>
+    protect(
+      Effect.gen(function* () {
+        const row = yield* managerRowForThread(threadId);
+        return row === null ? null : yield* decodeManager(row);
+      }),
+    );
+
+  const proposeOnboarding: FactoryServiceShape["proposeOnboarding"] = (threadId, report) =>
+    lock(
+      Effect.gen(function* () {
+        const row = yield* managerRowForThread(threadId);
+        if (row === null)
+          return yield* error("not-found", "This thread is not an engineering manager.");
+        const onboarding =
+          row.state === "onboarding" ||
+          ((row.state === "manager-paused" || row.state === "project-paused") &&
+            row.paused_from === "onboarding");
+        if (!onboarding)
+          return yield* error("conflict", "This manager has already finished onboarding.");
+        yield* sql`UPDATE factory_managers SET onboarding_report_json=${encodeReport(report)},
+            onboarding_notes=${report.summary},updated_at=${yield* now} WHERE id=${row.id}`;
+        yield* publish;
+        return yield* readManager(row.id);
+      }),
+    );
+
+  const approveOnboarding: FactoryServiceShape["approveOnboarding"] = (input) =>
+    lock(
+      Effect.gen(function* () {
+        const replay = yield* replayManager(input.requestId, input);
+        if (replay) return replay;
+        const manager = yield* readManager(input.managerId);
+        if (manager.state === "manager-paused" || manager.state === "project-paused")
+          return yield* error("conflict", "Resume the manager first.");
+        if (manager.state !== "onboarding")
+          return yield* error("conflict", `${manager.name} is not onboarding.`);
+        if (manager.onboardingReport === null)
+          return yield* error(
+            "conflict",
+            `${manager.name} has not proposed an onboarding report yet.`,
+          );
+        yield* sql`UPDATE factory_managers SET state='active',
+            control_paths_json=${json(controlPathsOf(input.controlPaths))},updated_at=${yield* now}
+            WHERE id=${manager.id}`;
+        return yield* rememberManager(input.requestId, input, manager.id);
+      }),
+    );
+
+  const roleBrief: FactoryServiceShape["roleBrief"] = (projectId, role, managerId) =>
+    protect(
+      Effect.gen(function* () {
+        const shell = yield* project(projectId);
+        const manager = yield* readManager(managerId);
+        if (manager.projectId !== projectId)
+          return yield* error("invalid", "This manager belongs to a different project.");
+        const config = (yield* configView(projectId)).effective;
+        const skill = yield* deps.readRoleSkill(role, shell.workspaceRoot);
+        const protectedPaths =
+          manager.controlPaths.length > 0
+            ? manager.controlPaths
+            : (manager.onboardingReport?.controlPaths ?? []);
+        const text = renderRoleSkill(skill.text, skillFill(config, role, protectedPaths));
+        return { role, text, source: skill.source } satisfies FactoryRoleBrief;
+      }),
+    );
+
   return {
     getConfig,
     updateConfig,
@@ -398,15 +625,53 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     pauseManager,
     resumeManager,
     retireManager,
+    proposeOnboarding,
+    approveOnboarding,
+    managerForThread,
+    roleBrief,
   } satisfies FactoryServiceShape;
 });
 
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const projects = yield* ProjectStore.ProjectStoreV2;
+  const ids = yield* IdAllocator.IdAllocatorV2;
+  const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
+  const { baseDir } = yield* ServerConfig.ServerConfig;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   return yield* makeFactoryService({
     getProject: (id) =>
       projects.getShell(id).pipe(Effect.map(Option.getOrNull), Effect.mapError(storageError)),
+    allocateThreadId: (projectId) =>
+      ids.allocate.thread({ projectId }).pipe(Effect.mapError(storageError)),
+    launchThread: (input) =>
+      threadLaunch
+        .launch({
+          commandId: input.commandId,
+          threadId: input.threadId,
+          projectId: input.projectId,
+          title: input.title,
+          generateTitle: false,
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          workspaceStrategy: { type: "root" },
+          initialMessage: { text: input.text, attachments: [] },
+          createdBy: "user",
+          creationSource: "web",
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            error("unavailable", `The thread could not be launched: ${cause.message}`),
+          ),
+          Effect.asVoid,
+        ),
+    readRoleSkill: (role, projectRoot) =>
+      roleSkillSource(role, { projectRoot, baseDir }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+      ),
   });
 });
 

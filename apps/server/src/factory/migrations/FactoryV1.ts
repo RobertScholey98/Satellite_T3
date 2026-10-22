@@ -24,6 +24,9 @@ export const FactoryV1 = Effect.gen(function* () {
     thread_id TEXT,
     control_paths_json TEXT NOT NULL DEFAULT '[]',
     onboarding_notes TEXT NOT NULL DEFAULT '',
+    onboarding_report_json TEXT,
+    model_selection_json TEXT,
+    runtime_mode TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`;
