@@ -2,6 +2,17 @@ import type * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import {
+  FACTORY_WS_METHODS,
+  WsFactoryConfigGetRpc,
+  WsFactoryConfigUpdateRpc,
+  WsFactoryManagersCreateRpc,
+  WsFactoryManagersListRpc,
+  WsFactoryManagersPauseRpc,
+  WsFactoryManagersResumeRpc,
+  WsFactoryManagersRetireRpc,
+  WsFactoryManagersSubscribeRpc,
+} from "./factory.ts";
+import {
   ISSUES_WS_METHODS,
   WsIssuesAttemptsEndRpc,
   WsIssuesAttemptsListRpc,
@@ -25,6 +36,7 @@ import {
  */
 export const SATELLITE_WS_METHODS = {
   ...ISSUES_WS_METHODS,
+  ...FACTORY_WS_METHODS,
 } as const;
 
 /**
@@ -46,6 +58,14 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsIssuesAttemptsStartRpc,
   WsIssuesAttemptsEndRpc,
   WsIssuesAttemptsResumeRpc,
+  WsFactoryConfigGetRpc,
+  WsFactoryConfigUpdateRpc,
+  WsFactoryManagersListRpc,
+  WsFactoryManagersSubscribeRpc,
+  WsFactoryManagersCreateRpc,
+  WsFactoryManagersPauseRpc,
+  WsFactoryManagersResumeRpc,
+  WsFactoryManagersRetireRpc,
 );
 
 type SatelliteWsRpc = RpcGroup.Rpcs<typeof WsSatelliteRpcGroup>;

@@ -2,6 +2,7 @@ import {
   type AuthEnvironmentScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthSettingsWriteScope,
   SATELLITE_WS_METHODS,
   type SatelliteWsRpcMethod,
 } from "@t3tools/contracts";
@@ -21,6 +22,14 @@ export const SATELLITE_RPC_REQUIRED_SCOPES = {
   [SATELLITE_WS_METHODS.issuesAttemptsStart]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.issuesAttemptsEnd]: AuthOrchestrationOperateScope,
   [SATELLITE_WS_METHODS.issuesAttemptsResume]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.factoryConfigGet]: AuthOrchestrationReadScope,
+  [SATELLITE_WS_METHODS.factoryConfigUpdate]: AuthSettingsWriteScope,
+  [SATELLITE_WS_METHODS.factoryManagersList]: AuthOrchestrationReadScope,
+  [SATELLITE_WS_METHODS.factoryManagersSubscribe]: AuthOrchestrationReadScope,
+  [SATELLITE_WS_METHODS.factoryManagersCreate]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.factoryManagersPause]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.factoryManagersResume]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.factoryManagersRetire]: AuthOrchestrationOperateScope,
 } as const satisfies Readonly<Record<SatelliteWsRpcMethod, AuthEnvironmentScope>>;
 
 /** The `rpc.aggregate` span label of each Satellite RPC. `RPC_AGGREGATES` spreads it. */
@@ -38,4 +47,12 @@ export const SATELLITE_RPC_AGGREGATES = {
   [SATELLITE_WS_METHODS.issuesAttemptsStart]: "issues",
   [SATELLITE_WS_METHODS.issuesAttemptsEnd]: "issues",
   [SATELLITE_WS_METHODS.issuesAttemptsResume]: "issues",
+  [SATELLITE_WS_METHODS.factoryConfigGet]: "factory",
+  [SATELLITE_WS_METHODS.factoryConfigUpdate]: "factory",
+  [SATELLITE_WS_METHODS.factoryManagersList]: "factory",
+  [SATELLITE_WS_METHODS.factoryManagersSubscribe]: "factory",
+  [SATELLITE_WS_METHODS.factoryManagersCreate]: "factory",
+  [SATELLITE_WS_METHODS.factoryManagersPause]: "factory",
+  [SATELLITE_WS_METHODS.factoryManagersResume]: "factory",
+  [SATELLITE_WS_METHODS.factoryManagersRetire]: "factory",
 } as const satisfies Readonly<Record<SatelliteWsRpcMethod, string>>;

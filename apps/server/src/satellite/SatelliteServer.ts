@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as Factory from "../factory/Factory.ts";
 import * as Issues from "../issues/Issues.ts";
 import { drainLegacyThreadArchivesAfterStartup } from "./persistence/drainLegacyThreadArchives.ts";
 
@@ -21,13 +22,14 @@ export const layer = Layer.mergeAll(
     ),
   ),
   Issues.layer,
+  Factory.layer,
 );
 
 /**
  * Satellite's services with test stand-ins for their dependencies, for tests that build Satellite
  * handlers.
  */
-export const testLayer = Issues.testLayer;
+export const testLayer = Layer.mergeAll(Issues.testLayer, Factory.testLayer);
 
 /** Where Satellite's MCP toolkits join `/mcp`, via `McpHttpServer.toolkitRegistration`. */
 export const withMcpToolkits = <A, E, R>(mcpServer: Layer.Layer<A, E, R>) =>
