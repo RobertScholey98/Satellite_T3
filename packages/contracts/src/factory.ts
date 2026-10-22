@@ -33,6 +33,7 @@ export const FACTORY_WS_METHODS = {
   factoryAssignmentsList: "factory.assignments.list",
   factoryAssignmentsSubscribe: "factory.assignments.subscribe",
   factoryAssignmentsCancel: "factory.assignments.cancel",
+  factoryAssignmentsRefreshDigest: "factory.assignments.refreshDigest",
   factoryThreadsTakeOver: "factory.threads.takeOver",
   factoryThreadsHandBack: "factory.threads.handBack",
   factoryLogList: "factory.log.list",
@@ -625,6 +626,10 @@ export const FactoryAssignmentsCancelInput = Schema.Struct({
 });
 export type FactoryAssignmentsCancelInput = typeof FactoryAssignmentsCancelInput.Type;
 
+/** Rewrites the assignment's digest when its team has new activity; otherwise returns it as is. */
+export const FactoryAssignmentsRefreshDigestInput = Schema.Struct({ assignmentId: Id });
+export type FactoryAssignmentsRefreshDigestInput = typeof FactoryAssignmentsRefreshDigestInput.Type;
+
 /** The user takes over a factory thread; the factory stops acting on it until handed back. */
 export const FactoryThreadsTakeOverInput = Schema.Struct({ requestId: Id, threadId: ThreadId });
 export type FactoryThreadsTakeOverInput = typeof FactoryThreadsTakeOverInput.Type;
@@ -1034,6 +1039,14 @@ export const WsFactoryAssignmentsCancelRpc = Rpc.make(FACTORY_WS_METHODS.factory
   success: FactoryAssignment,
   error: FactoryRpcError,
 });
+export const WsFactoryAssignmentsRefreshDigestRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryAssignmentsRefreshDigest,
+  {
+    payload: FactoryAssignmentsRefreshDigestInput,
+    success: FactoryAssignment,
+    error: FactoryRpcError,
+  },
+);
 export const WsFactoryThreadsTakeOverRpc = Rpc.make(FACTORY_WS_METHODS.factoryThreadsTakeOver, {
   payload: FactoryThreadsTakeOverInput,
   success: FactoryAssignment,

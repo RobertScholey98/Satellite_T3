@@ -32,7 +32,9 @@ import { TestClock } from "effect/testing";
 import { parseRateTable, type RateTable } from "../usage/usagePricing.ts";
 import {
   makeFactoryService,
+  type FactoryDigestRequest,
   type FactoryServiceDependencies,
+  type FactoryThreadActivity,
   type FactoryThreadInterrupt,
   type FactoryThreadLaunch,
   type FactoryPullRequestRef,
@@ -177,6 +179,8 @@ interface HarnessControls {
   ticketFailures: number;
   /** What the usage rate cache holds; null when usage tracking has cached none. */
   rateTable: RateTable | null;
+  /** What the text-generation model answers a digest request with. */
+  summary: Effect.Effect<string, FactoryOperationError>;
 }
 
 type TicketRequest = Parameters<FactoryServiceDependencies["createTicket"]>[0];
@@ -192,12 +196,15 @@ const makeHarness = (options: HarnessOptions = {}) =>
     const interrupts: FactoryThreadInterrupt[] = [];
     const threadRuns = new Map<ThreadId, FactoryThreadRuns>();
     const threadTurns = new Map<ThreadId, ReadonlyArray<FactoryThreadTurn>>();
+    const threadActivity = new Map<ThreadId, ReadonlyArray<FactoryThreadActivity>>();
+    const summaryRequests: FactoryDigestRequest[] = [];
     const controls: HarnessControls = {
       sendFailures: 0,
       attemptFailures: 0,
       fileReadFailures: 0,
       ticketFailures: 0,
       rateTable: null,
+      summary: Effect.sync(() => ` Digest ${summaryRequests.length}. `),
     };
     const ticketRequests: TicketRequest[] = [];
     /** Changed files by pull request number. */
@@ -269,6 +276,12 @@ const makeHarness = (options: HarnessOptions = {}) =>
         }),
       readThreadRuns: (threadId) => Effect.sync(() => threadRuns.get(threadId) ?? null),
       readThreadTurns: (threadId) => Effect.sync(() => threadTurns.get(threadId) ?? []),
+      readThreadActivity: (threadId) => Effect.sync(() => threadActivity.get(threadId) ?? []),
+      generateSummary: (input) =>
+        Effect.suspend(() => {
+          summaryRequests.push(input);
+          return controls.summary;
+        }),
       readRateTable: Effect.sync(() => controls.rateTable),
       sendToThread: (input) =>
         Effect.suspend(() => {
@@ -316,6 +329,8 @@ const makeHarness = (options: HarnessOptions = {}) =>
       interrupts,
       threadRuns,
       threadTurns,
+      threadActivity,
+      summaryRequests,
       controls,
       pullRequestFiles,
       fileReads,
@@ -1451,6 +1466,103 @@ const wakeReasons = (service: Service, managerId: string) =>
         .toReversed(),
     ),
   );
+
+const activity = (text: string, at: string): FactoryThreadActivity => ({
+  role: "assistant",
+  text,
+  at,
+});
+
+describe("FactoryService digests", () => {
+  it.effect("writes a digest on the sweep once there is new activity and the interval is up", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadActivity, summaryRequests, sentMessages } = factory;
+        const { assignment, lead } = yield* startedAssignment(factory);
+        threadActivity.set(lead, [activity("Parser merged.", "1970-01-01T00:00:01.000Z")]);
+
+        yield* service.sweepDigests;
+        const first = (yield* service.assignmentForThread(lead))!.digest;
+        assert.deepStrictEqual(first, {
+          text: "Digest 1.",
+          generatedAt: EPOCH,
+          activityAt: "1970-01-01T00:00:01.000Z",
+        });
+        assert.strictEqual(summaryRequests[0]!.subject, "Ticket 1");
+        assert.strictEqual(summaryRequests[0]!.cwd, "/repo");
+        assert.isNull(summaryRequests[0]!.previousSummary);
+        assert.include(summaryRequests[0]!.context, "lead: Parser merged.");
+
+        // New activity inside the interval waits for the next due sweep, or a refresh.
+        threadActivity.set(lead, [
+          activity("Parser merged.", "1970-01-01T00:00:01.000Z"),
+          activity("Tests are failing on Windows.", "1970-01-01T00:00:02.000Z"),
+        ]);
+        yield* service.sweepDigests;
+        assert.strictEqual(summaryRequests.length, 1);
+
+        const refreshed = yield* service.refreshDigest(assignment.id);
+        assert.strictEqual(refreshed.digest?.text, "Digest 2.");
+        assert.strictEqual(refreshed.digest?.activityAt, "1970-01-01T00:00:02.000Z");
+        assert.strictEqual(summaryRequests[1]!.previousSummary, "Digest 1.");
+        assert.notInclude(summaryRequests[1]!.context, "Parser merged.");
+        assert.include(summaryRequests[1]!.context, "Tests are failing on Windows.");
+
+        // Past the interval with nothing new, the sweep leaves it alone.
+        yield* TestClock.adjust("11 minutes");
+        yield* service.sweepDigests;
+        assert.strictEqual(summaryRequests.length, 2);
+        const sentBefore = sentMessages.length;
+        yield* service.refreshDigest(assignment.id);
+        assert.strictEqual(summaryRequests.length, 2);
+        assert.strictEqual(sentMessages.length, sentBefore);
+      }),
+    ),
+  );
+
+  it.effect("keeps the previous digest when generation fails", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadActivity, summaryRequests, controls } = factory;
+        const { assignment, lead } = yield* startedAssignment(factory);
+        threadActivity.set(lead, [activity("Parser merged.", "1970-01-01T00:00:01.000Z")]);
+        controls.summary = Effect.fail(
+          new FactoryOperationError({ reason: "unavailable", message: "Provider is offline." }),
+        );
+
+        const refreshed = yield* service.refreshDigest(assignment.id);
+        assert.isNull(refreshed.digest);
+        assert.strictEqual(summaryRequests.length, 1);
+      }),
+    ),
+  );
+
+  it.effect("generates once while a refresh for the assignment is in flight", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, threadActivity, summaryRequests, controls } = factory;
+        const { assignment, lead } = yield* startedAssignment(factory);
+        threadActivity.set(lead, [activity("Parser merged.", "1970-01-01T00:00:01.000Z")]);
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        controls.summary = Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+          Effect.as("The parser landed."),
+        );
+
+        const first = yield* service.refreshDigest(assignment.id).pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        assert.isNull((yield* service.refreshDigest(assignment.id)).digest);
+        yield* Deferred.succeed(release, undefined);
+        assert.strictEqual((yield* Fiber.join(first)).digest?.text, "The parser landed.");
+        assert.strictEqual(summaryRequests.length, 1);
+      }),
+    ),
+  );
+});
 
 describe("FactoryService completion claims", () => {
   it.effect("starts the retro when every pull request is merged and asks the lead for it", () =>

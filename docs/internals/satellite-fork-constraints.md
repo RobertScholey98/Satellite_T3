@@ -73,6 +73,9 @@ and new MCP tools. Edits to upstream files are limited to registration points:
 - settings schema extensions
 - one mount in the web root route
 - the one persistence seam that runs Satellite migrations and the ledger repair
+- optional members on upstream's provider text-generation interface, built once in `fromRunner`, so
+  a Satellite feature can ask every CLI-backed provider for a new kind of text; `generateSummary`
+  is the one that exists
 
 Every PR lists the upstream files it edits and why. Measure the footprint as the number of upstream
 files Satellite modifies or deletes relative to the upstream merge base:

@@ -99,6 +99,7 @@ import {
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
 import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   normalizeThreadPullRequestKey,
   threadPullRequestsOf,
@@ -122,6 +123,8 @@ import { IssueService } from "../issues/IssueService.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { parseRateTable, priceUsage, type RateTable } from "../usage/usagePricing.ts";
@@ -226,6 +229,24 @@ export interface FactoryThreadMessage {
   readonly text: string;
 }
 
+/** A finished user or assistant message on a member thread, as the digest reads it. */
+export interface FactoryThreadActivity {
+  readonly role: "user" | "assistant";
+  readonly text: string;
+  /** When the message last changed. */
+  readonly at: string;
+}
+
+/** What an assignment digest asks the project's text-generation model to summarize. */
+export interface FactoryDigestRequest {
+  readonly projectId: ProjectId;
+  readonly cwd: string;
+  readonly subject: string;
+  /** Member activity since the previous digest, oldest first. */
+  readonly context: string;
+  readonly previousSummary: string | null;
+}
+
 export interface FactoryServiceDependencies {
   readonly getProject: (
     projectId: ProjectId,
@@ -254,6 +275,14 @@ export interface FactoryServiceDependencies {
   readonly readThreadRuns: (threadId: ThreadId) => Effect.Effect<FactoryThreadRuns | null>;
   /** Empty when the thread is unknown. */
   readonly readThreadTurns: (threadId: ThreadId) => Effect.Effect<ReadonlyArray<FactoryThreadTurn>>;
+  /** Finished user and assistant messages; empty when the thread is unknown. */
+  readonly readThreadActivity: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<FactoryThreadActivity>>;
+  /** A short summary from the project's text-generation model. */
+  readonly generateSummary: (
+    input: FactoryDigestRequest,
+  ) => Effect.Effect<string, FactoryOperationError>;
   /** The model rates usage tracking last cached, or null when there are none. */
   readonly readRateTable: Effect.Effect<RateTable | null>;
   readonly sendToThread: (
@@ -384,6 +413,14 @@ export interface FactoryServiceShape {
   readonly cancel: (
     input: FactoryAssignmentsCancelInput,
   ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
+  /**
+   * Rewrites the assignment's digest from its team's activity since the last one. With no new
+   * activity, a refresh already running, or a failed generation, it returns the assignment as is.
+   * It never messages the team.
+   */
+  readonly refreshDigest: (
+    assignmentId: string,
+  ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
   readonly takeOver: (
     input: FactoryThreadsTakeOverInput,
   ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
@@ -400,6 +437,12 @@ export interface FactoryServiceShape {
    * capacity, and delivers each active manager's undelivered wakes in one message.
    */
   readonly sweep: Effect.Effect<void>;
+  /**
+   * Refreshes the digest of each active manager's live assignments once it is older than the
+   * project's digest interval. Apart from `sweep` because generating takes seconds to minutes,
+   * and the reactor runs `sweep` on the worker that reconciles leads.
+   */
+  readonly sweepDigests: Effect.Effect<void>;
   /**
    * What delegating a worker from the lead in this thread launches: the role must be on the
    * team with a free place, and the model one the member allows. Changes nothing.
@@ -947,6 +990,30 @@ const digestValue = (row: AssignmentRow) =>
         generatedAt: row.digest_generated_at,
         activityAt: row.digest_activity_at,
       };
+
+const DIGEST_CONTEXT_CHARS = 12_000;
+const DIGEST_MESSAGE_CHARS = 2_000;
+
+/** Activity lines, newest last; the oldest drop first when they exceed the context budget. */
+const digestContext = (
+  entries: ReadonlyArray<{ readonly role: string; readonly activity: FactoryThreadActivity }>,
+) => {
+  const kept: string[] = [];
+  let size = 0;
+  for (const { role, activity } of entries.toReversed()) {
+    const text = activity.text.trim();
+    const clipped =
+      text.length > DIGEST_MESSAGE_CHARS ? `${text.slice(0, DIGEST_MESSAGE_CHARS)} [cut]` : text;
+    const line =
+      activity.role === "assistant"
+        ? `[${activity.at}] ${role}: ${clipped}`
+        : `[${activity.at}] to ${role}: ${clipped}`;
+    if (kept.length > 0 && size + line.length > DIGEST_CONTEXT_CHARS) break;
+    kept.push(line);
+    size += line.length + 1;
+  }
+  return kept.toReversed().join("\n");
+};
 
 /** An assignment with whether the user has taken over its lead's thread. */
 interface LeadAssignmentRow extends AssignmentRow {
@@ -3054,6 +3121,101 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       }),
     );
 
+  const digesting = new Set<string>();
+
+  /** Whether a new digest was written. */
+  const writeDigest = Effect.fnUntraced(function* (row: AssignmentRow) {
+    if (row.lead_thread_id === null) return false;
+    const roles = new Map([[row.lead_thread_id, "lead"]]);
+    const members = yield* sql<{ thread_id: string; role: string }>`SELECT thread_id,role
+        FROM factory_members WHERE assignment_id=${row.id} ORDER BY created_at, thread_id`;
+    for (const member of members)
+      if (!roles.has(member.thread_id)) roles.set(member.thread_id, member.role);
+    const since = row.digest_activity_at === null ? -Infinity : Date.parse(row.digest_activity_at);
+    const entries: Array<{ role: string; activity: FactoryThreadActivity }> = [];
+    for (const [threadId, role] of roles)
+      for (const activity of yield* deps.readThreadActivity(ThreadId.make(threadId)))
+        if (Date.parse(activity.at) > since) entries.push({ role, activity });
+    const fresh = entries.toSorted(
+      (left, right) => Date.parse(left.activity.at) - Date.parse(right.activity.at),
+    );
+    const newest = fresh.at(-1);
+    if (newest === undefined) return false;
+    const projectShell = yield* deps.getProject(ProjectId.make(row.project_id));
+    if (projectShell === null) return false;
+    const summary = yield* deps
+      .generateSummary({
+        projectId: projectShell.id,
+        cwd: projectShell.workspaceRoot,
+        subject: row.title,
+        context: digestContext(fresh),
+        previousSummary: row.digest_text,
+      })
+      .pipe(
+        Effect.map((text) => text.trim()),
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not write a factory assignment digest", {
+            assignmentId: row.id,
+            cause: cause.message,
+          }).pipe(Effect.as("")),
+        ),
+      );
+    if (summary.length === 0) return false;
+    yield* lock(
+      Effect.gen(function* () {
+        yield* sql`UPDATE factory_assignments SET digest_text=${summary},
+            digest_generated_at=${yield* now},digest_activity_at=${newest.activity.at}
+            WHERE id=${row.id}`;
+      }),
+    );
+    yield* publish;
+    return true;
+  });
+
+  const refreshDigest: FactoryServiceShape["refreshDigest"] = Effect.fn(
+    "FactoryService.refreshDigest",
+  )(function* (assignmentId) {
+    const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+        WHERE id=${assignmentId}`;
+    const row = rows[0];
+    if (!row) return yield* error("not-found", "This assignment no longer exists.");
+    if (isTerminal(row.state) || digesting.has(row.id)) return yield* decodeAssignment(row);
+    digesting.add(row.id);
+    const written = yield* writeDigest(row).pipe(
+      Effect.ensuring(Effect.sync(() => digesting.delete(row.id))),
+    );
+    return written ? yield* readAssignment(row.id) : yield* decodeAssignment(row);
+  }, protect);
+
+  const sweepDigests: FactoryServiceShape["sweepDigests"] = Effect.gen(function* () {
+    const at = Date.parse(yield* now);
+    for (const manager of yield* currentManagers()) {
+      if (manager.state !== "active") continue;
+      const intervalMs =
+        (yield* configView(manager.projectId)).effective.digestIntervalMinutes * 60_000;
+      for (const row of yield* liveAssignmentRows(manager.id)) {
+        if (
+          row.digest_generated_at !== null &&
+          at - Date.parse(row.digest_generated_at) < intervalMs
+        )
+          continue;
+        yield* refreshDigest(row.id).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not refresh a factory assignment digest", {
+              assignmentId: row.id,
+              cause: cause.message,
+            }),
+          ),
+        );
+      }
+    }
+  }).pipe(
+    protect,
+    Effect.catch((cause) =>
+      Effect.logWarning("Could not sweep factory digests", { cause: cause.message }),
+    ),
+  );
+
   /**
    * The design has a state that waits for the user's reason after a cancel. The reason is part of
    * the cancel call, so the assignment goes straight to the lead's retro.
@@ -3873,6 +4035,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     handBack,
     reconcileThread,
     sweep,
+    sweepDigests,
+    refreshDigest,
     planDelegation,
     recordMember,
     observeThread,
@@ -3924,6 +4088,8 @@ export const make = Effect.gen(function* () {
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const pullRequests = yield* PullRequestService.PullRequestService;
   const ticketHost = yield* FactoryTicketHost.FactoryTicketHost;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const { generateSummary } = yield* TextGeneration.TextGeneration;
   const { baseDir, stateDir } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -4031,6 +4197,51 @@ export const make = Effect.gen(function* () {
           ),
         ),
       ),
+    readThreadActivity: (threadId) =>
+      threads
+        .getThreadRecords(threadId, ["messages"], { messageRoles: ["user", "assistant"] })
+        .pipe(
+          Effect.map(({ messages }) =>
+            messages.flatMap((message) =>
+              message.streaming || message.role === "system"
+                ? []
+                : [
+                    {
+                      role: message.role,
+                      text: message.text,
+                      at: DateTime.formatIso(message.updatedAt),
+                    },
+                  ],
+            ),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logDebug("factory member messages unavailable", { threadId, cause }).pipe(
+              Effect.as([]),
+            ),
+          ),
+        ),
+    // Digest tokens stay out of team stats: text generation runs no provider turn on a thread.
+    generateSummary: (input) =>
+      generateSummary === undefined
+        ? Effect.fail(error("unavailable", "Text generation cannot write summaries."))
+        : serverSettings.getSettings.pipe(
+            Effect.flatMap((settings) =>
+              generateSummary({
+                cwd: input.cwd,
+                subject: input.subject,
+                context: input.context,
+                ...(input.previousSummary === null
+                  ? {}
+                  : { previousSummary: input.previousSummary }),
+                modelSelection: resolveProjectSettings(settings, input.projectId).settings
+                  .textGenerationModelSelection,
+              }),
+            ),
+            Effect.map((result) => result.summary),
+            Effect.mapError((cause) =>
+              error("unavailable", `The digest could not be written: ${cause.message}`),
+            ),
+          ),
     // UsageService owns fetching the rates; the factory only reads the copy it caches.
     readRateTable: fs.readFileString(path.join(stateDir, "usage-model-rates.json")).pipe(
       Effect.flatMap(decodeRatesCache),
