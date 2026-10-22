@@ -51,7 +51,11 @@ export const FactoryV1 = Effect.gen(function* () {
     team_json TEXT NOT NULL,
     recovery_used INTEGER NOT NULL DEFAULT 0,
     waiting_reason TEXT,
+    waiting_kind TEXT,
+    stall_reason TEXT,
     cancel_reason TEXT,
+    claim_json TEXT,
+    team_verdict_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     ended_at TEXT
@@ -74,6 +78,20 @@ export const FactoryV1 = Effect.gen(function* () {
   )`;
   yield* sql`CREATE INDEX IF NOT EXISTS factory_members_assignment
     ON factory_members(assignment_id)`;
+
+  yield* sql`CREATE TABLE IF NOT EXISTS factory_dependencies (
+    id TEXT PRIMARY KEY,
+    blocked_assignment_id TEXT NOT NULL,
+    delivering_assignment_id TEXT,
+    title TEXT NOT NULL,
+    unblock_condition TEXT NOT NULL,
+    brief TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`;
+  yield* sql`CREATE INDEX IF NOT EXISTS factory_dependencies_blocked
+    ON factory_dependencies(blocked_assignment_id)`;
 
   // Wakes are rows first and messages second, so a restart redelivers undelivered ones.
   yield* sql`CREATE TABLE IF NOT EXISTS factory_log (

@@ -1,5 +1,6 @@
 import type {
   FactoryAssignment,
+  FactoryAssignmentState,
   FactoryOperationError,
   FactoryRoleBrief,
   FactoryStatus,
@@ -20,6 +21,9 @@ const briefSource: Record<FactoryRoleBrief["source"], string> = {
   default: "the built-in default",
 };
 
+const NOT_A_MANAGER = "This thread is not an engineering manager.";
+const NOT_A_LEAD = "This thread is not a factory lead.";
+
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 const statusMessage = ({
@@ -36,6 +40,21 @@ const statusMessage = ({
 const started = (assignment: FactoryAssignment) =>
   `Started assignment ${assignment.id}, "${assignment.title}". Its lead is launching.`;
 
+const claimMessage = (assignment: FactoryAssignment) =>
+  assignment.state === "retro"
+    ? "No pull request is left open, so the retro starts. Write your team retro next."
+    : `${assignment.waitingReason ?? "The user reviews your pull requests."} The retro starts once they are merged; wait for that message.`;
+
+const recoverMessage = (assignment: FactoryAssignment) =>
+  assignment.state === "waiting-user"
+    ? `The recovery allowance is spent, so "${assignment.title}" is with the user, with your brief as the recommendation.`
+    : `Recovered "${assignment.title}" (${assignment.recoveryUsed} recovery used). Its lead is ${assignment.leadThreadId}.`;
+
+const endedAs: Partial<Record<FactoryAssignmentState, string>> = {
+  completed: "completed",
+  cancelled: "ended cancelled",
+};
+
 const make = Effect.gen(function* () {
   const factory = yield* FactoryService;
 
@@ -49,10 +68,27 @@ const make = Effect.gen(function* () {
     return { threadId, manager };
   });
 
+  const callingLead = Effect.fn("FactoryMcp.callingLead")(function* (notMember: string) {
+    const scope = yield* McpInvocationContext.requireMcpCapability("orchestration");
+    const { threadId } = (yield* McpInvocationContext.requireThreadScope(scope, "This tool"))
+      .thread;
+    const assignment = yield* factory
+      .assignmentForThread(threadId)
+      .pipe(Effect.mapError(toolFailure));
+    if (
+      assignment === null ||
+      assignment.leadThreadId !== threadId ||
+      assignment.state === "completed" ||
+      assignment.state === "cancelled"
+    )
+      return yield* new FactoryToolFailedError({ reason: "not-found", message: notMember });
+    return { threadId, assignment };
+  });
+
   return {
     factory_propose_onboarding: McpToolAccess.actsAsCaller((report) =>
       Effect.gen(function* () {
-        const { threadId } = yield* callingManager("This thread is not an engineering manager.");
+        const { threadId } = yield* callingManager(NOT_A_MANAGER);
         const manager = yield* factory
           .proposeOnboarding(threadId, report)
           .pipe(Effect.mapError(toolFailure));
@@ -80,14 +116,14 @@ const make = Effect.gen(function* () {
     ),
     factory_status: McpToolAccess.reads(() =>
       Effect.gen(function* () {
-        const { manager } = yield* callingManager("This thread is not an engineering manager.");
+        const { manager } = yield* callingManager(NOT_A_MANAGER);
         const status = yield* factory.status(manager.id).pipe(Effect.mapError(toolFailure));
         return { ...status, message: statusMessage(status) };
       }),
     ),
     factory_pickup: McpToolAccess.actsAsCaller((input) =>
       Effect.gen(function* () {
-        const { threadId } = yield* callingManager("This thread is not an engineering manager.");
+        const { threadId } = yield* callingManager(NOT_A_MANAGER);
         const assignment = yield* factory
           .pickup(threadId, input)
           .pipe(Effect.mapError(toolFailure));
@@ -103,13 +139,61 @@ const make = Effect.gen(function* () {
     ),
     factory_commission: McpToolAccess.actsAsCaller((input) =>
       Effect.gen(function* () {
-        const { threadId } = yield* callingManager("This thread is not an engineering manager.");
+        const { threadId } = yield* callingManager(NOT_A_MANAGER);
         const assignment = yield* factory
           .commission(threadId, input)
           .pipe(Effect.mapError(toolFailure));
         return {
           assignment,
           message: started(assignment),
+        };
+      }),
+    ),
+    factory_claim_complete: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingLead(NOT_A_LEAD);
+        const assignment = yield* factory
+          .claimComplete(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return { assignment, message: claimMessage(assignment) };
+      }),
+    ),
+    factory_report_dependency: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingLead(NOT_A_LEAD);
+        const dependency = yield* factory
+          .reportDependency(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        const assignment = yield* factory
+          .assignmentForThread(threadId)
+          .pipe(Effect.mapError(toolFailure));
+        if (assignment === null)
+          return yield* new FactoryToolFailedError({ reason: "not-found", message: NOT_A_LEAD });
+        return {
+          dependency,
+          assignment,
+          message: `Recorded "${dependency.title}". The manager is told; this assignment waits as blocked until it is delivered.`,
+        };
+      }),
+    ),
+    factory_recover: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingManager(NOT_A_MANAGER);
+        const assignment = yield* factory
+          .recover(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return { assignment, message: recoverMessage(assignment) };
+      }),
+    ),
+    factory_complete: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingManager(NOT_A_MANAGER);
+        const assignment = yield* factory
+          .complete(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return {
+          assignment,
+          message: `"${assignment.title}" ${endedAs[assignment.state] ?? assignment.state}.`,
         };
       }),
     ),

@@ -1,10 +1,15 @@
 import {
   FactoryAssignment,
+  FactoryClaimCompleteInput,
   FactoryCommissionInput,
+  FactoryCompleteInput,
+  FactoryDependency,
   FactoryManagerState,
   FactoryOnboardingReport,
   FactoryOperationError,
   FactoryPickupInput,
+  FactoryRecoverInput,
+  FactoryReportDependencyInput,
   FactoryRole,
   FactoryRoleBrief,
   FactoryStatus,
@@ -131,7 +136,7 @@ export type CommissionResult = typeof CommissionResult.Type;
 
 const CommissionTool = Tool.make("factory_commission", {
   description:
-    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. In this version it needs the number of a ticket in a Ready column.",
+    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. Pass the number of a ticket in a Ready column to work on it; without one the lead gets its own worktree on a new branch. Pass `dependencyId` to deliver an open dependency another lead reported; that start ignores the cap, because the blocked assignment already holds a slot.",
   parameters: FactoryCommissionInput,
   success: CommissionResult,
   failure: FactoryToolFailure,
@@ -147,10 +152,99 @@ const CommissionTool = Tool.make("factory_commission", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
+export const AssignmentResult = Schema.Struct({
+  assignment: FactoryAssignment,
+  message: Schema.String,
+});
+export type AssignmentResult = typeof AssignmentResult.Type;
+
+const ClaimCompleteTool = Tool.make("factory_claim_complete", {
+  description:
+    "For a factory lead. Claim that your assignment's completion condition is met. Give the evidence: the checks you ran with their results and how each part of the condition is met. List the pull requests that deliver the work; each must already be linked on this thread. The user reviews and merges them; you never merge. The assignment moves to its retro once no pull request linked on this thread is still open.",
+  parameters: FactoryClaimCompleteInput,
+  success: AssignmentResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Claim factory assignment complete")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const ReportDependencyResult = Schema.Struct({
+  dependency: FactoryDependency,
+  assignment: FactoryAssignment,
+  message: Schema.String,
+});
+export type ReportDependencyResult = typeof ReportDependencyResult.Type;
+
+const ReportDependencyTool = Tool.make("factory_report_dependency", {
+  description:
+    "For a factory lead. Record a blocker outside your assignment's scope: a short title, a brief for whoever delivers it, and the condition that unblocks you. The manager is told, and your assignment waits as `blocked` until that work is delivered. Do not widen your scope to get around it.",
+  parameters: FactoryReportDependencyInput,
+  success: ReportDependencyResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Report a factory dependency")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+const RecoverTool = Tool.make("factory_recover", {
+  description:
+    "For an engineering manager. Recover a stalled assignment. `rebrief` sends your brief to the same lead; `replace` starts a new lead in the stalled lead's worktree and branch with the original brief plus yours. Each uses one recovery from the allowance. Once the allowance is spent, the assignment goes to the user instead, with your brief as the recommendation.",
+  parameters: FactoryRecoverInput,
+  success: AssignmentResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Recover a stalled assignment")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+const CompleteTool = Tool.make("factory_complete", {
+  description:
+    "For an engineering manager. End an assignment in its retro once you have read the lead's team retro. Record whether the team was a good or poor fit for the work and why.",
+  parameters: FactoryCompleteInput,
+  success: AssignmentResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Complete a factory assignment")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 export const FactoryToolkit = Toolkit.make(
   ProposeOnboardingTool,
   RoleBriefTool,
   StatusTool,
   PickupTool,
   CommissionTool,
+  ClaimCompleteTool,
+  ReportDependencyTool,
+  RecoverTool,
+  CompleteTool,
 );

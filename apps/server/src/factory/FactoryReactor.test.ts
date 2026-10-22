@@ -81,7 +81,7 @@ describe("FactoryReactor", () => {
   it.effect("reconciles the thread of a run event and ignores unrelated events", () =>
     Effect.gen(function* () {
       const reactor = yield* startReactor;
-      yield* reactor.emit("thread.pull-request-synced", LEAD_THREAD);
+      yield* reactor.emit("message.updated", LEAD_THREAD);
       assert.deepStrictEqual(yield* reactor.calls, [{ _tag: "sweep" }]);
 
       yield* reactor.emit("run.updated", LEAD_THREAD);
@@ -89,6 +89,39 @@ describe("FactoryReactor", () => {
       assert.deepStrictEqual(yield* reactor.calls, [
         { _tag: "sweep" },
         { _tag: "thread", threadId: LEAD_THREAD },
+        { _tag: "thread", threadId: LEAD_THREAD },
+      ]);
+    }),
+  );
+
+  it.effect("reconciles the thread when one of its requests changes", () =>
+    Effect.gen(function* () {
+      const reactor = yield* startReactor;
+      yield* reactor.emit("runtime-request.updated", LEAD_THREAD);
+      assert.deepStrictEqual(yield* reactor.calls, [
+        { _tag: "sweep" },
+        { _tag: "thread", threadId: LEAD_THREAD },
+      ]);
+    }),
+  );
+
+  it.effect("reconciles the thread when a pull request is linked or unlinked", () =>
+    Effect.gen(function* () {
+      const reactor = yield* startReactor;
+      yield* reactor.emit("thread.pull-request-link-updated", LEAD_THREAD);
+      assert.deepStrictEqual(yield* reactor.calls, [
+        { _tag: "sweep" },
+        { _tag: "thread", threadId: LEAD_THREAD },
+      ]);
+    }),
+  );
+
+  it.effect("reconciles the thread when its pull requests sync", () =>
+    Effect.gen(function* () {
+      const reactor = yield* startReactor;
+      yield* reactor.emit("thread.pull-request-synced", LEAD_THREAD);
+      assert.deepStrictEqual(yield* reactor.calls, [
+        { _tag: "sweep" },
         { _tag: "thread", threadId: LEAD_THREAD },
       ]);
     }),

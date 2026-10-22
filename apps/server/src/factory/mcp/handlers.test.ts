@@ -2,12 +2,17 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
   type FactoryAssignment,
+  type FactoryClaimCompleteInput,
   type FactoryCommissionInput,
+  type FactoryCompleteInput,
+  type FactoryDependency,
   type FactoryManager,
   FactoryOperationError,
   type FactoryOnboardingReport,
   type FactoryPickupInput,
   type FactoryReadyTicket,
+  type FactoryRecoverInput,
+  type FactoryReportDependencyInput,
   type FactoryRole,
   type FactoryStatus,
   ProjectId,
@@ -30,6 +35,7 @@ import { FactoryToolkit } from "./tools.ts";
 
 const MANAGER_THREAD = ThreadId.make("thread-manager");
 const OTHER_THREAD = ThreadId.make("thread-other");
+const LEAD_THREAD = ThreadId.make("thread-lead");
 
 const report: FactoryOnboardingReport = {
   summary: "Turbo monorepo; CI gates on lint and tests.",
@@ -64,13 +70,17 @@ const assignment: FactoryAssignment = {
   source: "ticket",
   issue: null,
   attemptId: "attempt-1",
-  leadThreadId: ThreadId.make("thread-lead"),
+  leadThreadId: LEAD_THREAD,
   complexity: "small",
   state: "active",
   team: { preset: "Default", members: [] },
   recoveryUsed: 0,
   waitingReason: null,
   cancelReason: null,
+  claim: null,
+  takenOver: false,
+  dependencies: [],
+  teamVerdict: null,
   createdAt: "2026-10-21T00:00:00.000Z",
   updatedAt: "2026-10-21T00:00:00.000Z",
   endedAt: null,
@@ -124,6 +134,45 @@ const commissionInput: FactoryCommissionInput = {
   issueNumber: 5,
 };
 
+const claimInput: FactoryClaimCompleteInput = {
+  evidence: "login.test.ts passed 20 runs in a row.",
+  pullRequests: [{ host: "github.com", repository: "acme/app", number: 12 }],
+};
+
+const dependencyInput: FactoryReportDependencyInput = {
+  title: "Stable test clock",
+  brief: "Give the login test a controllable clock.",
+  unblockCondition: "The test harness exposes a fake clock",
+};
+
+const dependency: FactoryDependency = {
+  id: "dependency-1",
+  blockedAssignmentId: assignment.id,
+  deliveringAssignmentId: null,
+  title: dependencyInput.title,
+  unblockCondition: dependencyInput.unblockCondition,
+  state: "open",
+  createdAt: "2026-10-21T00:00:00.000Z",
+  updatedAt: "2026-10-21T00:00:00.000Z",
+};
+
+const recoverInput: FactoryRecoverInput = {
+  assignmentId: assignment.id,
+  action: "replace",
+  brief: "Quarantine the flaky fixture first.",
+};
+
+const completeInput: FactoryCompleteInput = {
+  assignmentId: assignment.id,
+  teamVerdict: { fit: "good", reason: "One implementer was enough." },
+};
+
+type LifecycleCall =
+  | { readonly method: "claimComplete"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "reportDependency"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "recover"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "complete"; readonly threadId: ThreadId; readonly input: unknown };
+
 const invocation = (
   threadId: ThreadId,
   capabilities: ReadonlyArray<McpInvocationContext.McpCapability>,
@@ -153,6 +202,9 @@ const makeHarness = Effect.gen(function* () {
     ReadonlyArray<{ threadId: ThreadId; input: FactoryCommissionInput }>
   >([]);
   const pickupConflict = yield* Ref.make(false);
+  const lifecycle = yield* Ref.make<ReadonlyArray<LifecycleCall>>([]);
+  const recordLifecycle = (call: LifecycleCall) =>
+    Ref.update(lifecycle, (recorded) => [...recorded, call]);
   const dependencies = Layer.mergeAll(
     Layer.mock(FactoryService)({
       managerForThread: (threadId) => Effect.succeed(threadId === MANAGER_THREAD ? manager : null),
@@ -179,6 +231,28 @@ const makeHarness = Effect.gen(function* () {
       commission: (threadId, input) =>
         Ref.update(commissions, (recorded) => [...recorded, { threadId, input }]).pipe(
           Effect.as({ ...assignment, source: "user" as const, complexity: input.complexity }),
+        ),
+      assignmentForThread: (threadId) =>
+        Effect.succeed(threadId === LEAD_THREAD ? assignment : null),
+      claimComplete: (threadId, input) =>
+        recordLifecycle({ method: "claimComplete", threadId, input }).pipe(
+          Effect.as({
+            ...assignment,
+            state: "waiting-user" as const,
+            waitingReason: "Pull requests await the user's review: #12.",
+          }),
+        ),
+      reportDependency: (threadId, input) =>
+        recordLifecycle({ method: "reportDependency", threadId, input }).pipe(
+          Effect.as(dependency),
+        ),
+      recover: (threadId, input) =>
+        recordLifecycle({ method: "recover", threadId, input }).pipe(
+          Effect.as({ ...assignment, recoveryUsed: 1 }),
+        ),
+      complete: (threadId, input) =>
+        recordLifecycle({ method: "complete", threadId, input }).pipe(
+          Effect.as({ ...assignment, state: "completed" as const }),
         ),
     }),
     McpToolAccessTestkit.liveThreadsLayer,
@@ -213,6 +287,7 @@ const makeHarness = Effect.gen(function* () {
     pickups,
     commissions,
     pickupConflict,
+    lifecycle,
     call,
   };
 });
@@ -393,6 +468,125 @@ describe("factory_commission", () => {
         message:
           'Started assignment assignment-1, "Fix the flaky login test". Its lead is launching.',
       });
+    }),
+  );
+});
+
+describe("factory_claim_complete", () => {
+  it.effect("forwards the lead thread and claim", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_claim_complete", claimInput, LEAD_THREAD);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "claimComplete", threadId: LEAD_THREAD, input: claimInput },
+      ]);
+      assert.strictEqual(result.assignment.state, "waiting-user");
+      assert.strictEqual(
+        result.message,
+        "Pull requests await the user's review: #12. The retro starts once they are merged; wait for that message.",
+      );
+    }),
+  );
+
+  it.effect("refuses a thread that does not lead an assignment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      for (const threadId of [OTHER_THREAD, MANAGER_THREAD]) {
+        const failure = yield* harness
+          .call("factory_claim_complete", claimInput, threadId)
+          .pipe(Effect.flip);
+        assert.deepInclude(failure, {
+          _tag: "FactoryToolFailedError",
+          reason: "not-found",
+          message: "This thread is not a factory lead.",
+        });
+      }
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
+describe("factory_report_dependency", () => {
+  it.effect("forwards the lead thread and blocker and returns the blocked assignment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_report_dependency", dependencyInput, LEAD_THREAD);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "reportDependency", threadId: LEAD_THREAD, input: dependencyInput },
+      ]);
+      assert.deepStrictEqual(result.dependency, dependency);
+      assert.deepStrictEqual(result.assignment, assignment);
+    }),
+  );
+
+  it.effect("refuses a thread that does not lead an assignment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_report_dependency", dependencyInput, OTHER_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        reason: "not-found",
+        message: "This thread is not a factory lead.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
+describe("factory_recover", () => {
+  it.effect("forwards the manager thread and diagnosis", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_recover", recoverInput);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "recover", threadId: MANAGER_THREAD, input: recoverInput },
+      ]);
+      assert.strictEqual(result.assignment.recoveryUsed, 1);
+    }),
+  );
+
+  it.effect("refuses a lead calling a manager tool", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_recover", recoverInput, LEAD_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        reason: "not-found",
+        message: "This thread is not an engineering manager.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
+describe("factory_complete", () => {
+  it.effect("forwards the manager thread and team verdict", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_complete", completeInput);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "complete", threadId: MANAGER_THREAD, input: completeInput },
+      ]);
+      assert.deepStrictEqual(result, {
+        assignment: { ...assignment, state: "completed" },
+        message: '"Fix the flaky login test" completed.',
+      });
+    }),
+  );
+
+  it.effect("refuses a lead calling a manager tool", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_complete", completeInput, LEAD_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        reason: "not-found",
+        message: "This thread is not an engineering manager.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
     }),
   );
 });

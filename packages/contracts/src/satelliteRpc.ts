@@ -3,6 +3,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import {
   FACTORY_WS_METHODS,
+  WsFactoryAssignmentsCancelRpc,
   WsFactoryAssignmentsListRpc,
   WsFactoryAssignmentsSubscribeRpc,
   WsFactoryConfigGetRpc,
@@ -15,6 +16,8 @@ import {
   WsFactoryManagersRetireRpc,
   WsFactoryManagersSubscribeRpc,
   WsFactoryLogListRpc,
+  WsFactoryThreadsHandBackRpc,
+  WsFactoryThreadsTakeOverRpc,
 } from "./factory.ts";
 import {
   ISSUES_WS_METHODS,
@@ -73,6 +76,9 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsFactoryManagersApproveOnboardingRpc,
   WsFactoryAssignmentsListRpc,
   WsFactoryAssignmentsSubscribeRpc,
+  WsFactoryAssignmentsCancelRpc,
+  WsFactoryThreadsTakeOverRpc,
+  WsFactoryThreadsHandBackRpc,
   WsFactoryLogListRpc,
 );
 

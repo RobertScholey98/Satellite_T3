@@ -32,6 +32,9 @@ const leadThreadOf = (event: OrchestrationV2DomainEvent): ThreadId | null => {
   switch (event.type) {
     case "run.created":
     case "run.updated":
+    case "runtime-request.updated":
+    case "thread.pull-request-link-updated":
+    case "thread.pull-request-synced":
     case "thread.deleted":
       return event.threadId;
     default:

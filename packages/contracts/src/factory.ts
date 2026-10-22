@@ -14,6 +14,7 @@ import {
 import { IssueRef, IssueSummary } from "./issues.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
+import { ThreadPullRequestKey } from "./threadPullRequest.ts";
 
 /**
  * The engineering factory: a standing manager per project that commissions assignments to leads.
@@ -31,6 +32,9 @@ export const FACTORY_WS_METHODS = {
   factoryManagersApproveOnboarding: "factory.managers.approveOnboarding",
   factoryAssignmentsList: "factory.assignments.list",
   factoryAssignmentsSubscribe: "factory.assignments.subscribe",
+  factoryAssignmentsCancel: "factory.assignments.cancel",
+  factoryThreadsTakeOver: "factory.threads.takeOver",
+  factoryThreadsHandBack: "factory.threads.handBack",
   factoryLogList: "factory.log.list",
 } as const;
 
@@ -351,6 +355,42 @@ const AssignmentTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
 const AssignmentBrief = TrimmedString.check(Schema.isMaxLength(20_000));
 const CompletionCondition = TrimmedString.check(Schema.isMaxLength(4000));
 const DecisionReason = TrimmedNonEmptyString.check(Schema.isMaxLength(2000));
+const ClaimEvidence = TrimmedNonEmptyString.check(Schema.isMaxLength(8000));
+const ClaimedPullRequests = Schema.Array(ThreadPullRequestKey).check(Schema.isMaxLength(50));
+const DependencyTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+const UnblockCondition = TrimmedNonEmptyString.check(Schema.isMaxLength(2000));
+const RequiredBrief = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
+
+/** The lead's claim that the completion condition is met. */
+export const FactoryAssignmentClaim = Schema.Struct({
+  evidence: Schema.String.check(Schema.isMaxLength(8000)),
+  pullRequests: Schema.Array(ThreadPullRequestKey),
+  claimedAt: Schema.String,
+});
+export type FactoryAssignmentClaim = typeof FactoryAssignmentClaim.Type;
+
+/** The manager's judgement of the team once its retro is in. */
+export const FactoryTeamVerdict = Schema.Struct({
+  fit: Schema.Literals(["good", "poor"]),
+  reason: DecisionReason,
+});
+export type FactoryTeamVerdict = typeof FactoryTeamVerdict.Type;
+
+/**
+ * Something outside an assignment's scope that blocks it. `delivered` once the assignment that
+ * delivers it completes; `confirmed` once the blocked lead accepts it.
+ */
+export const FactoryDependency = Schema.Struct({
+  id: Id,
+  blockedAssignmentId: Id,
+  deliveringAssignmentId: Schema.NullOr(Id),
+  title: DependencyTitle,
+  unblockCondition: Schema.String.check(Schema.isMaxLength(2000)),
+  state: Schema.Literals(["open", "delivered", "confirmed"]),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+});
+export type FactoryDependency = typeof FactoryDependency.Type;
 
 export const FactoryAssignment = Schema.Struct({
   id: Id,
@@ -372,6 +412,12 @@ export const FactoryAssignment = Schema.Struct({
   /** Why the assignment is blocked, stalled or waiting on the user. */
   waitingReason: Schema.NullOr(Schema.String),
   cancelReason: Schema.NullOr(Schema.String),
+  claim: Schema.NullOr(FactoryAssignmentClaim),
+  /** The user took over the lead's thread; the factory leaves it alone until handed back. */
+  takenOver: Schema.Boolean,
+  /** Dependencies reported against this assignment, delivered ones included. */
+  dependencies: Schema.Array(FactoryDependency),
+  teamVerdict: Schema.NullOr(FactoryTeamVerdict),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   endedAt: Schema.NullOr(Schema.String),
@@ -386,6 +432,13 @@ export const FactoryLogKind = Schema.Literals([
   "wake",
   "stalled",
   "refused",
+  "claim",
+  "dependency",
+  "recovery",
+  "takeover",
+  "handback",
+  "cancel",
+  "complete",
 ]);
 export type FactoryLogKind = typeof FactoryLogKind.Type;
 
@@ -472,8 +525,55 @@ export const FactoryCommissionInput = Schema.Struct({
   complexity: FactoryComplexity,
   issueNumber: Schema.optionalKey(PositiveInt),
   team: Schema.optionalKey(FactoryTeamSpec),
+  /** An open dependency this assignment delivers; the blocked assignment stays blocked until then. */
+  dependencyId: Schema.optionalKey(Id),
 });
 export type FactoryCommissionInput = typeof FactoryCommissionInput.Type;
+
+/** The lead's completion claim. Pull requests linked on the lead's thread count too. */
+export const FactoryClaimCompleteInput = Schema.Struct({
+  evidence: ClaimEvidence,
+  pullRequests: Schema.optionalKey(ClaimedPullRequests),
+});
+export type FactoryClaimCompleteInput = typeof FactoryClaimCompleteInput.Type;
+
+/** The lead reports work outside its scope that blocks it. */
+export const FactoryReportDependencyInput = Schema.Struct({
+  title: DependencyTitle,
+  brief: RequiredBrief,
+  unblockCondition: UnblockCondition,
+});
+export type FactoryReportDependencyInput = typeof FactoryReportDependencyInput.Type;
+
+/** The manager's diagnosis of a stalled assignment: brief the same lead again, or replace it. */
+export const FactoryRecoverInput = Schema.Struct({
+  assignmentId: Id,
+  action: Schema.Literals(["rebrief", "replace"]),
+  brief: RequiredBrief,
+});
+export type FactoryRecoverInput = typeof FactoryRecoverInput.Type;
+
+/** Ends an assignment whose retro is in, with the manager's verdict on the team. */
+export const FactoryCompleteInput = Schema.Struct({
+  assignmentId: Id,
+  teamVerdict: FactoryTeamVerdict,
+});
+export type FactoryCompleteInput = typeof FactoryCompleteInput.Type;
+
+/** The lead still writes its retro; the assignment ends cancelled once the manager completes it. */
+export const FactoryAssignmentsCancelInput = Schema.Struct({
+  requestId: Id,
+  assignmentId: Id,
+  reason: DecisionReason,
+});
+export type FactoryAssignmentsCancelInput = typeof FactoryAssignmentsCancelInput.Type;
+
+/** The user takes over a factory thread; the factory stops acting on it until handed back. */
+export const FactoryThreadsTakeOverInput = Schema.Struct({ requestId: Id, threadId: ThreadId });
+export type FactoryThreadsTakeOverInput = typeof FactoryThreadsTakeOverInput.Type;
+
+export const FactoryThreadsHandBackInput = Schema.Struct({ requestId: Id, threadId: ThreadId });
+export type FactoryThreadsHandBackInput = typeof FactoryThreadsHandBackInput.Type;
 
 const FactoryRpcError = Schema.Union([FactoryOperationError, EnvironmentAuthorizationError]);
 
@@ -540,6 +640,21 @@ export const WsFactoryAssignmentsSubscribeRpc = Rpc.make(
     stream: true,
   },
 );
+export const WsFactoryAssignmentsCancelRpc = Rpc.make(FACTORY_WS_METHODS.factoryAssignmentsCancel, {
+  payload: FactoryAssignmentsCancelInput,
+  success: FactoryAssignment,
+  error: FactoryRpcError,
+});
+export const WsFactoryThreadsTakeOverRpc = Rpc.make(FACTORY_WS_METHODS.factoryThreadsTakeOver, {
+  payload: FactoryThreadsTakeOverInput,
+  success: FactoryAssignment,
+  error: FactoryRpcError,
+});
+export const WsFactoryThreadsHandBackRpc = Rpc.make(FACTORY_WS_METHODS.factoryThreadsHandBack, {
+  payload: FactoryThreadsHandBackInput,
+  success: FactoryAssignment,
+  error: FactoryRpcError,
+});
 export const WsFactoryLogListRpc = Rpc.make(FACTORY_WS_METHODS.factoryLogList, {
   payload: FactoryLogListInput,
   success: Schema.Array(FactoryLogEntry),
