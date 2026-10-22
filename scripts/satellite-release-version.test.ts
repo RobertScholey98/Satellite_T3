@@ -78,11 +78,13 @@ it("bumps the highest stable tag, ignoring prereleases and unrelated tags", () =
   });
 });
 
-it("refuses a bump that stays below 2.x", () => {
-  assert.deepStrictEqual(nextSatelliteReleaseVersion(["v1.2.1"], "minor"), {
-    ok: false,
-    reason: "1.3.0 is below 2.0.0. Satellite 2.x releases must not reuse 1.x versions.",
-  });
+it("bumps from 1.x straight to 2.0.0, whichever part is chosen", () => {
+  for (const bump of ["major", "minor", "patch"] as const) {
+    assert.deepStrictEqual(nextSatelliteReleaseVersion(["v1.2.1"], bump), {
+      ok: true,
+      release: { version: "2.0.0", tag: "v2.0.0", prerelease: false },
+    });
+  }
 });
 
 it("asks for an exact version when there is no stable tag", () => {

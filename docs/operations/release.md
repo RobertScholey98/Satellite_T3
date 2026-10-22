@@ -41,7 +41,7 @@ already names a different commit fails in **Resolve release**; pick a new versio
 `X.Y.Z` and `X.Y.Z-alpha.N`, `-beta.N`, or `-rc.N`, with no leading `v`.
 
 - The major version is at least 2. Satellite 1.x tags run up to `v1.2.1` and must not be reused.
-  Until a stable 2.x release exists, a bump must be `major`, or enter the version.
+  While the latest stable tag is 1.x, every bump resolves to `2.0.0`.
 - Keep Satellite's major above upstream's. Upstream's official mobile app offers to update a
   server when upstream's newest CLI release is newer than the server's version, which would
   replace a Satellite server with upstream's.

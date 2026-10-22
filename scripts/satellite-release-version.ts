@@ -53,7 +53,8 @@ const STABLE_TAG_PATTERN = new RegExp(`^v${NUMBER}\\.${NUMBER}\\.${NUMBER}$`);
 
 /**
  * Bumps the highest stable `vX.Y.Z` tag. Prerelease tags are ignored, so a major bump after
- * `v2.0.0-beta.1` yields 2.0.0 when the latest stable tag is 1.x.
+ * `v2.0.0-beta.1` yields 2.0.0 when the latest stable tag is 1.x. Any bump from below the
+ * minimum major yields its first version, the only one the minimum allows.
  */
 export function nextSatelliteReleaseVersion(
   tags: readonly string[],
@@ -71,11 +72,13 @@ export function nextSatelliteReleaseVersion(
   }
   const [major, minor, patch] = latest;
   const next =
-    bump === "major"
-      ? `${major + 1}.0.0`
-      : bump === "minor"
-        ? `${major}.${minor + 1}.0`
-        : `${major}.${minor}.${patch + 1}`;
+    major < MINIMUM_MAJOR
+      ? `${MINIMUM_MAJOR}.0.0`
+      : bump === "major"
+        ? `${major + 1}.0.0`
+        : bump === "minor"
+          ? `${major}.${minor + 1}.0`
+          : `${major}.${minor}.${patch + 1}`;
   return parseSatelliteReleaseVersion(next);
 }
 
