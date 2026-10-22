@@ -46,8 +46,66 @@ export function parseSatelliteReleaseVersion(input: string): SatelliteReleaseVer
   };
 }
 
+const RELEASE_BUMPS = ["major", "minor", "patch"] as const;
+type ReleaseBump = (typeof RELEASE_BUMPS)[number];
+
+const STABLE_TAG_PATTERN = new RegExp(`^v${NUMBER}\\.${NUMBER}\\.${NUMBER}$`);
+
+/**
+ * Bumps the highest stable `vX.Y.Z` tag. Prerelease tags are ignored, so a major bump after
+ * `v2.0.0-beta.1` yields 2.0.0 when the latest stable tag is 1.x.
+ */
+export function nextSatelliteReleaseVersion(
+  tags: readonly string[],
+  bump: ReleaseBump,
+): SatelliteReleaseVersionResult {
+  let latest: readonly [number, number, number] | undefined;
+  for (const tag of tags) {
+    const match = STABLE_TAG_PATTERN.exec(tag);
+    if (!match) continue;
+    const version = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+    if (!latest || compareVersions(version, latest) > 0) latest = version;
+  }
+  if (!latest) {
+    return { ok: false, reason: "No stable vX.Y.Z tag to bump. Enter the version instead." };
+  }
+  const [major, minor, patch] = latest;
+  const next =
+    bump === "major"
+      ? `${major + 1}.0.0`
+      : bump === "minor"
+        ? `${major}.${minor + 1}.0`
+        : `${major}.${minor}.${patch + 1}`;
+  return parseSatelliteReleaseVersion(next);
+}
+
+function compareVersions(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): number {
+  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+}
+
+async function readStdin(): Promise<string> {
+  let text = "";
+  for await (const chunk of process.stdin) text += chunk;
+  return text;
+}
+
+/**
+ * `satellite-release-version.ts <version>` validates an exact version.
+ * `satellite-release-version.ts --bump <major|minor|patch>` reads tag names from stdin, one per
+ * line, and bumps the latest stable one.
+ */
 if (import.meta.main) {
-  const result = parseSatelliteReleaseVersion(process.argv[2] ?? "");
+  const [first, bumpArg] = process.argv.slice(2);
+  const bump = RELEASE_BUMPS.find((candidate) => candidate === bumpArg);
+  const result: SatelliteReleaseVersionResult =
+    first !== "--bump"
+      ? parseSatelliteReleaseVersion(first ?? "")
+      : bump
+        ? nextSatelliteReleaseVersion((await readStdin()).split(/\s+/), bump)
+        : { ok: false, reason: "Expected --bump major, minor, or patch." };
   if (!result.ok) {
     process.stderr.write(`${result.reason}\n`);
     process.exit(1);

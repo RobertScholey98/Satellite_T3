@@ -16,10 +16,13 @@ The workflow runs on GitHub-hosted runners and needs no secrets beyond the built
 2. Make sure **SatelliteT3 CI** passed on the commit you will release. The release jobs run no
    tests, so **Resolve release** refuses a commit whose CI `Check` has not passed.
 3. Start the workflow in either of two ways:
-   - **Actions → SatelliteT3 Release → Run workflow.** Select the branch to build, usually
-     `main`, and enter the version without the `v`. The workflow creates the `v` tag on that
-     branch's commit when it publishes. Optionally fill in **release_notes**; they appear above
-     the generated notes, so a stable release has its notes the moment it becomes latest.
+   - **Actions → SatelliteT3 Release → Run workflow**, or `gh workflow run release.yml` in a
+     terminal, which prompts for each input. Select the branch to build, usually `main`, and
+     choose **bump**: `major`, `minor`, or `patch` increments the highest stable `vX.Y.Z` tag
+     and resets the parts after it. For a prerelease or any other exact version, enter it in
+     **version** without the `v`; it overrides the bump. The workflow creates the `v` tag on
+     that branch's commit when it publishes. Optionally fill in **release_notes**; they appear
+     above the generated notes, so a stable release has its notes the moment it becomes latest.
    - **Push a tag:** `git tag v2.0.0 <commit> && git push origin v2.0.0`. The workflow builds
      the tagged commit. Edit the release afterwards to add notes.
 4. Wait for **Publish GitHub Release**. Release notes are generated from merged pull requests.
@@ -38,6 +41,7 @@ already names a different commit fails in **Resolve release**; pick a new versio
 `X.Y.Z` and `X.Y.Z-alpha.N`, `-beta.N`, or `-rc.N`, with no leading `v`.
 
 - The major version is at least 2. Satellite 1.x tags run up to `v1.2.1` and must not be reused.
+  Until a stable 2.x release exists, a bump must be `major`, or enter the version.
 - Keep Satellite's major above upstream's. Upstream's official mobile app offers to update a
   server when upstream's newest CLI release is newer than the server's version, which would
   replace a Satellite server with upstream's.
