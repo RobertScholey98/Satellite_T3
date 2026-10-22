@@ -59,6 +59,19 @@ describe("issues preferences", () => {
     expect(readIssuesPreferences("env\nother", storage)).toEqual(DEFAULT_ISSUES_PREFERENCES);
   });
 
+  it("remembers the Dismissed filter and keeps values stored before it existed", () => {
+    const storage = memoryStorage({
+      "satellite:issues:view:v1:old": '{"query":"crash","issueState":"all","issueHost":"all"}',
+    });
+    expect(readIssuesPreferences("old", storage)).toEqual({
+      query: "crash",
+      issueState: "all",
+      issueHost: "all",
+    });
+    writeIssuesPreferences("new", { ...DEFAULT_ISSUES_PREFERENCES, showDismissed: true }, storage);
+    expect(readIssuesPreferences("new", storage).showDismissed).toBe(true);
+  });
+
   it("falls back to defaults for unreadable values", () => {
     const storage = memoryStorage({ "satellite:issues:view:v1:scope": '{"query":3}' });
     expect(readIssuesPreferences("scope", storage)).toEqual(DEFAULT_ISSUES_PREFERENCES);

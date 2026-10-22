@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Hashes request payloads and mints manager ids.
 import * as NodeCrypto from "node:crypto";
+import * as NodeUtil from "node:util";
 
 import {
   CommandId,
@@ -17,6 +18,7 @@ import {
   FactoryMember,
   FactoryOnboardingReport,
   FactoryOperationError,
+  FactoryProposedChange,
   FactoryTeamSpec,
   FactoryTeamVerdict,
   FactoryTicketDraft,
@@ -42,6 +44,7 @@ import {
   type FactoryCreateTeamInput,
   type FactoryDelegateInput,
   type FactoryDelegationPlan,
+  type FactoryDraftsApplyInput,
   type FactoryDraftsApproveInput,
   type FactoryDraftsDismissInput,
   type FactoryDraftsEditInput,
@@ -516,6 +519,10 @@ export interface FactoryServiceShape {
   readonly restoreDraft: (
     input: FactoryDraftsRestoreInput,
   ) => Effect.Effect<FactoryTicketDraft, FactoryOperationError>;
+  /** Writes a factory draft's proposed change to the environment config and accepts the draft. */
+  readonly applyDraft: (
+    input: FactoryDraftsApplyInput,
+  ) => Effect.Effect<FactoryTicketDraft, FactoryOperationError>;
   /** Ended assignments' stats, newest first, with each team's medians over them. */
   readonly getStats: (
     input: FactoryStatsGetInput,
@@ -807,6 +814,92 @@ const teamSection = (config: FactoryConfig, team: FactoryTeamSpec) => {
   if (preset !== undefined)
     return `# Team\n\nPreset ${preset.name}: ${members}${preset.workflow === "" ? "" : `\n\n${preset.workflow}`}`;
   return team.members.length === 0 ? null : `# Team\n\n${members}`;
+};
+
+const SETTING_LABELS = {
+  pickupGuidance: "pickup guidance",
+  concurrencyCap: "concurrency cap",
+  recoveryAllowance: "recovery allowance",
+  digestIntervalMinutes: "digest interval",
+} as const;
+
+const shownValue = (value: unknown) => {
+  const text = json(value);
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+};
+
+const presetLine = (preset: FactoryTeamPreset) =>
+  `${preset.name}: ${preset.members.map(memberLine).join(", ")}${
+    preset.workflow === "" ? "" : `; workflow "${preset.workflow}"`
+  }`;
+
+const isFactoryConfig = Schema.is(FactoryConfig);
+
+/**
+ * The environment config with a proposed change applied, or why it no longer applies. The change
+ * names the value it replaces, so a config edited since the retro is refused rather than clobbered.
+ */
+const applyProposedChange = (
+  config: FactoryConfig,
+  change: FactoryProposedChange,
+): { readonly config: FactoryConfig } | { readonly refused: FactoryOperationError } => {
+  switch (change.kind) {
+    case "role-skill":
+      return { refused: error("invalid", "Edit the role file to apply this change.") };
+    case "setting": {
+      const current = config[change.key];
+      if (!NodeUtil.isDeepStrictEqual(current, change.before))
+        return {
+          refused: error(
+            "conflict",
+            `The ${SETTING_LABELS[change.key]} changed since this was proposed: it is now ${shownValue(current)}, not ${shownValue(change.before)}.`,
+          ),
+        };
+      const next = { ...config, [change.key]: change.after };
+      if (!isFactoryConfig(next))
+        return {
+          refused: error(
+            "invalid",
+            `${shownValue(change.after)} is not a valid ${SETTING_LABELS[change.key]}.`,
+          ),
+        };
+      return { config: next };
+    }
+    case "preset": {
+      if (change.before === null) {
+        const taken = config.teamPresets.find((preset) => preset.name === change.after.name);
+        if (taken !== undefined)
+          return {
+            refused: error(
+              "conflict",
+              `A team preset named "${change.after.name}" already exists: ${presetLine(taken)}.`,
+            ),
+          };
+        return { config: { ...config, teamPresets: [...config.teamPresets, change.after] } };
+      }
+      const replaced = change.before;
+      const current = config.teamPresets.find((preset) => preset.id === replaced.id);
+      if (current === undefined)
+        return {
+          refused: error("conflict", `The team preset "${replaced.name}" no longer exists.`),
+        };
+      if (!NodeUtil.isDeepStrictEqual(current, replaced))
+        return {
+          refused: error(
+            "conflict",
+            `The team preset "${replaced.name}" changed since this was proposed. It is now ${presetLine(current)}.`,
+          ),
+        };
+      return {
+        config: {
+          ...config,
+          teamPresets: config.teamPresets.map((preset) =>
+            preset.id === replaced.id ? change.after : preset,
+          ),
+        },
+      };
+    }
+  }
 };
 
 /** The approved control paths, or the proposed ones while onboarding. */
@@ -3922,6 +4015,29 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   const restoreDraft: FactoryServiceShape["restoreDraft"] = (input) =>
     moveDraft("restore", input, "dismissed", "pending");
 
+  const applyDraft: FactoryServiceShape["applyDraft"] = (input) =>
+    changeDraft("apply", input, (row, at) =>
+      Effect.gen(function* () {
+        if (row.scope !== "factory" || row.proposed_change_json === null)
+          return yield* error("invalid", "This draft proposes no factory change to apply.");
+        if (row.state !== "pending")
+          return yield* error(
+            "conflict",
+            `This draft is ${row.state}; only a pending draft can be applied.`,
+          );
+        const change = yield* parse(FactoryProposedChange, row.proposed_change_json);
+        const applied = applyProposedChange((yield* environmentConfig()).config, change);
+        if ("refused" in applied) return yield* applied.refused;
+        yield* saveEnvironmentConfig(applied.config);
+        yield* sql`UPDATE factory_ticket_drafts SET state='approved',updated_at=${at}
+            WHERE id=${row.id}`;
+        yield* writeLog(row.manager_id, row.assignment_id, "ticket", "factory change applied", {
+          draftId: row.id,
+          change,
+        });
+      }),
+    );
+
   /**
    * A factory draft is accepted in one step. A project draft files its ticket outside the lock;
    * a failed filing leaves it pending with no request remembered, so the user can approve again.
@@ -4053,6 +4169,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     approveDraft,
     dismissDraft,
     restoreDraft,
+    applyDraft,
     getStats,
   } satisfies FactoryServiceShape;
 });

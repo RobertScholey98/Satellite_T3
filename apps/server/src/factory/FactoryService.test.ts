@@ -11,6 +11,7 @@ import {
   ProjectId,
   ThreadId,
   type FactoryAssignmentsEvent,
+  type FactoryDraftTicketInput,
   type FactoryManagersEvent,
   type FactoryOnboardingReport,
   type FactoryRole,
@@ -2861,6 +2862,105 @@ describe("FactoryService ticket drafts", () => {
           );
         }),
       ),
+  );
+});
+
+describe("FactoryService applied drafts", () => {
+  const draftChange = (
+    factory: Factory,
+    threadId: ThreadId,
+    proposedChange: FactoryDraftTicketInput["proposedChange"],
+  ) =>
+    factory.service.draftTicket(threadId, {
+      scope: "factory",
+      title: "Change the factory",
+      body: "The retro found the factory setup in the way.",
+      acceptanceCriteria: [],
+      ...(proposedChange === undefined ? {} : { proposedChange }),
+    });
+
+  it.effect("applies a setting change to the environment config and accepts the draft", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service } = factory;
+        const manager = yield* activeManager(service);
+        const { draft } = yield* draftChange(factory, manager.threadId!, {
+          kind: "setting",
+          key: "concurrencyCap",
+          before: 1,
+          after: 2,
+        });
+
+        const applied = yield* service.applyDraft({ requestId: "apply-1", draftId: draft.id });
+        assert.strictEqual(applied.state, "approved");
+        assert.strictEqual((yield* service.getConfig({})).environment.concurrencyCap, 2);
+        const [entry] = yield* service.listLog({ managerId: manager.id });
+        assert.strictEqual(entry!.reason, "factory change applied");
+        assert.deepStrictEqual(
+          yield* service.applyDraft({ requestId: "apply-1", draftId: draft.id }),
+          applied,
+        );
+      }),
+    ),
+  );
+
+  it.effect("refuses a setting that changed since the retro, naming its current value", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service } = factory;
+        const manager = yield* activeManager(service);
+        const { draft } = yield* draftChange(factory, manager.threadId!, {
+          kind: "setting",
+          key: "concurrencyCap",
+          before: 1,
+          after: 2,
+        });
+        yield* service.updateConfig({
+          scope: "environment",
+          config: { ...FACTORY, concurrencyCap: 3 },
+        });
+
+        const refused = yield* service
+          .applyDraft({ requestId: "apply-1", draftId: draft.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "conflict");
+        assert.include(refused.message, "now 3");
+        assert.strictEqual((yield* service.getConfig({})).environment.concurrencyCap, 3);
+        const [pending] = yield* service.listDrafts({ state: "pending" });
+        assert.strictEqual(pending!.id, draft.id);
+      }),
+    ),
+  );
+
+  it.effect("adds a proposed new preset, and refuses it once a preset has that name", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service } = factory;
+        const manager = yield* activeManager(service);
+        const trio = preset("Trio", "implement, review, verify");
+        const { draft } = yield* draftChange(factory, manager.threadId!, {
+          kind: "preset",
+          before: null,
+          after: trio,
+        });
+        const { draft: again } = yield* draftChange(factory, manager.threadId!, {
+          kind: "preset",
+          before: null,
+          after: { ...trio, id: "preset-trio-2" },
+        });
+
+        yield* service.applyDraft({ requestId: "apply-1", draftId: draft.id });
+        assert.deepStrictEqual((yield* service.getConfig({})).environment.teamPresets, [trio]);
+        const refused = yield* service
+          .applyDraft({ requestId: "apply-2", draftId: again.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "conflict");
+        assert.include(refused.message, "Trio");
+      }),
+    ),
   );
 });
 

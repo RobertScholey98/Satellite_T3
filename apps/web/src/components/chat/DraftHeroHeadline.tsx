@@ -43,6 +43,7 @@ import { InlineButton } from "../ui/button";
 import { DraftProjectName } from "./DraftProjectName";
 import { DraftHeroProjectHeading } from "./DraftHeroProjectHeading";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { useFactoryManagerDraft } from "../factory/factoryWorkspaceState";
 
 const ADD_PROJECT_VALUE = "add-project";
 
@@ -81,6 +82,7 @@ export function DraftHeroHeadline({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
   const pickerFilter = useComboboxFilter();
+  const namingManager = useFactoryManagerDraft(draftId);
 
   const environmentLabelById = new Map(
     environments.map((environment) => [environment.environmentId, environment.label] as const),
@@ -343,7 +345,12 @@ export function DraftHeroHeadline({
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col items-center">
       {hasResolvedProject && !isScratchDraft ? (
-        <DraftHeroProjectHeading projectName={activeProjectDisplayName ?? "Choose a project"}>
+        <DraftHeroProjectHeading
+          projectName={activeProjectDisplayName ?? "Choose a project"}
+          {...(namingManager
+            ? { question: "What should we call this engineering manager", preposition: "for" }
+            : {})}
+        >
           {projectSelector}
         </DraftHeroProjectHeading>
       ) : (

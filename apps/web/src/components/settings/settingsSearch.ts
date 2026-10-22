@@ -27,7 +27,8 @@ export type SettingsPath =
   | "/settings/storage"
   | "/settings/connections"
   | "/settings/archived"
-  | "/settings/issue-boards";
+  | "/settings/issue-boards"
+  | "/factory";
 
 export type SettingsSearchScope =
   | "environment"
@@ -87,6 +88,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/connections": "Connections",
   "/settings/archived": "Archive",
   "/settings/issue-boards": "Issue boards",
+  "/factory": "Factory",
 };
 
 export function keybindingSearchAnchorId<Command extends KeybindingCommand>(command: Command) {
@@ -1014,6 +1016,36 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/issue-boards",
     searchTerms: ["ready in progress in pr completed mapping move on merge"],
   },
+  {
+    id: "factory-pickup",
+    title: "Factory pickup",
+    to: "/factory",
+    searchTerms: ["pickup guidance ready tickets concurrent assignments manager auto start"],
+  },
+  {
+    id: "factory-models",
+    title: "Factory models",
+    to: "/factory",
+    searchTerms: ["model pool manager lead implementer reviewer verifier role models"],
+  },
+  {
+    id: "factory-teams",
+    title: "Factory teams",
+    to: "/factory",
+    searchTerms: ["team presets members workflow when to use"],
+  },
+  {
+    id: "factory-role-skills",
+    title: "Factory role skills",
+    to: "/factory",
+    searchTerms: ["role briefs manager lead implementer reviewer verifier markdown"],
+  },
+  {
+    id: "factory-behaviour",
+    title: "Factory behaviour",
+    to: "/factory",
+    searchTerms: ["recovery allowance digest interval git identity github app behavior"],
+  },
 ] as const satisfies ReadonlyArray<SettingsSearchItem>;
 
 export type SettingsSearchItemId = (typeof SETTINGS_SEARCH_ITEMS)[number]["id"];
@@ -1035,6 +1067,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/scheduled-tasks": null,
   "/settings/archived": "project-defaults",
   "/settings/issue-boards": null,
+  "/factory": null,
 };
 
 export function getSettingsSearchTargetScope(targetId: string) {

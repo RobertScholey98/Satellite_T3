@@ -104,6 +104,10 @@ import { fileAttachmentCapabilityBlockReason } from "./composerAttachmentFiles";
 import { readEnvironmentScope } from "../../state/session";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import {
+  createFactoryManagerFromDraft,
+  isFactoryManagerDraft,
+} from "../factory/factoryWorkspaceState";
+import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   threadContextsOutsideEnvironment,
 } from "@t3tools/shared/composerContextReferences";
@@ -543,6 +547,34 @@ export function useComposerSend(input: ComposerSendInput) {
       return;
     }
     const sendCtx = composerRef.current?.getSendContext();
+    // A draft naming a new engineering manager creates it instead of starting a thread.
+    if (isLocalDraftThread && draftId && activeProject && isFactoryManagerDraft(draftId)) {
+      await createFactoryManagerFromDraft({
+        environmentId,
+        projectId: activeProject.id,
+        draftId,
+        name: promptRef.current,
+        modelSelection: sendCtx?.selectedModelSelection ?? null,
+        onError: (description) =>
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not create the engineering manager",
+              description,
+            }),
+          ),
+        onCreated: (manager) => {
+          promptRef.current = "";
+          clearComposerDraftContent(composerDraftTarget);
+          composerRef.current?.resetCursorState();
+          void navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(scopeThreadRef(environmentId, manager.threadId)),
+          });
+        },
+      });
+      return;
+    }
     if (activePendingProgress && sendCtx?.answeringPendingUserInput !== false) {
       if (directAnnotation) {
         notifyDirectAnnotationAttached();

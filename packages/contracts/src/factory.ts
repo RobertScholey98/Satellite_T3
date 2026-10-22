@@ -46,6 +46,7 @@ export const FACTORY_WS_METHODS = {
   factoryDraftsDismiss: "factory.drafts.dismiss",
   factoryDraftsRestore: "factory.drafts.restore",
   factoryStatsGet: "factory.stats.get",
+  factoryDraftsApply: "factory.drafts.apply",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -891,6 +892,13 @@ export type FactoryDraftsDismissInput = typeof FactoryDraftsDismissInput.Type;
 export const FactoryDraftsRestoreInput = Schema.Struct({ requestId: Id, draftId: Id });
 export type FactoryDraftsRestoreInput = typeof FactoryDraftsRestoreInput.Type;
 
+/**
+ * Applies a pending factory draft's proposed change and accepts the draft. Refused with
+ * `conflict` when the value it replaces has changed since; a role-skill change is not applied.
+ */
+export const FactoryDraftsApplyInput = Schema.Struct({ requestId: Id, draftId: Id });
+export type FactoryDraftsApplyInput = typeof FactoryDraftsApplyInput.Type;
+
 const StatsTokens = Schema.Struct({
   input: NonNegativeInt,
   cachedInput: NonNegativeInt,
@@ -1110,5 +1118,10 @@ export const WsFactoryDraftsRestoreRpc = Rpc.make(FACTORY_WS_METHODS.factoryDraf
 export const WsFactoryStatsGetRpc = Rpc.make(FACTORY_WS_METHODS.factoryStatsGet, {
   payload: FactoryStatsGetInput,
   success: FactoryStatsResult,
+  error: FactoryRpcError,
+});
+export const WsFactoryDraftsApplyRpc = Rpc.make(FACTORY_WS_METHODS.factoryDraftsApply, {
+  payload: FactoryDraftsApplyInput,
+  success: FactoryTicketDraft,
   error: FactoryRpcError,
 });

@@ -13,6 +13,7 @@ import {
   BotIcon,
   createLucideIcon,
   CalendarClockIcon,
+  FactoryIcon,
   GitBranchIcon,
   HardDriveIcon,
   PanelsTopLeftIcon,
@@ -90,6 +91,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/connections": Link2Icon,
   "/settings/archived": ArchiveIcon,
   "/settings/issue-boards": TicketIcon,
+  "/factory": FactoryIcon,
 };
 
 const SETTINGS_NAV_ITEMS: ReadonlyArray<{
@@ -97,7 +99,7 @@ const SETTINGS_NAV_ITEMS: ReadonlyArray<{
   to: SettingsPath;
   icon: ComponentType<{ className?: string }>;
 }> = (Object.keys(SETTINGS_SECTION_LABELS) as SettingsPath[])
-  .filter((to) => to !== "/settings/diagnostics")
+  .filter((to) => to !== "/settings/diagnostics" && to !== "/factory")
   .map((to) => ({
     to,
     label: SETTINGS_SECTION_LABELS[to],

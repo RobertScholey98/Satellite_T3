@@ -14,6 +14,7 @@ import {
   WsFactoryAssignmentsRefreshDigestRpc,
   WsFactoryAssignmentsSubscribeRpc,
   WsFactoryConfigGetRpc,
+  WsFactoryDraftsApplyRpc,
   WsFactoryDraftsApproveRpc,
   WsFactoryDraftsDismissRpc,
   WsFactoryDraftsEditRpc,
@@ -106,6 +107,7 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsFactoryDraftsDismissRpc,
   WsFactoryDraftsRestoreRpc,
   WsFactoryStatsGetRpc,
+  WsFactoryDraftsApplyRpc,
 );
 
 type SatelliteWsRpc = RpcGroup.Rpcs<typeof WsSatelliteRpcGroup>;
@@ -137,4 +139,6 @@ export const SATELLITE_CLIENT_GUARDED_RPC_SCOPES = {
   [FACTORY_WS_METHODS.factoryDraftsApprove]: AuthOrchestrationOperateScope,
   [FACTORY_WS_METHODS.factoryDraftsDismiss]: AuthOrchestrationOperateScope,
   [FACTORY_WS_METHODS.factoryDraftsRestore]: AuthOrchestrationOperateScope,
+  // Applying a draft writes the environment's factory config, as a config update does.
+  [FACTORY_WS_METHODS.factoryDraftsApply]: AuthSettingsWriteScope,
 } as const satisfies Partial<Readonly<Record<SatelliteWsRpcMethod, AuthEnvironmentScope>>>;

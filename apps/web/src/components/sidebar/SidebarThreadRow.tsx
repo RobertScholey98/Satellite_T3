@@ -109,6 +109,7 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } f
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
+import { FactoryWorkspaceWaitingCount } from "../factory/FactoryWorkspaceWaitingCount";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -1119,6 +1120,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               </span>
             ) : null}
             {prBadge}
+            <FactoryWorkspaceWaitingCount
+              environmentId={thread.environmentId}
+              threadId={thread.id}
+            />
             {sortable?.isDragging ? (
               dragDestination
             ) : (
@@ -1452,6 +1457,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {terminalStatusIcon}
               {prBadge}
+              <FactoryWorkspaceWaitingCount
+                environmentId={thread.environmentId}
+                threadId={thread.id}
+              />
               {diff ? (
                 <span className="shrink-0 font-mono">
                   <span className="text-diff-addition-foreground">

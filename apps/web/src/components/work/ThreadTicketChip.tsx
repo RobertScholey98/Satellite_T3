@@ -19,6 +19,7 @@ import {
   useIssueBoardSync,
 } from "./issuesState";
 import { canResumeAttempt } from "./issuesViewState";
+import { useFactoryLeadActions } from "../factory/FactoryThreadActions";
 
 const FOCUS_REFRESH_DEBOUNCE_MS = 250;
 
@@ -36,6 +37,8 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
     readonly attempts: ReadonlyArray<IssueAttempt>;
   } | null>(null);
   const [acting, setActing] = useState(false);
+  // A factory lead's attempt belongs to its assignment: cancelling that is the way to stop it.
+  const factory = useFactoryLeadActions(threadRef.environmentId, threadRef.threadId);
   const threadKey = `${threadRef.environmentId}\n${threadRef.threadId}`;
 
   const load = () => {
@@ -99,70 +102,92 @@ export function ThreadTicketChip({ threadRef }: { readonly threadRef: ScopedThre
   };
 
   return (
-    <Menu>
-      <MenuTrigger
-        render={<Button size="xs" variant="ghost" className="shrink-0" disabled={acting} />}
-      >
-        <TicketIcon />
-        Ticket #{attempt.issue.number}
-        <Badge size="sm" variant={paused ? "warning" : attempt.active ? "success" : "outline"}>
-          {paused ? "Automatic moves paused" : attempt.active ? "Active" : "Earlier"}
-        </Badge>
-      </MenuTrigger>
-      <MenuPopup align="end">
-        <MenuItem onClick={() => void ensureLocalApi().shell.openExternal(attempt.issue.url)}>
-          Open ticket
-        </MenuItem>
-        <MenuItem
-          onClick={() =>
-            void navigate({
-              to: "/issues",
-              search: {
-                environmentId: threadRef.environmentId,
-                projectId: attempt.projectId,
-                boardId: attempt.boardId,
-                ticket: `${attempt.issue.repository}#${attempt.issue.number}`,
-                mode: "board",
-              },
-            })
-          }
+    <>
+      <Menu>
+        <MenuTrigger
+          render={<Button size="xs" variant="ghost" className="shrink-0" disabled={acting} />}
         >
-          Show on board
-        </MenuItem>
-        {attempt.active || resumable ? <MenuSeparator /> : null}
-        {attempt.active ? (
-          <MenuItem
-            variant="destructive"
-            onClick={() =>
-              void act("Could not stop the attempt", async () =>
-                unwrapIssueResult(
-                  await endAttempt({
-                    environmentId: threadRef.environmentId,
-                    input: { requestId: randomUUID(), attemptId: attempt.id },
-                  }),
-                ),
-              )
-            }
-          >
-            Stop attempt
+          <TicketIcon />
+          Ticket #{attempt.issue.number}
+          <Badge size="sm" variant={paused ? "warning" : attempt.active ? "success" : "outline"}>
+            {paused ? "Automatic moves paused" : attempt.active ? "Active" : "Earlier"}
+          </Badge>
+        </MenuTrigger>
+        <MenuPopup align="end">
+          <MenuItem onClick={() => void ensureLocalApi().shell.openExternal(attempt.issue.url)}>
+            Open ticket
           </MenuItem>
-        ) : resumable ? (
           <MenuItem
             onClick={() =>
-              void act("Could not resume the attempt", async () =>
-                unwrapIssueResult(
-                  await resumeAttempt({
-                    environmentId: threadRef.environmentId,
-                    input: { requestId: randomUUID(), attemptId: attempt.id },
-                  }),
-                ),
-              )
+              void navigate({
+                to: "/issues",
+                search: {
+                  environmentId: threadRef.environmentId,
+                  projectId: attempt.projectId,
+                  boardId: attempt.boardId,
+                  ticket: `${attempt.issue.repository}#${attempt.issue.number}`,
+                  mode: "board",
+                },
+              })
             }
           >
-            Resume attempt
+            Show on board
           </MenuItem>
-        ) : null}
-      </MenuPopup>
-    </Menu>
+          {attempt.active || resumable || factory.lead ? <MenuSeparator /> : null}
+          {factory.lead ? (
+            <>
+              {factory.takenOver ? (
+                <MenuItem disabled={!factory.canHandBack} onClick={() => void factory.handBack()}>
+                  Hand back
+                </MenuItem>
+              ) : (
+                <MenuItem disabled={!factory.canTakeOver} onClick={() => void factory.takeOver()}>
+                  Take over
+                </MenuItem>
+              )}
+              <MenuItem
+                variant="destructive"
+                disabled={!factory.canCancel}
+                onClick={factory.requestCancel}
+              >
+                Cancel assignment
+              </MenuItem>
+            </>
+          ) : attempt.active ? (
+            <MenuItem
+              variant="destructive"
+              onClick={() =>
+                void act("Could not stop the attempt", async () =>
+                  unwrapIssueResult(
+                    await endAttempt({
+                      environmentId: threadRef.environmentId,
+                      input: { requestId: randomUUID(), attemptId: attempt.id },
+                    }),
+                  ),
+                )
+              }
+            >
+              Stop attempt
+            </MenuItem>
+          ) : resumable ? (
+            <MenuItem
+              onClick={() =>
+                void act("Could not resume the attempt", async () =>
+                  unwrapIssueResult(
+                    await resumeAttempt({
+                      environmentId: threadRef.environmentId,
+                      input: { requestId: randomUUID(), attemptId: attempt.id },
+                    }),
+                  ),
+                )
+              }
+            >
+              Resume attempt
+            </MenuItem>
+          ) : null}
+        </MenuPopup>
+      </Menu>
+      {factory.cancelDialog}
+    </>
   );
 }

@@ -61,6 +61,7 @@ export function createFactoryEnvironmentAtoms<R, E>(
     approveDraft: command("drafts:approve", WS_METHODS.factoryDraftsApprove),
     dismissDraft: command("drafts:dismiss", WS_METHODS.factoryDraftsDismiss),
     restoreDraft: command("drafts:restore", WS_METHODS.factoryDraftsRestore),
+    applyDraft: command("drafts:apply", WS_METHODS.factoryDraftsApply),
     getStats: command("stats:get", WS_METHODS.factoryStatsGet),
   };
 }

@@ -55,6 +55,7 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.factoryDraftsDismiss]: (input) => factory.dismissDraft(input),
         [SATELLITE_WS_METHODS.factoryDraftsRestore]: (input) => factory.restoreDraft(input),
         [SATELLITE_WS_METHODS.factoryStatsGet]: (input) => factory.getStats(input),
+        [SATELLITE_WS_METHODS.factoryDraftsApply]: (input) => factory.applyDraft(input),
       });
     }),
   );

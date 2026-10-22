@@ -19,6 +19,8 @@ const Preferences = Schema.Struct({
   query: Schema.String.check(Schema.isMaxLength(512)),
   issueState: Schema.String.check(Schema.isMaxLength(512)),
   issueHost: Schema.String.check(Schema.isMaxLength(512)),
+  /** Shows dismissed retro findings in the Retro triage column. Absent in older stored values. */
+  showDismissed: Schema.optionalKey(Schema.Boolean),
 });
 export type IssuesPreferences = typeof Preferences.Type;
 const decodePreferences = Schema.decodeUnknownOption(Preferences);
