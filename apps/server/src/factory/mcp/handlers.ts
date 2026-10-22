@@ -4,11 +4,14 @@ import type {
   FactoryOperationError,
   FactoryRoleBrief,
   FactoryStatus,
+  FactoryWorkerRole,
+  OrchestratorMcpDelegateTaskInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
+import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import { FactoryService } from "../FactoryService.ts";
 import { FactoryToolFailedError, FactoryToolkit } from "./tools.ts";
 
@@ -49,6 +52,12 @@ const recoverMessage = (assignment: FactoryAssignment) =>
   assignment.state === "waiting-user"
     ? `The recovery allowance is spent, so "${assignment.title}" is with the user, with your brief as the recommendation.`
     : `Recovered "${assignment.title}" (${assignment.recoveryUsed} recovery used). Its lead is ${assignment.leadThreadId}.`;
+
+const taskRole: Record<FactoryWorkerRole, NonNullable<OrchestratorMcpDelegateTaskInput["role"]>> = {
+  implementer: "implementation",
+  reviewer: "review",
+  verifier: "test",
+};
 
 const endedAs: Partial<Record<FactoryAssignmentState, string>> = {
   completed: "completed",
@@ -194,6 +203,75 @@ const make = Effect.gen(function* () {
         return {
           assignment,
           message: `"${assignment.title}" ${endedAs[assignment.state] ?? assignment.state}.`,
+        };
+      }),
+    ),
+    factory_delegate: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingLead(NOT_A_LEAD);
+        const plan = yield* factory
+          .planDelegation(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const orchestrator = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const task = yield* orchestrator.delegateTask(scope, {
+          task: plan.task,
+          title: plan.title,
+          target: {
+            providerInstanceId: plan.modelSelection.instanceId,
+            model: plan.modelSelection.model,
+          },
+          role: taskRole[plan.role],
+          isolation: "shared",
+          mode: "async",
+        });
+        yield* factory
+          .recordMember(threadId, {
+            threadId: task.childThreadId,
+            role: plan.role,
+            modelSelection: plan.modelSelection,
+            joined: "created",
+          })
+          .pipe(
+            // The child already runs, so say so; a retry would start a second one.
+            Effect.mapError(
+              (error) =>
+                new FactoryToolFailedError({
+                  reason: error.reason,
+                  message: `Started ${task.childThreadId} (task ${task.taskId}), but could not record it on the team: ${error.message}`,
+                }),
+            ),
+          );
+        return {
+          taskId: task.taskId,
+          childThreadId: task.childThreadId,
+          role: plan.role,
+          model: plan.modelSelection,
+          message: `Started a ${plan.role} on ${plan.modelSelection.model}, task ${task.taskId}. Its completion wakes this thread.`,
+        };
+      }),
+    ),
+    factory_update_checklist: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingLead(NOT_A_LEAD);
+        const assignment = yield* factory
+          .updateChecklist(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return {
+          checklist: assignment.checklist,
+          message: `The checklist has ${plural(assignment.checklist.length, "step")}.`,
+        };
+      }),
+    ),
+    factory_create_team: McpToolAccess.actsAsCaller((input) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* callingManager(NOT_A_MANAGER);
+        const preset = yield* factory
+          .createTeam(threadId, input)
+          .pipe(Effect.mapError(toolFailure));
+        return {
+          preset,
+          message: `Added the team preset "${preset.name}". Name it as the team when you pick up or commission work.`,
         };
       }),
     ),

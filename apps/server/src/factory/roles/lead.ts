@@ -45,6 +45,12 @@ Every worker you start uses one of these models:
 
 Never start a model outside this list, even if it would be faster.
 
+- Staff the team with \`factory_delegate\`: the role, the task, and optionally a model from
+  the list. The team in your assignment sets how many of each role may run at once. A child
+  started with plain \`delegate_task\` is still observed, and flagged to the manager if its
+  model is outside the pool.
+- Keep \`factory_update_checklist\` current as your plan moves: steps only, no narration.
+
 ## What stuck means
 
 You are stuck when you made no progress after a replan, or when the work depends on something

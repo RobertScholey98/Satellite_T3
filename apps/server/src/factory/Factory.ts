@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
 import * as FactoryReactor from "./FactoryReactor.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryMcp from "./mcp/handlers.ts";
@@ -22,4 +23,7 @@ export const layer = Layer.effectDiscard(
 /** Handler builds only need the service to exist. */
 export const testLayer = Layer.mock(FactoryService.FactoryService)({});
 
-export const mcpToolkit = McpHttpServer.toolkitRegistration(FactoryToolkit, FactoryMcp.layer);
+// `factory_delegate` launches its child through upstream's delegation, as `delegate_task` does.
+export const mcpToolkit = McpHttpServer.toolkitRegistration(FactoryToolkit, FactoryMcp.layer).pipe(
+  Layer.provide(OrchestratorMcpService.layer),
+);

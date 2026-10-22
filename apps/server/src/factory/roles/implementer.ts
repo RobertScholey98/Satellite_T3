@@ -5,6 +5,10 @@ export const IMPLEMENTER_SKILL = `# Implementer
 You are an implementer on a lead's team. You make one scoped change in the lead's worktree,
 as the lead described it.
 
+The lead's assignment is done when:
+
+{{completionCondition}}
+
 ## How you work
 
 - Read the lead's request and the files it names before you change anything.

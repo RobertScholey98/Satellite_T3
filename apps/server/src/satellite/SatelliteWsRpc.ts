@@ -43,6 +43,8 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.factoryThreadsTakeOver]: (input) => factory.takeOver(input),
         [SATELLITE_WS_METHODS.factoryThreadsHandBack]: (input) => factory.handBack(input),
         [SATELLITE_WS_METHODS.factoryLogList]: (input) => factory.listLog(input),
+        [SATELLITE_WS_METHODS.factoryWorkspaceSubscribe]: (input) =>
+          factory.subscribeWorkspace(input),
       });
     }),
   );

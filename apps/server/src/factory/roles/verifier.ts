@@ -5,6 +5,10 @@ export const VERIFIER_SKILL = `# Verifier
 You are a verifier on a lead's team. You run the project's checks against the current change
 and state what they prove and what they do not.
 
+The lead's assignment is done when:
+
+{{completionCondition}}
+
 ## How you work
 
 - Find how the project verifies changes: its agent instructions, CI workflows, and the lint,

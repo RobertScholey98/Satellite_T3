@@ -8,11 +8,15 @@ import {
   FactoryAssignmentClaim,
   FactoryConfig,
   FactoryConfigOverride,
+  FactoryControlViolation,
   FactoryDependency,
   FactoryLogEntry,
   FactoryManager,
+  FactoryMember,
   FactoryOnboardingReport,
   FactoryOperationError,
+  FactoryTeamSpec,
+  FactoryWorkspaceFeed,
   IssueRef,
   issueReadyColumnIds,
   MessageId,
@@ -31,6 +35,9 @@ import {
   type FactoryConfigGetInput,
   type FactoryConfigUpdateInput,
   type FactoryConfigView,
+  type FactoryCreateTeamInput,
+  type FactoryDelegateInput,
+  type FactoryDelegationPlan,
   type FactoryLogKind,
   type FactoryLogListInput,
   type FactoryManagersApproveOnboardingInput,
@@ -48,9 +55,13 @@ import {
   type FactoryRole,
   type FactoryRoleBrief,
   type FactoryStatus,
-  type FactoryTeamSpec,
+  type FactoryTeamMember,
+  type FactoryTeamPreset,
   type FactoryThreadsHandBackInput,
   type FactoryThreadsTakeOverInput,
+  type FactoryUpdateChecklistInput,
+  type FactoryWorkerRole,
+  type FactoryWorkspaceSubscribeInput,
   type IssueAttemptsStartInput,
   type IssueAttemptsStartResult,
   type IssueBoardSummary,
@@ -60,12 +71,14 @@ import {
   type OrchestrationProjectShell,
   type OrchestrationV2RunStatus,
   type ProviderInteractionMode,
+  type PullRequestDiffResult,
   type PullRequestState,
   type RuntimeMode,
   ThreadId,
   type ThreadPullRequestKey,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
 import { sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import {
   normalizeThreadPullRequestKey,
@@ -89,9 +102,11 @@ import { canonicalIssueKey } from "../issues/IssueHost.ts";
 import { IssueService } from "../issues/IssueService.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { controlPathMatcher } from "./controlPaths.ts";
 import { factoryConfigProblem, modelKey, overrideWidensPool } from "./factoryConfig.ts";
 import {
   renderRoleSkill,
@@ -122,6 +137,8 @@ export interface FactoryThreadPullRequest {
   readonly merged: boolean;
   /** Null until the link's first sync. */
   readonly state: PullRequestState | null;
+  /** The snapshot's version, which the control-path check keys on; null until the first sync. */
+  readonly updatedAt: string | null;
 }
 
 /** What reconciling a lead reads from its thread. */
@@ -141,6 +158,29 @@ export interface FactoryThreadInterrupt {
   readonly threadId: ThreadId;
   readonly commandId: CommandId;
   readonly reason: string;
+}
+
+/** A pull request whose changed files the control-path check reads. */
+export interface FactoryPullRequestRef {
+  readonly projectId: ProjectId;
+  readonly host: string;
+  readonly repository: string;
+  readonly number: number;
+}
+
+/** A worker the lead launched from a delegation plan. */
+export interface FactoryMemberRecord {
+  readonly threadId: ThreadId;
+  readonly role: FactoryWorkerRole;
+  readonly modelSelection: ModelSelection;
+  readonly joined: "created";
+}
+
+/** A new thread as upstream's `thread.created` reports it. */
+export interface FactoryObservedThread {
+  readonly threadId: ThreadId;
+  readonly parentThreadId: ThreadId | null;
+  readonly modelSelection: ModelSelection;
 }
 
 /** A machine-authored message the factory queues behind the thread's current run. */
@@ -186,6 +226,10 @@ export interface FactoryServiceDependencies {
   ) => Effect.Effect<void, FactoryOperationError>;
   /** The repository's default branch, else "main". */
   readonly resolveBaseRef: (cwd: string) => Effect.Effect<string>;
+  /** Every path the pull request changes, renamed files under both names. */
+  readonly readPullRequestFiles: (
+    input: FactoryPullRequestRef,
+  ) => Effect.Effect<ReadonlyArray<string>, FactoryOperationError>;
 }
 
 export interface FactoryServiceShape {
@@ -305,6 +349,37 @@ export interface FactoryServiceShape {
    * capacity, and delivers each active manager's undelivered wakes in one message.
    */
   readonly sweep: Effect.Effect<void>;
+  /**
+   * What delegating a worker from the lead in this thread launches: the role must be on the
+   * team with a free place, and the model one the member allows. Changes nothing.
+   */
+  readonly planDelegation: (
+    leadThreadId: ThreadId,
+    input: FactoryDelegateInput,
+  ) => Effect.Effect<FactoryDelegationPlan, FactoryOperationError>;
+  /** Records a worker the lead in this thread launched from a delegation plan. */
+  readonly recordMember: (
+    leadThreadId: ThreadId,
+    input: FactoryMemberRecord,
+  ) => Effect.Effect<FactoryMember, FactoryOperationError>;
+  /**
+   * Joins a new thread to its parent's team when the parent is a live member, and wakes the
+   * manager when it runs a model outside the pool. Other threads are ignored.
+   */
+  readonly observeThread: (thread: FactoryObservedThread) => Effect.Effect<void>;
+  /** The lead in this thread replaces its assignment's checklist. */
+  readonly updateChecklist: (
+    leadThreadId: ThreadId,
+    input: FactoryUpdateChecklistInput,
+  ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
+  /** The manager in this thread adds a team preset to the environment config. */
+  readonly createTeam: (
+    managerThreadId: ThreadId,
+    input: FactoryCreateTeamInput,
+  ) => Effect.Effect<FactoryTeamPreset, FactoryOperationError>;
+  readonly subscribeWorkspace: (
+    input: FactoryWorkspaceSubscribeInput,
+  ) => Stream.Stream<FactoryWorkspaceFeed, FactoryOperationError>;
 }
 
 export class FactoryService extends Context.Service<FactoryService, FactoryServiceShape>()(
@@ -325,6 +400,10 @@ const decodeManagerValue = Schema.decodeUnknownEffect(FactoryManager);
 const decodeAssignmentValue = Schema.decodeUnknownEffect(FactoryAssignment);
 const decodeDependencyValue = Schema.decodeUnknownEffect(FactoryDependency);
 const decodeLogValue = Schema.decodeUnknownEffect(FactoryLogEntry);
+const decodeMemberValue = Schema.decodeUnknownEffect(FactoryMember);
+const decodeWorkspaceFeed = Schema.decodeUnknownEffect(FactoryWorkspaceFeed);
+const ControlChecked = Schema.Record(Schema.String, Schema.String);
+const ControlViolations = Schema.Array(FactoryControlViolation);
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
   Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(storageError));
 
@@ -435,12 +514,27 @@ const decodeDependencyWake = jsonDecoder(
 const decodeHandbackWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(HandbackWakePayload)),
 );
+const ControlWakePayload = Schema.Struct({ title: Schema.String, text: Schema.String });
+const decodeControlWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(ControlWakePayload)),
+);
+const OffPoolWakePayload = Schema.Struct({
+  threadId: Schema.String,
+  title: Schema.String,
+  model: Schema.String,
+});
+const decodeOffPoolWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(OffPoolWakePayload)),
+);
 const decodeIssueRef = jsonDecoder(Schema.decodeUnknownOption(Schema.fromJsonString(IssueRef)));
 
 /** Ends agent- or user-written text with a full stop when it has none, so wake text reads. */
 const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 
 const pullRequestKey = (key: ThreadPullRequestKey) => `${key.host}/${key.repository}#${key.number}`;
+
+const violationText = (violation: FactoryControlViolation) =>
+  `Pull request #${violation.pullRequest.number} changes protected paths (${violation.paths.join(", ")}). Revert those changes; the factory cannot send this to the user as ready.`;
 
 const RETRO_ASK =
   "Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.";
@@ -487,6 +581,29 @@ const skillFill = (
   pickupGuidance: config.pickupGuidance,
 });
 
+const modelName = (model: ModelSelection) => `${model.instanceId}/${model.model}`;
+
+const memberLine = (member: FactoryTeamMember) =>
+  `${member.count} × ${member.role}${
+    member.models !== undefined && member.models.length > 0
+      ? ` (${member.models.map(modelName).join(", ")})`
+      : ""
+  }`;
+
+const presetFor = (config: FactoryConfig, team: FactoryTeamSpec) =>
+  team.preset === "custom"
+    ? undefined
+    : config.teamPresets.find((preset) => preset.name === team.preset);
+
+/** The lead's view of its team; a preset also brings its workflow. */
+const teamSection = (config: FactoryConfig, team: FactoryTeamSpec) => {
+  const members = team.members.map(memberLine).join(", ");
+  const preset = presetFor(config, team);
+  if (preset !== undefined)
+    return `# Team\n\nPreset ${preset.name}: ${members}${preset.workflow === "" ? "" : `\n\n${preset.workflow}`}`;
+  return team.members.length === 0 ? null : `# Team\n\n${members}`;
+};
+
 /** The approved control paths, or the proposed ones while onboarding. */
 const protectedPathsOf = (manager: FactoryManager) =>
   manager.controlPaths.length > 0
@@ -516,10 +633,49 @@ interface AssignmentRow {
   readonly cancel_reason: string | null;
   readonly claim_json: string | null;
   readonly team_verdict_json: string | null;
+  readonly checklist_json: string;
+  readonly digest_text: string | null;
+  readonly digest_generated_at: string | null;
+  readonly digest_activity_at: string | null;
+  readonly control_violations_json: string;
+  readonly control_checked_json: string;
   readonly created_at: string;
   readonly updated_at: string;
   readonly ended_at: string | null;
 }
+
+interface MemberRow {
+  readonly thread_id: string;
+  readonly manager_id: string;
+  readonly assignment_id: string | null;
+  readonly role: string;
+  readonly parent_thread_id: string | null;
+  readonly joined: string;
+  readonly taken_over: number;
+  readonly off_pool: number;
+  readonly ended_at: string | null;
+}
+
+const memberValue = (row: MemberRow) => ({
+  threadId: row.thread_id,
+  managerId: row.manager_id,
+  assignmentId: row.assignment_id,
+  role: row.role,
+  parentThreadId: row.parent_thread_id,
+  joined: row.joined,
+  takenOver: row.taken_over === 1,
+  offPool: row.off_pool === 1,
+  endedAt: row.ended_at,
+});
+
+const digestValue = (row: AssignmentRow) =>
+  row.digest_text === null || row.digest_generated_at === null || row.digest_activity_at === null
+    ? null
+    : {
+        text: row.digest_text,
+        generatedAt: row.digest_generated_at,
+        activityAt: row.digest_activity_at,
+      };
 
 /** An assignment with whether the user has taken over its lead's thread. */
 interface LeadAssignmentRow extends AssignmentRow {
@@ -683,14 +839,18 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     }
   });
 
+  const saveEnvironmentConfig = Effect.fnUntraced(function* (config: FactoryConfig) {
+    const problem = factoryConfigProblem(config);
+    if (problem !== null) return yield* error("invalid", problem);
+    yield* assertProjectsSound(config);
+    yield* writeConfigRow(ENVIRONMENT_SCOPE, encodeConfig(config));
+  });
+
   const updateConfig: FactoryServiceShape["updateConfig"] = (input) =>
     lock(
       Effect.gen(function* () {
         if (input.scope === "environment") {
-          const problem = factoryConfigProblem(input.config);
-          if (problem !== null) return yield* error("invalid", problem);
-          yield* assertProjectsSound(input.config);
-          yield* writeConfigRow(ENVIRONMENT_SCOPE, encodeConfig(input.config));
+          yield* saveEnvironmentConfig(input.config);
           return yield* configView(undefined);
         }
         yield* project(input.projectId);
@@ -1078,6 +1238,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       dependencies: dependencies.map(dependencyValue),
       teamVerdict:
         row.team_verdict_json === null ? null : yield* parse(Schema.Unknown, row.team_verdict_json),
+      checklist: yield* parse(Schema.Unknown, row.checklist_json),
+      digest: digestValue(row),
+      controlViolations: yield* parse(Schema.Unknown, row.control_violations_json),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       endedAt: row.ended_at,
@@ -1304,14 +1467,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     manager: FactoryManager,
     config: FactoryConfig,
     workspaceRoot: string,
-    plan: Pick<AssignmentPlan, "title" | "brief" | "completionCondition">,
+    plan: Pick<AssignmentPlan, "title" | "brief" | "completionCondition" | "team">,
   ) {
     const skill = yield* deps.readRoleSkill("lead", workspaceRoot);
     const role = renderRoleSkill(skill.text, {
       ...skillFill(config, "lead", protectedPathsOf(manager)),
       completionCondition: plan.completionCondition,
     });
-    return `${role}\n\n# Assignment\n\n## ${plan.title}\n\n${plan.brief}\n\n## Completion condition\n\n${plan.completionCondition}`;
+    const team = teamSection(config, plan.team);
+    return `${role}\n\n# Assignment\n\n## ${plan.title}\n\n${plan.brief}\n\n## Completion condition\n\n${plan.completionCondition}${team === null ? "" : `\n\n${team}`}`;
   });
 
   /** A ticket's lead starts through an issue attempt, which owns its worktree and board moves. */
@@ -1363,10 +1527,16 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   const startAssignment = Effect.fnUntraced(function* (
     manager: FactoryManager,
     config: FactoryConfig,
-    plan: AssignmentPlan,
+    requested: AssignmentPlan,
   ) {
     const refusal = (reason: "conflict" | "invalid", message: string) =>
-      refuse(manager.id, reason, message, plan.refusalPayload);
+      refuse(manager.id, reason, message, requested.refusalPayload);
+    // A preset named without members staffs the preset's members, so delegation has a team.
+    const preset = presetFor(config, requested.team);
+    const plan: AssignmentPlan =
+      preset !== undefined && requested.team.members.length === 0
+        ? { ...requested, team: { preset: preset.name, members: preset.members } }
+        : requested;
     const pool = new Set(config.modelPool.map(modelKey));
     const outside = plan.team.members
       .flatMap((member) => member.models ?? [])
@@ -1694,6 +1864,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const rows = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments WHERE id=${id}`;
         const row = rows[0];
         if (!row || row.claim_json === null || !CLAIMABLE_STATES.has(row.state)) return null;
+        // Protected-path changes hold the claim; clearing them settles it again.
+        if (row.waiting_kind === "control") return null;
         const claim = yield* parse(FactoryAssignmentClaim, row.claim_json);
         const linked = new Map(
           [...previousLinks, ...(runs?.pullRequests ?? [])].map((pullRequest) => [
@@ -1739,15 +1911,156 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     yield* publish;
   });
 
+  /**
+   * Reads the files of each open pull request whose snapshot changed since its last check, outside
+   * the lock, and records which touch the manager's control paths. A new violation sends the
+   * assignment to the user and tells the lead and the manager; once none remain it returns to
+   * work. A failed read leaves that pull request for the next reconcile. True when the
+   * assignment's state changed, so the caller stops there.
+   */
+  const checkControlPaths = Effect.fnUntraced(function* (
+    row: LeadAssignmentRow & { readonly manager_control_paths_json: string },
+    runs: FactoryThreadRuns,
+  ) {
+    const open = runs.pullRequests.filter(
+      (pullRequest) => pullRequest.state === "open" && pullRequest.updatedAt !== null,
+    );
+    const openKeys = new Set(open.map(pullRequestKey));
+    const checked = yield* parse(ControlChecked, row.control_checked_json);
+    const stored = yield* parse(ControlViolations, row.control_violations_json);
+    const due = open.filter(
+      (pullRequest) => checked[pullRequestKey(pullRequest)] !== pullRequest.updatedAt,
+    );
+    if (
+      due.length === 0 &&
+      stored.every((violation) => openKeys.has(pullRequestKey(violation.pullRequest)))
+    )
+      return false;
+    const matches = controlPathMatcher(
+      controlPathsOf(yield* parse(Schema.Array(Schema.String), row.manager_control_paths_json)),
+    );
+    const results: Array<
+      { readonly key: string; readonly version: string } & FactoryControlViolation
+    > = [];
+    for (const pullRequest of due) {
+      const files = yield* deps
+        .readPullRequestFiles({
+          projectId: ProjectId.make(row.project_id),
+          host: pullRequest.host,
+          repository: pullRequest.repository,
+          number: pullRequest.number,
+        })
+        .pipe(Effect.result);
+      if (files._tag === "Failure") {
+        yield* Effect.logWarning("Could not read a factory pull request's files", {
+          assignmentId: row.id,
+          pullRequest: pullRequestKey(pullRequest),
+          cause: files.failure.message,
+        });
+        continue;
+      }
+      results.push({
+        key: pullRequestKey(pullRequest),
+        version: pullRequest.updatedAt!,
+        pullRequest: {
+          host: pullRequest.host,
+          repository: pullRequest.repository,
+          number: pullRequest.number,
+        },
+        paths: files.success.filter(matches),
+      });
+    }
+    const outcome = yield* lock(
+      Effect.gen(function* () {
+        const current = (yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+            WHERE id=${row.id}`)[0];
+        if (!current || isTerminal(current.state)) return null;
+        const before = yield* parse(ControlViolations, current.control_violations_json);
+        const nextChecked = { ...(yield* parse(ControlChecked, current.control_checked_json)) };
+        const byKey = new Map(
+          before
+            .filter((violation) => openKeys.has(pullRequestKey(violation.pullRequest)))
+            .map((violation) => [pullRequestKey(violation.pullRequest), violation]),
+        );
+        const fresh: FactoryControlViolation[] = [];
+        for (const { key, version, ...violation } of results) {
+          nextChecked[key] = version;
+          if (violation.paths.length === 0) {
+            byKey.delete(key);
+            continue;
+          }
+          const previous = byKey.get(key);
+          if (
+            previous === undefined ||
+            violation.paths.some((path) => !previous.paths.includes(path))
+          )
+            fresh.push(violation);
+          byKey.set(key, violation);
+        }
+        const violations = [...byKey.values()];
+        yield* sql`UPDATE factory_assignments SET control_checked_json=${json(nextChecked)},
+            control_violations_json=${json(violations)} WHERE id=${row.id}`;
+        const reason = violations
+          .map(
+            (violation) =>
+              `Pull request #${violation.pullRequest.number} changes protected paths: ${violation.paths.join(", ")}.`,
+          )
+          .join(" ");
+        const inControl = current.state === "waiting-user" && current.waiting_kind === "control";
+        if (fresh.length > 0) {
+          if (current.state === "active" || current.state === "waiting-user")
+            yield* sql`UPDATE factory_assignments SET state='waiting-user',waiting_kind='control',
+                waiting_reason=${reason},updated_at=${yield* now} WHERE id=${row.id}`;
+          for (const violation of fresh)
+            yield* writeWake(current, "control", {
+              title: current.title,
+              assignmentId: current.id,
+              text: violationText(violation),
+            });
+          return { kind: "violation", fresh } as const;
+        }
+        if (inControl && violations.length === 0) {
+          yield* sql`UPDATE factory_assignments SET state='active',waiting_kind=NULL,
+              waiting_reason=NULL,updated_at=${yield* now} WHERE id=${row.id}`;
+          return { kind: "cleared", claimed: current.claim_json !== null } as const;
+        }
+        if (inControl && reason !== current.waiting_reason)
+          yield* sql`UPDATE factory_assignments SET waiting_reason=${reason},
+              updated_at=${yield* now} WHERE id=${row.id}`;
+        return { kind: "recorded", changed: json(before) !== json(violations) } as const;
+      }),
+    );
+    if (outcome === null) return false;
+    switch (outcome.kind) {
+      case "violation":
+        if (row.lead_taken_over !== 1 && row.lead_thread_id !== null)
+          for (const violation of outcome.fresh)
+            yield* notifyLead(row.project_id, row.lead_thread_id, violationText(violation));
+        yield* publish;
+        return true;
+      case "cleared":
+        yield* publish;
+        if (outcome.claimed) yield* settleClaim(row.id, runs);
+        return true;
+      case "recorded":
+        if (outcome.changed) yield* publish;
+        return false;
+    }
+  });
+
   const reconcileLead = Effect.fnUntraced(function* (threadId: ThreadId) {
-    const rows = yield* sql<AssignmentRow & { manager_state: string }>`
-        SELECT a.*, m.state AS manager_state FROM factory_assignments a
+    const rows = yield* sql<
+      LeadAssignmentRow & { manager_state: string; manager_control_paths_json: string }
+    >`
+        SELECT a.*, ${LEAD_TAKEN_OVER}, m.state AS manager_state,
+        m.control_paths_json AS manager_control_paths_json FROM factory_assignments a
         JOIN factory_managers m ON m.id=a.manager_id
         WHERE a.lead_thread_id=${threadId} AND a.state IN ('active','waiting-user')`;
     const row = rows[0];
     if (!row) return;
     const runs = yield* deps.readThreadRuns(threadId);
     if (runs === null) return;
+    if (!runs.deleted && (yield* checkControlPaths(row, runs))) return;
     if (row.state === "waiting-user") {
       if (row.waiting_kind === "review" && row.claim_json !== null)
         return yield* settleClaim(row.id, runs);
@@ -1854,6 +2167,18 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           Option.map(decodeDependencyWake(row.payload_json), (payload) =>
             lines.push(
               `Assignment ${payload.title} is blocked on ${payload.dependencyTitle}: ${sentence(payload.unblockCondition)} Commission it with factory_commission (dependencyId ${payload.dependencyId}) or tell the lead how to proceed. The lead's brief for it:\n\n${payload.brief}`,
+            ),
+          );
+          break;
+        case "control":
+          Option.map(decodeControlWake(row.payload_json), (payload) =>
+            lines.push(`Assignment ${payload.title}: ${payload.text}`),
+          );
+          break;
+        case "off-pool":
+          Option.map(decodeOffPoolWake(row.payload_json), (payload) =>
+            lines.push(
+              `Thread ${payload.threadId} under ${payload.title} runs ${payload.model}, which is outside the pool. Tell the lead to stop it or ask the user to add the model.`,
             ),
           );
           break;
@@ -2064,7 +2389,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             }),
           );
         } else {
-          const { complexity } = yield* decodeAssignment(row);
+          const { complexity, team } = yield* decodeAssignment(row);
           const modelSelection = config.roleModels.lead[complexity] ?? config.modelPool[0];
           if (modelSelection === undefined)
             return yield* error("invalid", "Add at least one model to the factory pool first.");
@@ -2095,6 +2420,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               title: row.title,
               brief: `${row.brief}\n\n## Recovery brief\n\nYou replace a stalled lead and continue in its worktree${row.branch === null ? "" : ` on branch ${row.branch}`}. Check what it left before you change anything.${ticketNote}\n\n${input.brief}`,
               completionCondition: row.completion_condition,
+              team,
             }),
             modelSelection,
             runtimeMode: "full-access",
@@ -2333,6 +2659,249 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   const takeOver: FactoryServiceShape["takeOver"] = (input) => setTakenOver(input, true);
   const handBack: FactoryServiceShape["handBack"] = (input) => setTakenOver(input, false);
 
+  const decodeMember = (row: MemberRow) =>
+    decodeMemberValue(memberValue(row)).pipe(Effect.mapError(storageError));
+
+  const planDelegation: FactoryServiceShape["planDelegation"] = (leadThreadId, input) =>
+    protect(
+      Effect.gen(function* () {
+        const row = yield* requireLead(leadThreadId);
+        const team = yield* parse(FactoryTeamSpec, row.team_json);
+        const member = team.members.find((candidate) => candidate.role === input.role);
+        if (member === undefined)
+          return yield* error("invalid", `The team for ${row.title} has no ${input.role}.`);
+        const live = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM factory_members
+            WHERE assignment_id=${row.id} AND role=${input.role} AND ended_at IS NULL`;
+        if ((live[0]?.count ?? 0) >= member.count)
+          return yield* error(
+            "conflict",
+            `The team allows ${member.count} ${input.role}${member.count === 1 ? "" : "s"} and all are busy.`,
+          );
+        const config = (yield* configView(ProjectId.make(row.project_id))).effective;
+        const allowedModels =
+          member.models !== undefined && member.models.length > 0
+            ? member.models
+            : allowedModelsFor(config, input.role);
+        const modelSelection = input.modelSelection ?? allowedModels[0];
+        if (modelSelection === undefined)
+          return yield* error("invalid", "Add at least one model to the factory pool first.");
+        const allowed = new Set(allowedModels.map(modelKey));
+        if (!allowed.has(modelKey(modelSelection)))
+          return yield* error(
+            "invalid",
+            `${modelSelection.model} (${modelSelection.instanceId}) is not allowed for a ${input.role} on this team.`,
+          );
+        const manager = yield* readManager(row.manager_id);
+        const shell = yield* project(manager.projectId);
+        const skill = yield* deps.readRoleSkill(input.role, shell.workspaceRoot);
+        const text = renderRoleSkill(skill.text, {
+          ...skillFill(config, input.role, protectedPathsOf(manager)),
+          allowedModels,
+          completionCondition: row.completion_condition,
+        });
+        const role = `${input.role[0]!.toUpperCase()}${input.role.slice(1)}`;
+        return {
+          role: input.role,
+          title: input.title ?? `${role}: ${row.title}`.slice(0, 120),
+          task: `${text}\n\n# Task\n\n${input.task}`,
+          modelSelection,
+          allowedModels,
+        } satisfies FactoryDelegationPlan;
+      }),
+    );
+
+  const recordMember: FactoryServiceShape["recordMember"] = (leadThreadId, input) =>
+    protect(
+      Effect.gen(function* () {
+        const member = yield* lock(
+          Effect.gen(function* () {
+            const row = yield* requireLead(leadThreadId);
+            // The thread's own `thread.created` may have joined it as observed first.
+            yield* sql`INSERT INTO factory_members(thread_id,manager_id,assignment_id,role,
+                parent_thread_id,joined,off_pool,model_selection_json,created_at)
+                VALUES(${input.threadId},${row.manager_id},${row.id},${input.role},${leadThreadId},
+                ${input.joined},0,${encodeModel(input.modelSelection)},${yield* now})
+                ON CONFLICT(thread_id) DO UPDATE SET role=excluded.role,joined=excluded.joined,
+                off_pool=0,model_selection_json=excluded.model_selection_json
+                WHERE factory_members.assignment_id=excluded.assignment_id`;
+            const rows = yield* sql<MemberRow>`SELECT * FROM factory_members
+                WHERE thread_id=${input.threadId}`;
+            if (rows[0]?.assignment_id !== row.id)
+              return yield* error("conflict", "That thread already belongs to another team.");
+            return yield* decodeMember(rows[0]);
+          }),
+        );
+        yield* publish;
+        return member;
+      }),
+    );
+
+  const observeThread: FactoryServiceShape["observeThread"] = (thread) =>
+    protect(
+      Effect.gen(function* () {
+        const parentThreadId = thread.parentThreadId;
+        if (parentThreadId === null) return;
+        const joined = yield* lock(
+          Effect.gen(function* () {
+            const parents = yield* sql<
+              MemberRow & { title: string; project_id: string }
+            >`SELECT m.*, a.title, a.project_id FROM factory_members m
+                JOIN factory_assignments a ON a.id=m.assignment_id
+                WHERE m.thread_id=${parentThreadId} AND m.ended_at IS NULL
+                AND ${sql.in("a.state", ACTIVE_ASSIGNMENT_STATES)}`;
+            const parent = parents[0];
+            if (!parent) return false;
+            const existing = yield* sql<{ thread_id: string }>`SELECT thread_id FROM factory_members
+                WHERE thread_id=${thread.threadId}`;
+            if (existing[0]) return false;
+            const role: FactoryRole =
+              parent.role === "implementer" ||
+              parent.role === "reviewer" ||
+              parent.role === "verifier"
+                ? parent.role
+                : "implementer";
+            const config = (yield* configView(ProjectId.make(parent.project_id))).effective;
+            const offPool = !config.modelPool.some(
+              (model) => modelKey(model) === modelKey(thread.modelSelection),
+            );
+            yield* sql`INSERT INTO factory_members(thread_id,manager_id,assignment_id,role,
+                parent_thread_id,joined,off_pool,model_selection_json,created_at)
+                VALUES(${thread.threadId},${parent.manager_id},${parent.assignment_id},${role},
+                ${parentThreadId},'observed',${offPool ? 1 : 0},
+                ${encodeModel(thread.modelSelection)},${yield* now})`;
+            if (offPool)
+              yield* writeLog(parent.manager_id, parent.assignment_id, "wake", "off-pool", {
+                threadId: thread.threadId,
+                assignmentId: parent.assignment_id,
+                title: parent.title,
+                model: modelName(thread.modelSelection),
+              });
+            return true;
+          }),
+        );
+        if (joined) yield* publish;
+      }),
+    ).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not observe a thread for the factory", {
+          threadId: thread.threadId,
+          cause: cause.message,
+        }),
+      ),
+    );
+
+  const updateChecklist: FactoryServiceShape["updateChecklist"] = (leadThreadId, input) =>
+    protect(
+      Effect.gen(function* () {
+        const id = yield* lock(
+          Effect.gen(function* () {
+            const row = yield* requireLead(leadThreadId);
+            yield* sql`UPDATE factory_assignments SET checklist_json=${json(input.steps)},
+                updated_at=${yield* now} WHERE id=${row.id}`;
+            return row.id;
+          }),
+        );
+        yield* publish;
+        return yield* readAssignment(id);
+      }),
+    );
+
+  const createTeam: FactoryServiceShape["createTeam"] = (managerThreadId, input) =>
+    protect(
+      Effect.gen(function* () {
+        const manager = yield* requireManager(managerThreadId);
+        const problem = managerStateProblem(manager);
+        if (problem !== null) return yield* error("conflict", problem);
+        return yield* lock(
+          Effect.gen(function* () {
+            const effective = (yield* configView(manager.projectId)).effective;
+            const pool = new Set(effective.modelPool.map(modelKey));
+            const outside = input.members
+              .flatMap((member) => member.models ?? [])
+              .find((selection) => !pool.has(modelKey(selection)));
+            if (outside)
+              return yield* error(
+                "invalid",
+                `${outside.model} (${outside.instanceId}) is not in the model pool.`,
+              );
+            if (effective.teamPresets.some((preset) => preset.name === input.name))
+              return yield* error(
+                "conflict",
+                `A team preset named "${input.name}" already exists.`,
+              );
+            const environment = (yield* environmentConfig()).config;
+            const preset: FactoryTeamPreset = {
+              id: NodeCrypto.randomUUID(),
+              ...input,
+              createdBy: "manager",
+            };
+            yield* saveEnvironmentConfig({
+              ...environment,
+              teamPresets: [...environment.teamPresets, preset],
+            });
+            yield* writeLog(manager.id, null, "team", input.name, {
+              presetId: preset.id,
+              name: input.name,
+            });
+            return preset;
+          }),
+        );
+      }),
+    );
+
+  const workspaceFeed = Effect.fnUntraced(function* () {
+    const managers = yield* currentManagers();
+    const members = yield* sql<MemberRow>`SELECT * FROM factory_members
+        WHERE ended_at IS NULL ORDER BY created_at, rowid`;
+    const since = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, { hours: 24 }));
+    const assignments = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
+        WHERE ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)} OR ended_at >= ${since}
+        ORDER BY created_at, id`;
+    return yield* decodeWorkspaceFeed({
+      managers: managers.map((manager) => ({
+        id: manager.id,
+        threadId: manager.threadId,
+        projectId: manager.projectId,
+        name: manager.name,
+        state: manager.state,
+        waitingOnYou: manager.waitingOnYou,
+      })),
+      members: members.map(memberValue),
+      assignments: yield* Effect.forEach(assignments, (row) =>
+        Effect.gen(function* () {
+          return {
+            id: row.id,
+            managerId: row.manager_id,
+            title: row.title,
+            state: row.state,
+            source: row.source,
+            complexity: row.complexity,
+            team: (yield* parse(FactoryTeamSpec, row.team_json)).preset,
+            leadThreadId: row.lead_thread_id,
+            checklist: yield* parse(Schema.Unknown, row.checklist_json),
+            digest: digestValue(row),
+            waitingReason: row.waiting_reason,
+          };
+        }),
+      ),
+    }).pipe(Effect.mapError(storageError));
+  });
+
+  const subscribeWorkspace: FactoryServiceShape["subscribeWorkspace"] = () =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const subscription = yield* PubSub.subscribe(changes);
+        return Stream.concat(
+          Stream.make(yield* workspaceFeed()),
+          Stream.fromSubscription(subscription).pipe(Stream.mapEffect(() => workspaceFeed())),
+        );
+      }).pipe(Effect.mapError(preserveError)),
+    ).pipe(
+      Stream.mapError(preserveError),
+      Stream.changesWith((left, right) => json(left) === json(right)),
+      Stream.scoped,
+    );
+
   return {
     getConfig,
     updateConfig,
@@ -2362,6 +2931,12 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     handBack,
     reconcileThread,
     sweep,
+    planDelegation,
+    recordMember,
+    observeThread,
+    updateChecklist,
+    createTeam,
+    subscribeWorkspace,
   } satisfies FactoryServiceShape;
 });
 
@@ -2390,6 +2965,7 @@ export const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
+  const pullRequests = yield* PullRequestService.PullRequestService;
   const { baseDir } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -2452,6 +3028,8 @@ export const make = Effect.gen(function* () {
               number: link.number,
               state: link.snapshot?.state ?? null,
               merged: link.snapshot?.state === "merged" || link.snapshot?.mergedAt != null,
+              // A host with no updatedAt is checked again on every sync rather than never.
+              updatedAt: link.snapshot?.updatedAt ?? link.snapshot?.syncedAt ?? null,
             })),
           worktreePath: thread.worktreePath,
         })),
@@ -2501,6 +3079,30 @@ export const make = Effect.gen(function* () {
         Effect.map((branch) => branch ?? "main"),
         Effect.orElseSucceed(() => "main"),
       ),
+    readPullRequestFiles: Effect.fn("FactoryService.readPullRequestFiles")(
+      function* (input) {
+        const paths = new Set<string>();
+        let cursor: string | null = null;
+        do {
+          const page: PullRequestDiffResult = yield* pullRequests.diff({
+            projectId: input.projectId,
+            host: input.host,
+            repository: input.repository,
+            number: input.number,
+            ...(cursor === null ? {} : { cursor }),
+          });
+          // Both names of a rename count: moving a protected file away changes it too.
+          for (const file of parseDiffFilePaths(page.patch))
+            for (const path of [file.oldPath, file.newPath]) if (path !== null) paths.add(path);
+          for (const stat of page.omittedFileStats ?? []) paths.add(stat.path);
+          cursor = page.nextCursor;
+        } while (cursor !== null);
+        return [...paths];
+      },
+      Effect.mapError((cause) =>
+        error("unavailable", `The pull request's files could not be read: ${cause.message}`),
+      ),
+    ),
   });
 });
 

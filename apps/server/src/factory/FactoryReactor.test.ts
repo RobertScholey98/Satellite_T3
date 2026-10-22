@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { type OrchestrationV2DomainEvent, ThreadId } from "@t3tools/contracts";
+import { type OrchestrationV2DomainEvent, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -10,13 +10,17 @@ import { TestClock } from "effect/testing";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as FactoryReactor from "./FactoryReactor.ts";
-import { FactoryService } from "./FactoryService.ts";
+import { type FactoryObservedThread, FactoryService } from "./FactoryService.ts";
 
 const LEAD_THREAD = ThreadId.make("thread-lead");
+const CHILD_THREAD = ThreadId.make("thread-child");
 
-type Call = { readonly _tag: "sweep" } | { readonly _tag: "thread"; readonly threadId: ThreadId };
+type Call =
+  | { readonly _tag: "sweep" }
+  | { readonly _tag: "thread"; readonly threadId: ThreadId }
+  | { readonly _tag: "observe"; readonly thread: FactoryObservedThread };
 
-/** The reactor reads only an event's type and thread, so the rest of the payload is left out. */
+/** The reactor reads only an event's type, thread and new thread's lineage and model. */
 const domainEvent = (type: OrchestrationV2DomainEvent["type"], threadId: ThreadId) =>
   ({ type, threadId }) as OrchestrationV2DomainEvent;
 
@@ -49,23 +53,27 @@ const startReactor = Effect.gen(function* () {
         Layer.mock(FactoryService)({
           sweep: record({ _tag: "sweep" }).pipe(Effect.ensuring(Queue.offer(sweeps, undefined))),
           reconcileThread: (threadId) => record({ _tag: "thread", threadId }),
+          observeThread: (thread) => record({ _tag: "observe", thread }),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents }),
       ),
     ),
   );
   const sweepReceipt = Queue.take(sweeps).pipe(Effect.andThen(reactor.drain));
+  const emitEvent = (event: OrchestrationV2DomainEvent) =>
+    Effect.gen(function* () {
+      const consumed = yield* Deferred.make<void>();
+      yield* Queue.offer(inbox, { event, consumed });
+      yield* Deferred.await(consumed);
+      yield* reactor.drain;
+    });
   yield* reactor.start();
   yield* sweepReceipt;
   return {
     calls: Ref.get(calls),
     emit: (type: OrchestrationV2DomainEvent["type"], threadId: ThreadId) =>
-      Effect.gen(function* () {
-        const consumed = yield* Deferred.make<void>();
-        yield* Queue.offer(inbox, { event: domainEvent(type, threadId), consumed });
-        yield* Deferred.await(consumed);
-        yield* reactor.drain;
-      }),
+      emitEvent(domainEvent(type, threadId)),
+    emitEvent,
     minuteSweep: TestClock.adjust("1 minute").pipe(Effect.andThen(sweepReceipt)),
   };
 });
@@ -123,6 +131,33 @@ describe("FactoryReactor", () => {
       assert.deepStrictEqual(yield* reactor.calls, [
         { _tag: "sweep" },
         { _tag: "thread", threadId: LEAD_THREAD },
+      ]);
+    }),
+  );
+
+  it.effect("observes a new thread with its parent and model", () =>
+    Effect.gen(function* () {
+      const reactor = yield* startReactor;
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+      yield* reactor.emitEvent({
+        type: "thread.created",
+        threadId: CHILD_THREAD,
+        payload: {
+          id: CHILD_THREAD,
+          modelSelection,
+          lineage: {
+            rootThreadId: LEAD_THREAD,
+            parentThreadId: LEAD_THREAD,
+            relationshipToParent: "subagent",
+          },
+        },
+      } as OrchestrationV2DomainEvent);
+      assert.deepStrictEqual(yield* reactor.calls, [
+        { _tag: "sweep" },
+        {
+          _tag: "observe",
+          thread: { threadId: CHILD_THREAD, parentThreadId: LEAD_THREAD, modelSelection },
+        },
       ]);
     }),
   );

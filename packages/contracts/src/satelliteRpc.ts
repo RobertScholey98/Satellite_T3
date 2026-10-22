@@ -18,6 +18,7 @@ import {
   WsFactoryLogListRpc,
   WsFactoryThreadsHandBackRpc,
   WsFactoryThreadsTakeOverRpc,
+  WsFactoryWorkspaceSubscribeRpc,
 } from "./factory.ts";
 import {
   ISSUES_WS_METHODS,
@@ -80,6 +81,7 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsFactoryThreadsTakeOverRpc,
   WsFactoryThreadsHandBackRpc,
   WsFactoryLogListRpc,
+  WsFactoryWorkspaceSubscribeRpc,
 );
 
 type SatelliteWsRpc = RpcGroup.Rpcs<typeof WsSatelliteRpcGroup>;

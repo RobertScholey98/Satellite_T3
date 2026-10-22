@@ -4,6 +4,7 @@ import {
   FactoryConfig,
   FactoryConfigOverride,
   FactoryOperationError,
+  FactoryUpdateChecklistInput,
   IssueBoardView,
   IssueSummary,
   ModelSelection,
@@ -20,6 +21,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -30,6 +32,7 @@ import {
   makeFactoryService,
   type FactoryThreadInterrupt,
   type FactoryThreadLaunch,
+  type FactoryPullRequestRef,
   type FactoryThreadMessage,
   type FactoryThreadRuns,
 } from "./FactoryService.ts";
@@ -68,6 +71,7 @@ const SONNET = model({ instanceId: "claude", model: "claude-sonnet-5" });
 const GPT = model({ instanceId: "codex", model: "gpt-6" });
 
 const decodeConfig = Schema.decodeSync(FactoryConfig);
+const decodeChecklistInput = Schema.decodeUnknownOption(FactoryUpdateChecklistInput);
 const decodeOverride = Schema.decodeSync(FactoryConfigOverride);
 
 const preset = (name: string, workflow: string, models?: ReadonlyArray<typeof OPUS>) => ({
@@ -165,6 +169,7 @@ const board = (
 interface HarnessControls {
   sendFailures: number;
   attemptFailures: number;
+  fileReadFailures: number;
 }
 
 const makeHarness = (options: HarnessOptions = {}) =>
@@ -177,7 +182,10 @@ const makeHarness = (options: HarnessOptions = {}) =>
     const sentMessages: FactoryThreadMessage[] = [];
     const interrupts: FactoryThreadInterrupt[] = [];
     const threadRuns = new Map<ThreadId, FactoryThreadRuns>();
-    const controls: HarnessControls = { sendFailures: 0, attemptFailures: 0 };
+    const controls: HarnessControls = { sendFailures: 0, attemptFailures: 0, fileReadFailures: 0 };
+    /** Changed files by pull request number. */
+    const pullRequestFiles = new Map<number, ReadonlyArray<string>>();
+    const fileReads: FactoryPullRequestRef[] = [];
     let failures = options.launchFailures ?? 0;
     let threads = 0;
     const service = yield* makeFactoryService({
@@ -256,6 +264,16 @@ const makeHarness = (options: HarnessOptions = {}) =>
         }),
       interruptThread: (input) => Effect.sync(() => void interrupts.push(input)),
       resolveBaseRef: () => Effect.succeed("trunk"),
+      readPullRequestFiles: (input) =>
+        Effect.suspend(() => {
+          fileReads.push(input);
+          if (controls.fileReadFailures === 0)
+            return Effect.succeed(pullRequestFiles.get(input.number) ?? []);
+          controls.fileReadFailures -= 1;
+          return Effect.fail(
+            new FactoryOperationError({ reason: "unavailable", message: "GitHub is down." }),
+          );
+        }),
     });
     if (options.config)
       yield* service.updateConfig({ scope: "environment", config: options.config });
@@ -269,6 +287,8 @@ const makeHarness = (options: HarnessOptions = {}) =>
       interrupts,
       threadRuns,
       controls,
+      pullRequestFiles,
+      fileReads,
     };
   });
 
@@ -1370,12 +1390,13 @@ describe("FactoryService sweep", () => {
   );
 });
 
-const pullRequest = (number: number, merged: boolean) => ({
+const pullRequest = (number: number, merged: boolean, updatedAt: string | null = EPOCH) => ({
   host: "github.com",
   repository: "acme/app",
   number,
   merged,
   state: merged ? ("merged" as const) : ("open" as const),
+  updatedAt,
 });
 
 const RETRO_REQUEST =
@@ -1870,6 +1891,426 @@ describe("FactoryService project pause", () => {
         threadRuns.set(lead, idleRun({ latestRunStatus: "interrupted" }));
         yield* service.reconcileThread(lead);
         assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
+      }),
+    ),
+  );
+});
+
+/** A Duo preset: one implementer on two models, and one reviewer on the role's model. */
+const DUO = {
+  id: "preset-duo",
+  name: "Duo",
+  useWhen: "Small changes worth a second look.",
+  members: [
+    { role: "implementer" as const, count: 1, models: [SONNET, OPUS] },
+    { role: "reviewer" as const, count: 1 },
+  ],
+  workflow: "Implement, then review before the pull request.",
+  createdBy: "user" as const,
+};
+
+const TEAM_FACTORY = decodeConfig({
+  pickupGuidance: "Small, well-specified bugs.",
+  concurrencyCap: 2,
+  modelPool: [OPUS, SONNET],
+  roleModels: { manager: OPUS, lead: { small: SONNET }, workers: { reviewer: [SONNET] } },
+  teamPresets: [DUO],
+});
+
+const makeTeamFactory = makeHarness({ config: TEAM_FACTORY });
+
+/** An active manager whose Duo team works ticket 1 from lead thread lead-1. */
+const startedTeam = (factory: Factory) =>
+  Effect.gen(function* () {
+    factory.boards.push(board([{ number: 1, columnId: READY }]));
+    const manager = yield* activeManager(factory.service);
+    const assignment = (yield* factory.service.pickup(manager.threadId!, {
+      ...START,
+      issueNumber: 1,
+      team: { preset: "Duo", members: [] },
+    }))!;
+    return { manager, assignment, lead: ThreadId.make("lead-1") };
+  });
+
+const workspace = (service: Service) =>
+  service.subscribeWorkspace({}).pipe(
+    Stream.take(1),
+    Stream.runCollect,
+    Effect.map((feeds) => feeds[0]!),
+  );
+
+describe("FactoryService teams", () => {
+  it.effect("staffs a named preset's members and gives the lead the preset's workflow", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { assignment } = yield* startedTeam(factory);
+
+        assert.deepStrictEqual(assignment.team, { preset: "Duo", members: DUO.members });
+        assert.include(
+          factory.attemptStarts[0]!.prompt,
+          "# Team\n\nPreset Duo: 1 × implementer (claude/claude-sonnet-5, claude/claude-opus-5-5), 1 × reviewer\n\nImplement, then review before the pull request.",
+        );
+      }),
+    ),
+  );
+
+  it.effect(
+    "adds a manager's preset to the environment, refusing duplicates and other models",
+    () =>
+      withDatabase(
+        Effect.gen(function* () {
+          const factory = yield* makeTeamFactory;
+          const { service } = factory;
+          const manager = yield* activeManager(service);
+          const trio = {
+            name: "Trio",
+            useWhen: "Risky migrations.",
+            members: [{ role: "implementer" as const, count: 2, models: [OPUS] }],
+            workflow: "Two implementers split the work.",
+          };
+
+          const created = yield* service.createTeam(manager.threadId!, trio);
+          assert.strictEqual(created.createdBy, "manager");
+          assert.deepStrictEqual({ ...created, id: "" }, { ...trio, id: "", createdBy: "manager" });
+          const environment = (yield* service.getConfig({})).environment;
+          assert.deepStrictEqual(environment.teamPresets, [DUO, created]);
+          const [team] = yield* service.listLog({ managerId: manager.id });
+          assert.strictEqual(team!.kind, "team");
+          assert.strictEqual(team!.reason, "Trio");
+
+          const duplicate = yield* service
+            .createTeam(manager.threadId!, { ...trio, name: "Duo" })
+            .pipe(Effect.flip);
+          assert.strictEqual(duplicate.reason, "conflict");
+          const outside = yield* service
+            .createTeam(manager.threadId!, {
+              ...trio,
+              name: "Codex pair",
+              members: [{ role: "reviewer", count: 1, models: [GPT] }],
+            })
+            .pipe(Effect.flip);
+          assert.strictEqual(outside.reason, "invalid");
+          assert.include(outside.message, "gpt-6");
+          assert.strictEqual((yield* service.getConfig({})).environment.teamPresets.length, 2);
+        }),
+      ),
+  );
+});
+
+describe("FactoryService delegation", () => {
+  it.effect("plans a worker the team has room for, on a model the member allows", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service } = factory;
+        const { assignment, lead } = yield* startedTeam(factory);
+
+        const verifier = yield* service
+          .planDelegation(lead, { role: "verifier", task: "Run the checks." })
+          .pipe(Effect.flip);
+        assert.strictEqual(verifier.reason, "invalid");
+        const offList = yield* service
+          .planDelegation(lead, { role: "reviewer", task: "Review it.", modelSelection: OPUS })
+          .pipe(Effect.flip);
+        assert.strictEqual(offList.reason, "invalid");
+
+        const plan = yield* service.planDelegation(lead, {
+          role: "implementer",
+          task: "Guard the empty list in List.tsx.",
+        });
+        assert.strictEqual(plan.role, "implementer");
+        assert.strictEqual(plan.title, "Implementer: Ticket 1");
+        assert.deepStrictEqual(plan.modelSelection, SONNET);
+        assert.deepStrictEqual(plan.allowedModels, [SONNET, OPUS]);
+        for (const heading of [
+          "# Implementer",
+          "## What you hand back",
+          "## Sub-agents and models",
+        ])
+          assert.include(plan.task, heading);
+        assert.include(plan.task, "- claude/claude-sonnet-5\n- claude/claude-opus-5-5");
+        assert.include(plan.task, START.completionCondition);
+        assert.include(plan.task, "- AGENTS.md");
+        assert.isTrue(plan.task.endsWith("\n\n# Task\n\nGuard the empty list in List.tsx."));
+        assert.notInclude(plan.task, "{{");
+
+        const reviewer = yield* service.planDelegation(lead, {
+          role: "reviewer",
+          task: "Review it.",
+          title: "Review the guard",
+        });
+        assert.strictEqual(reviewer.title, "Review the guard");
+        assert.deepStrictEqual(reviewer.allowedModels, [SONNET]);
+        assert.deepStrictEqual(yield* memberRows, [
+          {
+            thread_id: "lead-1",
+            assignment_id: assignment.id,
+            role: "lead",
+            parent_thread_id: "thread-1",
+            joined: "created",
+          },
+        ]);
+
+        const member = yield* service.recordMember(lead, {
+          threadId: ThreadId.make("worker-1"),
+          role: "implementer",
+          modelSelection: plan.modelSelection,
+          joined: "created",
+        });
+        assert.deepStrictEqual(member, {
+          threadId: ThreadId.make("worker-1"),
+          managerId: assignment.managerId,
+          assignmentId: assignment.id,
+          role: "implementer",
+          parentThreadId: lead,
+          joined: "created",
+          takenOver: false,
+          offPool: false,
+          endedAt: null,
+        });
+        assert.deepStrictEqual(
+          (yield* workspace(service)).members.map((row) => row.threadId),
+          ["lead-1", "worker-1"],
+        );
+
+        const busy = yield* service
+          .planDelegation(lead, { role: "implementer", task: "Another change." })
+          .pipe(Effect.flip);
+        assert.strictEqual(busy.reason, "conflict");
+        assert.strictEqual(busy.message, "The team allows 1 implementer and all are busy.");
+      }),
+    ),
+  );
+});
+
+describe("FactoryService observed threads", () => {
+  it.effect("joins a member's sub-agent to its team and wakes the manager off the pool", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, sentMessages } = factory;
+        const { manager, assignment, lead } = yield* startedTeam(factory);
+        yield* service.recordMember(lead, {
+          threadId: ThreadId.make("worker-1"),
+          role: "reviewer",
+          modelSelection: SONNET,
+          joined: "created",
+        });
+
+        yield* service.observeThread({
+          threadId: ThreadId.make("sub-1"),
+          parentThreadId: lead,
+          modelSelection: SONNET,
+        });
+        yield* service.observeThread({
+          threadId: ThreadId.make("sub-2"),
+          parentThreadId: ThreadId.make("worker-1"),
+          modelSelection: GPT,
+        });
+        yield* service.observeThread({
+          threadId: ThreadId.make("sub-3"),
+          parentThreadId: ThreadId.make("stranger"),
+          modelSelection: GPT,
+        });
+        yield* service.observeThread({
+          threadId: ThreadId.make("sub-4"),
+          parentThreadId: null,
+          modelSelection: GPT,
+        });
+
+        const members = (yield* workspace(service)).members;
+        assert.deepStrictEqual(
+          members.map((member): ReadonlyArray<unknown> => [
+            member.threadId,
+            member.role,
+            member.parentThreadId,
+            member.joined,
+            member.offPool,
+          ]),
+          [
+            ["lead-1", "lead", "thread-1", "created", false],
+            ["worker-1", "reviewer", "lead-1", "created", false],
+            ["sub-1", "implementer", "lead-1", "observed", false],
+            ["sub-2", "reviewer", "worker-1", "observed", true],
+          ],
+        );
+        const [wake] = yield* service.listLog({ managerId: manager.id });
+        assert.strictEqual(wake!.kind, "wake");
+        assert.strictEqual(wake!.reason, "off-pool");
+        assert.deepStrictEqual(wake!.payload, {
+          threadId: "sub-2",
+          assignmentId: assignment.id,
+          title: "Ticket 1",
+          model: "codex/gpt-6",
+        });
+
+        yield* service.sweep;
+        assert.deepStrictEqual(
+          sentMessages.map((message) => message.text),
+          [
+            "Thread sub-2 under Ticket 1 runs codex/gpt-6, which is outside the pool. Tell the lead to stop it or ask the user to add the model.",
+          ],
+        );
+      }),
+    ),
+  );
+});
+
+describe("FactoryService checklist", () => {
+  it.effect("replaces the lead's checklist and shows it in the workspace feed", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service } = factory;
+        const { assignment, lead } = yield* startedTeam(factory);
+        assert.deepStrictEqual(assignment.checklist, []);
+        assert.isNull(assignment.digest);
+
+        yield* service.updateChecklist(lead, {
+          steps: [{ text: "Reproduce the crash", state: "in-progress" }],
+        });
+        const steps = [
+          { text: "Reproduce the crash", state: "done" },
+          { text: "Guard the empty list", state: "not-started" },
+        ] as const;
+        const updated = yield* service.updateChecklist(lead, { steps: [...steps] });
+        assert.deepStrictEqual(updated.checklist, steps);
+
+        const feed = yield* workspace(service);
+        assert.deepStrictEqual(feed.assignments, [
+          {
+            id: assignment.id,
+            managerId: assignment.managerId,
+            title: "Ticket 1",
+            state: "active",
+            source: "ticket",
+            complexity: "small",
+            team: "Duo",
+            leadThreadId: lead,
+            checklist: steps,
+            digest: null,
+            waitingReason: null,
+          },
+        ]);
+        assert.strictEqual(feed.managers[0]!.waitingOnYou, 0);
+        assert.deepStrictEqual(yield* logKinds(service, assignment.managerId), ["pickup"]);
+
+        const tooLong = Array.from({ length: 21 }, (_, index) => ({
+          text: `Step ${index}`,
+          state: "not-started",
+        }));
+        assert.isTrue(Option.isNone(decodeChecklistInput({ steps: tooLong })));
+      }),
+    ),
+  );
+});
+
+const PROTECTED_FILES = ["src/list.tsx", "apps/web/AGENTS.md", ".satellite/factory/roles/lead.md"];
+
+describe("FactoryService control paths", () => {
+  it.effect("holds a pull request that touches protected paths until a new push clears it", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles, fileReads, sentMessages } = factory;
+        const { manager, lead } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, PROTECTED_FILES);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+
+        yield* service.reconcileThread(lead);
+        const held = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(held.state, "waiting-user");
+        assert.strictEqual(
+          held.waitingReason,
+          "Pull request #7 changes protected paths: apps/web/AGENTS.md, .satellite/factory/roles/lead.md.",
+        );
+        assert.deepStrictEqual(held.controlViolations, [
+          {
+            pullRequest: { host: "github.com", repository: "acme/app", number: 7 },
+            paths: ["apps/web/AGENTS.md", ".satellite/factory/roles/lead.md"],
+          },
+        ]);
+        assert.deepStrictEqual(fileReads, [
+          { projectId: PROJECT_ID, host: "github.com", repository: "acme/app", number: 7 },
+        ]);
+        const leadText =
+          "Pull request #7 changes protected paths (apps/web/AGENTS.md, .satellite/factory/roles/lead.md). Revert those changes; the factory cannot send this to the user as ready.";
+        assert.deepStrictEqual(
+          sentMessages.map((message) => [message.threadId, message.text]),
+          [[lead, leadText]],
+        );
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), ["control"]);
+
+        // A claim waits behind the protected paths rather than going to the user's review.
+        const claimed = yield* service.claimComplete(lead, {
+          evidence: "Tests pass.",
+          pullRequests: [{ host: "github.com", repository: "acme/app", number: 7 }],
+        });
+        assert.strictEqual(claimed.state, "waiting-user");
+        assert.strictEqual(claimed.waitingReason, held.waitingReason);
+
+        yield* service.reconcileThread(lead);
+        assert.strictEqual(fileReads.length, 1);
+
+        yield* service.sweep;
+        assert.strictEqual(sentMessages.at(-1)!.threadId, manager.threadId);
+        assert.strictEqual(sentMessages.at(-1)!.text, `Assignment Ticket 1: ${leadText}`);
+
+        pullRequestFiles.set(7, ["src/list.tsx"]);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-2")] }));
+        yield* service.reconcileThread(lead);
+        const cleared = (yield* service.assignmentForThread(lead))!;
+        assert.deepStrictEqual(cleared.controlViolations, []);
+        assert.strictEqual(cleared.state, "waiting-user");
+        assert.strictEqual(cleared.waitingReason, "Pull requests await the user's review: #7.");
+      }),
+    ),
+  );
+
+  it.effect("returns an unclaimed assignment to work once its pull request is clean", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles } = factory;
+        const { lead } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, PROTECTED_FILES);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+        yield* service.reconcileThread(lead);
+        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
+
+        pullRequestFiles.set(7, []);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-2")] }));
+        yield* service.reconcileThread(lead);
+        const active = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(active.state, "active");
+        assert.isNull(active.waitingReason);
+        assert.deepStrictEqual(active.controlViolations, []);
+      }),
+    ),
+  );
+
+  it.effect("leaves a pull request unchecked when its files cannot be read", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles, fileReads, sentMessages, controls } =
+          factory;
+        const { manager, lead } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, PROTECTED_FILES);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+        controls.fileReadFailures = 1;
+
+        yield* service.reconcileThread(lead);
+        const unchanged = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(unchanged.state, "active");
+        assert.deepStrictEqual(unchanged.controlViolations, []);
+        assert.deepStrictEqual(sentMessages, []);
+        assert.deepStrictEqual(yield* wakeReasons(service, manager.id), []);
+
+        yield* service.reconcileThread(lead);
+        assert.strictEqual(fileReads.length, 2);
+        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "waiting-user");
       }),
     ),
   );

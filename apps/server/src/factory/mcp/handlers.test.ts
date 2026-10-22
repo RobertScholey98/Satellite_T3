@@ -5,6 +5,9 @@ import {
   type FactoryClaimCompleteInput,
   type FactoryCommissionInput,
   type FactoryCompleteInput,
+  type FactoryCreateTeamInput,
+  type FactoryDelegateInput,
+  type FactoryDelegationPlan,
   type FactoryDependency,
   type FactoryManager,
   FactoryOperationError,
@@ -15,6 +18,10 @@ import {
   type FactoryReportDependencyInput,
   type FactoryRole,
   type FactoryStatus,
+  type FactoryUpdateChecklistInput,
+  NodeId,
+  type OrchestratorMcpDelegateTaskInput,
+  type OrchestratorMcpDelegateTaskResult,
   ProjectId,
   ProviderInstanceId,
   SourceControlProviderKind,
@@ -29,6 +36,7 @@ import type * as Tool from "effect/ai/Tool";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import * as McpToolAccessTestkit from "../../mcp/McpToolAccess.testkit.ts";
+import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import { FactoryService } from "../FactoryService.ts";
 import * as FactoryMcp from "./handlers.ts";
 import { FactoryToolkit } from "./tools.ts";
@@ -36,6 +44,7 @@ import { FactoryToolkit } from "./tools.ts";
 const MANAGER_THREAD = ThreadId.make("thread-manager");
 const OTHER_THREAD = ThreadId.make("thread-other");
 const LEAD_THREAD = ThreadId.make("thread-lead");
+const CHILD_THREAD = ThreadId.make("thread-child");
 
 const report: FactoryOnboardingReport = {
   summary: "Turbo monorepo; CI gates on lint and tests.",
@@ -81,6 +90,9 @@ const assignment: FactoryAssignment = {
   takenOver: false,
   dependencies: [],
   teamVerdict: null,
+  checklist: [],
+  digest: null,
+  controlViolations: [],
   createdAt: "2026-10-21T00:00:00.000Z",
   updatedAt: "2026-10-21T00:00:00.000Z",
   endedAt: null,
@@ -167,11 +179,66 @@ const completeInput: FactoryCompleteInput = {
   teamVerdict: { fit: "good", reason: "One implementer was enough." },
 };
 
+const reviewerModel = { instanceId: ProviderInstanceId.make("claude"), model: "claude-opus-4-6" };
+
+const delegateInput: FactoryDelegateInput = {
+  role: "reviewer",
+  task: "Review the fix for the flaky login test.",
+};
+
+const plan: FactoryDelegationPlan = {
+  role: "reviewer",
+  title: "Reviewer: Fix the flaky login test",
+  task: "# Reviewer skill\n\n# Task\n\nReview the fix for the flaky login test.",
+  modelSelection: reviewerModel,
+  allowedModels: [reviewerModel],
+};
+
+const delegated: OrchestratorMcpDelegateTaskResult = {
+  taskId: NodeId.make("task-1"),
+  childThreadId: CHILD_THREAD,
+  childRunId: null,
+  childNodeId: NodeId.make("node-child"),
+  status: "queued",
+  workState: "working",
+  hasPendingChildRuns: false,
+  latestTerminalRunId: null,
+  latestTerminalStatus: null,
+  latestTerminalSummary: null,
+  latestTerminalResultContextTransferId: null,
+  providerInstanceId: reviewerModel.instanceId,
+  model: reviewerModel.model,
+  summary: null,
+  resultContextTransferId: null,
+  hasPendingQuestion: false,
+  pendingApproval: null,
+  waitTimedOut: false,
+};
+
+const checklistInput: FactoryUpdateChecklistInput = {
+  steps: [
+    { text: "Reproduce the flake", state: "done" },
+    { text: "Fix the clock", state: "in-progress" },
+  ],
+};
+
+const teamInput: FactoryCreateTeamInput = {
+  name: "Pair",
+  useWhen: "Small fixes that need a second pair of eyes.",
+  members: [{ role: "implementer", count: 1 }],
+  workflow: "Implement, then review.",
+};
+
 type LifecycleCall =
   | { readonly method: "claimComplete"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "reportDependency"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "recover"; readonly threadId: ThreadId; readonly input: unknown }
-  | { readonly method: "complete"; readonly threadId: ThreadId; readonly input: unknown };
+  | { readonly method: "complete"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "planDelegation"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "delegateTask"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "recordMember"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "updateChecklist"; readonly threadId: ThreadId; readonly input: unknown }
+  | { readonly method: "createTeam"; readonly threadId: ThreadId; readonly input: unknown };
 
 const invocation = (
   threadId: ThreadId,
@@ -202,6 +269,7 @@ const makeHarness = Effect.gen(function* () {
     ReadonlyArray<{ threadId: ThreadId; input: FactoryCommissionInput }>
   >([]);
   const pickupConflict = yield* Ref.make(false);
+  const delegationConflict = yield* Ref.make(false);
   const lifecycle = yield* Ref.make<ReadonlyArray<LifecycleCall>>([]);
   const recordLifecycle = (call: LifecycleCall) =>
     Ref.update(lifecycle, (recorded) => [...recorded, call]);
@@ -254,6 +322,46 @@ const makeHarness = Effect.gen(function* () {
         recordLifecycle({ method: "complete", threadId, input }).pipe(
           Effect.as({ ...assignment, state: "completed" as const }),
         ),
+      planDelegation: (threadId, input) =>
+        Effect.gen(function* () {
+          if (yield* Ref.get(delegationConflict))
+            return yield* new FactoryOperationError({
+              reason: "conflict",
+              message: "The team allows 1 reviewer and all are busy.",
+            });
+          yield* recordLifecycle({ method: "planDelegation", threadId, input });
+          return plan;
+        }),
+      recordMember: (threadId, input) =>
+        recordLifecycle({ method: "recordMember", threadId, input }).pipe(
+          Effect.as({
+            threadId: input.threadId,
+            managerId: manager.id,
+            assignmentId: assignment.id,
+            role: input.role,
+            parentThreadId: threadId,
+            joined: input.joined,
+            takenOver: false,
+            offPool: false,
+            endedAt: null,
+          }),
+        ),
+      updateChecklist: (threadId, input) =>
+        recordLifecycle({ method: "updateChecklist", threadId, input }).pipe(
+          Effect.as({ ...assignment, checklist: input.steps }),
+        ),
+      createTeam: (threadId, input) =>
+        recordLifecycle({ method: "createTeam", threadId, input }).pipe(
+          Effect.as({ ...input, id: "preset-1", createdBy: "manager" as const }),
+        ),
+    }),
+    Layer.mock(OrchestratorMcpService.OrchestratorMcpService)({
+      delegateTask: (scope, input: OrchestratorMcpDelegateTaskInput) =>
+        recordLifecycle({
+          method: "delegateTask",
+          threadId: scope.thread!.threadId,
+          input,
+        }).pipe(Effect.as(delegated)),
     }),
     McpToolAccessTestkit.liveThreadsLayer,
   );
@@ -287,6 +395,7 @@ const makeHarness = Effect.gen(function* () {
     pickups,
     commissions,
     pickupConflict,
+    delegationConflict,
     lifecycle,
     call,
   };
@@ -587,6 +696,102 @@ describe("factory_complete", () => {
         message: "This thread is not an engineering manager.",
       });
       assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
+describe("factory_delegate", () => {
+  it.effect("plans, delegates with the mapped role and target, and records the member", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_delegate", delegateInput, LEAD_THREAD);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "planDelegation", threadId: LEAD_THREAD, input: delegateInput },
+        {
+          method: "delegateTask",
+          threadId: LEAD_THREAD,
+          input: {
+            task: plan.task,
+            title: plan.title,
+            target: { providerInstanceId: reviewerModel.instanceId, model: reviewerModel.model },
+            role: "review",
+            isolation: "shared",
+            mode: "async",
+          },
+        },
+        {
+          method: "recordMember",
+          threadId: LEAD_THREAD,
+          input: {
+            threadId: CHILD_THREAD,
+            role: "reviewer",
+            modelSelection: reviewerModel,
+            joined: "created",
+          },
+        },
+      ]);
+      assert.deepInclude(result, {
+        taskId: delegated.taskId,
+        childThreadId: CHILD_THREAD,
+        role: "reviewer",
+        model: reviewerModel,
+      });
+    }),
+  );
+
+  it.effect("surfaces a plan refusal without delegating", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.delegationConflict, true);
+      const failure = yield* harness
+        .call("factory_delegate", delegateInput, LEAD_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        _tag: "FactoryToolFailedError",
+        reason: "conflict",
+        message: "The team allows 1 reviewer and all are busy.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+
+  it.effect("refuses a thread that does not lead an assignment", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_delegate", delegateInput, MANAGER_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        reason: "not-found",
+        message: "This thread is not a factory lead.",
+      });
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), []);
+    }),
+  );
+});
+
+describe("factory_update_checklist", () => {
+  it.effect("forwards the lead thread and steps and returns the stored checklist", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_update_checklist", checklistInput, LEAD_THREAD);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "updateChecklist", threadId: LEAD_THREAD, input: checklistInput },
+      ]);
+      assert.deepStrictEqual(result.checklist, checklistInput.steps);
+    }),
+  );
+});
+
+describe("factory_create_team", () => {
+  it.effect("forwards the manager thread and preset and returns the stored preset", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_create_team", teamInput);
+      assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
+        { method: "createTeam", threadId: MANAGER_THREAD, input: teamInput },
+      ]);
+      assert.deepStrictEqual(result.preset, { ...teamInput, id: "preset-1", createdBy: "manager" });
     }),
   );
 });

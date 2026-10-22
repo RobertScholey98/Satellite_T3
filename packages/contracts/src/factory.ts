@@ -36,6 +36,7 @@ export const FACTORY_WS_METHODS = {
   factoryThreadsTakeOver: "factory.threads.takeOver",
   factoryThreadsHandBack: "factory.threads.handBack",
   factoryLogList: "factory.log.list",
+  factoryWorkspaceSubscribe: "factory.workspace.subscribe",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -73,17 +74,25 @@ export const FactoryTeamMember = Schema.Struct({
 });
 export type FactoryTeamMember = typeof FactoryTeamMember.Type;
 
-export const FactoryTeamPreset = Schema.Struct({
-  id: Id,
+const PresetFields = {
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
   /** Free text the manager matches against a ticket. */
   useWhen: TrimmedString.check(Schema.isMaxLength(1000)),
   members: Schema.Array(FactoryTeamMember).check(Schema.isMinLength(1), Schema.isMaxLength(12)),
   /** Free text the lead follows, such as the order of implementation, review and verification. */
   workflow: TrimmedString.check(Schema.isMaxLength(2000)),
+};
+
+export const FactoryTeamPreset = Schema.Struct({
+  id: Id,
+  ...PresetFields,
   createdBy: Schema.Literals(["user", "manager"]),
 });
 export type FactoryTeamPreset = typeof FactoryTeamPreset.Type;
+
+/** A preset the manager saves to the environment config; the factory assigns its id. */
+export const FactoryCreateTeamInput = Schema.Struct(PresetFields);
+export type FactoryCreateTeamInput = typeof FactoryCreateTeamInput.Type;
 
 const OptionalModel = Schema.NullOr(ModelSelection).pipe(
   Schema.withDecodingDefault(Effect.succeed(null)),
@@ -361,6 +370,29 @@ const DependencyTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
 const UnblockCondition = TrimmedNonEmptyString.check(Schema.isMaxLength(2000));
 const RequiredBrief = TrimmedNonEmptyString.check(Schema.isMaxLength(20_000));
 
+export const FactoryChecklistStep = Schema.Struct({
+  text: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+  state: Schema.Literals(["done", "in-progress", "not-started"]),
+});
+export type FactoryChecklistStep = typeof FactoryChecklistStep.Type;
+
+const FactoryChecklist = Schema.Array(FactoryChecklistStep).check(Schema.isMaxLength(20));
+
+/** A summary of the lead's recent activity, and the activity it covers. */
+export const FactoryAssignmentDigest = Schema.Struct({
+  text: Schema.String,
+  generatedAt: Schema.String,
+  activityAt: Schema.String,
+});
+export type FactoryAssignmentDigest = typeof FactoryAssignmentDigest.Type;
+
+/** An open pull request that changes the manager's protected control paths. */
+export const FactoryControlViolation = Schema.Struct({
+  pullRequest: ThreadPullRequestKey,
+  paths: Schema.Array(Schema.String),
+});
+export type FactoryControlViolation = typeof FactoryControlViolation.Type;
+
 /** The lead's claim that the completion condition is met. */
 export const FactoryAssignmentClaim = Schema.Struct({
   evidence: Schema.String.check(Schema.isMaxLength(8000)),
@@ -418,6 +450,11 @@ export const FactoryAssignment = Schema.Struct({
   /** Dependencies reported against this assignment, delivered ones included. */
   dependencies: Schema.Array(FactoryDependency),
   teamVerdict: Schema.NullOr(FactoryTeamVerdict),
+  /** The lead's plan as it last reported it. */
+  checklist: FactoryChecklist,
+  digest: Schema.NullOr(FactoryAssignmentDigest),
+  /** While any remain, the assignment waits on the user and cannot be offered as ready. */
+  controlViolations: Schema.Array(FactoryControlViolation),
   createdAt: Schema.String,
   updatedAt: Schema.String,
   endedAt: Schema.NullOr(Schema.String),
@@ -439,6 +476,7 @@ export const FactoryLogKind = Schema.Literals([
   "handback",
   "cancel",
   "complete",
+  "team",
 ]);
 export type FactoryLogKind = typeof FactoryLogKind.Type;
 
@@ -575,6 +613,90 @@ export type FactoryThreadsTakeOverInput = typeof FactoryThreadsTakeOverInput.Typ
 export const FactoryThreadsHandBackInput = Schema.Struct({ requestId: Id, threadId: ThreadId });
 export type FactoryThreadsHandBackInput = typeof FactoryThreadsHandBackInput.Type;
 
+/** The lead replaces its checklist whole. */
+export const FactoryUpdateChecklistInput = Schema.Struct({ steps: FactoryChecklist });
+export type FactoryUpdateChecklistInput = typeof FactoryUpdateChecklistInput.Type;
+
+/** The lead asks for a worker from its team. Absent model means the first one allowed. */
+export const FactoryDelegateInput = Schema.Struct({
+  role: FactoryWorkerRole,
+  task: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
+  title: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
+  modelSelection: Schema.optionalKey(ModelSelection),
+});
+export type FactoryDelegateInput = typeof FactoryDelegateInput.Type;
+
+/** What a delegation launches: `task` is the full first message, role skill and task. */
+export const FactoryDelegationPlan = Schema.Struct({
+  role: FactoryWorkerRole,
+  title: TrimmedNonEmptyString,
+  task: Schema.String,
+  modelSelection: ModelSelection,
+  allowedModels: Schema.Array(ModelSelection),
+});
+export type FactoryDelegationPlan = typeof FactoryDelegationPlan.Type;
+
+/**
+ * How a thread joined a team: launched by the factory, handed over from outside, or observed as
+ * a sub-agent of a member.
+ */
+export const FactoryMemberJoin = Schema.Literals(["created", "handover", "observed"]);
+export type FactoryMemberJoin = typeof FactoryMemberJoin.Type;
+
+export const FactoryMember = Schema.Struct({
+  threadId: ThreadId,
+  managerId: Id,
+  assignmentId: Schema.NullOr(Id),
+  role: FactoryRole,
+  parentThreadId: Schema.NullOr(ThreadId),
+  joined: FactoryMemberJoin,
+  takenOver: Schema.Boolean,
+  /** The thread runs a model outside the factory's pool. */
+  offPool: Schema.Boolean,
+  endedAt: Schema.NullOr(Schema.String),
+});
+export type FactoryMember = typeof FactoryMember.Type;
+
+export const FactoryWorkspaceSubscribeInput = Schema.Struct({});
+export type FactoryWorkspaceSubscribeInput = typeof FactoryWorkspaceSubscribeInput.Type;
+
+export const FactoryWorkspaceManager = Schema.Struct({
+  id: Id,
+  threadId: Schema.NullOr(ThreadId),
+  projectId: ProjectId,
+  name: Schema.String,
+  state: FactoryManagerState,
+  waitingOnYou: NonNegativeInt,
+});
+export type FactoryWorkspaceManager = typeof FactoryWorkspaceManager.Type;
+
+export const FactoryWorkspaceAssignment = Schema.Struct({
+  id: Id,
+  managerId: Id,
+  title: Schema.String,
+  state: FactoryAssignmentState,
+  source: FactoryAssignmentSource,
+  complexity: FactoryComplexity,
+  /** The team's preset name, or `custom`. */
+  team: Schema.String,
+  leadThreadId: Schema.NullOr(ThreadId),
+  checklist: Schema.Array(FactoryChecklistStep),
+  digest: Schema.NullOr(FactoryAssignmentDigest),
+  waitingReason: Schema.NullOr(Schema.String),
+});
+export type FactoryWorkspaceAssignment = typeof FactoryWorkspaceAssignment.Type;
+
+/**
+ * What the workspace shows of the factory, sent whole: current managers, live members, and
+ * assignments that are live or ended in the last 24 hours.
+ */
+export const FactoryWorkspaceFeed = Schema.Struct({
+  managers: Schema.Array(FactoryWorkspaceManager),
+  members: Schema.Array(FactoryMember),
+  assignments: Schema.Array(FactoryWorkspaceAssignment),
+});
+export type FactoryWorkspaceFeed = typeof FactoryWorkspaceFeed.Type;
+
 const FactoryRpcError = Schema.Union([FactoryOperationError, EnvironmentAuthorizationError]);
 
 export const WsFactoryConfigGetRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigGet, {
@@ -660,3 +782,12 @@ export const WsFactoryLogListRpc = Rpc.make(FACTORY_WS_METHODS.factoryLogList, {
   success: Schema.Array(FactoryLogEntry),
   error: FactoryRpcError,
 });
+export const WsFactoryWorkspaceSubscribeRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryWorkspaceSubscribe,
+  {
+    payload: FactoryWorkspaceSubscribeInput,
+    success: FactoryWorkspaceFeed,
+    error: FactoryRpcError,
+    stream: true,
+  },
+);

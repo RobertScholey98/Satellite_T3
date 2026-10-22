@@ -3,6 +3,8 @@ import {
   FactoryClaimCompleteInput,
   FactoryCommissionInput,
   FactoryCompleteInput,
+  FactoryCreateTeamInput,
+  FactoryDelegateInput,
   FactoryDependency,
   FactoryManagerState,
   FactoryOnboardingReport,
@@ -13,14 +15,21 @@ import {
   FactoryRole,
   FactoryRoleBrief,
   FactoryStatus,
+  FactoryTeamPreset,
+  FactoryUpdateChecklistInput,
+  FactoryWorkerRole,
   McpCapabilityUnavailableError,
+  ModelSelection,
+  NodeId,
   OrchestratorMcpFailure,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/ai/Tool";
 import * as Toolkit from "effect/ai/Toolkit";
 
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
+import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { FactoryService } from "../FactoryService.ts";
 
@@ -237,6 +246,82 @@ const CompleteTool = Tool.make("factory_complete", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
+export const DelegateResult = Schema.Struct({
+  taskId: NodeId,
+  childThreadId: ThreadId,
+  role: FactoryWorkerRole,
+  model: ModelSelection,
+  message: Schema.String,
+});
+export type DelegateResult = typeof DelegateResult.Type;
+
+const DelegateTool = Tool.make("factory_delegate", {
+  description:
+    "For a factory lead. Start a team member: a child thread that gets the role's skill, your assignment's completion condition and protected paths, then your task. The role must be on your assignment's team with a free place, and the model one the team allows for that role; leave the model out for the first one allowed. The child shares this worktree. Its completion wakes this thread; use task_status with the returned taskId only when you need its result mid-turn.",
+  parameters: FactoryDelegateInput,
+  success: DelegateResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+    OrchestratorMcpService.OrchestratorMcpService,
+  ],
+})
+  .annotate(Tool.Title, "Start a factory team member")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true);
+
+export const ChecklistResult = Schema.Struct({
+  checklist: FactoryAssignment.fields.checklist,
+  message: Schema.String,
+});
+export type ChecklistResult = typeof ChecklistResult.Type;
+
+const UpdateChecklistTool = Tool.make("factory_update_checklist", {
+  description:
+    "For a factory lead. Replace your assignment's checklist with the steps of your plan, each `done`, `in-progress` or `not-started`: at most 20 steps of at most 120 characters. The user sees it in Satellite; it never wakes the manager. Keep it to steps, not narration.",
+  parameters: FactoryUpdateChecklistInput,
+  success: ChecklistResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Update the factory checklist")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+export const CreateTeamResult = Schema.Struct({
+  preset: FactoryTeamPreset,
+  message: Schema.String,
+});
+export type CreateTeamResult = typeof CreateTeamResult.Type;
+
+const CreateTeamTool = Tool.make("factory_create_team", {
+  description:
+    "For an engineering manager. Add a team preset, only after the user agreed to it in this thread. Every model a member names must be in the model pool, and the name must not match an existing preset. It cannot edit or remove presets; the user does that in Satellite.",
+  parameters: FactoryCreateTeamInput,
+  success: CreateTeamResult,
+  failure: FactoryToolFailure,
+  dependencies: [
+    McpInvocationContext.McpInvocationContext,
+    ThreadManagementService.ThreadManagementService,
+    FactoryService,
+  ],
+})
+  .annotate(Tool.Title, "Add a factory team preset")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 export const FactoryToolkit = Toolkit.make(
   ProposeOnboardingTool,
   RoleBriefTool,
@@ -247,4 +332,7 @@ export const FactoryToolkit = Toolkit.make(
   ReportDependencyTool,
   RecoverTool,
   CompleteTool,
+  DelegateTool,
+  UpdateChecklistTool,
+  CreateTeamTool,
 );

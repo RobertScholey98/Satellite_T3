@@ -56,6 +56,13 @@ export const FactoryV1 = Effect.gen(function* () {
     cancel_reason TEXT,
     claim_json TEXT,
     team_verdict_json TEXT,
+    checklist_json TEXT NOT NULL DEFAULT '[]',
+    digest_text TEXT,
+    digest_generated_at TEXT,
+    digest_activity_at TEXT,
+    control_violations_json TEXT NOT NULL DEFAULT '[]',
+    -- Pull request key to the snapshot updatedAt its files were last checked at.
+    control_checked_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     ended_at TEXT
@@ -73,6 +80,8 @@ export const FactoryV1 = Effect.gen(function* () {
     parent_thread_id TEXT,
     joined TEXT NOT NULL,
     taken_over INTEGER NOT NULL DEFAULT 0,
+    off_pool INTEGER NOT NULL DEFAULT 0,
+    model_selection_json TEXT,
     created_at TEXT NOT NULL,
     ended_at TEXT
   )`;

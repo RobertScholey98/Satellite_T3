@@ -71,6 +71,9 @@ type Equals<A, B> =
 // Pins the derived set so a new stream RPC is a reviewed change to reconnect resubscription.
 const subscriptionsFollowTheGroup: Equals<
   SatelliteWsSubscriptionMethod,
-  "issues.boards.subscribe" | "factory.managers.subscribe" | "factory.assignments.subscribe"
+  | "issues.boards.subscribe"
+  | "factory.managers.subscribe"
+  | "factory.assignments.subscribe"
+  | "factory.workspace.subscribe"
 > = true;
 void subscriptionsFollowTheGroup;
