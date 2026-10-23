@@ -29,6 +29,11 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Textarea } from "../ui/textarea";
 import { SettingResetButton, SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { issuesEnvironment } from "../work/issuesState";
+import { FactoryConfigRepoSection } from "./FactoryConfigRepoSection";
+import { FactoryConfigShareSection } from "./FactoryConfigShareSection";
+import { FactoryDefinitionsSection } from "./FactoryDefinitionsSection";
+import { FactoryPoolSection } from "./FactoryPoolSection";
+import { FactoryTeamsFileSection } from "./FactoryTeamsFileSection";
 import { factoryEnvironment, factoryErrorMessage, unwrapFactoryResult } from "./factoryState";
 import {
   FACTORY_ROLE_LABELS,
@@ -359,6 +364,28 @@ export function FactoryPageConfiguration({
         resetFor={resetFor}
         onChange={(key, value) => change((current) => setFactoryField(current, key, value))}
       />
+      {/* The factory config files belong to the environment; projects only reference teams. */}
+      {draft.kind === "environment" ? (
+        <>
+          <FactoryPoolSection
+            environmentId={environmentId}
+            canEdit={canEdit}
+            modelOptions={modelOptions}
+          />
+          <FactoryDefinitionsSection
+            environmentId={environmentId}
+            canEdit={canEdit}
+            modelOptions={modelOptions}
+          />
+          <FactoryTeamsFileSection
+            environmentId={environmentId}
+            canEdit={canEdit}
+            modelOptions={modelOptions}
+          />
+          <FactoryConfigRepoSection environmentId={environmentId} canEdit={canEdit} />
+          <FactoryConfigShareSection environmentId={environmentId} canEdit={canEdit} />
+        </>
+      ) : null}
     </>
   );
 }

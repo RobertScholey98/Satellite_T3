@@ -62,6 +62,9 @@ export const SATELLITE_RPC_REQUIRED_SCOPES = {
   [SATELLITE_WS_METHODS.factoryConfigExport]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.factoryConfigImportPreview]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.factoryConfigImportApply]: AuthSettingsWriteScope,
+  [SATELLITE_WS_METHODS.factoryDefinitionsSave]: AuthSettingsWriteScope,
+  [SATELLITE_WS_METHODS.factoryDefinitionsRemove]: AuthSettingsWriteScope,
+  [SATELLITE_WS_METHODS.factoryConfigSaveSettings]: AuthSettingsWriteScope,
 } as const satisfies Readonly<Record<SatelliteWsRpcMethod, AuthEnvironmentScope>>;
 
 /** The `rpc.aggregate` span label of each Satellite RPC. `RPC_AGGREGATES` spreads it. */
@@ -117,4 +120,7 @@ export const SATELLITE_RPC_AGGREGATES = {
   [SATELLITE_WS_METHODS.factoryConfigExport]: "factory",
   [SATELLITE_WS_METHODS.factoryConfigImportPreview]: "factory",
   [SATELLITE_WS_METHODS.factoryConfigImportApply]: "factory",
+  [SATELLITE_WS_METHODS.factoryDefinitionsSave]: "factory",
+  [SATELLITE_WS_METHODS.factoryDefinitionsRemove]: "factory",
+  [SATELLITE_WS_METHODS.factoryConfigSaveSettings]: "factory",
 } as const satisfies Readonly<Record<SatelliteWsRpcMethod, string>>;
