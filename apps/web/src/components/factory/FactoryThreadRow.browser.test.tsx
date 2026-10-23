@@ -128,6 +128,7 @@ function onboardingManager(proposal: FactoryOnboardingProposal | null): FactoryM
     name: "Ada",
     state: "onboarding",
     onboardingThreadId: null,
+    primingMessageId: null,
     threadId: ThreadId.make("manager-thread"),
     onboardingProposal: proposal,
     onboardingResult: null,

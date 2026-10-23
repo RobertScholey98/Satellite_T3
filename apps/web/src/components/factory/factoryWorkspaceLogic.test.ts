@@ -136,6 +136,7 @@ describe("resolveFactoryWorkspaceView", () => {
 
 describe("collapseFactoryPriming", () => {
   const at = "2026-10-23T12:00:00.000Z";
+  const primingId = MessageId.make("priming");
   const message = (id: string, role: "user" | "assistant", text: string): TimelineEntry => ({
     id,
     kind: "message",
@@ -160,49 +161,54 @@ describe("collapseFactoryPriming", () => {
     entries.map((entry) =>
       entry.kind === "factory-priming"
         ? {
-            kind: entry.kind,
-            prompt: entry.prompt.text,
+            prompt: entry.prompt?.text ?? null,
             reply: entry.reply?.text ?? null,
             continued: entry.continued,
           }
         : entry.id,
     );
 
-  it("folds the first user message through the first reply, whatever their text", () => {
+  it("folds the priming message by id with its turn and the first reply", () => {
     const entries = [
       message("priming", "user", "You are the engineering manager for Atlas."),
       work("read"),
       message("ready", "assistant", "Ready."),
     ];
-    expect(shape(collapseFactoryPriming(entries))).toEqual([
-      {
-        kind: "factory-priming",
-        prompt: "You are the engineering manager for Atlas.",
-        reply: "Ready.",
-        continued: false,
-      },
+    expect(shape(collapseFactoryPriming(entries, primingId))).toEqual([
+      { prompt: "You are the engineering manager for Atlas.", reply: "Ready.", continued: false },
     ]);
   });
 
-  it("keeps later turns and notes that the user has written since", () => {
+  it("keeps earlier and later turns and notes that the user has written since", () => {
     const entries = [
+      message("earlier", "user", "An older request still in the window"),
       message("priming", "user", "Primed"),
       message("ready", "assistant", "Ready."),
       message("ask", "user", "What is on the board?"),
       message("answer", "assistant", "Two tickets."),
     ];
-    expect(shape(collapseFactoryPriming(entries))).toEqual([
-      { kind: "factory-priming", prompt: "Primed", reply: "Ready.", continued: true },
+    expect(shape(collapseFactoryPriming(entries, primingId))).toEqual([
+      "earlier",
+      { prompt: "Primed", reply: "Ready.", continued: true },
       "ask",
       "answer",
     ]);
   });
 
-  it("folds the priming before the reply arrives and leaves a thread without one alone", () => {
-    expect(
-      shape(collapseFactoryPriming([message("priming", "user", "Primed"), work("read")])),
-    ).toEqual([{ kind: "factory-priming", prompt: "Primed", reply: null, continued: false }]);
-    const unprimed = [work("read")];
-    expect(collapseFactoryPriming(unprimed)).toBe(unprimed);
+  it("waits for the reply without swallowing a later user message", () => {
+    const entries = [
+      message("priming", "user", "Primed"),
+      work("read"),
+      message("ask", "user", "Hi"),
+    ];
+    expect(shape(collapseFactoryPriming(entries, primingId))).toEqual([
+      { prompt: "Primed", reply: null, continued: true },
+      "ask",
+    ]);
+  });
+
+  it("folds nothing when the priming is outside the loaded window", () => {
+    const windowed = [message("ask", "user", "What is on the board?"), work("read")];
+    expect(collapseFactoryPriming(windowed, primingId)).toBe(windowed);
   });
 });

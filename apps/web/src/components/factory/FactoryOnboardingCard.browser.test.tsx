@@ -80,6 +80,7 @@ const manager: FactoryManager = {
   state: "onboarding",
   threadId,
   onboardingThreadId: null,
+  primingMessageId: null,
   onboardingProposal: proposal,
   onboardingResult: null,
   modelSelection: null,
@@ -293,4 +294,45 @@ it("marks the old onboarding thread approved and links to the manager's new thre
   await expect
     .element(screen.getByRole("link", { name: "Open Ada's thread" }))
     .toHaveAttribute("href", "/local/primed-thread");
+});
+
+it("undoes the swap on a refused approval and keeps the answers through a remount", async () => {
+  setup();
+  state.approve.mockResolvedValue({
+    _tag: "Failure",
+    cause: Cause.fail(
+      new FactoryOperationError({ reason: "conflict", message: "The new thread did not start." }),
+    ),
+  });
+  await using screen = await render(card());
+  await userEvent.click(screen.getByText("Other", { exact: true }));
+  await userEvent.type(
+    screen.getByRole("textbox", { name: "Other answer: Who merges pull requests?" }),
+    "The lead",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+  await expect
+    .element(screen.getByRole("alert"))
+    .toHaveTextContent("The new thread did not start.");
+  await expect.element(screen.getByText("Cooking...")).not.toBeInTheDocument();
+
+  // A timeline row remounts when it scrolls away and back.
+  await screen.rerender(<div key="remounted">{card()}</div>);
+  await expect
+    .element(screen.getByRole("textbox", { name: "Other answer: Who merges pull requests?" }))
+    .toHaveValue("The lead");
+});
+
+it("clears the loader when the approved manager has no new thread", async () => {
+  setup();
+  state.approve.mockResolvedValue({
+    _tag: "Success",
+    value: { ...manager, state: "active", threadId: null },
+  });
+  await using screen = await render(card());
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+  expect(state.approve).toHaveBeenCalledOnce();
+  await expect.element(screen.getByText("Cooking...")).not.toBeInTheDocument();
 });

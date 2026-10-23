@@ -27,6 +27,7 @@ import {
   unwrapFactoryResult,
   useFactoryManagers,
 } from "./factoryState";
+import { pinFactoryManagerThread, unpinFactoryThread } from "./factoryWorkspaceState";
 import {
   initialOnboardingForm,
   onboardingApproveBlocker,
@@ -37,8 +38,14 @@ import {
   type OnboardingForm,
 } from "./factoryOnboardingCard.logic";
 
-/** The loader stays at least this long from the click, so the swap never flickers past. */
+/** The loader stays at least this long once it appears, so the swap never flickers past. */
 const SWAP_MINIMUM_MS = 3000;
+
+// Timeline rows unmount when they scroll away or the feed changes; answers survive until approval.
+const formDrafts = new Map<
+  string,
+  { readonly proposedAt: string; readonly form: OnboardingForm }
+>();
 
 /**
  * Slides the transcript holding `anchor` up and off once, on the compositor. Returns the running
@@ -82,29 +89,48 @@ export function FactoryOnboardingCard(props: {
   const router = useRouter();
   const anchor = useRef<HTMLDivElement>(null);
   const slide = useRef<Animation | null>(null);
-  // Undefined until approved; then where the loader covers the transcript, or null for in place.
+  // Undefined until Approve; then where the loader covers the transcript, or null for in place.
   const [swapHost, setSwapHost] = useState<HTMLElement | null | undefined>(undefined);
+  const [approveError, setApproveError] = useState<string | null>(null);
   // A list reused by the next thread must not keep this thread's transform.
   useEffect(() => () => slide.current?.cancel(), []);
 
+  const undoSwap = () => {
+    slide.current?.cancel();
+    slide.current = null;
+    setSwapHost(undefined);
+  };
   const approve = async (managerId: string, result: FactoryOnboardingResult) => {
     const from = router.state.location.href;
-    const minimum = new Promise<void>((resolve) => setTimeout(resolve, SWAP_MINIMUM_MS));
-    const approved = unwrapFactoryResult(
-      await approveCommand({
-        environmentId,
-        input: { requestId: randomUUID(), managerId, result },
-      }),
-    );
+    setApproveError(null);
     const viewport =
       anchor.current?.closest<HTMLElement>("[data-assistant-citation-viewport]") ?? null;
     setSwapHost(viewport);
     slide.current = slideTranscriptAway(viewport, anchor.current);
+    const minimum = new Promise<void>((resolve) => setTimeout(resolve, SWAP_MINIMUM_MS));
+    const approved = await approveCommand({
+      environmentId,
+      input: { requestId: randomUUID(), managerId, result },
+    })
+      .then(unwrapFactoryResult)
+      .catch((failure: unknown) => {
+        undoSwap();
+        setApproveError(factoryErrorMessage(failure));
+        return null;
+      });
+    if (approved === null) return;
+    const primedThreadId = approved.threadId;
+    if (primedThreadId === null) return undoSwap();
+    formDrafts.delete(managerId);
+    // The manager's thread stays pinned across the swap, as it was when it was created.
+    void pinFactoryManagerThread(environmentId, primedThreadId);
+    const onboardingThreadId = approved.onboardingThreadId ?? props.threadId;
+    if (onboardingThreadId !== null) void unpinFactoryThread(environmentId, onboardingThreadId);
     await minimum;
-    if (approved.threadId === null || router.state.location.href !== from) return;
+    if (router.state.location.href !== from) return;
     void navigate({
       to: "/$environmentId/$threadId",
-      params: { environmentId, threadId: approved.threadId },
+      params: { environmentId, threadId: primedThreadId },
       replace: true,
     });
   };
@@ -122,6 +148,7 @@ export function FactoryOnboardingCard(props: {
         threadId={props.threadId}
         latest={props.latest}
         manager={manager}
+        approveError={approveError}
         onApprove={approve}
         onSendMessage={props.onSendMessage}
       />
@@ -135,6 +162,7 @@ function OnboardingCardBody(props: {
   readonly threadId: ThreadId | null;
   readonly latest: boolean;
   readonly manager: FactoryManager | undefined;
+  readonly approveError: string | null;
   readonly onApprove: (managerId: string, result: FactoryOnboardingResult) => Promise<void>;
   readonly onSendMessage: ((text: string) => Promise<void>) | undefined;
 }) {
@@ -170,9 +198,11 @@ function OnboardingCardBody(props: {
       // A new proposal starts a fresh review.
       key={manager.onboardingProposal.proposedAt}
       environmentId={props.environmentId}
+      managerId={manager.id}
       projectId={manager.projectId}
       proposal={manager.onboardingProposal}
       onApprove={(result) => props.onApprove(manager.id, result)}
+      approveError={props.approveError}
       onSendMessage={props.onSendMessage}
     />
   );
@@ -193,9 +223,11 @@ function Section(props: { readonly title: string; readonly children: ReactNode }
 
 function OnboardingProposalForm(props: {
   readonly environmentId: EnvironmentId;
+  readonly managerId: string;
   readonly projectId: ProjectId;
   readonly proposal: FactoryOnboardingProposal;
   readonly onApprove: (result: FactoryOnboardingResult) => Promise<void>;
+  readonly approveError: string | null;
   readonly onSendMessage: ((text: string) => Promise<void>) | undefined;
 }) {
   const { environmentId, proposal } = props;
@@ -203,7 +235,14 @@ function OnboardingProposalForm(props: {
     factoryEnvironment.approveOnboarding.permissionAtom(environmentId),
   );
   const getConfig = useAtomCommand(factoryEnvironment.getConfig, { reportFailure: false });
-  const [form, setForm] = useState<OnboardingForm>(() => initialOnboardingForm(proposal));
+  const [form, setForm] = useState<OnboardingForm>(() => {
+    const saved = formDrafts.get(props.managerId);
+    return saved?.proposedAt === proposal.proposedAt ? saved.form : initialOnboardingForm(proposal);
+  });
+  const updateForm = (next: OnboardingForm) => {
+    formDrafts.set(props.managerId, { proposedAt: proposal.proposedAt, form: next });
+    setForm(next);
+  };
   // Approve waits for the real cap rather than sending a guess.
   const [config, setConfig] = useState<{ readonly cap: number } | "loading" | "failed">("loading");
   const [newPath, setNewPath] = useState("");
@@ -256,9 +295,12 @@ function OnboardingProposalForm(props: {
     if (failure !== null) setError(factoryErrorMessage(failure));
     return failure === null;
   };
-  const approve = () => {
+  const approve = async () => {
     if (typeof config !== "object") return;
-    void run(() => props.onApprove(onboardingResultFromForm(proposal, form, config.cap)));
+    // The card above shows the outcome; a failure lands in `approveError`.
+    setBusy(true);
+    await props.onApprove(onboardingResultFromForm(proposal, form, config.cap));
+    setBusy(false);
   };
   const draftTicket = (index: number, finding: string) => {
     if (!send) return;
@@ -278,7 +320,7 @@ function OnboardingProposalForm(props: {
   const addPath = () => {
     const path = newPath.trim();
     if (path === "" || form.controlPaths.some((entry) => entry.path === path)) return;
-    setForm({ ...form, controlPaths: [...form.controlPaths, { path, reason: "", kept: true }] });
+    updateForm({ ...form, controlPaths: [...form.controlPaths, { path, reason: "", kept: true }] });
     setNewPath("");
   };
 
@@ -296,7 +338,7 @@ function OnboardingProposalForm(props: {
           rows={2}
           disabled={readOnly}
           value={form.purpose}
-          onChange={(event) => setForm({ ...form, purpose: event.target.value })}
+          onChange={(event) => updateForm({ ...form, purpose: event.target.value })}
         />
       </Section>
 
@@ -306,7 +348,7 @@ function OnboardingProposalForm(props: {
             size="sm"
             checked={form.pickupEnabled}
             disabled={readOnly || pickupUnavailable !== null}
-            onCheckedChange={(checked) => setForm({ ...form, pickupEnabled: checked })}
+            onCheckedChange={(checked) => updateForm({ ...form, pickupEnabled: checked })}
           />
           Pick up tickets on its own
         </Label>
@@ -328,7 +370,7 @@ function OnboardingProposalForm(props: {
                         checked={form.columns.some((entry) => sameColumn(entry, ref))}
                         disabled={readOnly}
                         onCheckedChange={(checked) =>
-                          setForm(toggleColumn(form, ref, checked === true))
+                          updateForm(toggleColumn(form, ref, checked === true))
                         }
                       />
                       {column.title}
@@ -343,7 +385,7 @@ function OnboardingProposalForm(props: {
               rows={2}
               disabled={readOnly}
               value={form.guidance}
-              onChange={(event) => setForm({ ...form, guidance: event.target.value })}
+              onChange={(event) => updateForm({ ...form, guidance: event.target.value })}
             />
           </>
         ) : null}
@@ -354,7 +396,7 @@ function OnboardingProposalForm(props: {
           {proposal.rules.map((rule) => {
             const answer = form.answers[rule.id] ?? { choice: OTHER_ANSWER, other: "" };
             const setAnswer = (next: typeof answer) =>
-              setForm({ ...form, answers: { ...form.answers, [rule.id]: next } });
+              updateForm({ ...form, answers: { ...form.answers, [rule.id]: next } });
             const labelId = `factory-onboarding-${rule.id}`;
             return (
               <div key={rule.id} className="space-y-1.5">
@@ -407,7 +449,7 @@ function OnboardingProposalForm(props: {
                 checked={entry.kept}
                 disabled={readOnly}
                 onCheckedChange={(checked) =>
-                  setForm({
+                  updateForm({
                     ...form,
                     controlPaths: form.controlPaths.map((current, at) =>
                       at === index ? { ...current, kept: checked === true } : current,
@@ -490,7 +532,7 @@ function OnboardingProposalForm(props: {
       ) : null}
 
       <div className="flex flex-wrap items-center gap-3">
-        <Button size="sm" disabled={readOnly || blocker !== null} onClick={approve}>
+        <Button size="sm" disabled={readOnly || blocker !== null} onClick={() => void approve()}>
           Approve
         </Button>
         {canApprove ? null : (
@@ -500,9 +542,9 @@ function OnboardingProposalForm(props: {
           <p className="text-xs text-muted-foreground">{blocker}</p>
         ) : null}
       </div>
-      {error === null ? null : (
+      {(error ?? props.approveError) === null ? null : (
         <p role="alert" className="text-xs text-destructive">
-          {error}
+          {error ?? props.approveError}
         </p>
       )}
     </div>

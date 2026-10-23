@@ -13,6 +13,9 @@ export function FactoryPrimingTimelineRow({
 }) {
   const ctx = use(TimelineRowCtx);
   const [open, setOpen] = useState(false);
+  if (row.prompt === null) {
+    return <p className="px-1 text-xs text-muted-foreground">Loading the manager's thread…</p>;
+  }
   const Chevron = open ? ChevronDownIcon : ChevronRightIcon;
   return (
     <div className="space-y-3 px-1">
@@ -26,7 +29,8 @@ export function FactoryPrimingTimelineRow({
           {row.reply === null ? null : <p className="whitespace-pre-wrap">{row.reply.text}</p>}
         </div>
       ) : null}
-      {row.continued ? null : (
+      {/* Ready only once the manager has answered its priming, and until the user writes. */}
+      {row.reply === null || row.continued ? null : (
         <FactoryManagerReady
           environmentId={ctx.activeThreadEnvironmentId}
           threadId={ctx.threadRef?.threadId ?? null}

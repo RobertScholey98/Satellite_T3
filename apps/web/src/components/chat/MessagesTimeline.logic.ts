@@ -647,7 +647,7 @@ type MessagesTimelineRowContent =
       kind: "factory-priming";
       id: string;
       createdAt: string;
-      prompt: ChatMessage;
+      prompt: ChatMessage | null;
       reply: ChatMessage | null;
       continued: boolean;
     }

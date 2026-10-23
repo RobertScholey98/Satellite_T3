@@ -63,6 +63,7 @@ function managerWith(
     state: managerState,
     threadId,
     onboardingThreadId: ThreadId.make("onboarding-thread"),
+    primingMessageId: null,
     onboardingProposal: null,
     onboardingResult: approved(pickupEnabled),
     modelSelection: null,

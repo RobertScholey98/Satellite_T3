@@ -160,7 +160,8 @@ export type TimelineEntry = (
       readonly id: string;
       readonly kind: "factory-priming";
       readonly createdAt: string;
-      readonly prompt: ChatMessage;
+      /** Null while the managers feed loads and the priming is not known yet. */
+      readonly prompt: ChatMessage | null;
       readonly reply: ChatMessage | null;
       /** The user has written since, so the thread is no longer waiting to start. */
       readonly continued: boolean;

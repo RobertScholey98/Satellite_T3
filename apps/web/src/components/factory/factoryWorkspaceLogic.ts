@@ -9,9 +9,11 @@ import type {
   FactoryWorkspaceAssignment,
   FactoryWorkspaceFeed,
   FactoryWorkspaceManager,
+  MessageId,
   ThreadId,
 } from "@t3tools/contracts";
 import type { TimelineEntry } from "~/session-logic";
+import type { ChatMessage } from "~/types";
 
 export const FACTORY_MANAGER_STATE_LABEL: Record<FactoryManagerState, string> = {
   onboarding: "Onboarding",
@@ -172,24 +174,33 @@ export function describePickupDecision(entry: {
 }
 
 /**
- * Folds a primed manager thread's first exchange into one entry: its first user message (the
- * priming the server sent from the approved onboarding result) through the first reply.
- * Callers apply it only to a manager's current thread after onboarding, never by matching text.
+ * Folds a primed manager thread's first exchange into one entry: the priming message the server
+ * sent from the approved onboarding result, the work of that turn, and the manager's first reply.
+ * The priming is found by id, never by position or text: history is windowed, so the first loaded
+ * message may be a real request. Without the priming in the window, nothing folds.
  */
 export function collapseFactoryPriming(
   entries: ReadonlyArray<TimelineEntry>,
+  primingMessageId: MessageId,
 ): ReadonlyArray<TimelineEntry> {
   const start = entries.findIndex(
-    (entry) => entry.kind === "message" && entry.message.role === "user",
+    (entry) => entry.kind === "message" && entry.message.id === primingMessageId,
   );
   const prompt = entries[start];
   if (prompt?.kind !== "message") return entries;
-  const replyAt = entries.findIndex(
-    (entry, index) =>
-      index > start && entry.kind === "message" && entry.message.role === "assistant",
-  );
-  const reply = entries[replyAt];
-  const rest = replyAt === -1 ? [] : entries.slice(replyAt + 1);
+  // The fold ends at the reply, or before any later user message if the reply hasn't come.
+  let end = start;
+  let reply: ChatMessage | null = null;
+  for (let index = start + 1; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (entry.kind === "message" && entry.message.role === "user") break;
+    end = index;
+    if (entry.kind === "message" && entry.message.role === "assistant") {
+      reply = entry.message;
+      break;
+    }
+  }
+  const rest = entries.slice(end + 1);
   return [
     ...entries.slice(0, start),
     {
@@ -197,7 +208,7 @@ export function collapseFactoryPriming(
       kind: "factory-priming",
       createdAt: prompt.createdAt,
       prompt: prompt.message,
-      reply: reply?.kind === "message" ? reply.message : null,
+      reply,
       continued: rest.some((entry) => entry.kind === "message" && entry.message.role === "user"),
     },
     ...rest,
