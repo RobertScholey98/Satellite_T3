@@ -60,7 +60,7 @@ import { render } from "../../../test/render";
 import { FactoryPageConfiguration } from "./FactoryPageConfiguration";
 
 const environmentId = EnvironmentId.make("env");
-const saved = { ...DEFAULT_FACTORY_CONFIG, pickupGuidance: "Small bugs only." };
+const saved = { ...DEFAULT_FACTORY_CONFIG, concurrencyCap: 2 };
 const view: FactoryConfigView = { environment: saved, effective: saved, configured: true };
 
 function setup() {
@@ -76,7 +76,7 @@ function setup() {
   });
 }
 
-it("saves the edited pickup guidance to the environment config", async () => {
+it("saves the edited concurrency cap to the environment config", async () => {
   setup();
   await using screen = await render(
     <FactoryPageConfiguration
@@ -86,19 +86,15 @@ it("saves the edited pickup guidance to the environment config", async () => {
       canEdit
     />,
   );
-  const guidance = screen.getByRole("textbox", { name: "Pickup guidance" });
-  await expect.element(guidance).toHaveValue("Small bugs only.");
+  const cap = screen.getByRole("textbox", { name: "Concurrent assignments" });
+  await expect.element(cap).toHaveValue("2");
   await expect.element(screen.getByRole("button", { name: "Save" })).toBeDisabled();
 
-  await userEvent.clear(guidance);
-  await userEvent.type(guidance, "Pick up bugs labelled agent.");
+  await userEvent.click(screen.getByRole("button", { name: "Increase Concurrent assignments" }));
   await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
   expect(state.updateConfig).toHaveBeenCalledExactlyOnceWith({
     environmentId,
-    input: {
-      scope: "environment",
-      config: { ...saved, pickupGuidance: "Pick up bugs labelled agent." },
-    },
+    input: { scope: "environment", config: { ...saved, concurrencyCap: 3 } },
   });
 });

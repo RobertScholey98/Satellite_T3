@@ -12,9 +12,8 @@ Open **Factory** from the bottom of the sidebar, or choose **Open factory** in t
 pool from your enabled Claude and Codex models and one **Standard** team of an implementer, a
 reviewer and a verifier. Nothing is saved until you press **Save**.
 
-- **Pickup** is the guidance the manager reads before starting a Ready ticket on its own, and how
-  many assignments may run at once. Leave the guidance empty and nothing starts without you. Pickup
-  needs a connected board; see [Issues](./issues.md).
+- **Pickup** sets how many assignments may run at once. Whether a manager picks up tickets on its
+  own, from which columns, and with what guidance is set per manager during onboarding.
 - **Models** is the pool every factory thread must start on, with the manager's model, the lead's
   model by ticket size, and an allow-list per worker role.
 - **Teams** lists the presets the manager chooses from. A preset has a name, when to use it, its
@@ -29,8 +28,27 @@ reviewer and a verifier. Nothing is saved until you press **Save**.
 
 On the new-thread screen, turn on the **Engineering manager** toggle left of the checkout selector.
 Type a name for the manager and send. The manager's thread opens pinned and starts onboarding: it
-reads the project, proposes what it found and which files it must never change, and asks you to
-approve. A project has one manager; retire it from its **Factory** row to create another.
+reads the project and proposes how it should work. A project has one manager; retire it from its
+**Factory** row to create another.
+
+The proposal appears as a card in the manager's thread. Review it there:
+
+- **Pickup** is off unless you turn it on. Turning it on lists each connected board's Ready columns
+  by name, with none ticked; tick the columns the manager may take tickets from on its own. Columns
+  you leave unticked stay available to **Start**. Pickup needs a connected board; see
+  [Issues](./issues.md).
+- **Questions** are the manager's open choices, with its recommended answer selected. Pick another
+  option or write your own. Your answers become project rules the manager and every lead it starts
+  follow.
+- **Protected paths** are the files no team may change. Untick any you want teams to edit.
+- **Findings** are things the manager noticed. They are not kept after approval; use **Draft
+  ticket** for one you want to act on.
+
+**Send back** sends your note to the manager so it can revise the proposal. **Approve** saves the
+result and replaces the onboarding conversation with a fresh manager thread that starts from your
+approved answers alone. The onboarding thread is settled and kept as a record. If you turned pickup
+on, the manager picks up nothing until you press **Start picking up**; until then you can still give
+it work in its thread.
 
 ## Living with a manager
 

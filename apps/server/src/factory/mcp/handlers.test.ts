@@ -14,7 +14,8 @@ import {
   type FactoryFinding,
   type FactoryManager,
   FactoryOperationError,
-  type FactoryOnboardingReport,
+  type FactoryOnboardingDetected,
+  type FactoryOnboardingProposalInput,
   type FactoryPickupInput,
   type FactoryReadyTicket,
   type FactoryRecordFindingInput,
@@ -47,15 +48,41 @@ import { FactoryToolkit } from "./tools.ts";
 
 const MANAGER_THREAD = ThreadId.make("thread-manager");
 const OTHER_THREAD = ThreadId.make("thread-other");
+const ONBOARDED_THREAD = ThreadId.make("thread-onboarded");
+const ONBOARDING_FINISHED =
+  "This thread's onboarding is finished; the manager now runs in a new thread.";
 const LEAD_THREAD = ThreadId.make("thread-lead");
 const CHILD_THREAD = ThreadId.make("thread-child");
 const WORKER_THREAD = ThreadId.make("thread-worker");
 
-const report: FactoryOnboardingReport = {
+const report: FactoryOnboardingProposalInput = {
   summary: "Turbo monorepo; CI gates on lint and tests.",
-  controlPaths: [".github/**", "apps/server/src/persistence/Migrations/**"],
-  boardGaps: ["No column for blocked tickets."],
-  openChoices: ["Should docs-only tickets skip review?"],
+  purpose: "A desktop workspace for coding agents.",
+  pickup: { enabled: false, guidance: "" },
+  rules: [
+    {
+      id: "docs-review",
+      question: "Should docs-only tickets skip review?",
+      options: ["Skip review", "Review like code"],
+      recommended: 1,
+      reason: "Docs mislead agents too.",
+    },
+  ],
+  controlPaths: [{ path: ".github/**", reason: "CI decides what merges." }],
+  findings: ["No column for blocked tickets."],
+};
+
+const detected: FactoryOnboardingDetected = {
+  boards: [
+    {
+      boardId: "board-1",
+      title: "Roadmap",
+      readyColumns: [{ id: "ready", title: "Ready" }],
+      labels: ["bug"],
+    },
+  ],
+  defaultBranch: "main",
+  detectedAt: "2026-10-20T00:00:00.000Z",
 };
 
 const manager: FactoryManager = {
@@ -64,9 +91,10 @@ const manager: FactoryManager = {
   name: "Ada",
   state: "onboarding",
   threadId: MANAGER_THREAD,
-  controlPaths: [],
-  onboardingNotes: "",
-  onboardingReport: null,
+  onboardingProposal: null,
+  onboardingResult: null,
+  onboardingThreadId: null,
+  primingMessageId: null,
   modelSelection: null,
   activeAssignments: 0,
   waitingOnYou: 0,
@@ -132,6 +160,7 @@ const status: FactoryStatus = {
   capacityFree: true,
   assignments: [assignment],
   readyTickets: [readyTicket(4, true), readyTicket(5, false), readyTicket(6, false)],
+  pickupEnabled: true,
   pickupGuidance: "Pick up small bug fixes.",
 };
 
@@ -313,7 +342,7 @@ const invocation = (
 });
 
 const makeHarness = Effect.gen(function* () {
-  const proposals = yield* Ref.make<ReadonlyArray<FactoryOnboardingReport>>([]);
+  const proposals = yield* Ref.make<ReadonlyArray<FactoryOnboardingProposalInput>>([]);
   const briefRequests = yield* Ref.make<
     ReadonlyArray<{ projectId: ProjectId; role: FactoryRole; managerId: string }>
   >([]);
@@ -332,9 +361,14 @@ const makeHarness = Effect.gen(function* () {
   const dependencies = Layer.mergeAll(
     Layer.mock(FactoryService)({
       managerForThread: (threadId) => Effect.succeed(threadId === MANAGER_THREAD ? manager : null),
+      finishedOnboardingMessage: (threadId) =>
+        Effect.succeed(threadId === ONBOARDED_THREAD ? ONBOARDING_FINISHED : null),
       proposeOnboarding: (_threadId, proposed) =>
         Ref.update(proposals, (recorded) => [...recorded, proposed]).pipe(
-          Effect.as({ ...manager, onboardingReport: proposed }),
+          Effect.as({
+            ...manager,
+            onboardingProposal: { ...proposed, detected, proposedAt: detected.detectedAt },
+          }),
         ),
       roleBrief: (projectId, role, managerId) =>
         Ref.update(briefRequests, (recorded) => [...recorded, { projectId, role, managerId }]).pipe(
@@ -491,7 +525,7 @@ describe("factory_propose_onboarding", () => {
     }),
   );
 
-  it.effect("forwards the manager's report and returns the stored control paths", () =>
+  it.effect("forwards the manager's proposal and returns what Satellite detected", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
       const result = yield* harness.call("factory_propose_onboarding", report);
@@ -500,9 +534,9 @@ describe("factory_propose_onboarding", () => {
         managerId: "manager-1",
         managerName: "Ada",
         state: "onboarding",
-        controlPaths: report.controlPaths,
+        detected,
         message:
-          "The onboarding report is with the user. Ask them in this thread to review and approve it in Satellite.",
+          "The proposal is with the user. Tell them in this thread that it is ready for review in Satellite.",
       });
     }),
   );
@@ -573,6 +607,14 @@ describe("factory_status", () => {
         message: "This thread is not an engineering manager.",
       });
       assert.deepStrictEqual(yield* Ref.get(harness.statusRequests), []);
+    }),
+  );
+
+  it.effect("tells a finished onboarding thread where its manager went", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness.call("factory_status", {}, ONBOARDED_THREAD).pipe(Effect.flip);
+      assert.deepInclude(failure, { reason: "not-found", message: ONBOARDING_FINISHED });
     }),
   );
 

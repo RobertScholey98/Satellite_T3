@@ -167,6 +167,31 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("lets only the newest onboarding proposal call act", () => {
+    const proposal = (id: string, createdAt: string): TimelineEntry => ({
+      kind: "factory-onboarding",
+      id,
+      createdAt,
+      runId: null,
+    });
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        proposal("first", "2026-10-23T12:00:00Z"),
+        proposal("second", "2026-10-23T12:05:00Z"),
+      ],
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(
+      rows.flatMap((row) => (row.kind === "factory-onboarding" ? [[row.id, row.latest]] : [])),
+    ).toEqual([
+      ["first", false],
+      ["second", true],
+    ]);
+  });
+
   it("stops stranded thinking after a steer and follows the next thought or tool", () => {
     const runId = RunId.make("steered-run");
     const at = "2026-10-01T06:19:10Z";

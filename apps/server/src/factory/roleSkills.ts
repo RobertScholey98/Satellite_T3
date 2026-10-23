@@ -1,4 +1,9 @@
-import type { FactoryRole, FactoryRoleBrief, ModelSelection } from "@t3tools/contracts";
+import type {
+  FactoryOnboardingResult,
+  FactoryRole,
+  FactoryRoleBrief,
+  ModelSelection,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -10,7 +15,6 @@ export interface RoleSkillFill {
   readonly allowedModels: ReadonlyArray<ModelSelection>;
   readonly protectedPaths: ReadonlyArray<string>;
   readonly completionCondition: string | null;
-  readonly pickupGuidance: string;
 }
 
 export type RoleSkillSource = Pick<FactoryRoleBrief, "text" | "source">;
@@ -30,10 +34,34 @@ export const renderRoleSkill = (text: string, fill: RoleSkillFill): string => {
     allowedModels: models(fill.allowedModels),
     protectedPaths: list(fill.protectedPaths),
     completionCondition: fill.completionCondition?.trim() || "(no assignment yet)",
-    pickupGuidance: fill.pickupGuidance.trim() || "(none: nothing auto-starts)",
+    // Role files written before guidance moved onto the onboarding result still name it.
+    pickupGuidance: "(see the Project section)",
   };
   return text.replace(/\{\{(\w+)\}\}/g, (token, name: string) => values[name] ?? token);
 };
+
+/**
+ * What the user approved for this project, appended after a manager's or lead's rendered role
+ * skill. It stays one block, apart from the role text, so a rebuilt role skill can compose it.
+ */
+export const projectSection = (result: FactoryOnboardingResult): string => {
+  const purpose = result.purpose.trim();
+  const guidance = result.pickup.guidance.trim();
+  const pickup = result.pickup.enabled
+    ? `Pickup is on. Judge each ticket you are offered against this guidance:\n\n${guidance || "Recommend every ticket to the user; start none on your own."}`
+    : "Pickup is off. No ticket is offered on its own; work starts when the user asks for it.";
+  const rules = result.rules.map((rule) => `- ${rule.question}: ${rule.answer}`);
+  return [
+    "# Project",
+    ...(purpose === "" ? [] : [purpose]),
+    `## Pickup\n\n${pickup}`,
+    ...(rules.length === 0 ? [] : [`## Project rules\n\n${rules.join("\n")}`]),
+  ].join("\n\n");
+};
+
+/** A rendered role skill with the project section after it, once onboarding is approved. */
+export const withProjectSection = (rendered: string, result: FactoryOnboardingResult | null) =>
+  result === null ? rendered : `${rendered}\n\n${projectSection(result)}`;
 
 /**
  * A role's skill: the project's own file, then the environment's, then the built-in default.

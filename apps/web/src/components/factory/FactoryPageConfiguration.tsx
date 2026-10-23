@@ -26,7 +26,6 @@ import {
   NumberFieldInput,
 } from "../ui/number-field";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { Textarea } from "../ui/textarea";
 import { SettingResetButton, SettingsRow, SettingsSection } from "../settings/settingsLayout";
 import { issuesEnvironment } from "../work/issuesState";
 import { factoryEnvironment, factoryErrorMessage, unwrapFactoryResult } from "./factoryState";
@@ -364,9 +363,7 @@ export function FactoryPageConfiguration({
 }
 
 type ResetFor = (key: FactoryOverridableKey, label: string) => ReactNode;
-type FieldChange = <
-  K extends "pickupGuidance" | "concurrencyCap" | "recoveryAllowance" | "digestIntervalMinutes",
->(
+type FieldChange = <K extends "concurrencyCap" | "recoveryAllowance" | "digestIntervalMinutes">(
   key: K,
   value: FactoryConfig[K],
 ) => void;
@@ -443,28 +440,10 @@ function FactoryPickupSection({
         />
       ) : null}
       <SettingsRow
-        id="factory-pickup-guidance"
-        title="Pickup guidance"
-        aria-disabled={noBoard || undefined}
-        description="The manager judges each Ready ticket against this. Leave it empty and nothing starts on its own. Large tickets never start on their own."
-        resetAction={resetFor("pickupGuidance", "pickup guidance")}
-      >
-        <div className="mt-3 max-w-2xl pb-3.5">
-          <Textarea
-            aria-label="Pickup guidance"
-            rows={4}
-            disabled={disabled}
-            value={config.pickupGuidance}
-            placeholder="Pick up small and medium bug fixes labelled ready-for-agent."
-            onChange={(event) => onChange("pickupGuidance", event.target.value)}
-          />
-        </div>
-      </SettingsRow>
-      <SettingsRow
         id="factory-concurrency"
         title="Concurrent assignments"
         aria-disabled={noBoard || undefined}
-        description="How many assignments the manager runs at once in a project."
+        description="How many assignments the manager runs at once in a project. Which tickets it picks up is set per manager during onboarding."
         resetAction={resetFor("concurrencyCap", "concurrent assignments")}
         control={
           <FactoryNumberControl

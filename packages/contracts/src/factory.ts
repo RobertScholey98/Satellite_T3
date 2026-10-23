@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthorizationError } from "./auth.ts";
 import {
+  MessageId,
   NonNegativeInt,
   PositiveInt,
   ProjectId,
@@ -11,7 +12,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
-import { IssueRef, IssueSummary } from "./issues.ts";
+import { IssueBoardColumn, IssueRef, IssueSummary } from "./issues.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 import { ThreadPullRequestKey } from "./threadPullRequest.ts";
@@ -30,6 +31,7 @@ export const FACTORY_WS_METHODS = {
   factoryManagersResume: "factory.managers.resume",
   factoryManagersRetire: "factory.managers.retire",
   factoryManagersApproveOnboarding: "factory.managers.approveOnboarding",
+  factoryManagersStartPickup: "factory.managers.startPickup",
   factoryAssignmentsList: "factory.assignments.list",
   factoryAssignmentsSubscribe: "factory.assignments.subscribe",
   factoryAssignmentsCancel: "factory.assignments.cancel",
@@ -145,8 +147,6 @@ const DigestIntervalMinutes = PositiveInt.check(Schema.isLessThanOrEqualTo(24 * 
 const TeamPresets = Schema.Array(FactoryTeamPreset);
 
 export const FactoryConfig = Schema.Struct({
-  /** Judged by the manager against each Ready ticket; empty means nothing auto-starts. */
-  pickupGuidance: PickupGuidance.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   concurrencyCap: ConcurrencyCap.pipe(Schema.withDecodingDefault(Effect.succeed(2))),
   /** Diagnosis-and-replan cycles per assignment. */
   recoveryAllowance: RecoveryAllowance.pipe(Schema.withDecodingDefault(Effect.succeed(1))),
@@ -172,7 +172,6 @@ export const DEFAULT_FACTORY_CONFIG: FactoryConfig = Schema.decodeSync(FactoryCo
  * silently reset the environment's.
  */
 export const FactoryConfigOverride = Schema.Struct({
-  pickupGuidance: Schema.optionalKey(PickupGuidance),
   concurrencyCap: Schema.optionalKey(ConcurrencyCap),
   recoveryAllowance: Schema.optionalKey(RecoveryAllowance),
   digestIntervalMinutes: Schema.optionalKey(DigestIntervalMinutes),
@@ -212,26 +211,126 @@ export const FactoryConfigView = Schema.Struct({
 });
 export type FactoryConfigView = typeof FactoryConfigView.Type;
 
-const ControlPath = Schema.String.check(Schema.isMaxLength(300));
-const ControlPaths = Schema.Array(ControlPath).check(Schema.isMaxLength(100));
-
-/** What the manager learned while onboarding, proposed to the user for approval. */
-export const FactoryOnboardingReport = Schema.Struct({
-  summary: Schema.String.check(Schema.isMaxLength(4000)),
-  /** Glob patterns relative to the repository root that no team may edit. */
-  controlPaths: ControlPaths,
-  boardGaps: Schema.Array(Schema.String.check(Schema.isMaxLength(500))).check(
-    Schema.isMaxLength(50),
-  ),
-  openChoices: Schema.Array(Schema.String.check(Schema.isMaxLength(500))).check(
-    Schema.isMaxLength(50),
-  ),
+/** A glob relative to the repository root that teams may not edit, and why. */
+export const FactoryControlPath = Schema.Struct({
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
+  reason: TrimmedString.check(Schema.isMaxLength(500)),
 });
-export type FactoryOnboardingReport = typeof FactoryOnboardingReport.Type;
+export type FactoryControlPath = typeof FactoryControlPath.Type;
 
-/** `retired` is terminal; the project can then get a new manager. */
+const RuleId = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(80),
+  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+);
+const RuleQuestionText = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
+
+/** An open choice the manager asks the user while onboarding. `recommended` indexes `options`. */
+export const FactoryRuleQuestion = Schema.Struct({
+  id: RuleId,
+  question: RuleQuestionText,
+  options: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(300))).check(
+    Schema.isMinLength(2),
+    Schema.isMaxLength(4),
+  ),
+  recommended: NonNegativeInt,
+  reason: TrimmedString.check(Schema.isMaxLength(1000)),
+});
+export type FactoryRuleQuestion = typeof FactoryRuleQuestion.Type;
+
+/** A question with the user's answer: one of its options, or the user's own words. */
+export const FactoryProjectRule = Schema.Struct({
+  id: RuleId,
+  question: RuleQuestionText,
+  answer: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
+});
+export type FactoryProjectRule = typeof FactoryProjectRule.Type;
+
+export const FactoryPickupColumn = Schema.Struct({ boardId: Id, columnId: Id });
+export type FactoryPickupColumn = typeof FactoryPickupColumn.Type;
+
+const PickupLabels = Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(200))).check(
+  Schema.isMaxLength(50),
+);
+
+/** With `enabled` false the manager is never offered tickets, whatever the columns say. */
+export const FactoryPickup = Schema.Struct({
+  enabled: Schema.Boolean,
+  /** Each one a Ready column of its board when approved; one that stops being Ready is ignored. */
+  columns: Schema.Array(FactoryPickupColumn).check(Schema.isMaxLength(50)),
+  /** Stored for label-scoped pickup; nothing filters on them yet. */
+  labels: PickupLabels,
+  /** Judged by the manager against each ticket it is offered. */
+  guidance: PickupGuidance,
+});
+export type FactoryPickup = typeof FactoryPickup.Type;
+
+const Purpose = TrimmedString.check(Schema.isMaxLength(2000));
+const BaseBranch = TrimmedNonEmptyString.check(Schema.isMaxLength(255));
+
+/** The manager configuration the user approved at the end of onboarding. */
+export const FactoryOnboardingResult = Schema.Struct({
+  purpose: Purpose,
+  pickup: FactoryPickup,
+  /** Stored for a per-manager base branch; null means the repository's default. Unused yet. */
+  baseBranch: Schema.NullOr(BaseBranch),
+  rules: Schema.Array(FactoryProjectRule).check(Schema.isMaxLength(30)),
+  controlPaths: Schema.Array(FactoryControlPath).check(Schema.isMaxLength(100)),
+  /** Factory team ids this manager may staff; empty means every team. */
+  teamIds: Schema.Array(Id).check(Schema.isMaxLength(50)),
+  /** Stored for a per-manager cap on running assignments; the environment cap still governs. */
+  concurrencyCap: ConcurrencyCap,
+});
+export type FactoryOnboardingResult = typeof FactoryOnboardingResult.Type;
+
+/** One connected board as Satellite read it when the manager proposed. */
+export const FactoryOnboardingBoard = Schema.Struct({
+  boardId: Id,
+  title: Schema.String,
+  readyColumns: Schema.Array(IssueBoardColumn),
+  /** Labels on the board's current items, sorted. */
+  labels: Schema.Array(Schema.String),
+});
+export type FactoryOnboardingBoard = typeof FactoryOnboardingBoard.Type;
+
+/** Facts Satellite reads itself, so the card never relies on the manager's reading. */
+export const FactoryOnboardingDetected = Schema.Struct({
+  boards: Schema.Array(FactoryOnboardingBoard),
+  /** The primary remote's default branch, or null when it cannot be read. */
+  defaultBranch: Schema.NullOr(Schema.String),
+  detectedAt: Schema.String,
+});
+export type FactoryOnboardingDetected = typeof FactoryOnboardingDetected.Type;
+
+const Finding = TrimmedNonEmptyString.check(Schema.isMaxLength(500));
+
+/** What the manager submits while onboarding. Board columns are not its to name; Satellite detects them. */
+export const FactoryOnboardingProposalInput = Schema.Struct({
+  summary: TrimmedString.check(Schema.isMaxLength(4000)),
+  purpose: Purpose,
+  pickup: Schema.Struct({ enabled: Schema.Boolean, guidance: PickupGuidance }),
+  rules: Schema.Array(FactoryRuleQuestion).check(Schema.isMaxLength(20)),
+  controlPaths: Schema.Array(FactoryControlPath).check(Schema.isMaxLength(100)),
+  /** Things that need no decision; shown on the card and discarded on approval. */
+  findings: Schema.Array(Finding).check(Schema.isMaxLength(50)),
+});
+export type FactoryOnboardingProposalInput = typeof FactoryOnboardingProposalInput.Type;
+
+/** The latest proposal with what Satellite detected. Discarded once the user approves. */
+export const FactoryOnboardingProposal = Schema.Struct({
+  ...FactoryOnboardingProposalInput.fields,
+  detected: FactoryOnboardingDetected,
+  proposedAt: Schema.String,
+});
+export type FactoryOnboardingProposal = typeof FactoryOnboardingProposal.Type;
+
+/**
+ * `ready` is approved with pickup on but not yet started by the user: it works like `active`
+ * except that no ticket is offered or picked up. `retired` is terminal; the project can then get
+ * a new manager.
+ */
 export const FactoryManagerState = Schema.Literals([
   "onboarding",
+  "ready",
   "active",
   "manager-paused",
   "project-paused",
@@ -246,11 +345,19 @@ export const FactoryManager = Schema.Struct({
   state: FactoryManagerState,
   /** Null until onboarding launches the manager's thread. */
   threadId: Schema.NullOr(ThreadId),
-  /** Protected control paths, approved by the user at the end of onboarding. */
-  controlPaths: Schema.Array(Schema.String),
-  onboardingNotes: Schema.String,
-  /** The manager's onboarding proposal; kept after approval as the record of what was approved. */
-  onboardingReport: Schema.NullOr(FactoryOnboardingReport),
+  /**
+   * The thread the manager onboarded in, once approval moved it to a primed thread; null before.
+   * Defaults on decode so manager values recorded before it existed still read.
+   */
+  onboardingThreadId: Schema.NullOr(ThreadId).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /** The primed thread's first message, so a client can fold it by id; null before approval. */
+  primingMessageId: Schema.NullOr(MessageId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  /** The latest proposal while onboarding; null before the first one and after approval. */
+  onboardingProposal: Schema.NullOr(FactoryOnboardingProposal),
+  /** Null until the user approves onboarding. */
+  onboardingResult: Schema.NullOr(FactoryOnboardingResult),
   /** The model the manager's thread launched with. */
   modelSelection: Schema.NullOr(ModelSelection),
   /** Assignments that are not completed or cancelled. */
@@ -329,16 +436,22 @@ export const FactoryManagersRetireInput = Schema.Struct({ requestId: Id, manager
 export type FactoryManagersRetireInput = typeof FactoryManagersRetireInput.Type;
 
 /**
- * Approves the manager's onboarding with the control paths the user settled on, and starts it.
- * The factory's own folder is always protected.
+ * Approves the manager's onboarding with the result the user settled on. The manager moves to a
+ * new thread primed from the result, which the returned manager names; it is `ready` with pickup
+ * on and `active` otherwise. Every proposed question needs a rule with its id, and each pickup
+ * column has to still be Ready. The factory's own folder is always protected.
  */
 export const FactoryManagersApproveOnboardingInput = Schema.Struct({
   requestId: Id,
   managerId: Id,
-  controlPaths: ControlPaths,
+  result: FactoryOnboardingResult,
 });
 export type FactoryManagersApproveOnboardingInput =
   typeof FactoryManagersApproveOnboardingInput.Type;
+
+/** Starts pickup for a `ready` manager, which then becomes `active`. */
+export const FactoryManagersStartPickupInput = Schema.Struct({ requestId: Id, managerId: Id });
+export type FactoryManagersStartPickupInput = typeof FactoryManagersStartPickupInput.Type;
 
 export const FactoryAssignmentSource = Schema.Literals([
   "ticket",
@@ -496,6 +609,8 @@ export const FactoryLogKind = Schema.Literals([
   "retro",
   "draft",
   "ticket",
+  /** Onboarding approved; the payload names the onboarding thread and the manager's new one. */
+  "onboarded",
 ]);
 export type FactoryLogKind = typeof FactoryLogKind.Type;
 
@@ -531,8 +646,9 @@ export const FactoryStatus = Schema.Struct({
   capacityFree: Schema.Boolean,
   /** Assignments that are not completed or cancelled. */
   assignments: Schema.Array(FactoryAssignment),
-  /** Tickets in a Ready column of a connected board with no live assignment. */
+  /** Tickets in the manager's pickup columns with no live assignment; none while pickup is off. */
   readyTickets: Schema.Array(FactoryReadyTicket),
+  pickupEnabled: Schema.Boolean,
   pickupGuidance: Schema.String,
 });
 export type FactoryStatus = typeof FactoryStatus.Type;
@@ -786,6 +902,7 @@ export const FactoryProposedChange = Schema.Union([
   }),
   Schema.Struct({
     kind: Schema.Literal("setting"),
+    /** `pickupGuidance` moved onto the manager; a draft that stored it can no longer be applied. */
     key: Schema.Literals([
       "pickupGuidance",
       "concurrencyCap",
@@ -1024,6 +1141,14 @@ export const WsFactoryManagersApproveOnboardingRpc = Rpc.make(
   FACTORY_WS_METHODS.factoryManagersApproveOnboarding,
   {
     payload: FactoryManagersApproveOnboardingInput,
+    success: FactoryManager,
+    error: FactoryRpcError,
+  },
+);
+export const WsFactoryManagersStartPickupRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryManagersStartPickup,
+  {
+    payload: FactoryManagersStartPickupInput,
     success: FactoryManager,
     error: FactoryRpcError,
   },

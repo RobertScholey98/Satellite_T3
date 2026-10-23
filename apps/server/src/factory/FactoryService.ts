@@ -16,7 +16,8 @@ import {
   FactoryLogEntry,
   FactoryManager,
   FactoryMember,
-  FactoryOnboardingReport,
+  FactoryOnboardingProposal,
+  FactoryOnboardingResult,
   FactoryOperationError,
   FactoryProposedChange,
   FactoryTeamSpec,
@@ -29,6 +30,7 @@ import {
   ModelSelection,
   ProjectId,
   resolveFactoryConfig,
+  RuntimeMode,
   type FactoryAssignmentState,
   type FactoryAssignmentsCancelInput,
   type FactoryAssignmentsEvent,
@@ -64,7 +66,10 @@ import {
   type FactoryManagersPauseInput,
   type FactoryManagersResumeInput,
   type FactoryManagersRetireInput,
+  type FactoryManagersStartPickupInput,
   type FactoryManagersSubscribeInput,
+  type FactoryOnboardingBoard,
+  type FactoryOnboardingProposalInput,
   type FactoryPickupInput,
   type FactoryReadyTicket,
   type FactoryRecordFindingInput,
@@ -95,7 +100,6 @@ import {
   type ProviderInteractionMode,
   type PullRequestDiffResult,
   type PullRequestState,
-  type RuntimeMode,
   ThreadId,
   type ThreadPullRequestKey,
 } from "@t3tools/contracts";
@@ -109,6 +113,7 @@ import {
 } from "@t3tools/shared/threadPullRequests";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -139,6 +144,7 @@ import {
   roleSkillSource,
   type RoleSkillFill,
   type RoleSkillSource,
+  withProjectSection,
 } from "./roleSkills.ts";
 import { ONBOARDING_BRIEF } from "./roles/index.ts";
 import * as FactoryTicketHost from "./tickets/FactoryTicketHost.ts";
@@ -150,6 +156,8 @@ export interface FactoryThreadLaunch {
   readonly projectId: ProjectId;
   readonly title: string;
   readonly text: string;
+  /** The initial message's id; launch picks one when it is not given. */
+  readonly messageId?: MessageId;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
@@ -291,12 +299,17 @@ export interface FactoryServiceDependencies {
   readonly sendToThread: (
     input: FactoryThreadMessage,
   ) => Effect.Effect<void, FactoryOperationError>;
+  /** Marks the thread settled and stops its provider session once any running turn ends. */
+  readonly settleThread: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+  }) => Effect.Effect<void, FactoryOperationError>;
   /** Stops the thread's active run; a thread with no active run succeeds. */
   readonly interruptThread: (
     input: FactoryThreadInterrupt,
   ) => Effect.Effect<void, FactoryOperationError>;
-  /** The repository's default branch, else "main". */
-  readonly resolveBaseRef: (cwd: string) => Effect.Effect<string>;
+  /** The primary remote's default branch, or null when it cannot be read. */
+  readonly readDefaultBranch: (cwd: string) => Effect.Effect<string | null>;
   /** Every path the pull request changes, renamed files under both names. */
   readonly readPullRequestFiles: (
     input: FactoryPullRequestRef,
@@ -340,14 +353,29 @@ export interface FactoryServiceShape {
   readonly retireManager: (
     input: FactoryManagersRetireInput,
   ) => Effect.Effect<FactoryManager, FactoryOperationError>;
-  /** Stores the onboarding report the manager in this thread proposes for the user to approve. */
+  /**
+   * Stores the proposal the manager in this thread submits for the user to approve, with the
+   * boards and default branch Satellite reads itself.
+   */
   readonly proposeOnboarding: (
     threadId: ThreadId,
-    report: FactoryOnboardingReport,
+    input: FactoryOnboardingProposalInput,
   ) => Effect.Effect<FactoryManager, FactoryOperationError>;
+  /** Every proposed question needs its rule, and pickup that is on a column still Ready. */
   readonly approveOnboarding: (
     input: FactoryManagersApproveOnboardingInput,
   ) => Effect.Effect<FactoryManager, FactoryOperationError>;
+  /** Moves a `ready` manager to `active` and offers it the tickets in its pickup columns. */
+  readonly startPickup: (
+    input: FactoryManagersStartPickupInput,
+  ) => Effect.Effect<FactoryManager, FactoryOperationError>;
+  /**
+   * What to tell a manager-only tool called from a manager's finished onboarding thread, or null
+   * for any other thread. It scans the approval log, so ask only once no manager was found.
+   */
+  readonly finishedOnboardingMessage: (
+    threadId: ThreadId,
+  ) => Effect.Effect<string | null, FactoryOperationError>;
   /** The current manager whose own thread this is, or null. */
   readonly managerForThread: (
     threadId: ThreadId,
@@ -542,7 +570,8 @@ const hash = (value: unknown) => NodeCrypto.createHash("sha256").update(json(val
 const encodeConfig = Schema.encodeSync(Schema.fromJsonString(FactoryConfig));
 const encodeOverride = Schema.encodeSync(Schema.fromJsonString(FactoryConfigOverride));
 const encodeModel = Schema.encodeSync(Schema.fromJsonString(ModelSelection));
-const encodeReport = Schema.encodeSync(Schema.fromJsonString(FactoryOnboardingReport));
+const encodeProposal = Schema.encodeSync(Schema.fromJsonString(FactoryOnboardingProposal));
+const encodeResult = Schema.encodeSync(Schema.fromJsonString(FactoryOnboardingResult));
 const decodeManagerValue = Schema.decodeUnknownEffect(FactoryManager);
 const decodeAssignmentValue = Schema.decodeUnknownEffect(FactoryAssignment);
 const decodeDependencyValue = Schema.decodeUnknownEffect(FactoryDependency);
@@ -602,10 +631,11 @@ const stallReason = (runs: FactoryThreadRuns): string | null => {
 
 const managerStateProblem = (manager: FactoryManager): string | null => {
   switch (manager.state) {
+    case "ready":
     case "active":
       return null;
     case "onboarding":
-      return `${manager.name} is still onboarding. Nothing starts until the user approves the onboarding report.`;
+      return `${manager.name} is still onboarding. Nothing starts until the user approves its onboarding.`;
     case "manager-paused":
     case "project-paused":
       return `${manager.name} is paused. Nothing starts until the user resumes it.`;
@@ -613,6 +643,36 @@ const managerStateProblem = (manager: FactoryManager): string | null => {
       return `${manager.name} is retired.`;
   }
 };
+
+/** Why pickup cannot start, or null for a `ready` manager. */
+const startPickupProblem = (manager: FactoryManager): string | null => {
+  switch (manager.state) {
+    case "ready":
+      return null;
+    case "active":
+      return manager.onboardingResult?.pickup.enabled === true
+        ? `${manager.name} is already picking up tickets.`
+        : `Pickup is off for ${manager.name}; turn it on at onboarding.`;
+    case "onboarding":
+      return `${manager.name} is still onboarding.`;
+    case "manager-paused":
+    case "project-paused":
+      return `Resume ${manager.name} first.`;
+    case "retired":
+      return `${manager.name} is retired.`;
+  }
+};
+
+const PRIMED_CLOSING =
+  "Onboarding is done; this thread replaces the onboarding thread. Reply with exactly: Ready.";
+
+const ONBOARDING_FINISHED =
+  "This thread's onboarding is finished; the manager now runs in a new thread.";
+
+const decodeStoredRuntimeMode = Schema.decodeUnknownOption(RuntimeMode);
+/** The mode the manager launched with; the nullable column reads as the default, full access. */
+const decodeRuntimeMode = (text: string | null): RuntimeMode =>
+  Option.getOrElse(decodeStoredRuntimeMode(text), () => "full-access" as const);
 
 const isPaused = (state: string) => state === "manager-paused" || state === "project-paused";
 
@@ -663,6 +723,13 @@ const decodeDependencyWake = jsonDecoder(
 );
 const decodeHandbackWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(HandbackWakePayload)),
+);
+const OnboardedPayload = Schema.Struct({
+  onboardingThreadId: Schema.NullOr(Schema.String),
+  primingMessageId: Schema.optional(Schema.String),
+});
+const decodeOnboardedPayload = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(OnboardedPayload)),
 );
 const ControlWakePayload = Schema.Struct({ title: Schema.String, text: Schema.String });
 const decodeControlWake = jsonDecoder(
@@ -790,7 +857,6 @@ const skillFill = (
   allowedModels: allowedModelsFor(config, role),
   protectedPaths,
   completionCondition: null,
-  pickupGuidance: config.pickupGuidance,
 });
 
 const modelName = (model: ModelSelection) => `${model.instanceId}/${model.model}`;
@@ -816,8 +882,10 @@ const teamSection = (config: FactoryConfig, team: FactoryTeamSpec) => {
   return team.members.length === 0 ? null : `# Team\n\n${members}`;
 };
 
+const PICKUP_GUIDANCE_MOVED =
+  "Pickup guidance is now set per manager at onboarding, not in the factory config, so it cannot be changed through a factory draft.";
+
 const SETTING_LABELS = {
-  pickupGuidance: "pickup guidance",
   concurrencyCap: "concurrency cap",
   recoveryAllowance: "recovery allowance",
   digestIntervalMinutes: "digest interval",
@@ -847,6 +915,8 @@ const applyProposedChange = (
     case "role-skill":
       return { refused: error("invalid", "Edit the role file to apply this change.") };
     case "setting": {
+      if (change.key === "pickupGuidance")
+        return { refused: error("invalid", PICKUP_GUIDANCE_MOVED) };
       const current = config[change.key];
       if (!NodeUtil.isDeepStrictEqual(current, change.before))
         return {
@@ -902,11 +972,70 @@ const applyProposedChange = (
   }
 };
 
+const resultControlPaths = (result: FactoryOnboardingResult | null) =>
+  controlPathsOf((result?.controlPaths ?? []).map((controlPath) => controlPath.path));
+
 /** The approved control paths, or the proposed ones while onboarding. */
 const protectedPathsOf = (manager: FactoryManager) =>
-  manager.controlPaths.length > 0
-    ? manager.controlPaths
-    : (manager.onboardingReport?.controlPaths ?? []);
+  manager.onboardingResult !== null
+    ? resultControlPaths(manager.onboardingResult)
+    : (manager.onboardingProposal?.controlPaths ?? []).map((controlPath) => controlPath.path);
+
+/** Onboarding, or paused while onboarding. */
+const isOnboarding = (row: { readonly state: string; readonly paused_from: string | null }) =>
+  row.state === "onboarding" ||
+  ((row.state === "manager-paused" || row.state === "project-paused") &&
+    row.paused_from === "onboarding");
+
+/** What the schema cannot check, worded for the manager to fix and resubmit. */
+const proposalProblem = (input: FactoryOnboardingProposalInput) => {
+  const ids = new Set<string>();
+  for (const question of input.rules) {
+    if (ids.has(question.id))
+      return `Two questions share the id "${question.id}". Give each question its own id.`;
+    ids.add(question.id);
+    if (question.recommended >= question.options.length)
+      return `Question "${question.id}" recommends option ${question.recommended}, but it has ${question.options.length} options. recommended is the 0-based index of one of its options.`;
+  }
+  return null;
+};
+
+/** Every proposed question needs exactly one rule with its id, and every rule a question. */
+const rulesProblem = (
+  questions: FactoryOnboardingProposal["rules"],
+  rules: FactoryOnboardingResult["rules"],
+) => {
+  const asked = new Set(questions.map((question) => question.id));
+  const answered = new Set<string>();
+  for (const rule of rules) {
+    if (!asked.has(rule.id)) return `Rule "${rule.id}" answers no question in the proposal.`;
+    if (answered.has(rule.id)) return `Question "${rule.id}" is answered more than once.`;
+    answered.add(rule.id);
+  }
+  const unanswered = questions.find((question) => !answered.has(question.id));
+  return unanswered === undefined ? null : `Answer "${unanswered.question}" before approving.`;
+};
+
+/**
+ * Pickup that is on needs a column. Every stored column has to be a Ready column of a connected
+ * board, even with pickup off, so turning pickup on later never inherits an unchecked one.
+ */
+const pickupColumnsProblem = (
+  pickup: FactoryOnboardingResult["pickup"],
+  boards: ReadonlyArray<FactoryOnboardingBoard>,
+) => {
+  const { columns } = pickup;
+  if (pickup.enabled && columns.length === 0)
+    return "Pickup is on, so choose at least one Ready column for it.";
+  for (const column of columns) {
+    const board = boards.find((candidate) => candidate.boardId === column.boardId);
+    if (board === undefined)
+      return `Column ${column.columnId} is on board ${column.boardId}, which is not a connected board with a mapping.`;
+    if (!board.readyColumns.some((ready) => ready.id === column.columnId))
+      return `Column ${column.columnId} is not a Ready column of ${board.title}.`;
+  }
+  return null;
+};
 
 interface StatsRow {
   readonly assignment_id: string;
@@ -1161,6 +1290,20 @@ interface AssignmentPlan {
   readonly dependencyId: string | null;
 }
 
+const findTicket = (items: ReadonlyArray<ReadyItem>, issueNumber: number, missing: string) => {
+  const matches = items.filter((item) => item.issue.ref.number === issueNumber);
+  const distinct = new Set(matches.map((item) => canonicalIssueKey(item.issue.ref)));
+  if (distinct.size > 1)
+    return {
+      found: false,
+      reason: "invalid",
+      message: `#${issueNumber} matches Ready tickets in more than one repository.`,
+    } as const;
+  const ticket = matches[0];
+  if (ticket === undefined) return { found: false, reason: "conflict", message: missing } as const;
+  return { found: true, ticket } as const;
+};
+
 interface ManagerRow {
   readonly id: string;
   readonly project_id: string;
@@ -1168,14 +1311,15 @@ interface ManagerRow {
   readonly state: string;
   readonly paused_from: string | null;
   readonly thread_id: string | null;
-  readonly control_paths_json: string;
-  readonly onboarding_notes: string;
-  readonly onboarding_report_json: string | null;
+  readonly onboarding_proposal_json: string | null;
+  readonly onboarding_result_json: string | null;
   readonly model_selection_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
   readonly active_assignments: number;
   readonly waiting_on_you: number;
+  /** The latest `onboarded` log entry's payload; approval writes no column of its own. */
+  readonly onboarded_json: string | null;
 }
 
 export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
@@ -1313,12 +1457,21 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       name: row.name,
       state: row.state,
       threadId: row.thread_id,
-      controlPaths: yield* parse(Schema.Array(Schema.String), row.control_paths_json),
-      onboardingNotes: row.onboarding_notes,
-      onboardingReport:
-        row.onboarding_report_json === null
+      ...Option.match(decodeOnboardedPayload(row.onboarded_json), {
+        onNone: () => ({ onboardingThreadId: null, primingMessageId: null }),
+        onSome: (payload) => ({
+          onboardingThreadId: payload.onboardingThreadId,
+          primingMessageId: payload.primingMessageId ?? null,
+        }),
+      }),
+      onboardingProposal:
+        row.onboarding_proposal_json === null
           ? null
-          : yield* parse(Schema.Unknown, row.onboarding_report_json),
+          : yield* parse(Schema.Unknown, row.onboarding_proposal_json),
+      onboardingResult:
+        row.onboarding_result_json === null
+          ? null
+          : yield* parse(Schema.Unknown, row.onboarding_result_json),
       modelSelection:
         row.model_selection_json === null
           ? null
@@ -1334,7 +1487,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         (SELECT COUNT(*) FROM factory_assignments a
           WHERE a.manager_id=m.id AND ${sql.in("a.state", ACTIVE_ASSIGNMENT_STATES)}) AS active_assignments,
         (SELECT COUNT(*) FROM factory_assignments a
-          WHERE a.manager_id=m.id AND a.state='waiting-user') AS waiting_on_you
+          WHERE a.manager_id=m.id AND a.state='waiting-user') AS waiting_on_you,
+        (SELECT l.payload_json FROM factory_log l
+          WHERE l.manager_id=m.id AND l.kind='onboarded'
+          ORDER BY l.sequence DESC LIMIT 1) AS onboarded_json
       FROM factory_managers m WHERE ${where} AND (${id} IS NULL OR m.id=${id})
       ORDER BY m.created_at, m.id`;
   const readManager = Effect.fnUntraced(function* (id: string) {
@@ -1524,7 +1680,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         if (manager.state === "manager-paused" || manager.state === "project-paused") {
           const rows = yield* sql<{ paused_from: string | null }>`
               SELECT paused_from FROM factory_managers WHERE id=${manager.id}`;
-          const resumed = rows[0]?.paused_from === "onboarding" ? "onboarding" : "active";
+          const from = rows[0]?.paused_from;
+          const resumed = from === "onboarding" || from === "ready" ? from : "active";
           yield* sql`UPDATE factory_managers SET state=${resumed},paused_from=NULL,updated_at=${yield* now}
               WHERE id=${manager.id}`;
         }
@@ -1558,6 +1715,20 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     return rows.find((row) => row.thread_id === threadId) ?? null;
   });
 
+  /** Approval moves the manager off its onboarding thread; the log remembers which one it was. */
+  const finishedOnboardingThread = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const rows = yield* sql`SELECT 1 FROM factory_log WHERE kind='onboarded'
+        AND json_extract(payload_json,'$.onboardingThreadId')=${threadId} LIMIT 1`;
+    return rows.length > 0;
+  });
+  /** Only manager-only tools ask, and only once the thread turned out not to be a manager's. */
+  const notAManager = Effect.fnUntraced(function* (threadId: ThreadId) {
+    return yield* error(
+      "not-found",
+      (yield* finishedOnboardingMessage(threadId)) ?? "This thread is not an engineering manager.",
+    );
+  });
+
   const managerForThread: FactoryServiceShape["managerForThread"] = (threadId) =>
     protect(
       Effect.gen(function* () {
@@ -1566,44 +1737,258 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       }),
     );
 
-  const proposeOnboarding: FactoryServiceShape["proposeOnboarding"] = (threadId, report) =>
-    lock(
+  const finishedOnboardingMessage: FactoryServiceShape["finishedOnboardingMessage"] = (threadId) =>
+    protect(
+      finishedOnboardingThread(threadId).pipe(
+        Effect.map((finished) => (finished ? ONBOARDING_FINISHED : null)),
+      ),
+    );
+
+  /** Each connected board's Ready columns in board order, and the labels on its items. */
+  const onboardingBoards = Effect.fnUntraced(function* (projectId: ProjectId) {
+    const boards: FactoryOnboardingBoard[] = [];
+    for (const summary of yield* deps.readBoards(projectId)) {
+      if (summary.mapping === null) continue;
+      const view = yield* deps.readBoard(projectId, summary.id);
+      const ready = new Set(issueReadyColumnIds(view.board.mapping ?? summary.mapping));
+      boards.push({
+        boardId: summary.id,
+        title: view.board.title,
+        readyColumns: view.columns
+          .filter((column) => ready.has(column.id))
+          .map((column) => ({ id: column.id, title: column.title })),
+        labels: [...new Set(view.items.flatMap((item) => item.issue.labels))].toSorted(),
+      });
+    }
+    return boards;
+  });
+
+  const proposeOnboarding: FactoryServiceShape["proposeOnboarding"] = (threadId, input) =>
+    protect(
       Effect.gen(function* () {
-        const row = yield* managerRowForThread(threadId);
-        if (row === null)
-          return yield* error("not-found", "This thread is not an engineering manager.");
-        const onboarding =
-          row.state === "onboarding" ||
-          ((row.state === "manager-paused" || row.state === "project-paused") &&
-            row.paused_from === "onboarding");
-        if (!onboarding)
+        const problem = proposalProblem(input);
+        if (problem !== null) return yield* error("invalid", problem);
+        const found = yield* managerRowForThread(threadId);
+        if (found === null) return yield* notAManager(threadId);
+        if (!isOnboarding(found))
           return yield* error("conflict", "This manager has already finished onboarding.");
-        yield* sql`UPDATE factory_managers SET onboarding_report_json=${encodeReport(report)},
-            onboarding_notes=${report.summary},updated_at=${yield* now} WHERE id=${row.id}`;
-        yield* publish;
-        return yield* readManager(row.id);
+        const projectId = ProjectId.make(found.project_id);
+        const shell = yield* project(projectId);
+        // Read outside the lock: boards come from the issue service and git from a subprocess.
+        const boards = yield* onboardingBoards(projectId);
+        const defaultBranch = yield* deps.readDefaultBranch(shell.workspaceRoot);
+        return yield* lock(
+          Effect.gen(function* () {
+            const row = yield* managerRowForThread(threadId);
+            if (row === null || row.id !== found.id)
+              return yield* error("not-found", "This thread is not an engineering manager.");
+            if (!isOnboarding(row))
+              return yield* error("conflict", "This manager has already finished onboarding.");
+            const at = yield* now;
+            const proposal = {
+              ...input,
+              detected: { boards, defaultBranch, detectedAt: at },
+              proposedAt: at,
+            };
+            yield* sql`UPDATE factory_managers SET onboarding_proposal_json=${encodeProposal(proposal)},
+                updated_at=${at} WHERE id=${row.id}`;
+            yield* publish;
+            return yield* readManager(row.id);
+          }),
+        );
       }),
     );
 
-  const approveOnboarding: FactoryServiceShape["approveOnboarding"] = (input) =>
-    lock(
+  /**
+   * Moves the manager to a fresh thread primed from the approved result. The approval is written
+   * under the lock, the thread launches outside it like a new manager's, and only a launched
+   * approval is remembered and published. A failed launch puts the manager back in onboarding on
+   * its old thread, keeping a pause or retirement made meanwhile, so approving again starts over.
+   */
+  const approveOnce = Effect.fnUntraced(function* (input: FactoryManagersApproveOnboardingInput) {
+    const { pickup } = input.result;
+    // Pickup columns are checked against the boards as they are now, not as proposed: a
+    // column that stopped being Ready since must not be approved.
+    const boards =
+      pickup.enabled || pickup.columns.length > 0
+        ? yield* onboardingBoards((yield* readManager(input.managerId)).projectId)
+        : [];
+    const approved = yield* lock(
       Effect.gen(function* () {
         const replay = yield* replayManager(input.requestId, input);
-        if (replay) return replay;
+        if (replay) return { replay } as const;
         const manager = yield* readManager(input.managerId);
         if (manager.state === "manager-paused" || manager.state === "project-paused")
           return yield* error("conflict", "Resume the manager first.");
         if (manager.state !== "onboarding")
           return yield* error("conflict", `${manager.name} is not onboarding.`);
-        if (manager.onboardingReport === null)
-          return yield* error(
-            "conflict",
-            `${manager.name} has not proposed an onboarding report yet.`,
+        const proposal = manager.onboardingProposal;
+        if (proposal === null)
+          return yield* error("conflict", `${manager.name} has not proposed onboarding yet.`);
+        const problem =
+          rulesProblem(proposal.rules, input.result.rules) ?? pickupColumnsProblem(pickup, boards);
+        if (problem !== null) return yield* error("invalid", problem);
+        // The question is the manager's wording from the proposal, not whatever the client sent.
+        const asked = new Map(proposal.rules.map((question) => [question.id, question.question]));
+        const result = {
+          ...input.result,
+          rules: input.result.rules.map((rule) => ({
+            ...rule,
+            question: asked.get(rule.id) ?? rule.question,
+          })),
+        };
+        const runtime = yield* sql<{ runtime_mode: string | null }>`
+            SELECT runtime_mode FROM factory_managers WHERE id=${manager.id}`;
+        const threadId = yield* deps.allocateThreadId(manager.projectId);
+        const primingMessageId = MessageId.make(`message:factory-manager-primed:${threadId}`);
+        yield* sql`UPDATE factory_managers SET state=${pickup.enabled ? "ready" : "active"},
+            thread_id=${threadId},onboarding_result_json=${encodeResult(result)},
+            onboarding_proposal_json=NULL,updated_at=${yield* now} WHERE id=${manager.id}`;
+        yield* writeLog(manager.id, null, "onboarded", "onboarding approved", {
+          onboardingThreadId: manager.threadId,
+          threadId,
+          primingMessageId,
+        });
+        return {
+          manager: yield* readManager(manager.id),
+          onboardingThreadId: manager.threadId,
+          proposal,
+          primingMessageId,
+          runtimeMode: decodeRuntimeMode(runtime[0]?.runtime_mode ?? null),
+        } as const;
+      }),
+    );
+    if ("replay" in approved) return approved.replay;
+    const { manager, onboardingThreadId, proposal } = approved;
+    const newThreadId = manager.threadId!;
+    const launched = yield* Effect.gen(function* () {
+      const shell = yield* project(manager.projectId);
+      const config = (yield* configView(manager.projectId)).effective;
+      const skill = yield* deps.readRoleSkill("manager", shell.workspaceRoot);
+      const modelSelection =
+        manager.modelSelection ?? config.roleModels.manager ?? config.modelPool[0];
+      if (modelSelection === undefined)
+        return yield* error("invalid", "Add at least one model to the factory pool first.");
+      yield* deps.launchThread({
+        // A rejected command id stays rejected, so each new thread gets its own.
+        commandId: CommandId.make(`factory-manager-primed:${newThreadId}`),
+        threadId: newThreadId,
+        projectId: manager.projectId,
+        title: `Engineering manager: ${manager.name}`,
+        text: `${withProjectSection(
+          renderRoleSkill(skill.text, skillFill(config, "manager", protectedPathsOf(manager))),
+          manager.onboardingResult,
+        )}\n\n${PRIMED_CLOSING}`,
+        messageId: approved.primingMessageId,
+        modelSelection,
+        runtimeMode: approved.runtimeMode,
+        interactionMode: "default",
+        workspace: { type: "root" },
+      });
+    }).pipe(Effect.result);
+    if (launched._tag === "Failure") {
+      const state = yield* lock(
+        Effect.gen(function* () {
+          // A pause made during the launch stays, now pausing onboarding; a retirement stays too.
+          yield* sql`UPDATE factory_managers SET
+              state=CASE WHEN state IN ('ready','active') THEN 'onboarding' ELSE state END,
+              paused_from=CASE WHEN state IN ('manager-paused','project-paused')
+                THEN 'onboarding' ELSE NULL END,
+              thread_id=${onboardingThreadId},onboarding_result_json=NULL,
+              onboarding_proposal_json=${encodeProposal(proposal)},updated_at=${yield* now}
+              WHERE id=${manager.id} AND thread_id=${newThreadId}`;
+          yield* sql`DELETE FROM factory_log WHERE manager_id=${manager.id}
+              AND kind='onboarded' AND json_extract(payload_json,'$.threadId')=${newThreadId}`;
+          return (yield* readManager(manager.id)).state;
+        }),
+      );
+      yield* publish;
+      yield* Effect.logWarning("Could not launch the manager's primed thread", {
+        managerId: manager.id,
+        cause: launched.failure.message,
+      });
+      return yield* error(
+        "unavailable",
+        state === "retired"
+          ? `${launched.failure.message} ${manager.name} was retired meanwhile, so it stays retired.`
+          : `${launched.failure.message} Onboarding is unchanged; approve it again.`,
+      );
+    }
+    const remembered = yield* lock(rememberManager(input.requestId, input, manager.id));
+    if (onboardingThreadId !== null)
+      yield* deps
+        .settleThread({
+          threadId: onboardingThreadId,
+          commandId: CommandId.make(`factory-onboarding-settle:${onboardingThreadId}`),
+        })
+        .pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not settle the manager's onboarding thread", {
+              threadId: onboardingThreadId,
+              cause: cause.message,
+            }),
+          ),
+        );
+    return remembered;
+  });
+
+  // An approval is remembered only once its thread launched, so a repeat of a request still
+  // launching waits for it here instead of being refused as no longer onboarding.
+  const approvalsInFlight = new Map<
+    string,
+    {
+      readonly hash: string;
+      readonly done: Deferred.Deferred<FactoryManager, FactoryOperationError>;
+    }
+  >();
+  const approveOnboarding: FactoryServiceShape["approveOnboarding"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const inFlight = approvalsInFlight.get(input.requestId);
+        if (inFlight !== undefined) {
+          if (inFlight.hash !== hash(input))
+            return yield* error(
+              "conflict",
+              "This request ID was already used for a different factory operation.",
+            );
+          return yield* Deferred.await(inFlight.done);
+        }
+        const done = Deferred.makeUnsafe<FactoryManager, FactoryOperationError>();
+        approvalsInFlight.set(input.requestId, { hash: hash(input), done });
+        return yield* protect(approveOnce(input)).pipe(
+          Effect.onExit((exit) => Deferred.done(done, exit)),
+          Effect.ensuring(Effect.sync(() => approvalsInFlight.delete(input.requestId))),
+        );
+      }),
+    );
+
+  /** Pickup of a `ready` manager starts only when the user asks, and offers its first tickets. */
+  const startPickup: FactoryServiceShape["startPickup"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const manager = yield* lock(
+          Effect.gen(function* () {
+            const replay = yield* replayManager(input.requestId, input);
+            if (replay) return replay;
+            const current = yield* readManager(input.managerId);
+            const problem = startPickupProblem(current);
+            if (problem !== null) return yield* error("conflict", problem);
+            yield* sql`UPDATE factory_managers SET state='active',updated_at=${yield* now}
+                WHERE id=${current.id}`;
+            return yield* rememberManager(input.requestId, input, current.id);
+          }),
+        );
+        if (manager.state === "active")
+          yield* queuePickupWake(manager).pipe(
+            Effect.andThen(deliverWakes(manager)),
+            Effect.catch((cause) =>
+              Effect.logWarning("Could not offer a manager its first pickup tickets", {
+                managerId: manager.id,
+                cause: cause.message,
+              }),
+            ),
           );
-        yield* sql`UPDATE factory_managers SET state='active',
-            control_paths_json=${json(controlPathsOf(input.controlPaths))},updated_at=${yield* now}
-            WHERE id=${manager.id}`;
-        return yield* rememberManager(input.requestId, input, manager.id);
+        return manager;
       }),
     );
 
@@ -1616,9 +2001,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           return yield* error("invalid", "This manager belongs to a different project.");
         const config = (yield* configView(projectId)).effective;
         const skill = yield* deps.readRoleSkill(role, shell.workspaceRoot);
-        const text = renderRoleSkill(
-          skill.text,
-          skillFill(config, role, protectedPathsOf(manager)),
+        const text = withProjectSection(
+          renderRoleSkill(skill.text, skillFill(config, role, protectedPathsOf(manager))),
+          role === "manager" || role === "lead" ? manager.onboardingResult : null,
         );
         return { role, text, source: skill.source } satisfies FactoryRoleBrief;
       }),
@@ -1815,14 +2200,20 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     );
   });
 
-  const readyItems = Effect.fnUntraced(function* (projectId: ProjectId) {
+  /** Items in the columns `pick` chooses from each connected board's Ready columns. */
+  const itemsIn = Effect.fnUntraced(function* (
+    projectId: ProjectId,
+    pick: (boardId: string, ready: ReadonlyArray<string>) => ReadonlyArray<string>,
+  ) {
     const items: ReadyItem[] = [];
     for (const summary of yield* deps.readBoards(projectId)) {
       if (summary.mapping === null) continue;
       const view = yield* deps.readBoard(projectId, summary.id);
-      const ready = new Set(issueReadyColumnIds(view.board.mapping ?? summary.mapping));
+      const columns = new Set(
+        pick(summary.id, issueReadyColumnIds(view.board.mapping ?? summary.mapping)),
+      );
       for (const item of view.items) {
-        if (item.columnId === null || !ready.has(item.columnId)) continue;
+        if (item.columnId === null || !columns.has(item.columnId)) continue;
         items.push({
           issue: item.issue,
           boardId: summary.id,
@@ -1833,9 +2224,26 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     }
     return items;
   });
-  /** Ready tickets with no live assignment, flagged when the manager already judged them. */
+  /** Every Ready ticket: what the user may ask the manager to start by hand. */
+  const readyItems = (projectId: ProjectId) => itemsIn(projectId, (_boardId, ready) => ready);
+  /**
+   * What the manager may take on its own: only the pickup columns the user confirmed, and only
+   * while each is still Ready, so a board mapping that counts Backlog as Ready offers nothing new.
+   */
+  const pickupItems = (manager: FactoryManager) => {
+    const pickup = manager.onboardingResult?.pickup;
+    // A ready manager waits for the user to start pickup before anything is offered.
+    if (pickup === undefined || !pickup.enabled || manager.state === "ready")
+      return Effect.succeed([]);
+    return itemsIn(manager.projectId, (boardId, ready) =>
+      ready.filter((columnId) =>
+        pickup.columns.some((column) => column.boardId === boardId && column.columnId === columnId),
+      ),
+    );
+  };
+  /** Pickup tickets with no live assignment, flagged when the manager already judged them. */
   const readyTickets = Effect.fnUntraced(function* (manager: FactoryManager) {
-    const items = yield* readyItems(manager.projectId);
+    const items = yield* pickupItems(manager);
     const live = yield* liveIssueKeys(manager.projectId);
     const judged = yield* judgedKeys(manager.id);
     return items
@@ -1865,15 +2273,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           capacityFree: activeCount < config.concurrencyCap,
           assignments,
           readyTickets: yield* readyTickets(manager),
-          pickupGuidance: config.pickupGuidance,
+          pickupEnabled: manager.onboardingResult?.pickup.enabled ?? false,
+          pickupGuidance: manager.onboardingResult?.pickup.guidance ?? "",
         } satisfies FactoryStatus;
       }),
     );
 
   const requireManager = Effect.fnUntraced(function* (threadId: ThreadId) {
     const row = yield* managerRowForThread(threadId);
-    if (row === null)
-      return yield* error("not-found", "This thread is not an engineering manager.");
+    if (row === null) return yield* notAManager(threadId);
     return yield* decodeManager(row);
   });
 
@@ -1888,27 +2296,6 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       Effect.andThen(Effect.fail(error(reason, message))),
     );
 
-  const findReadyTicket = Effect.fnUntraced(function* (projectId: ProjectId, issueNumber: number) {
-    const matches = (yield* readyItems(projectId)).filter(
-      (item) => item.issue.ref.number === issueNumber,
-    );
-    const distinct = new Set(matches.map((item) => canonicalIssueKey(item.issue.ref)));
-    if (distinct.size > 1)
-      return {
-        found: false,
-        reason: "invalid",
-        message: `#${issueNumber} matches Ready tickets in more than one repository.`,
-      } as const;
-    const ticket = matches[0];
-    if (ticket === undefined)
-      return {
-        found: false,
-        reason: "conflict",
-        message: `#${issueNumber} is not in a Ready column on a connected board.`,
-      } as const;
-    return { found: true, ticket } as const;
-  });
-
   const leadPrompt = Effect.fnUntraced(function* (
     manager: FactoryManager,
     config: FactoryConfig,
@@ -1916,10 +2303,13 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     plan: Pick<AssignmentPlan, "title" | "brief" | "completionCondition" | "team">,
   ) {
     const skill = yield* deps.readRoleSkill("lead", workspaceRoot);
-    const role = renderRoleSkill(skill.text, {
-      ...skillFill(config, "lead", protectedPathsOf(manager)),
-      completionCondition: plan.completionCondition,
-    });
+    const role = withProjectSection(
+      renderRoleSkill(skill.text, {
+        ...skillFill(config, "lead", protectedPathsOf(manager)),
+        completionCondition: plan.completionCondition,
+      }),
+      manager.onboardingResult,
+    );
     const team = teamSection(config, plan.team);
     return `${role}\n\n# Assignment\n\n## ${plan.title}\n\n${plan.brief}\n\n## Completion condition\n\n${plan.completionCondition}${team === null ? "" : `\n\n${team}`}`;
   });
@@ -1935,7 +2325,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   ) {
     const shell = yield* project(manager.projectId);
     const prompt = yield* leadPrompt(manager, config, shell.workspaceRoot, plan);
-    const baseRef = yield* deps.resolveBaseRef(shell.workspaceRoot);
+    const baseRef = (yield* deps.readDefaultBranch(shell.workspaceRoot)) ?? "main";
     if (plan.ticket !== null) {
       const launched = yield* deps.startAttempt({
         requestId: `factory-assignment:${id}`,
@@ -2106,7 +2496,18 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           refuse(manager.id, reason, message, refusalPayload);
         const problem = managerStateProblem(manager);
         if (problem !== null) return yield* refusal("conflict", problem);
-        const found = yield* findReadyTicket(manager.projectId, input.issueNumber);
+        if (manager.state === "ready")
+          return yield* refusal("conflict", "Pickup has not started; the user starts it.");
+        if (manager.onboardingResult?.pickup.enabled !== true)
+          return yield* refusal(
+            "conflict",
+            "Pickup is off for this project. Recommend the ticket to the user instead.",
+          );
+        const found = findTicket(
+          yield* pickupItems(manager),
+          input.issueNumber,
+          `#${input.issueNumber} is not in one of your pickup columns.`,
+        );
         if (!found.found) return yield* refusal(found.reason, found.message);
         const { ticket } = found;
         const judged = {
@@ -2162,7 +2563,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         if (problem !== null) return yield* refusal("conflict", problem);
         let ticket: ReadyItem | null = null;
         if (input.issueNumber !== undefined) {
-          const found = yield* findReadyTicket(manager.projectId, input.issueNumber);
+          const found = findTicket(
+            yield* readyItems(manager.projectId),
+            input.issueNumber,
+            `#${input.issueNumber} is not in a Ready column on a connected board.`,
+          );
           if (!found.found) return yield* refusal(found.reason, found.message);
           ticket = found.ticket;
         }
@@ -2369,7 +2774,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
    * assignment's state changed, so the caller stops there.
    */
   const checkControlPaths = Effect.fnUntraced(function* (
-    row: LeadAssignmentRow & { readonly manager_control_paths_json: string },
+    row: LeadAssignmentRow & { readonly manager_result_json: string | null },
     runs: FactoryThreadRuns,
   ) {
     const open = runs.pullRequests.filter(
@@ -2387,7 +2792,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     )
       return false;
     const matches = controlPathMatcher(
-      controlPathsOf(yield* parse(Schema.Array(Schema.String), row.manager_control_paths_json)),
+      resultControlPaths(
+        row.manager_result_json === null
+          ? null
+          : yield* parse(FactoryOnboardingResult, row.manager_result_json),
+      ),
     );
     const results: Array<
       { readonly key: string; readonly version: string } & FactoryControlViolation
@@ -2503,10 +2912,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
 
   const reconcileLead = Effect.fnUntraced(function* (threadId: ThreadId) {
     const rows = yield* sql<
-      LeadAssignmentRow & { manager_state: string; manager_control_paths_json: string }
+      LeadAssignmentRow & { manager_state: string; manager_result_json: string | null }
     >`
         SELECT a.*, ${LEAD_TAKEN_OVER}, m.state AS manager_state,
-        m.control_paths_json AS manager_control_paths_json FROM factory_assignments a
+        m.onboarding_result_json AS manager_result_json FROM factory_assignments a
         JOIN factory_managers m ON m.id=a.manager_id
         WHERE a.lead_thread_id=${threadId} AND a.state IN ('active','waiting-user')`;
     const row = rows[0];
@@ -2743,8 +3152,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         AND ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)}`;
     for (const lead of leads) yield* reconcileLead(ThreadId.make(lead.lead_thread_id));
     const manager = yield* readManager(managerId);
-    if (manager.state !== "active") return;
-    yield* queuePickupWake(manager);
+    if (manager.state !== "active" && manager.state !== "ready") return;
+    // A ready manager hears about its assignments, but no ticket until the user starts pickup.
+    if (manager.state === "active") yield* queuePickupWake(manager);
     yield* deliverWakes(manager);
   });
 
@@ -3283,7 +3693,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
   const sweepDigests: FactoryServiceShape["sweepDigests"] = Effect.gen(function* () {
     const at = Date.parse(yield* now);
     for (const manager of yield* currentManagers()) {
-      if (manager.state !== "active") continue;
+      if (manager.state !== "active" && manager.state !== "ready") continue;
       const intervalMs =
         (yield* configView(manager.projectId)).effective.digestIntervalMinutes * 60_000;
       for (const row of yield* liveAssignmentRows(manager.id)) {
@@ -3867,9 +4277,18 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     protect(
       Effect.gen(function* () {
         const manager = yield* requireManager(managerThreadId);
-        // Drafting only records a proposal for the user, so a paused manager may finish its retro.
-        const problem = isPaused(manager.state) ? null : managerStateProblem(manager);
+        // Drafting only records a proposal for the user, so a paused manager may finish its retro
+        // and an onboarding one may draft a ticket from a finding the user asked about.
+        const problem =
+          isPaused(manager.state) || manager.state === "onboarding"
+            ? null
+            : managerStateProblem(manager);
         if (problem !== null) return yield* error("conflict", problem);
+        if (
+          input.proposedChange?.kind === "setting" &&
+          input.proposedChange.key === "pickupGuidance"
+        )
+          return yield* error("invalid", PICKUP_GUIDANCE_MOVED);
         const findingIds = [...new Set(input.findingIds ?? [])];
         const id = yield* lock(
           Effect.gen(function* () {
@@ -4133,7 +4552,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     retireManager,
     proposeOnboarding,
     approveOnboarding,
+    startPickup,
     managerForThread,
+    finishedOnboardingMessage,
     roleBrief,
     status,
     pickup,
@@ -4227,7 +4648,11 @@ export const make = Effect.gen(function* () {
           runtimeMode: input.runtimeMode,
           interactionMode: input.interactionMode,
           workspaceStrategy: input.workspace,
-          initialMessage: { text: input.text, attachments: [] },
+          initialMessage: {
+            text: input.text,
+            attachments: [],
+            ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+          },
           createdBy: "user",
           creationSource: "web",
         })
@@ -4389,6 +4814,13 @@ export const make = Effect.gen(function* () {
           ),
           Effect.asVoid,
         ),
+    settleThread: (input) =>
+      threads.settleThread({ ...input, byOwnAgent: false }).pipe(
+        Effect.mapError(() =>
+          error("unavailable", "The manager's onboarding thread could not be settled."),
+        ),
+        Effect.asVoid,
+      ),
     interruptThread: (input) =>
       threads
         .interruptThread({
@@ -4404,11 +4836,10 @@ export const make = Effect.gen(function* () {
           Effect.asVoid,
         ),
     // Same source GitManager falls back to: the primary remote's HEAD symbolic ref.
-    resolveBaseRef: (cwd) =>
+    readDefaultBranch: (cwd) =>
       git.resolvePrimaryRemoteName(cwd).pipe(
         Effect.flatMap((remote) => git.resolveDefaultBranchName(cwd, remote)),
-        Effect.map((branch) => branch ?? "main"),
-        Effect.orElseSucceed(() => "main"),
+        Effect.orElseSucceed(() => null),
       ),
     readPullRequestFiles: Effect.fn("FactoryService.readPullRequestFiles")(
       function* (input) {

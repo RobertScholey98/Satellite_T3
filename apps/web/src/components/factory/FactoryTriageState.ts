@@ -84,6 +84,8 @@ export function managerStatusText(
   switch (manager.state) {
     case "onboarding":
       return "Manager onboarding";
+    case "ready":
+      return "Manager ready to pick up";
     case "manager-paused":
       return "Manager paused";
     case "project-paused":

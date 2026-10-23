@@ -1520,6 +1520,56 @@ describe("HTML renders in the timeline", () => {
   });
 });
 
+describe("factory onboarding proposals in the timeline", () => {
+  const at = DateTime.makeUnsafe("2026-10-23T12:00:00.000Z");
+  const proposalCall = (id: string, output: unknown): OrchestrationV2ProjectedTurnItem => {
+    const item: OrchestrationV2TurnItem = {
+      id: TurnItemId.make(id),
+      threadId: ThreadId.make("manager-thread"),
+      runId: RunId.make("onboarding-run"),
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "completed",
+      title: null,
+      startedAt: at,
+      completedAt: at,
+      updatedAt: at,
+      type: "dynamic_tool",
+      toolName: "mcp__t3-code__factory_propose_onboarding",
+      input: {},
+      output,
+    };
+    return {
+      position: 1,
+      visibility: "local",
+      sourceThreadId: item.threadId,
+      sourceItemId: item.id,
+      item,
+    };
+  };
+
+  it("gives a completed proposal call its own entry and leaves a refused one in the work log", () => {
+    const entries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        proposalCall("proposed", { structuredContent: { managerId: "manager" }, content: [] }),
+        proposalCall("refused", {
+          content: [{ type: "text", text: "Only an onboarding manager can propose." }],
+          isError: true,
+        }),
+      ],
+      optimisticMessages: [],
+    });
+    expect(entries.map((entry) => [entry.id, entry.kind])).toEqual([
+      ["proposed", "factory-onboarding"],
+      ["refused", "work"],
+    ]);
+  });
+});
+
 describe("work-log failure policy (#7999/#7893)", () => {
   const toolEntry = (overrides: Record<string, unknown>) =>
     ({

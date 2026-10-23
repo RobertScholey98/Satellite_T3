@@ -11,7 +11,8 @@ import {
   FactoryFinding,
   FactoryFindingsListInput,
   FactoryManagerState,
-  FactoryOnboardingReport,
+  FactoryOnboardingDetected,
+  FactoryOnboardingProposalInput,
   FactoryOperationError,
   FactoryPickupInput,
   FactoryRecordFindingInput,
@@ -53,15 +54,16 @@ export const ProposeOnboardingResult = Schema.Struct({
   managerId: Schema.String,
   managerName: Schema.String,
   state: FactoryManagerState,
-  controlPaths: Schema.Array(Schema.String),
+  /** What Satellite read itself, so the manager sees the boards the user will choose from. */
+  detected: FactoryOnboardingDetected,
   message: Schema.String,
 });
 export type ProposeOnboardingResult = typeof ProposeOnboardingResult.Type;
 
 const ProposeOnboardingTool = Tool.make("factory_propose_onboarding", {
   description:
-    "For an engineering manager that is onboarding. Submit your onboarding report: the control paths you propose to protect (glob patterns relative to the repository root that no team may edit), gaps in how the issue board maps to the factory, open choices the user needs to make, and a short summary. Nothing is picked up until the user approves the report in Satellite. Call it again to revise the report. After calling it, ask the user in this thread to review and approve it.",
-  parameters: FactoryOnboardingReport,
+    "For an engineering manager that is onboarding. Submit your onboarding proposal: a short summary, the project's purpose, the control paths you propose to protect (glob patterns relative to the repository root that no team may edit, each with its reason), findings that need no decision, and whether pickup should be on with the guidance you would judge tickets by. Put each open choice in as a question with 2 to 4 options and the 0-based index of the one you recommend, with your reason; the user answers each one when they review the proposal. Do not report board columns or the default branch: Satellite detects them itself and returns what it found. Nothing is picked up until the user reviews and approves the proposal in Satellite. Call it again to revise it.",
+  parameters: FactoryOnboardingProposalInput,
   success: ProposeOnboardingResult,
   failure: FactoryToolFailure,
   // The access check loads the calling thread to confirm it still owns a live run.
@@ -105,7 +107,7 @@ export type StatusResult = typeof StatusResult.Type;
 
 const StatusTool = Tool.make("factory_status", {
   description:
-    "For an engineering manager. Return your capacity under the concurrency cap, your live assignments, the Ready tickets on connected boards with no live assignment (each marked judged once you picked it up or skipped it as it is now), and the project's pickup guidance. Call it before judging tickets.",
+    "For an engineering manager. Return your capacity under the concurrency cap, your live assignments, the tickets in your pickup columns with no live assignment (each marked judged once you picked it up or skipped it as it is now), `pickupEnabled`, and the `pickupGuidance` the user approved at onboarding. No ticket is returned while `pickupEnabled` is false, or before the user starts pickup. Call it before judging tickets.",
   parameters: Tool.EmptyParams,
   success: StatusResult,
   failure: FactoryToolFailure,
@@ -126,7 +128,7 @@ export type PickupResult = typeof PickupResult.Type;
 
 const PickupTool = Tool.make("factory_pickup", {
   description:
-    "For an engineering manager. Judge one Ready ticket against the pickup guidance from factory_status. `start` launches a lead on the ticket and needs a brief, a completion condition and a complexity that is not `large`; recommend a large ticket to the user instead. `skip` records your reason so the ticket is not offered again until it changes. The server re-checks the concurrency cap and that the ticket is still in a Ready column, and refuses with a reason if either fails.",
+    "For an engineering manager. Judge one ticket from factory_status against your pickup guidance. `start` launches a lead on the ticket and needs a brief, a completion condition and a complexity that is not `large`; recommend a large ticket to the user instead. `skip` records your reason so the ticket is not offered again until it changes. The server re-checks the concurrency cap and that the ticket is still in one of your confirmed pickup columns, and refuses with a reason if either fails. While pickup is off, or before the user starts it, it refuses every ticket.",
   parameters: FactoryPickupInput,
   success: PickupResult,
   failure: FactoryToolFailure,
@@ -136,7 +138,7 @@ const PickupTool = Tool.make("factory_pickup", {
     FactoryService,
   ],
 })
-  .annotate(Tool.Title, "Judge a Ready ticket")
+  .annotate(Tool.Title, "Judge a pickup ticket")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
@@ -150,7 +152,7 @@ export type CommissionResult = typeof CommissionResult.Type;
 
 const CommissionTool = Tool.make("factory_commission", {
   description:
-    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. Pass the number of a ticket in a Ready column to work on it; without one the lead gets its own worktree on a new branch. Pass `dependencyId` to deliver an open dependency another lead reported; that start ignores the cap, because the blocked assignment already holds a slot.",
+    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. Pass the number of a ticket in any Ready column of a connected board, not only your pickup columns, to work on it; without one the lead gets its own worktree on a new branch. Pass `dependencyId` to deliver an open dependency another lead reported; that start ignores the cap, because the blocked assignment already holds a slot.",
   parameters: FactoryCommissionInput,
   success: CommissionResult,
   failure: FactoryToolFailure,

@@ -9,11 +9,15 @@ import type {
   FactoryWorkspaceAssignment,
   FactoryWorkspaceFeed,
   FactoryWorkspaceManager,
+  MessageId,
   ThreadId,
 } from "@t3tools/contracts";
+import type { TimelineEntry } from "~/session-logic";
+import type { ChatMessage } from "~/types";
 
 export const FACTORY_MANAGER_STATE_LABEL: Record<FactoryManagerState, string> = {
   onboarding: "Onboarding",
+  ready: "Ready",
   active: "Active",
   "manager-paused": "Paused",
   "project-paused": "Paused with teams",
@@ -167,4 +171,65 @@ export function describePickupDecision(entry: {
   const verb = entry.kind === "skip" ? "Skipped" : "Picked up";
   const subject = issueNumber === null ? verb : `${verb} #${issueNumber}`;
   return entry.reason.trim() === "" ? subject : `${subject}: ${entry.reason.trim()}`;
+}
+
+// The timeline recomputes its rows whenever its entries change identity, and does so during
+// render, so a fresh fold for the same input would loop. One fold is kept per entries array.
+const primingFolds = new WeakMap<
+  ReadonlyArray<TimelineEntry>,
+  { readonly primingMessageId: MessageId; readonly entries: ReadonlyArray<TimelineEntry> }
+>();
+
+/**
+ * Folds a primed manager thread's first exchange into one entry: the priming message the server
+ * sent from the approved onboarding result, the work of that turn, and the manager's first reply.
+ * The priming is found by id, never by position or text: history is windowed, so the first loaded
+ * message may be a real request. Without the priming in the window, nothing folds. The same input
+ * returns the same array.
+ */
+export function collapseFactoryPriming(
+  entries: ReadonlyArray<TimelineEntry>,
+  primingMessageId: MessageId,
+): ReadonlyArray<TimelineEntry> {
+  const cached = primingFolds.get(entries);
+  if (cached?.primingMessageId === primingMessageId) return cached.entries;
+  const folded = foldPriming(entries, primingMessageId);
+  primingFolds.set(entries, { primingMessageId, entries: folded });
+  return folded;
+}
+
+function foldPriming(
+  entries: ReadonlyArray<TimelineEntry>,
+  primingMessageId: MessageId,
+): ReadonlyArray<TimelineEntry> {
+  const start = entries.findIndex(
+    (entry) => entry.kind === "message" && entry.message.id === primingMessageId,
+  );
+  const prompt = entries[start];
+  if (prompt?.kind !== "message") return entries;
+  // The fold ends at the reply, or before any later user message if the reply hasn't come.
+  let end = start;
+  let reply: ChatMessage | null = null;
+  for (let index = start + 1; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (entry.kind === "message" && entry.message.role === "user") break;
+    end = index;
+    if (entry.kind === "message" && entry.message.role === "assistant") {
+      reply = entry.message;
+      break;
+    }
+  }
+  const rest = entries.slice(end + 1);
+  return [
+    ...entries.slice(0, start),
+    {
+      id: `factory-priming:${prompt.id}`,
+      kind: "factory-priming",
+      createdAt: prompt.createdAt,
+      prompt: prompt.message,
+      reply,
+      continued: rest.some((entry) => entry.kind === "message" && entry.message.role === "user"),
+    },
+    ...rest,
+  ];
 }
