@@ -107,7 +107,7 @@ export type StatusResult = typeof StatusResult.Type;
 
 const StatusTool = Tool.make("factory_status", {
   description:
-    "For an engineering manager. Return your capacity under the concurrency cap, your live assignments, the tickets in your pickup columns with no live assignment (each marked judged once you picked it up or skipped it as it is now), `pickupEnabled`, and the `pickupGuidance` the user approved at onboarding. While `pickupEnabled` is false no ticket is returned. Call it before judging tickets.",
+    "For an engineering manager. Return your capacity under the concurrency cap, your live assignments, the tickets in your pickup columns with no live assignment (each marked judged once you picked it up or skipped it as it is now), `pickupEnabled`, and the `pickupGuidance` the user approved at onboarding. No ticket is returned while `pickupEnabled` is false, or before the user starts pickup. Call it before judging tickets.",
   parameters: Tool.EmptyParams,
   success: StatusResult,
   failure: FactoryToolFailure,
@@ -128,7 +128,7 @@ export type PickupResult = typeof PickupResult.Type;
 
 const PickupTool = Tool.make("factory_pickup", {
   description:
-    "For an engineering manager. Judge one ticket from factory_status against your pickup guidance. `start` launches a lead on the ticket and needs a brief, a completion condition and a complexity that is not `large`; recommend a large ticket to the user instead. `skip` records your reason so the ticket is not offered again until it changes. The server re-checks the concurrency cap and that the ticket is still in one of your confirmed pickup columns, and refuses with a reason if either fails. While pickup is off it refuses every ticket.",
+    "For an engineering manager. Judge one ticket from factory_status against your pickup guidance. `start` launches a lead on the ticket and needs a brief, a completion condition and a complexity that is not `large`; recommend a large ticket to the user instead. `skip` records your reason so the ticket is not offered again until it changes. The server re-checks the concurrency cap and that the ticket is still in one of your confirmed pickup columns, and refuses with a reason if either fails. While pickup is off, or before the user starts it, it refuses every ticket.",
   parameters: FactoryPickupInput,
   success: PickupResult,
   failure: FactoryToolFailure,

@@ -90,6 +90,7 @@ const manager: FactoryManager = {
   threadId: MANAGER_THREAD,
   onboardingProposal: null,
   onboardingResult: null,
+  onboardingThreadId: null,
   modelSelection: null,
   activeAssignments: 0,
   waitingOnYou: 0,

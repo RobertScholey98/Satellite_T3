@@ -30,6 +30,7 @@ export const FACTORY_WS_METHODS = {
   factoryManagersResume: "factory.managers.resume",
   factoryManagersRetire: "factory.managers.retire",
   factoryManagersApproveOnboarding: "factory.managers.approveOnboarding",
+  factoryManagersStartPickup: "factory.managers.startPickup",
   factoryAssignmentsList: "factory.assignments.list",
   factoryAssignmentsSubscribe: "factory.assignments.subscribe",
   factoryAssignmentsCancel: "factory.assignments.cancel",
@@ -321,9 +322,14 @@ export const FactoryOnboardingProposal = Schema.Struct({
 });
 export type FactoryOnboardingProposal = typeof FactoryOnboardingProposal.Type;
 
-/** `retired` is terminal; the project can then get a new manager. */
+/**
+ * `ready` is approved with pickup on but not yet started by the user: it works like `active`
+ * except that no ticket is offered or picked up. `retired` is terminal; the project can then get
+ * a new manager.
+ */
 export const FactoryManagerState = Schema.Literals([
   "onboarding",
+  "ready",
   "active",
   "manager-paused",
   "project-paused",
@@ -338,6 +344,13 @@ export const FactoryManager = Schema.Struct({
   state: FactoryManagerState,
   /** Null until onboarding launches the manager's thread. */
   threadId: Schema.NullOr(ThreadId),
+  /**
+   * The thread the manager onboarded in, once approval moved it to a primed thread; null before.
+   * Defaults on decode so manager values recorded before it existed still read.
+   */
+  onboardingThreadId: Schema.NullOr(ThreadId).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   /** The latest proposal while onboarding; null before the first one and after approval. */
   onboardingProposal: Schema.NullOr(FactoryOnboardingProposal),
   /** Null until the user approves onboarding. */
@@ -420,9 +433,10 @@ export const FactoryManagersRetireInput = Schema.Struct({ requestId: Id, manager
 export type FactoryManagersRetireInput = typeof FactoryManagersRetireInput.Type;
 
 /**
- * Approves the manager's onboarding with the result the user settled on, and starts it. Every
- * proposed question needs a rule with its id, and pickup that is on needs a column that is still
- * Ready. The factory's own folder is always protected.
+ * Approves the manager's onboarding with the result the user settled on. The manager moves to a
+ * new thread primed from the result, which the returned manager names; it is `ready` with pickup
+ * on and `active` otherwise. Every proposed question needs a rule with its id, and each pickup
+ * column has to still be Ready. The factory's own folder is always protected.
  */
 export const FactoryManagersApproveOnboardingInput = Schema.Struct({
   requestId: Id,
@@ -431,6 +445,10 @@ export const FactoryManagersApproveOnboardingInput = Schema.Struct({
 });
 export type FactoryManagersApproveOnboardingInput =
   typeof FactoryManagersApproveOnboardingInput.Type;
+
+/** Starts pickup for a `ready` manager, which then becomes `active`. */
+export const FactoryManagersStartPickupInput = Schema.Struct({ requestId: Id, managerId: Id });
+export type FactoryManagersStartPickupInput = typeof FactoryManagersStartPickupInput.Type;
 
 export const FactoryAssignmentSource = Schema.Literals([
   "ticket",
@@ -588,6 +606,8 @@ export const FactoryLogKind = Schema.Literals([
   "retro",
   "draft",
   "ticket",
+  /** Onboarding approved; the payload names the onboarding thread and the manager's new one. */
+  "onboarded",
 ]);
 export type FactoryLogKind = typeof FactoryLogKind.Type;
 
@@ -1118,6 +1138,14 @@ export const WsFactoryManagersApproveOnboardingRpc = Rpc.make(
   FACTORY_WS_METHODS.factoryManagersApproveOnboarding,
   {
     payload: FactoryManagersApproveOnboardingInput,
+    success: FactoryManager,
+    error: FactoryRpcError,
+  },
+);
+export const WsFactoryManagersStartPickupRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryManagersStartPickup,
+  {
+    payload: FactoryManagersStartPickupInput,
     success: FactoryManager,
     error: FactoryRpcError,
   },
