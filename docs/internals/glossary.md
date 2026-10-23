@@ -71,3 +71,22 @@ See [composer context references](./composer-context-references.md) for the cont
 | Attempt            | A thread and worktree started from a ticket. Owned by the environment that started it. Ownership never moves.                                                                           |
 | Owning environment | The only environment that moves a ticket on behalf of its attempt. It writes directly to the remote board. Other environments only refresh their stored copy.                           |
 | Manual move        | A ticket move made by a person on any machine. Wins over an automatic move that arrives later from an attempt.                                                                          |
+
+## Factory
+
+| Term            | Meaning                                                                                                                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Manager         | The standing agent for one project. Its protocol (pickup, commissioning, retros, reporting to the user) is fixed; a user may add instructions on top.                                        |
+| Lead            | The agent that owns one assignment and staffs its team. Its protocol (report to the manager, hand back a claim or blocker, run the team retro) is fixed; a user may add instructions on top. |
+| Worker          | A reusable building block for teams: a name, default models, and a description of what it is and does. There is no fixed set of workers.                                                     |
+| Starter worker  | One of the workers a new factory config begins with (implementer, reviewer, verifier). An ordinary worker once created: the user may edit, duplicate or delete it.                           |
+| Team member     | A copy of a worker inside one team, with its own count and edits. Editing the worker later does not change the copy, and editing the copy never changes the worker.                          |
+| Sub-agent       | A helper a team member starts on its own. It belongs to that member: it takes no team place, and its cost counts as the member's.                                                            |
+| Model pool      | The factory-wide allow-list of models, named portably as `driver/model`. Every model a definition lists must be in it. On each environment only the pool's models it can run are usable.     |
+| Model list      | One definition's models. By default a priority order: the first one the environment can run is used.                                                                                         |
+| Dynamic         | A model list the starter of the agent chooses from per task (the lead for a team member, the manager for a lead), instead of following its order.                                            |
+| Concurrency cap | Two limits on running assignments: the environment's cap counts across all its projects; a manager's cap counts only that manager's assignments. Both must have room.                        |
+| Factory config  | The portable factory definitions on an environment: files under `<T3 home>/factory/`. It holds nothing project- or machine-specific and no secrets.                                          |
+| Config repo     | An optional Git remote the factory config directory is a checkout of. The user pulls and pushes it by hand; local edits stay local until pushed.                                             |
+| Definition      | A top-level template in the factory config: a worker, a lead definition, or a manager definition. Whatever uses one (a team, a project's manager) owns its own copy.                         |
+| Exempt team     | A team whose definition sets `mayEditProtectedPaths`. Its assignments may edit the paths the project protects; every other team may not.                                                     |
