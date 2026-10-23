@@ -26,7 +26,12 @@ import {
 import type { HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import { turnItemDetailRevision } from "@t3tools/client-runtime/work-log/item-detail";
 import type { McpAppReference } from "@t3tools/shared/mcpApp";
-import { htmlRenderFromToolItem, mcpAppFromToolItem } from "@t3tools/shared/toolOutput";
+import {
+  compactDynamicToolOutput,
+  htmlRenderFromToolItem,
+  mcpAppFromToolItem,
+} from "@t3tools/shared/toolOutput";
+import { isFactoryOnboardingProposalTool } from "./components/factory/factoryOnboardingCard.logic";
 import {
   contextCompactionLabel,
   workEntryIndicatesToolFailure,
@@ -143,6 +148,12 @@ export type TimelineEntry = (
       readonly createdAt: string;
       readonly runId: RunId | null;
       readonly htmlRender: HtmlRenderReference;
+    }
+  | {
+      readonly id: string;
+      readonly kind: "factory-onboarding";
+      readonly createdAt: string;
+      readonly runId: RunId | null;
     }
   | {
       readonly id: string;
@@ -739,6 +750,22 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
         kind: "proposed-plan",
         createdAt,
         proposedPlan,
+        ...attemptMetadata,
+      });
+      continue;
+    }
+
+    if (
+      item.type === "dynamic_tool" &&
+      item.status === "completed" &&
+      isFactoryOnboardingProposalTool(item.toolName) &&
+      compactDynamicToolOutput(item.output)?.isError !== true
+    ) {
+      entries.push({
+        id: item.id,
+        kind: "factory-onboarding",
+        createdAt,
+        runId: item.runId,
         ...attemptMetadata,
       });
       continue;
