@@ -20,7 +20,11 @@ import {
   FactoryConfigRepoPushInput,
   FactoryConfigRepoResolveInput,
   FactoryConfigRepoStatus,
+  FactoryConfigSettings,
   FactoryDefinitionId,
+  FactoryDefinitionRemoveInput,
+  FactoryDefinitionSaveInput,
+  FactoryDefinitionSaveResult,
   FactoryDefinitionsView,
   FactoryExportSelection,
   FactoryImportDecision,
@@ -77,6 +81,9 @@ export const FACTORY_WS_METHODS = {
   factoryConfigExport: "factory.config.export",
   factoryConfigImportPreview: "factory.config.importPreview",
   factoryConfigImportApply: "factory.config.importApply",
+  factoryDefinitionsSave: "factory.definitions.save",
+  factoryDefinitionsRemove: "factory.definitions.remove",
+  factoryConfigSaveSettings: "factory.config.saveSettings",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -1447,3 +1454,22 @@ export const WsFactoryConfigImportApplyRpc = Rpc.make(FACTORY_WS_METHODS.factory
   success: FactoryDefinitionsView,
   error: FactoryRpcError,
 });
+
+export const WsFactoryDefinitionsSaveRpc = Rpc.make(FACTORY_WS_METHODS.factoryDefinitionsSave, {
+  payload: FactoryDefinitionSaveInput,
+  success: FactoryDefinitionSaveResult,
+  error: FactoryRpcError,
+});
+export const WsFactoryDefinitionsRemoveRpc = Rpc.make(FACTORY_WS_METHODS.factoryDefinitionsRemove, {
+  payload: FactoryDefinitionRemoveInput,
+  success: FactoryDefinitionsView,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigSaveSettingsRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryConfigSaveSettings,
+  {
+    payload: FactoryConfigSettings,
+    success: FactoryDefinitionsView,
+    error: FactoryRpcError,
+  },
+);

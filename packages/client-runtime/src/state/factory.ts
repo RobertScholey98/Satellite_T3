@@ -76,5 +76,8 @@ export function createFactoryEnvironmentAtoms<R, E>(
     exportConfig: command("config:export", WS_METHODS.factoryConfigExport),
     previewConfigImport: command("config:import-preview", WS_METHODS.factoryConfigImportPreview),
     applyConfigImport: command("config:import-apply", WS_METHODS.factoryConfigImportApply),
+    saveDefinition: command("definitions:save", WS_METHODS.factoryDefinitionsSave),
+    removeDefinition: command("definitions:remove", WS_METHODS.factoryDefinitionsRemove),
+    saveFactorySettings: command("config:save-settings", WS_METHODS.factoryConfigSaveSettings),
   };
 }

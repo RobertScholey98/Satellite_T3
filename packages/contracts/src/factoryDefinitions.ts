@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 
 import {
   NonNegativeInt,
@@ -142,6 +143,62 @@ export type FactoryDefinitionsView = typeof FactoryDefinitionsView.Type;
 
 export const FactoryDefinitionKind = Schema.Literals(["worker", "lead", "manager", "team"]);
 export type FactoryDefinitionKind = typeof FactoryDefinitionKind.Type;
+
+/** A team member as edited: a new member has no id yet and gets one from its name. */
+export const FactoryTeamMemberDraft = FactoryTeamMemberDefinition.mapFields(
+  Struct.assign({ id: Schema.optionalKey(FactoryDefinitionId) }),
+);
+export type FactoryTeamMemberDraft = typeof FactoryTeamMemberDraft.Type;
+
+const withoutId = <Fields extends { readonly id: unknown }>(fields: Fields) =>
+  Struct.omit(fields, ["id"]);
+
+/**
+ * A definition to save. Without an `id` it is created, with an id derived from its name; with
+ * one, that definition is replaced and its id is kept.
+ */
+export const FactoryDefinitionSaveInput = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("worker"),
+    id: Schema.optionalKey(FactoryDefinitionId),
+    definition: FactoryWorkerDefinition.mapFields(withoutId),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("lead"),
+    id: Schema.optionalKey(FactoryDefinitionId),
+    definition: FactoryLeadDefinition.mapFields(withoutId),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("manager"),
+    id: Schema.optionalKey(FactoryDefinitionId),
+    definition: FactoryManagerDefinition.mapFields(withoutId),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("team"),
+    id: Schema.optionalKey(FactoryDefinitionId),
+    definition: FactoryTeamDefinition.mapFields((fields) => ({
+      ...withoutId(fields),
+      members: Schema.Array(FactoryTeamMemberDraft).check(
+        Schema.isMinLength(1),
+        Schema.isMaxLength(12),
+      ),
+    })),
+  }),
+]);
+export type FactoryDefinitionSaveInput = typeof FactoryDefinitionSaveInput.Type;
+
+export const FactoryDefinitionSaveResult = Schema.Struct({
+  /** The saved definition's id: the given one, or the one it was created with. */
+  id: FactoryDefinitionId,
+  view: FactoryDefinitionsView,
+});
+export type FactoryDefinitionSaveResult = typeof FactoryDefinitionSaveResult.Type;
+
+export const FactoryDefinitionRemoveInput = Schema.Struct({
+  kind: FactoryDefinitionKind,
+  id: FactoryDefinitionId,
+});
+export type FactoryDefinitionRemoveInput = typeof FactoryDefinitionRemoveInput.Type;
 
 /**
  * A factory config as files, for export and import. The client zips and unzips it; the server

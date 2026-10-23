@@ -56,6 +56,21 @@ vi.mock(import("../settings/settingsLayout"), async (original) => ({
   SettingResetButton: (() => null) as never,
 }));
 
+// The file-based config sections load through their own commands and have their own tests.
+vi.mock(import("./FactoryPoolSection"), () => ({ FactoryPoolSection: (() => null) as never }));
+vi.mock(import("./FactoryDefinitionsSection"), () => ({
+  FactoryDefinitionsSection: (() => null) as never,
+}));
+vi.mock(import("./FactoryTeamsFileSection"), () => ({
+  FactoryTeamsFileSection: (() => null) as never,
+}));
+vi.mock(import("./FactoryConfigRepoSection"), () => ({
+  FactoryConfigRepoSection: (() => null) as never,
+}));
+vi.mock(import("./FactoryConfigShareSection"), () => ({
+  FactoryConfigShareSection: (() => null) as never,
+}));
+
 import { render } from "../../../test/render";
 import { FactoryPageConfiguration } from "./FactoryPageConfiguration";
 
