@@ -89,6 +89,23 @@ describe("command permissions", () => {
     ),
   );
 
+  it.effect("requires the destination operate grant to pause an engineering manager", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const pause = createCommandPermissions(runtime, WS_METHODS.factoryManagersPause);
+        registry.set(sessions(env), AsyncResult.success(grant(false)));
+        expect(registry.get(pause.permissionAtom(env))).toBe(false);
+        expect((yield* pause.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(pause.permissionAtom(env))).toBe(true);
+        yield* pause.authorize(registry, env);
+      }),
+    ),
+  );
+
   it.effect("requires the destination settings grant to run storage cleanup", () =>
     Effect.scoped(
       Effect.gen(function* () {

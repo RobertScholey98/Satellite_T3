@@ -1,19 +1,23 @@
 import { DndContext, type DragEndEvent, useDraggable, useDroppable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import type {
-  IssueAttempt,
-  EnvironmentId,
-  IssueBoardItem,
-  IssueBoardMapping,
-  IssueBoardSummary,
-  IssueBoardView,
-  IssueMove,
-  IssueSummary,
-  ProjectId,
+import { useAtomValue } from "@effect/atom-react";
+import {
+  type IssueAttempt,
+  type EnvironmentId,
+  type FactoryTicketDraft,
+  type IssueBoardItem,
+  type IssueBoardMapping,
+  type IssueBoardSummary,
+  type IssueBoardView,
+  type IssueMove,
+  type IssueSummary,
+  type ProjectId,
+  issueReadyColumnIds,
 } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   Columns3Icon,
+  FactoryIcon,
   GripVerticalIcon,
   ListFilterIcon,
   ListIcon,
@@ -30,6 +34,22 @@ import { cn, randomUUID } from "~/lib/utils";
 import { useProjects } from "~/state/entities";
 import { usePrimaryEnvironmentId } from "~/state/environments";
 import { useAtomCommand } from "~/state/use-atom-command";
+import {
+  factoryEnvironment,
+  factoryErrorMessage,
+  unwrapFactoryResult,
+  useFactoryDrafts,
+  useFactoryManagers,
+} from "../factory/factoryState";
+import { FactoryIssuesManagerStatus } from "../factory/FactoryIssuesManagerStatus";
+import { FactoryTriageDraftDialog } from "../factory/FactoryTriageDraftDialog";
+import {
+  RETRO_TRIAGE_COLUMN_ID,
+  draftDragId,
+  draftIdOfDrag,
+  projectManager,
+  triageColumnDrafts,
+} from "../factory/FactoryTriageState";
 import {
   PULL_REQUEST_ROW_CLASS,
   PULL_REQUEST_ROW_NUMBER_CLASS,
@@ -100,7 +120,7 @@ const FOCUS_REFRESH_DEBOUNCE_MS = 250;
 const FOCUS_REFRESH_MIN_INTERVAL_MS = 10_000;
 const MOVED_ELSEWHERE = "This ticket moved on another device. Refresh before moving it again.";
 
-type ColumnTone = "muted" | "progress" | "review" | "completed";
+type ColumnTone = "muted" | "progress" | "review" | "completed" | "triage";
 
 const columnTone = (columnId: string, mapping: IssueBoardMapping | null): ColumnTone =>
   columnId === mapping?.inProgress
@@ -114,6 +134,66 @@ const columnTone = (columnId: string, mapping: IssueBoardMapping | null): Column
 const ticketKey = (ref: IssueBoardItem["issue"]["ref"]) =>
   [ref.host.toLowerCase(), ref.repository.toLowerCase(), ref.id].join("\n");
 
+/** A board card's shell: the drag handle and the button that opens it. */
+function BoardCardFrame({
+  dragId,
+  dragLabel,
+  disabled,
+  handle = true,
+  tinted = false,
+  onOpen,
+  children,
+}: {
+  readonly dragId: string;
+  readonly dragLabel: string;
+  readonly disabled: boolean;
+  /** Without a handle the card cannot be dragged at all. */
+  readonly handle?: boolean;
+  /** Factory findings are about the workflow, not the project, and look it. */
+  readonly tinted?: boolean;
+  readonly onOpen: () => void;
+  readonly children: ReactNode;
+}) {
+  const { setNodeRef, transform, isDragging, listeners, attributes } = useDraggable({
+    id: dragId,
+    disabled: disabled || !handle,
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      style={{
+        transform: CSS.Translate.toString(transform),
+        opacity: isDragging ? 0.5 : 1,
+      }}
+      className={cn(
+        "flex gap-1 rounded-lg border p-3",
+        tinted
+          ? "border-info/32 bg-info/8 hover:bg-info/16"
+          : "border-border/60 bg-card/40 hover:bg-accent/40",
+      )}
+    >
+      {handle ? (
+        <button
+          type="button"
+          {...listeners}
+          {...attributes}
+          aria-label={dragLabel}
+          className="cursor-grab touch-none self-start rounded-sm text-muted-foreground/50 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <GripVerticalIcon className="size-3.5" />
+        </button>
+      ) : null}
+      <button
+        type="button"
+        onClick={onOpen}
+        className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        {children}
+      </button>
+    </div>
+  );
+}
+
 const BoardCard = memo(function BoardCard({
   item,
   attempt,
@@ -125,53 +205,113 @@ const BoardCard = memo(function BoardCard({
   readonly disabled: boolean;
   readonly onOpen: (item: IssueBoardItem) => void;
 }) {
-  const { setNodeRef, transform, isDragging, listeners, attributes } = useDraggable({
-    id: item.itemId,
-    disabled,
-  });
   return (
-    <div
-      ref={setNodeRef}
-      style={{
-        transform: CSS.Translate.toString(transform),
-        opacity: isDragging ? 0.5 : 1,
-      }}
-      className="flex gap-1 rounded-lg border border-border/60 bg-card/40 p-3 hover:bg-accent/40"
+    <BoardCardFrame
+      dragId={item.itemId}
+      dragLabel={`Drag ticket ${item.issue.ref.number}`}
+      disabled={disabled}
+      onOpen={() => onOpen(item)}
     >
-      <button
-        type="button"
-        {...listeners}
-        {...attributes}
-        aria-label={`Drag ticket ${item.issue.ref.number}`}
-        className="cursor-grab touch-none self-start rounded-sm text-muted-foreground/50 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-      >
-        <GripVerticalIcon className="size-3.5" />
-      </button>
-      <button
-        type="button"
-        onClick={() => onOpen(item)}
-        className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-      >
-        <span className="flex items-center gap-2">
-          <span className="font-mono text-xs tabular-nums text-muted-foreground">
-            #{item.issue.ref.number}
-          </span>
-          {attempt ? (
-            <Badge size="sm" variant={attempt.automaticMoves === "paused" ? "warning" : "success"}>
-              {attempt.automaticMoves === "paused" ? "Paused" : "Active"}
-            </Badge>
-          ) : null}
+      <span className="flex items-center gap-2">
+        <span className="font-mono text-xs tabular-nums text-muted-foreground">
+          #{item.issue.ref.number}
         </span>
-        <p className="mt-2 text-sm leading-snug">{item.issue.title}</p>
-        {item.issue.labels.length ? (
-          <p className="mt-2 truncate text-xs text-muted-foreground">
-            {item.issue.labels.join(" · ")}
-          </p>
+        {attempt ? (
+          <Badge size="sm" variant={attempt.automaticMoves === "paused" ? "warning" : "success"}>
+            {attempt.automaticMoves === "paused" ? "Paused" : "Active"}
+          </Badge>
         ) : null}
-      </button>
-    </div>
+      </span>
+      <p className="mt-2 text-sm leading-snug">{item.issue.title}</p>
+      {item.issue.labels.length ? (
+        <p className="mt-2 truncate text-xs text-muted-foreground">
+          {item.issue.labels.join(" · ")}
+        </p>
+      ) : null}
+    </BoardCardFrame>
   );
 });
+
+/** A retro finding in the Retro triage column. Only a pending project finding can be dragged. */
+function TriageCard({
+  draft,
+  disabled,
+  onOpen,
+}: {
+  readonly draft: FactoryTicketDraft;
+  readonly disabled: boolean;
+  readonly onOpen: (draftId: string) => void;
+}) {
+  const isFactory = draft.scope === "factory";
+  return (
+    <BoardCardFrame
+      dragId={draftDragId(draft.id)}
+      dragLabel={`Drag finding ${draft.title}`}
+      disabled={disabled}
+      handle={!isFactory && draft.state === "pending"}
+      tinted={isFactory}
+      onOpen={() => onOpen(draft.id)}
+    >
+      <span className="flex items-center gap-2 text-xs text-muted-foreground">
+        {isFactory ? <FactoryIcon className="size-3.5" /> : null}
+        {isFactory ? "Factory finding" : "Retro finding"}
+        {draft.state === "dismissed" ? (
+          <Badge size="sm" variant="outline">
+            Dismissed
+          </Badge>
+        ) : null}
+      </span>
+      <p className="mt-2 text-sm leading-snug">{draft.title}</p>
+    </BoardCardFrame>
+  );
+}
+
+/** A board column's shell: the drop target, its title and count, and its cards. */
+function BoardColumnFrame({
+  id,
+  title,
+  tone,
+  count,
+  dropDisabled = false,
+  emptyLabel,
+  children,
+}: {
+  readonly id: string;
+  readonly title: string;
+  readonly tone: ColumnTone;
+  readonly count: number;
+  readonly dropDisabled?: boolean;
+  readonly emptyLabel: string;
+  readonly children: ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id, disabled: dropDisabled });
+  return (
+    <section
+      ref={setNodeRef}
+      className={cn(
+        "min-h-64 w-72 shrink-0 rounded-xl bg-muted/30 p-2",
+        isOver && "ring-1 ring-inset ring-primary",
+      )}
+    >
+      <h2 className="flex items-center gap-2 px-1 py-2 text-sm font-medium">
+        <span
+          className={cn(
+            "size-2 rounded-full",
+            tone === "progress" && "bg-warning",
+            tone === "review" && "bg-primary",
+            tone === "completed" && "bg-success",
+            tone === "triage" && "bg-info",
+            tone === "muted" && "bg-muted-foreground/50",
+          )}
+        />
+        {title}
+        <span className="text-xs font-normal tabular-nums text-muted-foreground">{count}</span>
+      </h2>
+      <div className="mt-2 space-y-2">{children}</div>
+      {count === 0 ? <p className="px-2 py-5 text-xs text-muted-foreground">{emptyLabel}</p> : null}
+    </section>
+  );
+}
 
 const BoardColumn = memo(function BoardColumn({
   id,
@@ -190,45 +330,24 @@ const BoardColumn = memo(function BoardColumn({
   readonly disabled: boolean;
   readonly onOpen: (item: IssueBoardItem) => void;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id });
   return (
-    <section
-      ref={setNodeRef}
-      className={cn(
-        "min-h-64 w-72 shrink-0 rounded-xl bg-muted/30 p-2",
-        isOver && "ring-1 ring-inset ring-primary",
-      )}
+    <BoardColumnFrame
+      id={id}
+      title={title}
+      tone={tone}
+      count={items.length}
+      emptyLabel="No tickets in this column"
     >
-      <h2 className="flex items-center gap-2 px-1 py-2 text-sm font-medium">
-        <span
-          className={cn(
-            "size-2 rounded-full",
-            tone === "progress" && "bg-warning",
-            tone === "review" && "bg-primary",
-            tone === "completed" && "bg-success",
-            tone === "muted" && "bg-muted-foreground/50",
-          )}
+      {items.map((item) => (
+        <BoardCard
+          key={item.itemId}
+          item={item}
+          attempt={activeAttempts.get(ticketKey(item.issue.ref))}
+          disabled={disabled}
+          onOpen={onOpen}
         />
-        {title}
-        <span className="text-xs font-normal tabular-nums text-muted-foreground">
-          {items.length}
-        </span>
-      </h2>
-      <div className="mt-2 space-y-2">
-        {items.map((item) => (
-          <BoardCard
-            key={item.itemId}
-            item={item}
-            attempt={activeAttempts.get(ticketKey(item.issue.ref))}
-            disabled={disabled}
-            onOpen={onOpen}
-          />
-        ))}
-      </div>
-      {items.length === 0 ? (
-        <p className="px-2 py-5 text-xs text-muted-foreground">No tickets in this column</p>
-      ) : null}
-    </section>
+      ))}
+    </BoardColumnFrame>
   );
 });
 
@@ -528,6 +647,23 @@ export function IssuesBoard({
   };
   const query = useDeferredValue(preferences.query);
 
+  // Retro findings wait in a local-only column until approved; only a managed project has them.
+  const factoryManager = projectManager(useFactoryManagers(environmentId), projectId);
+  const factoryDrafts = useFactoryDrafts(factoryManager ? environmentId : null);
+  const showDismissed = preferences.showDismissed === true;
+  const triage = factoryManager
+    ? triageColumnDrafts(factoryDrafts, projectId, { showDismissed, query })
+    : [];
+  const [openDraftId, setOpenDraftId] = useState<string | null>(null);
+  const openDraft =
+    openDraftId === null
+      ? null
+      : (factoryDrafts?.find((draft) => draft.id === openDraftId) ?? null);
+  const canApproveDrafts = useAtomValue(
+    factoryEnvironment.approveDraft.permissionAtom(environmentId),
+  );
+  const approveDraft = useAtomCommand(factoryEnvironment.approveDraft, { reportFailure: false });
+
   // A remembered board that is gone falls back to another; its ticket and filter do not carry over.
   // The notice stays until the person picks another board or project.
   const [fellBackTo, setFellBackTo] = useState<string | null>(null);
@@ -696,9 +832,39 @@ export function IssuesBoard({
     }
   };
 
+  // The server files an approved draft in the board's first Ready column, so only that one
+  // takes a dragged finding.
+  const draftReadyColumnId = view?.board.mapping
+    ? (issueReadyColumnIds(view.board.mapping)[0] ?? null)
+    : null;
+  const approveDropped = async (draftId: string) => {
+    if (!environmentId || !connected) return;
+    setActionError(null);
+    try {
+      unwrapFactoryResult(
+        await approveDraft({ environmentId, input: { requestId: randomUUID(), draftId } }),
+      );
+      refreshBoard();
+    } catch (failure) {
+      setActionError(factoryErrorMessage(failure));
+    }
+  };
+
   const dragEnd = (event: DragEndEvent) => {
-    const item = view?.items.find((candidate) => candidate.itemId === event.active.id);
     const target = event.over?.id;
+    const draftId = draftIdOfDrag(event.active.id);
+    if (draftId !== null) {
+      const draft = triage.find((candidate) => candidate.id === draftId);
+      if (
+        draft?.scope === "project" &&
+        draft.state === "pending" &&
+        target !== undefined &&
+        String(target) === draftReadyColumnId
+      )
+        void approveDropped(draftId);
+      return;
+    }
+    const item = view?.items.find((candidate) => candidate.itemId === event.active.id);
     if (item && target !== undefined && view?.columns.some((column) => column.id === target)) {
       void moveItem(item, String(target));
     }
@@ -718,6 +884,13 @@ export function IssuesBoard({
         <WorkTabs current="issues" />
         {view ? (
           <BoardSyncStatus sync={displaySync} retryDisabled={!connected} onRetry={refreshBoard} />
+        ) : null}
+        {factoryManager && environmentId ? (
+          <FactoryIssuesManagerStatus
+            environmentId={environmentId}
+            manager={factoryManager}
+            connected={connected}
+          />
         ) : null}
         <div className="min-w-0 flex-1" />
         <Button
@@ -779,6 +952,17 @@ export function IssuesBoard({
                 </MenuItem>
               }
             />
+          ) : null}
+          {mode === "board" && factoryManager ? (
+            <Button
+              size="sm"
+              variant={showDismissed ? "secondary" : "ghost"}
+              aria-pressed={showDismissed}
+              onClick={() => updatePreferences({ showDismissed: !showDismissed })}
+            >
+              <ListFilterIcon />
+              Dismissed
+            </Button>
           ) : null}
           {mode === "list" ? (
             <Menu>
@@ -1025,6 +1209,25 @@ export function IssuesBoard({
           <DndContext onDragEnd={dragEnd}>
             <div className="min-h-0 flex-1 overflow-auto">
               <div className="flex min-h-full w-max min-w-full items-stretch gap-3 pb-4">
+                {factoryManager ? (
+                  <BoardColumnFrame
+                    id={RETRO_TRIAGE_COLUMN_ID}
+                    title="Retro triage"
+                    tone="triage"
+                    count={triage.length}
+                    dropDisabled
+                    emptyLabel="No retro findings to triage"
+                  >
+                    {triage.map((draft) => (
+                      <TriageCard
+                        key={draft.id}
+                        draft={draft}
+                        disabled={dragDisabled || !canApproveDrafts || draftReadyColumnId === null}
+                        onOpen={setOpenDraftId}
+                      />
+                    ))}
+                  </BoardColumnFrame>
+                ) : null}
                 {grouped.columns.map(({ column, items }) => (
                   <BoardColumn
                     key={column.id}
@@ -1073,6 +1276,17 @@ export function IssuesBoard({
           }}
           onMove={(columnId) => void moveItem(selectedItem, columnId)}
           onAttemptsChanged={() => void openView(false)}
+        />
+      ) : null}
+      {openDraft && environmentId ? (
+        <FactoryTriageDraftDialog
+          key={openDraft.id}
+          environmentId={environmentId}
+          draft={openDraft}
+          manager={factoryManager}
+          connected={connected}
+          onClose={() => setOpenDraftId(null)}
+          onApproved={refreshBoard}
         />
       ) : null}
       {starting && view && environmentId ? (

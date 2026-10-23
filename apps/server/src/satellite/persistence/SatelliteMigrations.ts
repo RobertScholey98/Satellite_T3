@@ -3,6 +3,7 @@ import * as Migrator from "effect/sql/Migrator";
 import type * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
+import { FactoryV1 } from "../../factory/migrations/FactoryV1.ts";
 import { IssueBoardsV2 } from "../../issues/migrations/IssueBoardsV2.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
 import { repairSatelliteLegacyLedger } from "../../persistence/Migrations/satellite/repairSatelliteLegacyLedger.ts";
@@ -26,6 +27,7 @@ export type SatelliteMigration = readonly [
 
 export const satelliteMigrationEntries: ReadonlyArray<SatelliteMigration> = [
   [101, "IssueBoardsV2", IssueBoardsV2],
+  [102, "FactoryV1", FactoryV1],
 ];
 
 const run = Migrator.make({});

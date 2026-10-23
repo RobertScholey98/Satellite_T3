@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { randomUUID } from "~/lib/utils";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { buildThreadRouteParams } from "~/threadRoutes";
+import { FactoryIssuesManagerDecision } from "../factory/FactoryIssuesManagerDecision";
 import { PullRequestMarkdown } from "../pullRequest/PullRequestMarkdown";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -351,6 +352,14 @@ export function IssueDetailDialog({
                 {connected ? "Loading ticket details…" : "Reconnect to load ticket details."}
               </p>
             )}
+            {projectId ? (
+              <FactoryIssuesManagerDecision
+                environmentId={environmentId}
+                projectId={projectId}
+                issue={ref}
+                connected={connected}
+              />
+            ) : null}
             {attempts.length ? (
               <section className="grid gap-2 border-t border-border/60 pt-3">
                 <h3 className="text-sm font-medium">Attempts on this computer</h3>

@@ -3,12 +3,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { FactoryService } from "../factory/FactoryService.ts";
 import { IssueService } from "../issues/IssueService.ts";
 
 const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
   WsSatelliteRpcGroup.toLayer(
     Effect.gen(function* () {
       const issues = yield* IssueService;
+      const factory = yield* FactoryService;
       return WsSatelliteRpcGroup.of({
         [SATELLITE_WS_METHODS.issuesList]: (input) => issues.list(input),
         [SATELLITE_WS_METHODS.issuesGet]: (input) => issues.get(input),
@@ -23,6 +25,37 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
         [SATELLITE_WS_METHODS.issuesAttemptsStart]: (input) => issues.startAttempt(input),
         [SATELLITE_WS_METHODS.issuesAttemptsEnd]: (input) => issues.endAttempt(input),
         [SATELLITE_WS_METHODS.issuesAttemptsResume]: (input) => issues.resumeAttempt(input),
+        [SATELLITE_WS_METHODS.factoryConfigGet]: (input) => factory.getConfig(input),
+        [SATELLITE_WS_METHODS.factoryConfigUpdate]: (input) => factory.updateConfig(input),
+        [SATELLITE_WS_METHODS.factoryManagersList]: (input) => factory.listManagers(input),
+        [SATELLITE_WS_METHODS.factoryManagersSubscribe]: (input) =>
+          factory.subscribeManagers(input),
+        [SATELLITE_WS_METHODS.factoryManagersCreate]: (input) => factory.createManager(input),
+        [SATELLITE_WS_METHODS.factoryManagersPause]: (input) => factory.pauseManager(input),
+        [SATELLITE_WS_METHODS.factoryManagersResume]: (input) => factory.resumeManager(input),
+        [SATELLITE_WS_METHODS.factoryManagersRetire]: (input) => factory.retireManager(input),
+        [SATELLITE_WS_METHODS.factoryManagersApproveOnboarding]: (input) =>
+          factory.approveOnboarding(input),
+        [SATELLITE_WS_METHODS.factoryAssignmentsList]: (input) => factory.listAssignments(input),
+        [SATELLITE_WS_METHODS.factoryAssignmentsSubscribe]: (input) =>
+          factory.subscribeAssignments(input),
+        [SATELLITE_WS_METHODS.factoryAssignmentsCancel]: (input) => factory.cancel(input),
+        [SATELLITE_WS_METHODS.factoryAssignmentsRefreshDigest]: (input) =>
+          factory.refreshDigest(input.assignmentId),
+        [SATELLITE_WS_METHODS.factoryThreadsTakeOver]: (input) => factory.takeOver(input),
+        [SATELLITE_WS_METHODS.factoryThreadsHandBack]: (input) => factory.handBack(input),
+        [SATELLITE_WS_METHODS.factoryLogList]: (input) => factory.listLog(input),
+        [SATELLITE_WS_METHODS.factoryWorkspaceSubscribe]: (input) =>
+          factory.subscribeWorkspace(input),
+        [SATELLITE_WS_METHODS.factoryFindingsList]: (input) => factory.listFindings(input),
+        [SATELLITE_WS_METHODS.factoryDraftsList]: (input) => factory.listDrafts(input),
+        [SATELLITE_WS_METHODS.factoryDraftsSubscribe]: (input) => factory.subscribeDrafts(input),
+        [SATELLITE_WS_METHODS.factoryDraftsEdit]: (input) => factory.editDraft(input),
+        [SATELLITE_WS_METHODS.factoryDraftsApprove]: (input) => factory.approveDraft(input),
+        [SATELLITE_WS_METHODS.factoryDraftsDismiss]: (input) => factory.dismissDraft(input),
+        [SATELLITE_WS_METHODS.factoryDraftsRestore]: (input) => factory.restoreDraft(input),
+        [SATELLITE_WS_METHODS.factoryStatsGet]: (input) => factory.getStats(input),
+        [SATELLITE_WS_METHODS.factoryDraftsApply]: (input) => factory.applyDraft(input),
       });
     }),
   );

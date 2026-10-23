@@ -9,8 +9,19 @@ integration branch. The rules that keep a sync small are in
 Satellite registers its features through a few fork-owned modules. Each reaches an upstream file
 through a line or two, so a conflict at one of those lines resolves by keeping both sides.
 
-No fork module is registered yet. The first change that adds one starts a table here naming each
-fork module and the upstream line it touches, and every later registration adds its row.
+Each fork module or feature below names the upstream files it touches; keep both sides there.
+
+| Fork module or feature    | Upstream file                                                                                     | The touch                                                                                                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SatelliteServer.ts`      | `apps/server/src/server.ts`                                                                       | One `Layer.provideMerge` of its `layer`, with `layerPullRequestService` provided for the factory's control-path check, and `withMcpToolkits` in the `McpHttpServer` pipe |
+| `SatelliteWsRpc.ts`       | `apps/server/src/ws.ts`                                                                           | Captures `makeConnectionLayer` and merges it per connection                                                                                                              |
+| `SatelliteRpcRegistry.ts` | `apps/server/src/auth/RpcAuthorization.ts`, `apps/server/src/observability/RpcInstrumentation.ts` | Spread the scope and aggregate-label tables                                                                                                                              |
+| `satelliteRpc.ts`         | `packages/contracts/src/rpc.ts`, `packages/contracts/src/index.ts`                                | Spreads `SATELLITE_WS_METHODS`, merges `WsSatelliteRpcGroup`, and exports the Satellite contracts files                                                                  |
+| `SatelliteMigrations.ts`  | `apps/server/src/persistence/Sqlite.ts`                                                           | Runs migrations through `runMigrationsWithSatellite`                                                                                                                     |
+| Factory assignment digest | `packages/provider-core/src/server/textGeneration.ts`, `textGenerationOperations.ts`              | Optional `generateSummary` on `ProviderTextGeneration`, built in `fromRunner`                                                                                            |
+| Factory assignment digest | `apps/server/src/textGeneration/TextGeneration.ts`                                                | Dispatches `generateSummary` to the selected instance                                                                                                                    |
+| Factory assignment digest | `apps/server/src/provider/Drivers/CodexManagedProvider.ts`                                        | One `generateSummary` entry in the hand-wrapped operations                                                                                                               |
+| Factory assignment digest | `packages/provider-opencode/src/server/textGeneration.ts`                                         | `generateSummary` in the operation literals of its error schemas                                                                                                         |
 
 ## Procedure
 

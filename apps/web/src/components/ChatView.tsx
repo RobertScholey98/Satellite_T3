@@ -274,6 +274,11 @@ import {
 } from "./chat/PanelLayoutControls";
 import type { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel } from "./chat/ThreadDetailsPanel";
+import {
+  FactoryManagerToggle,
+  useFactoryManagerModelDisabledReason,
+} from "./factory/FactoryManagerToggle";
+import { FactoryWorkspacePanel } from "./factory/FactoryWorkspacePanel";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
   resolveEffectiveEnvMode,
@@ -2923,6 +2928,12 @@ export default function ChatView(props: ChatViewProps) {
     setPendingServerThreadStartFromOriginByThreadId,
     scheduleComposerFocus,
   });
+  const composerModelDisabledReason = useFactoryManagerModelDisabledReason({
+    environmentId,
+    projectId: activeProject?.id ?? null,
+    draftId: isLocalDraftThread ? draftId : null,
+    base: getModelDisabledReason,
+  });
   const { onSend, onResume, onImplementPlanInNewThread, isResuming } = useComposerSend({
     environmentId,
     routeThreadKey,
@@ -3697,7 +3708,7 @@ export default function ChatView(props: ChatViewProps) {
                               }
                               onProviderModelSelect={onProviderModelSelectStable}
                               onOpenProviderSetup={openProviderSetupStable}
-                              getModelDisabledReason={getModelDisabledReason}
+                              getModelDisabledReason={composerModelDisabledReason}
                               toggleInteractionMode={toggleInteractionModeStable}
                               handleRuntimeModeChange={handleRuntimeModeChangeStable}
                               handleInteractionModeChange={handleInteractionModeChangeStable}
@@ -3779,6 +3790,15 @@ export default function ChatView(props: ChatViewProps) {
                                 availableEnvironments={logicalProjectEnvironments}
                                 composerControlsHostRef={setRestingComposerControlsHost}
                                 contextStripVisible={showComposerContextStrip}
+                                leadingControl={
+                                  isLocalDraftThread && draftId && activeProject && isGitRepo ? (
+                                    <FactoryManagerToggle
+                                      environmentId={activeThread.environmentId}
+                                      projectId={activeProject.id}
+                                      draftId={draftId}
+                                    />
+                                  ) : null
+                                }
                               />
                             </div>
                           )}
@@ -3877,6 +3897,12 @@ export default function ChatView(props: ChatViewProps) {
               onUpdateProjectScript={updateProjectScriptStable}
               onDeleteProjectScript={deleteProjectScriptStable}
             />
+            {isServerThread ? (
+              <FactoryWorkspacePanel
+                environmentId={activeThread.environmentId}
+                threadId={activeThread.id}
+              />
+            ) : null}
 
             <PullRequestThreadDialogHost
               threadKey={activeThreadKey}

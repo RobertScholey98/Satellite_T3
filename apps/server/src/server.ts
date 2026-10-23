@@ -1051,7 +1051,7 @@ const layerMakeServer = Layer.unwrap(
 
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
-      Layer.provideMerge(SatelliteServer.layer),
+      Layer.provideMerge(SatelliteServer.layer.pipe(Layer.provide(layerPullRequestService))),
       Layer.provideMerge(layerRuntimeServices),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(

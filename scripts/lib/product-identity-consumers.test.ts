@@ -64,7 +64,7 @@ describe("static identity consumers", () => {
     });
   });
 
-  it("the web entry page names Satellite and shows a static boot image", () => {
+  it("the web entry page names Satellite and animates its boot mark", () => {
     const html = read("apps/web/index.html");
     expect(/<title>([^<]*)<\/title>/.exec(html)?.[1]).toBe(
       `${PRODUCT_NAME} (${PRODUCT_STAGE_LABEL})`,
@@ -72,8 +72,14 @@ describe("static identity consumers", () => {
     expect(/id="boot-shell-card" aria-label="([^"]*)"/.exec(html)?.[1]).toBe(
       `${PRODUCT_NAME} splash screen`,
     );
-    expect(/id="boot-shell-logo"[^>]*alt="([^"]*)"/.exec(html)?.[1]).toBe(PRODUCT_NAME);
-    expect(html).not.toContain("<animate");
+    expect(/id="boot-shell-logo"[\s\S]*?aria-label="([^"]*)"/.exec(html)?.[1]).toContain(
+      PRODUCT_NAME,
+    );
+    expect(/<span id="boot-shell-brand">([^<]*)<\/span>/.exec(html)?.[1]).toBe(PRODUCT_NAME);
+    // The boot shell runs before any script, so the mark animates through SMIL and needs its own
+    // reduced-motion fallback rather than the app's motion-safe utilities.
+    expect(html).toContain("<animate");
+    expect(html).toContain("prefers-reduced-motion");
   });
 
   it("the desktop dev launcher uses the product display names", () => {

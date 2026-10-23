@@ -13,6 +13,7 @@ T3's hosted services and app-store clients describe upstream infrastructure.
 - [Terminal history](./user/terminal.md)
 - [Source control](./user/source-control.md)
 - [Issues](./user/issues.md)
+- [Factory](./user/factory.md)
 - [Project settings](./user/project-settings.md)
 - [Appearance and themes](./user/appearance.md)
 - [Keyboard shortcuts](./user/keybindings.md)

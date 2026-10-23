@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import { ArrowLeftIcon, ChartNoAxesColumnIcon, FactoryIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -6,6 +6,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { usePullRequestsSupported } from "../../state/environments";
+import { useFactorySupported } from "../factory/FactoryPageAvailability";
 import { PRODUCT_NAME } from "@t3tools/contracts";
 import { SatelliteMark } from "../SatelliteMark";
 import {
@@ -165,6 +166,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     select: (location) => isSidebarUtilityPage(location.pathname),
   });
   const pullRequestsSupported = usePullRequestsSupported();
+  const factorySupported = useFactorySupported();
   const closeMobileSidebar = () => {
     if (isMobile) {
       setOpenMobile(false);
@@ -219,6 +221,16 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Usage"
             onClick={handleUsageClick}
           />
+          {factorySupported ? (
+            <SidebarUtilityItem
+              icon={<FactoryIcon />}
+              label="Factory"
+              onClick={() => {
+                closeMobileSidebar();
+                void navigate({ to: "/factory" });
+              }}
+            />
+          ) : null}
         </>
       )}
       <SidebarUpdatePill />

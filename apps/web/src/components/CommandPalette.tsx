@@ -52,6 +52,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CornerLeftUpIcon,
+  FactoryIcon,
   FileSearchIcon,
   FolderGit2Icon,
   FolderIcon,
@@ -234,6 +235,7 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import { readIssuesNavigation } from "~/components/work/issuesNavigation";
+import { supportsFactory } from "~/components/factory/factoryState";
 import { readOpenIssueBoardRefresh } from "~/components/work/issuesState";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
@@ -1538,6 +1540,19 @@ function OpenCommandPaletteDialog(props: {
       await navigate({ to: "/issues", search: readIssuesNavigation() });
     },
   });
+
+  if (environments.some(supportsFactory)) {
+    actionItems.push({
+      kind: "action",
+      value: "action:factory",
+      searchTerms: ["factory", "manager", "teams", "pickup", "assignments", "triage", "stats"],
+      title: "Open factory",
+      icon: <FactoryIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/factory" });
+      },
+    });
+  }
 
   actionItems.push({
     kind: "action",

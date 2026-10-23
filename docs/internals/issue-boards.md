@@ -22,7 +22,11 @@ directly removes the problem rather than transporting around it. Migration 101 k
 cross-machine attempts as ended links only, and a startup cleanup removes the dev builds' peer
 secrets and sessions.
 
-Do not add a move or start MCP tool. A third mover would weaken the rule below.
+Do not add a move MCP tool. The only start tools are the factory's `factory_pickup` and
+`factory_commission`, and both start a ticket's lead through `IssueService.startAttempt`, so a
+factory-started attempt is an ordinary attempt, its environment stays the only mover, and the rule
+below holds. Work commissioned without a ticket, and a replacement lead, launch a plain thread
+that never moves a ticket.
 
 ## A manual move wins
 
