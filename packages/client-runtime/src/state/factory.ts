@@ -72,5 +72,8 @@ export function createFactoryEnvironmentAtoms<R, E>(
     resolveConfigRepo: command("config-repo:resolve", WS_METHODS.factoryConfigRepoResolve),
     discardConfigRepo: command("config-repo:discard", WS_METHODS.factoryConfigRepoDiscard),
     disconnectConfigRepo: command("config-repo:disconnect", WS_METHODS.factoryConfigRepoDisconnect),
+    exportConfig: command("config:export", WS_METHODS.factoryConfigExport),
+    previewConfigImport: command("config:import-preview", WS_METHODS.factoryConfigImportPreview),
+    applyConfigImport: command("config:import-apply", WS_METHODS.factoryConfigImportApply),
   };
 }

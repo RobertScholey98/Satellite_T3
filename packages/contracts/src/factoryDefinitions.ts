@@ -140,6 +140,85 @@ export const FactoryDefinitionsView = Schema.Struct({
 });
 export type FactoryDefinitionsView = typeof FactoryDefinitionsView.Type;
 
+export const FactoryDefinitionKind = Schema.Literals(["worker", "lead", "manager", "team"]);
+export type FactoryDefinitionKind = typeof FactoryDefinitionKind.Type;
+
+/**
+ * A factory config as files, for export and import. The client zips and unzips it; the server
+ * never archives the config directory, so nothing outside the definitions can leak.
+ */
+export const FactoryConfigBundle = Schema.Struct({
+  files: Schema.Array(
+    Schema.Struct({
+      /** Inside the factory layout with forward slashes, such as `workers/reviewer.md`. */
+      path: Schema.String,
+      contents: Schema.String,
+    }),
+  ),
+});
+export type FactoryConfigBundle = typeof FactoryConfigBundle.Type;
+
+/** Selected teams also bring the workers and leads whose ids match their members and lead. */
+export const FactoryExportSelection = Schema.Union([
+  Schema.Struct({ scope: Schema.Literal("all") }),
+  Schema.Struct({
+    scope: Schema.Literal("teams"),
+    teamIds: Schema.Array(FactoryDefinitionId).check(Schema.isMinLength(1)),
+  }),
+]);
+export type FactoryExportSelection = typeof FactoryExportSelection.Type;
+
+export const FactoryImportStatus = Schema.Literals(["new", "same", "differs"]);
+export type FactoryImportStatus = typeof FactoryImportStatus.Type;
+
+export const FactoryImportPreview = Schema.Struct({
+  /** Every definition in the bundle, compared by encoded bytes with the local one of its id. */
+  items: Schema.Array(
+    Schema.Struct({
+      kind: FactoryDefinitionKind,
+      id: FactoryDefinitionId,
+      name: Schema.String,
+      status: FactoryImportStatus,
+      /**
+       * Models this definition lists that the local pool lacks. The import drops each from its
+       * model lists unless the matching pool addition is accepted, so every listed model stays in
+       * the pool. Omitted when there are none.
+       */
+      modelsNeedingPool: Schema.optionalKey(Schema.Array(FactoryModelRef)),
+    }),
+  ),
+  /** Models in the bundle's pool that the local pool lacks. Each is added only when chosen. */
+  poolAdditions: Schema.Array(FactoryModelRef),
+  recoveryAllowance: Schema.Struct({ mine: NonNegativeInt, theirs: NonNegativeInt }),
+  /** Files in the bundle that were rejected or could not be decoded. */
+  problems: Schema.Array(FactoryConfigProblem),
+});
+export type FactoryImportPreview = typeof FactoryImportPreview.Type;
+
+/** Keep the local definition, overwrite it, or keep both with theirs under a new id. */
+export const FactoryImportChoice = Schema.Literals(["mine", "theirs", "both"]);
+export type FactoryImportChoice = typeof FactoryImportChoice.Type;
+
+export const FactoryImportDecision = Schema.Struct({
+  /** Merge adds and resolves per definition; replace backs up, then swaps in the bundle. */
+  mode: Schema.Literals(["merge", "replace"]),
+  /** For merge: one per `differs` definition. A definition without a choice keeps mine. */
+  choices: Schema.Array(
+    Schema.Struct({
+      kind: FactoryDefinitionKind,
+      id: FactoryDefinitionId,
+      choice: FactoryImportChoice,
+    }),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /** The preview's pool additions the user accepted. Replace honours this too. */
+  poolAdditions: Schema.Array(FactoryModelRef).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /** For merge: which recovery allowance to keep. Replace always takes theirs. */
+  recoveryAllowance: Schema.Literals(["mine", "theirs"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("mine" as const)),
+  ),
+});
+export type FactoryImportDecision = typeof FactoryImportDecision.Type;
+
 /** A file in the config directory that differs from the last commit. */
 export const FactoryConfigRepoChange = Schema.Struct({
   /** Relative to the factory config directory, with forward slashes. */

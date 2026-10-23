@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import { FactoryConfigTransfer } from "../factory/config/exportImport.ts";
 import { FactoryConfigRepo } from "../factory/config/FactoryConfigRepo.ts";
 import { FactoryConfigStore } from "../factory/config/FactoryConfigStore.ts";
 import { FactoryService } from "../factory/FactoryService.ts";
@@ -15,6 +16,7 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
       const factory = yield* FactoryService;
       const configStore = yield* FactoryConfigStore;
       const configRepo = yield* FactoryConfigRepo;
+      const configTransfer = yield* FactoryConfigTransfer;
       return WsSatelliteRpcGroup.of({
         [SATELLITE_WS_METHODS.issuesList]: (input) => issues.list(input),
         [SATELLITE_WS_METHODS.issuesGet]: (input) => issues.get(input),
@@ -70,6 +72,10 @@ const layer = (_session: EnvironmentAuth.AuthenticatedSession) =>
           configRepo.resolve(input.path, input.side),
         [SATELLITE_WS_METHODS.factoryConfigRepoDiscard]: () => configRepo.discard,
         [SATELLITE_WS_METHODS.factoryConfigRepoDisconnect]: (input) => configRepo.disconnect(input),
+        [SATELLITE_WS_METHODS.factoryConfigExport]: (input) => configTransfer.export(input),
+        [SATELLITE_WS_METHODS.factoryConfigImportPreview]: (input) => configTransfer.preview(input),
+        [SATELLITE_WS_METHODS.factoryConfigImportApply]: (input) =>
+          configTransfer.apply(input.bundle, input.decision),
       });
     }),
   );

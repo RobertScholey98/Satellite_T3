@@ -13,12 +13,16 @@ import {
 } from "./baseSchemas.ts";
 import {
   FactoryConfigRepoConnectInput,
+  FactoryConfigBundle,
   FactoryConfigRepoConnectResult,
   FactoryConfigRepoDisconnectInput,
   FactoryConfigRepoPushInput,
   FactoryConfigRepoResolveInput,
   FactoryConfigRepoStatus,
   FactoryDefinitionsView,
+  FactoryExportSelection,
+  FactoryImportDecision,
+  FactoryImportPreview,
 } from "./factoryDefinitions.ts";
 import { IssueRef, IssueSummary } from "./issues.ts";
 import { ModelSelection } from "./modelSelection.ts";
@@ -65,6 +69,9 @@ export const FACTORY_WS_METHODS = {
   factoryConfigRepoResolve: "factory.configRepo.resolve",
   factoryConfigRepoDiscard: "factory.configRepo.discard",
   factoryConfigRepoDisconnect: "factory.configRepo.disconnect",
+  factoryConfigExport: "factory.config.export",
+  factoryConfigImportPreview: "factory.config.importPreview",
+  factoryConfigImportApply: "factory.config.importApply",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -1194,3 +1201,28 @@ export const WsFactoryConfigRepoDisconnectRpc = Rpc.make(
     error: FactoryRpcError,
   },
 );
+
+/** An export is built from definitions on the environment; the client only zips the files. */
+export const WsFactoryConfigExportRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigExport, {
+  payload: FactoryExportSelection,
+  success: FactoryConfigBundle,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigImportPreviewRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryConfigImportPreview,
+  {
+    payload: FactoryConfigBundle,
+    success: FactoryImportPreview,
+    error: FactoryRpcError,
+  },
+);
+export const FactoryConfigImportApplyInput = Schema.Struct({
+  bundle: FactoryConfigBundle,
+  decision: FactoryImportDecision,
+});
+export type FactoryConfigImportApplyInput = typeof FactoryConfigImportApplyInput.Type;
+export const WsFactoryConfigImportApplyRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigImportApply, {
+  payload: FactoryConfigImportApplyInput,
+  success: FactoryDefinitionsView,
+  error: FactoryRpcError,
+});
