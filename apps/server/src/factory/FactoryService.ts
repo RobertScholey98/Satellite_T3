@@ -615,7 +615,7 @@ const managerStateProblem = (manager: FactoryManager): string | null => {
     case "active":
       return null;
     case "onboarding":
-      return `${manager.name} is still onboarding. Nothing starts until the user approves the onboarding report.`;
+      return `${manager.name} is still onboarding. Nothing starts until the user approves its onboarding.`;
     case "manager-paused":
     case "project-paused":
       return `${manager.name} is paused. Nothing starts until the user resumes it.`;
@@ -4051,8 +4051,12 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     protect(
       Effect.gen(function* () {
         const manager = yield* requireManager(managerThreadId);
-        // Drafting only records a proposal for the user, so a paused manager may finish its retro.
-        const problem = isPaused(manager.state) ? null : managerStateProblem(manager);
+        // Drafting only records a proposal for the user, so a paused manager may finish its retro
+        // and an onboarding one may draft a ticket from a finding the user asked about.
+        const problem =
+          isPaused(manager.state) || manager.state === "onboarding"
+            ? null
+            : managerStateProblem(manager);
         if (problem !== null) return yield* error("conflict", problem);
         if (
           input.proposedChange?.kind === "setting" &&

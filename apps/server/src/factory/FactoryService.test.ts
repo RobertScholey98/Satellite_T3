@@ -2937,6 +2937,24 @@ const DRAFT = {
 } as const;
 
 describe("FactoryService ticket drafts", () => {
+  it.effect("lets an onboarding manager draft a ticket from a finding", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const { service } = yield* makeHarness({ config: ENVIRONMENT });
+        const created = yield* create(service);
+        assert.strictEqual(created.state, "onboarding");
+
+        const { draft } = yield* service.draftTicket(created.threadId!, {
+          ...DRAFT,
+          title: "Turn on branch protection for main",
+        });
+        assert.strictEqual(draft.state, "pending");
+        assert.strictEqual(draft.title, "Turn on branch protection for main");
+        assert.isNull(draft.assignmentId);
+      }),
+    ),
+  );
+
   it.effect(
     "stores a draft with its findings and returns overlapping drafts and open tickets",
     () =>
