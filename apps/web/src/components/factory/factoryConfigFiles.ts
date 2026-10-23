@@ -8,14 +8,32 @@ export async function zipFactoryBundle(bundle: FactoryConfigBundle): Promise<Uin
   return zip.generateAsync({ type: "uint8array" });
 }
 
+/** Folders of the config layout itself, which are never a wrapper to strip. */
+const LAYOUT_FOLDERS = new Set(["workers", "leads", "managers", "teams"]);
+
+/**
+ * The folder every path sits in, when a user zipped the config folder itself rather than its
+ * contents, or null.
+ */
+function wrappingFolder(paths: ReadonlyArray<string>): string | null {
+  const tops = new Set(paths.map((path) => (path.includes("/") ? path.split("/")[0]! : null)));
+  if (tops.size !== 1) return null;
+  const [top] = tops;
+  return top === null || top === undefined || LAYOUT_FOLDERS.has(top) ? null : top;
+}
+
 /** Directories are entries in a zip but not files of the bundle. */
 export async function unzipFactoryBundle(
   bytes: ArrayBuffer | Uint8Array,
 ): Promise<FactoryConfigBundle> {
   const zip = await JSZip.loadAsync(bytes);
   const entries = Object.values(zip.files).filter((entry) => !entry.dir);
+  const wrapper = wrappingFolder(entries.map((entry) => entry.name));
   const files = await Promise.all(
-    entries.map(async (entry) => ({ path: entry.name, contents: await entry.async("string") })),
+    entries.map(async (entry) => ({
+      path: wrapper === null ? entry.name : entry.name.slice(wrapper.length + 1),
+      contents: await entry.async("string"),
+    })),
   );
   return { files: files.toSorted((a, b) => a.path.localeCompare(b.path)) };
 }

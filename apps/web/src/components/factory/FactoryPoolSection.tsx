@@ -84,7 +84,7 @@ export function FactoryPoolSection({
       {view !== null && !view.configured ? (
         <SettingsRow
           title="Nothing saved yet"
-          description="This environment has no factory config. Saving any definition, team or setting here creates it."
+          description="This environment has no factory config yet. Saving a setting, worker, lead, manager or team creates it."
         />
       ) : null}
       {error !== null ? <SettingsRow title="Could not save" description={error} /> : null}
@@ -92,7 +92,7 @@ export function FactoryPoolSection({
         <>
           <SettingsRow
             title="Models"
-            description="Every model a worker, lead, manager or team lists must be in the pool."
+            description="Workers, leads, managers and teams can only add models from the pool. A model removed here stays in the lists that name it, flagged as not in the pool, and delegation skips it."
             control={
               <Menu>
                 <MenuTrigger

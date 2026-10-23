@@ -19,6 +19,7 @@ import {
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { factoryConfigCommitMessage } from "./factoryConfigFiles";
+import { useFactoryDefinitions } from "./factoryDefinitionsState";
 import { factoryEnvironment, factoryErrorMessage, unwrapFactoryResult } from "./factoryState";
 
 type ConnectedStatus = Extract<FactoryConfigRepoStatus, { connected: true }>;
@@ -66,11 +67,14 @@ export function FactoryConfigRepoSection({
     reportFailure: false,
   });
 
+  const definitions = useFactoryDefinitions(environmentId);
+
   const [status, setStatus] = useState<FactoryConfigRepoStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [url, setUrl] = useState("");
   const [choosing, setChoosing] = useState(false);
+  const [choiceError, setChoiceError] = useState<string | null>(null);
   const [pushMessage, setPushMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -85,20 +89,22 @@ export function FactoryConfigRepoSection({
     };
   }, [environmentId, getStatus]);
 
-  /** Runs one repo action; the status it returns replaces the shown one. */
+  /**
+   * Runs one repo action; the status it returns replaces the shown one. An action that rewrites
+   * the files also rereads the definitions, so the other factory sections show what is on disk.
+   */
   const act = async (
     run: () => Promise<AtomCommandResult<FactoryConfigRepoStatus, unknown>>,
+    changesFiles = false,
   ): Promise<boolean> => {
     setBusy(true);
     setError(null);
     const result = await run();
+    if (result._tag === "Success") setStatus(result.value);
+    else setError(failureMessage(result));
+    if (changesFiles) await definitions.refresh();
     setBusy(false);
-    if (result._tag === "Success") {
-      setStatus(result.value);
-      return true;
-    }
-    setError(failureMessage(result));
-    return false;
+    return result._tag === "Success";
   };
 
   const submitConnect = async (choice?: "use-repo") => {
@@ -106,29 +112,50 @@ export function FactoryConfigRepoSection({
     if (trimmed.length === 0) return;
     setBusy(true);
     setError(null);
+    setChoiceError(null);
     const result = await connect({
       environmentId,
       input: choice === undefined ? { url: trimmed } : { url: trimmed, choice },
     });
-    setBusy(false);
     if (result._tag !== "Success") {
-      setError(failureMessage(result));
+      setBusy(false);
+      // A failed `use-repo` is answered where it was asked, in the dialog.
+      if (choice === undefined) setError(failureMessage(result));
+      else setChoiceError(failureMessage(result));
       return;
     }
     if (result.value.outcome === "needs-choice") {
+      setBusy(false);
       setChoosing(true);
       return;
     }
     setChoosing(false);
     setStatus(result.value.status);
+    await definitions.refresh();
+    setBusy(false);
   };
 
-  const confirmDiscard = async () => {
+  const confirmDiscard = async (connected: ConnectedStatus) => {
+    const commits =
+      connected.unpushedCommits === 0
+        ? ""
+        : ` ${plural(connected.unpushedCommits, "commit that was", "commits that were")} never pushed ${connected.unpushedCommits === 1 ? "is" : "are"} also discarded.`;
     const confirmed = await confirm(
-      "Discard local changes? Files go back to the last copy from the repo.",
+      `Discard local changes? Files go back to the last copy from the repo.${commits} A backup of the current files is kept beside the config folder.`,
       true,
     );
-    if (confirmed) await act(() => discard({ environmentId, input: {} }));
+    if (confirmed) await act(() => discard({ environmentId, input: {} }), true);
+  };
+
+  const settle = async (path: string, side: "mine" | "theirs") => {
+    if (side === "theirs") {
+      const confirmed = await confirm(
+        `Take the repo's version? Your version of ${path} is replaced.`,
+        true,
+      );
+      if (!confirmed) return;
+    }
+    await act(() => resolve({ environmentId, input: { path, side } }), true);
   };
 
   const confirmDisconnect = async (connected: ConnectedStatus) => {
@@ -186,12 +213,10 @@ export function FactoryConfigRepoSection({
           status={status}
           disabled={disabled}
           onCheck={() => void act(() => check({ environmentId, input: {} }))}
-          onPull={() => void act(() => pull({ environmentId, input: {} }))}
+          onPull={() => void act(() => pull({ environmentId, input: {} }), true)}
           onPush={() => setPushMessage(factoryConfigCommitMessage(status.localChanges))}
-          onResolve={(path, side) =>
-            void act(() => resolve({ environmentId, input: { path, side } }))
-          }
-          onDiscard={() => void confirmDiscard()}
+          onResolve={(path, side) => void settle(path, side)}
+          onDiscard={() => void confirmDiscard(status)}
           onDisconnect={() => void confirmDisconnect(status)}
         />
       )}
@@ -201,8 +226,12 @@ export function FactoryConfigRepoSection({
       <UseRepoDialog
         open={choosing}
         busy={busy}
+        error={choiceError}
         onUseRepo={() => void submitConnect("use-repo")}
-        onCancel={() => setChoosing(false)}
+        onCancel={() => {
+          setChoosing(false);
+          setChoiceError(null);
+        }}
       />
       <PushDialog
         message={pushMessage}
@@ -351,11 +380,13 @@ function ConnectedRows({
 function UseRepoDialog({
   open,
   busy,
+  error,
   onUseRepo,
   onCancel,
 }: {
   readonly open: boolean;
   readonly busy: boolean;
+  readonly error: string | null;
   readonly onUseRepo: () => void;
   readonly onCancel: () => void;
 }) {
@@ -374,6 +405,11 @@ function UseRepoDialog({
             first, beside the config folder, then replaces it.
           </DialogDescription>
         </DialogHeader>
+        {error !== null ? (
+          <DialogPanel>
+            <p className="text-sm text-destructive">{error}</p>
+          </DialogPanel>
+        ) : null}
         <DialogFooter variant="bare">
           <Button type="button" variant="outline" onClick={onCancel}>
             Cancel

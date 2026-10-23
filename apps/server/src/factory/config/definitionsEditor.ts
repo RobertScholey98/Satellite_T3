@@ -126,6 +126,11 @@ const make = Effect.gen(function* () {
   const lock = yield* Semaphore.make(1);
   const serialized = <A, E, R>(effect: Effect.Effect<A, E, R>) => lock.withPermits(1)(effect);
 
+  // The startup migration rewrites the config from the database while `factory.yaml` is missing,
+  // so a change made here writes it first and is never migrated over.
+  const markConfigured = (view: FactoryDefinitionsView) =>
+    view.configured ? Effect.void : store.writeSettings(view.settings);
+
   const save = Effect.fn("FactoryDefinitionsEditor.save")(function* (
     input: FactoryDefinitionSaveInput,
   ) {
@@ -139,6 +144,7 @@ const make = Effect.gen(function* () {
         message: `There is no ${input.kind} "${input.id}" to update. It may have been removed.`,
       });
     const id = input.id ?? definitionIdFromName(input.definition.name, taken);
+    yield* markConfigured(view);
     switch (input.kind) {
       case "worker":
         yield* store.writeWorker({ ...input.definition, id });
@@ -164,6 +170,7 @@ const make = Effect.gen(function* () {
     input: FactoryDefinitionRemoveInput,
   ) {
     // TODO(#101): warn with every manager whose onboarding result lists a team before removing it.
+    yield* markConfigured(yield* store.read);
     yield* store.remove(input.kind, input.id);
     return yield* store.read;
   }, serialized);
