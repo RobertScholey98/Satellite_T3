@@ -79,8 +79,15 @@ const make = Effect.gen(function* () {
     const { threadId } = (yield* McpInvocationContext.requireThreadScope(scope, "This tool"))
       .thread;
     const manager = yield* factory.managerForThread(threadId).pipe(Effect.mapError(toolFailure));
-    if (manager === null)
-      return yield* new FactoryToolFailedError({ reason: "not-found", message: notMember });
+    if (manager === null) {
+      const finished = yield* factory
+        .finishedOnboardingMessage(threadId)
+        .pipe(Effect.mapError(toolFailure));
+      return yield* new FactoryToolFailedError({
+        reason: "not-found",
+        message: finished ?? notMember,
+      });
+    }
     return { threadId, manager };
   });
 

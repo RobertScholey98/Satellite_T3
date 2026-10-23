@@ -12,6 +12,7 @@ import {
   ThreadId,
   type FactoryAssignmentsEvent,
   type FactoryDraftTicketInput,
+  type FactoryManager,
   type FactoryManagersEvent,
   type FactoryOnboardingProposalInput,
   type FactoryOnboardingResult,
@@ -185,6 +186,8 @@ interface HarnessControls {
   ticketFailures: number;
   /** How many thread launches fail before one succeeds. */
   launchFailures: number;
+  /** Runs once inside the next launch, before it succeeds or fails. */
+  duringLaunch: Effect.Effect<void, FactoryOperationError> | null;
   /** What the usage rate cache holds; null when usage tracking has cached none. */
   rateTable: RateTable | null;
   /** What the text-generation model answers a digest request with. */
@@ -216,6 +219,7 @@ const makeHarness = (options: HarnessOptions = {}) =>
       fileReadFailures: 0,
       ticketFailures: 0,
       launchFailures: options.launchFailures ?? 0,
+      duringLaunch: null,
       rateTable: null,
       summary: Effect.sync(() => ` Digest ${summaryRequests.length}. `),
       defaultBranch: "trunk",
@@ -231,10 +235,21 @@ const makeHarness = (options: HarnessOptions = {}) =>
       launchThread: (input) =>
         Effect.suspend(() => {
           launches.push(input);
-          if (controls.launchFailures === 0) return Effect.void;
-          controls.launchFailures -= 1;
-          return Effect.fail(
-            new FactoryOperationError({ reason: "unavailable", message: "Provider is offline." }),
+          const during = controls.duringLaunch ?? Effect.void;
+          controls.duringLaunch = null;
+          return during.pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                if (controls.launchFailures === 0) return Effect.void;
+                controls.launchFailures -= 1;
+                return Effect.fail(
+                  new FactoryOperationError({
+                    reason: "unavailable",
+                    message: "Provider is offline.",
+                  }),
+                );
+              }),
+            ),
           );
         }),
       readRoleSkill: (role, projectRoot) =>
@@ -1124,9 +1139,15 @@ describe("FactoryService primed manager thread", () => {
           assert.notStrictEqual(manager.threadId, created.threadId);
           assert.isNull(created.onboardingThreadId);
           assert.strictEqual(manager.onboardingThreadId, created.threadId);
+          assert.strictEqual(
+            manager.primingMessageId,
+            `message:factory-manager-primed:${manager.threadId}`,
+          );
+          assert.isNull(created.primingMessageId);
           assert.strictEqual(launches.length, 2);
           const [onboarding, primed] = launches;
           assert.strictEqual(primed!.threadId, manager.threadId);
+          assert.strictEqual(primed!.messageId, manager.primingMessageId);
           assert.strictEqual(primed!.title, "Engineering manager: Ada");
           assert.deepStrictEqual(primed!.modelSelection, onboarding!.modelSelection);
           assert.strictEqual(primed!.runtimeMode, onboarding!.runtimeMode);
@@ -1139,8 +1160,12 @@ describe("FactoryService primed manager thread", () => {
           assert.deepStrictEqual(settles, [created.threadId]);
 
           assert.strictEqual((yield* service.managerForThread(manager.threadId!))!.id, created.id);
-          const old = yield* service.managerForThread(created.threadId!).pipe(Effect.flip);
+          // The old thread is no manager's; only manager-only tools explain why.
+          assert.isNull(yield* service.managerForThread(created.threadId!));
+          const old = yield* startTicket(factory, created.threadId!, 1).pipe(Effect.flip);
           assert.deepInclude(old, { reason: "not-found", message: FINISHED });
+          assert.strictEqual(yield* service.finishedOnboardingMessage(created.threadId!), FINISHED);
+          assert.isNull(yield* service.finishedOnboardingMessage(manager.threadId!));
 
           // A ready manager is offered nothing and may not pick up until the user starts pickup.
           yield* service.sweep;
@@ -1156,6 +1181,99 @@ describe("FactoryService primed manager thread", () => {
           assert.strictEqual(commissioned.state, "active");
         }),
       ),
+  );
+
+  it.effect("makes a repeat of an approval still launching wait for its launch", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, launches, boards } = factory;
+        boards.push(board([]));
+        const created = yield* create(service);
+        yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        const approve = service.approveOnboarding({
+          requestId: "approve-1",
+          managerId: created.id,
+          result: RESULT,
+        });
+        const sql = yield* SqlClient.SqlClient;
+        let repeat: Fiber.Fiber<FactoryManager, FactoryOperationError> | undefined;
+        controls.duringLaunch = Effect.gen(function* () {
+          repeat = yield* approve.pipe(Effect.forkChild);
+          // Nothing is remembered while the thread launches.
+          const remembered = yield* sql`SELECT 1 FROM factory_requests
+              WHERE request_id='approve-1'`;
+          assert.deepStrictEqual(remembered, []);
+        }).pipe(Effect.orDie);
+
+        const approved = yield* approve;
+        assert.deepStrictEqual(yield* Fiber.join(repeat!), approved);
+        assert.strictEqual(launches.length, 2);
+      }),
+    ),
+  );
+
+  it.effect("keeps a pause made during a failed launch, now pausing onboarding", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, boards } = factory;
+        boards.push(board([]));
+        const created = yield* create(service);
+        const managerId = created.id;
+        const proposed = yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        controls.launchFailures = 1;
+        controls.duringLaunch = service
+          .pauseManager({ requestId: "pause-1", managerId, scope: "manager" })
+          .pipe(Effect.asVoid);
+        const approve = service.approveOnboarding({
+          requestId: "approve-1",
+          managerId,
+          result: RESULT,
+        });
+
+        const failed = yield* approve.pipe(Effect.flip);
+        assert.strictEqual(failed.reason, "unavailable");
+        const [paused] = yield* service.listManagers({ projectId: PROJECT_ID });
+        assert.strictEqual(paused!.state, "manager-paused");
+        assert.strictEqual(paused!.threadId, created.threadId);
+        assert.isNull(paused!.onboardingResult);
+        assert.isNull(paused!.onboardingThreadId);
+        assert.deepStrictEqual(paused!.onboardingProposal, proposed.onboardingProposal);
+
+        const resumed = yield* service.resumeManager({ requestId: "resume-1", managerId });
+        assert.strictEqual(resumed.state, "onboarding");
+        assert.strictEqual((yield* approve).state, "ready");
+      }),
+    ),
+  );
+
+  it.effect("leaves a manager retired during a failed launch retired", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, controls, boards, settles } = factory;
+        boards.push(board([]));
+        const created = yield* create(service);
+        const managerId = created.id;
+        yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        controls.launchFailures = 1;
+        controls.duringLaunch = service
+          .retireManager({ requestId: "retire-1", managerId })
+          .pipe(Effect.asVoid);
+
+        const failed = yield* service
+          .approveOnboarding({ requestId: "approve-1", managerId, result: RESULT })
+          .pipe(Effect.flip);
+        assert.strictEqual(failed.reason, "unavailable");
+        assert.include(failed.message, "stays retired");
+        const [retired] = yield* service.listManagers({ includeRetired: true });
+        assert.strictEqual(retired!.state, "retired");
+        assert.strictEqual(retired!.threadId, created.threadId);
+        assert.isNull(retired!.onboardingResult);
+        assert.deepStrictEqual(settles, []);
+      }),
+    ),
   );
 
   it.effect("replays an approval without launching the new thread again", () =>

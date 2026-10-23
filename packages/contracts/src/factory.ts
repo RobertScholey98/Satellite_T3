@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthorizationError } from "./auth.ts";
 import {
+  MessageId,
   NonNegativeInt,
   PositiveInt,
   ProjectId,
@@ -351,6 +352,8 @@ export const FactoryManager = Schema.Struct({
   onboardingThreadId: Schema.NullOr(ThreadId).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** The primed thread's first message, so a client can fold it by id; null before approval. */
+  primingMessageId: Schema.NullOr(MessageId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   /** The latest proposal while onboarding; null before the first one and after approval. */
   onboardingProposal: Schema.NullOr(FactoryOnboardingProposal),
   /** Null until the user approves onboarding. */

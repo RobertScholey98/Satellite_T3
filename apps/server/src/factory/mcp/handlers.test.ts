@@ -48,6 +48,9 @@ import { FactoryToolkit } from "./tools.ts";
 
 const MANAGER_THREAD = ThreadId.make("thread-manager");
 const OTHER_THREAD = ThreadId.make("thread-other");
+const ONBOARDED_THREAD = ThreadId.make("thread-onboarded");
+const ONBOARDING_FINISHED =
+  "This thread's onboarding is finished; the manager now runs in a new thread.";
 const LEAD_THREAD = ThreadId.make("thread-lead");
 const CHILD_THREAD = ThreadId.make("thread-child");
 const WORKER_THREAD = ThreadId.make("thread-worker");
@@ -91,6 +94,7 @@ const manager: FactoryManager = {
   onboardingProposal: null,
   onboardingResult: null,
   onboardingThreadId: null,
+  primingMessageId: null,
   modelSelection: null,
   activeAssignments: 0,
   waitingOnYou: 0,
@@ -357,6 +361,8 @@ const makeHarness = Effect.gen(function* () {
   const dependencies = Layer.mergeAll(
     Layer.mock(FactoryService)({
       managerForThread: (threadId) => Effect.succeed(threadId === MANAGER_THREAD ? manager : null),
+      finishedOnboardingMessage: (threadId) =>
+        Effect.succeed(threadId === ONBOARDED_THREAD ? ONBOARDING_FINISHED : null),
       proposeOnboarding: (_threadId, proposed) =>
         Ref.update(proposals, (recorded) => [...recorded, proposed]).pipe(
           Effect.as({
@@ -601,6 +607,14 @@ describe("factory_status", () => {
         message: "This thread is not an engineering manager.",
       });
       assert.deepStrictEqual(yield* Ref.get(harness.statusRequests), []);
+    }),
+  );
+
+  it.effect("tells a finished onboarding thread where its manager went", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness.call("factory_status", {}, ONBOARDED_THREAD).pipe(Effect.flip);
+      assert.deepInclude(failure, { reason: "not-found", message: ONBOARDING_FINISHED });
     }),
   );
 
