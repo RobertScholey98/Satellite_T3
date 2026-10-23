@@ -12,9 +12,8 @@ Open **Factory** from the bottom of the sidebar, or choose **Open factory** in t
 pool from your enabled Claude and Codex models and one **Standard** team of an implementer, a
 reviewer and a verifier. Nothing is saved until you press **Save**.
 
-- **Pickup** is the guidance the manager reads before starting a Ready ticket on its own, and how
-  many assignments may run at once. Leave the guidance empty and nothing starts without you. Pickup
-  needs a connected board; see [Issues](./issues.md).
+- **Pickup** sets how many assignments may run at once. Whether a manager picks up tickets on its
+  own, from which columns, and with what guidance is set per manager during onboarding.
 - **Models** is the pool every factory thread must start on, with the manager's model, the lead's
   model by ticket size, and an allow-list per worker role.
 - **Teams** lists the presets the manager chooses from. A preset has a name, when to use it, its
@@ -29,8 +28,11 @@ reviewer and a verifier. Nothing is saved until you press **Save**.
 
 On the new-thread screen, turn on the **Engineering manager** toggle left of the checkout selector.
 Type a name for the manager and send. The manager's thread opens pinned and starts onboarding: it
-reads the project, proposes what it found and which files it must never change, and asks you to
-approve. A project has one manager; retire it from its **Factory** row to create another.
+reads the project and proposes how it should work: its purpose, whether it may pick up tickets on
+its own and from which of the board's Ready columns, questions for you with its recommended answer,
+and the files no team may change. Pickup is off unless you turn it on, and it needs a connected
+board; see [Issues](./issues.md). Your answers become project rules that the manager and every lead
+it starts follow. A project has one manager; retire it from its **Factory** row to create another.
 
 ## Living with a manager
 

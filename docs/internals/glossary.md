@@ -71,3 +71,14 @@ See [composer context references](./composer-context-references.md) for the cont
 | Attempt            | A thread and worktree started from a ticket. Owned by the environment that started it. Ownership never moves.                                                                           |
 | Owning environment | The only environment that moves a ticket on behalf of its attempt. It writes directly to the remote board. Other environments only refresh their stored copy.                           |
 | Manual move        | A ticket move made by a person on any machine. Wins over an automatic move that arrives later from an attempt.                                                                          |
+
+## Factory
+
+| Term              | Meaning                                                                                                                                                                                                                                                         |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Manager           | The standing agent for a project. It commissions leads, recovers stalled work, holds retros and, with pickup on, picks up tickets. It never writes code. Its record holds its onboarding result.                                                                |
+| Onboarding result | The manager configuration the user approves at the end of onboarding, kept for the manager's life: purpose, pickup, pickup columns, pickup guidance, project rules, control paths and the manager's concurrency cap. The proposal that produced it is not kept. |
+| Project rule      | A question the manager asked while onboarding, with the user's chosen answer, such as whether leads may change dependency manifests. Rendered into the project section of the manager's and its leads' role skills.                                             |
+| Pickup            | The manager taking tickets on its own. Off unless the user switches it on in the onboarding result.                                                                                                                                                             |
+| Pickup column     | A board column a manager picks up from. Chosen from the board's Ready columns, so pickup is never wider than what the user can start by hand.                                                                                                                   |
+| Control path      | A path in the project that teams may not edit. The manager proposes the list with a reason for each, and the user confirms it in the onboarding result.                                                                                                         |
