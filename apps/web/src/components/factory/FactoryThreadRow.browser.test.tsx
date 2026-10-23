@@ -3,6 +3,8 @@ import {
   ProjectId,
   ThreadId,
   type FactoryAssignment,
+  type FactoryManager,
+  type FactoryOnboardingProposal,
   type FactoryWorkspaceFeed,
 } from "@t3tools/contracts";
 import { expect, it, vi } from "vite-plus/test";
@@ -10,6 +12,7 @@ import { page } from "vite-plus/test/browser";
 
 const state = vi.hoisted(() => ({
   feed: undefined as FactoryWorkspaceFeed | undefined,
+  managers: [] as ReadonlyArray<FactoryManager>,
   takeOver: vi.fn(),
   other: vi.fn(),
 }));
@@ -18,6 +21,10 @@ vi.mock(import("./factoryWorkspaceState"), async (importOriginal) => ({
   useFactoryWorkspaceFeed: () => state.feed,
 }));
 // Permissions are read through atoms; this test is about the row, so every grant holds.
+vi.mock(import("./factoryState"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useFactoryManagers: () => state.managers,
+}));
 vi.mock(import("@effect/atom-react"), async (importOriginal) => ({
   ...(await importOriginal()),
   useAtomValue: (() => true) as never,
@@ -86,6 +93,7 @@ function leadFeed(takenOver: boolean): FactoryWorkspaceFeed {
 
 function setup() {
   state.feed = leadFeed(false);
+  state.managers = [];
   state.takeOver.mockReset().mockResolvedValue({ _tag: "Success", value: {} as FactoryAssignment });
   state.other.mockReset().mockResolvedValue({ _tag: "Success", value: {} });
 }
@@ -111,4 +119,51 @@ it("takes over a managed lead's thread and then reads as taken over", async () =
   await expect.element(screen.getByText("Taken over by you")).toBeInTheDocument();
   await screen.getByRole("button", { name: "Factory lead actions" }).click();
   await expect.element(page.getByRole("menuitem", { name: "Hand back" })).toBeInTheDocument();
+});
+
+function onboardingManager(proposal: FactoryOnboardingProposal | null): FactoryManager {
+  return {
+    id: "manager",
+    projectId: ProjectId.make("project"),
+    name: "Ada",
+    state: "onboarding",
+    threadId: ThreadId.make("manager-thread"),
+    onboardingProposal: proposal,
+    onboardingResult: null,
+    modelSelection: null,
+    activeAssignments: 0,
+    waitingOnYou: 0,
+    createdAt: "2026-10-23T00:00:00.000Z",
+    updatedAt: "2026-10-23T00:00:00.000Z",
+  };
+}
+
+it("tells an onboarding manager's thread whether its proposal is ready", async () => {
+  setup();
+  const managerThreadId = ThreadId.make("manager-thread");
+  const onboardingFeed = (): FactoryWorkspaceFeed => ({
+    managers: [{ ...leadFeed(false).managers[0]!, state: "onboarding", waitingOnYou: 0 }],
+    members: [],
+    assignments: [],
+  });
+  state.feed = onboardingFeed();
+  // No config or log loads here; the row shows the onboarding status instead of a pickup decision.
+  state.other.mockResolvedValue({ _tag: "Failure", cause: null });
+  state.managers = [onboardingManager(null)];
+  await using screen = await render(
+    <FactoryThreadRow environmentId={environmentId} threadId={managerThreadId} />,
+  );
+  await expect
+    .element(screen.getByText("Waiting for its onboarding proposal").first())
+    .toBeInTheDocument();
+
+  state.managers = [onboardingManager({} as FactoryOnboardingProposal)];
+  // The mocked managers hook does not subscribe, so a fresh feed is what re-renders the row.
+  state.feed = onboardingFeed();
+  await screen.rerender(
+    <FactoryThreadRow environmentId={environmentId} threadId={managerThreadId} />,
+  );
+  await expect
+    .element(screen.getByText("Onboarding proposal ready for review").first())
+    .toBeInTheDocument();
 });
