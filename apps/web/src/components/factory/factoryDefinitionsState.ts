@@ -94,5 +94,14 @@ export function useFactoryDefinitions(environmentId: EnvironmentId) {
     return null;
   };
 
-  return { view, loadError, save, remove, saveSettings };
+  /** Rereads the files after something other than these writes changed them, such as a pull. */
+  const refresh = async (): Promise<FactoryDefinitionsWriteResult> => {
+    const result = await getDefinitions({ environmentId, input: {} });
+    if (result._tag !== "Success") return failureMessage(result) ?? "Cancelled.";
+    setLoadError(null);
+    setView(result.value);
+    return null;
+  };
+
+  return { view, loadError, save, remove, saveSettings, refresh, setView };
 }

@@ -31,6 +31,26 @@ describe("factory config zips", () => {
   });
 });
 
+describe("unzipping a zipped config folder", () => {
+  it("strips the one folder every file sits in", async () => {
+    const zip = new JSZip();
+    zip.file("factory/factory.yaml", "version: 1\n");
+    zip.file("factory/workers/implementer.md", "brief\n");
+
+    expect(await unzipFactoryBundle(await zip.generateAsync({ type: "uint8array" }))).toEqual({
+      files: [
+        { path: "factory.yaml", contents: "version: 1\n" },
+        { path: "workers/implementer.md", contents: "brief\n" },
+      ],
+    });
+  });
+
+  it("keeps a layout folder that happens to hold every file", async () => {
+    const bundle = { files: [{ path: "workers/implementer.md", contents: "brief\n" }] };
+    expect(await unzipFactoryBundle(await zipFactoryBundle(bundle))).toEqual(bundle);
+  });
+});
+
 describe("factoryConfigCommitMessage", () => {
   it("names each changed definition once, a team by its folder", () => {
     expect(

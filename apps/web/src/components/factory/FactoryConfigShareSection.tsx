@@ -1,13 +1,12 @@
 import type {
   EnvironmentId,
   FactoryConfigBundle,
-  FactoryDefinitionsView,
   FactoryImportChoice,
   FactoryImportPreview,
   FactoryModelRef,
 } from "@t3tools/contracts";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
-import { type ChangeEvent, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, useRef, useState } from "react";
 
 import { useAtomCommand } from "~/state/use-atom-command";
 import { SettingsRow, SettingsSection } from "../settings/settingsLayout";
@@ -27,6 +26,7 @@ import {
 import { Radio, RadioGroup } from "../ui/radio-group";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { downloadBytes, unzipFactoryBundle, zipFactoryBundle } from "./factoryConfigFiles";
+import { useFactoryDefinitions } from "./factoryDefinitionsState";
 import { factoryEnvironment, factoryErrorMessage, unwrapFactoryResult } from "./factoryState";
 
 function failureMessage<A, E>(result: AtomCommandResult<A, E>): string | null {
@@ -68,9 +68,7 @@ export function FactoryConfigShareSection({
   readonly environmentId: EnvironmentId;
   readonly canEdit: boolean;
 }) {
-  const getDefinitions = useAtomCommand(factoryEnvironment.getDefinitions, {
-    reportFailure: false,
-  });
+  const definitions = useFactoryDefinitions(environmentId);
   const exportConfig = useAtomCommand(factoryEnvironment.exportConfig, { reportFailure: false });
   const previewImport = useAtomCommand(factoryEnvironment.previewConfigImport, {
     reportFailure: false,
@@ -79,7 +77,6 @@ export function FactoryConfigShareSection({
     reportFailure: false,
   });
 
-  const [definitions, setDefinitions] = useState<FactoryDefinitionsView | null>(null);
   const [scope, setScope] = useState<"all" | "teams">("all");
   const [teamIds, setTeamIds] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -89,17 +86,7 @@ export function FactoryConfigShareSection({
   const [applyError, setApplyError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    let current = true;
-    void getDefinitions({ environmentId, input: {} }).then((result) => {
-      if (current && result._tag === "Success") setDefinitions(result.value);
-    });
-    return () => {
-      current = false;
-    };
-  }, [environmentId, getDefinitions]);
-
-  const teams = definitions?.teams ?? [];
+  const teams = definitions.view?.teams ?? [];
   const selectedTeams = teams.filter((team) => teamIds.has(team.id));
 
   const runExport = async () => {
@@ -118,8 +105,12 @@ export function FactoryConfigShareSection({
       setError(failureMessage(result));
       return;
     }
-    const bytes = await zipFactoryBundle(result.value);
+    const bytes = await zipFactoryBundle(result.value).catch(() => null);
     setBusy(false);
+    if (bytes === null) {
+      setError("The export could not be zipped.");
+      return;
+    }
     const name =
       scope === "all" ? "factory" : selectedTeams.length === 1 ? selectedTeams[0]!.id : "teams";
     downloadBytes(`${name}.satellite-factory.zip`, bytes);
@@ -187,7 +178,8 @@ export function FactoryConfigShareSection({
       setApplyError(failureMessage(result));
       return;
     }
-    setDefinitions(result.value);
+    // The other factory sections read this view, so they show the imported definitions at once.
+    definitions.setView(result.value);
     setDraft(null);
     setNotice(`Imported ${current.fileName}.`);
   };
@@ -225,6 +217,11 @@ export function FactoryConfigShareSection({
             Selected teams, with the workers and leads they were built from
           </label>
         </RadioGroup>
+        {definitions.view === null && definitions.loadError !== null ? (
+          <p className="text-sm text-destructive">
+            The teams could not be read: {definitions.loadError}
+          </p>
+        ) : null}
         {scope === "teams" ? (
           <div className="space-y-1.5 pl-6">
             {teams.map((team) => (
@@ -335,12 +332,10 @@ function ImportDialogBody({
 }) {
   const { preview, mode } = draft;
   const merging = mode === "merge";
-  const losesModel = (model: FactoryModelRef) =>
-    preview.items
-      .filter((item) =>
-        item.modelsNeedingPool?.some((needed) => modelKey(needed) === modelKey(model)),
-      )
-      .map((item) => item.name);
+  const needing = (model: FactoryModelRef) =>
+    preview.items.filter((item) =>
+      item.modelsNeedingPool?.some((needed) => modelKey(needed) === modelKey(model)),
+    );
 
   return (
     <>
@@ -424,7 +419,11 @@ function ImportDialogBody({
               <p className="text-sm font-medium">Models to add to the pool</p>
               {preview.poolAdditions.map((model) => {
                 const key = modelKey(model);
-                const losers = losesModel(model);
+                // A flagged item would be left out entirely rather than lose a model.
+                const skipped = needing(model).filter((item) => item.skippedUnlessPoolAdded);
+                const losers = needing(model)
+                  .filter((item) => !item.skippedUnlessPoolAdded)
+                  .map((item) => item.name);
                 return (
                   <div key={key} className="space-y-0.5">
                     <label className="flex items-center gap-2 text-sm">
@@ -439,6 +438,13 @@ function ImportDialogBody({
                       />
                       <span className="font-mono">{key}</span>
                     </label>
+                    {draft.poolAdditions.has(key)
+                      ? null
+                      : skipped.map((item) => (
+                          <p key={itemKey(item)} className="pl-6 text-xs text-muted-foreground">
+                            {item.name}: skipped unless you add its models to the pool.
+                          </p>
+                        ))}
                     {losers.length > 0 && !draft.poolAdditions.has(key) ? (
                       <p className="pl-6 text-xs text-muted-foreground">
                         Without it, {losers.join(", ")} lose this model.
