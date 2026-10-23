@@ -7,6 +7,7 @@ import {
   type FactoryCompleteInput,
   type FactoryCreateTeamInput,
   type FactoryDelegateInput,
+  type FactoryDefinitionsView,
   type FactoryDelegationPlan,
   type FactoryDependency,
   type FactoryDraftTicketInput,
@@ -42,9 +43,10 @@ import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import * as McpToolAccessTestkit from "../../mcp/McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
+import { FactoryConfigStore } from "../config/FactoryConfigStore.ts";
 import { FactoryService } from "../FactoryService.ts";
 import * as FactoryMcp from "./handlers.ts";
-import { FactoryToolkit } from "./tools.ts";
+import { FactoryToolkitWithDefinitions as FactoryToolkit } from "./tools.ts";
 
 const MANAGER_THREAD = ThreadId.make("thread-manager");
 const OTHER_THREAD = ThreadId.make("thread-other");
@@ -310,6 +312,23 @@ const drafted: FactoryDraftTicketResult = {
   similar: [{ kind: "ticket", id: "issue-9", title: "Share test fixtures", url: null }],
 };
 
+const definitions: FactoryDefinitionsView = {
+  configured: true,
+  settings: { version: 1, modelPool: [], recoveryAllowance: 1 },
+  workers: [
+    {
+      id: "reviewer",
+      name: "reviewer",
+      models: { dynamic: true, models: [] },
+      description: "Review the diff.",
+    },
+  ],
+  leads: [],
+  managers: [],
+  teams: [],
+  problems: [{ path: "teams/broken/team.md", message: "Missing name." }],
+};
+
 type LifecycleCall =
   | { readonly method: "claimComplete"; readonly threadId: ThreadId; readonly input: unknown }
   | { readonly method: "reportDependency"; readonly threadId: ThreadId; readonly input: unknown }
@@ -471,11 +490,14 @@ const makeHarness = Effect.gen(function* () {
           input,
         }).pipe(Effect.as(delegated)),
     }),
+    Layer.mock(FactoryConfigStore)({ directory: "factory", read: Effect.succeed(definitions) }),
     McpToolAccessTestkit.liveThreadsLayer,
   );
   const toolkit = yield* FactoryToolkit.pipe(
     Effect.provide(
-      McpToolAccess.HandlersLayer.layer(FactoryMcp.layer).pipe(Layer.provide(dependencies)),
+      McpToolAccess.HandlersLayer.layer(FactoryMcp.layerWithDefinitions).pipe(
+        Layer.provide(dependencies),
+      ),
     ),
   );
   const call = <Name extends keyof typeof FactoryToolkit.tools>(
@@ -592,6 +614,34 @@ describe("factory_role_brief", () => {
         .call("factory_role_brief", { role: "lead" }, MANAGER_THREAD, ["preview"])
         .pipe(Effect.flip);
       assert.strictEqual(failure._tag, "McpCapabilityUnavailableError");
+    }),
+  );
+});
+
+describe("factory_definitions", () => {
+  it.effect("returns the factory config to a manager and to a lead", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const expected = {
+        ...definitions,
+        message: "0 teams and 1 worker. 1 file could not be read.",
+      };
+      assert.deepStrictEqual(yield* harness.call("factory_definitions", {}), expected);
+      assert.deepStrictEqual(yield* harness.call("factory_definitions", {}, LEAD_THREAD), expected);
+    }),
+  );
+
+  it.effect("refuses a worker", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const failure = yield* harness
+        .call("factory_definitions", {}, WORKER_THREAD)
+        .pipe(Effect.flip);
+      assert.deepInclude(failure, {
+        _tag: "FactoryToolFailedError",
+        reason: "not-found",
+        message: "This thread is not an engineering manager or a factory lead.",
+      });
     }),
   );
 });

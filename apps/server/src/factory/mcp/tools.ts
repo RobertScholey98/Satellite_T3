@@ -4,6 +4,7 @@ import {
   FactoryCommissionInput,
   FactoryCompleteInput,
   FactoryCreateTeamInput,
+  FactoryDefinitionsView,
   FactoryDelegateInput,
   FactoryDependency,
   FactoryDraftTicketInput,
@@ -37,6 +38,7 @@ import * as Toolkit from "effect/ai/Toolkit";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
+import { FactoryConfigStore } from "../config/FactoryConfigStore.ts";
 import { FactoryService } from "../FactoryService.ts";
 
 export class FactoryToolFailedError extends Schema.TaggedError<FactoryToolFailedError>()(
@@ -94,6 +96,26 @@ const RoleBriefTool = Tool.make("factory_role_brief", {
   dependencies: [McpInvocationContext.McpInvocationContext, FactoryService],
 })
   .annotate(Tool.Title, "Read factory role brief")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+export const DefinitionsResult = Schema.Struct({
+  ...FactoryDefinitionsView.fields,
+  message: Schema.String,
+});
+export type DefinitionsResult = typeof DefinitionsResult.Type;
+
+const DefinitionsTool = Tool.make("factory_definitions", {
+  description:
+    "For an engineering manager or a factory lead. Return the factory config: the model pool, the workers, leads and managers, and each team with its own copies of its lead and members, plus any definition file that could not be read. Only the user changes these definitions, in Satellite; never edit the factory config files directly.",
+  parameters: Tool.EmptyParams,
+  success: DefinitionsResult,
+  failure: FactoryToolFailure,
+  dependencies: [McpInvocationContext.McpInvocationContext, FactoryService, FactoryConfigStore],
+})
+  .annotate(Tool.Title, "Read factory definitions")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
@@ -432,4 +454,13 @@ export const FactoryToolkit = Toolkit.make(
   FindingsTool,
   RetroDoneTool,
   DraftTicketTool,
+);
+
+/**
+ * With `factory_definitions`, which joins the served toolkit when the factory staffs teams from the
+ * definition files. Until then an agent could read teams the factory does not use.
+ */
+export const FactoryToolkitWithDefinitions = Toolkit.merge(
+  FactoryToolkit,
+  Toolkit.make(DefinitionsTool),
 );

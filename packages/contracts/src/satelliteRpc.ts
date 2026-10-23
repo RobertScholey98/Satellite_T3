@@ -14,6 +14,18 @@ import {
   WsFactoryAssignmentsRefreshDigestRpc,
   WsFactoryAssignmentsSubscribeRpc,
   WsFactoryConfigGetRpc,
+  WsFactoryDefinitionsGetRpc,
+  WsFactoryConfigRepoStatusRpc,
+  WsFactoryConfigRepoConnectRpc,
+  WsFactoryConfigRepoCheckRpc,
+  WsFactoryConfigRepoPushRpc,
+  WsFactoryConfigRepoPullRpc,
+  WsFactoryConfigRepoResolveRpc,
+  WsFactoryConfigRepoDiscardRpc,
+  WsFactoryConfigRepoDisconnectRpc,
+  WsFactoryConfigExportRpc,
+  WsFactoryConfigImportPreviewRpc,
+  WsFactoryConfigImportApplyRpc,
   WsFactoryDraftsApplyRpc,
   WsFactoryDraftsApproveRpc,
   WsFactoryDraftsDismissRpc,
@@ -110,6 +122,18 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsFactoryDraftsRestoreRpc,
   WsFactoryStatsGetRpc,
   WsFactoryDraftsApplyRpc,
+  WsFactoryDefinitionsGetRpc,
+  WsFactoryConfigRepoStatusRpc,
+  WsFactoryConfigRepoConnectRpc,
+  WsFactoryConfigRepoCheckRpc,
+  WsFactoryConfigRepoPushRpc,
+  WsFactoryConfigRepoPullRpc,
+  WsFactoryConfigRepoResolveRpc,
+  WsFactoryConfigRepoDiscardRpc,
+  WsFactoryConfigRepoDisconnectRpc,
+  WsFactoryConfigExportRpc,
+  WsFactoryConfigImportPreviewRpc,
+  WsFactoryConfigImportApplyRpc,
 );
 
 type SatelliteWsRpc = RpcGroup.Rpcs<typeof WsSatelliteRpcGroup>;
@@ -144,4 +168,14 @@ export const SATELLITE_CLIENT_GUARDED_RPC_SCOPES = {
   [FACTORY_WS_METHODS.factoryDraftsRestore]: AuthOrchestrationOperateScope,
   // Applying a draft writes the environment's factory config, as a config update does.
   [FACTORY_WS_METHODS.factoryDraftsApply]: AuthSettingsWriteScope,
+  // The config repo runs Git against the remote with the environment's own credentials.
+  [FACTORY_WS_METHODS.factoryConfigRepoConnect]: AuthSettingsWriteScope,
+  [FACTORY_WS_METHODS.factoryConfigRepoCheck]: AuthSettingsWriteScope,
+  [FACTORY_WS_METHODS.factoryConfigRepoPush]: AuthSettingsWriteScope,
+  [FACTORY_WS_METHODS.factoryConfigRepoPull]: AuthSettingsWriteScope,
+  [FACTORY_WS_METHODS.factoryConfigRepoResolve]: AuthSettingsWriteScope,
+  [FACTORY_WS_METHODS.factoryConfigRepoDiscard]: AuthSettingsWriteScope,
+  [FACTORY_WS_METHODS.factoryConfigRepoDisconnect]: AuthSettingsWriteScope,
+  // An import rewrites the environment's factory config files.
+  [FACTORY_WS_METHODS.factoryConfigImportApply]: AuthSettingsWriteScope,
 } as const satisfies Partial<Readonly<Record<SatelliteWsRpcMethod, AuthEnvironmentScope>>>;

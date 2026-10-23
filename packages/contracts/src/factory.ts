@@ -12,6 +12,19 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
+import {
+  FactoryConfigRepoConnectInput,
+  FactoryConfigBundle,
+  FactoryConfigRepoConnectResult,
+  FactoryConfigRepoDisconnectInput,
+  FactoryConfigRepoPushInput,
+  FactoryConfigRepoResolveInput,
+  FactoryConfigRepoStatus,
+  FactoryDefinitionsView,
+  FactoryExportSelection,
+  FactoryImportDecision,
+  FactoryImportPreview,
+} from "./factoryDefinitions.ts";
 import { IssueBoardColumn, IssueRef, IssueSummary } from "./issues.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
@@ -49,6 +62,18 @@ export const FACTORY_WS_METHODS = {
   factoryDraftsRestore: "factory.drafts.restore",
   factoryStatsGet: "factory.stats.get",
   factoryDraftsApply: "factory.drafts.apply",
+  factoryDefinitionsGet: "factory.definitions.get",
+  factoryConfigRepoStatus: "factory.configRepo.status",
+  factoryConfigRepoConnect: "factory.configRepo.connect",
+  factoryConfigRepoCheck: "factory.configRepo.check",
+  factoryConfigRepoPush: "factory.configRepo.push",
+  factoryConfigRepoPull: "factory.configRepo.pull",
+  factoryConfigRepoResolve: "factory.configRepo.resolve",
+  factoryConfigRepoDiscard: "factory.configRepo.discard",
+  factoryConfigRepoDisconnect: "factory.configRepo.disconnect",
+  factoryConfigExport: "factory.config.export",
+  factoryConfigImportPreview: "factory.config.importPreview",
+  factoryConfigImportApply: "factory.config.importApply",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -1248,5 +1273,81 @@ export const WsFactoryStatsGetRpc = Rpc.make(FACTORY_WS_METHODS.factoryStatsGet,
 export const WsFactoryDraftsApplyRpc = Rpc.make(FACTORY_WS_METHODS.factoryDraftsApply, {
   payload: FactoryDraftsApplyInput,
   success: FactoryTicketDraft,
+  error: FactoryRpcError,
+});
+
+const NoInput = Schema.Struct({});
+
+export const WsFactoryDefinitionsGetRpc = Rpc.make(FACTORY_WS_METHODS.factoryDefinitionsGet, {
+  payload: NoInput,
+  success: FactoryDefinitionsView,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoStatusRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoStatus, {
+  payload: NoInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoConnectRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoConnect, {
+  payload: FactoryConfigRepoConnectInput,
+  success: FactoryConfigRepoConnectResult,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoCheckRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoCheck, {
+  payload: NoInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoPushRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoPush, {
+  payload: FactoryConfigRepoPushInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoPullRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoPull, {
+  payload: NoInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoResolveRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoResolve, {
+  payload: FactoryConfigRepoResolveInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoDiscardRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoDiscard, {
+  payload: NoInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoDisconnectRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryConfigRepoDisconnect,
+  {
+    payload: FactoryConfigRepoDisconnectInput,
+    success: FactoryConfigRepoStatus,
+    error: FactoryRpcError,
+  },
+);
+
+/** An export is built from definitions on the environment; the client only zips the files. */
+export const WsFactoryConfigExportRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigExport, {
+  payload: FactoryExportSelection,
+  success: FactoryConfigBundle,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigImportPreviewRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryConfigImportPreview,
+  {
+    payload: FactoryConfigBundle,
+    success: FactoryImportPreview,
+    error: FactoryRpcError,
+  },
+);
+export const FactoryConfigImportApplyInput = Schema.Struct({
+  bundle: FactoryConfigBundle,
+  decision: FactoryImportDecision,
+});
+export type FactoryConfigImportApplyInput = typeof FactoryConfigImportApplyInput.Type;
+export const WsFactoryConfigImportApplyRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigImportApply, {
+  payload: FactoryConfigImportApplyInput,
+  success: FactoryDefinitionsView,
   error: FactoryRpcError,
 });

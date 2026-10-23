@@ -1,6 +1,7 @@
 import type {
   FactoryAssignment,
   FactoryAssignmentState,
+  FactoryDefinitionsView,
   FactoryDraftTicketResult,
   FactoryOperationError,
   FactoryRoleBrief,
@@ -9,12 +10,14 @@ import type {
   OrchestratorMcpDelegateTaskInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Struct from "effect/Struct";
 
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
+import { FactoryConfigStore } from "../config/FactoryConfigStore.ts";
 import { FactoryService } from "../FactoryService.ts";
-import { FactoryToolFailedError, FactoryToolkit } from "./tools.ts";
+import { FactoryToolFailedError, FactoryToolkit, FactoryToolkitWithDefinitions } from "./tools.ts";
 
 const toolFailure = ({ reason, message }: FactoryOperationError) =>
   new FactoryToolFailedError({ reason, message });
@@ -27,6 +30,7 @@ const briefSource: Record<FactoryRoleBrief["source"], string> = {
 
 const NOT_A_MANAGER = "This thread is not an engineering manager.";
 const NOT_A_LEAD = "This thread is not a factory lead.";
+const NOT_A_MANAGER_OR_LEAD = "This thread is not an engineering manager or a factory lead.";
 const NOT_A_MEMBER = "This thread is not a member of a live factory team.";
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -40,6 +44,13 @@ const statusMessage = ({
   const unjudged = readyTickets.filter((ticket) => !ticket.judged).length;
   const capacity = capacityFree ? "capacity is free" : "no capacity is free";
   return `${activeCount} of ${plural(concurrencyCap, "slot")} in use, so ${capacity}; ${plural(unjudged, "Ready ticket")} await judgement.`;
+};
+
+const definitionsMessage = ({ configured, workers, teams, problems }: FactoryDefinitionsView) => {
+  if (!configured) return "No factory config is saved on this environment yet.";
+  const unread =
+    problems.length === 0 ? "" : ` ${plural(problems.length, "file")} could not be read.`;
+  return `${plural(teams.length, "team")} and ${plural(workers.length, "worker")}.${unread}`;
 };
 
 const started = (assignment: FactoryAssignment) =>
@@ -73,6 +84,7 @@ const endedAs: Partial<Record<FactoryAssignmentState, string>> = {
 
 const make = Effect.gen(function* () {
   const factory = yield* FactoryService;
+  const configStore = yield* FactoryConfigStore;
 
   const callingManager = Effect.fn("FactoryMcp.callingManager")(function* (notMember: string) {
     const scope = yield* McpInvocationContext.requireMcpCapability("orchestration");
@@ -107,6 +119,12 @@ const make = Effect.gen(function* () {
       return yield* new FactoryToolFailedError({ reason: "not-found", message: notMember });
     return { threadId, assignment };
   });
+
+  const callingManagerOrLead = () =>
+    callingManager(NOT_A_MANAGER_OR_LEAD).pipe(
+      Effect.catch(() => callingLead(NOT_A_MANAGER_OR_LEAD)),
+      Effect.asVoid,
+    );
 
   /** A lead or worker. The service still refuses a member whose own thread has ended. */
   const callingMember = Effect.fn("FactoryMcp.callingMember")(function* () {
@@ -145,7 +163,7 @@ const make = Effect.gen(function* () {
     if (led === null || led.leadThreadId !== threadId)
       return yield* new FactoryToolFailedError({
         reason: "not-found",
-        message: "This thread is not an engineering manager or a factory lead.",
+        message: NOT_A_MANAGER_OR_LEAD,
       });
     if (led.id !== assignmentId) return yield* notFound;
     return led;
@@ -179,6 +197,13 @@ const make = Effect.gen(function* () {
           ...brief,
           message: `The ${role} brief, from ${briefSource[brief.source]}.`,
         };
+      }),
+    ),
+    factory_definitions: McpToolAccess.reads(() =>
+      Effect.gen(function* () {
+        yield* callingManagerOrLead();
+        const view = yield* configStore.read.pipe(Effect.mapError(toolFailure));
+        return { ...view, message: definitionsMessage(view) };
       }),
     ),
     factory_status: McpToolAccess.reads(() =>
@@ -378,7 +403,12 @@ const make = Effect.gen(function* () {
         return { ...result, message: draftMessage(result) };
       }),
     ),
-  } satisfies McpToolAccess.Handlers<typeof FactoryToolkit.tools>;
+  } satisfies McpToolAccess.Handlers<typeof FactoryToolkitWithDefinitions.tools>;
 });
 
-export const layer = McpToolAccess.toLayer(FactoryToolkit, make);
+export const layer = McpToolAccess.toLayer(
+  FactoryToolkit,
+  Effect.map(make, (handlers) => Struct.omit(handlers, ["factory_definitions"])),
+);
+
+export const layerWithDefinitions = McpToolAccess.toLayer(FactoryToolkitWithDefinitions, make);
