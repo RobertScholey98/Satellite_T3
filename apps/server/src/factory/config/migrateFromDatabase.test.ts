@@ -252,9 +252,25 @@ describe("planFactoryConfigMigration", () => {
 });
 
 const encodeConfig = Schema.encodeSync(Schema.fromJsonString(FactoryConfig));
+const encodeOverride = Schema.encodeSync(Schema.fromJsonString(FactoryConfigOverride));
+
+const projectRow = (projectId: ProjectId, title: string): ProjectStore.ProjectRow => ({
+  projectId,
+  title,
+  workspaceRoot: "/repo",
+  defaultModelSelection: null,
+  defaultThreadEnvMode: null,
+  autoPull: false,
+  faviconPath: null,
+  projectIcon: null,
+  scripts: [],
+  createdAt: "2026-10-20T00:00:00.000Z",
+  updatedAt: "2026-10-20T00:00:00.000Z",
+  deletedAt: null,
+});
 
 /** Runs the migration against a store in `directory`, as the server does at startup. */
-const migrate = (directory: string) =>
+const migrate = (directory: string, titles: Readonly<Record<string, string>> = {}) =>
   migrateFactoryConfigFromDatabase().pipe(
     Effect.provide(
       Layer.mergeAll(
@@ -264,7 +280,12 @@ const migrate = (directory: string) =>
             [ProviderInstanceId.make("codex-work")]: { driver: ProviderDriverKind.make("codex") },
           },
         }),
-        Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeedNone }),
+        Layer.mock(ProjectStore.ProjectStoreV2)({
+          get: (projectId) =>
+            titles[projectId] === undefined
+              ? Effect.succeedNone
+              : Effect.succeedSome(projectRow(projectId, titles[projectId])),
+        }),
       ),
     ),
   );
@@ -274,6 +295,19 @@ const readStore = (directory: string) =>
     const store = yield* FactoryConfigStore.FactoryConfigStore;
     return yield* store.read;
   }).pipe(Effect.provide(FactoryConfigStore.layerAt(directory)));
+
+const saveRow = (scopeKey: string, configJson: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO factory_config(scope_key,config_json,updated_at)
+        VALUES(${scopeKey},${configJson},'2026-10-20T00:00:00.000Z')`;
+  });
+
+const savedRows = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ scope_key: string; config_json: string }>`
+      SELECT scope_key,config_json FROM factory_config ORDER BY scope_key`;
+});
 
 const withEnvironment = <A, E>(
   effect: Effect.Effect<
@@ -292,17 +326,24 @@ const withEnvironment = <A, E>(
     ),
   );
 
+const docsPreset = {
+  id: "preset-docs",
+  name: "Docs",
+  useWhen: "Docs changes.",
+  workflow: "Review the wording.",
+  createdBy: "user" as const,
+  members: [{ role: "reviewer" as const, count: 1 }],
+};
+
 describe("migrateFactoryConfigFromDatabase", () => {
-  it.effect("writes the saved config as files and removes the retired role files", () =>
+  it.effect("writes the saved config as files and keeps the role files", () =>
     withEnvironment(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const sql = yield* SqlClient.SqlClient;
         const directory = yield* fs.makeTempDirectoryScoped();
         const saved = encodeConfig(liveEnvironment);
-        yield* sql`INSERT INTO factory_config(scope_key,config_json,updated_at)
-            VALUES('environment',${saved},'2026-10-20T00:00:00.000Z')`;
+        yield* saveRow("environment", saved);
         yield* fs.makeDirectory(path.join(directory, "roles"));
         yield* fs.writeFileString(path.join(directory, "roles", "reviewer.md"), "# Our reviewer\n");
 
@@ -328,9 +369,14 @@ describe("migrateFactoryConfigFromDatabase", () => {
           view.teams.map((team) => [team.id, team.members.map((member) => member.id)]),
           [["standard", ["implementer", "reviewer", "verifier"]]],
         );
-        assert.strictEqual(yield* fs.exists(path.join(directory, "roles")), false);
-        const rows = yield* sql<{ config_json: string }>`SELECT config_json FROM factory_config`;
-        assert.deepStrictEqual(rows, [{ config_json: saved }]);
+        // Live briefs still read the role files until they switch to definitions.
+        assert.strictEqual(
+          yield* fs.readFileString(path.join(directory, "roles", "reviewer.md")),
+          "# Our reviewer\n",
+        );
+        assert.deepStrictEqual(yield* savedRows, [
+          { scope_key: "environment", config_json: saved },
+        ]);
       }),
     ),
   );
@@ -342,8 +388,7 @@ describe("migrateFactoryConfigFromDatabase", () => {
         const path = yield* Path.Path;
         const sql = yield* SqlClient.SqlClient;
         const directory = yield* fs.makeTempDirectoryScoped();
-        yield* sql`INSERT INTO factory_config(scope_key,config_json,updated_at)
-            VALUES('environment',${encodeConfig(liveEnvironment)},'2026-10-20T00:00:00.000Z')`;
+        yield* saveRow("environment", encodeConfig(liveEnvironment));
         yield* migrate(directory);
         const first = yield* readStore(directory);
 
@@ -353,10 +398,142 @@ describe("migrateFactoryConfigFromDatabase", () => {
         yield* migrate(directory);
 
         assert.deepStrictEqual(yield* readStore(directory), first);
-        assert.strictEqual(
-          yield* fs.readFileString(path.join(directory, "roles", "lead.md")),
-          "Changed.",
+      }),
+    ),
+  );
+
+  it.effect("finishes a run that stopped before factory.yaml", () =>
+    withEnvironment(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* saveRow("environment", encodeConfig(liveEnvironment));
+        const clean = yield* fs.makeTempDirectoryScoped();
+        yield* migrate(clean);
+        const expected = yield* readStore(clean);
+
+        const interrupted = yield* fs.makeTempDirectoryScoped();
+        const [implementer, reviewer] = expected.workers;
+        yield* Effect.gen(function* () {
+          const store = yield* FactoryConfigStore.FactoryConfigStore;
+          yield* store.writeWorker(implementer!);
+          yield* store.writeWorker({ ...reviewer!, description: "Half-written." });
+        }).pipe(Effect.provide(FactoryConfigStore.layerAt(interrupted)));
+        assert.strictEqual((yield* readStore(interrupted)).configured, false);
+
+        yield* migrate(interrupted);
+
+        assert.deepStrictEqual(yield* readStore(interrupted), expected);
+      }),
+    ),
+  );
+
+  it.effect("migrates a project's own team when the environment saved nothing", () =>
+    withEnvironment(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        yield* saveRow("project:x", encodeOverride({ teamPresets: [docsPreset] }));
+
+        yield* migrate(directory);
+
+        const view = yield* readStore(directory);
+        assert.strictEqual(view.configured, true);
+        assert.deepStrictEqual(
+          view.teams.map((team) => ({
+            id: team.id,
+            name: team.name,
+            members: team.members.map((member) => `${member.count}x ${member.name}`),
+          })),
+          [{ id: "docs", name: "Docs", members: ["1x Reviewer"] }],
         );
+      }),
+    ),
+  );
+
+  it.effect("keeps a clashing team's name within the limit for a long project title", () =>
+    withEnvironment(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        yield* saveRow("environment", encodeConfig(liveEnvironment));
+        yield* saveRow(
+          "project:x",
+          encodeOverride({ teamPresets: [{ ...docsPreset, name: "Standard" }] }),
+        );
+
+        yield* migrate(directory, { x: "A".repeat(85) });
+
+        const view = yield* readStore(directory);
+        assert.deepStrictEqual(view.problems, []);
+        assert.deepStrictEqual(
+          view.teams.map((team) => team.name),
+          ["Standard", `Standard (${"A".repeat(68)}…)`],
+        );
+      }),
+    ),
+  );
+
+  it.effect("fails and writes nothing when the saved config is not JSON", () =>
+    withEnvironment(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        yield* saveRow("environment", "{not json");
+
+        const failure = yield* migrate(directory).pipe(Effect.flip);
+
+        assert.deepInclude(failure, {
+          reason: "storage",
+          message: "The saved factory config could not be read.",
+        });
+        assert.deepStrictEqual(yield* fs.readDirectory(directory), []);
+        assert.deepStrictEqual(yield* savedRows, [
+          { scope_key: "environment", config_json: "{not json" },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("fails and writes nothing when a project override does not decode", () =>
+    withEnvironment(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        yield* saveRow("environment", encodeConfig(liveEnvironment));
+        yield* saveRow("project:x", '{"concurrencyCap":99}');
+
+        const failure = yield* migrate(directory).pipe(Effect.flip);
+
+        assert.deepInclude(failure, {
+          reason: "storage",
+          message: "The saved factory config of project x could not be read.",
+        });
+        assert.deepStrictEqual(yield* fs.readDirectory(directory), []);
+      }),
+    ),
+  );
+
+  it.effect("fails and writes nothing when a definition would not load back", () =>
+    withEnvironment(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped();
+        yield* fs.makeDirectory(path.join(directory, "roles"));
+        yield* fs.writeFileString(
+          path.join(directory, "roles", "implementer.md"),
+          "x".repeat(20_001),
+        );
+
+        const failure = yield* migrate(directory).pipe(Effect.flip);
+
+        assert.deepInclude(failure, { reason: "storage" });
+        assert.isTrue(
+          failure.message.startsWith(
+            "The migrated workers/implementer.md would not load, so nothing was written:",
+          ),
+        );
+        assert.deepStrictEqual(yield* fs.readDirectory(directory), ["roles"]);
       }),
     ),
   );

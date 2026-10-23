@@ -117,19 +117,41 @@ const make = Effect.fn("FactoryConfigStore.make")(function* (directory: string) 
       Effect.mapError(() => storageError("read", relativePath)),
     );
 
+  /** In a read, an entry that cannot be read is a problem for that entry, not a failed read. */
+  const attempt = <A>(
+    relativePath: string,
+    effect: Effect.Effect<A, FactoryOperationError>,
+  ): Effect.Effect<Result.Result<A, FactoryConfigProblem>> =>
+    effect.pipe(
+      Effect.map((value) => Result.succeed(value)),
+      Effect.catch(() =>
+        Effect.succeed(Result.fail({ path: relativePath, message: "Could not be read." })),
+      ),
+    );
+
+  const failures = (results: ReadonlyArray<Result.Result<unknown, FactoryConfigProblem>>) =>
+    results.flatMap((result) => (Result.isFailure(result) ? [result.failure] : []));
+
   // The helpers below run inside one public operation, whose span already covers them.
   const readDefinitions = Effect.fnUntraced(function* <A>(
     kind: Exclude<FactoryDefinitionKind, "team">,
     decode: (input: DefinitionFileInput) => Result.Result<A, FactoryConfigProblem>,
   ) {
     const folder = KIND_DIRECTORY[kind];
-    const stems = yield* listMarkdownStems(folder);
+    const stems = yield* attempt(folder, listMarkdownStems(folder));
+    if (Result.isFailure(stems)) return { definitions: [], problems: [stems.failure] };
     const decoded = yield* Effect.forEach(
-      stems,
+      stems.success,
       (id) => {
         const relativePath = `${folder}/${id}.md`;
-        return readText(relativePath).pipe(
-          Effect.map((text) => (text === null ? null : decode({ path: relativePath, id, text }))),
+        return attempt(relativePath, readText(relativePath)).pipe(
+          Effect.map((text): Result.Result<A, FactoryConfigProblem> | null =>
+            Result.isFailure(text)
+              ? Result.fail(text.failure)
+              : text.success === null
+                ? null
+                : decode({ path: relativePath, id, text: text.success }),
+          ),
         );
       },
       { concurrency: 16 },
@@ -147,41 +169,79 @@ const make = Effect.fn("FactoryConfigStore.make")(function* (directory: string) 
   const readTeam = Effect.fnUntraced(function* (id: string) {
     const teamDirectory = `${KIND_DIRECTORY.team}/${id}`;
     const membersDirectory = `${teamDirectory}/${TEAM_MEMBERS_DIRECTORY}`;
+    const teamPath = `${teamDirectory}/${TEAM_FILE}`;
+    const leadPath = `${teamDirectory}/${TEAM_LEAD_FILE}`;
     const [team, lead, memberIds] = yield* Effect.all([
-      readText(`${teamDirectory}/${TEAM_FILE}`),
-      readText(`${teamDirectory}/${TEAM_LEAD_FILE}`),
-      listMarkdownStems(membersDirectory),
+      attempt(teamPath, readText(teamPath)),
+      attempt(leadPath, readText(leadPath)),
+      attempt(membersDirectory, listMarkdownStems(membersDirectory)),
     ]);
-    const members = yield* Effect.forEach(memberIds, (memberId) =>
-      readText(`${membersDirectory}/${memberId}.md`).pipe(
-        Effect.map((text) => (text === null ? [] : [{ id: memberId, text }])),
-      ),
+    const unread = failures([team, lead, memberIds]);
+    // A team loads whole or not at all, so an unreadable header file skips it.
+    if (Result.isFailure(team) || Result.isFailure(lead)) return { team: null, problems: unread };
+    const members = yield* Effect.forEach(
+      Result.isSuccess(memberIds) ? memberIds.success : [],
+      (memberId) => {
+        const relativePath = `${membersDirectory}/${memberId}.md`;
+        return attempt(relativePath, readText(relativePath)).pipe(
+          Effect.map((text) => ({ id: memberId, text })),
+        );
+      },
     );
-    return decodeTeamFiles({
+    const decoded = decodeTeamFiles({
       id,
       directory: teamDirectory,
-      team,
-      lead,
-      members: members.flat(),
+      team: team.success,
+      lead: lead.success,
+      members: members.flatMap(({ id, text }) =>
+        Result.isSuccess(text) && text.success !== null ? [{ id, text: text.success }] : [],
+      ),
     });
+    return {
+      team: decoded.team,
+      problems: [...unread, ...failures(members.map(({ text }) => text)), ...decoded.problems],
+    };
   });
 
   const readTeams = Effect.gen(function* () {
-    const names = yield* listNames(KIND_DIRECTORY.team);
-    const folders = yield* Effect.filter(names, (name) =>
-      isDirectory(`${KIND_DIRECTORY.team}/${name}`),
+    const names = yield* attempt(KIND_DIRECTORY.team, listNames(KIND_DIRECTORY.team));
+    if (Result.isFailure(names)) return { definitions: [], problems: [names.failure] };
+    const entries = yield* Effect.forEach(names.success, (name) => {
+      const relativePath = `${KIND_DIRECTORY.team}/${name}`;
+      return attempt(relativePath, isDirectory(relativePath)).pipe(
+        Effect.map((folder) => ({ name, folder })),
+      );
+    });
+    const folders = entries.flatMap(({ name, folder }) =>
+      Result.isSuccess(folder) && folder.success ? [name] : [],
     );
     const results = yield* Effect.forEach(folders, readTeam, { concurrency: 8 });
     return {
       definitions: results.flatMap((result) => (result.team === null ? [] : [result.team])),
-      problems: results.flatMap((result) => result.problems),
+      problems: [
+        ...failures(entries.map(({ folder }) => folder)),
+        ...results.flatMap((result) => result.problems),
+      ],
     };
   });
 
   const read = Effect.fn("FactoryConfigStore.read")(function* () {
-    const settingsText = yield* readText(FACTORY_SETTINGS_FILE);
-    const settings =
-      settingsText === null ? null : decodeSettingsFile(FACTORY_SETTINGS_FILE, settingsText);
+    // Only the root decides whether the config exists, so it alone fails the read.
+    const rootNames = yield* fs.readDirectory(directory).pipe(
+      Effect.catchReason("PlatformError", "NotFound", () =>
+        Effect.succeed<ReadonlyArray<string>>([]),
+      ),
+      Effect.mapError(() => storageError("list", "")),
+    );
+    const configured = rootNames.includes(FACTORY_SETTINGS_FILE);
+    const settingsText = configured
+      ? yield* attempt(FACTORY_SETTINGS_FILE, readText(FACTORY_SETTINGS_FILE))
+      : Result.succeed(null);
+    const settings = Result.flatMap(settingsText, (text) =>
+      text === null
+        ? Result.succeed(DEFAULT_FACTORY_SETTINGS)
+        : decodeSettingsFile(FACTORY_SETTINGS_FILE, text),
+    );
     const [workers, leads, managers, teams] = yield* Effect.all(
       [
         readDefinitions("worker", decodeWorkerFile),
@@ -192,17 +252,14 @@ const make = Effect.fn("FactoryConfigStore.make")(function* (directory: string) 
       { concurrency: "unbounded" },
     );
     return {
-      configured: settingsText !== null,
-      settings:
-        settings !== null && Result.isSuccess(settings)
-          ? settings.success
-          : DEFAULT_FACTORY_SETTINGS,
+      configured,
+      settings: Result.isSuccess(settings) ? settings.success : DEFAULT_FACTORY_SETTINGS,
       workers: workers.definitions,
       leads: leads.definitions,
       managers: managers.definitions,
       teams: teams.definitions,
       problems: [
-        ...(settings !== null && Result.isFailure(settings) ? [settings.failure] : []),
+        ...failures([settings]),
         ...workers.problems,
         ...leads.problems,
         ...managers.problems,

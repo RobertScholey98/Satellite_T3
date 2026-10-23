@@ -6,6 +6,7 @@ import {
   type FactoryLeadDefinition,
   type FactoryModelList,
   type FactoryModelRef,
+  type FactoryConfigProblem,
   FactoryOperationError,
   FactoryRole,
   type FactoryTeamDefinition,
@@ -17,18 +18,36 @@ import {
   ProjectId,
   type ProviderDriverKind,
   type ProviderInstanceId,
+  defaultInstanceIdForDriver,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ProjectStore from "../../orchestration-v2/ProjectStore.ts";
 import { BUILT_IN_DRIVERS } from "../../provider/builtInDrivers.ts";
 import * as ServerSettings from "../../serverSettings.ts";
-import { definitionIdFromName } from "./definitionFiles.ts";
+import {
+  FACTORY_SETTINGS_FILE,
+  TEAM_FILE,
+  TEAM_LEAD_FILE,
+  TEAM_MEMBERS_DIRECTORY,
+  decodeLeadFile,
+  decodeManagerFile,
+  decodeSettingsFile,
+  decodeTeamFiles,
+  decodeWorkerFile,
+  definitionIdFromName,
+  encodeLeadFile,
+  encodeManagerFile,
+  encodeSettingsFile,
+  encodeTeamFiles,
+  encodeWorkerFile,
+} from "./definitionFiles.ts";
 import { FactoryConfigStore } from "./FactoryConfigStore.ts";
 import {
   STARTER_WORKER_ROLES,
@@ -56,7 +75,7 @@ export interface FactoryConfigMigrationInput {
   readonly projectOverrides: ReadonlyArray<ProjectOverrideRow>;
   /** Text of the environment role-skill files that exist. */
   readonly roleSkills: Partial<Record<FactoryRole, string>>;
-  readonly driverOf: (instanceId: string) => ProviderDriverKind | null;
+  readonly driverOf: (instanceId: ProviderInstanceId) => ProviderDriverKind | null;
 }
 
 export interface FactoryConfigMigrationPlan {
@@ -107,15 +126,12 @@ export const planFactoryConfigMigration = (
   }
 
   const roleModels = environment?.roleModels;
-  const workers: Array<FactoryWorkerDefinition> = STARTER_WORKER_ROLES.map((role) =>
+  const workerFor = (role: FactoryWorkerRole): FactoryWorkerDefinition =>
     starterWorker(role, {
       ...(input.roleSkills[role] === undefined ? {} : { description: input.roleSkills[role] }),
       models: dynamic(roleModels?.workers[role] ?? []),
-    }),
-  );
-  const workerOf = new Map<FactoryWorkerRole, FactoryWorkerDefinition>(
-    STARTER_WORKER_ROLES.map((role, index) => [role, workers[index]!]),
-  );
+    });
+  const workers = STARTER_WORKER_ROLES.map(workerFor);
   const lead = defaultLead({
     ...(input.roleSkills.lead === undefined ? {} : { instructions: input.roleSkills.lead }),
     models: dynamic(
@@ -134,13 +150,13 @@ export const planFactoryConfigMigration = (
     const id = definitionIdFromName(name, teamIds);
     teamIds.add(id);
     teamNames.add(name);
-    teams.push(teamFromPreset(preset, { id, name, lead, workerOf, dynamic }));
+    teams.push(teamFromPreset(preset, { id, name, lead, workerFor, dynamic }));
   };
   for (const preset of environment?.teamPresets ?? []) addTeam(preset, preset.name);
 
   for (const { projectId, title, override } of input.projectOverrides) {
     for (const preset of override.teamPresets ?? []) {
-      addTeam(preset, teamNames.has(preset.name) ? `${preset.name} (${title})` : preset.name);
+      addTeam(preset, teamNames.has(preset.name) ? clashName(preset.name, title) : preset.name);
     }
     if (override.modelPool !== undefined) {
       notCarriedOver.push({ projectId, key: "modelPool", value: override.modelPool });
@@ -182,19 +198,40 @@ export const planFactoryConfigMigration = (
   };
 };
 
+const MAX_NAME_LENGTH = 80;
+const ELLIPSIS = "…";
+
+/** Cuts on a code point boundary and marks the cut. */
+const shorten = (text: string, max: number) => {
+  if (text.length <= max) return text;
+  let kept = "";
+  for (const char of text) {
+    if (kept.length + char.length > max - ELLIPSIS.length) break;
+    kept += char;
+  }
+  return `${kept.trimEnd()}${ELLIPSIS}`;
+};
+
+/** `Name (Project)` within the name limit. The title gives way first, down to a few characters. */
+const clashName = (name: string, title: string) => {
+  const room = MAX_NAME_LENGTH - " ()".length;
+  const shortTitle = shorten(title, Math.max(room - name.length, Math.min(title.length, 12)));
+  return `${shorten(name, room - shortTitle.length)} (${shortTitle})`;
+};
+
 const teamFromPreset = (
   preset: FactoryTeamPreset,
   context: {
     readonly id: string;
     readonly name: string;
     readonly lead: FactoryLeadDefinition;
-    readonly workerOf: ReadonlyMap<FactoryWorkerRole, FactoryWorkerDefinition>;
+    readonly workerFor: (role: FactoryWorkerRole) => FactoryWorkerDefinition;
     readonly dynamic: (selections: ReadonlyArray<ModelSelection>) => FactoryModelList;
   },
 ): FactoryTeamDefinition => {
   const memberIds = new Set<string>();
   const members = preset.members.map((member): FactoryTeamMemberDefinition => {
-    const worker = context.workerOf.get(member.role)!;
+    const worker = context.workerFor(member.role);
     // Presets do not repeat a role in practice; a repeat still needs a distinct delegation name.
     let id: string = member.role;
     let n = 1;
@@ -221,9 +258,9 @@ const teamFromPreset = (
 };
 
 const ROLE_SKILLS_DIRECTORY = "roles";
-const DEFAULT_INSTANCE_DRIVERS = new Set<string>(
+const DEFAULT_INSTANCE_DRIVERS = new Map<ProviderInstanceId, ProviderDriverKind>(
   BUILT_IN_DRIVERS.filter((driver) => driver.metadata.hasDefaultInstance !== false).map(
-    (driver) => driver.driverKind,
+    (driver) => [defaultInstanceIdForDriver(driver.driverKind), driver.driverKind],
   ),
 );
 
@@ -231,10 +268,69 @@ const storageError = (message: string) => new FactoryOperationError({ reason: "s
 const decodeConfig = Schema.decodeEffect(Schema.fromJsonString(FactoryConfig));
 const decodeOverride = Schema.decodeEffect(Schema.fromJsonString(FactoryConfigOverride));
 
+const failureOf = <A>(decoded: Result.Result<A, FactoryConfigProblem>) =>
+  Result.isFailure(decoded) ? decoded.failure : null;
+
+/**
+ * The first planned definition that would not load back from its own file, or null. A value the
+ * old schema allowed and the new one does not, such as a role file over the length limit, would
+ * otherwise be written and then skipped by every read.
+ */
+const unloadableDefinition = (definitions: FactoryDefinitions): FactoryConfigProblem | null => {
+  const checks: Array<() => FactoryConfigProblem | null> = [
+    () =>
+      failureOf(
+        decodeSettingsFile(FACTORY_SETTINGS_FILE, encodeSettingsFile(definitions.settings)),
+      ),
+    ...definitions.workers.map((worker) => () => {
+      const path = `workers/${worker.id}.md`;
+      return failureOf(decodeWorkerFile({ path, id: worker.id, text: encodeWorkerFile(worker) }));
+    }),
+    ...definitions.leads.map((lead) => () => {
+      const path = `leads/${lead.id}.md`;
+      return failureOf(decodeLeadFile({ path, id: lead.id, text: encodeLeadFile(lead) }));
+    }),
+    ...definitions.managers.map((manager) => () => {
+      const path = `managers/${manager.id}.md`;
+      return failureOf(
+        decodeManagerFile({ path, id: manager.id, text: encodeManagerFile(manager) }),
+      );
+    }),
+    ...definitions.teams.map((team) => () => {
+      const directory = `teams/${team.id}`;
+      const files = encodeTeamFiles(team);
+      const text = (path: string) => files.find((file) => file.path === path)?.contents ?? null;
+      const memberPrefix = `${TEAM_MEMBERS_DIRECTORY}/`;
+      const decoded = decodeTeamFiles({
+        id: team.id,
+        directory,
+        team: text(TEAM_FILE),
+        lead: text(TEAM_LEAD_FILE),
+        members: files.flatMap((file) =>
+          file.path.startsWith(memberPrefix)
+            ? [{ id: file.path.slice(memberPrefix.length, -".md".length), text: file.contents }]
+            : [],
+        ),
+      });
+      if (decoded.problems[0] !== undefined) return decoded.problems[0];
+      return decoded.team === null
+        ? { path: directory, message: "The team would not load." }
+        : null;
+    }),
+  ];
+  for (const check of checks) {
+    const found = check();
+    if (found !== null) return found;
+  }
+  return null;
+};
+
 /**
  * Writes the factory config files from the database once, while `factory.yaml` is missing and
- * there is something to carry over. `factory.yaml` is written last, so a run that stops part way
- * runs again at the next start. The database rows stay as the rollback copy.
+ * there is something to carry over. Every definition is checked before the first write, and
+ * `factory.yaml` is written last, so a run that fails or stops part way runs again at the next
+ * start. The database rows stay as the rollback copy, and the role files stay for the live briefs
+ * that still read them.
  */
 export const migrateFactoryConfigFromDatabase = Effect.fn("FactoryConfigMigration.run")(
   function* () {
@@ -266,9 +362,15 @@ export const migrateFactoryConfigFromDatabase = Effect.fn("FactoryConfigMigratio
       Effect.mapError(() => storageError("Could not read the saved factory config.")),
     );
     const environmentRow = rows.find((row) => row.scope_key === "environment");
-    if (environmentRow === undefined && !roleFileNames.some((name) => name.endsWith(".md"))) return;
+    const projectRows = rows.filter((row) => row.scope_key.startsWith("project:"));
+    if (
+      environmentRow === undefined &&
+      projectRows.length === 0 &&
+      !roleFileNames.some((name) => name.endsWith(".md"))
+    )
+      return;
 
-    // A config that no longer decodes fails the run rather than migrating defaults over it.
+    // A row that no longer decodes fails the run rather than migrating defaults over it.
     const environment =
       environmentRow === undefined
         ? null
@@ -276,35 +378,28 @@ export const migrateFactoryConfigFromDatabase = Effect.fn("FactoryConfigMigratio
             Effect.mapError(() => storageError("The saved factory config could not be read.")),
           );
     const projects = yield* ProjectStore.ProjectStoreV2;
-    const projectOverrides = yield* Effect.forEach(
-      rows.filter((row) => row.scope_key.startsWith("project:")),
-      (row) =>
-        Effect.gen(function* () {
-          const projectId = ProjectId.make(row.scope_key.slice("project:".length));
-          const override = yield* decodeOverride(row.config_json).pipe(Effect.option);
-          if (Option.isNone(override)) {
-            yield* Effect.logWarning("factory config migration skipped a project override", {
-              projectId,
-            });
-            return [];
-          }
-          const title = yield* projects.get(projectId, { includeDeleted: true }).pipe(
-            Effect.map(
-              Option.match({ onNone: () => projectId, onSome: (project) => project.title }),
-            ),
-            Effect.orElseSucceed(() => projectId),
-          );
-          return [{ projectId, title, override: override.value }];
-        }),
-    ).pipe(Effect.map((overrides) => overrides.flat()));
+    const projectOverrides = yield* Effect.forEach(projectRows, (row) =>
+      Effect.gen(function* () {
+        const projectId = ProjectId.make(row.scope_key.slice("project:".length));
+        const override = yield* decodeOverride(row.config_json).pipe(
+          Effect.mapError(() =>
+            storageError(`The saved factory config of project ${projectId} could not be read.`),
+          ),
+        );
+        const title = yield* projects.get(projectId, { includeDeleted: true }).pipe(
+          Effect.map(Option.match({ onNone: () => projectId, onSome: (project) => project.title })),
+          Effect.orElseSucceed(() => projectId),
+        );
+        return { projectId, title, override };
+      }),
+    );
 
     const { providerInstances } =
       yield* (yield* ServerSettings.ServerSettingsService).getSettings.pipe(
         Effect.mapError(() => storageError("Could not read the provider instances.")),
       );
-    const driverOf = (instanceId: string): ProviderDriverKind | null =>
-      providerInstances[instanceId as ProviderInstanceId]?.driver ??
-      (DEFAULT_INSTANCE_DRIVERS.has(instanceId) ? (instanceId as ProviderDriverKind) : null);
+    const driverOf = (instanceId: ProviderInstanceId): ProviderDriverKind | null =>
+      providerInstances[instanceId]?.driver ?? DEFAULT_INSTANCE_DRIVERS.get(instanceId) ?? null;
 
     const { definitions, notCarriedOver } = planFactoryConfigMigration({
       environment,
@@ -312,15 +407,17 @@ export const migrateFactoryConfigFromDatabase = Effect.fn("FactoryConfigMigratio
       roleSkills,
       driverOf,
     });
+    const unloadable = unloadableDefinition(definitions);
+    if (unloadable !== null) {
+      return yield* storageError(
+        `The migrated ${unloadable.path} would not load, so nothing was written: ${unloadable.message}`,
+      );
+    }
     for (const worker of definitions.workers) yield* store.writeWorker(worker);
     for (const lead of definitions.leads) yield* store.writeLead(lead);
     for (const manager of definitions.managers) yield* store.writeManager(manager);
     for (const team of definitions.teams) yield* store.writeTeam(team);
     yield* store.writeSettings(definitions.settings);
-    yield* fs.remove(rolesDirectory, { recursive: true }).pipe(
-      Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
-      Effect.mapError(() => storageError("Could not remove the retired factory role files.")),
-    );
 
     yield* Effect.logInfo("factory config migrated from the database", {
       directory: store.directory,

@@ -124,6 +124,20 @@ it.layer(NodeServices.layer)("FactoryConfigStore", (it) => {
     }),
   );
 
+  it.effect("reports an entry it cannot read and still loads the rest", () =>
+    Effect.gen(function* () {
+      const { fs, store, file } = yield* setup;
+      yield* store.writeWorker(WORKER);
+      yield* fs.makeDirectory(file("workers/notes.md"), { recursive: true });
+
+      const view = yield* store.read;
+      assert.deepStrictEqual(view.workers, [WORKER]);
+      assert.deepStrictEqual(view.problems, [
+        { path: "workers/notes.md", message: "Could not be read." },
+      ]);
+    }),
+  );
+
   it.effect("reports duplicate member names in a team", () =>
     Effect.gen(function* () {
       const { store, write } = yield* setup;

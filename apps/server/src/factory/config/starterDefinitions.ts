@@ -1,18 +1,14 @@
-import type {
-  FactoryLeadDefinition,
-  FactoryManagerDefinition,
-  FactoryModelList,
-  FactoryWorkerDefinition,
+import {
+  type FactoryLeadDefinition,
+  type FactoryManagerDefinition,
+  type FactoryModelList,
+  type FactoryWorkerDefinition,
   FactoryWorkerRole,
 } from "@t3tools/contracts";
 
 import { DEFAULT_ROLE_SKILLS } from "../roles/index.ts";
 
-export const STARTER_WORKER_ROLES = [
-  "implementer",
-  "reviewer",
-  "verifier",
-] as const satisfies ReadonlyArray<FactoryWorkerRole>;
+export const STARTER_WORKER_ROLES = FactoryWorkerRole.literals;
 
 /** An empty dynamic list is a menu of the whole pool. */
 const POOL: FactoryModelList = { dynamic: true, models: [] };

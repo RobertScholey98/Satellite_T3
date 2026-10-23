@@ -29,6 +29,7 @@ const briefSource: Record<FactoryRoleBrief["source"], string> = {
 
 const NOT_A_MANAGER = "This thread is not an engineering manager.";
 const NOT_A_LEAD = "This thread is not a factory lead.";
+const NOT_A_MANAGER_OR_LEAD = "This thread is not an engineering manager or a factory lead.";
 const NOT_A_MEMBER = "This thread is not a member of a live factory team.";
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -111,25 +112,11 @@ const make = Effect.gen(function* () {
     return { threadId, assignment };
   });
 
-  const callingManagerOrLead = Effect.fn("FactoryMcp.callingManagerOrLead")(function* () {
-    const scope = yield* McpInvocationContext.requireMcpCapability("orchestration");
-    const { threadId } = (yield* McpInvocationContext.requireThreadScope(scope, "This tool"))
-      .thread;
-    const manager = yield* factory.managerForThread(threadId).pipe(Effect.mapError(toolFailure));
-    if (manager !== null) return threadId;
-    const led = yield* factory.assignmentForThread(threadId).pipe(Effect.mapError(toolFailure));
-    if (
-      led === null ||
-      led.leadThreadId !== threadId ||
-      led.state === "completed" ||
-      led.state === "cancelled"
-    )
-      return yield* new FactoryToolFailedError({
-        reason: "not-found",
-        message: "This thread is not an engineering manager or a factory lead.",
-      });
-    return threadId;
-  });
+  const callingManagerOrLead = () =>
+    callingManager(NOT_A_MANAGER_OR_LEAD).pipe(
+      Effect.catch(() => callingLead(NOT_A_MANAGER_OR_LEAD)),
+      Effect.asVoid,
+    );
 
   /** A lead or worker. The service still refuses a member whose own thread has ended. */
   const callingMember = Effect.fn("FactoryMcp.callingMember")(function* () {
@@ -168,7 +155,7 @@ const make = Effect.gen(function* () {
     if (led === null || led.leadThreadId !== threadId)
       return yield* new FactoryToolFailedError({
         reason: "not-found",
-        message: "This thread is not an engineering manager or a factory lead.",
+        message: NOT_A_MANAGER_OR_LEAD,
       });
     if (led.id !== assignmentId) return yield* notFound;
     return led;
