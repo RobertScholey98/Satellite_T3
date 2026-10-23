@@ -258,23 +258,24 @@ const poolAdditions = (local: FactoryConfigSettings, imported: FactoryConfigSett
   return imported.modelPool.filter((model) => !pool.has(modelKey(model)));
 };
 
-/** Every model a definition lists must be in the pool, so an import drops the ones outside it. */
-const withinPool = (pool: ReadonlyArray<FactoryModelRef>) => {
+/**
+ * An import drops the models outside the pool from what it writes. An empty list means the whole
+ * pool, so a list that named only dropped models would widen; its definition is skipped instead.
+ */
+const fitToPool = (pool: ReadonlyArray<FactoryModelRef>) => {
   const allowed = new Set(pool.map(modelKey));
-  const list = (models: FactoryModelList): FactoryModelList => ({
-    ...models,
-    models: models.models.filter((model) => allowed.has(modelKey(model))),
-  });
-  const definition = <D extends { readonly models: FactoryModelList }>(value: D): D => ({
-    ...value,
-    models: list(value.models),
-  });
-  const team = (value: FactoryTeamDefinition): FactoryTeamDefinition => ({
-    ...value,
-    lead: definition(value.lead),
-    members: value.members.map(definition),
-  });
-  return { definition, team };
+  const definition = <D extends { readonly models: FactoryModelList }>(value: D): D | null => {
+    const models = value.models.models.filter((model) => allowed.has(modelKey(model)));
+    if (models.length === 0 && value.models.models.length > 0) return null;
+    return { ...value, models: { ...value.models, models } };
+  };
+  const team = (value: FactoryTeamDefinition): FactoryTeamDefinition | null => {
+    const lead = definition(value.lead);
+    const members = value.members.map(definition);
+    if (lead === null || members.some((member) => member === null)) return null;
+    return { ...value, lead, members: members.filter((member) => member !== null) };
+  };
+  return { worker: definition, lead: definition, manager: definition, team };
 };
 
 export const previewImport = (
@@ -283,11 +284,14 @@ export const previewImport = (
 ): FactoryImportPreview => {
   const imported = decodeBundle(bundle);
   const pool = new Set(local.settings.modelPool.map(modelKey));
+  // The import's own check, against the pool before any addition is accepted.
+  const fit = fitToPool(local.settings.modelPool);
   const items = <D extends AnyDefinition>(
     kind: FactoryDefinitionKind,
     theirs: ReadonlyArray<D>,
     mine: ReadonlyArray<D>,
     encode: (definition: D) => string,
+    fitOne: (definition: D) => D | null,
   ) =>
     theirs.map((definition) => {
       const modelsNeedingPool = modelsOf(definition).filter((model) => !pool.has(modelKey(model)));
@@ -297,14 +301,15 @@ export const previewImport = (
         name: definition.name,
         status: status(definition, mine, encode),
         ...(modelsNeedingPool.length > 0 ? { modelsNeedingPool } : {}),
+        ...(fitOne(definition) === null ? { skippedUnlessPoolAdded: true as const } : {}),
       };
     });
   return {
     items: [
-      ...items("worker", imported.workers, local.workers, ENCODERS.worker),
-      ...items("lead", imported.leads, local.leads, ENCODERS.lead),
-      ...items("manager", imported.managers, local.managers, ENCODERS.manager),
-      ...items("team", imported.teams, local.teams, ENCODERS.team),
+      ...items("worker", imported.workers, local.workers, ENCODERS.worker, fit.worker),
+      ...items("lead", imported.leads, local.leads, ENCODERS.lead, fit.lead),
+      ...items("manager", imported.managers, local.managers, ENCODERS.manager, fit.manager),
+      ...items("team", imported.teams, local.teams, ENCODERS.team, fit.team),
     ],
     poolAdditions: poolAdditions(local.settings, imported.settings),
     recoveryAllowance: {
@@ -321,6 +326,8 @@ export interface ImportPlan extends DefinitionSet {
   readonly backup: boolean;
   readonly settings: FactoryConfigSettings;
   readonly remove: ReadonlyArray<{ readonly kind: FactoryDefinitionKind; readonly id: string }>;
+  /** Definitions left out because they would only have run models the pool lacks. */
+  readonly skipped: ReadonlyArray<FactoryConfigProblem>;
 }
 
 /** The local config, with the files that did not decode when it was read. */
@@ -360,9 +367,43 @@ export const planImport = (
   const additions = poolAdditions(local.settings, imported.settings).filter((model) =>
     accepted.has(modelKey(model)),
   );
+  const skipped: FactoryConfigProblem[] = [];
+  /** The definition as it can be written within the pool, or null when it is skipped. */
+  const fitted = <D extends Definition>(
+    kind: FactoryDefinitionKind,
+    definition: D,
+    fit: (definition: D) => D | null,
+  ): D | null => {
+    const result = fit(definition);
+    if (result === null) {
+      skipped.push({
+        path: kind === "team" ? `teams/${definition.id}` : `${PLURAL[kind]}/${definition.id}.md`,
+        message: `${definition.name} uses only models you didn't add to the pool, so it wasn't imported.`,
+      });
+    }
+    return result;
+  };
 
   if (decision.mode === "replace") {
-    const empty = KINDS.filter((kind) => setOf(imported, kind).length === 0);
+    const allowed = new Set([...local.settings.modelPool, ...additions].map(modelKey));
+    const modelPool = imported.settings.modelPool.filter((model) => allowed.has(modelKey(model)));
+    const fit = fitToPool(modelPool);
+    const all = <D extends Definition>(
+      kind: FactoryDefinitionKind,
+      definitions: ReadonlyArray<D>,
+      fitOne: (definition: D) => D | null,
+    ) =>
+      definitions.flatMap((definition) => {
+        const result = fitted(kind, definition, fitOne);
+        return result === null ? [] : [result];
+      });
+    const written: DefinitionSet = {
+      workers: all("worker", imported.workers, fit.worker),
+      leads: all("lead", imported.leads, fit.lead),
+      managers: all("manager", imported.managers, fit.manager),
+      teams: all("team", imported.teams, fit.team),
+    };
+    const empty = KINDS.filter((kind) => setOf(written, kind).length === 0);
     if (empty.length > 0) {
       const missing = listed(empty.map((kind) => PLURAL[kind]));
       return Result.fail(
@@ -372,9 +413,7 @@ export const planImport = (
         }),
       );
     }
-    const allowed = new Set([...local.settings.modelPool, ...additions].map(modelKey));
-    const modelPool = imported.settings.modelPool.filter((model) => allowed.has(modelKey(model)));
-    const keep = withinPool(modelPool);
+    // A skipped definition's local copy stays, so it counts as kept.
     const kept = new Set(
       KINDS.flatMap((kind) =>
         setOf(imported, kind).map((definition) => `${kind}/${definition.id}`),
@@ -383,15 +422,13 @@ export const planImport = (
     return Result.succeed({
       backup: true,
       settings: { ...imported.settings, modelPool },
-      workers: imported.workers.map(keep.definition),
-      leads: imported.leads.map(keep.definition),
-      managers: imported.managers.map(keep.definition),
-      teams: imported.teams.map(keep.team),
+      ...written,
       remove: KINDS.flatMap((kind) =>
         setOf(local, kind)
           .filter((definition) => !kept.has(`${kind}/${definition.id}`))
           .map((definition) => ({ kind, id: definition.id })),
       ),
+      skipped,
     });
   }
 
@@ -406,22 +443,27 @@ export const planImport = (
   let overwrites = problems.some(({ path }) => path === FACTORY_SETTINGS_FILE);
   const choice = (kind: FactoryDefinitionKind, id: string): FactoryImportChoice =>
     decision.choices.find((entry) => entry.kind === kind && entry.id === id)?.choice ?? "mine";
+  const modelPool = [...local.settings.modelPool, ...additions];
+  const fit = fitToPool(modelPool);
   const merge = <D extends Definition>(
     kind: FactoryDefinitionKind,
     theirs: ReadonlyArray<D>,
     mine: ReadonlyArray<D>,
     encode: (definition: D) => string,
+    fitOne: (definition: D) => D | null,
   ): D[] => {
-    const taken = new Set([...mine, ...theirs].map((definition) => definition.id));
-    return theirs.flatMap((definition) => {
-      const found = status(definition, mine, encode);
+    const taken = new Set([...mine, ...theirs].map((original) => original.id));
+    return theirs.flatMap((original) => {
+      const found = status(original, mine, encode);
       if (found === "same") return [];
+      const chosen = found === "new" ? "theirs" : choice(kind, original.id);
+      if (chosen === "mine") return [];
+      const definition = fitted(kind, original, fitOne);
+      if (definition === null) return [];
       if (found === "new") {
         overwrites ||= unreadable(kind, definition.id);
         return [definition];
       }
-      const chosen = choice(kind, definition.id);
-      if (chosen === "mine") return [];
       if (chosen === "theirs") {
         overwrites = true;
         return [definition];
@@ -436,12 +478,16 @@ export const planImport = (
       return [{ ...definition, id, name }];
     });
   };
-  const workers = merge("worker", imported.workers, local.workers, ENCODERS.worker);
-  const leads = merge("lead", imported.leads, local.leads, ENCODERS.lead);
-  const managers = merge("manager", imported.managers, local.managers, ENCODERS.manager);
-  const teams = merge("team", imported.teams, local.teams, ENCODERS.team);
-  const modelPool = [...local.settings.modelPool, ...additions];
-  const keep = withinPool(modelPool);
+  const workers = merge("worker", imported.workers, local.workers, ENCODERS.worker, fit.worker);
+  const leads = merge("lead", imported.leads, local.leads, ENCODERS.lead, fit.lead);
+  const managers = merge(
+    "manager",
+    imported.managers,
+    local.managers,
+    ENCODERS.manager,
+    fit.manager,
+  );
+  const teams = merge("team", imported.teams, local.teams, ENCODERS.team, fit.team);
   return Result.succeed({
     backup: overwrites,
     settings: {
@@ -452,18 +498,19 @@ export const planImport = (
           ? imported.settings.recoveryAllowance
           : local.settings.recoveryAllowance,
     },
-    workers: workers.map(keep.definition),
-    leads: leads.map(keep.definition),
-    managers: managers.map(keep.definition),
-    teams: teams.map(keep.team),
+    workers,
+    leads,
+    managers,
+    teams,
     remove: [],
+    skipped,
   });
 };
 
 /**
- * Applies an import to the local config and returns the config as it now reads. Settings land
- * first, so a failure part-way leaves a configured directory that the database migration will not
- * write over.
+ * Applies an import to the local config and returns the config as it now reads, with skipped
+ * definitions among its problems. Settings land first, so a failure part-way leaves a configured
+ * directory that the database migration will not write over.
  */
 export const applyImport = Effect.fn("FactoryConfigImport.apply")(function* (
   bundle: FactoryConfigBundle,
@@ -480,7 +527,8 @@ export const applyImport = Effect.fn("FactoryConfigImport.apply")(function* (
   for (const definition of plan.leads) yield* store.writeLead(definition);
   for (const definition of plan.managers) yield* store.writeManager(definition);
   for (const team of plan.teams) yield* store.writeTeam(team);
-  return yield* store.read;
+  const view = yield* store.read;
+  return { ...view, problems: [...view.problems, ...plan.skipped] };
 });
 
 /** Export and import as one service, so transports reach them without filesystem services. */

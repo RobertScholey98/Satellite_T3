@@ -199,6 +199,7 @@ it.layer(NodeServices.layer)("factory config export and import", (it) => {
             name: "Tester",
             status: "new",
             modelsNeedingPool: [GROK],
+            skippedUnlessPoolAdded: true,
           },
           { kind: "lead", id: "default-lead", name: "Default lead", status: "differs" },
           { kind: "manager", id: "default-manager", name: "Default manager", status: "differs" },
@@ -225,6 +226,7 @@ it.layer(NodeServices.layer)("factory config export and import", (it) => {
           bundleOf(REMOTE),
           decision({
             mode: "merge",
+            poolAdditions: [GROK],
             choices: [
               { kind: "worker", id: "implementer", choice: "theirs" },
               { kind: "lead", id: "default-lead", choice: "both" },
@@ -251,7 +253,10 @@ it.layer(NodeServices.layer)("factory config export and import", (it) => {
         ],
       );
       assert.deepStrictEqual(view.managers, LOCAL.managers);
-      assert.deepStrictEqual(view.settings, LOCAL.settings);
+      assert.deepStrictEqual(view.settings, {
+        ...LOCAL.settings,
+        modelPool: [...LOCAL.settings.modelPool, GROK],
+      });
       assert.deepStrictEqual((yield* store.read).problems, []);
       // Taking theirs overwrote implementer, so the merge backed up first.
       assert.strictEqual(
@@ -291,7 +296,7 @@ it.layer(NodeServices.layer)("factory config export and import", (it) => {
       const { fs, path, root, seed, write, run } = yield* withStore;
       yield* seed;
       yield* write("workers/tester.md", "a hand edit that lost its frontmatter");
-      yield* run(applyImport(bundleOf(REMOTE), decision({ mode: "merge" })));
+      yield* run(applyImport(bundleOf(REMOTE), decision({ mode: "merge", poolAdditions: [GROK] })));
       assert.strictEqual(
         yield* fs.readFileString(path.join(root, "factory-backups", "1", "workers", "tester.md")),
         "a hand edit that lost its frontmatter",
@@ -337,6 +342,73 @@ it.layer(NodeServices.layer)("factory config export and import", (it) => {
     }),
   );
 
+  it.effect("skips a definition rather than empty its model list, which would widen it", () =>
+    Effect.gen(function* () {
+      const { fs, path, root, seed, run } = yield* withStore;
+      yield* seed;
+      const pinned = decodeDefinitions({
+        ...LOCAL_INPUT,
+        settings: { version: 1 as const, modelPool: [OPUS, GPT, GROK] },
+        workers: [...LOCAL_INPUT.workers, worker("tester", "Tester", GROK)],
+        teams: [
+          {
+            ...LOCAL_INPUT.teams[0]!,
+            id: "qa",
+            name: "QA",
+            members: [{ ...worker("tester", "Tester", GROK), count: 1 }],
+          },
+        ],
+      });
+      const bundle = bundleOf(pinned);
+      assert.deepStrictEqual(
+        previewImport(LOCAL, bundle).items.filter((item) => item.status === "new"),
+        [
+          {
+            kind: "worker",
+            id: "tester",
+            name: "Tester",
+            status: "new",
+            modelsNeedingPool: [GROK],
+            skippedUnlessPoolAdded: true,
+          },
+          {
+            kind: "team",
+            id: "qa",
+            name: "QA",
+            status: "new",
+            modelsNeedingPool: [GROK],
+            skippedUnlessPoolAdded: true,
+          },
+        ],
+      );
+
+      const declined = yield* run(applyImport(bundle, decision({ mode: "merge" })));
+      assert.deepStrictEqual(declined.problems, [
+        {
+          path: "workers/tester.md",
+          message: "Tester uses only models you didn't add to the pool, so it wasn't imported.",
+        },
+        {
+          path: "teams/qa",
+          message: "QA uses only models you didn't add to the pool, so it wasn't imported.",
+        },
+      ]);
+      assert.strictEqual(
+        yield* fs.exists(path.join(root, "factory", "workers", "tester.md")),
+        false,
+      );
+      assert.strictEqual(yield* fs.exists(path.join(root, "factory", "teams", "qa")), false);
+
+      const accepted = Result.getOrThrow(
+        planImport(LOCAL, bundle, decision({ mode: "merge", poolAdditions: [GROK] })),
+      );
+      assert.deepStrictEqual(
+        [accepted.workers.map((d) => d.id), accepted.teams.map((d) => d.id), accepted.skipped],
+        [["tester"], ["qa"], []],
+      );
+    }),
+  );
+
   it.effect("refuses a replace that would leave a kind of definition empty", () =>
     Effect.gen(function* () {
       const message = (bundle: FactoryConfigBundle) => {
@@ -368,7 +440,7 @@ it.layer(NodeServices.layer)("factory config export and import", (it) => {
   it.effect("keeps mine for a differing definition that has no choice", () =>
     Effect.sync(() => {
       const plan = Result.getOrThrow(
-        planImport(LOCAL, bundleOf(REMOTE), decision({ mode: "merge" })),
+        planImport(LOCAL, bundleOf(REMOTE), decision({ mode: "merge", poolAdditions: [GROK] })),
       );
       assert.deepStrictEqual(
         [plan.workers, plan.leads, plan.managers, plan.teams].map((set) => set.map((d) => d.id)),

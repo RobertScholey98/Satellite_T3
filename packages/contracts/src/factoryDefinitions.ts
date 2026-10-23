@@ -180,11 +180,17 @@ export const FactoryImportPreview = Schema.Struct({
       name: Schema.String,
       status: FactoryImportStatus,
       /**
-       * Models this definition lists that the local pool lacks. The import drops each from its
-       * model lists unless the matching pool addition is accepted, so every listed model stays in
-       * the pool. Omitted when there are none.
+       * Models this definition lists that the local pool lacks. Unless its pool addition is
+       * accepted, the import drops each from the definition's model lists. Omitted when there are
+       * none.
        */
       modelsNeedingPool: Schema.optionalKey(Schema.Array(FactoryModelRef)),
+      /**
+       * Some model list here names only models the local pool lacks. Dropping them would empty it,
+       * and an empty list stands for the whole pool, so the definition, or the whole team, is not
+       * imported unless those pool additions are accepted.
+       */
+      skippedUnlessPoolAdded: Schema.optionalKey(Schema.Literal(true)),
     }),
   ),
   /** Models in the bundle's pool that the local pool lacks. Each is added only when chosen. */
