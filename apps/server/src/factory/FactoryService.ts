@@ -138,6 +138,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { controlPathMatcher } from "./controlPaths.ts";
 import { factoryConfigProblem, modelKey, overrideWidensPool } from "./factoryConfig.ts";
 import {
+  projectSection,
   renderRoleSkill,
   roleSkillSource,
   type RoleSkillFill,
@@ -673,6 +674,10 @@ const decodeDependencyWake = jsonDecoder(
 const decodeHandbackWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(HandbackWakePayload)),
 );
+const OnboardedWakePayload = Schema.Struct({ section: Schema.String });
+const decodeOnboardedWake = jsonDecoder(
+  Schema.decodeUnknownOption(Schema.fromJsonString(OnboardedWakePayload)),
+);
 const ControlWakePayload = Schema.Struct({ title: Schema.String, text: Schema.String });
 const decodeControlWake = jsonDecoder(
   Schema.decodeUnknownOption(Schema.fromJsonString(ControlWakePayload)),
@@ -824,6 +829,9 @@ const teamSection = (config: FactoryConfig, team: FactoryTeamSpec) => {
   return team.members.length === 0 ? null : `# Team\n\n${members}`;
 };
 
+const PICKUP_GUIDANCE_MOVED =
+  "Pickup guidance is now set per manager at onboarding, not in the factory config, so it cannot be changed through a factory draft.";
+
 const SETTING_LABELS = {
   concurrencyCap: "concurrency cap",
   recoveryAllowance: "recovery allowance",
@@ -855,12 +863,7 @@ const applyProposedChange = (
       return { refused: error("invalid", "Edit the role file to apply this change.") };
     case "setting": {
       if (change.key === "pickupGuidance")
-        return {
-          refused: error(
-            "invalid",
-            "Pickup guidance is now set per manager at onboarding, not in the factory config, so this draft can no longer be applied.",
-          ),
-        };
+        return { refused: error("invalid", PICKUP_GUIDANCE_MOVED) };
       const current = config[change.key];
       if (!NodeUtil.isDeepStrictEqual(current, change.before))
         return {
@@ -960,12 +963,17 @@ const rulesProblem = (
   return unanswered === undefined ? null : `Answer "${unanswered.question}" before approving.`;
 };
 
-/** Pickup that is on needs a column, and each one has to be a Ready column of a connected board. */
+/**
+ * Pickup that is on needs a column. Every stored column has to be a Ready column of a connected
+ * board, even with pickup off, so turning pickup on later never inherits an unchecked one.
+ */
 const pickupColumnsProblem = (
-  columns: FactoryOnboardingResult["pickup"]["columns"],
+  pickup: FactoryOnboardingResult["pickup"],
   boards: ReadonlyArray<FactoryOnboardingBoard>,
 ) => {
-  if (columns.length === 0) return "Pickup is on, so choose at least one Ready column for it.";
+  const { columns } = pickup;
+  if (pickup.enabled && columns.length === 0)
+    return "Pickup is on, so choose at least one Ready column for it.";
   for (const column of columns) {
     const board = boards.find((candidate) => candidate.boardId === column.boardId);
     if (board === undefined)
@@ -1711,9 +1719,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const { pickup } = input.result;
         // Pickup columns are checked against the boards as they are now, not as proposed: a
         // column that stopped being Ready since must not be approved.
-        const boards = pickup.enabled
-          ? yield* onboardingBoards((yield* readManager(input.managerId)).projectId)
-          : [];
+        const boards =
+          pickup.enabled || pickup.columns.length > 0
+            ? yield* onboardingBoards((yield* readManager(input.managerId)).projectId)
+            : [];
         return yield* lock(
           Effect.gen(function* () {
             const replay = yield* replayManager(input.requestId, input);
@@ -1725,13 +1734,26 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               return yield* error("conflict", `${manager.name} is not onboarding.`);
             if (manager.onboardingProposal === null)
               return yield* error("conflict", `${manager.name} has not proposed onboarding yet.`);
+            const questions = manager.onboardingProposal.rules;
             const problem =
-              rulesProblem(manager.onboardingProposal.rules, input.result.rules) ??
-              (pickup.enabled ? pickupColumnsProblem(pickup.columns, boards) : null);
+              rulesProblem(questions, input.result.rules) ?? pickupColumnsProblem(pickup, boards);
             if (problem !== null) return yield* error("invalid", problem);
+            // The question is the manager's wording from the proposal, not whatever the client sent.
+            const asked = new Map(questions.map((question) => [question.id, question.question]));
+            const result = {
+              ...input.result,
+              rules: input.result.rules.map((rule) => ({
+                ...rule,
+                question: asked.get(rule.id) ?? rule.question,
+              })),
+            };
             yield* sql`UPDATE factory_managers SET state='active',
-                onboarding_result_json=${encodeResult(input.result)},onboarding_proposal_json=NULL,
+                onboarding_result_json=${encodeResult(result)},onboarding_proposal_json=NULL,
                 updated_at=${yield* now} WHERE id=${manager.id}`;
+            // The running thread was primed before onboarding, so it learns the result here.
+            yield* writeLog(manager.id, null, "wake", "onboarded", {
+              section: projectSection(result),
+            });
             return yield* rememberManager(input.requestId, input, manager.id);
           }),
         );
@@ -2801,6 +2823,13 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             ),
           );
           break;
+        case "onboarded":
+          Option.map(decodeOnboardedWake(row.payload_json), (payload) =>
+            lines.push(
+              `The user approved your onboarding. Your role skill now ends with this project section:\n\n${payload.section}\n\nStart nothing from this message. Call factory_status before you pick anything up.`,
+            ),
+          );
+          break;
         case "manager-retro":
           Option.map(decodeManagerRetroWake(row.payload_json), (payload) =>
             lines.push(
@@ -2896,7 +2925,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     for (const lead of leads) yield* reconcileLead(ThreadId.make(lead.lead_thread_id));
     const manager = yield* readManager(managerId);
     if (manager.state !== "active") return;
-    yield* queuePickupWake(manager);
+    // The approval wake goes out on its own, so no ticket is offered in the same message.
+    const onboardedPending = yield* sql`SELECT 1 FROM factory_log WHERE manager_id=${manager.id}
+        AND kind='wake' AND reason='onboarded' AND delivered_at IS NULL`;
+    if (onboardedPending.length === 0) yield* queuePickupWake(manager);
     yield* deliverWakes(manager);
   });
 
@@ -4022,6 +4054,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         // Drafting only records a proposal for the user, so a paused manager may finish its retro.
         const problem = isPaused(manager.state) ? null : managerStateProblem(manager);
         if (problem !== null) return yield* error("conflict", problem);
+        if (
+          input.proposedChange?.kind === "setting" &&
+          input.proposedChange.key === "pickupGuidance"
+        )
+          return yield* error("invalid", PICKUP_GUIDANCE_MOVED);
         const findingIds = [...new Set(input.findingIds ?? [])];
         const id = yield* lock(
           Effect.gen(function* () {

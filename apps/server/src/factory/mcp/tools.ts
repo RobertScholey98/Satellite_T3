@@ -107,7 +107,7 @@ export type StatusResult = typeof StatusResult.Type;
 
 const StatusTool = Tool.make("factory_status", {
   description:
-    "For an engineering manager. Return your capacity under the concurrency cap, your live assignments, the Ready tickets on connected boards with no live assignment (each marked judged once you picked it up or skipped it as it is now), and the project's pickup guidance. Call it before judging tickets.",
+    "For an engineering manager. Return your capacity under the concurrency cap, your live assignments, the tickets in your pickup columns with no live assignment (each marked judged once you picked it up or skipped it as it is now), `pickupEnabled`, and the `pickupGuidance` the user approved at onboarding. While `pickupEnabled` is false no ticket is returned. Call it before judging tickets.",
   parameters: Tool.EmptyParams,
   success: StatusResult,
   failure: FactoryToolFailure,
@@ -128,7 +128,7 @@ export type PickupResult = typeof PickupResult.Type;
 
 const PickupTool = Tool.make("factory_pickup", {
   description:
-    "For an engineering manager. Judge one Ready ticket against the pickup guidance from factory_status. `start` launches a lead on the ticket and needs a brief, a completion condition and a complexity that is not `large`; recommend a large ticket to the user instead. `skip` records your reason so the ticket is not offered again until it changes. The server re-checks the concurrency cap and that the ticket is still in a Ready column, and refuses with a reason if either fails.",
+    "For an engineering manager. Judge one ticket from factory_status against your pickup guidance. `start` launches a lead on the ticket and needs a brief, a completion condition and a complexity that is not `large`; recommend a large ticket to the user instead. `skip` records your reason so the ticket is not offered again until it changes. The server re-checks the concurrency cap and that the ticket is still in one of your confirmed pickup columns, and refuses with a reason if either fails. While pickup is off it refuses every ticket.",
   parameters: FactoryPickupInput,
   success: PickupResult,
   failure: FactoryToolFailure,
@@ -138,7 +138,7 @@ const PickupTool = Tool.make("factory_pickup", {
     FactoryService,
   ],
 })
-  .annotate(Tool.Title, "Judge a Ready ticket")
+  .annotate(Tool.Title, "Judge a pickup ticket")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
@@ -152,7 +152,7 @@ export type CommissionResult = typeof CommissionResult.Type;
 
 const CommissionTool = Tool.make("factory_commission", {
   description:
-    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. Pass the number of a ticket in a Ready column to work on it; without one the lead gets its own worktree on a new branch. Pass `dependencyId` to deliver an open dependency another lead reported; that start ignores the cap, because the blocked assignment already holds a slot.",
+    "For an engineering manager. Start an assignment the user asked for in this thread. It skips the pickup guidance and the rule against starting `large` tickets, but still respects the concurrency cap. Pass the number of a ticket in any Ready column of a connected board, not only your pickup columns, to work on it; without one the lead gets its own worktree on a new branch. Pass `dependencyId` to deliver an open dependency another lead reported; that start ignores the cap, because the blocked assignment already holds a slot.",
   parameters: FactoryCommissionInput,
   success: CommissionResult,
   failure: FactoryToolFailure,

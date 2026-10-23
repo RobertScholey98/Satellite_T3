@@ -46,7 +46,7 @@ import {
 } from "./FactoryService.ts";
 import { FactoryOnboardingResultV1 } from "./migrations/FactoryOnboardingResultV1.ts";
 import { FactoryV1 } from "./migrations/FactoryV1.ts";
-import type { RoleSkillSource } from "./roleSkills.ts";
+import { projectSection, type RoleSkillSource } from "./roleSkills.ts";
 import { DEFAULT_ROLE_SKILLS, ONBOARDING_BRIEF } from "./roles/index.ts";
 
 const PROJECT_ID = ProjectId.make("project-1");
@@ -991,11 +991,16 @@ describe("FactoryService onboarding", () => {
         assert.strictEqual(twice.reason, "invalid");
         assert.include(twice.message, "more than once");
 
-        const approved = yield* approve("approve-5");
+        // A rule keeps the question the manager asked, whatever wording the client sends.
+        const reworded = {
+          ...RESULT,
+          rules: [{ ...RESULT.rules[0]!, question: "Is anything small?" }],
+        };
+        const approved = yield* approve("approve-5", reworded);
         assert.strictEqual(approved.state, "active");
         assert.deepStrictEqual(approved.onboardingResult, RESULT);
         assert.isNull(approved.onboardingProposal);
-        assert.deepStrictEqual(yield* approve("approve-5"), approved);
+        assert.deepStrictEqual(yield* approve("approve-5", reworded), approved);
 
         const again = yield* approve("approve-6").pipe(Effect.flip);
         assert.strictEqual(again.reason, "conflict");
@@ -1048,8 +1053,26 @@ describe("FactoryService onboarding", () => {
         assert.strictEqual(backlog.reason, "invalid");
         assert.include(backlog.message, BACKLOG);
 
+        // Columns stored with pickup off are checked too, so turning it on later stays safe.
+        const offBacklog = yield* service
+          .approveOnboarding({
+            requestId: "approve-5",
+            managerId,
+            result: {
+              ...RESULT,
+              pickup: {
+                ...RESULT.pickup,
+                enabled: false,
+                columns: [{ boardId: "board-1", columnId: BACKLOG }],
+              },
+            },
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(offBacklog.reason, "invalid");
+        assert.include(offBacklog.message, BACKLOG);
+
         const off = yield* service.approveOnboarding({
-          requestId: "approve-5",
+          requestId: "approve-6",
           managerId,
           result: { ...RESULT, pickup: { ...RESULT.pickup, enabled: false, columns: [] } },
         });
@@ -1139,6 +1162,9 @@ const approve = (
       result,
     });
     if (!connected) factory.boards.pop();
+    // The approval wake has its own test; the rest start from a log without it.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DELETE FROM factory_log WHERE manager_id=${managerId} AND reason='onboarded'`;
     return approved;
   });
 
@@ -1585,6 +1611,38 @@ describe("FactoryService lead reconciliation", () => {
 });
 
 describe("FactoryService sweep", () => {
+  it.effect("tells the manager its project section once approved, before offering a ticket", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { service, boards, sentMessages } = factory;
+        boards.push(board([{ number: 1, columnId: READY }]));
+        const created = yield* create(service);
+        yield* service.proposeOnboarding(created.threadId!, PROPOSAL);
+        yield* service.approveOnboarding({
+          requestId: "approve-1",
+          managerId: created.id,
+          result: RESULT,
+        });
+
+        yield* service.sweep;
+        assert.strictEqual(sentMessages.length, 1);
+        assert.strictEqual(sentMessages[0]!.threadId, created.threadId);
+        assert.strictEqual(
+          sentMessages[0]!.text,
+          `The user approved your onboarding. Your role skill now ends with this project section:\n\n${projectSection(RESULT)}\n\nStart nothing from this message. Call factory_status before you pick anything up.`,
+        );
+
+        // The ticket comes in its own message on the next sweep.
+        yield* service.sweep;
+        assert.strictEqual(sentMessages.length, 2);
+        assert.include(sentMessages[1]!.text, "#1 Ticket 1");
+        yield* service.sweep;
+        assert.strictEqual(sentMessages.length, 2);
+      }),
+    ),
+  );
+
   it.effect("wakes an active manager once about an unjudged Ready ticket", () =>
     withDatabase(
       Effect.gen(function* () {
@@ -3157,19 +3215,36 @@ describe("FactoryService applied drafts", () => {
     ),
   );
 
-  it.effect("refuses a stored pickup guidance change, which now lives on the manager", () =>
+  it.effect("refuses a pickup guidance change, which now lives on the manager", () =>
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { service } = factory;
+        const sql = yield* SqlClient.SqlClient;
         const manager = yield* activeManager(factory);
-        const { draft } = yield* draftChange(factory, manager.threadId!, {
+        const pickupGuidance = {
           kind: "setting",
           key: "pickupGuidance",
           before: "",
           after: "Only bugs.",
-        });
+        } as const;
 
+        const drafted = yield* draftChange(factory, manager.threadId!, pickupGuidance).pipe(
+          Effect.flip,
+        );
+        assert.strictEqual(drafted.reason, "invalid");
+        assert.include(drafted.message, "set per manager at onboarding");
+        assert.deepStrictEqual(yield* service.listDrafts({ state: "pending" }), []);
+
+        // A draft stored before the move still exists, and is refused when applied.
+        const { draft } = yield* draftChange(factory, manager.threadId!, {
+          kind: "setting",
+          key: "concurrencyCap",
+          before: 1,
+          after: 2,
+        });
+        yield* sql`UPDATE factory_ticket_drafts
+            SET proposed_change_json=${JSON.stringify(pickupGuidance)} WHERE id=${draft.id}`;
         const refused = yield* service
           .applyDraft({ requestId: "apply-1", draftId: draft.id })
           .pipe(Effect.flip);
