@@ -39,6 +39,16 @@ Ready set and never inherit it. Pickup is off unless the user turns it on. A pic
 stops being a Ready column is ignored rather than replaced. User-requested work can still name any
 Ready ticket.
 
+## Approval primes a fresh thread
+
+A provider conversation cannot be reset inside a thread, and an onboarding transcript is mostly file
+reads the manager should not carry forward. Approval therefore launches a new manager thread whose
+first message is the role skill and the project section, points the manager at it, and settles the
+onboarding thread. What the manager knows after onboarding is then exactly what the user approved.
+The client swaps the new thread into the current view with a history replace. Approval never starts
+pickup. A manager with pickup on waits in the `ready` state until the user starts it, so the first
+tickets it takes are ones the user chose to let it take.
+
 ## Control paths are the project's
 
 What must not change in a project, such as CI workflows and lint configuration, is a fact about the

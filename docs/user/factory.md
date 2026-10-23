@@ -44,7 +44,11 @@ The proposal appears as a card in the manager's thread. Review it there:
 - **Findings** are things the manager noticed. They are not kept after approval; use **Draft
   ticket** for one you want to act on.
 
-**Approve** saves the result and starts the manager. **Send back** sends your note to the manager so it can revise the proposal.
+**Send back** sends your note to the manager so it can revise the proposal. **Approve** saves the
+result and replaces the onboarding conversation with a fresh manager thread that starts from your
+approved answers alone. The onboarding thread stays in the sidebar as a record. If you turned pickup
+on, the manager picks up nothing until you press **Start picking up**; until then you can still give
+it work in its thread.
 
 ## Living with a manager
 
