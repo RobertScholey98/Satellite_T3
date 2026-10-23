@@ -41,7 +41,6 @@ const gptWork = { instanceId: "codex-work", model: "gpt-5.5" };
 const removed = { instanceId: "removed-instance", model: "old-model" };
 
 const liveEnvironment = Schema.decodeSync(FactoryConfig)({
-  pickupGuidance: "Pick up small fixes.",
   concurrencyCap: 3,
   recoveryAllowance: 2,
   digestIntervalMinutes: 15,
@@ -69,7 +68,6 @@ const liveEnvironment = Schema.decodeSync(FactoryConfig)({
 
 const projectId = ProjectId.make("project-satellite");
 const override = Schema.decodeSync(FactoryConfigOverride)({
-  pickupGuidance: "Only docs.",
   concurrencyCap: 1,
   recoveryAllowance: 0,
   digestIntervalMinutes: 30,
@@ -342,7 +340,11 @@ describe("migrateFactoryConfigFromDatabase", () => {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const directory = yield* fs.makeTempDirectoryScoped();
-        const saved = encodeConfig(liveEnvironment);
+        // Rows saved before pickup guidance moved onto the manager still carry it.
+        const saved = JSON.stringify({
+          ...JSON.parse(encodeConfig(liveEnvironment)),
+          pickupGuidance: "Pick up small fixes.",
+        });
         yield* saveRow("environment", saved);
         yield* fs.makeDirectory(path.join(directory, "roles"));
         yield* fs.writeFileString(path.join(directory, "roles", "reviewer.md"), "# Our reviewer\n");
