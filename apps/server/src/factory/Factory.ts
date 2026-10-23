@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
+import * as FactoryConfigRepo from "./config/FactoryConfigRepo.ts";
 import * as FactoryConfigStore from "./config/FactoryConfigStore.ts";
 import * as FactoryReactor from "./FactoryReactor.ts";
 import * as FactoryService from "./FactoryService.ts";
@@ -25,6 +26,7 @@ export const layer = Layer.effectDiscard(
       Layer.provide(FactoryTicketHost.layer),
     ),
   ),
+  Layer.provideMerge(FactoryConfigRepo.layer),
   Layer.provideMerge(FactoryConfigStore.layer),
 );
 
@@ -32,6 +34,7 @@ export const layer = Layer.effectDiscard(
 export const testLayer = Layer.mergeAll(
   Layer.mock(FactoryService.FactoryService)({}),
   Layer.mock(FactoryConfigStore.FactoryConfigStore)({ directory: "factory" }),
+  Layer.mock(FactoryConfigRepo.FactoryConfigRepo)({}),
 );
 
 // `factory_delegate` launches its child through upstream's delegation, as `delegate_task` does.

@@ -63,5 +63,14 @@ export function createFactoryEnvironmentAtoms<R, E>(
     restoreDraft: command("drafts:restore", WS_METHODS.factoryDraftsRestore),
     applyDraft: command("drafts:apply", WS_METHODS.factoryDraftsApply),
     getStats: command("stats:get", WS_METHODS.factoryStatsGet),
+    getDefinitions: command("definitions:get", WS_METHODS.factoryDefinitionsGet),
+    configRepoStatus: command("config-repo:status", WS_METHODS.factoryConfigRepoStatus),
+    connectConfigRepo: command("config-repo:connect", WS_METHODS.factoryConfigRepoConnect),
+    checkConfigRepo: command("config-repo:check", WS_METHODS.factoryConfigRepoCheck),
+    pushConfigRepo: command("config-repo:push", WS_METHODS.factoryConfigRepoPush),
+    pullConfigRepo: command("config-repo:pull", WS_METHODS.factoryConfigRepoPull),
+    resolveConfigRepo: command("config-repo:resolve", WS_METHODS.factoryConfigRepoResolve),
+    discardConfigRepo: command("config-repo:discard", WS_METHODS.factoryConfigRepoDiscard),
+    disconnectConfigRepo: command("config-repo:disconnect", WS_METHODS.factoryConfigRepoDisconnect),
   };
 }

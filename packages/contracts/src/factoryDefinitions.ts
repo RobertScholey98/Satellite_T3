@@ -139,3 +139,59 @@ export const FactoryDefinitionsView = Schema.Struct({
   problems: Schema.Array(FactoryConfigProblem),
 });
 export type FactoryDefinitionsView = typeof FactoryDefinitionsView.Type;
+
+/** A file in the config directory that differs from the last commit. */
+export const FactoryConfigRepoChange = Schema.Struct({
+  /** Relative to the factory config directory, with forward slashes. */
+  path: Schema.String,
+  change: Schema.Literals(["added", "modified", "deleted"]),
+});
+export type FactoryConfigRepoChange = typeof FactoryConfigRepoChange.Type;
+
+/** The config directory's own Git checkout, when the user connected one. */
+export const FactoryConfigRepoStatus = Schema.Union([
+  Schema.Struct({ connected: Schema.Literal(false) }),
+  Schema.Struct({
+    connected: Schema.Literal(true),
+    remoteUrl: Schema.String,
+    branch: Schema.String,
+    localChanges: Schema.Array(FactoryConfigRepoChange),
+    unpushedCommits: NonNegativeInt,
+    /** Null until a check, pull or connect has fetched. */
+    incomingCommits: Schema.NullOr(NonNegativeInt),
+    /** A pull stopped on files changed on both sides, each settled as mine or theirs. */
+    conflict: Schema.NullOr(Schema.Struct({ paths: Schema.Array(Schema.String) })),
+  }),
+]);
+export type FactoryConfigRepoStatus = typeof FactoryConfigRepoStatus.Type;
+
+export const FactoryConfigRepoConnectInput = Schema.Struct({
+  url: TrimmedNonEmptyString.check(Schema.isMaxLength(2000)),
+  /** Needed when the repo already has content and this config has files of its own. */
+  choice: Schema.optionalKey(Schema.Literals(["use-repo"])),
+});
+export type FactoryConfigRepoConnectInput = typeof FactoryConfigRepoConnectInput.Type;
+
+export const FactoryConfigRepoConnectResult = Schema.Union([
+  Schema.Struct({ outcome: Schema.Literal("connected"), status: FactoryConfigRepoStatus }),
+  /** Both sides have a config: nothing was changed, and the user picks which to keep. */
+  Schema.Struct({ outcome: Schema.Literal("needs-choice") }),
+]);
+export type FactoryConfigRepoConnectResult = typeof FactoryConfigRepoConnectResult.Type;
+
+export const FactoryConfigRepoPushInput = Schema.Struct({
+  message: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+});
+export type FactoryConfigRepoPushInput = typeof FactoryConfigRepoPushInput.Type;
+
+export const FactoryConfigRepoResolveInput = Schema.Struct({
+  path: TrimmedNonEmptyString.check(Schema.isMaxLength(1000)),
+  side: Schema.Literals(["mine", "theirs"]),
+});
+export type FactoryConfigRepoResolveInput = typeof FactoryConfigRepoResolveInput.Type;
+
+export const FactoryConfigRepoDisconnectInput = Schema.Struct({
+  /** Disconnect even though local changes or commits were never pushed. */
+  force: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+});
+export type FactoryConfigRepoDisconnectInput = typeof FactoryConfigRepoDisconnectInput.Type;

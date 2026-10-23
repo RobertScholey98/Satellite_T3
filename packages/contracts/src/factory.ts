@@ -11,6 +11,15 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
+import {
+  FactoryConfigRepoConnectInput,
+  FactoryConfigRepoConnectResult,
+  FactoryConfigRepoDisconnectInput,
+  FactoryConfigRepoPushInput,
+  FactoryConfigRepoResolveInput,
+  FactoryConfigRepoStatus,
+  FactoryDefinitionsView,
+} from "./factoryDefinitions.ts";
 import { IssueRef, IssueSummary } from "./issues.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
@@ -47,6 +56,15 @@ export const FACTORY_WS_METHODS = {
   factoryDraftsRestore: "factory.drafts.restore",
   factoryStatsGet: "factory.stats.get",
   factoryDraftsApply: "factory.drafts.apply",
+  factoryDefinitionsGet: "factory.definitions.get",
+  factoryConfigRepoStatus: "factory.configRepo.status",
+  factoryConfigRepoConnect: "factory.configRepo.connect",
+  factoryConfigRepoCheck: "factory.configRepo.check",
+  factoryConfigRepoPush: "factory.configRepo.push",
+  factoryConfigRepoPull: "factory.configRepo.pull",
+  factoryConfigRepoResolve: "factory.configRepo.resolve",
+  factoryConfigRepoDiscard: "factory.configRepo.discard",
+  factoryConfigRepoDisconnect: "factory.configRepo.disconnect",
 } as const;
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -1125,3 +1143,54 @@ export const WsFactoryDraftsApplyRpc = Rpc.make(FACTORY_WS_METHODS.factoryDrafts
   success: FactoryTicketDraft,
   error: FactoryRpcError,
 });
+
+const NoInput = Schema.Struct({});
+
+export const WsFactoryDefinitionsGetRpc = Rpc.make(FACTORY_WS_METHODS.factoryDefinitionsGet, {
+  payload: NoInput,
+  success: FactoryDefinitionsView,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoStatusRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoStatus, {
+  payload: NoInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoConnectRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoConnect, {
+  payload: FactoryConfigRepoConnectInput,
+  success: FactoryConfigRepoConnectResult,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoCheckRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoCheck, {
+  payload: NoInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoPushRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoPush, {
+  payload: FactoryConfigRepoPushInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoPullRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoPull, {
+  payload: NoInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoResolveRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoResolve, {
+  payload: FactoryConfigRepoResolveInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoDiscardRpc = Rpc.make(FACTORY_WS_METHODS.factoryConfigRepoDiscard, {
+  payload: NoInput,
+  success: FactoryConfigRepoStatus,
+  error: FactoryRpcError,
+});
+export const WsFactoryConfigRepoDisconnectRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryConfigRepoDisconnect,
+  {
+    payload: FactoryConfigRepoDisconnectInput,
+    success: FactoryConfigRepoStatus,
+    error: FactoryRpcError,
+  },
+);
