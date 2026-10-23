@@ -173,13 +173,32 @@ export function describePickupDecision(entry: {
   return entry.reason.trim() === "" ? subject : `${subject}: ${entry.reason.trim()}`;
 }
 
+// The timeline recomputes its rows whenever its entries change identity, and does so during
+// render, so a fresh fold for the same input would loop. One fold is kept per entries array.
+const primingFolds = new WeakMap<
+  ReadonlyArray<TimelineEntry>,
+  { readonly primingMessageId: MessageId; readonly entries: ReadonlyArray<TimelineEntry> }
+>();
+
 /**
  * Folds a primed manager thread's first exchange into one entry: the priming message the server
  * sent from the approved onboarding result, the work of that turn, and the manager's first reply.
  * The priming is found by id, never by position or text: history is windowed, so the first loaded
- * message may be a real request. Without the priming in the window, nothing folds.
+ * message may be a real request. Without the priming in the window, nothing folds. The same input
+ * returns the same array.
  */
 export function collapseFactoryPriming(
+  entries: ReadonlyArray<TimelineEntry>,
+  primingMessageId: MessageId,
+): ReadonlyArray<TimelineEntry> {
+  const cached = primingFolds.get(entries);
+  if (cached?.primingMessageId === primingMessageId) return cached.entries;
+  const folded = foldPriming(entries, primingMessageId);
+  primingFolds.set(entries, { primingMessageId, entries: folded });
+  return folded;
+}
+
+function foldPriming(
   entries: ReadonlyArray<TimelineEntry>,
   primingMessageId: MessageId,
 ): ReadonlyArray<TimelineEntry> {

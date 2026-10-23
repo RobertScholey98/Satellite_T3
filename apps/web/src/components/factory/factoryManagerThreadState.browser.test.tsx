@@ -63,11 +63,8 @@ const manager: FactoryManager = {
   updatedAt: at,
 };
 
-// The timeline's own path: the folded entries feed the incremental row derivation. The probe opts
-// out of the compiler so each render hands the hook a fresh thread ref, as an unmemoised caller does.
+// The timeline's own path: the folded entries feed the incremental row derivation.
 function PrimedTimeline(props: { readonly tick: number }) {
-  // oxlint-disable-next-line t3code/no-manual-memo -- the test stands in for a caller the compiler leaves alone.
-  "use no memo";
   const entries = useFactoryPrimedTimelineEntries(ENTRIES, scopeThreadRef(environmentId, threadId));
   const rows = useIncrementalTimelineRows("primed-thread", {
     timelineEntries: entries,

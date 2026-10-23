@@ -179,6 +179,13 @@ describe("collapseFactoryPriming", () => {
     ]);
   });
 
+  it("returns the same array for the same entries, which the timeline's row derivation needs", () => {
+    const entries = [message("priming", "user", "Primed"), message("ready", "assistant", "Ready.")];
+    const first = collapseFactoryPriming(entries, primingId);
+    expect(collapseFactoryPriming(entries, primingId)).toBe(first);
+    expect(collapseFactoryPriming([...entries], primingId)).not.toBe(first);
+  });
+
   it("keeps earlier and later turns and notes that the user has written since", () => {
     const entries = [
       message("earlier", "user", "An older request still in the window"),
