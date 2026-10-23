@@ -46,6 +46,9 @@ const probe = await vi.hoisted(async () => {
 vi.mock("../../../../packages/contracts/src/satelliteRpc.ts", () => ({
   SATELLITE_WS_METHODS: { satelliteProbe: probe.method },
   WsSatelliteRpcGroup: probe.group,
+  // clientRpcPermissions.ts spreads this, so the mock owes it a value; the probe is not
+  // client-guarded, and the registry below is what this file exercises.
+  SATELLITE_CLIENT_GUARDED_RPC_SCOPES: {},
 }));
 
 vi.mock("./SatelliteRpcRegistry.ts", async () => {
