@@ -1,12 +1,17 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { FactoryRole, ModelSelection } from "@t3tools/contracts";
+import { FactoryRole, ModelSelection, type FactoryOnboardingResult } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
-import { renderRoleSkill, roleSkillSource, type RoleSkillFill } from "./roleSkills.ts";
+import {
+  projectSection,
+  renderRoleSkill,
+  roleSkillSource,
+  type RoleSkillFill,
+} from "./roleSkills.ts";
 import { DEFAULT_ROLE_SKILLS } from "./roles/index.ts";
 
 const model = Schema.decodeSync(ModelSelection);
@@ -18,7 +23,6 @@ const EMPTY: RoleSkillFill = {
   allowedModels: [],
   protectedPaths: [],
   completionCondition: null,
-  pickupGuidance: "",
 };
 
 const TEMPLATE = [
@@ -48,7 +52,6 @@ describe("renderRoleSkill", () => {
       allowedModels: [GPT],
       protectedPaths: [".github/workflows/**", "AGENTS.md"],
       completionCondition: "The tests pass.",
-      pickupGuidance: "Only small bug fixes.",
     });
     assert.strictEqual(
       text,
@@ -62,7 +65,7 @@ describe("renderRoleSkill", () => {
         "- .github/workflows/**",
         "- AGENTS.md",
         "done when: The tests pass.",
-        "pickup: Only small bug fixes.",
+        "pickup: (see the Project section)",
       ].join("\n"),
     );
   });
@@ -78,7 +81,7 @@ describe("renderRoleSkill", () => {
         "protected:",
         "(none configured)",
         "done when: (no assignment yet)",
-        "pickup: (none: nothing auto-starts)",
+        "pickup: (see the Project section)",
       ].join("\n"),
     );
   });
@@ -95,6 +98,48 @@ describe("renderRoleSkill", () => {
       );
       assert.notInclude(renderRoleSkill(skill, EMPTY), "{{", role);
     }
+  });
+});
+
+const RESULT: FactoryOnboardingResult = {
+  purpose: "A todo app for small teams.",
+  pickup: { enabled: true, columns: [], labels: [], guidance: "Only small bug fixes." },
+  baseBranch: null,
+  rules: [
+    { id: "small", question: "Which tickets count as small?", answer: "One file" },
+    { id: "docs", question: "Do docs-only changes need review?", answer: "Yes" },
+  ],
+  controlPaths: [],
+  teamIds: [],
+  concurrencyCap: 2,
+};
+
+describe("projectSection", () => {
+  it("gives the purpose, the pickup switch with its guidance, and each rule with its answer", () => {
+    assert.strictEqual(
+      projectSection(RESULT),
+      [
+        "# Project",
+        "A todo app for small teams.",
+        "## Pickup",
+        "Pickup is on. Judge each ticket you are offered against this guidance:",
+        "Only small bug fixes.",
+        "## Project rules",
+        "- Which tickets count as small?: One file\n- Do docs-only changes need review?: Yes",
+      ].join("\n\n"),
+    );
+  });
+
+  it("says when pickup is off, and starts nothing on its own with no guidance", () => {
+    const bare = { ...RESULT, purpose: " ", rules: [] };
+    assert.strictEqual(
+      projectSection({ ...bare, pickup: { ...RESULT.pickup, enabled: false } }),
+      "# Project\n\n## Pickup\n\nPickup is off. No ticket is offered on its own; work starts when the user asks for it.",
+    );
+    assert.include(
+      projectSection({ ...bare, pickup: { ...RESULT.pickup, guidance: "" } }),
+      "Recommend every ticket to the user; start none on your own.",
+    );
   });
 });
 

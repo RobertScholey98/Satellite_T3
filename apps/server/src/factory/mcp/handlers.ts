@@ -145,19 +145,20 @@ const make = Effect.gen(function* () {
   });
 
   return {
-    factory_propose_onboarding: McpToolAccess.actsAsCaller((report) =>
+    factory_propose_onboarding: McpToolAccess.actsAsCaller((proposal) =>
       Effect.gen(function* () {
         const { threadId } = yield* callingManager(NOT_A_MANAGER);
         const manager = yield* factory
-          .proposeOnboarding(threadId, report)
+          .proposeOnboarding(threadId, proposal)
           .pipe(Effect.mapError(toolFailure));
         return {
           managerId: manager.id,
           managerName: manager.name,
           state: manager.state,
-          controlPaths: manager.onboardingReport?.controlPaths ?? [],
+          // The service just stored the proposal, so it is present.
+          detected: manager.onboardingProposal!.detected,
           message:
-            "The onboarding report is with the user. Ask them in this thread to review and approve it in Satellite.",
+            "The proposal is with the user. Tell them in this thread that it is ready for review in Satellite.",
         };
       }),
     ),

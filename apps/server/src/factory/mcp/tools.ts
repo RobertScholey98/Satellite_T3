@@ -11,7 +11,8 @@ import {
   FactoryFinding,
   FactoryFindingsListInput,
   FactoryManagerState,
-  FactoryOnboardingReport,
+  FactoryOnboardingDetected,
+  FactoryOnboardingProposalInput,
   FactoryOperationError,
   FactoryPickupInput,
   FactoryRecordFindingInput,
@@ -53,15 +54,16 @@ export const ProposeOnboardingResult = Schema.Struct({
   managerId: Schema.String,
   managerName: Schema.String,
   state: FactoryManagerState,
-  controlPaths: Schema.Array(Schema.String),
+  /** What Satellite read itself, so the manager sees the boards the user will choose from. */
+  detected: FactoryOnboardingDetected,
   message: Schema.String,
 });
 export type ProposeOnboardingResult = typeof ProposeOnboardingResult.Type;
 
 const ProposeOnboardingTool = Tool.make("factory_propose_onboarding", {
   description:
-    "For an engineering manager that is onboarding. Submit your onboarding report: the control paths you propose to protect (glob patterns relative to the repository root that no team may edit), gaps in how the issue board maps to the factory, open choices the user needs to make, and a short summary. Nothing is picked up until the user approves the report in Satellite. Call it again to revise the report. After calling it, ask the user in this thread to review and approve it.",
-  parameters: FactoryOnboardingReport,
+    "For an engineering manager that is onboarding. Submit your onboarding proposal: a short summary, the project's purpose, the control paths you propose to protect (glob patterns relative to the repository root that no team may edit, each with its reason), findings that need no decision, and whether pickup should be on with the guidance you would judge tickets by. Put each open choice in as a question with 2 to 4 options and the 0-based index of the one you recommend, with your reason; the user answers each one when they review the proposal. Do not report board columns or the default branch: Satellite detects them itself and returns what it found. Nothing is picked up until the user reviews and approves the proposal in Satellite. Call it again to revise it.",
+  parameters: FactoryOnboardingProposalInput,
   success: ProposeOnboardingResult,
   failure: FactoryToolFailure,
   // The access check loads the calling thread to confirm it still owns a live run.
