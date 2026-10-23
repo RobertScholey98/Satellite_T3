@@ -32,9 +32,6 @@ import {
   type OnboardingForm,
 } from "./factoryOnboardingCard.logic";
 
-/** Used when the factory config cannot be read; it matches the contract's default. */
-const FALLBACK_CONCURRENCY_CAP = 2;
-
 /**
  * Stands in for a `factory_propose_onboarding` call in a manager's thread. It reads the live
  * proposal from the managers feed, not the call's arguments, and only the newest call acts.
@@ -49,7 +46,8 @@ export function FactoryOnboardingCard(props: {
     (entry) => props.threadId !== null && entry.threadId === props.threadId,
   );
   if (!props.latest) return <CollapsedLine>Replaced by a later proposal</CollapsedLine>;
-  if (manager === undefined) return null;
+  // The managers feed may still be loading; the call must not vanish from the timeline meanwhile.
+  if (manager === undefined) return <CollapsedLine>Onboarding proposal</CollapsedLine>;
   if (manager.onboardingResult !== null) return <CollapsedLine>Onboarding approved</CollapsedLine>;
   // Paused or retired before approving: nothing here can act until it resumes onboarding.
   if (manager.state === "retired") return <CollapsedLine>Manager retired</CollapsedLine>;
@@ -97,7 +95,8 @@ function OnboardingProposalForm(props: {
   });
   const getConfig = useAtomCommand(factoryEnvironment.getConfig, { reportFailure: false });
   const [form, setForm] = useState<OnboardingForm>(() => initialOnboardingForm(proposal));
-  const [cap, setCap] = useState<number | null>(null);
+  // Approve waits for the real cap rather than sending a guess.
+  const [config, setConfig] = useState<{ readonly cap: number } | "loading" | "failed">("loading");
   const [newPath, setNewPath] = useState("");
   const [note, setNote] = useState("");
   const [asked, setAsked] = useState<ReadonlySet<number>>(() => new Set());
@@ -110,17 +109,32 @@ function OnboardingProposalForm(props: {
       environmentId,
       input: { projectId: props.projectId },
     }).then((result) => {
-      if (current && result._tag === "Success") setCap(result.value.effective.concurrencyCap);
+      if (!current) return;
+      setConfig(
+        result._tag === "Success" ? { cap: result.value.effective.concurrencyCap } : "failed",
+      );
     });
     return () => {
       current = false;
     };
   }, [environmentId, props.projectId, getConfig]);
 
+  // Only the review controls need the approve permission; sending into the thread does not.
   const readOnly = !canApprove || busy;
   const send = props.onSendMessage;
-  const blocker = onboardingApproveBlocker(proposal, form);
-  const boards = proposal.detected.boards;
+  const blocker =
+    config === "loading"
+      ? "Loading the factory settings…"
+      : config === "failed"
+        ? "Could not read the factory settings"
+        : onboardingApproveBlocker(proposal, form);
+  const boards = proposal.detected.boards.filter((board) => board.readyColumns.length > 0);
+  const pickupUnavailable =
+    proposal.detected.boards.length === 0
+      ? "Connect a board in Issues to turn on pickup"
+      : boards.length === 0
+        ? "No board has a Ready column; map one in Issues"
+        : null;
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true);
@@ -133,7 +147,8 @@ function OnboardingProposalForm(props: {
     if (failure !== null) setError(factoryErrorMessage(failure));
     return failure === null;
   };
-  const approve = () =>
+  const approve = () => {
+    if (typeof config !== "object") return;
     void run(async () => {
       unwrapFactoryResult(
         await approveCommand({
@@ -141,11 +156,12 @@ function OnboardingProposalForm(props: {
           input: {
             requestId: randomUUID(),
             managerId: props.managerId,
-            result: onboardingResultFromForm(proposal, form, cap ?? FALLBACK_CONCURRENCY_CAP),
+            result: onboardingResultFromForm(proposal, form, config.cap),
           },
         }),
       );
     });
+  };
   const draftTicket = (index: number, finding: string) => {
     if (!send) return;
     void run(() =>
@@ -191,15 +207,13 @@ function OnboardingProposalForm(props: {
           <Switch
             size="sm"
             checked={form.pickupEnabled}
-            disabled={readOnly || boards.length === 0}
+            disabled={readOnly || pickupUnavailable !== null}
             onCheckedChange={(checked) => setForm({ ...form, pickupEnabled: checked })}
           />
           Pick up tickets on its own
         </Label>
-        {boards.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            Connect a board in Issues to turn on pickup
-          </p>
+        {pickupUnavailable !== null ? (
+          <p className="text-xs text-muted-foreground">{pickupUnavailable}</p>
         ) : proposal.pickup.enabled && !form.pickupEnabled ? (
           <p className="text-xs text-muted-foreground">The manager suggests turning pickup on.</p>
         ) : null}
@@ -262,7 +276,7 @@ function OnboardingProposalForm(props: {
                   }
                 >
                   {rule.options.map((option, index) => (
-                    <Label key={option}>
+                    <Label key={`${index}:${option}`}>
                       <Radio value={String(index)} />
                       {index === rule.recommended ? `${option} (recommended)` : option}
                     </Label>
@@ -289,26 +303,26 @@ function OnboardingProposalForm(props: {
 
       <Section title="Protected paths">
         {form.controlPaths.map((entry, index) => (
-          <Label key={entry.path} className="items-start">
-            <Checkbox
-              checked={entry.kept}
-              disabled={readOnly}
-              onCheckedChange={(checked) =>
-                setForm({
-                  ...form,
-                  controlPaths: form.controlPaths.map((current, at) =>
-                    at === index ? { ...current, kept: checked === true } : current,
-                  ),
-                })
-              }
-            />
-            <span className="min-w-0">
+          <div key={`${index}:${entry.path}`} className="space-y-0.5">
+            <Label>
+              <Checkbox
+                checked={entry.kept}
+                disabled={readOnly}
+                onCheckedChange={(checked) =>
+                  setForm({
+                    ...form,
+                    controlPaths: form.controlPaths.map((current, at) =>
+                      at === index ? { ...current, kept: checked === true } : current,
+                    ),
+                  })
+                }
+              />
               <code className="break-all">{entry.path}</code>
-              {entry.reason === "" ? null : (
-                <span className="block text-xs text-muted-foreground">{entry.reason}</span>
-              )}
-            </span>
-          </Label>
+            </Label>
+            {entry.reason === "" ? null : (
+              <p className="ps-6 text-xs text-muted-foreground">{entry.reason}</p>
+            )}
+          </div>
         ))}
         <div className="flex gap-2">
           <Input
@@ -337,13 +351,13 @@ function OnboardingProposalForm(props: {
         <Section title="Findings">
           <ul className="space-y-1.5">
             {proposal.findings.map((finding, index) => (
-              <li key={finding} className="flex items-start gap-2">
+              <li key={`${index}:${finding}`} className="flex items-start gap-2">
                 <span className="min-w-0 flex-1">{finding}</span>
                 {send ? (
                   <Button
                     size="xs"
                     variant="outline"
-                    disabled={readOnly || asked.has(index)}
+                    disabled={busy || asked.has(index)}
                     onClick={() => draftTicket(index, finding)}
                   >
                     {asked.has(index) ? "Asked" : "Draft ticket"}
@@ -362,14 +376,14 @@ function OnboardingProposalForm(props: {
             size="sm"
             rows={2}
             placeholder="What should the manager change?"
-            disabled={readOnly}
+            disabled={busy}
             value={note}
             onChange={(event) => setNote(event.target.value)}
           />
           <Button
             size="sm"
             variant="outline"
-            disabled={readOnly || note.trim() === ""}
+            disabled={busy || note.trim() === ""}
             onClick={sendBack}
           >
             Send back

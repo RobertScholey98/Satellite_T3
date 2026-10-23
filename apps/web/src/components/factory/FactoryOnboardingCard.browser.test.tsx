@@ -1,10 +1,12 @@
 import {
   EnvironmentId,
+  FactoryOperationError,
   ProjectId,
   ThreadId,
   type FactoryManager,
   type FactoryOnboardingProposal,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
@@ -169,4 +171,71 @@ it("preselects the recommended answer and sends the user's own words for Other",
       },
     ],
   });
+});
+
+it("starts a fresh review when the manager sends a new proposal", async () => {
+  setup();
+  await using screen = await render(card());
+  const purpose = screen.getByRole("textbox", { name: "Purpose" });
+  await userEvent.clear(purpose);
+  await userEvent.type(purpose, "My own words");
+  await expect.element(purpose).toHaveValue("My own words");
+
+  state.managers = [
+    {
+      ...manager,
+      onboardingProposal: {
+        ...proposal,
+        purpose: "Ship Atlas v2.",
+        proposedAt: "2026-10-23T01:00:00.000Z",
+      },
+    },
+  ];
+  await screen.rerender(card());
+  await expect
+    .element(screen.getByRole("textbox", { name: "Purpose" }))
+    .toHaveValue("Ship Atlas v2.");
+});
+
+it("sends only the kept protected paths, with any the user added", async () => {
+  setup();
+  await using screen = await render(card());
+
+  await userEvent.click(screen.getByText(".github/**", { exact: true }));
+  await userEvent.type(screen.getByRole("textbox", { name: "Add a protected path" }), "docs/**");
+  await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+  expect(state.approve).toHaveBeenCalledOnce();
+  expect(state.approve.mock.calls[0]![0].input.result.controlPaths).toEqual([
+    { path: "docs/**", reason: "" },
+  ]);
+});
+
+it("shows the server's refusal on the card", async () => {
+  setup();
+  state.approve.mockResolvedValue({
+    _tag: "Failure",
+    cause: Cause.fail(
+      new FactoryOperationError({
+        reason: "invalid",
+        message: "Backlog is not a Ready column of Atlas board.",
+      }),
+    ),
+  });
+  await using screen = await render(card());
+
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+  await expect
+    .element(screen.getByRole("alert"))
+    .toHaveTextContent("Backlog is not a Ready column of Atlas board.");
+});
+
+it("will not approve without the factory settings rather than guess the cap", async () => {
+  setup();
+  state.getConfig.mockResolvedValue({ _tag: "Failure", cause: Cause.fail(new Error("offline")) });
+  await using screen = await render(card());
+
+  await expect.element(screen.getByText("Could not read the factory settings")).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
 });
