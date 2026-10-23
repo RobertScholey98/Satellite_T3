@@ -45,8 +45,8 @@ or renaming a definition can never break a team. To land a change everywhere, ed
 Definitions name models as `driver/model` with optional options, never a provider instance id,
 which differs between machines. A definition's model list is a priority order: the first entry the
 environment can run is used. A **dynamic** list is instead a menu the starter of the agent picks
-from per task: the lead for a team member, the manager for a team's lead. Briefs list only the
-entries the environment can run.
+from per task: the lead for a team member, the manager for a team's lead. An empty list stands for
+the whole pool. Briefs list only the entries the environment can run.
 
 The model pool in `factory.yaml` is the factory-wide allow-list and cost guard. Every listed model
 must be in it, and imports cannot widen it without the user's say-so. On each environment the
