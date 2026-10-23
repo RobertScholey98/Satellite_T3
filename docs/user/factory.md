@@ -44,8 +44,7 @@ The proposal appears as a card in the manager's thread. Review it there:
 - **Findings** are things the manager noticed. They are not kept after approval; use **Draft
   ticket** for one you want to act on.
 
-**Approve** saves the result and starts the manager. **Send back** returns the proposal with your
-note so the manager can revise it.
+**Approve** saves the result and starts the manager. **Send back** sends your note to the manager so it can revise the proposal.
 
 ## Living with a manager
 
