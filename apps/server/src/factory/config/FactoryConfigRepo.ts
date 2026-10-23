@@ -70,7 +70,8 @@ const NETWORK_ENV = { GIT_TERMINAL_PROMPT: "0" };
  * whole state lives in the repo, so a conflict outlasts a restart. The commit never leaves this
  * private repo: once the rebase ends it is undone, and the changes are uncommitted again.
  */
-const SET_ASIDE_SUBJECT = "satellite: local changes set aside during a pull";
+/** @internal Exported for tests that recreate an interrupted pull. */
+export const SET_ASIDE_SUBJECT = "satellite: local changes set aside during a pull";
 const SET_ASIDE_IDENTITY = {
   GIT_AUTHOR_NAME: "Satellite",
   GIT_AUTHOR_EMAIL: "satellite@localhost",
@@ -103,6 +104,16 @@ const summarise = (action: string, stderr: string) => {
 
 /** A URL's password or token is not shown back. */
 const displayUrl = (url: string) => url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1");
+
+/**
+ * Credentials in a URL would sit in `.git/config` in plain text. A user name alone is how SSH
+ * URLs name the account, so only HTTP userinfo and any password are refused.
+ */
+const carriesCredentials = (url: string) => {
+  const userinfo = /^([a-z][a-z0-9+.-]*):\/\/([^/@]*)@/i.exec(url);
+  if (userinfo === null) return false;
+  return /^https?$/i.test(userinfo[1]!) || userinfo[2]!.includes(":");
+};
 
 const parseChanges = (fields: ReadonlyArray<string>): FactoryConfigRepoChange[] => {
   const changes: FactoryConfigRepoChange[] = [];
@@ -143,7 +154,7 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
   const run = (args: ReadonlyArray<string>, gitOptions: GitOptions = {}, bare = false) =>
     git
       .execute({
-        operation: `FactoryConfigRepo.git.${args[0]}`,
+        operation: `FactoryConfigRepo.git.${args.find((arg) => !arg.startsWith("-") && !arg.includes("=")) ?? "git"}`,
         cwd: directory,
         args: bare ? args : ["--git-dir", gitDir, "--work-tree", directory, ...args],
         allowNonZeroExit: true,
@@ -273,12 +284,27 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
     yield* Ref.set(fetched, true);
   });
 
-  /** Ends a pull that stopped after its rebase but before the set-aside commit was undone. */
+  /**
+   * Ends a pull that stopped after its rebase but before the set-aside commit was undone. A commit
+   * with that subject the repo already has is real history, never undone.
+   */
   const restoreSetAside = Effect.gen(function* () {
     if (yield* rebaseInProgress) return;
     if ((yield* output(["log", "-1", "--format=%s"])) !== SET_ASIDE_SUBJECT) return;
+    const upstream = upstreamOf(yield* currentBranch);
+    if (
+      (yield* hasCommit(upstream)) &&
+      (yield* succeeds(["merge-base", "--is-ancestor", "HEAD", upstream]))
+    )
+      return;
     yield* ok("bring back the local changes", ["reset", "--mixed", "--quiet", "HEAD~1"]);
   });
+
+  /** A signing prompt would stall a rebase nobody is watching; these commits are replays. */
+  const rebase = (args: ReadonlyArray<string>) =>
+    Effect.flatMap(rebaseEnv, (env) =>
+      run(["-c", "commit.gpgsign=false", "rebase", ...args], { env }),
+    );
 
   /** A rebase that stops on a conflict leaves it for `resolve`; any other failure is undone. */
   const afterRebase = Effect.fnUntraced(function* (result: GitVcsDriver.ExecuteGitResult) {
@@ -299,9 +325,7 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
     }
     // Taking theirs for every file can leave the replayed commit empty, which Git only skips.
     const nothingStaged = yield* succeeds(["diff", "--cached", "--quiet"]);
-    const result = yield* run(["rebase", nothingStaged ? "--skip" : "--continue"], {
-      env: yield* rebaseEnv,
-    });
+    const result = yield* rebase([nothingStaged ? "--skip" : "--continue"]);
     return yield* afterRebase(result);
   });
 
@@ -327,21 +351,55 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
     yield* fs.writeFileString(excludeFile, `${current}${separator}${LEGACY_ROLES_EXCLUDE}\n`);
   }).pipe(Effect.mapError(storage("configure")));
 
+  const backUp = backupFactoryConfig(directory).pipe(
+    Effect.provideService(FileSystem.FileSystem, fs),
+    Effect.provideService(Path.Path, path),
+  );
+
+  const checkOut = (branch: string) =>
+    ok("check out the repo", ["checkout", "--quiet", "-B", branch, "--track", `origin/${branch}`]);
+
   /**
-   * Backs the config up beside the directory, then removes what the backup holds so the repo's
-   * config can be checked out. Anything outside the config layout stays, as a local change.
+   * Backs the config up beside the directory, removes what the backup holds, and checks out the
+   * repo's config. Anything outside the config layout stays, as a local change. The checkout is
+   * checked first, and if it fails anyway the backup is copied back, so a failed connect leaves the
+   * config as it was.
    */
-  const replaceWithRepo = Effect.gen(function* () {
-    yield* backupFactoryConfig(directory).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, path),
-    );
+  const replaceWithRepo = Effect.fnUntraced(function* (branch: string) {
+    for (const repoPath of yield* fields([
+      "ls-tree",
+      "-r",
+      "--name-only",
+      "-z",
+      `origin/${branch}`,
+    ])) {
+      if (CONFIG_LAYOUT_ENTRIES.includes(repoPath.split("/")[0]!)) continue;
+      const local = yield* fs
+        .exists(path.join(directory, ...repoPath.split("/")))
+        .pipe(Effect.mapError(storage("read")));
+      if (local)
+        return yield* error(
+          "invalid",
+          `The repo has ${repoPath}, and this environment has its own file there outside the config. Move it out of the config folder, then connect again.`,
+        );
+    }
+    const backup = yield* backUp;
     for (const entry of CONFIG_LAYOUT_ENTRIES) {
       yield* fs.remove(path.join(directory, entry), { recursive: true }).pipe(
         Effect.catchReason("PlatformError", "NotFound", () => Effect.void),
         Effect.mapError(storage("clear")),
       );
     }
+    yield* checkOut(branch).pipe(
+      Effect.tapError(() =>
+        // An entry the config never had is missing from the backup too, which is fine.
+        Effect.forEach(CONFIG_LAYOUT_ENTRIES, (entry) =>
+          fs
+            .copy(path.join(backup, entry), path.join(directory, entry), { overwrite: true })
+            .pipe(Effect.ignore),
+        ),
+      ),
+    );
   });
 
   const remoteDefaultBranch = Effect.fnUntraced(function* (branches: ReadonlyArray<string>) {
@@ -381,6 +439,11 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
   const connect = Effect.fn("FactoryConfigRepo.connect")(function* (
     input: FactoryConfigRepoConnectInput,
   ) {
+    if (carriesCredentials(input.url))
+      return yield* error(
+        "invalid",
+        "Don't put credentials in the URL. Use a Git credential helper or SSH.",
+      );
     const current = yield* remoteUrl;
     if (current !== null) {
       if (current === input.url)
@@ -405,7 +468,7 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
       // Files are written with LF endings and must not change on checkout.
       yield* ok("configure the repo", ["config", "core.autocrlf", "false"]);
       yield* excludeLegacyRoles;
-      yield* ok("add the repo", ["remote", "add", "origin", input.url]);
+      yield* ok("add the repo", ["remote", "add", "--", "origin", input.url]);
       yield* fetch;
       const branches =
         (yield* output(["for-each-ref", "--format=%(refname)", "refs/remotes/origin"]))
@@ -421,16 +484,10 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
         // Both sides have a config. A `merge` choice, keeping these files by importing them into
         // the repo's config, arrives with import; `use-repo` keeps the repo's and backs these up.
         if (input.choice !== "use-repo") return "needs-choice" as const;
-        yield* replaceWithRepo;
+        yield* replaceWithRepo(branch);
+      } else {
+        yield* checkOut(branch);
       }
-      yield* ok("check out the repo", [
-        "checkout",
-        "--quiet",
-        "-B",
-        branch,
-        "--track",
-        `origin/${branch}`,
-      ]);
       return "connected" as const;
     });
 
@@ -501,7 +558,7 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
       yield* ok("check out the repo", ["checkout", "--quiet", "-B", branch, "--track", upstream]);
       return yield* readStatus;
     }
-    const result = yield* run(["rebase", "--quiet", upstream], { env: yield* rebaseEnv });
+    const result = yield* rebase(["--quiet", upstream]);
     return yield* afterRebase(result);
   }, serialized);
 
@@ -544,6 +601,8 @@ const make = Effect.fn("FactoryConfigRepo.make")(function* (directory: string) {
         "invalid",
         "Nothing has been pulled or pushed yet, so there is no copy to go back to.",
       );
+    // The reset also drops unpushed commits, whose content is in the files the backup copies.
+    yield* backUp;
     yield* ok("discard the local changes", ["reset", "--hard", "--quiet", upstream]);
     // Without -x, clean leaves excluded paths alone, and so the legacy role files.
     yield* ok("discard the local changes", ["clean", "-fdq"]);

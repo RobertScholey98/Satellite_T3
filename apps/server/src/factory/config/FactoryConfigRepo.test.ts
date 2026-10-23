@@ -51,7 +51,7 @@ const isolatedGit = Effect.gen(function* () {
 const git = (cwd: string, args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const driver = yield* GitVcsDriver.GitVcsDriver;
-    yield* driver.execute({ operation: "FactoryConfigRepo.test", cwd, args });
+    return (yield* driver.execute({ operation: "FactoryConfigRepo.test", cwd, args })).stdout;
   });
 
 /** A factory directory on one machine, with its own repo and, unless told otherwise, identity. */
@@ -290,6 +290,121 @@ describe("FactoryConfigRepo", () => {
         localChanges: [{ path: "workers/implementer.md", change: "modified" }],
         unpushedCommits: 0,
       });
+    }),
+  );
+  live("leaves the config as it was when the repo's config cannot be checked out", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const remote = yield* bareRemote;
+      const a = yield* machine("a");
+      yield* a.write("workers/implementer.md", "implementer v1\n");
+      yield* a.write("notes.md", "a's notes\n");
+      yield* a.repo.connect({ url: remote });
+      const b = yield* machine("b");
+      yield* b.write("workers/own.md", "b's own worker\n");
+      yield* b.write("notes.md", "b's notes\n");
+
+      const refused = yield* b.repo.connect({ url: remote, choice: "use-repo" }).pipe(Effect.flip);
+
+      assert.deepInclude(refused, {
+        reason: "invalid",
+        message:
+          "The repo has notes.md, and this environment has its own file there outside the config. Move it out of the config folder, then connect again.",
+      });
+      assert.deepStrictEqual(yield* b.repo.status, { connected: false });
+      assert.strictEqual(yield* b.read("workers/own.md"), "b's own worker\n");
+      assert.strictEqual(yield* b.read("notes.md"), "b's notes\n");
+      assert.strictEqual(yield* fs.exists(b.backupsDirectory), false);
+    }),
+  );
+
+  /** B's pull stopped after its rebase, leaving the set-aside commit at HEAD, then restarted. */
+  const interruptedPull = Effect.gen(function* () {
+    const pair = yield* connectedPair;
+    yield* pair.b.write("workers/reviewer.md", "reviewer from b\n");
+    yield* git(pair.b.directory, ["add", "-A"]);
+    yield* git(pair.b.directory, ["commit", "--quiet", "-m", FactoryConfigRepo.SET_ASIDE_SUBJECT]);
+    return { b: pair.b, restarted: yield* pair.b.reopen };
+  });
+
+  live("brings back changes an interrupted pull set aside, on the next pull", () =>
+    Effect.gen(function* () {
+      const { b, restarted } = yield* interruptedPull;
+      assert.deepInclude(yield* restarted.pull, {
+        localChanges: [{ path: "workers/reviewer.md", change: "modified" }],
+        unpushedCommits: 0,
+      });
+      assert.strictEqual(yield* b.read("workers/reviewer.md"), "reviewer from b\n");
+    }),
+  );
+
+  live("pushes changes an interrupted pull set aside under the push's own message", () =>
+    Effect.gen(function* () {
+      const { b, restarted } = yield* interruptedPull;
+      assert.deepInclude(yield* restarted.push("B's reviewer"), {
+        localChanges: [],
+        unpushedCommits: 0,
+      });
+      assert.strictEqual(yield* git(b.directory, ["log", "-1", "--format=%s"]), "B's reviewer\n");
+    }),
+  );
+
+  live("backs up changes an interrupted pull set aside before discarding them", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { b, restarted } = yield* interruptedPull;
+      assert.deepInclude(yield* restarted.discard, { localChanges: [], unpushedCommits: 0 });
+      assert.strictEqual(yield* b.read("workers/reviewer.md"), "reviewer v1\n");
+      assert.strictEqual(
+        yield* fs.readFileString(`${b.backupsDirectory}/1/workers/reviewer.md`),
+        "reviewer from b\n",
+      );
+    }),
+  );
+
+  live("refuses a URL that carries credentials", () =>
+    Effect.gen(function* () {
+      const c = yield* machine("c");
+      for (const url of [
+        "https://user:token@example.com/config.git",
+        "https://token@example.com/config.git",
+        "ssh://git:secret@example.com/config.git",
+      ]) {
+        assert.deepInclude(yield* c.repo.connect({ url }).pipe(Effect.flip), {
+          reason: "invalid",
+          message: "Don't put credentials in the URL. Use a Git credential helper or SSH.",
+        });
+      }
+      assert.deepStrictEqual(yield* c.repo.status, { connected: false });
+    }),
+  );
+
+  live("never shows a password from a URL set outside Satellite", () =>
+    Effect.gen(function* () {
+      const d = yield* machine("d");
+      yield* git(d.directory, [
+        "remote",
+        "add",
+        "origin",
+        "https://user:s3cret@127.0.0.1:9/config.git",
+      ]);
+      assert.deepInclude(yield* d.repo.status, { remoteUrl: "https://127.0.0.1:9/config.git" });
+      const failed = yield* d.repo.check.pipe(Effect.flip);
+      assert.strictEqual(failed.reason, "storage");
+      assert.notInclude(failed.message, "s3cret");
+    }),
+  );
+  live("never undoes a set-aside commit the repo already has", () =>
+    Effect.gen(function* () {
+      const { a } = yield* connectedPair;
+      yield* a.write("workers/reviewer.md", "reviewer v2\n");
+      yield* git(a.directory, ["add", "-A"]);
+      yield* git(a.directory, ["commit", "--quiet", "-m", FactoryConfigRepo.SET_ASIDE_SUBJECT]);
+      yield* git(a.directory, ["push", "--quiet", "origin", "HEAD:refs/heads/main"]);
+
+      const restarted = yield* a.reopen;
+      assert.deepInclude(yield* restarted.pull, { localChanges: [], unpushedCommits: 0 });
+      assert.strictEqual(yield* a.read("workers/reviewer.md"), "reviewer v2\n");
     }),
   );
 });
