@@ -317,7 +317,11 @@ function FactoryManagerRow(props: {
         <RowMenu label="Engineering manager actions">
           <MenuItem
             disabled={
-              busy || !canPause || (manager.state !== "onboarding" && manager.state !== "active")
+              busy ||
+              !canPause ||
+              (manager.state !== "onboarding" &&
+                manager.state !== "active" &&
+                manager.state !== "ready")
             }
             onClick={() => pause("manager")}
           >

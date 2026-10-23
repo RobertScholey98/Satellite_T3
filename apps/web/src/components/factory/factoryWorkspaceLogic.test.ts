@@ -1,6 +1,7 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   EnvironmentId,
+  MessageId,
   ProjectId,
   ThreadId,
   type FactoryMember,
@@ -9,7 +10,12 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { factoryMemberThreadKeys, resolveFactoryWorkspaceView } from "./factoryWorkspaceLogic";
+import type { TimelineEntry } from "~/session-logic";
+import {
+  collapseFactoryPriming,
+  factoryMemberThreadKeys,
+  resolveFactoryWorkspaceView,
+} from "./factoryWorkspaceLogic";
 
 const environmentId = EnvironmentId.make("local");
 const key = (threadId: string) =>
@@ -125,5 +131,78 @@ describe("resolveFactoryWorkspaceView", () => {
       ThreadId.make("manager-1-thread"),
     );
     expect(view?.activeAssignmentId).toBeNull();
+  });
+});
+
+describe("collapseFactoryPriming", () => {
+  const at = "2026-10-23T12:00:00.000Z";
+  const message = (id: string, role: "user" | "assistant", text: string): TimelineEntry => ({
+    id,
+    kind: "message",
+    createdAt: at,
+    message: {
+      id: MessageId.make(id),
+      role,
+      text,
+      runId: null,
+      streaming: false,
+      createdAt: at,
+      updatedAt: at,
+    },
+  });
+  const work = (id: string): TimelineEntry => ({
+    id,
+    kind: "work",
+    createdAt: at,
+    entry: { id, createdAt: at, label: "Read a file", tone: "tool" },
+  });
+  const shape = (entries: ReadonlyArray<TimelineEntry>) =>
+    entries.map((entry) =>
+      entry.kind === "factory-priming"
+        ? {
+            kind: entry.kind,
+            prompt: entry.prompt.text,
+            reply: entry.reply?.text ?? null,
+            continued: entry.continued,
+          }
+        : entry.id,
+    );
+
+  it("folds the first user message through the first reply, whatever their text", () => {
+    const entries = [
+      message("priming", "user", "You are the engineering manager for Atlas."),
+      work("read"),
+      message("ready", "assistant", "Ready."),
+    ];
+    expect(shape(collapseFactoryPriming(entries))).toEqual([
+      {
+        kind: "factory-priming",
+        prompt: "You are the engineering manager for Atlas.",
+        reply: "Ready.",
+        continued: false,
+      },
+    ]);
+  });
+
+  it("keeps later turns and notes that the user has written since", () => {
+    const entries = [
+      message("priming", "user", "Primed"),
+      message("ready", "assistant", "Ready."),
+      message("ask", "user", "What is on the board?"),
+      message("answer", "assistant", "Two tickets."),
+    ];
+    expect(shape(collapseFactoryPriming(entries))).toEqual([
+      { kind: "factory-priming", prompt: "Primed", reply: "Ready.", continued: true },
+      "ask",
+      "answer",
+    ]);
+  });
+
+  it("folds the priming before the reply arrives and leaves a thread without one alone", () => {
+    expect(
+      shape(collapseFactoryPriming([message("priming", "user", "Primed"), work("read")])),
+    ).toEqual([{ kind: "factory-priming", prompt: "Primed", reply: null, continued: false }]);
+    const unprimed = [work("read")];
+    expect(collapseFactoryPriming(unprimed)).toBe(unprimed);
   });
 });

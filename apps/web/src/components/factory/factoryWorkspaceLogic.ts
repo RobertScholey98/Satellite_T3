@@ -11,9 +11,11 @@ import type {
   FactoryWorkspaceManager,
   ThreadId,
 } from "@t3tools/contracts";
+import type { TimelineEntry } from "~/session-logic";
 
 export const FACTORY_MANAGER_STATE_LABEL: Record<FactoryManagerState, string> = {
   onboarding: "Onboarding",
+  ready: "Ready",
   active: "Active",
   "manager-paused": "Paused",
   "project-paused": "Paused with teams",
@@ -167,4 +169,37 @@ export function describePickupDecision(entry: {
   const verb = entry.kind === "skip" ? "Skipped" : "Picked up";
   const subject = issueNumber === null ? verb : `${verb} #${issueNumber}`;
   return entry.reason.trim() === "" ? subject : `${subject}: ${entry.reason.trim()}`;
+}
+
+/**
+ * Folds a primed manager thread's first exchange into one entry: its first user message (the
+ * priming the server sent from the approved onboarding result) through the first reply.
+ * Callers apply it only to a manager's current thread after onboarding, never by matching text.
+ */
+export function collapseFactoryPriming(
+  entries: ReadonlyArray<TimelineEntry>,
+): ReadonlyArray<TimelineEntry> {
+  const start = entries.findIndex(
+    (entry) => entry.kind === "message" && entry.message.role === "user",
+  );
+  const prompt = entries[start];
+  if (prompt?.kind !== "message") return entries;
+  const replyAt = entries.findIndex(
+    (entry, index) =>
+      index > start && entry.kind === "message" && entry.message.role === "assistant",
+  );
+  const reply = entries[replyAt];
+  const rest = replyAt === -1 ? [] : entries.slice(replyAt + 1);
+  return [
+    ...entries.slice(0, start),
+    {
+      id: `factory-priming:${prompt.id}`,
+      kind: "factory-priming",
+      createdAt: prompt.createdAt,
+      prompt: prompt.message,
+      reply: reply?.kind === "message" ? reply.message : null,
+      continued: rest.some((entry) => entry.kind === "message" && entry.message.role === "user"),
+    },
+    ...rest,
+  ];
 }

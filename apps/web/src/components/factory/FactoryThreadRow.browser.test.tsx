@@ -127,6 +127,7 @@ function onboardingManager(proposal: FactoryOnboardingProposal | null): FactoryM
     projectId: ProjectId.make("project"),
     name: "Ada",
     state: "onboarding",
+    onboardingThreadId: null,
     threadId: ThreadId.make("manager-thread"),
     onboardingProposal: proposal,
     onboardingResult: null,

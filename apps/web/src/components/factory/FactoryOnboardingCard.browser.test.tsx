@@ -34,7 +34,7 @@ vi.mock(import("~/state/use-atom-command"), async (importOriginal) => {
   };
 });
 
-import { render } from "../../../test/render";
+import { fakeTimers, render } from "../../../test/render";
 import { FactoryOnboardingCard } from "./FactoryOnboardingCard";
 
 const environmentId = EnvironmentId.make("local");
@@ -79,6 +79,7 @@ const manager: FactoryManager = {
   name: "Ada",
   state: "onboarding",
   threadId,
+  onboardingThreadId: null,
   onboardingProposal: proposal,
   onboardingResult: null,
   modelSelection: null,
@@ -238,4 +239,58 @@ it("will not approve without the factory settings rather than guess the cap", as
 
   await expect.element(screen.getByText("Could not read the factory settings")).toBeVisible();
   await expect.element(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+});
+
+const approvedResult = {
+  purpose: "Ship Atlas features.",
+  pickup: { enabled: false, columns: [], labels: [], guidance: "" },
+  baseBranch: null,
+  rules: [],
+  controlPaths: [],
+  teamIds: [],
+  concurrencyCap: 3,
+} as const;
+
+it("swaps to the primed thread with a history replace once the loader has had three seconds", async () => {
+  setup();
+  const primedThreadId = ThreadId.make("primed-thread");
+  state.approve.mockResolvedValue({
+    _tag: "Success",
+    value: { ...manager, state: "active", threadId: primedThreadId, onboardingThreadId: threadId },
+  });
+  await using screen = await render(card(), { router: "/local/manager-thread" });
+  const router = screen.router!;
+  const approve = screen.getByRole("button", { name: "Approve" });
+  await expect.element(approve).toBeEnabled();
+  const entriesBefore = router.history.length;
+
+  using _timers = fakeTimers();
+  await userEvent.click(approve);
+  await vi.advanceTimersByTimeAsync(2999);
+  expect(screen.getByText("Cooking...").query()).not.toBeNull();
+  expect(router.state.location.pathname).toBe("/local/manager-thread");
+
+  await vi.advanceTimersByTimeAsync(1);
+  expect(router.state.location.pathname).toBe("/local/primed-thread");
+  expect(router.history.length).toBe(entriesBefore);
+});
+
+it("marks the old onboarding thread approved and links to the manager's new thread", async () => {
+  setup();
+  state.managers = [
+    {
+      ...manager,
+      state: "active",
+      threadId: ThreadId.make("primed-thread"),
+      onboardingThreadId: threadId,
+      onboardingProposal: null,
+      onboardingResult: approvedResult,
+    },
+  ];
+  await using screen = await render(card());
+
+  await expect.element(screen.getByText(/^Onboarding approved/)).toBeVisible();
+  await expect
+    .element(screen.getByRole("link", { name: "Open Ada's thread" }))
+    .toHaveAttribute("href", "/local/primed-thread");
 });

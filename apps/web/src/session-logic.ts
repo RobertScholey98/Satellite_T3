@@ -156,6 +156,16 @@ export type TimelineEntry = (
       readonly runId: RunId | null;
     }
   | {
+      /** A primed manager thread's first exchange, folded by `collapseFactoryPriming`. */
+      readonly id: string;
+      readonly kind: "factory-priming";
+      readonly createdAt: string;
+      readonly prompt: ChatMessage;
+      readonly reply: ChatMessage | null;
+      /** The user has written since, so the thread is no longer waiting to start. */
+      readonly continued: boolean;
+    }
+  | {
       readonly id: string;
       readonly kind: "mcp-app";
       readonly createdAt: string;

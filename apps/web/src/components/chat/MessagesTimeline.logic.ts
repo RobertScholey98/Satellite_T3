@@ -644,6 +644,14 @@ type MessagesTimelineRowContent =
       latest: boolean;
     }
   | {
+      kind: "factory-priming";
+      id: string;
+      createdAt: string;
+      prompt: ChatMessage;
+      reply: ChatMessage | null;
+      continued: boolean;
+    }
+  | {
       kind: "mcp-app";
       id: string;
       createdAt: string;
@@ -819,6 +827,7 @@ function deriveSupersededAttemptFolds(
       entry.kind === "html-render" ||
       entry.kind === "mcp-app" ||
       entry.kind === "factory-onboarding" ||
+      entry.kind === "factory-priming" ||
       timelineEntryIsPersistentResourceCard(entry) ||
       liveSubagentEntryIds.has(entry.id) ||
       (entry.kind === "work" && entry.entry.itemType === "system_notice")
@@ -1848,6 +1857,18 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (timelineEntry.kind === "factory-priming") {
+      nextRows.push({
+        kind: "factory-priming",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        prompt: timelineEntry.prompt,
+        reply: timelineEntry.reply,
+        continued: timelineEntry.continued,
+      });
+      continue;
+    }
+
     if (timelineEntry.kind === "factory-onboarding") {
       nextRows.push({
         kind: "factory-onboarding",
@@ -2309,6 +2330,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
     case "factory-onboarding": {
       const bf = b as typeof a;
       return a.createdAt === bf.createdAt && a.latest === bf.latest;
+    }
+
+    case "factory-priming": {
+      const bp = b as typeof a;
+      return a.prompt === bp.prompt && a.reply === bp.reply && a.continued === bp.continued;
     }
 
     case "mcp-app": {
