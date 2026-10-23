@@ -222,21 +222,23 @@ function OnboardingProposalForm(props: {
             {boards.map((board) => (
               <fieldset key={board.boardId} className="space-y-1.5">
                 <legend className="text-xs">Ready columns on {board.title}</legend>
-                {board.readyColumns.map((column) => {
-                  const ref = { boardId: board.boardId, columnId: column.id };
-                  return (
-                    <Label key={column.id}>
-                      <Checkbox
-                        checked={form.columns.some((entry) => sameColumn(entry, ref))}
-                        disabled={readOnly}
-                        onCheckedChange={(checked) =>
-                          setForm(toggleColumn(form, ref, checked === true))
-                        }
-                      />
-                      {column.title}
-                    </Label>
-                  );
-                })}
+                <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                  {board.readyColumns.map((column) => {
+                    const ref = { boardId: board.boardId, columnId: column.id };
+                    return (
+                      <Label key={column.id}>
+                        <Checkbox
+                          checked={form.columns.some((entry) => sameColumn(entry, ref))}
+                          disabled={readOnly}
+                          onCheckedChange={(checked) =>
+                            setForm(toggleColumn(form, ref, checked === true))
+                          }
+                        />
+                        {column.title}
+                      </Label>
+                    );
+                  })}
+                </div>
               </fieldset>
             ))}
             <Textarea
