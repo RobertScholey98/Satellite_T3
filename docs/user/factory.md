@@ -28,11 +28,7 @@ reviewer and a verifier. Nothing is saved until you press **Save**.
 
 On the new-thread screen, turn on the **Engineering manager** toggle left of the checkout selector.
 Type a name for the manager and send. The manager's thread opens pinned and starts onboarding: it
-reads the project and proposes how it should work: its purpose, whether it may pick up tickets on
-its own and from which of the board's Ready columns, questions for you with its recommended answer,
-and the files no team may change. Pickup is off unless you turn it on, and it needs a connected
-board; see [Issues](./issues.md). Your answers become project rules that the manager and every lead
-it starts follow. A project has one manager; retire it from its **Factory** row to create another.
+reads the project and proposes how it should work, including the files no team may change. A project has one manager; retire it from its **Factory** row to create another.
 
 ## Living with a manager
 

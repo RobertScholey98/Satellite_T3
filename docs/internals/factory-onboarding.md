@@ -9,7 +9,7 @@ board's Issues mapping counted Backlog as Ready, and nobody was shown that. Term
 ## The result is configuration, not a report
 
 What the user approves is the manager's onboarding result: purpose, pickup switch, pickup columns,
-pickup guidance, project rules, control paths and the manager's concurrency cap. It is stored on the
+pickup guidance, project rules and control paths. It is stored on the
 manager and lives as long as the manager does. The proposal that produced it is discarded on
 approval, and so are the manager's findings. Findings describe the project as it was that day and
 turn into noise within a week.
@@ -18,8 +18,7 @@ Open choices are questions with options. The user's answers are stored as projec
 their question. A rule is only worth asking if every lead should read it, so rules render into the
 manager's and its leads' role skills rather than living in the manager's memory. Purpose, pickup
 and rules form one project section, appended after the role skill is rendered
-([`projectSection`](../../apps/server/src/factory/roleSkills.ts)). Role skills carry nothing
-project-specific, so this section is the only place a project shapes its agents.
+([`projectSection`](../../apps/server/src/factory/roleSkills.ts)).
 
 The result is per project and never part of portable factory configuration. Where it names factory
 things, such as the teams a manager may use, it refers to them by id.
