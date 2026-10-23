@@ -10,13 +10,14 @@ import type {
   OrchestratorMcpDelegateTaskInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Struct from "effect/Struct";
 
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import { FactoryConfigStore } from "../config/FactoryConfigStore.ts";
 import { FactoryService } from "../FactoryService.ts";
-import { FactoryToolFailedError, FactoryToolkit } from "./tools.ts";
+import { FactoryToolFailedError, FactoryToolkit, FactoryToolkitWithDefinitions } from "./tools.ts";
 
 const toolFailure = ({ reason, message }: FactoryOperationError) =>
   new FactoryToolFailedError({ reason, message });
@@ -394,7 +395,12 @@ const make = Effect.gen(function* () {
         return { ...result, message: draftMessage(result) };
       }),
     ),
-  } satisfies McpToolAccess.Handlers<typeof FactoryToolkit.tools>;
+  } satisfies McpToolAccess.Handlers<typeof FactoryToolkitWithDefinitions.tools>;
 });
 
-export const layer = McpToolAccess.toLayer(FactoryToolkit, make);
+export const layer = McpToolAccess.toLayer(
+  FactoryToolkit,
+  Effect.map(make, (handlers) => Struct.omit(handlers, ["factory_definitions"])),
+);
+
+export const layerWithDefinitions = McpToolAccess.toLayer(FactoryToolkitWithDefinitions, make);

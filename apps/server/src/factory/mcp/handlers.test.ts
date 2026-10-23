@@ -45,7 +45,7 @@ import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import { FactoryConfigStore } from "../config/FactoryConfigStore.ts";
 import { FactoryService } from "../FactoryService.ts";
 import * as FactoryMcp from "./handlers.ts";
-import { FactoryToolkit } from "./tools.ts";
+import { FactoryToolkitWithDefinitions as FactoryToolkit } from "./tools.ts";
 
 const MANAGER_THREAD = ThreadId.make("thread-manager");
 const OTHER_THREAD = ThreadId.make("thread-other");
@@ -461,7 +461,9 @@ const makeHarness = Effect.gen(function* () {
   );
   const toolkit = yield* FactoryToolkit.pipe(
     Effect.provide(
-      McpToolAccess.HandlersLayer.layer(FactoryMcp.layer).pipe(Layer.provide(dependencies)),
+      McpToolAccess.HandlersLayer.layer(FactoryMcp.layerWithDefinitions).pipe(
+        Layer.provide(dependencies),
+      ),
     ),
   );
   const call = <Name extends keyof typeof FactoryToolkit.tools>(

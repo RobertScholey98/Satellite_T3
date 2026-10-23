@@ -438,7 +438,6 @@ const DraftTicketTool = Tool.make("factory_draft_ticket", {
 export const FactoryToolkit = Toolkit.make(
   ProposeOnboardingTool,
   RoleBriefTool,
-  DefinitionsTool,
   StatusTool,
   PickupTool,
   CommissionTool,
@@ -453,4 +452,13 @@ export const FactoryToolkit = Toolkit.make(
   FindingsTool,
   RetroDoneTool,
   DraftTicketTool,
+);
+
+/**
+ * With `factory_definitions`, which joins the served toolkit when the factory staffs teams from the
+ * definition files. Until then an agent could read teams the factory does not use.
+ */
+export const FactoryToolkitWithDefinitions = Toolkit.merge(
+  FactoryToolkit,
+  Toolkit.make(DefinitionsTool),
 );

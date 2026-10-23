@@ -5,7 +5,6 @@ import * as Layer from "effect/Layer";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
 import * as FactoryConfigStore from "./config/FactoryConfigStore.ts";
-import { migrateFactoryConfigFromDatabase } from "./config/migrateFromDatabase.ts";
 import * as FactoryReactor from "./FactoryReactor.ts";
 import * as FactoryService from "./FactoryService.ts";
 import * as FactoryMcp from "./mcp/handlers.ts";
@@ -15,10 +14,6 @@ import * as FactoryTicketHost from "./tickets/FactoryTicketHost.ts";
 /** The engineering factory for the server's lifetime: the service and its reactor. */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
-    // A failed migration leaves `factory.yaml` missing, so it runs again at the next start.
-    yield* migrateFactoryConfigFromDatabase().pipe(
-      Effect.catchCause((cause) => Effect.logWarning("factory config migration failed", { cause })),
-    );
     const reactor = yield* FactoryReactor.FactoryReactor;
     yield* reactor.start();
   }),
