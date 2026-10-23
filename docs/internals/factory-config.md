@@ -48,9 +48,11 @@ environment can run is used. A **dynamic** list is instead a menu the starter of
 from per task: the lead for a team member, the manager for a team's lead. An empty list stands for
 the whole pool. Briefs list only the entries the environment can run.
 
-The model pool in `factory.yaml` is the factory-wide allow-list and cost guard. Every listed model
-must be in it, and imports cannot widen it without the user's say-so. On each environment the
-usable pool is the pool filtered to what that environment can run.
+The model pool in `factory.yaml` is the factory-wide allow-list and cost guard. A definition can
+only gain models from the pool. A model later removed from the pool stays listed, flagged, and is
+skipped at delegation. Imports cannot widen the pool without the user's say-so, and an import never
+empties a model list to fit it, since an empty list would stand for the whole pool. On each
+environment the usable pool is the pool filtered to what that environment can run.
 
 ## What stays out of the config
 
