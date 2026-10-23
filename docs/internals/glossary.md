@@ -71,3 +71,16 @@ See [composer context references](./composer-context-references.md) for the cont
 | Attempt            | A thread and worktree started from a ticket. Owned by the environment that started it. Ownership never moves.                                                                           |
 | Owning environment | The only environment that moves a ticket on behalf of its attempt. It writes directly to the remote board. Other environments only refresh their stored copy.                           |
 | Manual move        | A ticket move made by a person on any machine. Wins over an automatic move that arrives later from an attempt.                                                                          |
+
+## Factory
+
+| Term | Meaning |
+| --- | --- |
+| Engineering manager | A standing agent thread that runs factory work for a project: commissions leads, recovers stalled work and, with pickup on, picks up tickets. A project may have several, each with its own onboarding result. It never writes code. |
+| Onboarding | A manager's first stage. It ends when the user approves the onboarding result in the manager's thread. Approval swaps in a fresh manager thread primed from the result. |
+| Onboarding result | The manager configuration the user approves at the end of onboarding, kept for the manager's life: pickup, pickup scope, pickup guidance, pull request base branch, and project rules. The proposal that produced it is not kept. |
+| Project rule | A manager-written question with the user's chosen answer, such as whether leads may change dependency manifests. Rendered into the manager's and its leads' role skills. |
+| Onboarding finding | Something the manager noticed during onboarding that needs no decision, such as stale tickets. Shown on the approval card only and never stored, because it goes out of date; the user can draft a ticket from one. |
+| Pickup | The manager taking Ready tickets on its own. Off unless the user switches it on in the onboarding result, and even then it begins only when the user starts it. |
+| Pickup scope | The board columns and labels a manager picks up from. Columns come from the board's Ready columns and may be shared. A label belongs to at most one manager, and at least one is required. A ticket with two managers' labels is picked up by neither. |
+| Control path | A path a team may not edit. Belongs to a team, not to the project or its manager. `.satellite/factory/` is protected for every team not explicitly allowed to change it. |
