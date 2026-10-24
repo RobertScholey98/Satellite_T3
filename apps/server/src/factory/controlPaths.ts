@@ -42,3 +42,18 @@ export const controlPathMatcher = (patterns: ReadonlyArray<string>) => {
     return expressions.some((expression) => expression.test(value));
   };
 };
+
+/**
+ * Why a control path could never match a repository path, or null. The matcher reads any text, so
+ * these are the shapes that silently protect nothing.
+ */
+export const controlPathProblem = (raw: string): string | null => {
+  const pattern = normalise(raw);
+  if (pattern.replace(/\/+$/, "") === "")
+    return `"${raw}" names no path; use a path relative to the repository root.`;
+  if (/^[a-z]:/i.test(pattern))
+    return `"${raw}" is an absolute path; use a path relative to the repository root.`;
+  if (pattern.split("/").includes(".."))
+    return `"${raw}" leaves the repository; use a path relative to its root.`;
+  return null;
+};

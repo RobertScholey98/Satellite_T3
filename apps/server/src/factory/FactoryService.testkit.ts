@@ -286,6 +286,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     const sentMessages: FactoryThreadMessage[] = [];
     const interrupts: FactoryThreadInterrupt[] = [];
     const settles: ThreadId[] = [];
+    const modelChanges: Array<{ readonly threadId: ThreadId; readonly model: string }> = [];
     const threadRuns = new Map<ThreadId, FactoryThreadRuns>();
     const threadTurns = new Map<ThreadId, ReadonlyArray<FactoryThreadTurn>>();
     const controls: HarnessControls = {
@@ -417,6 +418,14 @@ export const makeHarness = (options: HarnessOptions = {}) =>
         }),
       interruptThread: (input) => Effect.sync(() => void interrupts.push(input)),
       settleThread: (input) => Effect.sync(() => void settles.push(input.threadId)),
+      setThreadModel: (input) =>
+        Effect.sync(
+          () =>
+            void modelChanges.push({
+              threadId: input.threadId,
+              model: input.modelSelection.model,
+            }),
+        ),
       readDefaultBranch: () => Effect.sync(() => controls.defaultBranch),
       readPullRequestFiles: (input) =>
         Effect.suspend(() => {
@@ -451,6 +460,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       sentMessages,
       interrupts,
       settles,
+      modelChanges,
       threadRuns,
       threadTurns,
       controls,

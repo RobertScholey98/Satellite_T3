@@ -54,6 +54,7 @@ export const FACTORY_WS_METHODS = {
   factoryManagersRetire: "factory.managers.retire",
   factoryManagersApproveOnboarding: "factory.managers.approveOnboarding",
   factoryManagersStartPickup: "factory.managers.startPickup",
+  factoryManagersUpdateSettings: "factory.managers.updateSettings",
   factoryAssignmentsList: "factory.assignments.list",
   factoryAssignmentsSubscribe: "factory.assignments.subscribe",
   factoryAssignmentsCancel: "factory.assignments.cancel",
@@ -533,6 +534,18 @@ export type FactoryManagersApproveOnboardingInput =
 /** Starts pickup for a `ready` manager, which then becomes `active`. */
 export const FactoryManagersStartPickupInput = Schema.Struct({ requestId: Id, managerId: Id });
 export type FactoryManagersStartPickupInput = typeof FactoryManagersStartPickupInput.Type;
+
+/**
+ * Replaces an approved manager's settings. Rules keep the manager's questions; only answers
+ * change. The base branch is kept as stored. Without `modelSelection` the model stays.
+ */
+export const FactoryManagersUpdateSettingsInput = Schema.Struct({
+  requestId: Id,
+  managerId: Id,
+  result: FactoryOnboardingResult,
+  modelSelection: Schema.optional(ModelSelection),
+});
+export type FactoryManagersUpdateSettingsInput = typeof FactoryManagersUpdateSettingsInput.Type;
 
 export const FactoryAssignmentSource = Schema.Literals([
   "ticket",
@@ -1300,6 +1313,14 @@ export const WsFactoryManagersStartPickupRpc = Rpc.make(
   FACTORY_WS_METHODS.factoryManagersStartPickup,
   {
     payload: FactoryManagersStartPickupInput,
+    success: FactoryManager,
+    error: FactoryRpcError,
+  },
+);
+export const WsFactoryManagersUpdateSettingsRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryManagersUpdateSettings,
+  {
+    payload: FactoryManagersUpdateSettingsInput,
     success: FactoryManager,
     error: FactoryRpcError,
   },
