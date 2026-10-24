@@ -102,8 +102,9 @@ manager's model. **Edit** changes them: pickup columns and labels, the cap, whic
 staff (none ticked means all), protected paths, your answers to its rules, and its model. A save
 tells the manager what changed, and a new model applies from its next turn. Lowering the cap below
 what is running cancels nothing; new work waits for room. Turning pickup on waits for **Start
-picking up**, as after approval. Settings can't be edited while the manager is paused. If they
-changed elsewhere since you opened them, the save is refused; cancel and edit again.
+picking up**, as after approval. You can edit a paused manager's settings too; it hears about the
+changes when it resumes. If the settings changed elsewhere since you opened them, the save is
+refused; cancel and edit again.
 
 Below that, a **Pull requests** card lists the teams' open pull requests, the ones ready to merge
 first, the longest waiting at the top. **Merge** appears once the lead has claimed the work done,
