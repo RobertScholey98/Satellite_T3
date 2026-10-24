@@ -82,10 +82,16 @@ const graphql = ["apps/server", "packages/source-control-github"].filter((dir) =
   files.some((file) => file.startsWith(`${dir}/`)),
 );
 
-// CI's "Check rebrand" step, for a change to a listed file or to the list.
+// CI's "Check rebrand" step, for a change to a listed file or to what decides
+// the rebranded text: the list, the script, or the product name it reads.
 const REBRAND_LIST = "scripts/rebrand-files.txt";
-const rebrandListed = new Set(readFileList(NodePath.join(root, REBRAND_LIST)));
-const runRebrand = files.some((file) => file === REBRAND_LIST || rebrandListed.has(file));
+const rebrandInputs = new Set([
+  REBRAND_LIST,
+  "scripts/rebrand.ts",
+  "packages/contracts/src/productIdentity.ts",
+  ...readFileList(NodePath.join(root, REBRAND_LIST)),
+]);
+const runRebrand = files.some((file) => rebrandInputs.has(file));
 // --verify reads the list's upstream base commit. It is in main's history, so
 // only a shallow or partial clone lacks it. CI fetches it; this script stays
 // offline and fails with the fetch command rather than skip the check.

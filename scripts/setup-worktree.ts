@@ -51,19 +51,21 @@ if (!projectRoot) {
 // pnpm installs the same lockfile: it switches to the version package.json
 // pins, as `vp i` does. With neither on PATH, the marker names the fix.
 const onPath = (command: string) => {
-  // Windows always sets PATHEXT, the extensions cmd.exe tries for a bare name.
-  const extensions = process.env.PATHEXT?.split(";") ?? [""];
+  // Windows always sets PATHEXT, the extensions cmd.exe tries for a bare name,
+  // and cmd.exe also finds a PATH entry written in quotes.
+  const extensions = process.env.PATHEXT?.split(";").filter(Boolean) ?? [""];
   return (process.env.PATH ?? "")
     .split(NodePath.delimiter)
+    .map((dir) => dir.replace(/^"(.*)"$/, "$1"))
     .filter(Boolean)
     .some((dir) => extensions.some((ext) => NodeFS.existsSync(NodePath.join(dir, command + ext))));
 };
-const installCommand = onPath("vp")
-  ? "vp i --frozen-lockfile -- --yes"
+const installer = onPath("vp")
+  ? { tool: "vp", command: "vp i --frozen-lockfile -- --yes" }
   : onPath("pnpm")
-    ? "pnpm install --frozen-lockfile --yes"
+    ? { tool: "pnpm", command: "pnpm install --frozen-lockfile --yes" }
     : undefined;
-if (!installCommand) {
+if (!installer) {
   failureDetail = [
     "Neither vp nor pnpm is on PATH, so dependencies were not installed.",
     "Install one of them (README.md, Install vp):",
@@ -75,8 +77,8 @@ if (!installCommand) {
   ].join("\n");
   process.exit(1);
 }
-if (!installCommand.startsWith("vp ")) {
-  process.stderr.write(`vp is not on PATH; installing with: ${installCommand}\n`);
+if (installer.tool !== "vp") {
+  process.stderr.write(`vp is not on PATH; installing with: ${installer.command}\n`);
 }
 
 // `shell` resolves the command through PATH, including Windows command shims.
@@ -85,7 +87,7 @@ if (!installCommand.startsWith("vp ")) {
 // Install exactly the locked dependencies so setup never rewrites the lockfile.
 // A stale lockfile must fail setup rather than silently resolving a new one.
 // Output is piped, not inherited, so a failure can keep its tail in the marker.
-const install = NodeChildProcess.spawn(installCommand, {
+const install = NodeChildProcess.spawn(installer.command, {
   cwd: worktree,
   shell: true,
   stdio: ["ignore", "pipe", "pipe"],
