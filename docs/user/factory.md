@@ -91,7 +91,8 @@ status beside the sync time, and a ticket's detail says why the manager picked i
 While you view the manager or any of its team threads, the right side shows a card for each team
 at work, the team you are in first, listing its lead and members with the same waiting marker
 the sidebar uses. The thread's details move to the top left, and on a team thread **Back to
-manager** sits above them; in a narrow window both stay at the top right, above the teams. Lead
+manager** sits above them. In a narrower window both stay at the top right, in the same order,
+above the teams; narrower still, the team cards hide and **Back to manager** stays there alone. Lead
 and team threads leave the sidebar while their manager runs; search and the command palette still
 find them.
 
