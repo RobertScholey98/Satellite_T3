@@ -407,7 +407,12 @@ const invocation = (
 const makeHarness = Effect.gen(function* () {
   const proposals = yield* Ref.make<ReadonlyArray<FactoryOnboardingProposalInput>>([]);
   const briefRequests = yield* Ref.make<
-    ReadonlyArray<{ projectId: ProjectId; role: FactoryRole; managerId: string }>
+    ReadonlyArray<{
+      projectId: ProjectId;
+      role: FactoryRole;
+      managerId: string;
+      assignmentId: string | undefined;
+    }>
   >([]);
   const statusRequests = yield* Ref.make<ReadonlyArray<string>>([]);
   const statusValue = yield* Ref.make<FactoryStatus>(status);
@@ -443,10 +448,11 @@ const makeHarness = Effect.gen(function* () {
             onboardingProposal: { ...proposed, detected, proposedAt: detected.detectedAt },
           }),
         ),
-      roleBrief: (projectId, role, managerId) =>
-        Ref.update(briefRequests, (recorded) => [...recorded, { projectId, role, managerId }]).pipe(
-          Effect.as({ role, text: `# ${role} brief`, source: "definition" as const }),
-        ),
+      roleBrief: (projectId, role, managerId, assignmentId) =>
+        Ref.update(briefRequests, (recorded) => [
+          ...recorded,
+          { projectId, role, managerId, assignmentId },
+        ]).pipe(Effect.as({ role, text: `# ${role} brief`, source: "definition" as const })),
       status: (managerId) =>
         Ref.update(statusRequests, (recorded) => [...recorded, managerId]).pipe(
           Effect.andThen(Ref.get(statusValue)),
@@ -635,7 +641,12 @@ describe("factory_role_brief", () => {
       const harness = yield* makeHarness;
       const result = yield* harness.call("factory_role_brief", { role: "reviewer" });
       assert.deepStrictEqual(yield* Ref.get(harness.briefRequests), [
-        { projectId: manager.projectId, role: "reviewer", managerId: "manager-1" },
+        {
+          projectId: manager.projectId,
+          role: "reviewer",
+          managerId: "manager-1",
+          assignmentId: undefined,
+        },
       ]);
       assert.deepStrictEqual(result, {
         role: "reviewer",
@@ -646,12 +657,18 @@ describe("factory_role_brief", () => {
     }),
   );
 
-  it.effect("reads the brief for the calling lead's project", () =>
+  it.effect("reads the brief for the calling lead's project and assignment", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
       const result = yield* harness.call("factory_role_brief", { role: "reviewer" }, LEAD_THREAD);
       assert.deepStrictEqual(yield* Ref.get(harness.briefRequests), [
-        { projectId: assignment.projectId, role: "reviewer", managerId: assignment.managerId },
+        {
+          projectId: assignment.projectId,
+          role: "reviewer",
+          managerId: assignment.managerId,
+          // The assignment's allowed protected files reach the brief through it.
+          assignmentId: assignment.id,
+        },
       ]);
       assert.strictEqual(result.text, "# reviewer brief");
     }),
