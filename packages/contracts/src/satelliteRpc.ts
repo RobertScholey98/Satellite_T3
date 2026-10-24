@@ -10,6 +10,7 @@ import {
 import {
   FACTORY_WS_METHODS,
   WsFactoryAssignmentsCancelRpc,
+  WsFactoryAssignmentsAnswerProtectedPathsRpc,
   WsFactoryAssignmentsListRpc,
   WsFactoryAssignmentsRefreshDigestRpc,
   WsFactoryAssignmentsSubscribeRpc,
@@ -113,6 +114,7 @@ export const WsSatelliteRpcGroup = RpcGroup.make(
   WsFactoryAssignmentsListRpc,
   WsFactoryAssignmentsSubscribeRpc,
   WsFactoryAssignmentsCancelRpc,
+  WsFactoryAssignmentsAnswerProtectedPathsRpc,
   WsFactoryAssignmentsRefreshDigestRpc,
   WsFactoryThreadsTakeOverRpc,
   WsFactoryThreadsHandBackRpc,
@@ -170,6 +172,7 @@ export const SATELLITE_CLIENT_GUARDED_RPC_SCOPES = {
   [FACTORY_WS_METHODS.factoryManagersApproveOnboarding]: AuthOrchestrationOperateScope,
   [FACTORY_WS_METHODS.factoryManagersStartPickup]: AuthOrchestrationOperateScope,
   [FACTORY_WS_METHODS.factoryAssignmentsCancel]: AuthOrchestrationOperateScope,
+  [FACTORY_WS_METHODS.factoryAssignmentsAnswerProtectedPaths]: AuthOrchestrationOperateScope,
   [FACTORY_WS_METHODS.factoryThreadsTakeOver]: AuthOrchestrationOperateScope,
   [FACTORY_WS_METHODS.factoryThreadsHandBack]: AuthOrchestrationOperateScope,
   [FACTORY_WS_METHODS.factoryDraftsEdit]: AuthOrchestrationOperateScope,

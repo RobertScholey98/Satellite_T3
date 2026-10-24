@@ -35,6 +35,7 @@ export const SATELLITE_RPC_REQUIRED_SCOPES = {
   [SATELLITE_WS_METHODS.factoryAssignmentsList]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.factoryAssignmentsSubscribe]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.factoryAssignmentsCancel]: AuthOrchestrationOperateScope,
+  [SATELLITE_WS_METHODS.factoryAssignmentsAnswerProtectedPaths]: AuthOrchestrationOperateScope,
   // Anyone who can read the tab can ask for a fresh digest; it changes nothing but the summary.
   [SATELLITE_WS_METHODS.factoryAssignmentsRefreshDigest]: AuthOrchestrationReadScope,
   [SATELLITE_WS_METHODS.factoryThreadsTakeOver]: AuthOrchestrationOperateScope,
@@ -98,6 +99,7 @@ export const SATELLITE_RPC_AGGREGATES = {
   [SATELLITE_WS_METHODS.factoryAssignmentsList]: "factory",
   [SATELLITE_WS_METHODS.factoryAssignmentsSubscribe]: "factory",
   [SATELLITE_WS_METHODS.factoryAssignmentsCancel]: "factory",
+  [SATELLITE_WS_METHODS.factoryAssignmentsAnswerProtectedPaths]: "factory",
   [SATELLITE_WS_METHODS.factoryAssignmentsRefreshDigest]: "factory",
   [SATELLITE_WS_METHODS.factoryThreadsTakeOver]: "factory",
   [SATELLITE_WS_METHODS.factoryThreadsHandBack]: "factory",

@@ -50,6 +50,7 @@ import * as FactoryConfigStore from "./config/FactoryConfigStore.ts";
 import type { FactoryModelCatalog } from "./config/modelResolution.ts";
 import { FactoryDefinitionsV1 } from "./migrations/FactoryDefinitionsV1.ts";
 import { FactoryManagersPerProjectV1 } from "./migrations/FactoryManagersPerProjectV1.ts";
+import { FactoryProtectedPathAsksV1 } from "./migrations/FactoryProtectedPathAsksV1.ts";
 import { FactoryOnboardingResultV1 } from "./migrations/FactoryOnboardingResultV1.ts";
 import { FactoryV1 } from "./migrations/FactoryV1.ts";
 import type { RoleSkillSource } from "./roleSkills.ts";
@@ -279,6 +280,7 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     yield* FactoryOnboardingResultV1;
     yield* FactoryDefinitionsV1;
     yield* FactoryManagersPerProjectV1;
+    yield* FactoryProtectedPathAsksV1;
     const launches: FactoryThreadLaunch[] = [];
     const skillReads: Array<readonly [FactoryRole, string]> = [];
     const boards: IssueBoardView[] = [];

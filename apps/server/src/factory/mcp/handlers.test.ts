@@ -129,6 +129,7 @@ const assignment: FactoryAssignment = {
   checklist: [],
   digest: null,
   controlViolations: [],
+  protectedPathAsks: [],
   retro: { teamDoneAt: null, managerDoneAt: null },
   createdAt: "2026-10-21T00:00:00.000Z",
   updatedAt: "2026-10-21T00:00:00.000Z",

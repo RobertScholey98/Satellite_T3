@@ -57,6 +57,7 @@ export const FACTORY_WS_METHODS = {
   factoryAssignmentsList: "factory.assignments.list",
   factoryAssignmentsSubscribe: "factory.assignments.subscribe",
   factoryAssignmentsCancel: "factory.assignments.cancel",
+  factoryAssignmentsAnswerProtectedPaths: "factory.assignments.answerProtectedPaths",
   factoryAssignmentsRefreshDigest: "factory.assignments.refreshDigest",
   factoryThreadsTakeOver: "factory.threads.takeOver",
   factoryThreadsHandBack: "factory.threads.handBack",
@@ -621,6 +622,29 @@ export const FactoryControlViolation = Schema.Struct({
 });
 export type FactoryControlViolation = typeof FactoryControlViolation.Type;
 
+const ProtectedPaths = Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(1024))).check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(50),
+);
+
+/**
+ * Protected files a team asks to edit for one assignment, named exactly. Only the user answers,
+ * and an answer covers every path in the ask. Declining an allowed ask revokes it; a declined ask
+ * may still be allowed later.
+ */
+export const FactoryProtectedPathAsk = Schema.Struct({
+  id: Id,
+  paths: ProtectedPaths,
+  reason: Schema.String.check(Schema.isMaxLength(2000)),
+  source: Schema.Literals(["commission", "pull-request"]),
+  /** The pull request that flagged the paths, for a `pull-request` ask. */
+  pullRequest: Schema.NullOr(ThreadPullRequestKey),
+  state: Schema.Literals(["open", "allowed", "declined"]),
+  createdAt: Schema.String,
+  answeredAt: Schema.NullOr(Schema.String),
+});
+export type FactoryProtectedPathAsk = typeof FactoryProtectedPathAsk.Type;
+
 /** The lead's claim that the completion condition is met. */
 export const FactoryAssignmentClaim = Schema.Struct({
   evidence: Schema.String.check(Schema.isMaxLength(8000)),
@@ -681,8 +705,13 @@ export const FactoryAssignment = Schema.Struct({
   /** The lead's plan as it last reported it. */
   checklist: FactoryChecklist,
   digest: Schema.NullOr(FactoryAssignmentDigest),
-  /** While any remain, the assignment waits on the user and cannot be offered as ready. */
+  /**
+   * Protected paths open pull requests change that the user has not allowed for this assignment.
+   * While any remain, the assignment waits on the user and cannot be offered as ready.
+   */
   controlViolations: Schema.Array(FactoryControlViolation),
+  /** Asks to edit protected files for this assignment, answered or not. */
+  protectedPathAsks: Schema.Array(FactoryProtectedPathAsk),
   /** When the lead finished the team retro, and when the manager finished its own. */
   retro: Schema.Struct({
     teamDoneAt: Schema.NullOr(Schema.String),
@@ -813,6 +842,13 @@ export const FactoryCommissionInput = Schema.Struct({
   leadModel: Schema.optionalKey(ModelSelection),
   /** An open dependency this assignment delivers; the blocked assignment stays blocked until then. */
   dependencyId: Schema.optionalKey(Id),
+  /**
+   * Exact protected files the team will need to edit, and why. The user allows or declines them
+   * on the team's card; no agent can.
+   */
+  protectedPaths: Schema.optionalKey(
+    Schema.Struct({ paths: ProtectedPaths, reason: DecisionReason }),
+  ),
 });
 export type FactoryCommissionInput = typeof FactoryCommissionInput.Type;
 
@@ -855,6 +891,16 @@ export const FactoryAssignmentsCancelInput = Schema.Struct({
   reason: DecisionReason,
 });
 export type FactoryAssignmentsCancelInput = typeof FactoryAssignmentsCancelInput.Type;
+
+/** The user's answer to one protected-path ask. Declining an allowed ask revokes it. */
+export const FactoryAssignmentsAnswerProtectedPathsInput = Schema.Struct({
+  requestId: Id,
+  assignmentId: Id,
+  askId: Id,
+  answer: Schema.Literals(["allow", "decline"]),
+});
+export type FactoryAssignmentsAnswerProtectedPathsInput =
+  typeof FactoryAssignmentsAnswerProtectedPathsInput.Type;
 
 /** Rewrites the assignment's digest when its team has new activity; otherwise returns it as is. */
 export const FactoryAssignmentsRefreshDigestInput = Schema.Struct({ assignmentId: Id });
@@ -1318,6 +1364,14 @@ export const WsFactoryAssignmentsCancelRpc = Rpc.make(FACTORY_WS_METHODS.factory
   success: FactoryAssignment,
   error: FactoryRpcError,
 });
+export const WsFactoryAssignmentsAnswerProtectedPathsRpc = Rpc.make(
+  FACTORY_WS_METHODS.factoryAssignmentsAnswerProtectedPaths,
+  {
+    payload: FactoryAssignmentsAnswerProtectedPathsInput,
+    success: FactoryAssignment,
+    error: FactoryRpcError,
+  },
+);
 export const WsFactoryAssignmentsRefreshDigestRpc = Rpc.make(
   FACTORY_WS_METHODS.factoryAssignmentsRefreshDigest,
   {

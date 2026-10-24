@@ -1,4 +1,5 @@
-const normalise = (value: string) =>
+/** A repository-relative path with forward slashes and no leading `./` or `/`. */
+export const normaliseControlPath = (value: string) =>
   value
     .trim()
     .replaceAll("\\", "/")
@@ -30,7 +31,7 @@ const globSource = (glob: string) => {
  */
 export const controlPathMatcher = (patterns: ReadonlyArray<string>) => {
   const expressions = patterns.flatMap((raw) => {
-    const pattern = normalise(raw);
+    const pattern = normaliseControlPath(raw);
     const body = pattern.replace(/\/+$/, "");
     if (body === "") return [];
     const anchor = body.includes("/") ? "^" : "^(?:.*/)?";
@@ -38,7 +39,7 @@ export const controlPathMatcher = (patterns: ReadonlyArray<string>) => {
     return [new RegExp(`${anchor}${globSource(body)}${under}$`)];
   });
   return (path: string) => {
-    const value = normalise(path);
+    const value = normaliseControlPath(path);
     return expressions.some((expression) => expression.test(value));
   };
 };

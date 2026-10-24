@@ -20,6 +20,7 @@ import {
   FactoryOnboardingProposal,
   FactoryOnboardingResult,
   FactoryOperationError,
+  FactoryProtectedPathAsk,
   FactoryProposedChange,
   FactoryTeamSpec,
   FactoryTeamVerdict,
@@ -33,6 +34,7 @@ import {
   resolveFactoryConfig,
   RuntimeMode,
   type FactoryAssignmentState,
+  type FactoryAssignmentsAnswerProtectedPathsInput,
   type FactoryAssignmentsCancelInput,
   type FactoryAssignmentsEvent,
   type FactoryAssignmentsListInput,
@@ -156,7 +158,7 @@ import {
 } from "./config/modelResolution.ts";
 import { findTeamMember, pickFactoryTeam } from "./config/teamStaffing.ts";
 import { rollupMemberStats } from "./memberStats.ts";
-import { controlPathMatcher } from "./controlPaths.ts";
+import { controlPathMatcher, normaliseControlPath } from "./controlPaths.ts";
 import { factoryConfigProblem, modelKey, overrideWidensPool } from "./factoryConfig.ts";
 import {
   definitionTeamSection,
@@ -421,11 +423,15 @@ export interface FactoryServiceShape {
   readonly managerForThread: (
     threadId: ThreadId,
   ) => Effect.Effect<FactoryManager | null, FactoryOperationError>;
-  /** A role's skill for this manager's project, with its placeholders filled. */
+  /**
+   * A role's skill for this manager's project, with its placeholders filled. Asked within an
+   * assignment, a lead's or worker's brief lists the protected files the user allowed it.
+   */
   readonly roleBrief: (
     projectId: ProjectId,
     role: FactoryRole,
     managerId: string,
+    assignmentId?: string,
   ) => Effect.Effect<FactoryRoleBrief, FactoryOperationError>;
   /** The manager's capacity, live assignments and the Ready tickets waiting for it. */
   readonly status: (managerId: string) => Effect.Effect<FactoryStatus, FactoryOperationError>;
@@ -484,6 +490,13 @@ export interface FactoryServiceShape {
   ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
   readonly cancel: (
     input: FactoryAssignmentsCancelInput,
+  ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
+  /**
+   * The user allows or declines one protected-path ask. The assignment's flagged files are
+   * re-judged at once, and the manager and the lead are told the answer.
+   */
+  readonly answerProtectedPaths: (
+    input: FactoryAssignmentsAnswerProtectedPathsInput,
   ) => Effect.Effect<FactoryAssignment, FactoryOperationError>;
   /**
    * Rewrites the assignment's digest from its team's activity since the last one. With no new
@@ -625,6 +638,7 @@ const decodeDraftValue = Schema.decodeUnknownEffect(FactoryTicketDraft);
 const decodeStatsValue = Schema.decodeUnknownEffect(FactoryAssignmentStats);
 const ControlChecked = Schema.Record(Schema.String, Schema.String);
 const ControlViolations = Schema.Array(FactoryControlViolation);
+const ProtectedPathAsks = Schema.Array(FactoryProtectedPathAsk);
 const parse = <S extends Schema.Top>(schema: S, text: string) =>
   Schema.decodeEffect(Schema.fromJsonString(schema))(text).pipe(Effect.mapError(storageError));
 
@@ -828,8 +842,82 @@ const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `
 
 const pullRequestKey = (key: ThreadPullRequestKey) => `${key.host}/${key.repository}#${key.number}`;
 
-const violationText = (violation: FactoryControlViolation) =>
-  `Pull request #${violation.pullRequest.number} changes protected paths (${violation.paths.join(", ")}). Revert those changes; the factory cannot send this to the user as ready.`;
+/** An ask may name at most this many paths, so a larger pull request gets several. */
+const ASK_PATH_LIMIT = 50;
+
+/**
+ * Paths the user allowed for the assignment. An allowed path in any ask is allowed, even if
+ * another ask that names it was declined.
+ */
+const allowedPaths = (asks: ReadonlyArray<FactoryProtectedPathAsk>) =>
+  new Set(asks.flatMap((ask) => (ask.state === "allowed" ? ask.paths : [])));
+
+/** Paths the user declined and has not allowed in another ask. */
+const declinedPaths = (asks: ReadonlyArray<FactoryProtectedPathAsk>) => {
+  const allowed = allowedPaths(asks);
+  return new Set(
+    asks.flatMap((ask) =>
+      ask.state === "declined" ? ask.paths.filter((path) => !allowed.has(path)) : [],
+    ),
+  );
+};
+
+/** The stored violations without the paths the user allowed, dropping a pull request left empty. */
+const effectiveViolations = (
+  violations: ReadonlyArray<FactoryControlViolation>,
+  asks: ReadonlyArray<FactoryProtectedPathAsk>,
+): FactoryControlViolation[] => {
+  const allowed = allowedPaths(asks);
+  return violations.flatMap((violation) => {
+    const paths = violation.paths.filter((path) => !allowed.has(path));
+    return paths.length === 0 ? [] : [{ ...violation, paths }];
+  });
+};
+
+const controlReason = (violations: ReadonlyArray<FactoryControlViolation>) =>
+  violations
+    .map(
+      (violation) =>
+        `Pull request #${violation.pullRequest.number} changes protected paths: ${violation.paths.join(", ")}.`,
+    )
+    .join(" ");
+
+const violationText = (
+  violation: FactoryControlViolation,
+  asks: ReadonlyArray<FactoryProtectedPathAsk>,
+) => {
+  const allowed = [...allowedPaths(asks)];
+  const declined = declinedPaths(asks);
+  const flaggedDeclined = violation.paths.filter((path) => declined.has(path));
+  return [
+    `Pull request #${violation.pullRequest.number} changes protected paths (${violation.paths.join(", ")}).`,
+    ...(allowed.length === 0
+      ? []
+      : [`Already allowed for this assignment: ${allowed.join(", ")}.`]),
+    "The user can allow the flagged files for this assignment from the team's card.",
+    `Keep an edit the task needs and wait for the user's answer; revert only an unintended edit or one the user declined${flaggedDeclined.length === 0 ? "" : ` (${flaggedDeclined.join(", ")})`}.`,
+    "The factory cannot send this to the user as ready while unallowed protected changes remain.",
+  ].join(" ");
+};
+
+/** How the user answered an ask, as the manager and the lead are told it. */
+const answerText = (
+  verb: "allowed" | "declined" | "revoked",
+  paths: ReadonlyArray<string>,
+  forLead: boolean,
+) => {
+  const files = paths.join(", ");
+  switch (verb) {
+    case "allowed":
+      return forLead
+        ? `The user allowed edits to these protected files for this assignment: ${files}. You may edit them for this assignment only. Tell any running worker who needs them.`
+        : `The user allowed edits to these protected files for this assignment: ${files}.`;
+    case "declined":
+      return `The user declined edits to these protected files for this assignment: ${files}.${forLead ? " Do not edit them, and revert any edit to them." : ""}`;
+    case "revoked":
+      return `The user revoked the allowance for these protected files: ${files}.${forLead ? " Revert those edits." : ""}`;
+  }
+};
 
 const RETRO_ASK =
   "Write your team retro now: what worked, what did not, what the next team should change, then call factory_retro_done.";
@@ -909,10 +997,12 @@ const skillFill = (
   config: FactoryConfig,
   role: FactoryRole,
   protectedPaths: ReadonlyArray<string>,
+  allowedProtectedPaths: ReadonlyArray<string>,
 ): RoleSkillFill => ({
   modelPool: config.modelPool,
   allowedModels: allowedModelsFor(config, role),
   protectedPaths,
+  allowedProtectedPaths,
   completionCondition: null,
 });
 
@@ -1049,6 +1139,12 @@ const protectedPathsOf = (manager: FactoryManager) =>
   manager.onboardingResult !== null
     ? resultControlPaths(manager.onboardingResult)
     : (manager.onboardingProposal?.controlPaths ?? []).map((controlPath) => controlPath.path);
+
+/** The protected files the user allowed this assignment's team to edit. */
+const allowedPathsOf = (row: { readonly protected_path_asks_json: string }) =>
+  parse(ProtectedPathAsks, row.protected_path_asks_json).pipe(
+    Effect.map((asks) => [...allowedPaths(asks)]),
+  );
 
 /** Onboarding, or paused while onboarding. */
 const isOnboarding = (row: { readonly state: string; readonly paused_from: string | null }) =>
@@ -1209,6 +1305,7 @@ interface AssignmentRow {
   readonly digest_activity_at: string | null;
   readonly control_violations_json: string;
   readonly control_checked_json: string;
+  readonly protected_path_asks_json: string;
   readonly team_retro_at: string | null;
   readonly manager_retro_at: string | null;
   readonly waiting_user_ms: number;
@@ -1365,6 +1462,10 @@ interface AssignmentPlan {
   readonly ticket: ReadyItem | null;
   /** The open dependency this assignment delivers, or null. */
   readonly dependencyId: string | null;
+  /** Protected files the manager asks the user to allow, already checked and normalised. */
+  readonly protectedPaths?:
+    | { readonly paths: ReadonlyArray<string>; readonly reason: string }
+    | undefined;
 }
 
 const findTicket = (items: ReadonlyArray<ReadyItem>, issueNumber: number, missing: string) => {
@@ -1827,7 +1928,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const onboardingSkill = protocolBrief(
           skill.text,
           created.definition?.instructions,
-          skillFill(created.config, "manager", []),
+          skillFill(created.config, "manager", [], []),
         );
         const launched = yield* deps
           .launchThread({
@@ -2136,7 +2237,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         text: `${managerBrief({
           protocol: skill.text,
           instructions: yield* managerInstructions(manager),
-          fill: skillFill(config, "manager", protectedPathsOf(manager)),
+          fill: skillFill(config, "manager", protectedPathsOf(manager), []),
           result: manager.onboardingResult,
         })}\n\n${PRIMED_CLOSING}`,
         messageId: approved.primingMessageId,
@@ -2252,7 +2353,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       }),
     );
 
-  const roleBrief: FactoryServiceShape["roleBrief"] = (projectId, role, managerId) =>
+  const roleBrief: FactoryServiceShape["roleBrief"] = (projectId, role, managerId, assignmentId) =>
     protect(
       Effect.gen(function* () {
         const shell = yield* project(projectId);
@@ -2263,7 +2364,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           ...(yield* configView(projectId)).effective,
           modelPool: (yield* factoryFiles()).pool,
         };
-        const fill = skillFill(config, role, protectedPathsOf(manager));
+        const fill = skillFill(
+          config,
+          role,
+          protectedPathsOf(manager),
+          // The manager has no single assignment.
+          role === "manager" || assignmentId === undefined
+            ? []
+            : yield* allowedPathsOf(yield* leadAssignmentRow(assignmentId)),
+        );
         const sourceOf = (instructions: string | undefined) =>
           (instructions ?? "").trim() === "" ? ("default" as const) : ("definition" as const);
         if (role === "manager" || role === "lead") {
@@ -2337,6 +2446,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             WHERE thread_id=${row.lead_thread_id}`;
     const dependencies = yield* sql<DependencyRow>`SELECT * FROM factory_dependencies
         WHERE blocked_assignment_id=${row.id} ORDER BY created_at, id`;
+    const asks = yield* parse(ProtectedPathAsks, row.protected_path_asks_json);
     return yield* decodeAssignmentValue({
       id: row.id,
       managerId: row.manager_id,
@@ -2361,7 +2471,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         row.team_verdict_json === null ? null : yield* parse(Schema.Unknown, row.team_verdict_json),
       checklist: yield* parse(Schema.Unknown, row.checklist_json),
       digest: digestValue(row),
-      controlViolations: yield* parse(Schema.Unknown, row.control_violations_json),
+      controlViolations: effectiveViolations(
+        yield* parse(ControlViolations, row.control_violations_json),
+        asks,
+      ),
+      protectedPathAsks: asks,
       retro: { teamDoneAt: row.team_retro_at, managerDoneAt: row.manager_retro_at },
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -2620,6 +2734,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     config: FactoryConfig,
     workspaceRoot: string,
     plan: Pick<AssignmentPlan, "title" | "brief" | "completionCondition" | "team">,
+    allowedProtectedPaths: ReadonlyArray<string>,
   ) {
     const skill = yield* deps.readRoleSkill("lead", workspaceRoot);
     const definition = plan.team.definition;
@@ -2627,6 +2742,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       { ...config, modelPool: (yield* factoryFiles()).pool },
       "lead",
       protectedPathsOf(manager),
+      allowedProtectedPaths,
     );
     return leadBrief({
       protocol: skill.text,
@@ -2659,7 +2775,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     modelSelection: ModelSelection,
   ) {
     const shell = yield* project(manager.projectId);
-    const prompt = yield* leadPrompt(manager, config, shell.workspaceRoot, plan);
+    const prompt = yield* leadPrompt(manager, config, shell.workspaceRoot, plan, []);
     const baseRef = (yield* deps.readDefaultBranch(shell.workspaceRoot)) ?? "main";
     if (plan.ticket !== null) {
       const launched = yield* deps.startAttempt({
@@ -2771,14 +2887,29 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               updated_at=${yield* now} WHERE id=${plan.dependencyId}`;
         }
         const at = yield* now;
+        const asks: ReadonlyArray<FactoryProtectedPathAsk> =
+          plan.protectedPaths === undefined
+            ? []
+            : [
+                {
+                  id: NodeCrypto.randomUUID(),
+                  paths: plan.protectedPaths.paths,
+                  reason: plan.protectedPaths.reason,
+                  source: "commission",
+                  pullRequest: null,
+                  state: "open",
+                  createdAt: at,
+                  answeredAt: null,
+                },
+              ];
         yield* writeLog(manager.id, id, plan.kind, plan.reason, plan.logPayload);
         yield* sql`INSERT INTO factory_assignments(id,manager_id,project_id,title,brief,
             completion_condition,source,issue_json,board_id,branch,complexity,state,team_json,
-            created_at,updated_at)
+            protected_path_asks_json,created_at,updated_at)
             VALUES(${id},${manager.id},${manager.projectId},${plan.title},${plan.brief},
             ${plan.completionCondition},${source},
             ${issue === null ? null : json(issue)},${plan.ticket?.boardId ?? null},${branch},
-            ${plan.complexity},'active',${json(plan.team)},${at},${at})`;
+            ${plan.complexity},'active',${json(plan.team)},${json(asks)},${at},${at})`;
         return null;
       }),
     );
@@ -2910,6 +3041,24 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           if (!found.found) return yield* refusal(found.reason, found.message);
           ticket = found.ticket;
         }
+        let protectedPaths: AssignmentPlan["protectedPaths"];
+        if (input.protectedPaths !== undefined) {
+          const paths = [...new Set(input.protectedPaths.paths.map(normaliseControlPath))];
+          const glob = paths.find((path) => /[*?[]/.test(path));
+          if (glob !== undefined)
+            return yield* refusal(
+              "invalid",
+              `${glob} is a pattern. Name each protected file the team must edit exactly, without *, ? or [.`,
+            );
+          const isProtected = controlPathMatcher(protectedPathsOf(manager));
+          const unprotected = paths.find((path) => path === "" || !isProtected(path));
+          if (unprotected !== undefined)
+            return yield* refusal(
+              "invalid",
+              `${unprotected || "An empty path"} is not a protected path, so the team may edit it without asking.`,
+            );
+          protectedPaths = { paths, reason: input.protectedPaths.reason };
+        }
         const config = (yield* configView(manager.projectId)).effective;
         return yield* startAssignment(manager, config, {
           kind: "commission",
@@ -2928,6 +3077,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           leadModel: input.leadModel,
           ticket,
           dependencyId: input.dependencyId ?? null,
+          protectedPaths,
         });
       }),
     );
@@ -3109,10 +3259,12 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
 
   /**
    * Reads the files of each open pull request whose snapshot changed since its last check, outside
-   * the lock, and records which touch the manager's control paths. A new violation sends the
-   * assignment to the user and tells the lead and the manager; once none remain it returns to
-   * work. A failed read leaves that pull request for the next reconcile. True when the
-   * assignment's state changed, so the caller stops there.
+   * the lock, and records which touch the manager's control paths. Paths the user allowed for the
+   * assignment do not count. A newly flagged path sends the assignment to the user, records an ask
+   * for a path no ask names yet, and tells the lead and the manager unless the user already
+   * declined it; once none remain the assignment returns to work. A failed read leaves that pull
+   * request for the next reconcile. True when the assignment's state changed, so the caller stops
+   * there.
    */
   const checkControlPaths = Effect.fnUntraced(function* (
     row: LeadAssignmentRow & { readonly manager_result_json: string | null },
@@ -3180,12 +3332,20 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             WHERE id=${row.id}`)[0];
         if (!current || isTerminal(current.state)) return null;
         const before = yield* parse(ControlViolations, current.control_violations_json);
+        const asksBefore = yield* parse(ProtectedPathAsks, current.protected_path_asks_json);
+        const allowed = allowedPaths(asksBefore);
+        const declined = declinedPaths(asksBefore);
+        const asked = new Set(asksBefore.flatMap((ask) => ask.paths));
         const nextChecked = { ...(yield* parse(ControlChecked, current.control_checked_json)) };
         const byKey = new Map(
           before
             .filter((violation) => openKeys.has(pullRequestKey(violation.pullRequest)))
             .map((violation) => [pullRequestKey(violation.pullRequest), violation]),
         );
+        const at = yield* now;
+        const newAsks: FactoryProtectedPathAsk[] = [];
+        // A path the previous check of the same pull request did not flag holds the assignment.
+        let flagged = false;
         const fresh: FactoryControlViolation[] = [];
         for (const { key, version, ...violation } of results) {
           nextChecked[key] = version;
@@ -3194,55 +3354,69 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             continue;
           }
           const previous = byKey.get(key);
-          if (
-            previous === undefined ||
-            violation.paths.some((path) => !previous.paths.includes(path))
-          )
-            fresh.push(violation);
           byKey.set(key, violation);
+          const unallowed = violation.paths.filter((path) => !allowed.has(path));
+          const added = unallowed.filter((path) => previous?.paths.includes(path) !== true);
+          if (added.length > 0) flagged = true;
+          // The user already answered a declined path; flagging it again repeats nothing.
+          if (added.some((path) => !declined.has(path)))
+            fresh.push({ ...violation, paths: unallowed });
+          const unasked = unallowed.filter((path) => !asked.has(path));
+          for (let index = 0; index < unasked.length; index += ASK_PATH_LIMIT) {
+            newAsks.push({
+              id: NodeCrypto.randomUUID(),
+              paths: unasked.slice(index, index + ASK_PATH_LIMIT),
+              reason: `Pull request #${violation.pullRequest.number} changes these protected files.`,
+              source: "pull-request",
+              pullRequest: violation.pullRequest,
+              state: "open",
+              createdAt: at,
+              answeredAt: null,
+            });
+          }
+          for (const path of unasked) asked.add(path);
         }
         const violations = [...byKey.values()];
+        const asks = [...asksBefore, ...newAsks];
         yield* sql`UPDATE factory_assignments SET control_checked_json=${json(nextChecked)},
-            control_violations_json=${json(violations)} WHERE id=${row.id}`;
-        const reason = violations
-          .map(
-            (violation) =>
-              `Pull request #${violation.pullRequest.number} changes protected paths: ${violation.paths.join(", ")}.`,
-          )
-          .join(" ");
+            control_violations_json=${json(violations)},
+            protected_path_asks_json=${json(asks)} WHERE id=${row.id}`;
+        const effective = effectiveViolations(violations, asks);
+        const reason = controlReason(effective);
         const inControl = current.state === "waiting-user" && current.waiting_kind === "control";
-        if (fresh.length > 0) {
-          if (current.state === "active" || current.state === "waiting-user") {
-            const at = yield* now;
+        if (flagged) {
+          if (current.state === "active" || current.state === "waiting-user")
             yield* sql`UPDATE factory_assignments SET ${enterState("waiting-user", at)},
                 waiting_kind='control',waiting_reason=${reason},updated_at=${at} WHERE id=${row.id}`;
-          }
-          for (const violation of fresh)
+          const texts = fresh.map((violation) => violationText(violation, asks));
+          for (const text of texts)
             yield* writeWake(current, "control", {
               title: current.title,
               assignmentId: current.id,
-              text: violationText(violation),
+              text,
             });
-          return { kind: "violation", fresh } as const;
+          return { kind: "violation", texts } as const;
         }
-        if (inControl && violations.length === 0) {
-          const at = yield* now;
+        if (inControl && effective.length === 0) {
           yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},waiting_kind=NULL,
               waiting_reason=NULL,updated_at=${at} WHERE id=${row.id}`;
           return { kind: "cleared", claimed: current.claim_json !== null } as const;
         }
         if (inControl && reason !== current.waiting_reason)
           yield* sql`UPDATE factory_assignments SET waiting_reason=${reason},
-              updated_at=${yield* now} WHERE id=${row.id}`;
-        return { kind: "recorded", changed: json(before) !== json(violations) } as const;
+              updated_at=${at} WHERE id=${row.id}`;
+        return {
+          kind: "recorded",
+          changed: json(before) !== json(violations) || newAsks.length > 0,
+        } as const;
       }),
     );
     if (outcome === null) return false;
     switch (outcome.kind) {
       case "violation":
         if (row.lead_taken_over !== 1 && row.lead_thread_id !== null)
-          for (const violation of outcome.fresh)
-            yield* notifyLead(row.project_id, row.lead_thread_id, violationText(violation));
+          for (const text of outcome.texts)
+            yield* notifyLead(row.project_id, row.lead_thread_id, text);
         yield* publish;
         return true;
       case "cleared":
@@ -3692,12 +3866,18 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             threadId,
             projectId: manager.projectId,
             title: `Factory: ${row.title}`,
-            text: yield* leadPrompt(manager, config, shell.workspaceRoot, {
-              title: row.title,
-              brief: `${row.brief}\n\n## Recovery brief\n\nYou replace a stalled lead and continue in its worktree${row.branch === null ? "" : ` on branch ${row.branch}`}. Check what it left before you change anything.${ticketNote}\n\n${input.brief}`,
-              completionCondition: row.completion_condition,
-              team,
-            }),
+            text: yield* leadPrompt(
+              manager,
+              config,
+              shell.workspaceRoot,
+              {
+                title: row.title,
+                brief: `${row.brief}\n\n## Recovery brief\n\nYou replace a stalled lead and continue in its worktree${row.branch === null ? "" : ` on branch ${row.branch}`}. Check what it left before you change anything.${ticketNote}\n\n${input.brief}`,
+                completionCondition: row.completion_condition,
+                team,
+              },
+              yield* allowedPathsOf(row),
+            ),
             modelSelection,
             runtimeMode: "full-access",
             interactionMode: "default",
@@ -4167,6 +4347,98 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
       }),
     );
 
+  const answerProtectedPaths: FactoryServiceShape["answerProtectedPaths"] = (input) =>
+    protect(
+      Effect.gen(function* () {
+        const applied = yield* lock(
+          Effect.gen(function* () {
+            const replay = yield* requestReplay(input.requestId, input);
+            if (replay !== null)
+              return { assignment: yield* parse(FactoryAssignment, replay), answered: null };
+            const row = yield* leadAssignmentRow(input.assignmentId);
+            if (isTerminal(row.state))
+              return yield* error("conflict", `${row.title} has already ended.`);
+            const asks = yield* parse(ProtectedPathAsks, row.protected_path_asks_json);
+            const ask = asks.find((candidate) => candidate.id === input.askId);
+            if (ask === undefined)
+              return yield* error(
+                "not-found",
+                `${row.title} has no protected-path ask ${input.askId}.`,
+              );
+            const state = input.answer === "allow" ? ("allowed" as const) : ("declined" as const);
+            if (ask.state === state) {
+              const assignment = yield* readAssignment(row.id);
+              yield* remember(input.requestId, input, assignment);
+              return { assignment, answered: null };
+            }
+            const verb = ask.state === "allowed" ? ("revoked" as const) : state;
+            const at = yield* now;
+            const nextAsks = asks.map((candidate) =>
+              candidate.id === ask.id ? { ...candidate, state, answeredAt: at } : candidate,
+            );
+            // The stored flags are re-judged against the answer; the pull requests are not re-read.
+            const effective = effectiveViolations(
+              yield* parse(ControlViolations, row.control_violations_json),
+              nextAsks,
+            );
+            const reason = controlReason(effective);
+            const inControl = row.state === "waiting-user" && row.waiting_kind === "control";
+            const flaggedAgain =
+              verb === "revoked" &&
+              effective.some((violation) =>
+                violation.paths.some((path) => ask.paths.includes(path)),
+              );
+            let cleared = false;
+            if (inControl && effective.length === 0) {
+              yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},waiting_kind=NULL,
+                  waiting_reason=NULL WHERE id=${row.id}`;
+              cleared = true;
+            } else if (
+              !inControl &&
+              flaggedAgain &&
+              (row.state === "active" || row.state === "waiting-user")
+            )
+              yield* sql`UPDATE factory_assignments SET ${enterState("waiting-user", at)},
+                  waiting_kind='control',waiting_reason=${reason} WHERE id=${row.id}`;
+            else if (inControl)
+              yield* sql`UPDATE factory_assignments SET waiting_reason=${reason} WHERE id=${row.id}`;
+            yield* sql`UPDATE factory_assignments SET protected_path_asks_json=${json(nextAsks)},
+                updated_at=${at} WHERE id=${row.id}`;
+            yield* writeWake(row, "control", {
+              title: row.title,
+              assignmentId: row.id,
+              text: answerText(verb, ask.paths, false),
+            });
+            const assignment = yield* readAssignment(row.id);
+            yield* remember(input.requestId, input, assignment);
+            return {
+              assignment,
+              answered: { row, verb, paths: ask.paths, settle: cleared && row.claim_json !== null },
+            };
+          }),
+        );
+        const { answered } = applied;
+        if (answered === null) return applied.assignment;
+        const { row } = answered;
+        if (row.lead_taken_over !== 1 && row.lead_thread_id !== null)
+          yield* notifyLead(
+            row.project_id,
+            row.lead_thread_id,
+            answerText(answered.verb, answered.paths, true),
+          );
+        yield* publish;
+        if (!answered.settle) return applied.assignment;
+        // A claim held only by the flags goes on to the user's review or the retro.
+        yield* settleClaim(
+          row.id,
+          row.lead_thread_id === null
+            ? null
+            : yield* deps.readThreadRuns(ThreadId.make(row.lead_thread_id)),
+        );
+        return yield* readAssignment(row.id);
+      }),
+    );
+
   const setTakenOver = (
     input: FactoryThreadsTakeOverInput | FactoryThreadsHandBackInput,
     takenOver: boolean,
@@ -4274,6 +4546,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         modelPool: files.pool,
         allowedModels,
         protectedPaths: protectedPathsOf(manager),
+        allowedProtectedPaths: yield* allowedPathsOf(row),
         completionCondition: row.completion_condition,
         result: manager.onboardingResult,
         task: input.task,
@@ -4322,7 +4595,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const manager = yield* readManager(row.manager_id);
         const shell = yield* project(manager.projectId);
         const fill = {
-          ...skillFill(config, memberRole, protectedPathsOf(manager)),
+          ...skillFill(config, memberRole, protectedPathsOf(manager), yield* allowedPathsOf(row)),
           allowedModels,
           completionCondition: row.completion_condition,
         };
@@ -5043,6 +5316,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     recover,
     complete,
     cancel,
+    answerProtectedPaths,
     takeOver,
     handBack,
     reconcileThread,
