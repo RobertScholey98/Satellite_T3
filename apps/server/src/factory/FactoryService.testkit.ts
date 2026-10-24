@@ -254,10 +254,8 @@ export const board = (
 /** What the fakes do next; tests change it between calls. */
 interface HarnessControls {
   sendFailures: number;
-  /** How many thread model switches fail before one succeeds. */
-  modelFailures: number;
-  /** Runs once inside the next thread model switch, before it succeeds or fails. */
-  duringModelSwitch: Effect.Effect<void> | null;
+  /** Runs once inside the next message sent to a thread, before it succeeds or fails. */
+  duringSend: Effect.Effect<void> | null;
   attemptFailures: number;
   fileReadFailures: number;
   ticketFailures: number;
@@ -290,13 +288,11 @@ export const makeHarness = (options: HarnessOptions = {}) =>
     const sentMessages: FactoryThreadMessage[] = [];
     const interrupts: FactoryThreadInterrupt[] = [];
     const settles: ThreadId[] = [];
-    const modelChanges: Array<{ readonly threadId: ThreadId; readonly model: string }> = [];
     const threadRuns = new Map<ThreadId, FactoryThreadRuns>();
     const threadTurns = new Map<ThreadId, ReadonlyArray<FactoryThreadTurn>>();
     const controls: HarnessControls = {
       sendFailures: 0,
-      modelFailures: 0,
-      duringModelSwitch: null,
+      duringSend: null,
       attemptFailures: 0,
       fileReadFailures: 0,
       ticketFailures: 0,
@@ -413,34 +409,23 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       readRateTable: Effect.sync(() => controls.rateTable),
       sendToThread: (input) =>
         Effect.suspend(() => {
-          if (controls.sendFailures === 0) {
-            sentMessages.push(input);
-            return Effect.void;
-          }
-          controls.sendFailures -= 1;
-          return Effect.fail(
-            new FactoryOperationError({ reason: "unavailable", message: "Thread is busy." }),
-          );
-        }),
-      interruptThread: (input) => Effect.sync(() => void interrupts.push(input)),
-      settleThread: (input) => Effect.sync(() => void settles.push(input.threadId)),
-      setThreadModel: (input) =>
-        Effect.suspend(() => {
-          const during = controls.duringModelSwitch ?? Effect.void;
-          controls.duringModelSwitch = null;
+          const during = controls.duringSend ?? Effect.void;
+          controls.duringSend = null;
           return during;
         }).pipe(
           Effect.andThen(() => {
-            if (controls.modelFailures > 0) {
-              controls.modelFailures -= 1;
-              return Effect.fail(
-                new FactoryOperationError({ reason: "unavailable", message: "Thread is busy." }),
-              );
+            if (controls.sendFailures === 0) {
+              sentMessages.push(input);
+              return Effect.void;
             }
-            modelChanges.push({ threadId: input.threadId, model: input.modelSelection.model });
-            return Effect.void;
+            controls.sendFailures -= 1;
+            return Effect.fail(
+              new FactoryOperationError({ reason: "unavailable", message: "Thread is busy." }),
+            );
           }),
         ),
+      interruptThread: (input) => Effect.sync(() => void interrupts.push(input)),
+      settleThread: (input) => Effect.sync(() => void settles.push(input.threadId)),
       readDefaultBranch: () => Effect.sync(() => controls.defaultBranch),
       readPullRequestFiles: (input) =>
         Effect.suspend(() => {
@@ -475,7 +460,6 @@ export const makeHarness = (options: HarnessOptions = {}) =>
       sentMessages,
       interrupts,
       settles,
-      modelChanges,
       threadRuns,
       threadTurns,
       controls,

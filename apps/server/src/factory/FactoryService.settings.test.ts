@@ -19,7 +19,6 @@ import {
   READY,
   RESULT,
   SAVED_RESULT,
-  SONNET,
   activeManager,
   approve,
   board,
@@ -114,13 +113,6 @@ describe("FactoryService manager settings", () => {
           const failure = yield* update(factory, manager.id, result).pipe(Effect.flip);
           assert.deepStrictEqual([failure.reason, failure.message], ["invalid", message]);
         }
-        const model = yield* update(factory, manager.id, RESULT, {
-          modelSelection: { instanceId: SONNET.instanceId, model: "not-in-pool" },
-        }).pipe(Effect.flip);
-        assert.strictEqual(
-          model.message,
-          `not-in-pool (${SONNET.instanceId}) is not in the model pool.`,
-        );
         // The cap's bounds are the schema's, so the RPC refuses them before the service.
         const decode = Schema.decodeUnknownOption(FactoryManagersUpdateSettingsInput);
         for (const concurrencyCap of [0, 21])
@@ -241,10 +233,8 @@ describe("FactoryService manager settings", () => {
             concurrencyCap: 3,
             baseBranch: "release",
           }),
-          { modelSelection: SONNET },
         );
         assert.strictEqual(saved.state, "active");
-        assert.deepStrictEqual(saved.modelSelection, SONNET);
         assert.deepStrictEqual(saved.onboardingResult, {
           ...SAVED_RESULT,
           pickup: { ...SAVED_RESULT.pickup, guidance: "Bugs only." },
@@ -254,9 +244,6 @@ describe("FactoryService manager settings", () => {
           controlPaths: [...RESULT.controlPaths, { path: ".github/**", reason: "" }],
           concurrencyCap: 3,
         });
-        assert.deepStrictEqual(factory.modelChanges, [
-          { threadId: manager.threadId!, model: SONNET.model },
-        ]);
         assert.deepStrictEqual(
           factory.sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
           [
@@ -268,7 +255,6 @@ describe("FactoryService manager settings", () => {
                 "- concurrency cap: 1 → 3",
                 "- protected paths: AGENTS.md (Agent instructions.) → AGENTS.md (Agent instructions.), .github/**",
                 `- rule "Which tickets count as small?": "One file" → "Two files"`,
-                `- model: ${manager.modelSelection!.model} (${manager.modelSelection!.instanceId}) → ${SONNET.model} (${SONNET.instanceId})`,
                 "Use them from now on.",
               ].join("\n"),
             ],
@@ -514,62 +500,35 @@ describe("FactoryService manager settings, saved over time", () => {
     ),
   );
 
-  it.effect("tells the manager when its new model failed to apply", () =>
-    withDatabase(
-      Effect.gen(function* () {
-        const factory = yield* makeFactory;
-        const { manager, sentBefore } = yield* settledManager(factory);
-        factory.controls.modelFailures = 1;
-        const saved = yield* update(factory, manager.id, RESULT, { modelSelection: SONNET });
-        assert.deepStrictEqual(saved.modelSelection, manager.modelSelection);
-        const stored = (yield* factory.service.listManagers({})).find(
-          (entry) => entry.id === manager.id,
-        )!;
-        assert.deepStrictEqual(stored.modelSelection, manager.modelSelection);
-        assert.deepStrictEqual(factory.modelChanges, []);
-        assert.deepStrictEqual(
-          factory.sentMessages.slice(sentBefore).map((message) => message.text),
-          [
-            [
-              "The user changed your settings:",
-              `- model: the change to ${SONNET.model} (${SONNET.instanceId}) failed to apply; this thread still runs on ${manager.modelSelection!.model} (${manager.modelSelection!.instanceId})`,
-              "Use them from now on.",
-            ].join("\n"),
-          ],
-        );
-
-        // The card still offers the new model, so saving it again switches the thread.
-        yield* update(factory, manager.id, RESULT, { modelSelection: SONNET });
-        assert.deepStrictEqual(factory.modelChanges, [
-          { threadId: manager.threadId!, model: SONNET.model },
-        ]);
-      }),
-    ),
-  );
-
   it.effect("finishes a committed save when the client disconnects during it", () =>
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeFactory;
         const { manager, sentBefore } = yield* settledManager(factory);
-        const switching = yield* Deferred.make<void>();
+        const sending = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
-        factory.controls.duringModelSwitch = Deferred.succeed(switching, undefined).pipe(
+        factory.controls.duringSend = Deferred.succeed(sending, undefined).pipe(
           Effect.andThen(Deferred.await(release)),
         );
-        const save = yield* update(factory, manager.id, RESULT, { modelSelection: SONNET }).pipe(
+        const save = yield* update(factory, manager.id, withResult({ concurrencyCap: 3 })).pipe(
           Effect.forkChild,
         );
-        yield* Deferred.await(switching);
+        yield* Deferred.await(sending);
         // What the RPC server does to a disconnected client's requests.
         save.interruptUnsafe();
         yield* Deferred.succeed(release, undefined);
         yield* Fiber.await(save);
 
-        assert.deepStrictEqual(factory.modelChanges, [
-          { threadId: manager.threadId!, model: SONNET.model },
-        ]);
-        assert.strictEqual(factory.sentMessages.length, sentBefore + 1);
+        assert.deepStrictEqual(
+          factory.sentMessages.slice(sentBefore).map((message) => message.text),
+          [
+            [
+              "The user changed your settings:",
+              "- concurrency cap: 1 → 3",
+              "Use them from now on.",
+            ].join("\n"),
+          ],
+        );
       }),
     ),
   );

@@ -555,7 +555,6 @@ export const FactoryManagersUpdateSettingsInput = Schema.Struct({
   requestId: Id,
   managerId: Id,
   result: FactoryOnboardingResult,
-  modelSelection: Schema.optional(ModelSelection),
   /** The manager's `updatedAt` the settings were read at; a later change refuses the save. */
   expectedUpdatedAt: Schema.String,
 });

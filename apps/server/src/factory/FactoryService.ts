@@ -319,12 +319,6 @@ export interface FactoryServiceDependencies {
   readonly sendToThread: (
     input: FactoryThreadMessage,
   ) => Effect.Effect<void, FactoryOperationError>;
-  /** The model the thread's next turn runs on; a running turn keeps its own. */
-  readonly setThreadModel: (input: {
-    readonly threadId: ThreadId;
-    readonly commandId: CommandId;
-    readonly modelSelection: ModelSelection;
-  }) => Effect.Effect<void, FactoryOperationError>;
   /** Marks the thread settled and stops its provider session once any running turn ends. */
   readonly settleThread: (input: {
     readonly threadId: ThreadId;
@@ -835,8 +829,6 @@ const settingsStateProblem = (manager: FactoryManager): string | null => {
 const listed = (values: ReadonlyArray<string>, empty: string) =>
   values.length === 0 ? empty : values.join(", ");
 const quoted = (value: string) => (value.trim() === "" ? "(none)" : `"${value.trim()}"`);
-const shownModel = (model: ModelSelection | null) =>
-  model === null ? "(none)" : `${model.model} (${model.instanceId})`;
 
 /** Each setting that differs, as `name: old → new`, for the manager's wake. */
 const settingsChanges = (
@@ -2409,12 +2401,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             ? yield* onboardingBoards((yield* readManager(input.managerId)).projectId)
             : [];
         const teamIds = yield* factoryTeamIds;
-        const pool =
-          input.modelSelection === undefined
-            ? null
-            : new Set((yield* factoryFiles()).pool.map(modelKey));
         // The RPC server interrupts a request when its client disconnects. Once the save commits, the
-        // model switch and the wake must still happen, so closing the window doesn't drop them.
+        // wake must still be written and sent, so closing the window doesn't drop it.
         return yield* Effect.uninterruptible(
           Effect.gen(function* () {
             const saved = yield* lock(
@@ -2442,15 +2430,6 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                   others: pickupChanged ? yield* otherPickups(manager) : [],
                 });
                 if (problem !== null) return yield* error("invalid", problem);
-                const model = input.modelSelection ?? manager.modelSelection;
-                if (
-                  input.modelSelection !== undefined &&
-                  !pool!.has(modelKey(input.modelSelection))
-                )
-                  return yield* error(
-                    "invalid",
-                    `${input.modelSelection.model} (${input.modelSelection.instanceId}) is not in the model pool.`,
-                  );
                 const asked = new Map(stored.rules.map((rule) => [rule.id, rule.question]));
                 const result = {
                   ...input.result,
@@ -2478,69 +2457,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 const state = isPaused(manager.state) ? manager.state : settled(manager.state);
                 yield* sql`UPDATE factory_managers SET state=${state},
                 onboarding_result_json=${encodeResult(result)},
-                model_selection_json=${model === null ? null : encodeModel(model)},
                 updated_at=${yield* now} WHERE id=${manager.id}`;
                 return {
                   manager: yield* rememberManager(input.requestId, input, manager.id),
-                  previousModel: manager.modelSelection,
                   changes,
                 } as const;
               }),
             );
             if ("replay" in saved) return saved.replay;
-            const { previousModel } = saved;
-            const threadId = saved.manager.threadId;
-            const model = saved.manager.modelSelection;
-            const changes = [...saved.changes];
-            let manager = saved.manager;
-            // The model switches before the wake is written, so the wake's turn runs on it.
-            if (
-              model !== null &&
-              (previousModel === null || modelKey(previousModel) !== modelKey(model))
-            ) {
-              const applied =
-                threadId === null ||
-                (yield* deps
-                  .setThreadModel({
-                    threadId,
-                    commandId: CommandId.make(
-                      `factory-manager-model:${threadId}:${input.requestId}`,
-                    ),
-                    modelSelection: model,
-                  })
-                  .pipe(
-                    Effect.as(true),
-                    Effect.catch((cause) =>
-                      Effect.logWarning("Could not switch the manager's thread model", {
-                        managerId: manager.id,
-                        cause: cause.message,
-                      }).pipe(Effect.as(false)),
-                    ),
-                  ));
-              // The stored model goes back to what the thread runs, so the card doesn't show the new
-              // one and a retry dispatches it again. A later save has moved updated_at; its model stays.
-              if (!applied)
-                manager = yield* lock(
-                  Effect.gen(function* () {
-                    yield* sql`UPDATE factory_managers
-                    SET model_selection_json=${previousModel === null ? null : encodeModel(previousModel)}
-                    WHERE id=${manager.id} AND updated_at=${manager.updatedAt}`;
-                    return yield* readManager(manager.id);
-                  }),
-                ).pipe(
-                  Effect.catch((cause) =>
-                    Effect.logWarning("Could not restore the manager's model", {
-                      managerId: manager.id,
-                      cause: cause.message,
-                    }).pipe(Effect.as(manager)),
-                  ),
-                );
-              changes.push(
-                applied
-                  ? `model: ${shownModel(previousModel)} → ${shownModel(model)}`
-                  : `model: the change to ${shownModel(model)} failed to apply; this thread still runs on ${shownModel(previousModel)}`,
-              );
-            }
+            const { manager, changes } = saved;
             yield* publish;
             if (changes.length > 0)
               yield* lock(writeLog(manager.id, null, "wake", "settings", { changes })).pipe(
@@ -5582,20 +5507,6 @@ export const make = Effect.gen(function* () {
         .pipe(
           Effect.mapError((cause) =>
             error("unavailable", `The message could not be sent: ${cause.message}`),
-          ),
-          Effect.asVoid,
-        ),
-    setThreadModel: (input) =>
-      threads
-        .dispatch({
-          type: "thread.model-selection.set",
-          commandId: input.commandId,
-          threadId: input.threadId,
-          modelSelection: input.modelSelection,
-        })
-        .pipe(
-          Effect.mapError(() =>
-            error("unavailable", "The manager's thread could not switch models."),
           ),
           Effect.asVoid,
         ),
