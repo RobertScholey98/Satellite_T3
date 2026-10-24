@@ -1,7 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowLeftIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 
 import { observeResize } from "~/lib/observeResize";
@@ -16,19 +15,25 @@ import {
   THREAD_DETAILS_CARD_WIDTH,
 } from "../chat/threadDetailsCardLayout";
 import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
-import { THREAD_DETAILS_PANEL_ICON_CLASS } from "../chat/threadDetailsPanelStyles";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { ThreadStatusLabel } from "../ThreadStatusIndicators";
 import { ScrollArea } from "../ui/scroll-area";
+import {
+  FACTORY_CARD_CLASS,
+  FACTORY_THREAD_STACK,
+  type FactoryStackEntry,
+} from "./FactoryThreadStack";
 import { useFactoryWorkspaceFeed, useFactoryWorkspacePlace } from "./factoryWorkspaceState";
 import {
-  FACTORY_BACK_CONTROL_HEIGHT,
   factoryMemberLabel,
+  factoryThreadKind,
   resolveFactoryDetailsCardSide,
+  resolveFactoryThreadStack,
   resolveFactoryWorkspaceView,
   type FactoryWorkspaceTeam,
 } from "./factoryWorkspaceLogic";
 
+const GAP = THREAD_DETAILS_CARD_GAP;
 /** Below this the cards would be unreadable; the column waits for the details card to close. */
 const MIN_COLUMN_HEIGHT = 220;
 /**
@@ -36,7 +41,8 @@ const MIN_COLUMN_HEIGHT = 220;
  * on the list item because the control owns its own colours.
  */
 const CURRENT_ROW_CLASS = "rounded-lg bg-black/[0.05] dark:bg-white/[0.08]";
-const CARD_CLASS = "dropdown-glass isolate contain-paint shrink-0 rounded-3xl";
+/** Cards at the top right move down with the details card while the find bar is open. */
+const FIND_BAR_SLIDE_CLASS = "transition-[top] duration-150 ease-out motion-reduce:transition-none";
 
 type Obstacle = { readonly left: number; readonly right: number; readonly bottom: number } | null;
 
@@ -70,10 +76,21 @@ function useObstacleReport(
   );
 }
 
+/** An element's rendered size, kept current; zero while it is absent. */
+function useMeasured(element: HTMLElement | null, dimension: "offsetHeight" | "offsetWidth") {
+  const [size, setSize] = useState(0);
+  useLayoutEffect(() => {
+    const measure = () => setSize(element?.[dimension] ?? 0);
+    measure();
+    return element ? observeResize(element, measure) : undefined;
+  }, [element, dimension]);
+  return size;
+}
+
 /**
- * What a manager's workspace adds around a factory thread's chat: a card per live team on the
- * right and, on team threads, Back to manager above the details card. When the details card takes
- * the top-left gutter both sit there; otherwise both stay at the top right, above the teams.
+ * What a manager's workspace adds around a factory thread's chat: the column of cards around the
+ * details card (`FACTORY_THREAD_STACK`) and a card per live team on the right. The column takes the
+ * top-left gutter when it fits, and otherwise heads the right side, above the teams.
  */
 export function FactoryWorkspacePanel(props: {
   readonly environmentId: EnvironmentId;
@@ -93,8 +110,8 @@ export function FactoryWorkspacePanel(props: {
   );
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [detailsHeight, setDetailsHeight] = useState(0);
-  const [lone, setLone] = useState<HTMLElement | null>(null);
-  const [loneWidth, setLoneWidth] = useState(0);
+  const [above, setAbove] = useState<HTMLElement | null>(null);
+  const [below, setBelow] = useState<HTMLElement | null>(null);
   const topInset = canvas?.detailsCardTopInset ?? 0;
   const side =
     canvas && place
@@ -109,12 +126,31 @@ export function FactoryWorkspacePanel(props: {
           topInset,
         })
       : null;
+  const stack = resolveFactoryThreadStack(
+    FACTORY_THREAD_STACK,
+    place ? factoryThreadKind(place) : "manager",
+  );
+  const column =
+    canvas && view
+      ? side === "left"
+        ? { edge: "left" as const, top: GAP }
+        : placement
+          ? { edge: "right" as const, top: placement.y }
+          : null
+      : null;
+  // Without room for a card at the top right the details card is a popover, so the cards above it
+  // stand alone there.
+  const alone =
+    canvas !== null &&
+    view !== null &&
+    side === "right" &&
+    placement === null &&
+    stack.above.length > 0;
 
-  // On the right the details card shares the column's top edge, so its height decides where the
-  // column starts.
-  const stacked = side === "right" && detailsOpen && placement !== null;
+  // The chat view renders the details card, so the cards below it follow its measured height.
+  const measuringDetails = column !== null && detailsOpen;
   useLayoutEffect(() => {
-    const details = stacked
+    const details = measuringDetails
       ? (anchor
           ?.closest("[data-chat-canvas]")
           ?.querySelector<HTMLElement>('[data-thread-details-panel="inline"]') ?? null)
@@ -122,65 +158,63 @@ export function FactoryWorkspacePanel(props: {
     const measure = () => setDetailsHeight(details?.offsetHeight ?? 0);
     measure();
     return details ? observeResize(details, measure) : undefined;
-  }, [anchor, stacked]);
+  }, [anchor, measuringDetails]);
+  const belowHeight = useMeasured(below, "offsetHeight");
+  const aloneWidth = useMeasured(alone ? above : null, "offsetWidth");
 
-  const backToManager = place?.backToManager === true;
-  const backOnLeft = backToManager && side === "left";
-  const backOnRight = backToManager && side === "right" && placement !== null;
-  // Without room for a card at the top right the details card is a popover, so Back to manager
-  // stands alone there.
-  const backAlone = backToManager && side === "right" && placement === null && canvas !== null;
-  useLayoutEffect(() => {
-    if (!lone) return;
-    const measure = () => setLoneWidth(lone.offsetWidth);
-    measure();
-    return observeResize(lone, measure);
-  }, [lone]);
-  // Reported even when the lane then falls below its minimum width: a narrower chat reads better
-  // than one running under the control.
-  const loneObstacle =
-    backAlone && loneWidth > 0
+  const aboveTop = column?.top ?? GAP + topInset;
+  const detailsTop = aboveTop + stack.detailsTopInset;
+  const belowTop = detailsTop + (detailsHeight > 0 ? detailsHeight + GAP : 0);
+  const stackBottom =
+    column === null
+      ? null
+      : belowHeight > 0
+        ? belowTop + belowHeight
+        : detailsHeight > 0
+          ? detailsTop + detailsHeight
+          : stack.above.length > 0
+            ? detailsTop - GAP
+            : null;
+
+  const teamsTop =
+    column?.edge === "right" ? (stackBottom ?? column.top - GAP) + GAP : (placement?.y ?? 0);
+  const teamsHeight = canvas ? canvas.container.height - teamsTop - GAP : 0;
+  const teamsVisible =
+    placement !== null && (view?.teams.length ?? 0) > 0 && teamsHeight >= MIN_COLUMN_HEIGHT;
+
+  // On the right an open details card reports itself, and the cards around it share its edge.
+  const stacked = side === "right" && detailsOpen && placement !== null;
+  const rightBottom = teamsVisible
+    ? teamsTop + teamsHeight
+    : column?.edge === "right"
+      ? stackBottom
+      : null;
+  // Alone, the cards are reported even when the lane then falls below its minimum width: a
+  // narrower chat reads better than one running under them.
+  const aloneObstacle =
+    alone && aloneWidth > 0
       ? {
-          left: canvas.container.width - THREAD_DETAILS_CARD_GAP - loneWidth,
-          right: canvas.container.width - THREAD_DETAILS_CARD_GAP,
-          bottom: THREAD_DETAILS_CARD_GAP + topInset + FACTORY_BACK_CONTROL_HEIGHT,
+          left: canvas.container.width - GAP - aloneWidth,
+          right: canvas.container.width - GAP,
+          bottom: detailsTop - GAP,
         }
       : null;
-  const backSpace = FACTORY_BACK_CONTROL_HEIGHT + THREAD_DETAILS_CARD_GAP;
-  const top = placement
-    ? placement.y +
-      (backOnRight ? backSpace : 0) +
-      (stacked && detailsHeight > 0 ? detailsHeight + THREAD_DETAILS_CARD_GAP : 0)
-    : 0;
-  const height = placement && canvas ? canvas.container.height - top - THREAD_DETAILS_CARD_GAP : 0;
-  const visible =
-    placement !== null && (view?.teams.length ?? 0) > 0 && height >= MIN_COLUMN_HEIGHT;
-  const rightBottom = visible
-    ? top + height
-    : backOnRight
-      ? placement.y + FACTORY_BACK_CONTROL_HEIGHT
-      : null;
-
-  // With the details card on the left, the column and Back to manager are the only cards on the
-  // right.
   useObstacleReport(
     canvas?.reportDetailsCard,
-    placement && rightBottom !== null && !stacked
-      ? { left: placement.x, right: placement.x + placement.width, bottom: rightBottom }
-      : loneObstacle,
+    stacked
+      ? null
+      : placement && rightBottom !== null
+        ? { left: placement.x, right: placement.x + placement.width, bottom: rightBottom }
+        : aloneObstacle,
     stacked,
   );
-  // Back to manager stays in the gutter while the details card below it is closed.
+  // In the gutter the whole column is one obstacle, down to its lowest card.
   useObstacleReport(
     canvas?.reportLeftCard,
-    backOnLeft && !detailsOpen
-      ? {
-          left: THREAD_DETAILS_CARD_GAP,
-          right: THREAD_DETAILS_CARD_GAP + THREAD_DETAILS_CARD_WIDTH,
-          bottom: THREAD_DETAILS_CARD_GAP + FACTORY_BACK_CONTROL_HEIGHT,
-        }
+    column?.edge === "left" && stackBottom !== null
+      ? { left: GAP, right: GAP + THREAD_DETAILS_CARD_WIDTH, bottom: stackBottom }
       : null,
-    side === "left" && detailsOpen,
+    false,
   );
 
   if (!view) return null;
@@ -189,64 +223,58 @@ export function FactoryWorkspacePanel(props: {
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
     });
-  const back = backToManager ? <BackToManager onOpen={() => open(view.manager.threadId)} /> : null;
+  // A card with nothing to show takes no space, not even a gap.
+  const renderEntries = (entries: ReadonlyArray<FactoryStackEntry>) =>
+    entries.flatMap((entry) => {
+      const card = entry.render?.({ view, openThread: open });
+      return card == null
+        ? []
+        : [
+            <div
+              key={entry.key}
+              style={entry.height === undefined ? undefined : { height: entry.height }}
+            >
+              {card}
+            </div>,
+          ];
+    });
+  const edge = column?.edge === "left" ? { left: GAP } : { right: GAP };
+  const slide = column?.edge !== "left" && topInset > 0 ? FIND_BAR_SLIDE_CLASS : null;
   return (
     <div ref={setAnchor} className="contents">
-      {backOnLeft ? (
+      {(column !== null || alone) && stack.above.length > 0 ? (
         <nav
+          ref={setAbove}
           aria-label="Manager workspace"
-          className="absolute z-20"
+          className={cn("absolute z-20 flex flex-col gap-3", slide)}
           style={{
-            left: THREAD_DETAILS_CARD_GAP,
-            top: THREAD_DETAILS_CARD_GAP,
-            width: THREAD_DETAILS_CARD_WIDTH,
-            height: FACTORY_BACK_CONTROL_HEIGHT,
+            ...edge,
+            top: aboveTop,
+            width: column ? THREAD_DETAILS_CARD_WIDTH : undefined,
           }}
         >
-          {back}
+          {renderEntries(stack.above)}
         </nav>
       ) : null}
-      {backOnRight ? (
-        <nav
-          aria-label="Manager workspace"
-          // Moves down with the details card below it while the find bar is open.
-          className={cn(
-            "absolute z-20",
-            topInset > 0 && "transition-[top] duration-150 ease-out motion-reduce:transition-none",
-          )}
-          style={{
-            right: placement.right,
-            top: placement.y,
-            width: placement.width,
-            height: FACTORY_BACK_CONTROL_HEIGHT,
-          }}
+      {column !== null && stack.below.length > 0 ? (
+        <div
+          ref={setBelow}
+          className={cn("absolute z-20 flex flex-col gap-3", slide)}
+          style={{ ...edge, top: belowTop, width: THREAD_DETAILS_CARD_WIDTH }}
         >
-          {back}
-        </nav>
+          {renderEntries(stack.below)}
+        </div>
       ) : null}
-      {backAlone ? (
-        <nav
-          ref={setLone}
-          aria-label="Manager workspace"
-          // Moves down for the find bar, as the details card does.
-          className={cn(
-            "absolute z-20",
-            topInset > 0 && "transition-[top] duration-150 ease-out motion-reduce:transition-none",
-          )}
-          style={{
-            right: THREAD_DETAILS_CARD_GAP,
-            top: THREAD_DETAILS_CARD_GAP + topInset,
-            height: FACTORY_BACK_CONTROL_HEIGHT,
-          }}
-        >
-          {back}
-        </nav>
-      ) : null}
-      {visible ? (
+      {teamsVisible ? (
         <aside
           aria-label="Manager teams"
           className="absolute z-20"
-          style={{ right: placement.right, top, width: placement.width, height }}
+          style={{
+            right: placement.right,
+            top: teamsTop,
+            width: placement.width,
+            height: teamsHeight,
+          }}
           data-factory-workspace-panel
         >
           <ScrollArea scrollFade className="h-full">
@@ -268,17 +296,6 @@ export function FactoryWorkspacePanel(props: {
   );
 }
 
-function BackToManager(props: { readonly onOpen: () => void }) {
-  return (
-    <div className={`${CARD_CLASS} p-1.5`}>
-      <ThreadDetailsControl part="row" onClick={props.onOpen}>
-        <ArrowLeftIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />
-        Back to manager
-      </ThreadDetailsControl>
-    </div>
-  );
-}
-
 function TeamCard(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
@@ -287,7 +304,7 @@ function TeamCard(props: {
 }) {
   const { assignment, threads } = props.team;
   return (
-    <section aria-label={assignment.title} className={CARD_CLASS}>
+    <section aria-label={assignment.title} className={FACTORY_CARD_CLASS}>
       <h3 className="line-clamp-2 px-3.5 pt-3 pb-1 text-2xs font-medium text-muted-foreground select-none">
         {assignment.title}
       </h3>

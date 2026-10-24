@@ -27,7 +27,7 @@ export function ThreadDetailsCard({
   onPresentationChange: (presentation: ThreadPanelPresentation) => void;
   /**
    * Picks the card's corner and how far below that corner's usual top it sits. `left` puts it in
-   * the top-left gutter and reports it as the lane's left obstacle; null keeps the top right.
+   * the top-left gutter, where the caller reports the lane's left obstacle; null keeps the top right.
    * Given the canvas measurements only, so the choice never depends on the lane it changes.
    */
   resolvePlacement?:
@@ -81,7 +81,7 @@ export function ThreadDetailsCard({
     measurements.key === measurementKey ? measurements.heights : { full: 0, compact: 0 };
   const height = placement?.height ?? Math.max(0, (canvas?.container.height ?? 0) - 52);
   const density = resolveThreadDetailsCardDensity(height, contentHeights);
-  const reportDetailsCard = left ? canvas?.reportLeftCard : canvas?.reportDetailsCard;
+  const reportDetailsCard = left ? undefined : canvas?.reportDetailsCard;
   const cardLeft = preferredPlacement?.x;
   const cardRight = preferredPlacement
     ? preferredPlacement.x + preferredPlacement.width

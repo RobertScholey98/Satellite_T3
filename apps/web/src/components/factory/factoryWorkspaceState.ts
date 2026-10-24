@@ -34,10 +34,13 @@ import {
 import {
   factoryMemberThreadKeys,
   factoryWorkspacePlace,
-  resolveFactoryDetailsCardPlacement,
+  factoryThreadKind,
+  resolveFactoryDetailsCardSide,
+  resolveFactoryThreadStack,
   resolveFactoryWorkspaceView,
   type FactoryWorkspacePlace,
 } from "./factoryWorkspaceLogic";
+import { FACTORY_THREAD_STACK } from "./FactoryThreadStack";
 
 /** Drafts whose composer currently names a new engineering manager instead of starting a thread. */
 const useManagerDrafts = create<{ readonly draftIds: ReadonlySet<string> }>(() => ({
@@ -159,10 +162,15 @@ export function useFactoryWorkspacePlace(
 /** For the details card: its placement on a factory thread; undefined on any other. */
 export function useFactoryDetailsCardPlacement(environmentId: EnvironmentId, threadId: ThreadId) {
   const place = useFactoryWorkspacePlace(environmentId, threadId);
-  return place === null
-    ? undefined
-    : (canvas: Parameters<typeof resolveFactoryDetailsCardPlacement>[1]) =>
-        resolveFactoryDetailsCardPlacement(place, canvas);
+  if (place === null) return undefined;
+  const topInset = resolveFactoryThreadStack(
+    FACTORY_THREAD_STACK,
+    factoryThreadKind(place),
+  ).detailsTopInset;
+  return (canvas: Omit<Parameters<typeof resolveFactoryDetailsCardSide>[0], "teamColumn">) => ({
+    side: resolveFactoryDetailsCardSide({ ...canvas, teamColumn: place.teamColumn }),
+    topInset,
+  });
 }
 
 /** Whether the thread is a manager's current thread on a factory environment. */

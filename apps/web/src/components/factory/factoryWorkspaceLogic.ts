@@ -197,6 +197,45 @@ export const factoryWorkspacePlace = (
 /** Back to manager's height above the details card, in whichever corner the card takes. */
 export const FACTORY_BACK_CONTROL_HEIGHT = 44;
 
+/** The manager's own thread, or one of its team threads. */
+export type FactoryThreadKind = "manager" | "team";
+
+export const factoryThreadKind = (place: FactoryWorkspacePlace): FactoryThreadKind =>
+  place.backToManager ? "team" : "manager";
+
+/** One card in the column around a factory thread's details card. */
+export interface FactoryStackSlot {
+  readonly key: string;
+  readonly visibleOn: ReadonlyArray<FactoryThreadKind>;
+  /**
+   * A card above the details card needs a fixed height: the details card is placed from it before
+   * anything renders. Cards below it are measured.
+   */
+  readonly height?: number;
+}
+
+/** The details card's slot. The chat view renders the card; the stack only leaves it room. */
+export const FACTORY_DETAILS_SLOT = "details";
+
+/** The stack's cards that show on a thread, either side of the details card, in order. */
+export function resolveFactoryThreadStack<Slot extends FactoryStackSlot>(
+  stack: ReadonlyArray<Slot>,
+  kind: FactoryThreadKind,
+) {
+  const visible = stack.filter((slot) => slot.visibleOn.includes(kind));
+  const details = visible.findIndex((slot) => slot.key === FACTORY_DETAILS_SLOT);
+  const above = details < 0 ? visible : visible.slice(0, details);
+  return {
+    above,
+    below: details < 0 ? [] : visible.slice(details + 1),
+    /** How far below the column's top the details card starts. */
+    detailsTopInset: above.reduce(
+      (inset, slot) => inset + (slot.height ?? 0) + THREAD_DETAILS_CARD_GAP,
+      0,
+    ),
+  };
+}
+
 /**
  * Whether a factory thread's details card takes the top-left gutter: only while the card, the
  * lane's clearance and a readable lane fit beside the team column. Otherwise it stays at the top
@@ -214,20 +253,6 @@ export function resolveFactoryDetailsCardSide(input: {
     ? input.container.width - cardEdge - DETAILS_CARD_CLEARANCE
     : input.container.width - input.lane.padding;
   return laneRight - laneLeft >= input.lane.minChatWidth ? "left" : "right";
-}
-
-/**
- * The details card's corner on a factory thread. Back to manager sits above the card on either
- * side, so on team threads the card starts below it.
- */
-export function resolveFactoryDetailsCardPlacement(
-  place: FactoryWorkspacePlace,
-  canvas: Omit<Parameters<typeof resolveFactoryDetailsCardSide>[0], "teamColumn">,
-): { readonly side: "left" | "right"; readonly topInset: number } {
-  return {
-    side: resolveFactoryDetailsCardSide({ ...canvas, teamColumn: place.teamColumn }),
-    topInset: place.backToManager ? FACTORY_BACK_CONTROL_HEIGHT + THREAD_DETAILS_CARD_GAP : 0,
-  };
 }
 
 /** The newest pickup or skip in a manager's log, which `log.list` returns newest first. */
