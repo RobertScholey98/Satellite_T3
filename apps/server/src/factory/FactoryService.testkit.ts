@@ -664,7 +664,7 @@ export const wakeReasons = (service: Service, managerId: string, mark: number) =
   );
 
 /** A Duo preset: one implementer on two models, and one reviewer on the role's model. */
-export const DUO = {
+const DUO = {
   id: "preset-duo",
   name: "Duo",
   useWhen: "Small changes worth a second look.",
