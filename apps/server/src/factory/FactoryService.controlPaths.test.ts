@@ -426,6 +426,19 @@ describe("FactoryService control paths", () => {
           .listLog({ managerId: manager.id, limit: 1 })
           .pipe(Effect.map(([newest]) => newest!.sequence));
         const sentBefore = sentMessages.length;
+        const leadMessages = () =>
+          sentMessages
+            .slice(sentBefore)
+            .filter((message) => message.threadId === lead)
+            .map((message) => message.text);
+        const push = (version: string, files: ReadonlyArray<string>) =>
+          Effect.gen(function* () {
+            pullRequestFiles.set(7, files);
+            threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, version)] }));
+            yield* service.reconcileThread(lead);
+          });
+        const DECLINED_AGAIN =
+          "The user declined edits to these protected files for this assignment, and pull request #7 still changes them: AGENTS.md. Revert them.";
 
         const declined = yield* answer(service, assignment, askId, "decline", "decline-1");
         assert.strictEqual(declined.state, "waiting-user");
@@ -433,17 +446,21 @@ describe("FactoryService control paths", () => {
           { pullRequest: PR_7, paths: ["AGENTS.md"] },
         ]);
         yield* answer(service, assignment, askId, "decline", "decline-again");
+        assert.deepStrictEqual(leadMessages(), [
+          "The user declined edits to these protected files for this assignment: AGENTS.md. Do not edit them, and revert any edit to them.",
+        ]);
 
-        // The same file in a new push, then reverted, then back: no new ask and no new wake.
-        for (const [version, files] of [
-          ["push-2", ["AGENTS.md"]],
-          ["push-3", []],
-          ["push-4", ["AGENTS.md", "src/list.tsx"]],
-        ] as const) {
-          pullRequestFiles.set(7, files);
-          threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, version)] }));
-          yield* service.reconcileThread(lead);
-        }
+        // A new push that still changes the declined file tells the lead once, and only the lead.
+        yield* push("push-2", ["AGENTS.md"]);
+        yield* service.reconcileThread(lead);
+        assert.deepStrictEqual(leadMessages().slice(1), [DECLINED_AGAIN]);
+
+        // Reverted, then back in a later push: held again, and the lead hears once more.
+        yield* push("push-3", []);
+        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
+        yield* push("push-4", ["AGENTS.md", "src/list.tsx"]);
+        yield* service.reconcileThread(lead);
+        assert.deepStrictEqual(leadMessages().slice(1), [DECLINED_AGAIN, DECLINED_AGAIN]);
 
         const reflagged = (yield* service.assignmentForThread(lead))!;
         assert.strictEqual(reflagged.state, "waiting-user");
@@ -454,14 +471,107 @@ describe("FactoryService control paths", () => {
         assert.deepStrictEqual(yield* controlWakes(service, manager.id, mark), [
           "The user declined edits to these protected files for this assignment: AGENTS.md.",
         ]);
+      }),
+    ),
+  );
+
+  it.effect("holds a revoked file again once a blocked assignment returns to work", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles } = factory;
+        const { manager, assignment, lead } = yield* startedTeam(factory);
+        const runs = idleRun({ pullRequests: [pullRequest(7, false, "push-1")] });
+        pullRequestFiles.set(7, ["AGENTS.md"]);
+        threadRuns.set(lead, runs);
+        yield* service.reconcileThread(lead);
+        const askId = (yield* service.assignmentForThread(lead))!.protectedPathAsks[0]!.id;
+        yield* answer(service, assignment, askId, "allow", "allow-1");
+
+        const dependency = yield* service.reportDependency(lead, {
+          title: "Expose the sync cursor",
+          brief: "Add the cursor to GET /sync.",
+          unblockCondition: "GET /sync returns the cursor",
+        });
+        const revoked = yield* answer(service, assignment, askId, "decline", "revoke-1");
+        assert.strictEqual(revoked.state, "blocked");
+
+        const delivering = yield* service.commission(manager.threadId!, {
+          title: "Sync cursor endpoint",
+          brief: "Add the cursor to GET /sync.",
+          completionCondition: "GET /sync returns the cursor.",
+          complexity: "small",
+          dependencyId: dependency.id,
+        });
+        yield* service.claimComplete(delivering.leadThreadId!, { evidence: "Endpoint shipped." });
+        yield* service.retroDone(delivering.leadThreadId!);
+        yield* service.complete(manager.threadId!, {
+          assignmentId: delivering.id,
+          teamVerdict: { fit: "good", reason: "Small team, quick turnaround." },
+        });
+        assert.strictEqual((yield* service.assignmentForThread(lead))!.state, "active");
+
+        // The pull request has not changed since its last check, so nothing is due to read.
+        yield* service.reconcileThread(lead);
+        const held = (yield* service.assignmentForThread(lead))!;
+        assert.strictEqual(held.state, "waiting-user");
+        assert.strictEqual(
+          held.waitingReason,
+          "Pull request #7 changes protected paths: AGENTS.md.",
+        );
+
+        const claimed = yield* service.claimComplete(lead, {
+          evidence: "Tests pass.",
+          pullRequests: [PR_7],
+        });
+        assert.strictEqual(claimed.state, "waiting-user");
+        assert.strictEqual(claimed.waitingReason, held.waitingReason);
+      }),
+    ),
+  );
+
+  it.effect("settles a held claim once the user allows the last flagged files", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { service, threadRuns, pullRequestFiles } = factory;
+        const { assignment, lead } = yield* startedTeam(factory);
+        pullRequestFiles.set(7, ["AGENTS.md"]);
+        threadRuns.set(lead, idleRun({ pullRequests: [pullRequest(7, false, "push-1")] }));
+        yield* service.reconcileThread(lead);
+        const claimed = yield* service.claimComplete(lead, {
+          evidence: "Tests pass.",
+          pullRequests: [PR_7],
+        });
+        assert.strictEqual(
+          claimed.waitingReason,
+          "Pull request #7 changes protected paths: AGENTS.md.",
+        );
+
+        const askId = claimed.protectedPathAsks[0]!.id;
+        const settled = yield* answer(service, assignment, askId, "allow", "allow-1");
+        assert.strictEqual(settled.state, "waiting-user");
+        assert.strictEqual(settled.waitingReason, "Pull requests await the user's review: #7.");
+        assert.deepStrictEqual(settled.controlViolations, []);
+      }),
+    ),
+  );
+
+  it.effect("refuses an answer to an ask the assignment does not have", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeTeamFactory;
+        const { assignment } = yield* startedTeam(factory);
+        const failure = yield* answer(
+          factory.service,
+          assignment,
+          "no-such-ask",
+          "allow",
+          "allow-1",
+        ).pipe(Effect.flip);
         assert.deepStrictEqual(
-          sentMessages.slice(sentBefore).map((message) => [message.threadId, message.text]),
-          [
-            [
-              lead,
-              "The user declined edits to these protected files for this assignment: AGENTS.md. Do not edit them, and revert any edit to them.",
-            ],
-          ],
+          [failure.reason, failure.message],
+          ["not-found", "Ticket 1 has no protected-path ask no-such-ask."],
         );
       }),
     ),

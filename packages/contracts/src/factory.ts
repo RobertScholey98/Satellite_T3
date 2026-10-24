@@ -622,9 +622,18 @@ export const FactoryControlViolation = Schema.Struct({
 });
 export type FactoryControlViolation = typeof FactoryControlViolation.Type;
 
-const ProtectedPaths = Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(1024))).check(
+/** The most paths one ask names; the server splits a larger pull request across asks. */
+export const FACTORY_ASK_PATH_LIMIT = 50;
+
+const ProtectedPathsInput = Schema.Array(
+  TrimmedNonEmptyString.check(Schema.isMaxLength(1024)),
+).check(Schema.isMinLength(1), Schema.isMaxLength(FACTORY_ASK_PATH_LIMIT));
+
+// A pull request's file paths are stored as the host reported them, so a stored ask neither
+// trims nor bounds them: either would stop an allowed path matching, or fail every read.
+const StoredProtectedPaths = Schema.Array(Schema.NonEmptyString).check(
   Schema.isMinLength(1),
-  Schema.isMaxLength(50),
+  Schema.isMaxLength(FACTORY_ASK_PATH_LIMIT),
 );
 
 /**
@@ -634,7 +643,7 @@ const ProtectedPaths = Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLeng
  */
 export const FactoryProtectedPathAsk = Schema.Struct({
   id: Id,
-  paths: ProtectedPaths,
+  paths: StoredProtectedPaths,
   reason: Schema.String.check(Schema.isMaxLength(2000)),
   source: Schema.Literals(["commission", "pull-request"]),
   /** The pull request that flagged the paths, for a `pull-request` ask. */
@@ -711,7 +720,9 @@ export const FactoryAssignment = Schema.Struct({
    */
   controlViolations: Schema.Array(FactoryControlViolation),
   /** Asks to edit protected files for this assignment, answered or not. */
-  protectedPathAsks: Schema.Array(FactoryProtectedPathAsk),
+  protectedPathAsks: Schema.Array(FactoryProtectedPathAsk).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+  ),
   /** When the lead finished the team retro, and when the manager finished its own. */
   retro: Schema.Struct({
     teamDoneAt: Schema.NullOr(Schema.String),
@@ -847,7 +858,7 @@ export const FactoryCommissionInput = Schema.Struct({
    * on the team's card; no agent can.
    */
   protectedPaths: Schema.optionalKey(
-    Schema.Struct({ paths: ProtectedPaths, reason: DecisionReason }),
+    Schema.Struct({ paths: ProtectedPathsInput, reason: DecisionReason }),
   ),
 });
 export type FactoryCommissionInput = typeof FactoryCommissionInput.Type;

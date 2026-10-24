@@ -5,6 +5,7 @@ import * as NodeUtil from "node:util";
 import {
   CommandId,
   DEFAULT_FACTORY_CONFIG,
+  FACTORY_ASK_PATH_LIMIT,
   FactoryAssignment,
   FactoryAssignmentClaim,
   FactoryAssignmentStats,
@@ -842,9 +843,6 @@ const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `
 
 const pullRequestKey = (key: ThreadPullRequestKey) => `${key.host}/${key.repository}#${key.number}`;
 
-/** An ask may name at most this many paths, so a larger pull request gets several. */
-const ASK_PATH_LIMIT = 50;
-
 /**
  * Paths the user allowed for the assignment. An allowed path in any ask is allowed, even if
  * another ask that names it was declined.
@@ -899,6 +897,21 @@ const violationText = (
     "The factory cannot send this to the user as ready while unallowed protected changes remain.",
   ].join(" ");
 };
+
+/** What the lead hears when a new push still changes files the user declined. */
+const declinedAgainText = (violation: FactoryControlViolation) =>
+  `The user declined edits to these protected files for this assignment, and pull request #${violation.pullRequest.number} still changes them: ${violation.paths.join(", ")}. Revert them.`;
+
+/**
+ * Unallowed flags remain but the assignment is not held for them, as a fresh flag would hold it:
+ * from work or from waiting on the user for something else.
+ */
+const needsHold = (
+  row: { readonly state: string; readonly waiting_kind: string | null },
+  effective: ReadonlyArray<FactoryControlViolation>,
+) =>
+  effective.length > 0 &&
+  (row.state === "active" || (row.state === "waiting-user" && row.waiting_kind !== "control"));
 
 /** How the user answered an ask, as the manager and the lead are told it. */
 const answerText = (
@@ -3285,7 +3298,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     );
     if (
       due.length === 0 &&
-      stored.every((violation) => openKeys.has(pullRequestKey(violation.pullRequest)))
+      stored.every((violation) => openKeys.has(pullRequestKey(violation.pullRequest))) &&
+      !needsHold(
+        row,
+        effectiveViolations(stored, yield* parse(ProtectedPathAsks, row.protected_path_asks_json)),
+      )
     )
       return false;
     const matches = controlPathMatcher(
@@ -3347,6 +3364,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         // A path the previous check of the same pull request did not flag holds the assignment.
         let flagged = false;
         const fresh: FactoryControlViolation[] = [];
+        // Declined paths a new snapshot still changes; only the lead hears, once per snapshot.
+        const stillDeclined: FactoryControlViolation[] = [];
         for (const { key, version, ...violation } of results) {
           nextChecked[key] = version;
           if (violation.paths.length === 0) {
@@ -3358,14 +3377,15 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           const unallowed = violation.paths.filter((path) => !allowed.has(path));
           const added = unallowed.filter((path) => previous?.paths.includes(path) !== true);
           if (added.length > 0) flagged = true;
-          // The user already answered a declined path; flagging it again repeats nothing.
           if (added.some((path) => !declined.has(path)))
             fresh.push({ ...violation, paths: unallowed });
+          const declinedHere = unallowed.filter((path) => declined.has(path));
+          if (declinedHere.length > 0) stillDeclined.push({ ...violation, paths: declinedHere });
           const unasked = unallowed.filter((path) => !asked.has(path));
-          for (let index = 0; index < unasked.length; index += ASK_PATH_LIMIT) {
+          for (let index = 0; index < unasked.length; index += FACTORY_ASK_PATH_LIMIT) {
             newAsks.push({
               id: NodeCrypto.randomUUID(),
-              paths: unasked.slice(index, index + ASK_PATH_LIMIT),
+              paths: unasked.slice(index, index + FACTORY_ASK_PATH_LIMIT),
               reason: `Pull request #${violation.pullRequest.number} changes these protected files.`,
               source: "pull-request",
               pullRequest: violation.pullRequest,
@@ -3384,7 +3404,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         const effective = effectiveViolations(violations, asks);
         const reason = controlReason(effective);
         const inControl = current.state === "waiting-user" && current.waiting_kind === "control";
-        if (flagged) {
+        // An unflagged hold covers flags the assignment left control with, such as a revoke
+        // while it was blocked; those were announced already, so nothing is woken for them.
+        if (flagged || needsHold(current, effective)) {
           if (current.state === "active" || current.state === "waiting-user")
             yield* sql`UPDATE factory_assignments SET ${enterState("waiting-user", at)},
                 waiting_kind='control',waiting_reason=${reason},updated_at=${at} WHERE id=${row.id}`;
@@ -3395,7 +3417,10 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
               assignmentId: current.id,
               text,
             });
-          return { kind: "violation", texts } as const;
+          return {
+            kind: "violation",
+            texts: [...texts, ...stillDeclined.map(declinedAgainText)],
+          } as const;
         }
         if (inControl && effective.length === 0) {
           yield* sql`UPDATE factory_assignments SET ${enterState("active", at)},waiting_kind=NULL,
@@ -3408,6 +3433,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         return {
           kind: "recorded",
           changed: json(before) !== json(violations) || newAsks.length > 0,
+          texts: stillDeclined.map(declinedAgainText),
         } as const;
       }),
     );
@@ -3424,6 +3450,9 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
         if (outcome.claimed) yield* settleClaim(row.id, runs);
         return true;
       case "recorded":
+        if (row.lead_taken_over !== 1 && row.lead_thread_id !== null)
+          for (const text of outcome.texts)
+            yield* notifyLead(row.project_id, row.lead_thread_id, text);
         if (outcome.changed) yield* publish;
         return false;
     }
