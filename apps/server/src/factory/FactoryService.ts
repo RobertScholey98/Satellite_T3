@@ -2475,11 +2475,11 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           }),
         );
         if ("replay" in saved) return saved.replay;
-        const { manager, previousModel } = saved;
-        yield* publish;
-        const threadId = manager.threadId;
-        const model = manager.modelSelection;
+        const { previousModel } = saved;
+        const threadId = saved.manager.threadId;
+        const model = saved.manager.modelSelection;
         const changes = [...saved.changes];
+        let manager = saved.manager;
         // The model switches before the wake is written, so the wake's turn runs on it.
         if (
           model !== null &&
@@ -2502,12 +2502,31 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                   }).pipe(Effect.as(false)),
                 ),
               ));
+          // The stored model goes back to what the thread runs, so the card doesn't show the new
+          // one and a retry dispatches it again. A later save has moved updated_at; its model stays.
+          if (!applied)
+            manager = yield* lock(
+              Effect.gen(function* () {
+                yield* sql`UPDATE factory_managers
+                    SET model_selection_json=${previousModel === null ? null : encodeModel(previousModel)}
+                    WHERE id=${manager.id} AND updated_at=${manager.updatedAt}`;
+                return yield* readManager(manager.id);
+              }),
+            ).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Could not restore the manager's model", {
+                  managerId: manager.id,
+                  cause: cause.message,
+                }).pipe(Effect.as(manager)),
+              ),
+            );
           changes.push(
             applied
               ? `model: ${shownModel(previousModel)} → ${shownModel(model)}`
               : `model: the change to ${shownModel(model)} failed to apply; this thread still runs on ${shownModel(previousModel)}`,
           );
         }
+        yield* publish;
         if (changes.length > 0)
           yield* lock(writeLog(manager.id, null, "wake", "settings", { changes })).pipe(
             Effect.andThen(deliverWakes(manager)),

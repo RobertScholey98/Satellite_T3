@@ -484,7 +484,11 @@ describe("FactoryService manager settings, saved over time", () => {
         const { manager, sentBefore } = yield* settledManager(factory);
         factory.controls.modelFailures = 1;
         const saved = yield* update(factory, manager.id, RESULT, { modelSelection: SONNET });
-        assert.deepStrictEqual(saved.modelSelection, SONNET);
+        assert.deepStrictEqual(saved.modelSelection, manager.modelSelection);
+        const stored = (yield* factory.service.listManagers({})).find(
+          (entry) => entry.id === manager.id,
+        )!;
+        assert.deepStrictEqual(stored.modelSelection, manager.modelSelection);
         assert.deepStrictEqual(factory.modelChanges, []);
         assert.deepStrictEqual(
           factory.sentMessages.slice(sentBefore).map((message) => message.text),
@@ -496,6 +500,12 @@ describe("FactoryService manager settings, saved over time", () => {
             ].join("\n"),
           ],
         );
+
+        // The card still offers the new model, so saving it again switches the thread.
+        yield* update(factory, manager.id, RESULT, { modelSelection: SONNET });
+        assert.deepStrictEqual(factory.modelChanges, [
+          { threadId: manager.threadId!, model: SONNET.model },
+        ]);
       }),
     ),
   );
