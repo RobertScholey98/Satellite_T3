@@ -93,6 +93,8 @@ export function FactoryWorkspacePanel(props: {
   );
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [detailsHeight, setDetailsHeight] = useState(0);
+  const [lone, setLone] = useState<HTMLElement | null>(null);
+  const [loneWidth, setLoneWidth] = useState(0);
   const topInset = canvas?.detailsCardTopInset ?? 0;
   const side =
     canvas && place
@@ -110,7 +112,7 @@ export function FactoryWorkspacePanel(props: {
 
   // On the right the details card shares the column's top edge, so its height decides where the
   // column starts.
-  const stacked = side === "right" && detailsOpen;
+  const stacked = side === "right" && detailsOpen && placement !== null;
   useLayoutEffect(() => {
     const details = stacked
       ? (anchor
@@ -125,6 +127,25 @@ export function FactoryWorkspacePanel(props: {
   const backToManager = place?.backToManager === true;
   const backOnLeft = backToManager && side === "left";
   const backOnRight = backToManager && side === "right" && placement !== null;
+  // Without room for a card at the top right the details card is a popover, so Back to manager
+  // stands alone there.
+  const backAlone = backToManager && side === "right" && placement === null && canvas !== null;
+  useLayoutEffect(() => {
+    if (!lone) return;
+    const measure = () => setLoneWidth(lone.offsetWidth);
+    measure();
+    return observeResize(lone, measure);
+  }, [lone]);
+  // Reported even when the lane then falls below its minimum width: a narrower chat reads better
+  // than one running under the control.
+  const loneObstacle =
+    backAlone && loneWidth > 0
+      ? {
+          left: canvas.container.width - THREAD_DETAILS_CARD_GAP - loneWidth,
+          right: canvas.container.width - THREAD_DETAILS_CARD_GAP,
+          bottom: THREAD_DETAILS_CARD_GAP + topInset + FACTORY_BACK_CONTROL_HEIGHT,
+        }
+      : null;
   const backSpace = FACTORY_BACK_CONTROL_HEIGHT + THREAD_DETAILS_CARD_GAP;
   const top = placement
     ? placement.y +
@@ -146,7 +167,7 @@ export function FactoryWorkspacePanel(props: {
     canvas?.reportDetailsCard,
     placement && rightBottom !== null && !stacked
       ? { left: placement.x, right: placement.x + placement.width, bottom: rightBottom }
-      : null,
+      : loneObstacle,
     stacked,
   );
   // Back to manager stays in the gutter while the details card below it is closed.
@@ -197,6 +218,24 @@ export function FactoryWorkspacePanel(props: {
             right: placement.right,
             top: placement.y,
             width: placement.width,
+            height: FACTORY_BACK_CONTROL_HEIGHT,
+          }}
+        >
+          {back}
+        </nav>
+      ) : null}
+      {backAlone ? (
+        <nav
+          ref={setLone}
+          aria-label="Manager workspace"
+          // Moves down for the find bar, as the details card does.
+          className={cn(
+            "absolute z-20",
+            topInset > 0 && "transition-[top] duration-150 ease-out motion-reduce:transition-none",
+          )}
+          style={{
+            right: THREAD_DETAILS_CARD_GAP,
+            top: THREAD_DETAILS_CARD_GAP + topInset,
             height: FACTORY_BACK_CONTROL_HEIGHT,
           }}
         >
