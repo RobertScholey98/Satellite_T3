@@ -12,7 +12,7 @@ left before you change anything.
 - Read the brief and the completion condition before anything else. If they conflict or leave
   the goal unclear, say so to the manager before you start.
 - Design the change first: what moves, in which order, and how you will prove it works. Ground
-  it in live data read from a read-only snapshot, and walk the user, through the manager, through
+  it in live data read from a read-only snapshot and, through the manager, walk the user through
   how it behaves today before you propose changes. For stacked work, settle the end-state data
   model, migration ids and contract fields, and commit the contract, before client implementers
   start.

@@ -149,15 +149,16 @@ export const definitionTeamSection = (team: FactoryTeamDefinition): string => {
  * Rules every worker gets whatever its definition says, since users keep their own copies of the
  * starter descriptions.
  */
-const WORKER_RULES = `# Working on the team
+export const WORKER_RULES = `# Working on the team
 
 - Your final turn result is your handback to the lead. Do not message other sessions, even to
   reach the lead.
-- Write content that holds escape sequences or template literals with the Write or Edit tool.
-  Keep shell one-liners to plain search and replace: on Windows, heredocs and \`node -e\` turn
-  \`\\n\` inside strings into real newlines.
-- A test or reproduction you write only to check something is not a change to the code: run it
-  in a throwaway worktree outside the lead's, and never commit it.`;
+- Write content that holds escape sequences or template literals with your file-editing tool
+  (Write, Edit or apply_patch). Keep shell one-liners to plain search and replace: on Windows,
+  heredocs and \`node -e\` turn \`\\n\` inside strings into real newlines.
+- You may run focused tests and write scratch reproductions to check something. They are not
+  changes to the code: put them in a throwaway worktree outside the lead's, remove it
+  afterwards, and never commit them.`;
 
 /** The end of every worker's first message: the fixed worker rules, then the lead's task. */
 export const workerTask = (task: string): string => `${WORKER_RULES}\n\n# Task\n\n${task}`;

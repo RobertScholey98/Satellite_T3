@@ -29,7 +29,7 @@ import { TestClock } from "effect/testing";
 import { parseRateTable } from "../usage/usagePricing.ts";
 import type { FactoryThreadActivity, FactoryThreadTurn } from "./FactoryService.ts";
 import * as FactoryConfigStore from "./config/FactoryConfigStore.ts";
-import { projectSection } from "./roleSkills.ts";
+import { projectSection, WORKER_RULES } from "./roleSkills.ts";
 import { ONBOARDING_BRIEF } from "./roles/index.ts";
 import {
   PROJECT_ID,
@@ -1146,7 +1146,7 @@ describe("FactoryService role briefs", () => {
         assert.deepStrictEqual(implementer, {
           role: "implementer",
           source: "project",
-          text: "allowed:\n- claude/claude-sonnet-5\nprotected:\n- .github/workflows/**\n- AGENTS.md",
+          text: `allowed:\n- claude/claude-sonnet-5\nprotected:\n- .github/workflows/**\n- AGENTS.md\n\n${WORKER_RULES}`,
         });
         assert.deepStrictEqual(skillReads.at(-1), ["implementer", "/repo"]);
 
@@ -1173,6 +1173,8 @@ describe("FactoryService role briefs", () => {
         // A worker's brief carries the project section too, as a team member's does.
         const worker = yield* service.roleBrief(PROJECT_ID, "implementer", managerId);
         assert.include(worker.text, "\n\n# Project\n\n");
+        // As a delegated member's brief does, so a worker started from it gets the same rules.
+        assert.isTrue(worker.text.endsWith(`\n\n${WORKER_RULES}`));
 
         // The first lead definition's instructions follow the protocol, before the project.
         yield* configStore.writeLead({

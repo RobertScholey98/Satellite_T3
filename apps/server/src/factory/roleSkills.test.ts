@@ -292,11 +292,12 @@ describe("workerBrief", () => {
           "",
           "- Your final turn result is your handback to the lead. Do not message other sessions, even to",
           "  reach the lead.",
-          "- Write content that holds escape sequences or template literals with the Write or Edit tool.",
-          "  Keep shell one-liners to plain search and replace: on Windows, heredocs and `node -e` turn",
-          "  `\\n` inside strings into real newlines.",
-          "- A test or reproduction you write only to check something is not a change to the code: run it",
-          "  in a throwaway worktree outside the lead's, and never commit it.",
+          "- Write content that holds escape sequences or template literals with your file-editing tool",
+          "  (Write, Edit or apply_patch). Keep shell one-liners to plain search and replace: on Windows,",
+          "  heredocs and `node -e` turn `\\n` inside strings into real newlines.",
+          "- You may run focused tests and write scratch reproductions to check something. They are not",
+          "  changes to the code: put them in a throwaway worktree outside the lead's, remove it",
+          "  afterwards, and never commit them.",
         ].join("\n"),
         "# Task\n\nReview the List.tsx change.",
       ].join("\n\n"),
@@ -325,7 +326,7 @@ describe("workerBrief", () => {
     );
     assert.include(
       brief,
-      "run it\n  in a throwaway worktree outside the lead's, and never commit it.",
+      "put them in a throwaway worktree outside the lead's, remove it\n  afterwards, and never commit them.",
     );
     assert.include(brief, "Tag a\nfinding that needs a user decision rather than a fix.");
     assert.include(brief, "- The code under review: you never edit it, even to fix a finding.");
