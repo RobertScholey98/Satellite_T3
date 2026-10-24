@@ -1983,6 +1983,14 @@ describe("FactoryService completion claims", () => {
         threadRuns.set(newLead, idleRun());
         const claimed = yield* service.claimComplete(newLead, { evidence: "Checks pass." });
         assert.strictEqual(claimed.waitingReason, "Pull requests await the user's review: #7.");
+        // The merge card reads the replaced lead's links too, so #7 is offered to merge.
+        assert.deepStrictEqual(
+          (yield* workspace(service)).assignments.map((entry) => [
+            entry.leadThreadId,
+            entry.previousLeadThreadIds,
+          ]),
+          [[newLead, [lead]]],
+        );
 
         yield* service.reconcileMerge({ repository: "acme/app", number: 7 });
         assert.strictEqual((yield* service.assignmentForThread(newLead))!.state, "retro");

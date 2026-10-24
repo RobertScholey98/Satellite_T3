@@ -71,6 +71,19 @@ function mergeStatus(
 }
 
 /**
+ * Every lead thread an assignment has had, the current one first. Pull requests linked on a
+ * replaced lead's thread still gate the claim, so the card offers them too.
+ */
+export function factoryAssignmentLeadThreadIds(
+  assignment: FactoryWorkspaceAssignment,
+): ReadonlyArray<ThreadId> {
+  return [
+    ...(assignment.leadThreadId === null ? [] : [assignment.leadThreadId]),
+    ...(assignment.previousLeadThreadIds ?? []),
+  ];
+}
+
+/**
  * The open pull requests on a manager's live lead threads. Ready ones come first, the longest
  * claimed first; the rest follow in assignment order, oldest first, then by number.
  */
@@ -84,10 +97,18 @@ export function resolveFactoryMergeRows(
   > = [];
   for (const assignment of assignments) {
     if (assignment.managerId !== managerId || !isLiveAssignment(assignment)) continue;
-    const lead =
-      assignment.leadThreadId === null ? undefined : leadThreads.get(assignment.leadThreadId);
+    const leads = factoryAssignmentLeadThreadIds(assignment).flatMap(
+      (threadId) => leadThreads.get(threadId) ?? [],
+    );
+    const lead = leads[0];
     if (!lead) continue;
-    const links = visibleThreadPullRequests(lead.pullRequests)
+    // A pull request linked on more than one lead thread is one row.
+    const unique = new Map(
+      leads
+        .flatMap((entry) => visibleThreadPullRequests(entry.pullRequests))
+        .map((link) => [`${link.host}/${link.repository}#${link.number}`.toLowerCase(), link]),
+    );
+    const links = [...unique.values()]
       .filter((link) => link.snapshot?.state === "open")
       .toSorted((left, right) => left.number - right.number);
     for (const link of links) {

@@ -947,6 +947,8 @@ export const FactoryWorkspaceAssignment = Schema.Struct({
   claimedAt: Schema.optional(Schema.NullOr(Schema.String)),
   /** Open pull requests that change the manager's protected paths. */
   controlViolations: Schema.optional(Schema.Array(FactoryControlViolation)),
+  /** Leads the assignment had before `leadThreadId`; their pull requests still gate the claim. */
+  previousLeadThreadIds: Schema.optional(Schema.Array(ThreadId)),
 });
 export type FactoryWorkspaceAssignment = typeof FactoryWorkspaceAssignment.Type;
 

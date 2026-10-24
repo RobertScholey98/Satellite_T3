@@ -100,6 +100,23 @@ describe("resolveFactoryMergeRows", () => {
     expect(summary(rows)).toEqual([["a", 1, "ready"]]);
   });
 
+  it("lists the pull requests on a replaced lead's thread once, beside the current lead's", () => {
+    const replaced = assignment("a", {
+      leadThreadId: ThreadId.make("a-lead-2"),
+      previousLeadThreadIds: [ThreadId.make("a-lead")],
+    });
+    const rows = resolveFactoryMergeRows(
+      [replaced],
+      "manager-1",
+      leads({ "a-lead": [link(7), link(8)], "a-lead-2": [link(8), link(9)] }),
+    );
+    expect(summary(rows)).toEqual([
+      ["a", 7, "ready"],
+      ["a", 8, "ready"],
+      ["a", 9, "ready"],
+    ]);
+  });
+
   it("gives each pull request the state that keeps it from merging", () => {
     const rows = resolveFactoryMergeRows(
       [assignment("working", { claimedAt: null }), assignment("claimed")],

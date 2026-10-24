@@ -32,6 +32,7 @@ import {
   useFactoryWorkspace,
 } from "./factoryState";
 import {
+  factoryAssignmentLeadThreadIds,
   resolveFactoryMergeRows,
   type FactoryLeadThreadLinks,
   type FactoryMergeRow,
@@ -153,7 +154,7 @@ const workspacePlaceAtom = Atom.family((environmentId: EnvironmentId) =>
   ),
 );
 
-// Reads each live lead's shell, held through streaming ticks, so the card re-renders only when a
+// Reads the shell of every lead each live assignment has had, held through streaming ticks, so the card re-renders only when a
 // row changes.
 const mergeRowsAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.family((managerId: string) =>
@@ -161,17 +162,17 @@ const mergeRowsAtom = Atom.family((environmentId: EnvironmentId) =>
       const assignments = get(workspaceFeedsAtom).get(environmentId)?.assignments ?? [];
       const leadThreads = new Map<ThreadId, FactoryLeadThreadLinks>();
       for (const assignment of assignments) {
-        const threadId = assignment.leadThreadId;
-        if (assignment.managerId !== managerId || threadId === null) continue;
-        if (!isLiveAssignment(assignment)) continue;
-        const shell = get(
-          environmentThreadShells.quietThreadShellAtom(scopeThreadRef(environmentId, threadId)),
-        );
-        if (shell)
-          leadThreads.set(threadId, {
-            projectId: shell.projectId,
-            pullRequests: shell.pullRequests,
-          });
+        if (assignment.managerId !== managerId || !isLiveAssignment(assignment)) continue;
+        for (const threadId of factoryAssignmentLeadThreadIds(assignment)) {
+          const shell = get(
+            environmentThreadShells.quietThreadShellAtom(scopeThreadRef(environmentId, threadId)),
+          );
+          if (shell)
+            leadThreads.set(threadId, {
+              projectId: shell.projectId,
+              pullRequests: shell.pullRequests,
+            });
+        }
       }
       const next = resolveFactoryMergeRows(assignments, managerId, leadThreads);
       const previous = Option.getOrNull(get.self<ReadonlyArray<FactoryMergeRow>>());

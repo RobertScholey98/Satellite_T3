@@ -4725,6 +4725,17 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
     const assignments = yield* sql<AssignmentRow>`SELECT * FROM factory_assignments
         WHERE ${sql.in("state", ACTIVE_ASSIGNMENT_STATES)} OR ended_at >= ${since}
         ORDER BY created_at, id`;
+    const previousLeads = new Map<string, string[]>();
+    for (const lead of yield* sql<{ assignment_id: string; thread_id: string }>`
+        SELECT m.assignment_id,m.thread_id FROM factory_members m
+        JOIN factory_assignments a ON a.id=m.assignment_id
+        WHERE m.role='lead' AND m.ended_at IS NOT NULL
+          AND (${sql.in("a.state", ACTIVE_ASSIGNMENT_STATES)} OR a.ended_at >= ${since})
+        ORDER BY m.created_at, m.rowid`)
+      previousLeads.set(lead.assignment_id, [
+        ...(previousLeads.get(lead.assignment_id) ?? []),
+        lead.thread_id,
+      ]);
     return yield* decodeWorkspaceFeed({
       managers: managers.map((manager) => ({
         id: manager.id,
@@ -4756,6 +4767,7 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 ? null
                 : (yield* parse(FactoryAssignmentClaim, row.claim_json)).claimedAt,
             controlViolations: yield* parse(ControlViolations, row.control_violations_json),
+            previousLeadThreadIds: previousLeads.get(row.id) ?? [],
           };
         }),
       ),
