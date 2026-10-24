@@ -296,7 +296,7 @@ describe("card in the left gutter", () => {
       preview: player,
     });
   it("keeps chat centred while it clears both cards", () => {
-    expect(withCards(1600).chat).toEqual({ left: 432, width: 736, insetStart: 384, insetEnd: 384 });
+    expect(withCards(1600).chat).toEqual({ left: 432, width: 736, insetStart: 276, insetEnd: 276 });
   });
   it("narrows chat between the cards, a clearance from each", () => {
     expect(withCards(1300).chat).toEqual({ left: 324, width: 652, insetStart: 276, insetEnd: 276 });
