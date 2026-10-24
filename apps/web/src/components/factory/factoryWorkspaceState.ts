@@ -31,7 +31,13 @@ import {
   unwrapFactoryResult,
   useFactoryWorkspace,
 } from "./factoryState";
-import { factoryMemberThreadKeys } from "./factoryWorkspaceLogic";
+import {
+  factoryMemberThreadKeys,
+  factoryWorkspacePlace,
+  resolveFactoryDetailsCardLeft,
+  resolveFactoryWorkspaceView,
+  type FactoryWorkspacePlace,
+} from "./factoryWorkspaceLogic";
 
 /** Drafts whose composer currently names a new engineering manager instead of starting a thread. */
 const useManagerDrafts = create<{ readonly draftIds: ReadonlySet<string> }>(() => ({
@@ -121,6 +127,46 @@ const managerThreadAtom = Atom.family((threadKey: string) =>
     return false;
   }).pipe(Atom.withLabel(`web-factory-manager-thread:${threadKey}`)),
 );
+
+// Two booleans per thread, so the details card re-renders only when they change.
+const workspacePlaceAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.family((threadId: ThreadId) =>
+    Atom.make((get) => {
+      const view = resolveFactoryWorkspaceView(
+        get(workspaceFeedsAtom).get(environmentId),
+        threadId,
+      );
+      const next = view === null ? null : factoryWorkspacePlace(view, threadId);
+      const previous = Option.getOrNull(get.self<FactoryWorkspacePlace | null>());
+      return previous !== null &&
+        next !== null &&
+        previous.backToManager === next.backToManager &&
+        previous.teamColumn === next.teamColumn
+        ? previous
+        : next;
+    }).pipe(Atom.withLabel(`web-factory-workspace-place:${environmentId}:${threadId}`)),
+  ),
+);
+
+/** Where a thread sits in its manager's workspace; null when it is not a factory thread. */
+export function useFactoryWorkspacePlace(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): FactoryWorkspacePlace | null {
+  return useAtomValue(workspacePlaceAtom(environmentId)(threadId));
+}
+
+/** For the details card: its top-left placement on a factory thread; undefined on any other. */
+export function useFactoryDetailsCardLeftPlacement(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+) {
+  const place = useFactoryWorkspacePlace(environmentId, threadId);
+  return place === null
+    ? undefined
+    : (canvas: Parameters<typeof resolveFactoryDetailsCardLeft>[1]) =>
+        resolveFactoryDetailsCardLeft(place, canvas);
+}
 
 /** Whether the thread is a manager's current thread on a factory environment. */
 export function useIsFactoryManagerThread(threadKey: string | null): boolean {

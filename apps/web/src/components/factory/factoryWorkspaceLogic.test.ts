@@ -14,6 +14,9 @@ import type { TimelineEntry } from "~/session-logic";
 import {
   collapseFactoryPriming,
   factoryMemberThreadKeys,
+  factoryWorkspacePlace,
+  resolveFactoryDetailsCardLeft,
+  resolveFactoryDetailsCardSide,
   resolveFactoryWorkspaceView,
 } from "./factoryWorkspaceLogic";
 
@@ -130,6 +133,81 @@ describe("resolveFactoryWorkspaceView", () => {
       ThreadId.make("manager-1-thread"),
     );
     expect(view?.activeAssignmentId).toBeNull();
+  });
+
+  const ordered = workspace({
+    managers: [manager("manager-1", "active")],
+    members: [
+      member("manager-1-thread", { role: "manager", assignmentId: null }),
+      member("oldest-lead", { role: "lead", assignmentId: "oldest" }),
+    ],
+    // Oldest first, as the server sends them.
+    assignments: [
+      assignment("oldest"),
+      assignment("done", { state: "completed" }),
+      assignment("middle", { state: "retro" }),
+      assignment("newest"),
+    ],
+  });
+  const teamIds = (threadId: string) =>
+    resolveFactoryWorkspaceView(ordered, ThreadId.make(threadId))?.teams.map(
+      (team) => team.assignment.id,
+    );
+
+  it("lists live teams newest first on the manager's thread, a team in its retro included", () => {
+    expect(teamIds("manager-1-thread")).toEqual(["newest", "middle", "oldest"]);
+  });
+
+  it("puts the open thread's team first, then the newest", () => {
+    expect(teamIds("oldest-lead")).toEqual(["oldest", "newest", "middle"]);
+  });
+
+  it("leads back to the manager from team threads, with a team column while any team is live", () => {
+    const place = (feedInput: FactoryWorkspaceFeed, threadId: string) =>
+      factoryWorkspacePlace(
+        resolveFactoryWorkspaceView(feedInput, ThreadId.make(threadId))!,
+        ThreadId.make(threadId),
+      );
+    expect(place(ordered, "manager-1-thread")).toEqual({ backToManager: false, teamColumn: true });
+    expect(place(ordered, "oldest-lead")).toEqual({ backToManager: true, teamColumn: true });
+    expect(
+      place(
+        { ...ordered, assignments: [assignment("done", { state: "completed" })] },
+        "manager-1-thread",
+      ),
+    ).toEqual({ backToManager: false, teamColumn: false });
+  });
+});
+
+describe("resolveFactoryDetailsCardSide", () => {
+  const lane = { padding: 48, minChatWidth: 640 };
+  const side = (width: number, teamColumn: boolean) =>
+    resolveFactoryDetailsCardSide({ container: { width }, lane, teamColumn });
+
+  it("goes left only while a readable lane fits between the card and the team column", () => {
+    expect(side(1288, true)).toBe("left");
+    expect(side(1287, true)).toBe("right");
+  });
+
+  it("needs only the lane's padding on the right when there is no team column", () => {
+    expect(side(1012, false)).toBe("left");
+    expect(side(1011, false)).toBe("right");
+  });
+
+  it("leaves room for Back to manager above the card on team threads", () => {
+    const canvas = { container: { width: 1600 }, lane };
+    expect(
+      resolveFactoryDetailsCardLeft({ backToManager: true, teamColumn: true }, canvas),
+    ).toEqual({ topInset: 56 });
+    expect(
+      resolveFactoryDetailsCardLeft({ backToManager: false, teamColumn: true }, canvas),
+    ).toEqual({ topInset: 0 });
+    expect(
+      resolveFactoryDetailsCardLeft(
+        { backToManager: true, teamColumn: true },
+        { ...canvas, container: { width: 1200 } },
+      ),
+    ).toBeNull();
   });
 });
 

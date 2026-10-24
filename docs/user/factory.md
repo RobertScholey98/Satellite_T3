@@ -88,10 +88,12 @@ manager, pause the manager and its teams, resume, or retire it. The Issues page 
 status beside the sync time, and a ticket's detail says why the manager picked it up or skipped it.
 **Start** on a ticket always wins over the manager's decision.
 
-While you view the manager or any of its team threads, the right side shows **Team threads**,
-which lists each team's lead and members, with the same waiting marker the sidebar uses, and a
-**Manager** button to go back. Lead and team threads leave the sidebar while their manager runs;
-search and the command palette still find them.
+While you view the manager or any of its team threads, the right side shows a card for each team
+at work, the team you are in first, listing its lead and members with the same waiting marker
+the sidebar uses. The thread's details move to the top left, and on a team thread **Back to
+manager** sits above them; in a narrow window both stay at the top right, above the teams. Lead
+and team threads leave the sidebar while their manager runs; search and the command palette still
+find them.
 
 A lead's details panel shows **Lead for the manager** with the assignment's state. Its menu, and
 the ticket chip's menu, offer **Take over** (the manager stops steering that assignment while you

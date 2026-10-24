@@ -933,7 +933,7 @@ export type FactoryWorkspaceAssignment = typeof FactoryWorkspaceAssignment.Type;
 
 /**
  * What the workspace shows of the factory, sent whole: current managers, live members, and
- * assignments that are live or ended in the last 24 hours.
+ * assignments that are live or ended in the last 24 hours, oldest first.
  */
 export const FactoryWorkspaceFeed = Schema.Struct({
   managers: Schema.Array(FactoryWorkspaceManager),

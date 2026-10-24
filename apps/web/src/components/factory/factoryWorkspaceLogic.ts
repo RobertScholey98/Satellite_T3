@@ -13,6 +13,11 @@ import type {
 } from "@t3tools/contracts";
 import type { TimelineEntry } from "~/session-logic";
 import type { ChatMessage } from "~/types";
+import { DETAILS_CARD_CLEARANCE } from "../chat/chatCanvasLayout";
+import {
+  THREAD_DETAILS_CARD_GAP,
+  THREAD_DETAILS_CARD_WIDTH,
+} from "../chat/threadDetailsCardLayout";
 
 export const FACTORY_MANAGER_STATE_LABEL: Record<FactoryManagerState, string> = {
   onboarding: "Onboarding",
@@ -124,8 +129,9 @@ export interface FactoryWorkspaceTeam {
 
 export interface FactoryWorkspaceView {
   readonly manager: FactoryWorkspaceManager & { readonly threadId: ThreadId };
+  /** Live teams, the open thread's first and then the newest. */
   readonly teams: ReadonlyArray<FactoryWorkspaceTeam>;
-  /** The team whose thread is open, so the workspace opens on it; `null` on the manager's thread. */
+  /** The team whose thread is open; `null` on the manager's thread. */
   readonly activeAssignmentId: string | null;
 }
 
@@ -137,7 +143,9 @@ export function resolveFactoryWorkspaceView(
   const place = resolveFactoryThreadPlace(feed, threadId);
   if (!feed || !place || place.manager.threadId === null) return null;
   const manager = { ...place.manager, threadId: place.manager.threadId };
+  // The feed lists assignments oldest first, so the newest come from the end.
   const teams = feed.assignments
+    .toReversed()
     .filter((assignment) => assignment.managerId === manager.id && isLiveAssignment(assignment))
     .map((assignment) => {
       const members = feed.members.filter(
@@ -162,9 +170,62 @@ export function resolveFactoryWorkspaceView(
     });
   // A completed or cancelled assignment is not in `teams`, so its thread opens on no team.
   const open = place.kind === "manager" ? null : (place.assignment?.id ?? null);
-  const activeAssignmentId =
-    open !== null && teams.some((team) => team.assignment.id === open) ? open : null;
-  return { manager, teams, activeAssignmentId };
+  const active = open === null ? undefined : teams.find((team) => team.assignment.id === open);
+  return {
+    manager,
+    teams: active ? [active, ...teams.filter((team) => team !== active)] : teams,
+    activeAssignmentId: active?.assignment.id ?? null,
+  };
+}
+
+/** What a factory thread shows beside its chat, apart from the details card. */
+export interface FactoryWorkspacePlace {
+  /** Team threads lead back to their manager's thread. */
+  readonly backToManager: boolean;
+  /** The right-hand column of team cards, shown while any team is live. */
+  readonly teamColumn: boolean;
+}
+
+export const factoryWorkspacePlace = (
+  view: FactoryWorkspaceView,
+  threadId: ThreadId,
+): FactoryWorkspacePlace => ({
+  backToManager: threadId !== view.manager.threadId,
+  teamColumn: view.teams.length > 0,
+});
+
+/** Back to manager's height in the top-left gutter, above the details card. */
+export const FACTORY_BACK_CONTROL_HEIGHT = 44;
+
+/**
+ * Whether a factory thread's details card takes the top-left gutter: only while the card, the
+ * lane's clearance and a readable lane fit beside the team column. Otherwise it stays at the top
+ * right, as on every other thread. Decided from the canvas width and the lane's padding and
+ * minimum width, which the card does not change, so moving the card cannot flip the decision.
+ */
+export function resolveFactoryDetailsCardSide(input: {
+  readonly container: { readonly width: number };
+  readonly lane: { readonly padding: number; readonly minChatWidth: number };
+  readonly teamColumn: boolean;
+}): "left" | "right" {
+  const cardEdge = THREAD_DETAILS_CARD_GAP + THREAD_DETAILS_CARD_WIDTH;
+  const laneLeft = cardEdge + DETAILS_CARD_CLEARANCE;
+  const laneRight = input.teamColumn
+    ? input.container.width - cardEdge - DETAILS_CARD_CLEARANCE
+    : input.container.width - input.lane.padding;
+  return laneRight - laneLeft >= input.lane.minChatWidth ? "left" : "right";
+}
+
+/** The details card's left placement on a factory thread, or null to keep it at the top right. */
+export function resolveFactoryDetailsCardLeft(
+  place: FactoryWorkspacePlace,
+  canvas: Omit<Parameters<typeof resolveFactoryDetailsCardSide>[0], "teamColumn">,
+): { readonly topInset: number } | null {
+  if (resolveFactoryDetailsCardSide({ ...canvas, teamColumn: place.teamColumn }) === "right")
+    return null;
+  return {
+    topInset: place.backToManager ? FACTORY_BACK_CONTROL_HEIGHT + THREAD_DETAILS_CARD_GAP : 0,
+  };
 }
 
 /** The newest pickup or skip in a manager's log, which `log.list` returns newest first. */
