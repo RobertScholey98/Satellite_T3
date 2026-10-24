@@ -822,10 +822,9 @@ const settingsStateProblem = (manager: FactoryManager): string | null => {
   switch (manager.state) {
     case "ready":
     case "active":
-      return null;
     case "manager-paused":
     case "project-paused":
-      return `Resume ${manager.name} first.`;
+      return null;
     case "onboarding":
       return `${manager.name} is still onboarding; approve its onboarding first.`;
     case "retired":
@@ -2464,13 +2463,19 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
                 };
                 const changes = settingsChanges(stored, result, boards);
                 // Pickup turned on waits for the user's start, as after approval; turned off before
-                // it started, there is nothing left to start.
-                const state =
-                  manager.state === "active" && result.pickup.enabled && !stored.pickup.enabled
+                // it started, there is nothing left to start. A paused manager stays paused and
+                // resumes to what the new settings say.
+                const settled = (from: string) =>
+                  from === "active" && result.pickup.enabled && !stored.pickup.enabled
                     ? "ready"
-                    : manager.state === "ready" && !result.pickup.enabled
+                    : from === "ready" && !result.pickup.enabled
                       ? "active"
-                      : manager.state;
+                      : from;
+                if (isPaused(manager.state))
+                  yield* sql`UPDATE factory_managers SET paused_from=CASE paused_from
+                      WHEN 'active' THEN ${settled("active")} WHEN 'ready' THEN ${settled("ready")}
+                      ELSE paused_from END WHERE id=${manager.id}`;
+                const state = isPaused(manager.state) ? manager.state : settled(manager.state);
                 yield* sql`UPDATE factory_managers SET state=${state},
                 onboarding_result_json=${encodeResult(result)},
                 model_selection_json=${model === null ? null : encodeModel(model)},
@@ -2539,7 +2544,8 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
             yield* publish;
             if (changes.length > 0)
               yield* lock(writeLog(manager.id, null, "wake", "settings", { changes })).pipe(
-                Effect.andThen(deliverWakes(manager)),
+                // A paused manager's wakes wait in the log; the sweep delivers them once it resumes.
+                Effect.andThen(isPaused(manager.state) ? Effect.void : deliverWakes(manager)),
                 Effect.catch((cause) =>
                   Effect.logWarning("Could not tell a manager its settings changed", {
                     managerId: manager.id,

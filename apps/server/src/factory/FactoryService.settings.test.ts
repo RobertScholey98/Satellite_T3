@@ -382,18 +382,55 @@ describe("FactoryService manager settings", () => {
     ),
   );
 
-  it.effect("refuses a paused manager's settings until it resumes", () =>
+  it.effect("keeps a paused manager paused, and resumes it to what its new pickup says", () =>
     withDatabase(
       Effect.gen(function* () {
         const factory = yield* makeFactory;
-        const { manager } = yield* settledManager(factory);
+        factory.boards.push(board([{ number: 1, columnId: READY }]));
+        const off = withResult({ pickup: { ...RESULT.pickup, enabled: false } });
+        const manager = yield* activeManager(factory, off);
+        const pause = (requestId: string) =>
+          factory.service.pauseManager({ requestId, managerId: manager.id, scope: "manager" });
+        const resume = (requestId: string) =>
+          factory.service.resumeManager({ requestId, managerId: manager.id });
+
+        yield* pause("pause-1");
+        assert.strictEqual((yield* update(factory, manager.id, RESULT)).state, "manager-paused");
+        assert.strictEqual((yield* resume("resume-1")).state, "ready");
+
+        yield* pause("pause-2");
+        assert.strictEqual((yield* update(factory, manager.id, off)).state, "manager-paused");
+        assert.strictEqual((yield* resume("resume-2")).state, "active");
+      }),
+    ),
+  );
+
+  it.effect("holds a paused manager's settings wake until it resumes", () =>
+    withDatabase(
+      Effect.gen(function* () {
+        const factory = yield* makeFactory;
+        const { manager, sentBefore } = yield* settledManager(factory);
         yield* factory.service.pauseManager({
           requestId: "pause-1",
           managerId: manager.id,
           scope: "manager",
         });
-        const paused = yield* update(factory, manager.id, RESULT).pipe(Effect.flip);
-        assert.deepStrictEqual([paused.reason, paused.message], ["conflict", "Resume Ada first."]);
+        yield* update(factory, manager.id, withResult({ concurrencyCap: 3 }));
+        yield* factory.service.sweep;
+        assert.strictEqual(factory.sentMessages.length, sentBefore);
+
+        yield* factory.service.resumeManager({ requestId: "resume-1", managerId: manager.id });
+        yield* factory.service.sweep;
+        assert.deepStrictEqual(
+          factory.sentMessages.slice(sentBefore).map((message) => message.text),
+          [
+            [
+              "The user changed your settings:",
+              "- concurrency cap: 1 → 3",
+              "Use them from now on.",
+            ].join("\n"),
+          ],
+        );
       }),
     ),
   );
