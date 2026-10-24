@@ -223,15 +223,17 @@ export function FactoryWorkspacePanel(props: {
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
     });
-  // A card with nothing to show takes no space, not even a gap.
+  // A card with nothing to show takes no space, not even a gap: a component that renders nothing
+  // leaves its wrapper empty, and an empty wrapper is hidden.
   const renderEntries = (entries: ReadonlyArray<FactoryStackEntry>) =>
     entries.flatMap((entry) => {
-      const card = entry.render?.({ view, openThread: open });
+      const card = entry.render?.({ environmentId: props.environmentId, view, openThread: open });
       return card == null
         ? []
         : [
             <div
               key={entry.key}
+              className="empty:hidden"
               style={entry.height === undefined ? undefined : { height: entry.height }}
             >
               {card}

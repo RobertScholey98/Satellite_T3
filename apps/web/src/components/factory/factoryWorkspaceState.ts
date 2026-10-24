@@ -22,7 +22,7 @@ import {
   waitForThreadShell,
 } from "~/state/entities";
 import { environmentPresentations, environmentSummaries } from "~/state/presentation";
-import { threadEnvironment } from "~/state/threads";
+import { environmentThreadShells, threadEnvironment } from "~/state/threads";
 import { randomUUID } from "~/lib/utils";
 import { useEnvironment } from "~/state/environments";
 import {
@@ -32,15 +32,17 @@ import {
   useFactoryWorkspace,
 } from "./factoryState";
 import {
+  resolveFactoryMergeRows,
+  type FactoryLeadThreadLinks,
+  type FactoryMergeRow,
+} from "./factoryMergeLogic";
+import {
   factoryMemberThreadKeys,
   factoryWorkspacePlace,
-  factoryThreadKind,
-  resolveFactoryDetailsCardSide,
-  resolveFactoryThreadStack,
+  isLiveAssignment,
   resolveFactoryWorkspaceView,
   type FactoryWorkspacePlace,
 } from "./factoryWorkspaceLogic";
-import { FACTORY_THREAD_STACK } from "./FactoryThreadStack";
 
 /** Drafts whose composer currently names a new engineering manager instead of starting a thread. */
 const useManagerDrafts = create<{ readonly draftIds: ReadonlySet<string> }>(() => ({
@@ -151,26 +153,49 @@ const workspacePlaceAtom = Atom.family((environmentId: EnvironmentId) =>
   ),
 );
 
+// Reads each live lead's shell, held through streaming ticks, so the card re-renders only when a
+// row changes.
+const mergeRowsAtom = Atom.family((environmentId: EnvironmentId) =>
+  Atom.family((managerId: string) =>
+    Atom.make((get) => {
+      const assignments = get(workspaceFeedsAtom).get(environmentId)?.assignments ?? [];
+      const leadThreads = new Map<ThreadId, FactoryLeadThreadLinks>();
+      for (const assignment of assignments) {
+        const threadId = assignment.leadThreadId;
+        if (assignment.managerId !== managerId || threadId === null) continue;
+        if (!isLiveAssignment(assignment)) continue;
+        const shell = get(
+          environmentThreadShells.quietThreadShellAtom(scopeThreadRef(environmentId, threadId)),
+        );
+        if (shell)
+          leadThreads.set(threadId, {
+            projectId: shell.projectId,
+            pullRequests: shell.pullRequests,
+          });
+      }
+      const next = resolveFactoryMergeRows(assignments, managerId, leadThreads);
+      const previous = Option.getOrNull(get.self<ReadonlyArray<FactoryMergeRow>>());
+      return previous !== null && JSON.stringify(previous) === JSON.stringify(next)
+        ? previous
+        : next;
+    }).pipe(Atom.withLabel(`web-factory-merge-rows:${environmentId}:${managerId}`)),
+  ),
+);
+
+/** The open pull requests of a manager's teams, in the order the user should merge them. */
+export function useFactoryMergeRows(
+  environmentId: EnvironmentId,
+  managerId: string,
+): ReadonlyArray<FactoryMergeRow> {
+  return useAtomValue(mergeRowsAtom(environmentId)(managerId));
+}
+
 /** Where a thread sits in its manager's workspace; null when it is not a factory thread. */
 export function useFactoryWorkspacePlace(
   environmentId: EnvironmentId,
   threadId: ThreadId,
 ): FactoryWorkspacePlace | null {
   return useAtomValue(workspacePlaceAtom(environmentId)(threadId));
-}
-
-/** For the details card: its placement on a factory thread; undefined on any other. */
-export function useFactoryDetailsCardPlacement(environmentId: EnvironmentId, threadId: ThreadId) {
-  const place = useFactoryWorkspacePlace(environmentId, threadId);
-  if (place === null) return undefined;
-  const topInset = resolveFactoryThreadStack(
-    FACTORY_THREAD_STACK,
-    factoryThreadKind(place),
-  ).detailsTopInset;
-  return (canvas: Omit<Parameters<typeof resolveFactoryDetailsCardSide>[0], "teamColumn">) => ({
-    side: resolveFactoryDetailsCardSide({ ...canvas, teamColumn: place.teamColumn }),
-    topInset,
-  });
 }
 
 /** Whether the thread is a manager's current thread on a factory environment. */

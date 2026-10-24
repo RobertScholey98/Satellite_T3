@@ -23,7 +23,7 @@ import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 import { FactoryThreadRow } from "../factory/FactoryThreadRow";
-import { useFactoryDetailsCardPlacement } from "../factory/factoryWorkspaceState";
+import { useFactoryDetailsCardPlacement } from "../factory/factoryDetailsCardPlacement";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 

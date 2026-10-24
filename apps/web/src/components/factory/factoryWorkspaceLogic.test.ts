@@ -210,7 +210,7 @@ describe("resolveFactoryThreadStack", () => {
   it("puts Back to manager above a team thread's details, leaving the card room below it", () => {
     expect(keys("team")).toEqual({
       above: ["back-to-manager"],
-      below: ["pr-merge"],
+      below: [],
       detailsTopInset: 56,
     });
   });
