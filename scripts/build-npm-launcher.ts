@@ -41,7 +41,7 @@ export class NpmLauncherCommandFailedError extends Schema.TaggedError<NpmLaunche
   }
 }
 
-/** package.json for the launcher. `engines` asks for `import.meta.dirname` and `fetch`. */
+/** package.json for the launcher. `engines` asks for the Node lines patched by the 2026-10-21 security release. */
 export function npmLauncherPackageManifest(version: string) {
   return {
     name: NPM_LAUNCHER_PACKAGE_NAME,
@@ -52,7 +52,7 @@ export function npmLauncherPackageManifest(version: string) {
     repository: serverPackageJson.repository,
     bin: { t3: "./bin/t3.mjs" },
     files: ["bin", "dist"],
-    engines: { node: ">=20.11" },
+    engines: { node: "^22.23.4 || ^24.22.1 || >=26.12.1" },
   };
 }
 
