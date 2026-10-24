@@ -29,6 +29,7 @@ export function resolveChatCanvasLayout({
   minChatWidth = 640,
   composerHeight = 0,
   detailsCard = null,
+  leftCard = null,
   findBar = null,
 }: {
   container: PreviewMiniPlayerSize;
@@ -38,23 +39,31 @@ export function resolveChatCanvasLayout({
   minChatWidth?: number;
   composerHeight?: number;
   detailsCard?: PreviewMiniPlayerObstacles["detailsCard"];
+  /** A card in the top-left gutter, which bounds the lane on the left as `detailsCard` does on the right. */
+  leftCard?: PreviewMiniPlayerObstacles["detailsCard"];
   findBar?: PreviewMiniPlayerObstacles["detailsCard"];
 }) {
   const centeredWidth = Math.max(0, Math.min(maxChatWidth, container.width - padding * 2));
   const laneRight = detailsCard
     ? detailsCard.left - DETAILS_CARD_CLEARANCE
     : container.width - padding;
-  const normalWidth = Math.max(0, Math.min(centeredWidth, laneRight - padding));
+  const laneLeft = leftCard ? leftCard.right + DETAILS_CARD_CLEARANCE : padding;
+  // Without a left card the lane is centred by padding its end alone; with one, both edges move.
+  const lane = (left: number, width: number) => ({
+    left,
+    width,
+    insetStart: leftCard ? left - padding : 0,
+    insetEnd: Math.max(
+      0,
+      leftCard ? container.width - padding - left - width : container.width - left * 2 - width,
+    ),
+  });
+  const normalWidth = Math.max(0, Math.min(centeredWidth, laneRight - laneLeft));
   const normalLeft = Math.max(
-    padding,
+    laneLeft,
     Math.min((container.width - normalWidth) / 2, laneRight - normalWidth),
   );
-  let chat = {
-    left: normalLeft,
-    width: normalWidth,
-    insetStart: 0,
-    insetEnd: Math.max(0, container.width - normalLeft * 2 - normalWidth),
-  };
+  let chat = lane(normalLeft, normalWidth);
   let frame: PreviewMiniPlayerFrame | null = null;
   let overlapsChat = false;
   if (preview && container.width > 0 && container.height > 0) {
@@ -63,9 +72,9 @@ export function resolveChatCanvasLayout({
     // the container's right edge would pin the preview at every pointer position.
     const minimumPreviewX =
       preview.lastInteraction === "resize" ||
-      container.width <= padding + minChatWidth + frame.width + GAP * 2
+      container.width <= laneLeft + minChatWidth + frame.width + GAP * 2
         ? GAP
-        : padding + minChatWidth + GAP;
+        : laneLeft + minChatWidth + GAP;
     if (preview.position === null) frame = { ...frame, y: container.height - frame.height - GAP };
     if (preview.lastInteraction === "resize" && composerHeight > 0) {
       const laneWidth = Math.min(normalWidth, minChatWidth);
@@ -113,15 +122,9 @@ export function resolveChatCanvasLayout({
     const chatBeside = (player: PreviewMiniPlayerFrame) => {
       const normalRight = normalLeft + normalWidth;
       if (player.x >= normalRight + GAP) return chat;
-      const width = Math.min(maxChatWidth, player.x - GAP - padding);
+      const width = Math.min(maxChatWidth, player.x - GAP - laneLeft);
       if (width < minChatWidth) return null;
-      const left = Math.min(normalLeft, player.x - GAP - width);
-      return {
-        left,
-        width,
-        insetStart: 0,
-        insetEnd: Math.max(0, container.width - left * 2 - width),
-      };
+      return lane(Math.min(normalLeft, player.x - GAP - width), width);
     };
     let nextChat = chatBeside(frame);
     if (!nextChat && detailsCard) {
@@ -131,13 +134,7 @@ export function resolveChatCanvasLayout({
     if (nextChat) chat = nextChat;
     else overlapsChat = true;
     if (overlapsChat && preview.lastInteraction === "resize") {
-      const width = Math.min(normalWidth, minChatWidth);
-      chat = {
-        left: padding,
-        width,
-        insetStart: 0,
-        insetEnd: Math.max(0, container.width - padding * 2 - width),
-      };
+      chat = lane(laneLeft, Math.min(normalWidth, minChatWidth));
     } else if (overlapsChat) {
       const obstacles = {
         detailsCard: cardObstacle,

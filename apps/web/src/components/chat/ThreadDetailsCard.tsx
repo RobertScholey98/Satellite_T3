@@ -18,21 +18,38 @@ export function ThreadDetailsCard({
   anchor,
   handle,
   onPresentationChange,
+  resolveLeftPlacement,
   children,
 }: {
   threadRef: ScopedThreadRef;
   anchor: RefObject<Element | null>;
   handle: ReturnType<typeof PopoverCreateHandle>;
   onPresentationChange: (presentation: ThreadPanelPresentation) => void;
+  /**
+   * Returns a placement in the top-left gutter, `topInset` below the canvas top, to put the card
+   * there and report it as the lane's left obstacle; null keeps it at the top right. Given the
+   * canvas measurements only, so the choice never depends on the lane it changes.
+   */
+  resolveLeftPlacement?:
+    | ((
+        canvas: Pick<NonNullable<ReturnType<typeof useChatCanvas>>, "container" | "lane">,
+      ) => { readonly topInset: number } | null)
+    | undefined;
   children: (density: "full" | "compact" | "essential") => ReactNode;
 }) {
   const canvas = useChatCanvas();
+  const left = canvas && resolveLeftPlacement ? resolveLeftPlacement(canvas) : null;
+  const side = left ? "left" : "right";
+  const topInset = canvas?.detailsCardTopInset ?? 0;
+  // The find bar sits at the top right, so only a right-hand card moves down for it.
+  const cardTopInset = left ? left.topInset : topInset;
   const preferredPlacement = canvas
     ? resolveThreadDetailsCardLayout({
         container: canvas.container,
         lane: canvas.lane,
         frame: null,
-        topInset: canvas.detailsCardTopInset,
+        topInset: cardTopInset,
+        side,
       })
     : null;
   const placement = canvas
@@ -40,12 +57,12 @@ export function ThreadDetailsCard({
         container: canvas.container,
         lane: canvas.lane,
         frame: canvas.layout.frame,
-        overlapsDetailsCard: canvas.layout.overlapsDetailsCard,
-        topInset: canvas.detailsCardTopInset,
+        overlapsDetailsCard: !left && canvas.layout.overlapsDetailsCard,
+        topInset: cardTopInset,
+        side,
       })
     : null;
   const mode = placement ? "inline" : "popover";
-  const topInset = canvas?.detailsCardTopInset ?? 0;
   const inlineOpen = useRightPanelStore((state) =>
     selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "inline"),
   );
@@ -63,7 +80,7 @@ export function ThreadDetailsCard({
     measurements.key === measurementKey ? measurements.heights : { full: 0, compact: 0 };
   const height = placement?.height ?? Math.max(0, (canvas?.container.height ?? 0) - 52);
   const density = resolveThreadDetailsCardDensity(height, contentHeights);
-  const reportDetailsCard = canvas?.reportDetailsCard;
+  const reportDetailsCard = left ? canvas?.reportLeftCard : canvas?.reportDetailsCard;
   const cardLeft = preferredPlacement?.x;
   const cardRight = preferredPlacement
     ? preferredPlacement.x + preferredPlacement.width
