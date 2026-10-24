@@ -9,8 +9,8 @@ import { useChatCanvas } from "./ChatCanvasContext";
 import {
   THREAD_DETAILS_CARD_GAP,
   resolveThreadDetailsCardDensity,
-  resolveThreadDetailsCardLayout,
 } from "./threadDetailsCardLayout";
+import { resolveThreadDetailsCardPlacement } from "./threadDetailsCardPlacement";
 import { observeResize } from "../../lib/observeResize";
 
 export function ThreadDetailsCard({
@@ -38,32 +38,14 @@ export function ThreadDetailsCard({
   children: (density: "full" | "compact" | "essential") => ReactNode;
 }) {
   const canvas = useChatCanvas();
-  const resolved = canvas && resolvePlacement ? resolvePlacement(canvas) : null;
-  const side = resolved?.side ?? "right";
-  const left = side === "left";
-  const topInset = canvas?.detailsCardTopInset ?? 0;
-  // The find bar sits at the top right, so only a right-hand card moves down for it.
-  const cardTopInset = (left ? 0 : topInset) + (resolved?.topInset ?? 0);
-  const preferredPlacement = canvas
-    ? resolveThreadDetailsCardLayout({
-        container: canvas.container,
-        lane: canvas.lane,
-        frame: null,
-        topInset: cardTopInset,
-        side,
-      })
+  const resolved = canvas
+    ? resolveThreadDetailsCardPlacement(canvas, resolvePlacement?.(canvas) ?? null)
     : null;
-  const placement = canvas
-    ? resolveThreadDetailsCardLayout({
-        container: canvas.container,
-        lane: canvas.lane,
-        frame: canvas.layout.frame,
-        overlapsDetailsCard: !left && canvas.layout.overlapsDetailsCard,
-        topInset: cardTopInset,
-        side,
-      })
-    : null;
+  const left = resolved?.side === "left";
+  const preferredPlacement = resolved?.preferred ?? null;
+  const placement = resolved?.inline ?? null;
   const mode = placement ? "inline" : "popover";
+  const topInset = canvas?.detailsCardTopInset ?? 0;
   const inlineOpen = useRightPanelStore((state) =>
     selectThreadPanelOpen(state.threadPanelVisibilityByThreadKey, threadRef, "inline"),
   );

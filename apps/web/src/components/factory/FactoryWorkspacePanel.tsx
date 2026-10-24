@@ -14,6 +14,7 @@ import {
   THREAD_DETAILS_CARD_GAP,
   THREAD_DETAILS_CARD_WIDTH,
 } from "../chat/threadDetailsCardLayout";
+import { resolveThreadDetailsCardPlacement } from "../chat/threadDetailsCardPlacement";
 import { ThreadDetailsControl } from "../chat/ThreadDetailsControl";
 import { resolveThreadStatusPill } from "../Sidebar.logic";
 import { ThreadStatusLabel } from "../ThreadStatusIndicators";
@@ -23,11 +24,11 @@ import {
   FACTORY_THREAD_STACK,
   type FactoryStackEntry,
 } from "./FactoryThreadStack";
+import { resolveFactoryDetailsCardPlacement } from "./factoryDetailsCardPlacement";
 import { useFactoryWorkspaceFeed, useFactoryWorkspacePlace } from "./factoryWorkspaceState";
 import {
   factoryMemberLabel,
   factoryThreadKind,
-  resolveFactoryDetailsCardSide,
   resolveFactoryThreadStack,
   resolveFactoryWorkspaceView,
   type FactoryWorkspaceTeam,
@@ -113,10 +114,12 @@ export function FactoryWorkspacePanel(props: {
   const [above, setAbove] = useState<HTMLElement | null>(null);
   const [below, setBelow] = useState<HTMLElement | null>(null);
   const topInset = canvas?.detailsCardTopInset ?? 0;
-  const side =
+  // The details card's own placement, so the panel lays out around the card exactly where it is.
+  const details =
     canvas && place
-      ? resolveFactoryDetailsCardSide({ ...canvas, teamColumn: place.teamColumn })
-      : "right";
+      ? resolveThreadDetailsCardPlacement(canvas, resolveFactoryDetailsCardPlacement(place, canvas))
+      : null;
+  const side = details?.side ?? "right";
   const placement =
     canvas && view
       ? resolveThreadDetailsCardLayout({
@@ -147,19 +150,9 @@ export function FactoryWorkspacePanel(props: {
     placement === null &&
     stack.above.length > 0;
 
-  // Whether the details card is inline rather than a popover, by the card's own rule. Growing a
-  // short window turns it inline without any other input here changing, so the measurement below
-  // has to re-run on this.
-  const detailsInline =
-    canvas !== null &&
-    resolveThreadDetailsCardLayout({
-      container: canvas.container,
-      lane: canvas.lane,
-      frame: canvas.layout.frame,
-      overlapsDetailsCard: side === "right" && canvas.layout.overlapsDetailsCard,
-      topInset: (side === "left" ? 0 : topInset) + stack.detailsTopInset,
-      side,
-    }) !== null;
+  // Growing a short window turns the details card inline without any other input here changing,
+  // so the measurement below has to re-run on this.
+  const detailsInline = details?.inline != null;
   // The chat view renders the details card, so the cards below it follow its measured height.
   const measuringDetails = column !== null && detailsOpen && detailsInline;
   useLayoutEffect(() => {
