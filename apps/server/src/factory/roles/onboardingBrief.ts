@@ -17,7 +17,8 @@ Then call factory_propose_onboarding with:
 - The control paths no team may edit, as glob patterns relative to the repository root, each
   with the reason it is protected. Start from the CI workflows, the lint, format, type and test
   configuration, the lockfiles, AGENTS.md and CLAUDE.md, and add anything else that decides how
-  work is checked. Satellite always protects .satellite/factory/.
+  work is checked. Only the paths you list are protected; a team the user marks as allowed to
+  edit protected paths is exempt.
 - Each open choice the user should make as a question with 2 to 4 options, the option you
   recommend, and why. Ask only what every lead should follow, such as which tickets count as
   small.

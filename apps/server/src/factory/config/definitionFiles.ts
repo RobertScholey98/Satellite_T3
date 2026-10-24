@@ -306,13 +306,14 @@ export const decodeTeamFiles = (
     const member = decodeMember({ path, id: file.id, text: file.text });
     if (Result.isFailure(member)) {
       problems.push(member.failure);
-    } else if (names.has(member.success.name)) {
+    } else if (names.has(member.success.name.toLowerCase())) {
       problems.push({
         path,
         message: `Another member of this team is named "${member.success.name}"; a lead delegates by name.`,
       });
     } else {
-      names.add(member.success.name);
+      // Delegation matches names regardless of case, so uniqueness ignores it too.
+      names.add(member.success.name.toLowerCase());
       members.push(member.success);
     }
   }

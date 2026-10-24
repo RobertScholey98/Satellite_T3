@@ -3,6 +3,10 @@ import {
   type FactoryLogEntry,
   type FactoryManager,
   type FactoryProposedChange,
+  FactoryLeadDefinition,
+  type FactoryModelList,
+  type FactoryTeamDefinition,
+  FactoryWorkerDefinition,
   type FactoryTeamPreset,
   type FactoryTicketDraft,
   IssueRef,
@@ -164,6 +168,70 @@ const presetText = (preset: FactoryTeamPreset) =>
     .filter((line) => line !== null)
     .join("\n");
 
+/** A model list as the lead's team section words it. */
+const modelsText = (list: FactoryModelList) => {
+  const named = list.models.map((model) => `${model.driver}/${model.model}`).join(", ");
+  if (list.dynamic)
+    return named === "" ? "any pool model, picked per task" : `${named} (picked per task)`;
+  return named === "" ? "any pool model" : `${named} (in this order)`;
+};
+
+const block = (heading: string, text: string) => `${heading}:\n${text.trim() || "(none)"}`;
+
+/**
+ * Everything a team file holds, so approving a change shows every field it touches: the lead
+ * copy and each member, with their models and text.
+ */
+const teamText = (team: FactoryTeamDefinition) =>
+  [
+    [
+      `Team: ${team.name}`,
+      `Use when: ${team.useWhen || "(none)"}`,
+      `May edit protected paths: ${team.mayEditProtectedPaths ? "yes" : "no"}`,
+      block("Workflow", team.workflow),
+    ].join("\n"),
+    [
+      `Lead: ${team.lead.name}`,
+      `Models: ${modelsText(team.lead.models)}`,
+      block("Instructions", team.lead.instructions),
+    ].join("\n"),
+    ...team.members.map((member) =>
+      [
+        `Member: ${member.name} × ${member.count}`,
+        `Models: ${modelsText(member.models)}`,
+        block("Description", member.description),
+      ].join("\n"),
+    ),
+  ].join("\n\n");
+
+const DEFINITION_LABELS = { worker: "Worker", lead: "Lead", manager: "Manager" } as const;
+
+const decodeWorker = Schema.decodeUnknownOption(FactoryWorkerDefinition);
+const decodeProtocol = Schema.decodeUnknownOption(FactoryLeadDefinition);
+
+/** A worker, lead or manager definition's name, models and text; anything else as JSON. */
+const definitionText = (target: "worker" | "lead" | "manager", value: unknown) => {
+  if (target === "worker") {
+    const worker = decodeWorker(value);
+    return Option.isSome(worker)
+      ? [
+          `${DEFINITION_LABELS[target]}: ${worker.value.name}`,
+          `Models: ${modelsText(worker.value.models)}`,
+          block("Description", worker.value.description),
+        ].join("\n")
+      : valueText(value);
+  }
+  // A manager definition has the lead's shape: name, models and instructions.
+  const protocol = decodeProtocol(value);
+  return Option.isSome(protocol)
+    ? [
+        `${DEFINITION_LABELS[target]}: ${protocol.value.name}`,
+        `Models: ${modelsText(protocol.value.models)}`,
+        block("Instructions", protocol.value.instructions),
+      ].join("\n")
+    : valueText(value);
+};
+
 const valueText = (value: unknown) =>
   typeof value === "string" ? value || "(empty)" : JSON.stringify(value);
 
@@ -182,11 +250,29 @@ export function proposedChangeView(change: FactoryProposedChange): {
         after: valueText(change.after),
         applicable: true,
       };
+    // Presets are retired: teams live in the factory config, so this can no longer apply.
     case "preset":
       return {
         label: change.before === null ? "New team preset" : `Team preset ${change.before.name}`,
         before: change.before === null ? "(none)" : presetText(change.before),
         after: presetText(change.after),
+        applicable: false,
+      };
+    case "team":
+      return {
+        label: change.before === null ? "New team" : `Team ${change.before.name}`,
+        before: change.before === null ? "(none)" : teamText(change.before),
+        after: teamText(change.after),
+        applicable: true,
+      };
+    case "definition":
+      return {
+        label:
+          change.before === null
+            ? `New ${DEFINITION_LABELS[change.target].toLowerCase()}`
+            : DEFINITION_LABELS[change.target],
+        before: change.before === null ? "(none)" : definitionText(change.target, change.before),
+        after: definitionText(change.target, change.after),
         applicable: true,
       };
     case "role-skill":

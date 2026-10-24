@@ -62,6 +62,7 @@ const ROLE_COLORS: Record<FactoryRole, string> = {
   implementer: ink(72),
   reviewer: ink(48),
   verifier: ink(30),
+  worker: ink(72),
 };
 
 const totalTokens = (tokens: FactoryAssignmentStats["tokens"]) => tokens.input + tokens.output;

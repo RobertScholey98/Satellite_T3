@@ -3,7 +3,7 @@ import {
   FactoryClaimCompleteInput,
   FactoryCommissionInput,
   FactoryCompleteInput,
-  FactoryCreateTeamInput,
+  FactoryCreateTeamFromDefinitionsInput,
   FactoryDefinitionsView,
   FactoryDelegateInput,
   FactoryDependency,
@@ -22,9 +22,8 @@ import {
   FactoryRole,
   FactoryRoleBrief,
   FactoryStatus,
-  FactoryTeamPreset,
+  FactoryTeamDefinition,
   FactoryUpdateChecklistInput,
-  FactoryWorkerRole,
   McpCapabilityUnavailableError,
   ModelSelection,
   NodeId,
@@ -278,7 +277,7 @@ const CompleteTool = Tool.make("factory_complete", {
 export const DelegateResult = Schema.Struct({
   taskId: NodeId,
   childThreadId: ThreadId,
-  role: FactoryWorkerRole,
+  role: FactoryRole,
   model: ModelSelection,
   message: Schema.String,
 });
@@ -328,15 +327,15 @@ const UpdateChecklistTool = Tool.make("factory_update_checklist", {
   .annotate(Tool.OpenWorld, false);
 
 export const CreateTeamResult = Schema.Struct({
-  preset: FactoryTeamPreset,
+  team: FactoryTeamDefinition,
   message: Schema.String,
 });
 export type CreateTeamResult = typeof CreateTeamResult.Type;
 
 const CreateTeamTool = Tool.make("factory_create_team", {
   description:
-    "For an engineering manager. Add a team preset, only after the user agreed to it in this thread. Every model a member names must be in the model pool, and the name must not match an existing preset. It cannot edit or remove presets; the user does that in Satellite.",
-  parameters: FactoryCreateTeamInput,
+    "For an engineering manager. Add a team to the factory config, only after the user agreed to it in this thread. The team is built from copies of existing definitions: the lead by leadId (absent means the first lead) and each member from a worker by workerId, with its count and an optional member name, which defaults to the worker's name. Read the ids with factory_definitions. Every model the copies list must be in the model pool, and the name must not match an existing team. It returns the new team's id, which you pass as teamId. When your onboarding result names the teams you may use, a new team is not among them until the user adds its id; the result message says so. It cannot edit or remove teams; the user does that in Satellite.",
+  parameters: FactoryCreateTeamFromDefinitionsInput,
   success: CreateTeamResult,
   failure: FactoryToolFailure,
   dependencies: [
@@ -345,7 +344,7 @@ const CreateTeamTool = Tool.make("factory_create_team", {
     FactoryService,
   ],
 })
-  .annotate(Tool.Title, "Add a factory team preset")
+  .annotate(Tool.Title, "Add a factory team")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
@@ -440,6 +439,7 @@ const DraftTicketTool = Tool.make("factory_draft_ticket", {
 export const FactoryToolkit = Toolkit.make(
   ProposeOnboardingTool,
   RoleBriefTool,
+  DefinitionsTool,
   StatusTool,
   PickupTool,
   CommissionTool,
@@ -454,13 +454,4 @@ export const FactoryToolkit = Toolkit.make(
   FindingsTool,
   RetroDoneTool,
   DraftTicketTool,
-);
-
-/**
- * With `factory_definitions`, which joins the served toolkit when the factory staffs teams from the
- * definition files. Until then an agent could read teams the factory does not use.
- */
-export const FactoryToolkitWithDefinitions = Toolkit.merge(
-  FactoryToolkit,
-  Toolkit.make(DefinitionsTool),
 );

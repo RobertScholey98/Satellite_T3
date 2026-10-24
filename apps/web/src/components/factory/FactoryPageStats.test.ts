@@ -91,6 +91,7 @@ describe("factory stats formatting", () => {
       Implementer: 11,
       Reviewer: 0,
       Verifier: 0,
+      Worker: 0,
     });
   });
 

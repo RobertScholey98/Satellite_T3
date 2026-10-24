@@ -109,8 +109,9 @@ Environments that saved a factory config before this format get files written on
 when `factory.yaml` is missing. Role allow-lists become dynamic starter workers, lead models by
 size become a dynamic default lead, and each preset becomes a team of copies. Environment role-skill
 files at `<T3 home>/factory/roles/<role>.md`, the old override location, become the instructions of
-the matching starter worker, default lead or default manager. The migration leaves `roles/` in
-place because live briefs still read it; the folder is removed when briefs switch to definitions.
+the matching starter worker, default lead or default manager. Briefs read definitions, not
+`roles/`, so once `factory.yaml` exists startup moves `roles/` into the next backup folder rather
+than deleting it: a config pulled from elsewhere may hold role text that was never migrated.
 The concurrency cap seeds the environment cap only. Manager caps and pickup
 guidance move with the onboarding result's own migration. The database row is kept as the rollback
 copy, and project overrides with no new home are shown to the user rather than dropped.

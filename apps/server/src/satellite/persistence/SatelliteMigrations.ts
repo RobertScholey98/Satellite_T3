@@ -3,6 +3,7 @@ import * as Migrator from "effect/sql/Migrator";
 import type * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
+import { FactoryDefinitionsV1 } from "../../factory/migrations/FactoryDefinitionsV1.ts";
 import { FactoryOnboardingResultV1 } from "../../factory/migrations/FactoryOnboardingResultV1.ts";
 import { FactoryV1 } from "../../factory/migrations/FactoryV1.ts";
 import { IssueBoardsV2 } from "../../issues/migrations/IssueBoardsV2.ts";
@@ -30,6 +31,7 @@ export const satelliteMigrationEntries: ReadonlyArray<SatelliteMigration> = [
   [101, "IssueBoardsV2", IssueBoardsV2],
   [102, "FactoryV1", FactoryV1],
   [103, "FactoryOnboardingResultV1", FactoryOnboardingResultV1],
+  [104, "FactoryDefinitionsV1", FactoryDefinitionsV1],
 ];
 
 const run = Migrator.make({});

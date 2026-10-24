@@ -5,7 +5,8 @@ import {
   type FactoryClaimCompleteInput,
   type FactoryCommissionInput,
   type FactoryCompleteInput,
-  type FactoryCreateTeamInput,
+  type FactoryCreateTeamFromDefinitionsInput,
+  type FactoryTeamDefinition,
   type FactoryDelegateInput,
   type FactoryDefinitionsView,
   type FactoryDelegationPlan,
@@ -46,7 +47,7 @@ import * as OrchestratorMcpService from "../../mcp/OrchestratorMcpService.ts";
 import { FactoryConfigStore } from "../config/FactoryConfigStore.ts";
 import { FactoryService } from "../FactoryService.ts";
 import * as FactoryMcp from "./handlers.ts";
-import { FactoryToolkitWithDefinitions as FactoryToolkit } from "./tools.ts";
+import { FactoryToolkit } from "./tools.ts";
 
 const MANAGER_THREAD = ThreadId.make("thread-manager");
 const OTHER_THREAD = ThreadId.make("thread-other");
@@ -259,11 +260,53 @@ const checklistInput: FactoryUpdateChecklistInput = {
   ],
 };
 
-const teamInput: FactoryCreateTeamInput = {
+const teamInput: FactoryCreateTeamFromDefinitionsInput = {
   name: "Pair",
   useWhen: "Small fixes that need a second pair of eyes.",
-  members: [{ role: "implementer", count: 1 }],
+  members: [{ workerId: "implementer", count: 1 }],
   workflow: "Implement, then review.",
+};
+
+/** A manager whose onboarding result names the teams it may staff. */
+const LIMITED_MANAGER_THREAD = ThreadId.make("thread-limited-manager");
+const limitedManager: FactoryManager = {
+  ...manager,
+  id: "manager-2",
+  threadId: LIMITED_MANAGER_THREAD,
+  state: "active",
+  onboardingResult: {
+    purpose: "",
+    pickup: { enabled: false, columns: [], labels: [], guidance: "" },
+    baseBranch: null,
+    rules: [],
+    controlPaths: [],
+    teamIds: ["standard"],
+    concurrencyCap: 2,
+  },
+};
+
+const createdTeam: FactoryTeamDefinition = {
+  id: "pair",
+  name: "Pair",
+  useWhen: teamInput.useWhen,
+  workflow: teamInput.workflow,
+  mayEditProtectedPaths: false,
+  createdBy: "manager",
+  lead: {
+    id: "default",
+    name: "Default lead",
+    models: { dynamic: true, models: [] },
+    instructions: "",
+  },
+  members: [
+    {
+      id: "implementer",
+      name: "Implementer",
+      models: { dynamic: true, models: [] },
+      description: "Implement it.",
+      count: 1,
+    },
+  ],
 };
 
 const findingInput: FactoryRecordFindingInput = {
@@ -366,6 +409,7 @@ const makeHarness = Effect.gen(function* () {
     ReadonlyArray<{ projectId: ProjectId; role: FactoryRole; managerId: string }>
   >([]);
   const statusRequests = yield* Ref.make<ReadonlyArray<string>>([]);
+  const statusValue = yield* Ref.make<FactoryStatus>(status);
   const pickups = yield* Ref.make<ReadonlyArray<{ threadId: ThreadId; input: FactoryPickupInput }>>(
     [],
   );
@@ -374,12 +418,21 @@ const makeHarness = Effect.gen(function* () {
   >([]);
   const pickupConflict = yield* Ref.make(false);
   const delegationConflict = yield* Ref.make(false);
+  /** What planning a delegation returns; a role plan unless a test plans a team member. */
+  const delegationPlan = yield* Ref.make<FactoryDelegationPlan>(plan);
   const lifecycle = yield* Ref.make<ReadonlyArray<LifecycleCall>>([]);
   const recordLifecycle = (call: LifecycleCall) =>
     Ref.update(lifecycle, (recorded) => [...recorded, call]);
   const dependencies = Layer.mergeAll(
     Layer.mock(FactoryService)({
-      managerForThread: (threadId) => Effect.succeed(threadId === MANAGER_THREAD ? manager : null),
+      managerForThread: (threadId) =>
+        Effect.succeed(
+          threadId === MANAGER_THREAD
+            ? manager
+            : threadId === LIMITED_MANAGER_THREAD
+              ? limitedManager
+              : null,
+        ),
       finishedOnboardingMessage: (threadId) =>
         Effect.succeed(threadId === ONBOARDED_THREAD ? ONBOARDING_FINISHED : null),
       proposeOnboarding: (_threadId, proposed) =>
@@ -391,10 +444,12 @@ const makeHarness = Effect.gen(function* () {
         ),
       roleBrief: (projectId, role, managerId) =>
         Ref.update(briefRequests, (recorded) => [...recorded, { projectId, role, managerId }]).pipe(
-          Effect.as({ role, text: `# ${role} brief`, source: "project" as const }),
+          Effect.as({ role, text: `# ${role} brief`, source: "definition" as const }),
         ),
       status: (managerId) =>
-        Ref.update(statusRequests, (recorded) => [...recorded, managerId]).pipe(Effect.as(status)),
+        Ref.update(statusRequests, (recorded) => [...recorded, managerId]).pipe(
+          Effect.andThen(Ref.get(statusValue)),
+        ),
       pickup: (threadId, input) =>
         Effect.gen(function* () {
           if (yield* Ref.get(pickupConflict))
@@ -441,7 +496,7 @@ const makeHarness = Effect.gen(function* () {
               message: "The team allows 1 reviewer and all are busy.",
             });
           yield* recordLifecycle({ method: "planDelegation", threadId, input });
-          return plan;
+          return yield* Ref.get(delegationPlan);
         }),
       recordMember: (threadId, input) =>
         recordLifecycle({ method: "recordMember", threadId, input }).pipe(
@@ -462,9 +517,7 @@ const makeHarness = Effect.gen(function* () {
           Effect.as({ ...assignment, checklist: input.steps }),
         ),
       createTeam: (threadId, input) =>
-        recordLifecycle({ method: "createTeam", threadId, input }).pipe(
-          Effect.as({ ...input, id: "preset-1", createdBy: "manager" as const }),
-        ),
+        recordLifecycle({ method: "createTeam", threadId, input }).pipe(Effect.as(createdTeam)),
       recordFinding: (threadId, input) =>
         recordLifecycle({ method: "recordFinding", threadId, input }).pipe(
           Effect.as({ ...finding, threadId }),
@@ -495,9 +548,7 @@ const makeHarness = Effect.gen(function* () {
   );
   const toolkit = yield* FactoryToolkit.pipe(
     Effect.provide(
-      McpToolAccess.HandlersLayer.layer(FactoryMcp.layerWithDefinitions).pipe(
-        Layer.provide(dependencies),
-      ),
+      McpToolAccess.HandlersLayer.layer(FactoryMcp.layer).pipe(Layer.provide(dependencies)),
     ),
   );
   const call = <Name extends keyof typeof FactoryToolkit.tools>(
@@ -522,10 +573,12 @@ const makeHarness = Effect.gen(function* () {
     proposals,
     briefRequests,
     statusRequests,
+    statusValue,
     pickups,
     commissions,
     pickupConflict,
     delegationConflict,
+    delegationPlan,
     lifecycle,
     call,
   };
@@ -586,8 +639,8 @@ describe("factory_role_brief", () => {
       assert.deepStrictEqual(result, {
         role: "reviewer",
         text: "# reviewer brief",
-        source: "project",
-        message: "The reviewer brief, from this project's role file.",
+        source: "definition",
+        message: "The reviewer brief, from the factory config's definition.",
       });
     }),
   );
@@ -677,6 +730,18 @@ describe("factory_status", () => {
         ...status,
         message: "1 of 3 slots in use, so capacity is free; 2 Ready tickets await judgement.",
       });
+    }),
+  );
+
+  it.effect("says when the environment's cap, not the manager's, is the one that is full", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.statusValue, { ...status, capacityFree: false });
+      const result = yield* harness.call("factory_status", {});
+      assert.strictEqual(
+        result.message,
+        "1 of 3 slots in use, so no capacity is free: this environment's cap, shared by every project, is full; 2 Ready tickets await judgement.",
+      );
     }),
   );
 });
@@ -905,6 +970,39 @@ describe("factory_delegate", () => {
     }),
   );
 
+  it.effect("records a team member under the name its plan gives", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      yield* Ref.set(harness.delegationPlan, {
+        ...plan,
+        role: "worker",
+        member: "Second opinion",
+        title: "Second opinion: Fix the flaky login test",
+      });
+      const input: FactoryDelegateInput = {
+        member: "second opinion",
+        task: "Review the fix for the flaky login test.",
+      };
+      yield* harness.call("factory_delegate", input, LEAD_THREAD);
+      const calls = yield* Ref.get(harness.lifecycle);
+      assert.deepStrictEqual(
+        calls.map((call) => call.method),
+        ["planDelegation", "delegateTask", "recordMember"],
+      );
+      assert.deepStrictEqual(calls[2], {
+        method: "recordMember",
+        threadId: LEAD_THREAD,
+        input: {
+          threadId: CHILD_THREAD,
+          role: "worker",
+          memberName: "Second opinion",
+          modelSelection: reviewerModel,
+          joined: "created",
+        },
+      });
+    }),
+  );
+
   it.effect("surfaces a plan refusal without delegating", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
@@ -950,14 +1048,29 @@ describe("factory_update_checklist", () => {
 });
 
 describe("factory_create_team", () => {
-  it.effect("forwards the manager thread and preset and returns the stored preset", () =>
+  it.effect("forwards the manager thread and the team, and returns the team with its id", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness;
       const result = yield* harness.call("factory_create_team", teamInput);
       assert.deepStrictEqual(yield* Ref.get(harness.lifecycle), [
         { method: "createTeam", threadId: MANAGER_THREAD, input: teamInput },
       ]);
-      assert.deepStrictEqual(result.preset, { ...teamInput, id: "preset-1", createdBy: "manager" });
+      assert.deepStrictEqual(result, {
+        team: createdTeam,
+        message:
+          'Added the team "Pair" with the id pair. Pass it as teamId when you pick up or commission work.',
+      });
+    }),
+  );
+
+  it.effect("warns a manager limited to other teams that it cannot staff the new one yet", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness;
+      const result = yield* harness.call("factory_create_team", teamInput, LIMITED_MANAGER_THREAD);
+      assert.strictEqual(
+        result.message,
+        'Added the team "Pair" with the id pair, but you cannot staff it yet: your onboarding result limits you to other teams. Ask the user to add pair to your teams in Satellite.',
+      );
     }),
   );
 });

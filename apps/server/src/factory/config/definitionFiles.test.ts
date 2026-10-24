@@ -249,6 +249,19 @@ describe("definition files", () => {
     });
   });
 
+  it("treats member names that differ only in case as the same name", () => {
+    const files = encodeTeamFiles({
+      ...TEAM,
+      members: [...TEAM.members, { ...TEAM.members[1]!, id: "second-reviewer", name: "REVIEWER" }],
+    });
+    assert.deepStrictEqual(decodeTeam(files).problems, [
+      {
+        path: "teams/web-ui/members/second-reviewer.md",
+        message: 'Another member of this team is named "REVIEWER"; a lead delegates by name.',
+      },
+    ]);
+  });
+
   it("skips a team with no valid members or a bad lead copy", () => {
     const [team, lead] = encodeTeamFiles(TEAM);
     assert.deepStrictEqual(decodeTeam([team!, lead!]), {

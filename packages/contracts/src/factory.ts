@@ -20,10 +20,13 @@ import {
   FactoryConfigRepoPushInput,
   FactoryConfigRepoResolveInput,
   FactoryConfigRepoStatus,
+  FactoryDefinitionId,
   FactoryDefinitionsView,
   FactoryExportSelection,
   FactoryImportDecision,
   FactoryImportPreview,
+  FactoryManagerDefinition,
+  FactoryTeamDefinition,
 } from "./factoryDefinitions.ts";
 import { IssueBoardColumn, IssueRef, IssueSummary } from "./issues.ts";
 import { ModelSelection } from "./modelSelection.ts";
@@ -78,20 +81,28 @@ export const FACTORY_WS_METHODS = {
 
 const Id = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
 
+/**
+ * `worker` is a team member copied from a user-defined worker. The three named worker roles stay
+ * for assignments staffed before teams were built from definitions.
+ */
 export const FactoryRole = Schema.Literals([
   "manager",
   "lead",
   "implementer",
   "reviewer",
   "verifier",
+  "worker",
 ]);
 export type FactoryRole = typeof FactoryRole.Type;
 
-/** A role's skill text and where it came from: the project, the environment, or the built-in. */
+/**
+ * A role's skill text and where it came from. `definition` is a factory config definition on top
+ * of the built-in protocol; `project` and `environment` name retired override files.
+ */
 export const FactoryRoleBrief = Schema.Struct({
   role: FactoryRole,
   text: Schema.String,
-  source: Schema.Literals(["project", "environment", "default"]),
+  source: Schema.Literals(["project", "environment", "default", "definition"]),
 });
 export type FactoryRoleBrief = typeof FactoryRoleBrief.Type;
 
@@ -130,6 +141,26 @@ export type FactoryTeamPreset = typeof FactoryTeamPreset.Type;
 /** A preset the manager saves to the environment config; the factory assigns its id. */
 export const FactoryCreateTeamInput = Schema.Struct(PresetFields);
 export type FactoryCreateTeamInput = typeof FactoryCreateTeamInput.Type;
+
+/**
+ * A team the manager saves to the factory config, built from copies of existing definitions: the
+ * named lead (absent means the first lead) and each worker under an optional member name.
+ */
+export const FactoryCreateTeamFromDefinitionsInput = Schema.Struct({
+  name: PresetFields.name,
+  useWhen: PresetFields.useWhen,
+  workflow: PresetFields.workflow,
+  leadId: Schema.optionalKey(FactoryDefinitionId),
+  members: Schema.Array(
+    Schema.Struct({
+      workerId: FactoryDefinitionId,
+      count: PositiveInt.check(Schema.isLessThanOrEqualTo(8)),
+      name: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(12)),
+});
+export type FactoryCreateTeamFromDefinitionsInput =
+  typeof FactoryCreateTeamFromDefinitionsInput.Type;
 
 const OptionalModel = Schema.NullOr(ModelSelection).pipe(
   Schema.withDecodingDefault(Effect.succeed(null)),
@@ -385,6 +416,8 @@ export const FactoryManager = Schema.Struct({
   onboardingResult: Schema.NullOr(FactoryOnboardingResult),
   /** The model the manager's thread launched with. */
   modelSelection: Schema.NullOr(ModelSelection),
+  /** The manager's own copy of the definition it was created from; absent before definitions. */
+  definition: Schema.optionalKey(Schema.NullOr(FactoryManagerDefinition)),
   /** Assignments that are not completed or cancelled. */
   activeAssignments: NonNegativeInt,
   /** Assignments waiting on the user. */
@@ -442,6 +475,8 @@ export const FactoryManagersCreateInput = Schema.Struct({
   modelSelection: Schema.optionalKey(ModelSelection),
   /** Absent means `full-access`, because the factory runs unattended. */
   runtimeMode: Schema.optionalKey(RuntimeMode),
+  /** The manager definition the manager copies; absent means the first one. */
+  definitionId: Schema.optionalKey(FactoryDefinitionId),
 });
 export type FactoryManagersCreateInput = typeof FactoryManagersCreateInput.Type;
 
@@ -501,10 +536,30 @@ export const FactoryAssignmentState = Schema.Literals([
 ]);
 export type FactoryAssignmentState = typeof FactoryAssignmentState.Type;
 
-/** The team an assignment asks its lead to staff: a preset's name or `custom`. */
+/**
+ * The team an assignment asks its lead to staff. `definition` snapshots the factory team it was
+ * commissioned with, and `preset` is then that team's id. Without it, `preset` is a legacy
+ * preset's name or `custom`, and `members` name worker roles.
+ */
+/** What clients and agents see of a team snapshot, without its instructions and descriptions. */
+export const FactoryTeamSummary = Schema.Struct({
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+  members: Schema.Array(
+    Schema.Struct({
+      name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+      count: PositiveInt.check(Schema.isLessThanOrEqualTo(8)),
+    }),
+  ).check(Schema.isMaxLength(12)),
+  mayEditProtectedPaths: Schema.Boolean,
+});
+export type FactoryTeamSummary = typeof FactoryTeamSummary.Type;
+
 export const FactoryTeamSpec = Schema.Struct({
   preset: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
   members: Schema.Array(FactoryTeamMember).check(Schema.isMaxLength(12)),
+  /** Stored with the assignment; never sent to clients or agents, which get `summary`. */
+  definition: Schema.optionalKey(FactoryTeamDefinition),
+  summary: Schema.optionalKey(FactoryTeamSummary),
 });
 export type FactoryTeamSpec = typeof FactoryTeamSpec.Type;
 
@@ -712,6 +767,10 @@ export const FactoryPickupInput = Schema.Struct({
   brief: Schema.optionalKey(AssignmentBrief),
   completionCondition: Schema.optionalKey(CompletionCondition),
   team: Schema.optionalKey(FactoryTeamSpec),
+  /** A factory team id; absent means the first team the manager may staff. */
+  teamId: Schema.optionalKey(FactoryDefinitionId),
+  /** The lead's model, when the team's lead has a dynamic model list. */
+  leadModel: Schema.optionalKey(ModelSelection),
 });
 export type FactoryPickupInput = typeof FactoryPickupInput.Type;
 
@@ -723,6 +782,10 @@ export const FactoryCommissionInput = Schema.Struct({
   complexity: FactoryComplexity,
   issueNumber: Schema.optionalKey(PositiveInt),
   team: Schema.optionalKey(FactoryTeamSpec),
+  /** A factory team id; absent means the first team the manager may staff. */
+  teamId: Schema.optionalKey(FactoryDefinitionId),
+  /** The lead's model, when the team's lead has a dynamic model list. */
+  leadModel: Schema.optionalKey(ModelSelection),
   /** An open dependency this assignment delivers; the blocked assignment stays blocked until then. */
   dependencyId: Schema.optionalKey(Id),
 });
@@ -783,9 +846,15 @@ export type FactoryThreadsHandBackInput = typeof FactoryThreadsHandBackInput.Typ
 export const FactoryUpdateChecklistInput = Schema.Struct({ steps: FactoryChecklist });
 export type FactoryUpdateChecklistInput = typeof FactoryUpdateChecklistInput.Type;
 
-/** The lead asks for a worker from its team. Absent model means the first one allowed. */
+const MemberName = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
+
+/**
+ * The lead asks for a worker from its team: by `member` name on a team built from definitions, by
+ * `role` on an older team. Absent model means the first one allowed.
+ */
 export const FactoryDelegateInput = Schema.Struct({
-  role: FactoryWorkerRole,
+  member: Schema.optionalKey(MemberName),
+  role: Schema.optionalKey(FactoryWorkerRole),
   task: TrimmedNonEmptyString.check(Schema.isMaxLength(20_000)),
   title: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(120))),
   modelSelection: Schema.optionalKey(ModelSelection),
@@ -794,7 +863,8 @@ export type FactoryDelegateInput = typeof FactoryDelegateInput.Type;
 
 /** What a delegation launches: `task` is the full first message, role skill and task. */
 export const FactoryDelegationPlan = Schema.Struct({
-  role: FactoryWorkerRole,
+  role: FactoryRole,
+  member: Schema.optionalKey(MemberName),
   title: TrimmedNonEmptyString,
   task: Schema.String,
   modelSelection: ModelSelection,
@@ -814,6 +884,8 @@ export const FactoryMember = Schema.Struct({
   managerId: Id,
   assignmentId: Schema.NullOr(Id),
   role: FactoryRole,
+  /** The team member a `worker` was delegated as. */
+  memberName: Schema.optionalKey(MemberName),
   parentThreadId: Schema.NullOr(ThreadId),
   joined: FactoryMemberJoin,
   takenOver: Schema.Boolean,
@@ -943,6 +1015,19 @@ export const FactoryProposedChange = Schema.Union([
     before: Schema.NullOr(Schema.String),
     after: Schema.String,
   }),
+  /** A team definition in the factory config, created when `before` is null. */
+  Schema.Struct({
+    kind: Schema.Literal("team"),
+    before: Schema.NullOr(FactoryTeamDefinition),
+    after: FactoryTeamDefinition,
+  }),
+  /** A worker, lead or manager definition; `after` decodes as that kind's definition. */
+  Schema.Struct({
+    kind: Schema.Literal("definition"),
+    target: Schema.Literals(["worker", "lead", "manager"]),
+    before: Schema.NullOr(Schema.Unknown),
+    after: Schema.Unknown,
+  }),
 ]);
 export type FactoryProposedChange = typeof FactoryProposedChange.Type;
 
@@ -1070,6 +1155,17 @@ export const FactoryAssignmentStats = Schema.Struct({
   reviewRounds: NonNegativeInt,
   byRole: Schema.Array(
     Schema.Struct({ role: FactoryRole, tokens: StatsTokens, agentMs: NonNegativeInt }),
+  ),
+  /** Per team member, sub-agents included; absent for assignments staffed by role. */
+  byMember: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        delegations: NonNegativeInt,
+        tokens: StatsTokens,
+        agentMs: NonNegativeInt,
+      }),
+    ),
   ),
   byModel: Schema.Array(
     Schema.Struct({

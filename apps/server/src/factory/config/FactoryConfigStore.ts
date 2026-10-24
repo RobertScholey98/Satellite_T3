@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 
 import * as ServerConfig from "../../config.ts";
@@ -71,8 +72,21 @@ export class FactoryConfigStore extends Context.Service<
       kind: FactoryDefinitionKind,
       id: FactoryDefinitionId,
     ) => Effect.Effect<void, FactoryOperationError>;
+    /**
+     * Why this start could not migrate the database's config, or null. Kept in memory: the next
+     * start retries the migration and records its own outcome.
+     */
+    readonly migrationFailure: Effect.Effect<string | null>;
+    readonly recordMigrationFailure: (message: string | null) => Effect.Effect<void>;
   }
 >()("t3/factory/config/FactoryConfigStore") {}
+
+/**
+ * What a write that would create `factory.yaml` says while the migration failed. Writing it would
+ * mark the config as set up, and the database's config would never be migrated.
+ */
+export const unmigratedConfigMessage = (failure: string) =>
+  `The factory config from the database has not been migrated yet: ${failure} Fix that and restart Satellite to migrate it. Saving factory settings before then would skip the migration for good.`;
 
 const storageError = (action: string, relativePath: string) =>
   new FactoryOperationError({
@@ -86,6 +100,7 @@ const make = Effect.fn("FactoryConfigStore.make")(function* (directory: string) 
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
+  const migrationFailure = yield* Ref.make<string | null>(null);
 
   const absolute = (relativePath: string) => path.join(directory, ...relativePath.split("/"));
 
@@ -251,6 +266,7 @@ const make = Effect.fn("FactoryConfigStore.make")(function* (directory: string) 
       ],
       { concurrency: "unbounded" },
     );
+    const failure = yield* Ref.get(migrationFailure);
     return {
       configured,
       settings: Result.isSuccess(settings) ? settings.success : DEFAULT_FACTORY_SETTINGS,
@@ -259,6 +275,10 @@ const make = Effect.fn("FactoryConfigStore.make")(function* (directory: string) 
       managers: managers.definitions,
       teams: teams.definitions,
       problems: [
+        // Shown where Settings and `factory_definitions` list problems, until a start migrates it.
+        ...(configured || failure === null
+          ? []
+          : [{ path: FACTORY_SETTINGS_FILE, message: unmigratedConfigMessage(failure) }]),
         ...failures([settings]),
         ...workers.problems,
         ...leads.problems,
@@ -345,6 +365,8 @@ const make = Effect.fn("FactoryConfigStore.make")(function* (directory: string) 
     writeManager,
     writeTeam,
     remove,
+    migrationFailure: Ref.get(migrationFailure),
+    recordMigrationFailure: (message) => Ref.set(migrationFailure, message),
   });
 });
 

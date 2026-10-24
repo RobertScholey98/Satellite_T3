@@ -34,7 +34,7 @@ import {
   describePickupDecision,
   FACTORY_ASSIGNMENT_STATE_LABEL,
   FACTORY_MANAGER_STATE_LABEL,
-  FACTORY_ROLE_LABEL,
+  factoryMemberLabel,
   isLiveAssignment,
   resolveFactoryThreadPlace,
   takesAssignmentSlot,
@@ -73,7 +73,7 @@ export function FactoryThreadRow(props: {
         ) : (
           <FactoryRowLayout
             icon={<UsersRoundIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} />}
-            title={`${FACTORY_ROLE_LABEL[place.member.role]} for ${place.assignment?.title ?? place.manager.name}`}
+            title={`${factoryMemberLabel(place.member)} for ${place.assignment?.title ?? place.manager.name}`}
             detail={null}
             menu={null}
           />

@@ -285,6 +285,7 @@ const ROLE_NOUNS: Record<FactoryRole, string> = {
   implementer: "implementer",
   reviewer: "reviewer",
   verifier: "verifier",
+  worker: "worker",
 };
 
 export const FACTORY_ROLE_LABELS: Record<FactoryRole, string> = {
@@ -293,6 +294,7 @@ export const FACTORY_ROLE_LABELS: Record<FactoryRole, string> = {
   implementer: "Implementer",
   reviewer: "Reviewer",
   verifier: "Verifier",
+  worker: "Worker",
 };
 
 export const FACTORY_WORKER_ROLES: ReadonlyArray<FactoryWorkerRole> = [

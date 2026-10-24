@@ -1,18 +1,21 @@
 import type {
+  FactoryModelList,
+  FactoryModelRef,
   FactoryOnboardingResult,
   FactoryRole,
   FactoryRoleBrief,
+  FactoryTeamDefinition,
   ModelSelection,
 } from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
 
 import { DEFAULT_ROLE_SKILLS } from "./roles/index.ts";
 
+/** A model named by a provider instance, or portably by driver as definitions name it. */
+type NamedModel = ModelSelection | FactoryModelRef;
+
 export interface RoleSkillFill {
-  readonly modelPool: ReadonlyArray<ModelSelection>;
-  readonly allowedModels: ReadonlyArray<ModelSelection>;
+  readonly modelPool: ReadonlyArray<NamedModel>;
+  readonly allowedModels: ReadonlyArray<NamedModel>;
   readonly protectedPaths: ReadonlyArray<string>;
   readonly completionCondition: string | null;
 }
@@ -24,8 +27,10 @@ const NONE = "(none configured)";
 const list = (items: ReadonlyArray<string>) =>
   items.length === 0 ? NONE : items.map((item) => `- ${item}`).join("\n");
 
-const models = (selections: ReadonlyArray<ModelSelection>) =>
-  list(selections.map((selection) => `${selection.instanceId}/${selection.model}`));
+const modelLabel = (model: NamedModel) =>
+  "driver" in model ? `${model.driver}/${model.model}` : `${model.instanceId}/${model.model}`;
+
+const models = (selections: ReadonlyArray<NamedModel>) => list(selections.map(modelLabel));
 
 /** Fills every placeholder a role skill may use; unknown `{{...}}` text is left alone. */
 export const renderRoleSkill = (text: string, fill: RoleSkillFill): string => {
@@ -34,7 +39,7 @@ export const renderRoleSkill = (text: string, fill: RoleSkillFill): string => {
     allowedModels: models(fill.allowedModels),
     protectedPaths: list(fill.protectedPaths),
     completionCondition: fill.completionCondition?.trim() || "(no assignment yet)",
-    // Role files written before guidance moved onto the onboarding result still name it.
+    // Text written before guidance moved onto the onboarding result still names it.
     pickupGuidance: "(see the Project section)",
   };
   return text.replace(/\{\{(\w+)\}\}/g, (token, name: string) => values[name] ?? token);
@@ -64,29 +69,91 @@ export const withProjectSection = (rendered: string, result: FactoryOnboardingRe
   result === null ? rendered : `${rendered}\n\n${projectSection(result)}`;
 
 /**
- * A role's skill: the project's own file, then the environment's, then the built-in default.
- * An unreadable file falls through like a missing one so a bad override cannot stop the factory.
+ * A role's built-in text. Managers and leads have fixed protocols that definitions only add to;
+ * the named worker roles keep the starter workers' built-in descriptions for assignments staffed
+ * by role. A `worker` has no built-in text: its definition's description is its whole brief.
+ * Override files are retired, so nothing here reads the disk.
  */
-export const roleSkillSource = Effect.fn("FactoryRoleSkills.source")(function* (
-  role: FactoryRole,
-  roots: { readonly projectRoot: string; readonly baseDir: string },
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const read = (file: string) =>
-    fs.readFileString(file).pipe(
-      Effect.map((text): string | null => text),
-      Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(null)),
-      Effect.catch((cause) =>
-        Effect.logDebug("factory role skill unreadable", { file, cause }).pipe(Effect.as(null)),
-      ),
-    );
-  const project = yield* read(
-    path.join(roots.projectRoot, ".satellite", "factory", "roles", `${role}.md`),
-  );
-  if (project !== null) return { text: project, source: "project" } satisfies RoleSkillSource;
-  const environment = yield* read(path.join(roots.baseDir, "factory", "roles", `${role}.md`));
-  if (environment !== null)
-    return { text: environment, source: "environment" } satisfies RoleSkillSource;
-  return { text: DEFAULT_ROLE_SKILLS[role], source: "default" } satisfies RoleSkillSource;
+export const roleSkillSource = (role: FactoryRole): RoleSkillSource => ({
+  text: DEFAULT_ROLE_SKILLS[role],
+  source: "default",
 });
+
+/**
+ * A fixed protocol followed by the instructions its definition copy adds, with placeholders in
+ * both filled. Empty instructions add nothing.
+ */
+export const protocolBrief = (
+  protocol: string,
+  instructions: string | null | undefined,
+  fill: RoleSkillFill,
+): string => {
+  const added = instructions?.trim() ?? "";
+  return renderRoleSkill(added === "" ? protocol : `${protocol}\n\n${added}`, fill);
+};
+
+/** The manager's brief: protocol, its definition's instructions, then the project section. */
+export const managerBrief = (input: {
+  readonly protocol: string;
+  readonly instructions: string | null | undefined;
+  readonly fill: RoleSkillFill;
+  readonly result: FactoryOnboardingResult | null;
+}): string =>
+  withProjectSection(protocolBrief(input.protocol, input.instructions, input.fill), input.result);
+
+/**
+ * A lead's first message: protocol, the team's lead instructions, the project section, the
+ * assignment, then the team it staffs.
+ */
+export const leadBrief = (input: {
+  readonly protocol: string;
+  readonly instructions: string | null | undefined;
+  readonly fill: RoleSkillFill;
+  readonly result: FactoryOnboardingResult | null;
+  readonly assignment: {
+    readonly title: string;
+    readonly brief: string;
+    readonly completionCondition: string;
+  };
+  readonly team: string | null;
+}): string =>
+  [
+    withProjectSection(protocolBrief(input.protocol, input.instructions, input.fill), input.result),
+    `# Assignment\n\n## ${input.assignment.title}\n\n${input.assignment.brief}\n\n## Completion condition\n\n${input.assignment.completionCondition}`,
+    ...(input.team === null ? [] : [input.team]),
+  ].join("\n\n");
+
+const modelListLine = (list: FactoryModelList) => {
+  const named = list.models.map(modelLabel).join(", ");
+  if (list.dynamic)
+    return named === "" ? "any pool model, you pick per task" : `${named} (you pick per task)`;
+  return named === "" ? "any pool model" : `${named} (in this order)`;
+};
+
+/** The lead's view of a team built from definitions: who it delegates to, by name. */
+export const definitionTeamSection = (team: FactoryTeamDefinition): string => {
+  const members = team.members.map(
+    (member) => `- ${member.name}, up to ${member.count} at once: ${modelListLine(member.models)}`,
+  );
+  return [
+    `# Team\n\n${team.name}`,
+    ...(team.workflow.trim() === "" ? [] : [team.workflow.trim()]),
+    `## Members\n\nDelegate to a member by its name with \`factory_delegate\`.\n\n${members.join("\n")}`,
+    team.mayEditProtectedPaths
+      ? "This team may edit the project's protected paths."
+      : "This team may not edit the project's protected paths.",
+  ].join("\n\n");
+};
+
+/**
+ * A team member's first message: its description with placeholders filled, the project section,
+ * then the task.
+ */
+export const workerBrief = (
+  member: { readonly description: string },
+  fill: RoleSkillFill & {
+    readonly result: FactoryOnboardingResult | null;
+    readonly task: string;
+  },
+): string =>
+  `${withProjectSection(renderRoleSkill(member.description, fill), fill.result)}\n\n# Task\n\n${fill.task}`;

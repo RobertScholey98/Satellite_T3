@@ -34,13 +34,20 @@ export const FACTORY_ASSIGNMENT_STATE_LABEL: Record<FactoryAssignmentState, stri
   cancelled: "Cancelled",
 };
 
-export const FACTORY_ROLE_LABEL: Record<FactoryRole, string> = {
+const FACTORY_ROLE_LABEL: Record<FactoryRole, string> = {
   manager: "Manager",
   lead: "Lead",
   implementer: "Implementer",
   reviewer: "Reviewer",
   verifier: "Verifier",
+  worker: "Worker",
 };
+
+/** A member delegated by name, on a team built from definitions, is shown by that name. */
+export const factoryMemberLabel = (member: {
+  readonly role: FactoryRole;
+  readonly memberName?: string;
+}) => member.memberName ?? FACTORY_ROLE_LABEL[member.role];
 
 /** A digest older than this is rewritten when its tab opens. */
 export const FACTORY_DIGEST_STALE_MS = 5 * 60_000;
@@ -116,7 +123,11 @@ export function resolveFactoryThreadPlace(
 export interface FactoryWorkspaceTeam {
   readonly assignment: FactoryWorkspaceAssignment;
   /** The lead first, then the other members in the order the feed lists them. */
-  readonly threads: ReadonlyArray<{ readonly threadId: ThreadId; readonly role: FactoryRole }>;
+  readonly threads: ReadonlyArray<{
+    readonly threadId: ThreadId;
+    readonly role: FactoryRole;
+    readonly memberName?: string;
+  }>;
 }
 
 export interface FactoryWorkspaceView {
@@ -149,7 +160,11 @@ export function resolveFactoryWorkspaceView(
           ...(assignment.leadThreadId === null
             ? []
             : [{ threadId: assignment.leadThreadId, role: "lead" as const }]),
-          ...members.map((member) => ({ threadId: member.threadId, role: member.role })),
+          ...members.map((member) => ({
+            threadId: member.threadId,
+            role: member.role,
+            ...(member.memberName === undefined ? {} : { memberName: member.memberName }),
+          })),
         ],
       };
     });
