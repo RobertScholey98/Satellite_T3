@@ -3377,10 +3377,12 @@ export const makeFactoryService = Effect.fn("makeFactoryService")(function* (
           const unallowed = violation.paths.filter((path) => !allowed.has(path));
           const added = unallowed.filter((path) => previous?.paths.includes(path) !== true);
           if (added.length > 0) flagged = true;
+          const declinedHere = unallowed.filter((path) => declined.has(path));
+          // A fresh flag's wake already names the declined files it carries.
           if (added.some((path) => !declined.has(path)))
             fresh.push({ ...violation, paths: unallowed });
-          const declinedHere = unallowed.filter((path) => declined.has(path));
-          if (declinedHere.length > 0) stillDeclined.push({ ...violation, paths: declinedHere });
+          else if (declinedHere.length > 0)
+            stillDeclined.push({ ...violation, paths: declinedHere });
           const unasked = unallowed.filter((path) => !asked.has(path));
           for (let index = 0; index < unasked.length; index += FACTORY_ASK_PATH_LIMIT) {
             newAsks.push({
