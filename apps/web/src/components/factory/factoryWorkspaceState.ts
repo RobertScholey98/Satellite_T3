@@ -154,8 +154,8 @@ const workspacePlaceAtom = Atom.family((environmentId: EnvironmentId) =>
   ),
 );
 
-// Reads the shell of every lead each live assignment has had, held through streaming ticks, so the card re-renders only when a
-// row changes.
+// Reads the shell of every lead each live assignment has had, held through streaming ticks, so the
+// card re-renders only when a row changes.
 const mergeRowsAtom = Atom.family((environmentId: EnvironmentId) =>
   Atom.family((managerId: string) =>
     Atom.make((get) => {
