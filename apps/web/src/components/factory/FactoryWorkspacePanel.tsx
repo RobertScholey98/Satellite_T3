@@ -147,8 +147,21 @@ export function FactoryWorkspacePanel(props: {
     placement === null &&
     stack.above.length > 0;
 
+  // Whether the details card is inline rather than a popover, by the card's own rule. Growing a
+  // short window turns it inline without any other input here changing, so the measurement below
+  // has to re-run on this.
+  const detailsInline =
+    canvas !== null &&
+    resolveThreadDetailsCardLayout({
+      container: canvas.container,
+      lane: canvas.lane,
+      frame: canvas.layout.frame,
+      overlapsDetailsCard: side === "right" && canvas.layout.overlapsDetailsCard,
+      topInset: (side === "left" ? 0 : topInset) + stack.detailsTopInset,
+      side,
+    }) !== null;
   // The chat view renders the details card, so the cards below it follow its measured height.
-  const measuringDetails = column !== null && detailsOpen;
+  const measuringDetails = column !== null && detailsOpen && detailsInline;
   useLayoutEffect(() => {
     const details = measuringDetails
       ? (anchor
